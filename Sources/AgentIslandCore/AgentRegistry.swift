@@ -176,6 +176,7 @@ public enum AgentRegistry {
                 bundleIDs: [],
                 processNames: [cli],
                 sessionDirs: [],
+                defaultEnabled: false,   // 自动发现默认关闭（与设置页注释一致，避免首启全开）
                 category: .assistant
             ))
         }

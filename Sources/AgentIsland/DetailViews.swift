@@ -91,14 +91,19 @@ struct AgentDetailView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if loading {
                         HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-                            .padding(.top, 36)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 60)
                     } else if let usage, !usage.isEmpty {
                         overviewCard(usage)
                         if !models.isEmpty { modelList }
                     } else {
+                        // 无 token 数据：内容短，垂直居中避免大片空白玻璃（阿菜低3）
+                        Spacer(minLength: 0)
                         basicInfoCard
+                        Spacer(minLength: 0)
                     }
                 }
+                .frame(maxWidth: .infinity, minHeight: 310)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
             }
@@ -262,26 +267,27 @@ struct SessionListView: View {
 
             Divider().overlay(Theme.onDark.opacity(0.12))
 
-            ScrollView(.vertical, showsIndicators: true) {
-                // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行
-                LazyVStack(spacing: 4) {
-                    if loading {
-                        HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-                            .padding(.top, 36)
-                    } else if sessions.isEmpty {
-                        Text("该模型暂无会话记录")
-                            .font(Theme.bodyFont(11))
-                            .foregroundColor(Theme.onDarkFaint)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 28)
-                    } else {
+            // 列表态用 ScrollView+LazyVStack（懒加载）；loading/空态直接铺满剩余空间并居中，
+            // 避免窗口固定高度下大片空白玻璃（阿菜低3）
+            if loading {
+                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if sessions.isEmpty {
+                Text("该模型暂无会话记录")
+                    .font(Theme.bodyFont(11))
+                    .foregroundColor(Theme.onDarkFaint)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行
+                    LazyVStack(spacing: 4) {
                         ForEach(sessions) { s in
                             sessionRow(s)
                         }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
             }
         }
         .frame(width: 280)

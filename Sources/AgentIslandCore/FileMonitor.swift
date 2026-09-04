@@ -143,11 +143,11 @@ public final class FileActivityMonitor: FileActivityProviding {
         lock.unlock()
 
         // 单趟扫描：每目录一次遍历，同时产出最近写入时间 + 活跃会话数（M1 修复）
-        // 快跳过：根目录 mtime 未变（无新顶层子项）且缓存 newest 仍在活跃窗口内，
-        // 且距上次全量扫描 < forceRescanInterval（60s）
-        // → 树内无新写入（或只有深层旧会话内的新写入，newest 仍是该会话，复用不丢信号），
-        //   复用缓存，零枚举。newest 滑出窗口 / 超过 60s 未全量扫 → 强制全量重扫兜底，
-        //   保证深层写入信号最长延迟 60s 即被发现。
+        // 快跳过：根目录 mtime 未变（无新顶层子项）且距上次全量扫描 < forceRescanInterval（60s）
+        // → 复用缓存，零枚举。深层写入不改变根 mtime，故 60s 兜底强制重扫保证信号时效
+        //   （工作态信号最长延迟 60s 被发现）；空闲超 60s 后同样强制重扫，确认 idle 期间
+        //   无新会话/写入（不再要求 newest 活跃——否则长空闲时「newest 活跃」恒不满足，
+        //   每次扫描都全量枚举，阿证中1）。
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
         let now = Date()
@@ -160,10 +160,10 @@ public final class FileActivityMonitor: FileActivityProviding {
             let cachedCount = sessionCounts[dir]
             let lastFull = lastFullScans[dir]
             lock.unlock()
-            if let rootDate, let cachedRoot, rootDate == cachedRoot, let cachedNewest,
-               now.timeIntervalSince(cachedNewest) <= window, let cachedCount,
+            if let rootDate, let cachedRoot, rootDate == cachedRoot,
+               let cachedNewest, let cachedCount,
                now.timeIntervalSince(lastFull ?? .distantPast) < forceRescanInterval {
-                // 无新顶层子项 + 最近写入仍活跃 + 60s 内刚全量扫过：复用缓存，不枚举目录树
+                // 根 mtime 未变（无新顶层子项）+ 60s 内刚全量扫过：复用缓存，不枚举目录树
                 fresh[dir] = cachedNewest
                 freshCounts[dir] = cachedCount
                 continue
@@ -178,8 +178,11 @@ public final class FileActivityMonitor: FileActivityProviding {
         }
 
         lock.lock()
-        cache = fresh
-        sessionCounts = freshCounts
+        // 竞态防护（阿证低3）：扫描期间 watchedDirs 可能被 replaceWatchedDirs 替换，
+        // 迟到的扫描结果只写回仍在监控的目录，已停用目录的脏数据丢弃
+        let current = watchedDirs
+        cache = fresh.filter { current.contains($0.key) }
+        sessionCounts = freshCounts.filter { current.contains($0.key) }
         isScanning = false
         lock.unlock()
     }

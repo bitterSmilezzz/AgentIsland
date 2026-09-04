@@ -96,13 +96,9 @@ struct MenuBarMenuView: View {
         Divider()
 
         // 状态摘要（M1）：忙碌时带工作数；全离线时菜单仍可展开（空态有提示价值）
-        // 口径与展开卡片可见列表一致（在线 + 24h 活跃才算可见项）；
-        // 不禁用按钮：hover/tap 均可展开，禁用会造成「菜单灰、细条可点」的语义矛盾（阿证/阿剩）。
+        // 口径与展开卡片一致：统一走 engine.visibleSnapshots（阿剩低2/阿菜低2）
         let workingCount = engine.workingAgents().count
-        let hasVisibleItem = engine.snapshots.contains {
-            $0.processRunning || ($0.lastActivityAgo ?? .infinity) < 24 * 3600
-        }
-        let anyOfflineOnly = !hasVisibleItem
+        let anyOfflineOnly = engine.visibleSnapshots.isEmpty
         Button(controller.displayState == .expanded
                ? "收起灵动岛"
                : (anyOfflineOnly ? "展开灵动岛（暂无 Agent 在线）" : "展开灵动岛\(workingCount > 0 ? "（\(workingCount) 个工作中）" : "")")) {

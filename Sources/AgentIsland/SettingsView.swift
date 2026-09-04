@@ -168,15 +168,30 @@ struct SettingsView: View {
             }
         }
         .sheet(isPresented: $showAddCustom) {
-            // 冲突校验只针对引擎当前启用的条目（内置+自动发现+已存自定义）：
-            // 未启用的内置/未安装 CLI 与自定义条目同进程名时不会重复计数，不应误拦
             AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id)),
-                                knownProcessNames: engine.allProfiles
-                                    .flatMap(\.processNames)
-                                    .map { $0.lowercased() }) { profile in
+                                knownProcessNames: Self.conflictProcessNames(engine: engine)) { profile in
                 addCustom(profile)
             }
         }
+    }
+
+    /// 冲突校验进程名集合：覆盖「已安装 或 已启用」的全部条目（内置+自动发现+自定义）。
+    /// - 已启用条目：同进程名必然双份计数，必须拦（阿剩第五轮基础）
+    /// - 已安装但禁用的内置：日后启用会同进程双份，也要拦（阿剩第六轮指正——仅引擎启用集漏检）
+    /// - 未安装的 CLI：进程不会运行，同进程名无实际冲突，不误拦（第五轮「未安装不误拦」）
+    private static func conflictProcessNames(engine: ActivityEngine) -> [String] {
+        let installedCLIs = AgentRegistry.installedCLIs()
+        let installedBundles = AgentRegistry.installedBundleIDs()
+        var names = Set<String>()
+        for p in AgentRegistry.fullRegistry() {
+            let installed = p.bundleIDs.contains { installedBundles.contains($0.lowercased()) }
+                || p.processNames.contains { installedCLIs.contains($0.lowercased()) }
+            let enabled = engine.allProfiles.contains { $0.id == p.id }
+            if installed || enabled {
+                names.formUnion(p.processNames.map { $0.lowercased() })
+            }
+        }
+        return Array(names)
     }
 
     // MARK: 外观
@@ -309,6 +324,9 @@ struct SettingsView: View {
     }
 
     private func applyLaunchAtLogin(_ enabled: Bool) {
+        // 防误触：loadState 回显 launchAtLogin 也会走 onChange；
+        // 目标状态与系统实际状态一致时直接跳过，避免每次打开设置页都 register/unregister
+        guard enabled != (SMAppService.mainApp.status == .enabled) else { return }
         do {
             if enabled {
                 try SMAppService.mainApp.register()

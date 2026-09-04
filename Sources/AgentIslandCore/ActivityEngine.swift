@@ -63,8 +63,10 @@ public final class ActivityEngine: ObservableObject {
     // MARK: - 动态配置（设置界面接线）
 
     /// 更新启停集合（enabledAgents）
+    /// 从全量注册表（内置+自动发现+自定义）过滤：避免只从当前已缩水列表过滤，
+    /// 否则「关闭后再开启」的 agent 本会话内永久丢失监控（阿剩高优）
     public func setEnabled(_ enabledIDs: Set<String>) {
-        let all = profiles
+        let all = AgentRegistry.fullRegistry()
         profiles = all.filter { enabledIDs.contains($0.id) }
         refreshWatchedDirs()
         sample()

@@ -59,6 +59,21 @@ enum RegistryTests {
             try expectEqual(engine.allProfiles.map(\.id), ["dim"], "只保留启用项")
         }
 
+        TestKit.test("引擎: setEnabled 从全量注册表过滤（关→再开不丢失监控）") {
+            // 回归：阿剩第六轮高优——之前 setEnabled 只从当前已缩水列表过滤，
+            // 「关闭后再开启」的 agent 本会话内永久丢失监控
+            let engine = ActivityEngine(profiles: AgentRegistry.builtin, config: EngineConfig(),
+                                        processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent", "Codex"], bundleIDs: [])),
+                                        fileMonitor: FakeFileActivityProvider(writes: [:]))
+            engine.setEnabled(["dim"])                      // 只启用 dim
+            try expectEqual(engine.allProfiles.map(\.id), ["dim"], "只保留启用项")
+            engine.setEnabled(["dim", "claude"])            // 再开启 claude
+            let ids = engine.allProfiles.map(\.id)
+            try expectTrue(ids.contains("dim"), "dim 应保留")
+            try expectTrue(ids.contains("claude"), "claude 应能加回（修复后从 fullRegistry 取源）")
+            try expectEqual(Set(ids).count, ids.count, "无重复")
+        }
+
         TestKit.test("持久化: 全关（空数组）不被回退为默认") {
             // 模拟「用户主动全关」：写入空数组后，读取路径应返回空而非默认集
             let empty: [String] = []

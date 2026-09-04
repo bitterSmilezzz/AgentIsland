@@ -207,7 +207,9 @@ struct IslandView: View {
                     .fill(statusColor)
                     .scaleEffect(1.6)
                     .opacity(0.35)
-                    .modifier(PulseAnimation())
+                    // 仅展开态运行动画（阿证中2：docked 态 repeatForever 60fps 布局风暴，
+                    // 是工作态 CPU 峰值主因；收起即停止）
+                    .modifier(PulseAnimation(isActive: controller.displayState == .expanded))
             }
         }
     }
@@ -336,13 +338,27 @@ struct TokenSummaryBar: View {
 // MARK: - 呼吸动画
 
 struct PulseAnimation: ViewModifier {
+    /// 是否运行动画：isActive=false 时停止 repeatForever 并复位
+    /// （SwiftUI repeatForever 无法取消，只能通过条件移除动画环境实现）
+    let isActive: Bool
     @State private var pulsing = false
 
     func body(content: Content) -> some View {
         content
             .scaleEffect(pulsing ? 1.0 : 0.6)
             .opacity(pulsing ? 0 : 0.4)
+            .onChange(of: isActive) { active in
+                if active {
+                    pulsing = false
+                    withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) {
+                        pulsing = true
+                    }
+                } else {
+                    pulsing = false
+                }
+            }
             .onAppear {
+                guard isActive else { return }
                 pulsing = false
                 withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) {
                     pulsing = true
