@@ -187,6 +187,7 @@ struct AgentDetailView: View {
                             .font(Theme.monoFont(10, weight: .semibold))
                             .foregroundColor(Theme.onDark)
                             .lineLimit(1)
+                            .help(m.modelId)   // 长模型名截断时可看全名（阿菜低3）
                         HStack(spacing: 5) {
                             Text("\(TokenUsage.compact(m.tokens)) tok")
                                 .font(Theme.monoFont(9))
@@ -229,7 +230,7 @@ struct AgentDetailView: View {
                 infoRow("状态", s.level.label)
                 infoRow("活动", s.lastActivityText)
                 if s.activeSessions > 0 { infoRow("会话", "\(s.activeSessions) 个活跃") }
-                if s.cpuPercent > 1 { infoRow("CPU", String(format: "%.0f%%", s.cpuPercent)) }
+                if s.cpuPercent > 1 { infoRow("CPU", String(format: "%.1f%%", s.cpuPercent)) }
                 infoRow("Token", "暂无本地 token 数据")
             }
         }

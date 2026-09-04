@@ -32,8 +32,8 @@ public final class ActivityEngine: ObservableObject {
     private var installedBundles: Set<String> = []
     /// 滞回：CPU 信号瞬时抖动时保持 working 的最短时长（防 peek 高频弹跳）
     private var workingSince: [String: Date] = [:]
-    /// 安装缓存重扫计数（每 120 次采样刷一次，见 sampleCore）
-    private var installedRefreshCounter = 0
+    /// 安装缓存重扫时间戳（距上次 ≥5min 刷一次，见 sampleCore）
+    private var lastInstalledRefresh = Date.distantPast
 
     public init(profiles: [AgentProfile] = AgentRegistry.fullRegistry(),
          config: EngineConfig = EngineConfig(),
@@ -190,11 +190,11 @@ public final class ActivityEngine: ObservableObject {
     @discardableResult
     private func sampleCore(matcher: ProcessMatcher, now: Date) -> [AgentSnapshot] {
         fileMonitor.scanAsync()
-        // 低频重扫安装缓存（阿剩低3：运行中装新 CLI/App 不必重启）；
-        // 后台执行避免主线程卡顿（阿证中1）。每 120 次采样在工作态 ≈ 每 4 分钟
-        installedRefreshCounter += 1
-        if installedRefreshCounter >= 120 {
-            installedRefreshCounter = 0
+        // 低频重扫安装缓存（运行中装新 CLI/App 不必重启）；后台执行避免主线程卡顿。
+        // 用时间戳阈值（距上次 ≥5min）而非采样计数——计数在工作态 2s/离线 60s 间隔下
+        // 粒度漂移 30 倍（阿剩低：离线态最长拖 2 小时），时间戳保证两态刷新粒度一致
+        if now.timeIntervalSince(lastInstalledRefresh) >= 300 {
+            lastInstalledRefresh = now
             refreshInstalledInBackground()
         }
 

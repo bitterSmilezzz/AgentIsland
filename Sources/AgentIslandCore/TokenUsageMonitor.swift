@@ -83,6 +83,10 @@ public final class TokenUsageMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private var _usage: [String: TokenUsage] = [:]   // agentId → 用量
     private var _grandTotal = TokenUsage()
+    /// 增量缓存（阿证低）：文件未变时的上次结果副本，避免全表聚合重算
+    private var lastUsage: [String: TokenUsage] = [:]
+    private var lastDimStamp = ""
+    private var lastOpenCodeStamp = ""
     private var timer: Timer?
     /// 刷新完成后的主线程回调（引擎用它触发重采样，让卡片高度/徽标及时跟上）
     public var onRefresh: (@MainActor () -> Void)?
@@ -164,6 +168,16 @@ public final class TokenUsageMonitor: @unchecked Sendable {
     }
 
     public func refresh() {
+        // 增量缓存（阿证低）：两库文件 mtime/inode 未变则跳过全表聚合重算。
+        // 只读连接 + stat 微秒级；token 表行数到十万级时全表 SUM 可达数百 ms，
+        // 文件未变时无谓重算应避免
+        let dimStamp = fileStamp(dimAgentDB)
+        let openCodeStamp = fileStamp(openCodeDB)
+        if dimStamp == lastDimStamp, openCodeStamp == lastOpenCodeStamp,
+           !lastUsage.isEmpty {
+            return
+        }
+
         let cutoffISO = Self.iso24hAgo()
         let cutoffMs = Int64(Date().timeIntervalSince1970 - 86_400) * 1000
 
@@ -175,10 +189,22 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         lock.lock()
         _usage = usage.filter { !$0.value.isEmpty }
         _grandTotal = total
+        lastUsage = _usage
         lock.unlock()
+        lastDimStamp = dimStamp
+        lastOpenCodeStamp = openCodeStamp
         if let onRefresh {
             Task { @MainActor in onRefresh() }
         }
+    }
+
+    /// 文件变更戳（inode+mtime+size 组合；任一变化即视为被替换/写入）
+    private func fileStamp(_ path: String) -> String {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return "" }
+        let inode = (attrs[.systemFileNumber] as? UInt64) ?? 0
+        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let size = (attrs[.size] as? UInt64) ?? 0
+        return "\(inode)-\(Int(mtime))-\(size)"
     }
 
     // MARK: - 详情页数据（按需查询，后台线程执行，主线程回调）

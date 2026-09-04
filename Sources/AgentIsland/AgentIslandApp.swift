@@ -47,8 +47,17 @@ final class AppContext {
         )
         // 安装缓存后台首刷（阿剩中A：类型首次访问改为空集零成本，这里显式触发
         // 真实扫描；引擎采样循环随后会低频重扫，首次采样前 installed 标记短暂为空）
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
             AgentRegistry.refreshInstalledCache()
+            DispatchQueue.main.async {
+                // 首刷完成后用最新注册表重建启用集（阿剩中：若用户启用过自动发现
+                // cli-xxx，重启时旧缓存为空会导致该 CLI 被滤出引擎；这里补一次
+                // setEnabled 让其恢复监控）
+                guard let self else { return }
+                let registry = AgentRegistry.fullRegistry()
+                let enabled = AppContext.loadEnabledIDs(defaultRegistry: registry)
+                self.engine.setEnabled(enabled)
+            }
         }
     }
 }

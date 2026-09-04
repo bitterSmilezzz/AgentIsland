@@ -36,7 +36,10 @@ struct SettingsView: View {
     @State private var installedScanVersion = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // 依赖注册：让 body 真正读取扫描版本号（阿剩低B 修正——@State 只有在 body
+        // 求值中被读取才会建立依赖，bump 才能触发重算刷新自动发现列表）
+        _ = installedScanVersion
+        return VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
             ScrollView {
@@ -245,7 +248,9 @@ struct SettingsView: View {
                 .foregroundColor(Theme.ink)
 
             sliderRow(title: "「工作中」写入窗口", value: $workingWindow, range: 10...300, unit: "秒")
-            sliderRow(title: "CPU 判定阈值", value: $cpuThreshold, range: 0.5...50, unit: "%")
+            // range 1...50（阿菜低：之前 0.5...50 + step 1 档位全是半值 0.5/1.5/2.5…，
+            // 默认 1 不在档位上首次拖动即跳变）
+            sliderRow(title: "CPU 判定阈值", value: $cpuThreshold, range: 1...50, unit: "%")
             sliderRow(title: "活跃会话窗口", value: $activeSessionWindow, range: 60...3600, unit: "秒")
             sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
             sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
