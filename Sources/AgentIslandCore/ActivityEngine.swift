@@ -30,6 +30,8 @@ public final class ActivityEngine: ObservableObject {
     private var installedBundles: Set<String> = []
     /// 滞回：CPU 信号瞬时抖动时保持 working 的最短时长（防 peek 高频弹跳）
     private var workingSince: [String: Date] = [:]
+    /// 安装缓存重扫计数（每 120 次采样刷一次，见 sampleCore）
+    private var installedRefreshCounter = 0
 
     public init(profiles: [AgentProfile] = AgentRegistry.fullRegistry(),
          config: EngineConfig = EngineConfig(),
@@ -114,6 +116,8 @@ public final class ActivityEngine: ObservableObject {
     // MARK: - 安装检测（A4）
 
     private func refreshInstalled() {
+        // 运行期重扫安装缓存（阿剩低3：运行中装新 CLI/App 不必重启即更新 installed 标记）
+        AgentRegistry.refreshInstalledCache()
         installedCLIs = AgentRegistry.installedCLIs()
         installedBundles = AgentRegistry.installedBundleIDs()
     }
@@ -131,9 +135,15 @@ public final class ActivityEngine: ObservableObject {
     // MARK: - 采样
 
     /// 手动触发一次采样（也用于测试与 --probe）
+    /// 受 samplingInFlight 约束（阿证中1）：后台采样在飞时丢弃本次，
+    /// 避免同步路径与后台采样并发导致 CPU 差分短暂失真 + 主线程瞬时开销；
+    /// 配置变更/启动等低频场景下丢弃一次无影响（下个周期自动补采）
     @discardableResult
     public func sample(now: Date = Date()) -> [AgentSnapshot] {
-        sampleCore(matcher: processMonitor.matcher(profiles: profiles), now: now)
+        guard !samplingInFlight else { return [] }
+        samplingInFlight = true
+        defer { samplingInFlight = false }
+        return sampleCore(matcher: processMonitor.matcher(profiles: profiles), now: now)
     }
 
     /// 定时采样入口：进程遍历（proc_listpids/proc_pidpath，开销毫秒级）在后台执行，
@@ -159,13 +169,24 @@ public final class ActivityEngine: ObservableObject {
     @discardableResult
     private func sampleCore(matcher: ProcessMatcher, now: Date) -> [AgentSnapshot] {
         fileMonitor.scanAsync()
+        // 低频重扫安装缓存（阿剩低3：运行中装新 CLI/App 不必重启；
+        // 每 120 次采样 ≈ 2s 间隔下约每 4 分钟一次，毫秒级成本）
+        installedRefreshCounter += 1
+        if installedRefreshCounter >= 120 {
+            installedRefreshCounter = 0
+            refreshInstalled()
+        }
 
         var results: [AgentSnapshot] = []
         var anyWork = false
 
         for profile in profiles {
-            let running = matcher.isRunning(profile)
-            let cpu = matcher.cpuPercent(profile)
+            // 每 profile 只调一次 matchingEntries（阿剩低1：isRunning+cpuPercent 各遍历一遍
+            // 全表，合并为单趟；running 由「有匹配条目」推导，与 isRunning 语义等价——
+            // bundleHit 无名字匹配时返回 [pid:-1] 占位条目，CPU 合计为 0）
+            let entries = matcher.matchingEntries(for: profile)
+            let running = !entries.isEmpty
+            let cpu = entries.reduce(0) { $0 + $1.cpuPercent }
 
             // 合并本次探测到的最新写入时间（目录不存在时保留上次值）
             let fresh = fileMonitor.lastWriteDates(for: profile.sessionDirs)

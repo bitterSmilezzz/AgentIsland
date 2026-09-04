@@ -400,21 +400,27 @@ struct CustomAgentRowView: View {
             Text(profile.name)
                 .font(Theme.bodyFont(13))
                 .foregroundColor(Theme.ink)
+                .lineLimit(1)
+                .layoutPriority(1)   // 名称优先占位，进程名可压缩（阿剩低2）
             Text(profile.processNames.joined(separator: ","))
                 .font(Theme.monoFont(10))
                 .foregroundColor(Theme.inkMuted48)
                 .lineLimit(1)
+                .layoutPriority(0)
             Spacer()
             // 启用开关：binding(for:) → enabledAgents + engine.setEnabled（统一路径）
             Toggle("", isOn: isEnabled)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .tint(Theme.actionBlue)
+                .accessibilityLabel("启用 \(profile.name)")   // 空标签 Toggle 补 a11y（阿剩低2）
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash")
             }
             .buttonStyle(.plain)
             .foregroundColor(Theme.dangerRed)
+            .help("删除自定义 Agent")
+            .accessibilityLabel("删除 \(profile.name)")
         }
         .padding(.vertical, 2)
     }

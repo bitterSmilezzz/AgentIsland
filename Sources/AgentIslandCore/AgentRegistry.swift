@@ -123,8 +123,11 @@ public enum AgentRegistry {
     ]
 
     /// 已安装的 CLI 集合（小写命令名）
-    /// 静态缓存：应用生命周期内 PATH/安装基本不变，避免 fullRegistry/discoverCLI/refreshInstalled 各扫一遍
-    public static let cachedInstalledCLIs: Set<String> = {
+    /// 静态缓存：避免 fullRegistry/discoverCLI/refreshInstalled 各扫一遍；
+    /// 运行期可 refreshInstalledCache() 重扫（阿剩低3：装新 CLI 不必重启 App）
+    public private(set) static var cachedInstalledCLIs: Set<String> = Self.scanInstalledCLIs()
+
+    private static func scanInstalledCLIs() -> Set<String> {
         var found = Set<String>()
         var dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
             .split(separator: ":").map(String.init)
@@ -140,13 +143,15 @@ public enum AgentRegistry {
             }
         }
         return found
-    }()
+    }
 
     public static func installedCLIs() -> Set<String> { cachedInstalledCLIs }
 
     /// 已安装的 bundle id 集合（/Applications 枚举，小写）
-    /// 静态缓存：一次扫描，全部消费方复用
-    public static let cachedInstalledBundleIDs: Set<String> = {
+    /// 静态缓存：一次扫描，全部消费方复用；运行期可 refreshInstalledCache() 重扫
+    public private(set) static var cachedInstalledBundleIDs: Set<String> = Self.scanInstalledBundleIDs()
+
+    private static func scanInstalledBundleIDs() -> Set<String> {
         var found = Set<String>()
         let fm = FileManager.default
         let appsDir = URL(fileURLWithPath: "/Applications")
@@ -161,9 +166,15 @@ public enum AgentRegistry {
             }
         }
         return found
-    }()
+    }
 
     public static func installedBundleIDs() -> Set<String> { cachedInstalledBundleIDs }
+
+    /// 运行期重扫安装缓存（面板展开/设置打开时调用，成本毫秒级）
+    public static func refreshInstalledCache() {
+        cachedInstalledCLIs = scanInstalledCLIs()
+        cachedInstalledBundleIDs = scanInstalledBundleIDs()
+    }
 
     /// 自动发现的额外 CLI profile（不在内置集里的 CLI，如 aider/gemini/windsurf）
     public static func discoverCLIProfiles() -> [AgentProfile] {

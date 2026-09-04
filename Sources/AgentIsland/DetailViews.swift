@@ -87,28 +87,32 @@ struct AgentDetailView: View {
 
             Divider().overlay(Theme.onDark.opacity(0.12))
 
-            ScrollView(.vertical, showsIndicators: true) {
-                GeometryReader { geo in
+            // GeometryReader 必须在 ScrollView 外层（同 SessionListView，防长内容不可滚动）
+            GeometryReader { geo in
+                ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 10) {
                         if loading {
                             // 与 SessionListView 一致的居中 loading（阿菜低3）
                             HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                                 .frame(maxWidth: .infinity, minHeight: geo.size.height - 20)
-                        } else if let usage, !usage.isEmpty {
-                            if models.isEmpty {
-                                // usage 有数据但模型拆分无行：overviewCard 单独渲染，垂直居中
-                                // （阿菜中1：之前贴顶导致下方 ~244pt 空白玻璃）
-                                Spacer(minLength: 0)
-                                overviewCard(usage)
-                                Spacer(minLength: 0)
-                            } else {
-                                overviewCard(usage)
-                                if !models.isEmpty { modelList }
-                            }
                         } else {
-                            // 无 token 数据：内容短，垂直居中避免大片空白玻璃（阿菜低3）
+                            // 统一垂直居中：内容短时居中消除贴顶留白（阿菜中1/2），
+                            // 内容超过视口时 Spacer(minLength:0) 归零、贴顶正常滚动
                             Spacer(minLength: 0)
-                            basicInfoCard
+                            Group {
+                                if let usage, !usage.isEmpty {
+                                    if models.isEmpty {
+                                        overviewCard(usage)
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            overviewCard(usage)
+                                            modelList
+                                        }
+                                    }
+                                } else {
+                                    basicInfoCard
+                                }
+                            }
                             Spacer(minLength: 0)
                         }
                     }
@@ -288,11 +292,13 @@ struct SessionListView: View {
                     .foregroundColor(Theme.onDarkFaint)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView(.vertical, showsIndicators: true) {
-                    // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行。
-                    // minHeight=视口高度：会话少（<5 条）时行间留白而不是整片底部玻璃
-                    //（阿菜中2）；会话多时内容超过视口，正常滚动不受影响
-                    GeometryReader { geo in
+                // 注意：GeometryReader 必须在 ScrollView 外层——放内层会令 ScrollView
+                // 内容尺寸 = 视口，长内容不可滚动（阿菜高优回归实测 documentH=视口）
+                GeometryReader { geo in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行。
+                        // minHeight=视口高度：会话少（<5 条）时行间留白而不是整片底部玻璃
+                        //（阿菜中2）；会话多时内容超过视口，正常滚动
                         LazyVStack(spacing: 4) {
                             ForEach(sessions) { s in
                                 sessionRow(s)
