@@ -19,3 +19,6 @@ DerivedData/
 
 # 测试/工具临时文件
 artifacts/
+
+# 发布包（Release 附件已上传 GitHub）
+*.zip
