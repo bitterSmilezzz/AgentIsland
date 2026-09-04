@@ -225,6 +225,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             displayState = .expanded
         case .expanded:
             displayState = .docked
+            // 菜单「收起」时鼠标在菜单栏（顶部热区内），收起后热区会立即重新展开；
+            // 冷却 1.2s（与 dragEnded 同款），给用户从菜单收起的机会
+            dragCooldownUntil = Date().addingTimeInterval(1.2)
         }
     }
 
@@ -489,11 +492,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     //   列表    = N×行(44) + 行间(2) + ScrollView padding(.vertical,6)×2 ≈ 46N+10，上限 300
     //   summary = Divider(1) + TokenSummaryBar ≈ 26（有数据才显示）
     private let headerHeight: CGFloat = 37
+    private let detailHeaderHeight: CGFloat = 47   // 详情页顶栏：返回按钮 24 + padding(12+8) + subtitle 双行
     private let dividerHeight: CGFloat = 1
-    private let rowHeight: CGFloat = 46          // 含行间距与滚动 padding 的单行摊还
+    // 行高 48：实测单行 45.5~48pt（名称 13pt semibold + 9pt mono 徽标 + padding 14 + spacing 2），
+    // 46 低估会静默裁最后一行下 padding（阿剩低4）；窗口背景铺满，略高不可见，取上界安全
+    private let rowHeight: CGFloat = 48
     private let listMaxHeight: CGFloat = 300     // 与 ScrollView.frame(maxHeight:) 一致
-    private let emptyStateHeight: CGFloat = 84   // zzz 图标 + 文案 + padding(.vertical,22)
-    private let summaryBarHeight: CGFloat = 26   // Divider + TokenSummaryBar
+    private let emptyStateHeight: CGFloat = 87   // zzz 图标 + 文案 + padding(.vertical,22)（阿菜实测 ~87）
+    private let summaryBarHeight: CGFloat = 28   // Divider + TokenSummaryBar（阿菜实测 ~28）
+    /// 详情/会话页内容区高度（header + divider 之后；内容自身可滚动，故给足而不裁剪）
+    private let detailContentHeight: CGFloat = 310
 
     private func expandedHeight() -> CGFloat {
         switch route {
@@ -507,18 +515,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : summaryBarHeight
             return min(headerHeight + dividerHeight + listHeight + summaryBar, expandedMaxHeight)
         case .agentDetail:
-            // 详情页内容异步加载、高度不定，给固定舒适高度；内容自身可滚动
-            return min(headerHeight + dividerHeight + listMaxHeight + 10, expandedMaxHeight)
+            // 详情页用 detailHeaderHeight（显式，不再靠 +10 魔法补差）
+            return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
         case .sessions:
-            return min(headerHeight + dividerHeight + listMaxHeight + 10, expandedMaxHeight)
+            return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
         }
     }
 
-    /// 可见行数（与 IslandView 同口径：在线 + 24h 活跃）
+    /// 可见行数（统一走 engine.visibleSnapshots，口径单一实现）
     private func visibleCount() -> Int {
-        engine.snapshots.filter {
-            $0.processRunning || ($0.lastActivityAgo ?? .infinity) < 24 * 3600
-        }.count
+        engine.visibleSnapshots.count
     }
 
     private func placeWindow(size: NSSize, animated: Bool) {

@@ -28,6 +28,8 @@ struct SettingsView: View {
     }
 
     @State private var enabledAgents: Set<String> = []
+    /// 自启动设置失败提示（SMAppService 未签名/非 /Applications 时 register 抛错）
+    @State private var launchError: String?
     @State private var customProfiles: [AgentProfile] = []
     @State private var showAddCustom = false
 
@@ -104,13 +106,34 @@ struct SettingsView: View {
                 .tint(Theme.actionBlue)
             }
 
-            // 自动发现的 CLI（只读展示）
+            // 自动发现的额外 CLI：做成可开关条目（默认关闭，用户可启用监控）
+            // 之前只读展示，用户无法启用；且 defaultEnabled=false 导致首次切换
+            // 任意开关时这些项会被误塞进引擎或显示与实态脱节（阿剩中1）
             let discovered = AgentRegistry.discoverCLIProfiles()
             if !discovered.isEmpty {
-                Text("自动发现：\(discovered.map(\.name).joined(separator: "、"))")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.inkMuted48)
+                Text("自动发现")
+                    .font(Theme.bodyFont(13, weight: .semibold))
+                    .foregroundColor(Theme.ink)
                     .padding(.top, 4)
+                ForEach(discovered) { profile in
+                    Toggle(isOn: binding(for: profile)) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "terminal")
+                                .foregroundColor(Theme.inkMuted48)
+                                .frame(width: 18)
+                            Text(profile.name)
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            if let snapshot = engine.snapshots.first(where: { $0.id == profile.id }) {
+                                Text(snapshot.level.label)
+                                    .font(Theme.bodyFont(10, weight: .semibold))
+                                    .foregroundColor(snapshot.level.color)
+                            }
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+                }
             }
         }
     }
@@ -205,6 +228,12 @@ struct SettingsView: View {
             .onChange(of: launchAtLogin) { newValue in
                 applyLaunchAtLogin(newValue)
             }
+            if let launchError {
+                Text(launchError)
+                    .font(Theme.bodyFont(10))
+                    .foregroundColor(Theme.dangerRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -249,13 +278,14 @@ struct SettingsView: View {
     // MARK: - 状态同步
 
     private func loadState() {
-        // 启停集合：与引擎初始集一致（fullRegistry = 内置 + 自动发现 CLI + 自定义），
-        // 否则首次切换开关时 setEnabled 会把自动发现项静默移除。
+        // 启停集合：以引擎当前启用集为准（避免界面显示与引擎实态脱节——
+        // 之前用 fullRegistry().filter(defaultEnabled) 会把自动发现项一次性显示为开，
+        // 但引擎首启只启用内置，切换任意开关会把所有自动发现项塞进引擎）。
         // 注意：用户主动全关会存「空数组」，不算无记录，不能回退默认。
         if let saved = try? JSONDecoder().decode([String].self, from: enabledAgentsData) {
             enabledAgents = Set(saved)
         } else {
-            enabledAgents = Set(AgentRegistry.fullRegistry().filter(\.defaultEnabled).map(\.id))
+            enabledAgents = Set(engine.allProfiles.map(\.id))
         }
         // 自定义条目
         customProfiles = AgentRegistry.loadCustomProfiles()
@@ -285,8 +315,12 @@ struct SettingsView: View {
             } else {
                 try SMAppService.mainApp.unregister()
             }
+            launchError = nil
         } catch {
+            // 失败必须回显到 UI（未签名/非 /Applications 安装时 register 会抛错）
             print("SMAppService 失败: \(error)")
+            launchAtLogin = SMAppService.mainApp.status == .enabled   // 回滚开关状态
+            launchError = "自启动设置失败：\(error.localizedDescription)"
         }
     }
 

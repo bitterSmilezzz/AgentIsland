@@ -62,11 +62,7 @@ struct IslandView: View {
     @ObservedObject var controller: IslandPanelController
 
     /// 可见列表（Q3）：在线 + 24h 内有活动的 Agent；从未活跃的隐藏
-    private var visibleSnapshots: [AgentSnapshot] {
-        engine.snapshots.filter {
-            $0.processRunning || ($0.lastActivityAgo ?? .infinity) < 24 * 3600
-        }
-    }
+    // 可见列表统一走 engine.visibleSnapshots（口径单一实现，防漏改）
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -145,7 +141,7 @@ struct IslandView: View {
                     .font(Theme.bodyFont(13, weight: .semibold))
                     .foregroundColor(Theme.onDark)
                 Spacer()
-                Text("\(visibleSnapshots.count)/\(engine.snapshots.count) 可见")
+                Text("\(engine.visibleSnapshots.count)/\(engine.snapshots.count) 可见")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.onDarkFaint)
             }
@@ -166,7 +162,7 @@ struct IslandView: View {
             Divider().overlay(Theme.onDark.opacity(0.12))
 
             // Agent 列表（Q3：只显示在线 + 24h 活跃）
-            if visibleSnapshots.isEmpty {
+            if engine.visibleSnapshots.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "zzz")
                         .font(.system(size: 22))
@@ -180,7 +176,7 @@ struct IslandView: View {
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 2) {
-                        ForEach(visibleSnapshots) { snapshot in
+                        ForEach(engine.visibleSnapshots) { snapshot in
                             AgentRowView(snapshot: snapshot, controller: controller)
                         }
                     }

@@ -130,7 +130,7 @@ struct AgentDetailView: View {
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardFill))
+        .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.cardFill))
     }
 
     private func overviewCell(_ label: String, _ value: String, cost: String?) -> some View {
@@ -216,7 +216,7 @@ struct AgentDetailView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.cardFill))
+        .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.cardFill))
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {
@@ -344,15 +344,18 @@ private struct SessionRowView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
             .fill(isHovered && hasDir ? Theme.hoverFill : Theme.chipFill))
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous))
         .onHover { isHovered = $0 }
         .onTapGesture {
             if let dir = session.directory {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dir))
             }
         }
+        // a11y：有目录的行是按钮（打开目录）；无目录行隐藏交互语义（阿菜中2）
+        .accessibilityAddTraits(hasDir ? .isButton : [])
+        .accessibilityLabel(hasDir ? "打开 \(session.directory ?? "")" : "会话，无目录")
         .opacity(hasDir ? 1.0 : 0.75)
     }
 }

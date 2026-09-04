@@ -250,6 +250,14 @@ public final class ActivityEngine: ObservableObject {
         snapshots.filter { $0.level == .working }
     }
 
+    /// 可见口径（唯一实现）：在线 + 24h 内活跃。
+    /// 展开卡片列表、菜单摘要、高度计算统一消费此属性，改口径只改这一处。
+    public var visibleSnapshots: [AgentSnapshot] {
+        snapshots.filter {
+            $0.processRunning || ($0.lastActivityAgo ?? .infinity) < 24 * 3600
+        }
+    }
+
     public static func formatAgo(_ interval: TimeInterval?) -> String {
         guard let interval = interval else { return "—" }
         let i = Int(interval.rounded())

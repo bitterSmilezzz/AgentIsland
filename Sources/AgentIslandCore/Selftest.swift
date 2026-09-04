@@ -60,7 +60,7 @@ public enum Selftest {
         do {
             let now = Date()
             let dir = sessionPath("~/.dimcode/v2/data/sessions")
-            var provider = FakeFileActivityProvider(writes: [dir: now.addingTimeInterval(-300)])
+            let provider = FakeFileActivityProvider(writes: [dir: now.addingTimeInterval(-300)])
             let engine = ActivityEngine(
                 profiles: AgentRegistry.builtin,
                 config: EngineConfig(workingWindow: 20),

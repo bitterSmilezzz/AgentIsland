@@ -55,6 +55,12 @@ public final class FileActivityMonitor: FileActivityProviding {
     private let scanMinInterval: TimeInterval = 15.0
     /// 目录级快跳过缓存：目录自身 mtime + 最近写入时间（mtime 未变且 newest 仍活跃 → 复用，零枚举）
     private var lastRootDates: [String: Date] = [:]
+    /// 每目录上次全量扫描时间（快跳过兜底：深层写入不改变根 mtime，
+    /// 超过 forceRescanInterval 未全量扫 → 强制重扫，保证文件信号时效性）
+    private var lastFullScans: [String: Date] = [:]
+    /// 快跳过兜底周期：与引擎 workingWindow(60s) 同量级，
+    /// 深层持续写入的文件信号最长延迟该周期即被发现（阿证实测原 600s 过长）
+    private let forceRescanInterval: TimeInterval = 60
 
     public init(maxDepth: Int = 4) {
         self.maxDepth = maxDepth
@@ -75,6 +81,8 @@ public final class FileActivityMonitor: FileActivityProviding {
         // L6：清理不在新集合中的残留缓存（防止过期数据在集合变化后残留）
         cache = cache.filter { newSet.contains($0.key) }
         sessionCounts = sessionCounts.filter { newSet.contains($0.key) }
+        lastRootDates = lastRootDates.filter { newSet.contains($0.key) }
+        lastFullScans = lastFullScans.filter { newSet.contains($0.key) }
         lock.unlock()
     }
 
@@ -135,9 +143,11 @@ public final class FileActivityMonitor: FileActivityProviding {
         lock.unlock()
 
         // 单趟扫描：每目录一次遍历，同时产出最近写入时间 + 活跃会话数（M1 修复）
-        // 快跳过：根目录 mtime 未变（无新顶层子项）且缓存 newest 仍在活跃窗口内
+        // 快跳过：根目录 mtime 未变（无新顶层子项）且缓存 newest 仍在活跃窗口内，
+        // 且距上次全量扫描 < forceRescanInterval（60s）
         // → 树内无新写入（或只有深层旧会话内的新写入，newest 仍是该会话，复用不丢信号），
-        //   复用缓存，零枚举。newest 滑出窗口后强制全量重扫兜底。
+        //   复用缓存，零枚举。newest 滑出窗口 / 超过 60s 未全量扫 → 强制全量重扫兜底，
+        //   保证深层写入信号最长延迟 60s 即被发现。
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
         let now = Date()
@@ -148,10 +158,12 @@ public final class FileActivityMonitor: FileActivityProviding {
             let cachedRoot = lastRootDates[dir]
             let cachedNewest = cache[dir]
             let cachedCount = sessionCounts[dir]
+            let lastFull = lastFullScans[dir]
             lock.unlock()
             if let rootDate, let cachedRoot, rootDate == cachedRoot, let cachedNewest,
-               now.timeIntervalSince(cachedNewest) <= window, let cachedCount {
-                // 无新顶层子项 + 最近写入仍活跃：复用缓存，不枚举目录树
+               now.timeIntervalSince(cachedNewest) <= window, let cachedCount,
+               now.timeIntervalSince(lastFull ?? .distantPast) < forceRescanInterval {
+                // 无新顶层子项 + 最近写入仍活跃 + 60s 内刚全量扫过：复用缓存，不枚举目录树
                 fresh[dir] = cachedNewest
                 freshCounts[dir] = cachedCount
                 continue
@@ -161,6 +173,7 @@ public final class FileActivityMonitor: FileActivityProviding {
             freshCounts[dir] = r.activeSessions
             lock.lock()
             lastRootDates[dir] = rootDate ?? Date.distantPast
+            lastFullScans[dir] = now
             lock.unlock()
         }
 
