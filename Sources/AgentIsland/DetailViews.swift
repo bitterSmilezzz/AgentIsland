@@ -62,7 +62,8 @@ struct AgentDetailView: View {
 
     @State private var models: [ModelUsage] = []
     @State private var loading = true
-    @State private var modelHovered = false
+    @State private var queryToken = UUID()
+    @State private var modelHoveredID: String?
 
     private var snapshot: AgentSnapshot? {
         engine.snapshots.first { $0.id == agentId }
@@ -102,7 +103,10 @@ struct AgentDetailView: View {
         .task(id: agentId) {
             loading = true
             models = []
+            let token = UUID()   // 代际标记：防止旧查询结果覆盖已切换的新页面
+            queryToken = token
             engine.tokenMonitor.modelBreakdown(agentId: agentId) { rows in
+                guard queryToken == token else { return }
                 models = rows
                 loading = false
             }
@@ -180,9 +184,9 @@ struct AgentDetailView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(modelHovered ? Theme.hoverFill : Theme.chipFill))
+                    .fill(modelHoveredID == m.modelId ? Theme.hoverFill : Theme.chipFill))
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .onHover { modelHovered = $0 }
+                .onHover { modelHoveredID = $0 ? m.modelId : nil }
                 .onTapGesture {
                     controller.route = .sessions(agentId, m.modelId)
                 }
@@ -230,6 +234,7 @@ struct SessionListView: View {
 
     @State private var sessions: [SessionUsage] = []
     @State private var loading = true
+    @State private var queryToken = UUID()
     /// 当前 hover 的会话行 id（多行共享一个状态，避免每行各自 @State）
     @State private var hoveredSessionID: String?
 
@@ -276,7 +281,10 @@ struct SessionListView: View {
         .task(id: "\(agentId)/\(modelId)") {
             loading = true
             sessions = []
+            let token = UUID()   // 代际标记：防止旧查询结果覆盖已切换的新页面
+            queryToken = token
             engine.tokenMonitor.sessions(agentId: agentId, modelId: modelId) { rows in
+                guard queryToken == token else { return }
                 sessions = rows
                 loading = false
             }

@@ -101,6 +101,10 @@ public final class TokenUsageMonitor {
     private let dimAgentDB = NSString(string: "~/.dimcode/v2/dimcode.sqlite").expandingTildeInPath
     private let openCodeDB = NSString(string: "~/.local/share/opencode/opencode.db").expandingTildeInPath
 
+    /// SQLite 只读连接缓存（复用避免每查询 open/close）；查询统一走串行队列保证连接线程安全
+    private var dbConnections: [String: OpaquePointer] = [:]
+    private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
+
     public init() {}
 
     public func start(interval: TimeInterval = 60.0) {
@@ -116,6 +120,12 @@ public final class TokenUsageMonitor {
     public func stop() {
         timer?.invalidate()
         timer = nil
+        dbQueue.sync {
+            for (_, db) in dbConnections {
+                sqlite3_close(db)
+            }
+            dbConnections.removeAll()
+        }
     }
 
     public func refreshAsync() {
@@ -275,41 +285,50 @@ public final class TokenUsageMonitor {
     }
 
     /// 通用查询：全部列转字符串返回（数值/文本统一处理，空结果返回 []）
+    /// 线程安全：所有查询在 dbQueue 串行执行，连接按路径缓存复用（只读，应用生命周期内不关闭）
     private func rawRows(_ sql: String, dbPath: String, cols: Int) -> [[String]] {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: dbPath) else {
-            lastError = "not found: \(dbPath)"
-            return []
-        }
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
-            if let db { sqlite3_close(db) }
-            lastError = "open failed: \(dbPath)"
-            return []
-        }
-        defer { sqlite3_close(db) }
-
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
-            lastError = "prepare failed: \(String(cString: sqlite3_errmsg(db)))"
-            return []
-        }
-        defer { sqlite3_finalize(stmt) }
-
-        var rows: [[String]] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            var row: [String] = []
-            row.reserveCapacity(cols)
-            for i in 0..<cols {
-                if let c = sqlite3_column_text(stmt, Int32(i)) {
-                    row.append(String(cString: c))
-                } else {
-                    row.append("")
-                }
+        dbQueue.sync {
+            let fm = FileManager.default
+            guard fm.fileExists(atPath: dbPath) else {
+                lastError = "not found: \(dbPath)"
+                return []
             }
-            rows.append(row)
+            let db: OpaquePointer
+            if let cached = dbConnections[dbPath] {
+                db = cached
+            } else {
+                var handle: OpaquePointer?
+                guard sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
+                    if let handle { sqlite3_close(handle) }
+                    lastError = "open failed: \(dbPath)"
+                    return []
+                }
+                db = handle
+                dbConnections[dbPath] = db
+            }
+
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+                lastError = "prepare failed: \(String(cString: sqlite3_errmsg(db)))"
+                return []
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            var rows: [[String]] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                var row: [String] = []
+                row.reserveCapacity(cols)
+                for i in 0..<cols {
+                    if let c = sqlite3_column_text(stmt, Int32(i)) {
+                        row.append(String(cString: c))
+                    } else {
+                        row.append("")
+                    }
+                }
+                rows.append(row)
+            }
+            return rows
         }
-        return rows
     }
 
     /// 静态化：ISO8601DateFormatter 初始化昂贵且线程安全，避免每行/每次调用新建

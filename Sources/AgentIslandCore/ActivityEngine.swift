@@ -47,7 +47,7 @@ public final class ActivityEngine: ObservableObject {
         guard timer == nil else { return }
         // token 数据刷完后触发一次重采样（快照带上用量 + 卡片高度重算）
         tokenMonitor.onRefresh = { [weak self] in
-            self?.sample()
+            self?.sampleInBackground()
         }
         tokenMonitor.start()   // token 用量轮询（60s，后台队列）
         sample()               // sample() 末尾自带 scheduleNext()
@@ -127,8 +127,25 @@ public final class ActivityEngine: ObservableObject {
     /// 手动触发一次采样（也用于测试与 --probe）
     @discardableResult
     public func sample(now: Date = Date()) -> [AgentSnapshot] {
-        // 双信号来源：进程快照（一次）+ 后台文件扫描
-        let matcher = processMonitor.matcher()
+        sampleCore(matcher: processMonitor.matcher(), now: now)
+    }
+
+    /// 定时采样入口：进程遍历（proc_listpids/proc_pidpath，开销毫秒级）在后台执行，
+    /// 主线程只做装配与发布，避免与动画抢主线程。文件扫描/会话数/token 均为缓存读取。
+    func sampleInBackground() {
+        let monitor = processMonitor
+        DispatchQueue.global(qos: .utility).async {
+            let matcher = monitor.matcher()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.sampleCore(matcher: matcher, now: Date())
+            }
+        }
+    }
+
+    /// 采样主体（主线程）：双信号判定 + 快照组装 + 发布
+    @discardableResult
+    private func sampleCore(matcher: ProcessMatcher, now: Date) -> [AgentSnapshot] {
         fileMonitor.scanAsync()
 
         var results: [AgentSnapshot] = []
@@ -204,7 +221,7 @@ public final class ActivityEngine: ObservableObject {
         let interval = anyWorking ? config.sampleInterval : config.idleSampleInterval
         let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.sample()
+                self?.sampleInBackground()
             }
         }
         RunLoop.main.add(t, forMode: .common)

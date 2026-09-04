@@ -53,8 +53,9 @@ public protocol ProcessProviding {
 }
 
 // MARK: - 真实实现（libproc）
+// @unchecked Sendable：内部 CpuCache 有锁保护，snapshot 可安全后台执行
 
-public struct ProcessProvider: ProcessProviding {
+public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
 
     /// Mach tick → 秒换算（rusage_info_v2 的 ri_user_time/ri_system_time 单位是 tick：
     /// Apple Silicon 125/3 ns/tick，Intel 通常 1 ns/tick，必须经 timebase 换算）
@@ -65,10 +66,36 @@ public struct ProcessProvider: ProcessProviding {
     }()
 
     /// 上次采样的 CPU 累计时间（pid → 秒），用于差分
+    /// 锁保护：matcher() 可能被主线程（同步采样/启动）与后台队列（定时采样）并发调用
     private final class CpuCache: @unchecked Sendable {
-        var last: [Int32: Double] = [:]   // pid → ru_utime+ru_stime 累计秒
-        var lastWall: TimeInterval = 0    // 上次采样墙钟
-        init() {}
+        private let lock = NSLock()
+        private var last: [Int32: Double] = [:]   // pid → ru_utime+ru_stime 累计秒
+        private var lastWall: TimeInterval = 0    // 上次采样墙钟
+
+        /// 差分计算：返回本窗口 CPU%；首次见到返回 0
+        func update(pid: Int32, cpuTime: Double, wallDelta: TimeInterval) -> Double {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let prev = last[pid], wallDelta > 0.01 else {
+                last[pid] = cpuTime
+                return 0
+            }
+            let delta = cpuTime - prev
+            last[pid] = cpuTime
+            return delta >= 0 ? min(delta / wallDelta * 100.0, 100.0) : 0
+        }
+
+        func lastWallTime() -> TimeInterval {
+            lock.lock()
+            defer { lock.unlock() }
+            return lastWall
+        }
+
+        func setWall(_ t: TimeInterval) {
+            lock.lock()
+            lastWall = t
+            lock.unlock()
+        }
     }
     private let cache = CpuCache()
 
@@ -76,7 +103,7 @@ public struct ProcessProvider: ProcessProviding {
 
     public func snapshot() -> ProcessSnapshot {
         let now = Date().timeIntervalSince1970
-        let wallDelta = now - cache.lastWall   // 首拍可能为 0
+        let wallDelta = now - cache.lastWallTime()   // 首拍可能为 0
 
         // 1) 全部 pid
         let count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
@@ -86,7 +113,6 @@ public struct ProcessProvider: ProcessProviding {
         guard got > 0 else { return ProcessSnapshot(entries: []) }
 
         var entries: [ProcessSnapshot.Entry] = []
-        var cpuNow: [Int32: Double] = [:]
         let pidCount = Int(got)
         let pathBufSize = 4096   // 足够容纳最长可执行路径（PROC_PIDPATHINFO_MAXSIZE ≈ 4KB）
 
@@ -117,21 +143,14 @@ public struct ProcessProvider: ProcessProviding {
                 ? (Double(rusage.ri_user_time) + Double(rusage.ri_system_time)) * Self.tickToSeconds
                 : -1
 
-            var cpuPercent = 0.0
-            if cpuTime >= 0 {
-                cpuNow[pid] = cpuTime
-                if let prev = cache.last[pid], wallDelta > 0.01 {
-                    let delta = cpuTime - prev
-                    if delta >= 0 { cpuPercent = min(delta / wallDelta * 100.0, 100.0) }
-                }
-            }
+            // 4) 差分 CPU%（锁内更新缓存，线程安全）
+            let cpuPercent = cpuTime >= 0 ? cache.update(pid: pid, cpuTime: cpuTime, wallDelta: wallDelta) : 0
 
             let base = (path as NSString).lastPathComponent.lowercased()
             entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent))
         }
 
-        cache.last = cpuNow
-        cache.lastWall = now
+        cache.setWall(now)
         return ProcessSnapshot(entries: entries)
     }
 
@@ -147,8 +166,9 @@ public struct ProcessProvider: ProcessProviding {
 }
 
 // MARK: - 匹配引擎（对 profile 判定）
+// @unchecked Sendable：纯值类型（struct + 不可变集合），跨线程传递安全
 
-public struct ProcessMatcher {
+public struct ProcessMatcher: @unchecked Sendable {
     let snapshot: ProcessSnapshot
     let runningBundleIDs: Set<String>
     /// 预计算缓存：profile.id → (小写 processNames, 小写 pathContains)

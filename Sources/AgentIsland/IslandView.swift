@@ -123,7 +123,12 @@ struct IslandView: View {
                 Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.18), lineWidth: 0.5))
             .frame(width: 176, height: 5)
             .contentShape(Capsule())
-            .onTapGesture { controller.toggle() }
+            // 点击细条兜底展开（悬停通常已展开；防止 mouseMoved 事件被系统吞掉时无响应）
+            .onTapGesture {
+                if controller.displayState == .docked {
+                    controller.toggle()
+                }
+            }
     }
 
     // MARK: 展开卡片

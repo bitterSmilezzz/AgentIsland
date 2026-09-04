@@ -26,7 +26,6 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var cancellables = Set<AnyCancellable>()
     private var collapseTask: Task<Void, Never>?
     private var peekTask: Task<Void, Never>?
-    private var monitorTimer: Timer?
     private var didShowOnce = false
     private var dragStartOrigin: NSPoint?
     private var dragCooldownUntil: Date = .distantPast
@@ -218,26 +217,54 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     // MARK: - 顶部触发区监控
+    // 事件驱动（替代 0.2s 永久轮询）：仅鼠标移动时才评估，空闲零开销。
+    // local monitor 只收本应用前台事件；global monitor 兜底非前台（常驻菜单栏应用常态）。
+    // 展开后收起由 collapseTask 驱动，无需持续轮询。
+
+    private var mouseLocalMonitor: Any?
+    private var mouseGlobalMonitor: Any?
+    /// 评估节流：事件可能 60Hz 涌入，限制实际评估频率
+    private var lastEvalAt = Date.distantPast
+    private let evalMinInterval: TimeInterval = 0.1   // 最大 10Hz，悬停响应足够
+    /// 日志去重：状态没变化不打 tick（打日志本身有文件 I/O 开销）
+    private var lastLoggedTick: String?
 
     private func startTopZoneMonitor() {
-        guard monitorTimer == nil else { return }
-        let t = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+        guard mouseLocalMonitor == nil else { return }
+        mouseLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             Task { @MainActor [weak self] in
-                self?.evaluateTopZone()
+                self?.onMouseMoved()
+            }
+            return event
+        }
+        // global monitor 回调在后台线程，需 hop 回主线程
+        mouseGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.onMouseMoved()
             }
         }
-        RunLoop.main.add(t, forMode: .common)
-        monitorTimer = t
     }
 
-    /// 轮询：触碰顶部 → 滑出卡片；离开 → 收回细条（D1 离开即收，不区分忙闲）
+    private func onMouseMoved() {
+        let now = Date()
+        guard now.timeIntervalSince(lastEvalAt) >= evalMinInterval else { return }
+        lastEvalAt = now
+        evaluateTopZone()
+    }
+
+    /// 事件驱动：触碰顶部 → 滑出卡片；离开 → 收回细条（D1 离开即收，不区分忙闲）
     private func evaluateTopZone() {
         guard didShowOnce else { return }
         // 按下鼠标（拖动中）不触发展开
         let mousePressed = NSEvent.pressedMouseButtons != 0
         guard !mousePressed else { return }
         let inZone = Self.isMouseInTopZone(topZoneHeight: topZoneHeight)
-        Self.log("tick inZone=\(inZone) state=\(displayState) anyWorking=\(engine.anyWorking)")
+        // 日志去重：仅在状态组合变化时记录（高频事件下避免每拍写盘）
+        let sig = "\(inZone)|\(displayState)|\(engine.anyWorking)"
+        if sig != lastLoggedTick {
+            lastLoggedTick = sig
+            Self.log("tick inZone=\(inZone) state=\(displayState) anyWorking=\(engine.anyWorking)")
+        }
 
         if inZone {
             if displayState == .docked {
