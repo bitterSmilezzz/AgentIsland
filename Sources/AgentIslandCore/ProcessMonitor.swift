@@ -1,16 +1,17 @@
 import AppKit
 import Foundation
+import Darwin
 
 // MARK: - 进程快照
-// 一次 `ps` 拿全部进程（pid / 完整路径 / CPU%），引擎对每个 profile 复用同一快照，
-// 避免「每 agent 每次采样 fork 一次 ps」的浪费。
+// libproc 直接读进程表（proc_listpids + proc_pidpath + proc_pid_rusage），
+// 免子进程/管道/超时，主线程耗时微秒级；CPU 用两次采样间差分得到真实窗口利用率。
 
 public struct ProcessSnapshot {
     public struct Entry: Equatable {
         public let pid: Int32
-        public let path: String       // 完整可执行路径
+        public let path: String       // 完整可执行路径（libproc 无空格截断问题）
         public let basename: String   // 路径最后一段（小写）
-        public let cpuPercent: Double
+        public let cpuPercent: Double // 窗口利用率（差分），首拍为 0
     }
 
     public let entries: [Entry]
@@ -45,41 +46,82 @@ public struct ProcessSnapshot {
 // MARK: - 进程提供协议
 
 public protocol ProcessProviding {
-    /// 当前全部进程快照（一次采样）
+    /// 当前全部进程快照（一次采样；CPU 为差分窗口值）
     func snapshot() -> ProcessSnapshot
     /// 当前运行中的 GUI App bundle identifiers（小写）
     func runningBundleIDs() -> Set<String>
 }
 
-// MARK: - 真实实现
+// MARK: - 真实实现（libproc）
 
 public struct ProcessProvider: ProcessProviding {
+
+    /// 上次采样的 CPU 累计时间（pid → 秒），用于差分
+    private final class CpuCache: @unchecked Sendable {
+        var last: [Int32: Double] = [:]   // pid → ru_utime+ru_stime 累计秒
+        var lastWall: TimeInterval = 0    // 上次采样墙钟
+        init() {}
+    }
+    private let cache = CpuCache()
 
     public init() {}
 
     public func snapshot() -> ProcessSnapshot {
-        // 分两次 ps（macOS ps 组合字段会截断列宽到 15 字符）：
-        // 1) command= 拿完整可执行路径  2) pcpu= 拿 CPU%，按 PID 合并
-        let pathsOut = Shell.run("/bin/ps", args: ["-axo", "pid=,command="])
-        var paths: [Int32: String] = [:]
-        for line in pathsOut.split(separator: "\n") {
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 2, let pid = Int32(parts[0]) else { continue }
-            // command 第一段 = 可执行文件路径（含空格路径被 ps 原样输出，第一段即路径）
-            paths[pid] = String(parts[1])
+        let now = Date().timeIntervalSince1970
+        let wallDelta = now - cache.lastWall   // 首拍可能为 0
+
+        // 1) 全部 pid
+        let count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
+        guard count > 0 else { return ProcessSnapshot(entries: []) }
+        var pids = [pid_t](repeating: 0, count: Int(count))
+        let got = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(MemoryLayout<pid_t>.size * pids.count))
+        guard got > 0 else { return ProcessSnapshot(entries: []) }
+
+        var entries: [ProcessSnapshot.Entry] = []
+        var cpuNow: [Int32: Double] = [:]
+        let pidCount = Int(got)
+        let pathBufSize = 4096   // 足够容纳最长可执行路径（PROC_PIDPATHINFO_MAXSIZE ≈ 4KB）
+
+        for i in 0..<pidCount {
+            let pid = pids[i]
+            guard pid > 0 else { continue }
+
+            // 2) 完整可执行路径
+            var pathBuf = [CChar](repeating: 0, count: pathBufSize)
+            let len = proc_pidpath(pid, &pathBuf, UInt32(pathBufSize))
+            guard len > 0, Int(len) < pathBufSize else { continue }
+            // 用 withUnsafeBytes 闭包保持缓冲区作用域（数组隐式指针转换会悬垂）
+            let path = pathBuf.withUnsafeBytes { raw -> String in
+                String(decoding: raw[..<Int(len)], as: UTF8.self)
+            }
+            guard !path.isEmpty else { continue }
+
+            // 3) CPU 累计时间（rusage_info_v2：ri_user_time/ri_system_time 为微秒）
+            // 注意：proc_pid_rusage 把数据写入调用者缓冲区（rusage_info_t 只是类型伪装）
+            var rusage = rusage_info_v2()
+            let rc = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
+                let rebound = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: rusage_info_t?.self)
+                return proc_pid_rusage(pid, RUSAGE_INFO_V2, rebound)
+            }
+            let cpuTime: Double = rc == 0
+                ? (Double(rusage.ri_user_time) + Double(rusage.ri_system_time)) / 1_000_000
+                : -1
+
+            var cpuPercent = 0.0
+            if cpuTime >= 0 {
+                cpuNow[pid] = cpuTime
+                if let prev = cache.last[pid], wallDelta > 0.01 {
+                    let delta = cpuTime - prev
+                    if delta >= 0 { cpuPercent = min(delta / wallDelta * 100.0, 100.0) }
+                }
+            }
+
+            let base = (path as NSString).lastPathComponent.lowercased()
+            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent))
         }
 
-        let cpuOut = Shell.run("/bin/ps", args: ["-axo", "pid=,pcpu="])
-        var entries: [ProcessSnapshot.Entry] = []
-        for line in cpuOut.split(separator: "\n") {
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 2,
-                  let pid = Int32(parts[0]),
-                  let cpu = Double(parts[parts.count - 1]),
-                  let path = paths[pid] else { continue }
-            let base = (path as NSString).lastPathComponent.lowercased()
-            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpu))
-        }
+        cache.last = cpuNow
+        cache.lastWall = now
         return ProcessSnapshot(entries: entries)
     }
 
@@ -99,10 +141,31 @@ public struct ProcessProvider: ProcessProviding {
 public struct ProcessMatcher {
     let snapshot: ProcessSnapshot
     let runningBundleIDs: Set<String>
+    /// 预计算缓存：profile.id → (小写 processNames, 小写 pathContains)，避免每条目重建 Set
+    private let profileSets: [String: (names: Set<String>, paths: Set<String>)]
 
     public init(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>) {
         self.snapshot = snapshot
         self.runningBundleIDs = runningBundleIDs
+        // 按需构建（profile 数量少，全量预计算便宜）
+        self.profileSets = [:]
+    }
+
+    /// 惰性获取 profile 的小写匹配集（缓存）
+    private func sets(for profile: AgentProfile) -> (names: Set<String>, paths: Set<String>) {
+        // ProcessMatcher 是值类型，这里用全局缓存按 id 共享
+        ProcessMatcher.cachedSets(for: profile)
+    }
+
+    private static var setCache: [String: (names: Set<String>, paths: Set<String>)] = [:]
+    private static func cachedSets(for profile: AgentProfile) -> (names: Set<String>, paths: Set<String>) {
+        if let c = setCache[profile.id] { return c }
+        let v = (
+            names: Set(profile.processNames.map { $0.lowercased() }),
+            paths: Set(profile.pathContains.map { $0.lowercased() })
+        )
+        setCache[profile.id] = v
+        return v
     }
 
     /// 进程名前缀匹配（Q2：覆盖 Electron Helper / Helper (Renderer) 变体）
@@ -126,9 +189,9 @@ public struct ProcessMatcher {
 
     /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串 + 非系统路径 + 非黑名单）
     func matchesProfile(_ profile: AgentProfile, entry: ProcessSnapshot.Entry) -> Bool {
-        let names = Set(profile.processNames.map { $0.lowercased() })
-        let nameHit = Self.matchesProcessNames(names, basename: entry.basename)
-        let pathHit = Self.matchesPathContains(Set(profile.pathContains.map { $0.lowercased() }), path: entry.path)
+        let s = sets(for: profile)
+        let nameHit = Self.matchesProcessNames(s.names, basename: entry.basename)
+        let pathHit = Self.matchesPathContains(s.paths, path: entry.path)
         return (nameHit || pathHit)
             && !ProcessSnapshot.isSystemPath(entry.path)
             && !ProcessSnapshot.isBlacklisted(entry.basename)
@@ -178,45 +241,6 @@ public struct ProcessMonitor {
     /// 快照 + bundle 一次性获取（引擎每采样调一次）
     public func matcher() -> ProcessMatcher {
         ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs())
-    }
-}
-
-// MARK: - 工具
-
-public enum Shell {
-    @discardableResult
-    public static func run(_ path: String, args: [String], timeout: TimeInterval = 3.0) -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = args
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-        } catch {
-            return ""
-        }
-        let semaphore = DispatchSemaphore(value: 0)
-        var output = ""
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                pipe.fileHandleForReading.readabilityHandler = nil
-                semaphore.signal()
-            } else if let s = String(data: data, encoding: .utf8) {
-                output += s
-            }
-        }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-            if process.isRunning {
-                process.terminate()
-            }
-            pipe.fileHandleForReading.readabilityHandler = nil
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return output
     }
 }
 

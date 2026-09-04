@@ -312,15 +312,18 @@ public final class TokenUsageMonitor {
         return rows
     }
 
-    static func iso24hAgo(now: Date = Date()) -> String {
+    /// 静态化：ISO8601DateFormatter 初始化昂贵且线程安全，避免每行/每次调用新建
+    private static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.string(from: now.addingTimeInterval(-86_400))
+        return f
+    }()
+
+    static func iso24hAgo(now: Date = Date()) -> String {
+        isoFormatter.string(from: now.addingTimeInterval(-86_400))
     }
 
     static func parseISO(_ s: String) -> Date? {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.date(from: s)
+        isoFormatter.date(from: s)
     }
 }

@@ -27,9 +27,8 @@ public final class ActivityEngine: ObservableObject {
     private var timer: Timer?
     private var installedCLIs: Set<String> = []
     private var installedBundles: Set<String> = []
-    /// 会话数缓存（主线程全树扫描太贵，5s 才重算一次；离线 agent 直接记 0）
-    private var sessionCountCache: [String: Int] = [:]
-    private var sessionCountAt = Date.distantPast
+    /// 滞回：CPU 信号瞬时抖动时保持 working 的最短时长（防 peek 高频弹跳）
+    private var workingSince: [String: Date] = [:]
 
     public init(profiles: [AgentProfile] = AgentRegistry.fullRegistry(),
          config: EngineConfig = EngineConfig(),
@@ -40,8 +39,8 @@ public final class ActivityEngine: ObservableObject {
         self.processMonitor = processMonitor
         self.fileMonitor = fileMonitor
         refreshInstalled()
-        // 注册监控目录（后台扫描用）
-        fileMonitor.watch(dirs: profiles.flatMap(\.sessionDirs))
+        // 注册监控目录（后台扫描用，全量替换）
+        fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
     }
 
     public func start() {
@@ -51,8 +50,7 @@ public final class ActivityEngine: ObservableObject {
             self?.sample()
         }
         tokenMonitor.start()   // token 用量轮询（60s，后台队列）
-        sample()
-        scheduleNext()
+        sample()               // sample() 末尾自带 scheduleNext()
     }
 
     public func stop() {
@@ -89,6 +87,8 @@ public final class ActivityEngine: ObservableObject {
     public var allProfiles: [AgentProfile] { profiles }
 
     private func applyConfig() {
+        // 活跃会话判定窗口同步给后台扫描器
+        fileMonitor.setActiveSessionWindow(config.activeSessionWindow)
         // 采样间隔变化 → 重启定时器
         if timer != nil {
             timer?.invalidate()
@@ -98,7 +98,8 @@ public final class ActivityEngine: ObservableObject {
     }
 
     private func refreshWatchedDirs() {
-        fileMonitor.watch(dirs: profiles.flatMap(\.sessionDirs))
+        // 全量替换：当前启用的 profile 目录集合（移除自定义 agent 后其目录停止扫描）
+        fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
     }
 
     // MARK: - 安装检测（A4）
@@ -114,54 +115,6 @@ public final class ActivityEngine: ObservableObject {
         }
         if profile.processNames.contains(where: { installedCLIs.contains($0.lowercased()) }) {
             return true
-        }
-        return false
-    }
-
-    /// 会话目录下的活跃会话数：一级子目录中「window 内存在文件写入」的数量
-    /// （目录 mtime 只在增删条目时变，不能反映文件内容写入，必须递归查文件 mtime）
-    /// 批量实现：用 enumerator 一次取一批，避免逐文件 syscall 风暴。
-    static func activeSessionCount(in dirs: [String], window: TimeInterval, now: Date) -> Int {
-        var count = 0
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
-        for dir in dirs {
-            let url = URL(fileURLWithPath: dir)
-            guard let entries = try? FileManager.default.contentsOfDirectory(
-                at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { continue }
-            for entry in entries {
-                guard let v = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-                      v.isDirectory == true, v.isSymbolicLink != true else { continue }
-                if dirHasRecentWrite(entry.path, window: window, now: now) {
-                    count += 1
-                }
-            }
-        }
-        return count
-    }
-
-    /// 目录树内是否存在 window 内的文件写入（有限深度，找到即停）
-    private static func dirHasRecentWrite(_ path: String, window: TimeInterval, now: Date, maxDepth: Int = 4) -> Bool {
-        let fm = FileManager.default
-        let url = URL(fileURLWithPath: path)
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
-        guard let en = fm.enumerator(at: url,
-                                     includingPropertiesForKeys: keys,
-                                     options: [.skipsHiddenFiles]) else { return false }
-        while let item = en.nextObject() as? URL {
-            guard en.level <= maxDepth else {
-                en.skipDescendants()
-                continue
-            }
-            guard let v = try? item.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]) else {
-                continue
-            }
-            if let date = v.contentModificationDate,
-               now.timeIntervalSince(date) <= window {
-                return true
-            }
-            if v.isDirectory == true, v.isSymbolicLink == true {
-                en.skipDescendants()   // 符号链接目录跳过，防循环
-            }
         }
         return false
     }
@@ -198,10 +151,17 @@ public final class ActivityEngine: ObservableObject {
             let level: ActivityLevel
             if !running {
                 level = .offline
+                workingSince[profile.id] = nil
             } else if (newestAgo.map { $0 <= config.workingWindow } ?? false) || cpu > config.cpuThreshold {
+                level = .working
+                if workingSince[profile.id] == nil { workingSince[profile.id] = now }
+            } else if let since = workingSince[profile.id],
+                      now.timeIntervalSince(since) < config.minWorkingHold {
+                // 滞回：信号刚消失时保持 working 最短时长，防 CPU 临界抖动导致 peek 高频弹跳
                 level = .working
             } else {
                 level = .idle
+                workingSince[profile.id] = nil
             }
 
             if level == .working { anyWork = true }
@@ -211,32 +171,28 @@ public final class ActivityEngine: ObservableObject {
                 processRunning: running,
                 cpuPercent: cpu,
                 installed: isInstalled(profile),
-                activeSessions: cachedSessionCount(for: profile, running: running, now: now),
+                activeSessions: sessionCount(for: profile, running: running),
                 lastActivityAgo: newestAgo,
                 lastActivityText: Self.formatAgo(newestAgo),
                 tokenUsage: tokenMonitor.usage[profile.id]
             ))
         }
 
-        snapshots = results
-        anyWorking = anyWork
-        updatedAt = now
+        // 内容实质变化才发布（@Published 触发所有观察者重算）
+        if results != snapshots || anyWork != anyWorking {
+            snapshots = results
+            anyWorking = anyWork
+            updatedAt = now
+        }
         scheduleNext()
         return results
     }
 
-    /// 活跃会话数（缓存版）：离线 agent 直接 0（不扫盘）；运行中的每 5s 重算一次，
-    /// 避免主线程在每次采样时全树扫描（大目录下会卡 UI）。
-    private func cachedSessionCount(for profile: AgentProfile, running: Bool, now: Date) -> Int {
+    /// 活跃会话数（离线 agent 直接 0；在线读 FileMonitor 后台扫描缓存，主线程零扫描）
+    private func sessionCount(for profile: AgentProfile, running: Bool) -> Int {
         guard running else { return 0 }
-        if now.timeIntervalSince(sessionCountAt) >= 5 {
-            sessionCountAt = now
-            sessionCountCache.removeAll()
-        }
-        if let cached = sessionCountCache[profile.id] { return cached }
-        let count = Self.activeSessionCount(in: profile.sessionDirs, window: config.activeSessionWindow, now: now)
-        sessionCountCache[profile.id] = count
-        return count
+        let counts = fileMonitor.activeSessionCounts(for: profile.sessionDirs)
+        return counts.values.reduce(0, +)
     }
 
     /// 节电调度：有 working 快采样，全闲置降频

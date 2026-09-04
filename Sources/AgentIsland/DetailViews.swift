@@ -216,6 +216,13 @@ struct SessionListView: View {
     @State private var sessions: [SessionUsage] = []
     @State private var loading = true
 
+    /// 静态化：行 body 每次重算不再新建 DateFormatter（昂贵对象）
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f
+    }()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(title: modelId,
@@ -260,9 +267,7 @@ struct SessionListView: View {
     private func sessionRow(_ s: SessionUsage) -> some View {
         let timeText: String = {
             guard let t = s.lastTime else { return "—" }
-            let f = DateFormatter()
-            f.dateFormat = "MM-dd HH:mm"
-            return f.string(from: t)
+            return SessionListView.timeFormatter.string(from: t)
         }()
         let detail = "\(s.messages) 条 · \(TokenUsage.compact(s.tokens)) tok"
             + (TokenUsage.cost(s.cost).isEmpty ? "" : " · \(TokenUsage.cost(s.cost))")

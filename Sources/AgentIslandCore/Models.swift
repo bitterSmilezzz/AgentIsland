@@ -99,18 +99,21 @@ public struct EngineConfig: Equatable {
     public var cpuThreshold: Double = 1.0              // 进程 CPU% 超过 → working（双信号之二，ps 平均值偏低故取 1%）
     public var activeSessionWindow: TimeInterval = 600.0 // 活跃会话计数窗口（10 分钟）
     public var collapseDelay: TimeInterval = 0.5      // 鼠标离开后自动收起延迟
+    public var minWorkingHold: TimeInterval = 10.0    // 滞回：working 信号消失后保持最短时长（防抖动）
 
     public init(sampleInterval: TimeInterval = 2.0,
                 idleSampleInterval: TimeInterval = 15.0,
                 workingWindow: TimeInterval = 60.0,
                 cpuThreshold: Double = 1.0,
                 activeSessionWindow: TimeInterval = 600.0,
-                collapseDelay: TimeInterval = 3.0) {
+                collapseDelay: TimeInterval = 3.0,
+                minWorkingHold: TimeInterval = 10.0) {
         self.sampleInterval = sampleInterval
         self.idleSampleInterval = idleSampleInterval
         self.workingWindow = workingWindow
         self.cpuThreshold = cpuThreshold
         self.activeSessionWindow = activeSessionWindow
         self.collapseDelay = collapseDelay
+        self.minWorkingHold = minWorkingHold
     }
 }

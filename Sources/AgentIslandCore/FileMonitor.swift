@@ -8,8 +8,17 @@ public protocol FileActivityProviding {
     /// 返回 [目录: 最近一次写入时间]（缓存读取，必须快）
     func lastWriteDates(for dirs: [String]) -> [String: Date]
 
+    /// 返回 [目录: 活跃会话数]（后台扫描时算好，主线程只读缓存）
+    func activeSessionCounts(for dirs: [String]) -> [String: Int]
+
+    /// 设置活跃会话判定窗口（引擎 config 同步）
+    func setActiveSessionWindow(_ window: TimeInterval)
+
     /// 注册监控目录（假实现为空操作）
     func watch(dirs: [String])
+
+    /// 全量替换监控目录（启停集合变化时用；假实现为空操作）
+    func replaceWatchedDirs(_ dirs: [String])
 
     /// 触发后台扫描（假实现为空操作）
     func scanAsync()
@@ -17,7 +26,10 @@ public protocol FileActivityProviding {
 
 public extension FileActivityProviding {
     func watch(dirs: [String]) {}
+    func replaceWatchedDirs(_ dirs: [String]) {}
     func scanAsync() {}
+    func activeSessionCounts(for dirs: [String]) -> [String: Int] { [:] }
+    func setActiveSessionWindow(_ window: TimeInterval) {}
 }
 
 /// 后台扫描 + 缓存实现：
@@ -29,6 +41,10 @@ public final class FileActivityMonitor: FileActivityProviding {
 
     private var watchedDirs: Set<String> = []
     private var cache: [String: Date] = [:]
+    /// 活跃会话数缓存（后台扫描一并算好，主线程只读）
+    private var sessionCounts: [String: Int] = [:]
+    /// 活跃会话判定窗口（引擎 config 同步进来）
+    public var activeSessionWindow: TimeInterval = 600
     private let lock = NSLock()
     private let scanQueue = DispatchQueue(label: "com.agentisland.filemonitor", qos: .utility)
     private var isScanning = false
@@ -48,6 +64,12 @@ public final class FileActivityMonitor: FileActivityProviding {
         lock.unlock()
     }
 
+    public func replaceWatchedDirs(_ dirs: [String]) {
+        lock.lock()
+        watchedDirs = Set(dirs)
+        lock.unlock()
+    }
+
     public func lastWriteDates(for dirs: [String]) -> [String: Date] {
         lock.lock()
         defer { lock.unlock() }
@@ -56,6 +78,22 @@ public final class FileActivityMonitor: FileActivityProviding {
             if let date = cache[dir] { result[dir] = date }
         }
         return result
+    }
+
+    public func activeSessionCounts(for dirs: [String]) -> [String: Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        var result: [String: Int] = [:]
+        for dir in dirs {
+            if let count = sessionCounts[dir] { result[dir] = count }
+        }
+        return result
+    }
+
+    public func setActiveSessionWindow(_ window: TimeInterval) {
+        lock.lock()
+        activeSessionWindow = window
+        lock.unlock()
     }
 
     public func scanAsync() {
@@ -85,17 +123,69 @@ public final class FileActivityMonitor: FileActivityProviding {
         isScanning = true
         lastScanAt = Date()
         let dirs = Array(watchedDirs)
+        let window = activeSessionWindow
         lock.unlock()
 
         var fresh: [String: Date] = [:]
+        var freshCounts: [String: Int] = [:]
         for dir in dirs {
             fresh[dir] = Self.newestWrite(in: dir, maxDepth: maxDepth)
+            freshCounts[dir] = Self.activeSessionCount(in: [dir], window: window, now: Date())
         }
 
         lock.lock()
         cache = fresh
+        sessionCounts = freshCounts
         isScanning = false
         lock.unlock()
+    }
+
+    /// 会话目录下的活跃会话数：一级子目录中「window 内存在文件写入」的数量
+    /// （目录 mtime 只在增删条目时变，不能反映文件内容写入，必须递归查文件 mtime）
+    /// 批量实现：用 enumerator 一次取一批，避免逐文件 syscall 风暴。
+    public static func activeSessionCount(in dirs: [String], window: TimeInterval, now: Date) -> Int {
+        var count = 0
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
+        for dir in dirs {
+            let url = URL(fileURLWithPath: dir)
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { continue }
+            for entry in entries {
+                guard let v = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                      v.isDirectory == true, v.isSymbolicLink != true else { continue }
+                if dirHasRecentWrite(entry.path, window: window, now: now) {
+                    count += 1
+                }
+            }
+        }
+        return count
+    }
+
+    /// 目录树内是否存在 window 内的文件写入（有限深度，找到即停）
+    static func dirHasRecentWrite(_ path: String, window: TimeInterval, now: Date, maxDepth: Int = 4) -> Bool {
+        let fm = FileManager.default
+        let url = URL(fileURLWithPath: path)
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
+        guard let en = fm.enumerator(at: url,
+                                     includingPropertiesForKeys: keys,
+                                     options: [.skipsHiddenFiles]) else { return false }
+        while let item = en.nextObject() as? URL {
+            guard en.level <= maxDepth else {
+                en.skipDescendants()
+                continue
+            }
+            guard let v = try? item.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]) else {
+                continue
+            }
+            if let date = v.contentModificationDate,
+               now.timeIntervalSince(date) <= window {
+                return true
+            }
+            if v.isDirectory == true, v.isSymbolicLink == true {
+                en.skipDescendants()   // 符号链接目录跳过，防循环
+            }
+        }
+        return false
     }
 
     /// 目录树内最近写入时间：目录 mtime 与递归子项 mtime 的最大值

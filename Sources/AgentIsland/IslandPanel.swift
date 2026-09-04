@@ -28,6 +28,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var didShowOnce = false
     private var dragStartOrigin: NSPoint?
     private var dragCooldownUntil: Date = .distantPast
+    /// docked 态重绘守卫：working 状态没变就不强制重绘细条
+    private var lastAnyWorking: Bool?
 
     // 尺寸常量
     private let dockedSize = NSSize(width: 176, height: 5)
@@ -155,6 +157,11 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    // docked 态内容只依赖 anyWorking：working 状态没变就跳过整窗重绘
+                    if self.displayState == .docked, self.lastAnyWorking == self.engine.anyWorking {
+                        return
+                    }
+                    self.lastAnyWorking = self.engine.anyWorking
                     self.hostingView?.needsDisplay = true
                     if self.displayState == .expanded {
                         self.syncExpandedHeight()
@@ -223,6 +230,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         if inZone {
             if displayState == .docked {
                 guard Date() >= dragCooldownUntil else { return }
+                // 统一取消 peek/collapse 任务，避免与 expand 动画并发改同一 frame
+                cancelPendingTasks()
                 Self.log("topzone → expand")
                 displayState = .expanded
             }
@@ -286,8 +295,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     // MARK: - Peek（E4：忙起来时细条弹一下）
 
+    /// peek 冷却：30s 内最多弹一次（防 working↔idle 抖动时细条连续弹跳）
+    private var lastPeekAt: Date = .distantPast
+
     private func peek() {
         guard displayState == .docked, peekTask == nil else { return }
+        guard Date().timeIntervalSince(lastPeekAt) >= 30 else { return }
+        lastPeekAt = Date()
         peekTask = Task { [weak self] in
             defer { self?.peekTask = nil }
             guard let self, let panel = self.panel else { return }
