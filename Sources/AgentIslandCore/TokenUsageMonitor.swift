@@ -226,7 +226,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
                        SUM(json_extract(usage,'$.promptTokens'))+SUM(json_extract(usage,'$.completionTokens')),
                        COALESCE(SUM(cost),0), MAX(createdAt)
                 FROM usage_ledger WHERE modelId = '\(modelId.escaped)'
-                GROUP BY sessionId ORDER BY 5 DESC
+                GROUP BY sessionId ORDER BY 5 DESC LIMIT 200
                 """
                 rows = rawRows(sql, dbPath: dimAgentDB, cols: 5).map { r in
                     let dir = dirPrefix + "/" + r[0]
@@ -244,7 +244,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
                        MAX(m.time_created), s.directory
                 FROM message m LEFT JOIN session s ON s.id = m.session_id
                 WHERE json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.modelID')='\(modelId.escaped)'
-                GROUP BY m.session_id ORDER BY 5 DESC
+                GROUP BY m.session_id ORDER BY 5 DESC LIMIT 200
                 """
                 rows = rawRows(sql, dbPath: openCodeDB, cols: 6).map { r in
                     // 与 dim 对齐：目录已删除则置 nil（点击不再显示文件夹图标）

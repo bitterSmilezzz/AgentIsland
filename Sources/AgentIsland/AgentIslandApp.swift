@@ -95,15 +95,19 @@ struct MenuBarMenuView: View {
 
         Divider()
 
-        // 状态摘要（M1）：忙碌时带工作数；全离线时禁用展开
+        // 状态摘要（M1）：忙碌时带工作数；全离线时菜单仍可展开（空态有提示价值）
+        // 口径与展开卡片可见列表一致（在线 + 24h 活跃才算可见项）；
+        // 不禁用按钮：hover/tap 均可展开，禁用会造成「菜单灰、细条可点」的语义矛盾（阿证/阿剩）。
         let workingCount = engine.workingAgents().count
-        let anyOfflineOnly = !engine.anyWorking && !engine.snapshots.contains { $0.processRunning }
+        let hasVisibleItem = engine.snapshots.contains {
+            $0.processRunning || ($0.lastActivityAgo ?? .infinity) < 24 * 3600
+        }
+        let anyOfflineOnly = !hasVisibleItem
         Button(controller.displayState == .expanded
                ? "收起灵动岛"
                : (anyOfflineOnly ? "展开灵动岛（暂无 Agent 在线）" : "展开灵动岛\(workingCount > 0 ? "（\(workingCount) 个工作中）" : "")")) {
             controller.toggle()
         }
-        .disabled(anyOfflineOnly)
 
         Divider()
 
@@ -132,11 +136,13 @@ struct MenuBarIconView: View {
             .animation(.easeInOut(duration: 0.25), value: engine.anyWorking)
             .overlay(alignment: .topTrailing) {
                 if engine.anyWorking {
-                    // H1：角标收进图标内圈，避免被 MenuBarExtra host 视图裁剪
+                    // H1：角标用 alignment+padding 完全收进图标内圈（不用 offset，避免越出被裁）
+                    // 随图标同节奏淡入淡出
                     Circle()
                         .fill(Theme.statusWorking)
                         .frame(width: 4, height: 4)
-                        .offset(x: 1.5, y: -1.5)
+                        .padding(1)
+                        .transition(.opacity)
                 }
             }
     }

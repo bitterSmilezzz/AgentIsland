@@ -145,8 +145,10 @@ struct SettingsView: View {
             }
         }
         .sheet(isPresented: $showAddCustom) {
+            // 冲突校验只针对引擎当前启用的条目（内置+自动发现+已存自定义）：
+            // 未启用的内置/未安装 CLI 与自定义条目同进程名时不会重复计数，不应误拦
             AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id)),
-                                knownProcessNames: AgentRegistry.fullRegistry()
+                                knownProcessNames: engine.allProfiles
                                     .flatMap(\.processNames)
                                     .map { $0.lowercased() }) { profile in
                 addCustom(profile)

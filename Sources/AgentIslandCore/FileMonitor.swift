@@ -50,7 +50,11 @@ public final class FileActivityMonitor: FileActivityProviding {
     private var isScanning = false
     private var lastScanAt = Date.distantPast
     /// 扫描最小间隔（引擎 working 时 2s 采样，扫描节流避免每拍全量扫）
-    private let scanMinInterval: TimeInterval = 3.0
+    /// 实测单趟全量递归 2.9GB 会话树耗时 0.23-0.30s，3s 间隔 ≈ 持续 10% CPU；
+    /// 提到 15s + 快跳过（见 runScan）后工作态开销降到 ~2%。
+    private let scanMinInterval: TimeInterval = 15.0
+    /// 目录级快跳过缓存：目录自身 mtime + 最近写入时间（mtime 未变且 newest 仍活跃 → 复用，零枚举）
+    private var lastRootDates: [String: Date] = [:]
 
     public init(maxDepth: Int = 4) {
         self.maxDepth = maxDepth
@@ -131,13 +135,33 @@ public final class FileActivityMonitor: FileActivityProviding {
         lock.unlock()
 
         // 单趟扫描：每目录一次遍历，同时产出最近写入时间 + 活跃会话数（M1 修复）
+        // 快跳过：根目录 mtime 未变（无新顶层子项）且缓存 newest 仍在活跃窗口内
+        // → 树内无新写入（或只有深层旧会话内的新写入，newest 仍是该会话，复用不丢信号），
+        //   复用缓存，零枚举。newest 滑出窗口后强制全量重扫兜底。
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
         let now = Date()
         for dir in dirs {
+            let rootURL = URL(fileURLWithPath: dir)
+            let rootDate = (try? rootURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            lock.lock()
+            let cachedRoot = lastRootDates[dir]
+            let cachedNewest = cache[dir]
+            let cachedCount = sessionCounts[dir]
+            lock.unlock()
+            if let rootDate, let cachedRoot, rootDate == cachedRoot, let cachedNewest,
+               now.timeIntervalSince(cachedNewest) <= window, let cachedCount {
+                // 无新顶层子项 + 最近写入仍活跃：复用缓存，不枚举目录树
+                fresh[dir] = cachedNewest
+                freshCounts[dir] = cachedCount
+                continue
+            }
             let r = Self.scanTree(in: dir, maxDepth: maxDepth, window: window, now: now)
             fresh[dir] = r.newest
             freshCounts[dir] = r.activeSessions
+            lock.lock()
+            lastRootDates[dir] = rootDate ?? Date.distantPast
+            lock.unlock()
         }
 
         lock.lock()

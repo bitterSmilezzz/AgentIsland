@@ -403,7 +403,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         Self.log("onStateChanged → \(state)")
         switch state {
         case .docked:
-            route = .list   // 收起时重置导航
+            // 收起时无动画重置导航：route 的 0.35s spring 若与淡出并发会闪现列表内容
+            var t = Transaction(animation: nil)
+            t.disablesAnimations = true
+            withTransaction(t) { route = .list }
             engine.tokenMonitor.pause()   // 细条态无展示需求，暂停 60s 轮询省电
             updateWindowChrome(docked: true)
             panel.orderFrontRegardless()
@@ -479,25 +482,35 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
     }
 
-    /// 展开高度 = 顶栏 + 分隔线 + 可见行数 × 行高（上限 maxHeight）
-    /// 与 IslandView 布局对齐：header 实际 ~37pt、行含间距 ~46pt、列表上限 300
+    // MARK: - 展开高度
+    // 与 IslandView 布局逐项对应（任一 padding 改动需同步此处）：
+    //   header  = padding(.top,12) + 内容(状态点9/文本~17) + padding(.bottom,8) ≈ 37
+    //   divider = 1
+    //   列表    = N×行(44) + 行间(2) + ScrollView padding(.vertical,6)×2 ≈ 46N+10，上限 300
+    //   summary = Divider(1) + TokenSummaryBar ≈ 26（有数据才显示）
+    private let headerHeight: CGFloat = 37
+    private let dividerHeight: CGFloat = 1
+    private let rowHeight: CGFloat = 46          // 含行间距与滚动 padding 的单行摊还
+    private let listMaxHeight: CGFloat = 300     // 与 ScrollView.frame(maxHeight:) 一致
+    private let emptyStateHeight: CGFloat = 84   // zzz 图标 + 文案 + padding(.vertical,22)
+    private let summaryBarHeight: CGFloat = 26   // Divider + TokenSummaryBar
+
     private func expandedHeight() -> CGFloat {
         switch route {
         case .list:
             if visibleCount() == 0 {
-                // 空态：zzz 图标 + 文案 + padding ≈ 84pt，窗口高度需匹配否则底部被裁
-                let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : 25
-                return min(12 + 37 + 1 + 84 + summaryBar + 6, expandedMaxHeight)
+                let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : summaryBarHeight
+                return min(headerHeight + dividerHeight + emptyStateHeight + summaryBar, expandedMaxHeight)
             }
             let count = max(visibleCount(), 1)
-            let listHeight = min(CGFloat(count) * 46 + 10, 300)
-            let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : 25
-            return min(12 + 37 + 1 + listHeight + summaryBar + 6, expandedMaxHeight)
+            let listHeight = min(CGFloat(count) * rowHeight + 10, listMaxHeight)
+            let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : summaryBarHeight
+            return min(headerHeight + dividerHeight + listHeight + summaryBar, expandedMaxHeight)
         case .agentDetail:
             // 详情页内容异步加载、高度不定，给固定舒适高度；内容自身可滚动
-            return min(12 + 37 + 1 + 300 + 10, expandedMaxHeight)
+            return min(headerHeight + dividerHeight + listMaxHeight + 10, expandedMaxHeight)
         case .sessions:
-            return min(12 + 37 + 1 + 300 + 10, expandedMaxHeight)
+            return min(headerHeight + dividerHeight + listMaxHeight + 10, expandedMaxHeight)
         }
     }
 
@@ -603,9 +616,14 @@ final class ShadowHostView: NSView {
         self.cornerRadius = cornerRadius
         guard let layer else { return }
         layer.shadowColor = NSColor.black.cgColor
+        // 阴影随窗口 frame 动画同步淡入/淡出（0.42s easeInEaseOut），避免"啪"地突现
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.42)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
         layer.shadowOpacity = enabled ? 0.30 : 0
         layer.shadowRadius = enabled ? 16 : 0
         layer.shadowOffset = CGSize(width: 0, height: -6)
+        CATransaction.commit()
         updateShadowPath()
     }
 

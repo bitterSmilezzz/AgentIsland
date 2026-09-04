@@ -21,13 +21,15 @@ struct DetailHeader: View {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Theme.onDark.opacity(0.9))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: 24)
                     .background(Circle().fill(backHovered ? Theme.hoverFill : Theme.chipFill))
                     .contentShape(Circle())
                     .help("返回")
             }
             .buttonStyle(.plain)
             .onHover { backHovered = $0 }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("返回")
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(Theme.bodyFont(12, weight: .semibold))
@@ -188,13 +190,15 @@ struct AgentDetailView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
                     .fill(modelHoveredID == m.modelId ? Theme.hoverFill : Theme.chipFill))
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous))
                 .onHover { modelHoveredID = $0 ? m.modelId : nil }
                 .onTapGesture {
                     controller.route = .sessions(agentId, m.modelId)
                 }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(m.modelId)
             }
         }
     }
@@ -240,11 +244,9 @@ struct SessionListView: View {
     @State private var sessions: [SessionUsage] = []
     @State private var loading = true
     @State private var queryToken = UUID()
-    /// 当前 hover 的会话行 id（多行共享一个状态，避免每行各自 @State）
-    @State private var hoveredSessionID: String?
 
     /// 静态化：行 body 每次重算不再新建 DateFormatter（昂贵对象）
-    private static let timeFormatter: DateFormatter = {
+    fileprivate static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MM-dd HH:mm"
         return f
@@ -299,21 +301,30 @@ struct SessionListView: View {
     }
 
     private func sessionRow(_ s: SessionUsage) -> some View {
+        SessionRowView(session: s)
+    }
+}
+
+// MARK: - 会话行（hover 态在行内自持，避免整列表重绘：阿证低优）
+private struct SessionRowView: View {
+    let session: SessionUsage
+    @State private var isHovered = false
+
+    var body: some View {
         let timeText: String = {
-            guard let t = s.lastTime else { return "—" }
+            guard let t = session.lastTime else { return "—" }
             return SessionListView.timeFormatter.string(from: t)
         }()
-        let detail = "\(s.messages) 条 · \(TokenUsage.compact(s.tokens)) tok"
-            + (TokenUsage.cost(s.cost).isEmpty ? "" : " · \(TokenUsage.cost(s.cost))")
-        let isHovered = hoveredSessionID == s.id
-        let hasDir = s.directory != nil
+        let detail = "\(session.messages) 条 · \(TokenUsage.compact(session.tokens)) tok"
+            + (TokenUsage.cost(session.cost).isEmpty ? "" : " · \(TokenUsage.cost(session.cost))")
+        let hasDir = session.directory != nil
         return HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(timeText)
                     .font(Theme.monoFont(10, weight: .semibold))
                     .foregroundColor(hasDir ? Theme.onDark : Theme.onDark.opacity(0.55))
                     .lineLimit(1)
-                    .help(s.directory ?? s.sessionId)
+                    .help(session.directory ?? session.sessionId)
                 Text(detail)
                     .font(Theme.monoFont(9))
                     .foregroundColor(Theme.onDarkFaint)
@@ -336,14 +347,9 @@ struct SessionListView: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(isHovered && hasDir ? Theme.hoverFill : Theme.chipFill))
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onHover { hovering in
-            hoveredSessionID = hovering ? s.id : nil
-        }
-        .onDisappear {
-            if hoveredSessionID == s.id { hoveredSessionID = nil }
-        }
+        .onHover { isHovered = $0 }
         .onTapGesture {
-            if let dir = s.directory {
+            if let dir = session.directory {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dir))
             }
         }

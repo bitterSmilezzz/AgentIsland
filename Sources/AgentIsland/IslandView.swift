@@ -104,13 +104,12 @@ struct IslandView: View {
 
     // MARK: 贴边细条（E1：QQ 式收起态，仅露 5px；E3：忙闲都常驻）
 
-    @Environment(\.colorScheme) private var colorScheme
-    private var isLight: Bool { colorScheme == .light }
-
     private var dockedSliver: some View {
         Capsule()
             // 浅色模式主体加深：5pt 细条在亮壁纸上 0.22 几乎不可见，0.34 起才稳定可见
-            .fill(Color.black.opacity(engine.anyWorking ? (isLight ? 0.55 : 0.85) : (isLight ? 0.34 : 0.55)))
+            // 动态色随面板 effectiveAppearance 切换（避免 @Environment(\.colorScheme) 与强制外观不同步）
+            .fill(Color(dynamic: NSColor(hex: 0x000000, alpha: engine.anyWorking ? 0.55 : 0.34),
+                        dark: NSColor(hex: 0x000000, alpha: engine.anyWorking ? 0.85 : 0.55)))
             .overlay(alignment: .leading) {
                 // 忙碌时左侧一粒绿点（细条内的微状态提示）
                 if engine.anyWorking {
@@ -279,15 +278,18 @@ struct AgentRowView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            // 圆角与详情页模型/会话行统一为 Theme.radiusSm（阿菜低5）
+            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
                 .fill(hovering ? Theme.hoverFill : Color.clear)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous))
         .onHover { hovering = $0 }
         .onTapGesture {
             // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表）
             controller.route = .agentDetail(snapshot.profile.id)
         }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(snapshot.profile.name)
     }
 }
 
