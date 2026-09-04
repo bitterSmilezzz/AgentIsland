@@ -57,6 +57,7 @@ final class AppContext {
                 let registry = AgentRegistry.fullRegistry()
                 let enabled = AppContext.loadEnabledIDs(defaultRegistry: registry)
                 self.engine.setEnabled(enabled)
+                self.engine.markInstalledRefreshed()   // 避免引擎首采样再扫一次（阿剩低3）
             }
         }
     }

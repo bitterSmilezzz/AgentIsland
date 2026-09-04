@@ -35,6 +35,11 @@ public final class ActivityEngine: ObservableObject {
     /// 安装缓存重扫时间戳（距上次 ≥5min 刷一次，见 sampleCore）
     private var lastInstalledRefresh = Date.distantPast
 
+    /// 标记安装缓存已由外部（AppContext 首刷/设置页）刷新过（阿剩低3：避免启动双扫）
+    public func markInstalledRefreshed() {
+        lastInstalledRefresh = Date()
+    }
+
     public init(profiles: [AgentProfile] = AgentRegistry.fullRegistry(),
          config: EngineConfig = EngineConfig(),
          processMonitor: ProcessMonitor = ProcessMonitor(),

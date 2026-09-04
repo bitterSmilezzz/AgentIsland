@@ -168,7 +168,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
     }
 
     public func refresh() {
-        // 增量缓存（阿证低）：两库文件 mtime/inode 未变则跳过全表聚合重算。
+        // 增量缓存（阿证低）：两库文件戳（含 -wal）未变则跳过全表聚合重算。
         // 只读连接 + stat 微秒级；token 表行数到十万级时全表 SUM 可达数百 ms，
         // 文件未变时无谓重算应避免
         let dimStamp = fileStamp(dimAgentDB)
@@ -186,25 +186,33 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         usage["opencode"] = queryOpenCode(cutoffMs: cutoffMs)
 
         let total = usage.values.reduce(TokenUsage(), +)
+        // stamp 与结果同一把锁内原子更新（阿剩低：锁外写 stamp 会让并发
+        // refresh 交错时新结果配旧 stamp，显示短暂回退）
         lock.lock()
         _usage = usage.filter { !$0.value.isEmpty }
         _grandTotal = total
         lastUsage = _usage
-        lock.unlock()
         lastDimStamp = dimStamp
         lastOpenCodeStamp = openCodeStamp
+        lock.unlock()
         if let onRefresh {
             Task { @MainActor in onRefresh() }
         }
     }
 
-    /// 文件变更戳（inode+mtime+size 组合；任一变化即视为被替换/写入）
+    /// 文件变更戳（inode+mtime+size 组合；任一变化即视为被替换/写入）。
+    /// 必须纳入 `-wal` 文件（阿剩中：WAL 模式连接持有中 commit 只写 wal，
+    /// 主文件戳在 checkpoint 前不变——本机 dim WAL 已 13MB 未 checkpoint，
+    /// 只查主文件会导致活跃写入期间统计静默冻结）；mtime 用 Double 避免整秒截断漏检
     private func fileStamp(_ path: String) -> String {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return "" }
-        let inode = (attrs[.systemFileNumber] as? UInt64) ?? 0
-        let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let size = (attrs[.size] as? UInt64) ?? 0
-        return "\(inode)-\(Int(mtime))-\(size)"
+        func stamp(_ p: String) -> String {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: p) else { return "missing" }
+            let inode = (attrs[.systemFileNumber] as? UInt64) ?? 0
+            let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            let size = (attrs[.size] as? UInt64) ?? 0
+            return "\(inode)-\(mtime)-\(size)"
+        }
+        return stamp(path) + "|wal:" + stamp(path + "-wal")
     }
 
     // MARK: - 详情页数据（按需查询，后台线程执行，主线程回调）
