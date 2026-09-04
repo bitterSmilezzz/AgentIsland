@@ -1,0 +1,21 @@
+# SwiftPM
+.build/
+.swiftpm/
+
+# 构建产物
+dist/
+*.dmg
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# 系统
+.DS_Store
+
+# 调试日志
+/tmp/agentisland.log
+
+# 测试/工具临时文件
+artifacts/

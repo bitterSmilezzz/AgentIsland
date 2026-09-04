@@ -1,0 +1,326 @@
+import Foundation
+import SQLite3
+
+// MARK: - Token 用量统计（只读双 SQLite 数据源）
+//
+// 数据源参考 vibe-usage 的采集思路（本机只读、不碰凭证）：
+// 1. DimAgent: ~/.dimcode/v2/dimcode.sqlite → usage_ledger（token 全，cost 全 NULL）
+// 2. OpenCode: ~/.local/share/opencode/opencode.db → message（token + cost）
+// 24h 口径 = 时间窗口内的记录之和；累计 = 全表之和。
+// 60s 后台轮询足够（token 用量无需秒级实时）。
+// OpenCode 不用 tokens.total（它含 cache.read，多轮会话重复计费虚高），
+// 统一用 input+output+reasoning 净消耗口径，与 DimAgent 的 prompt+completion 对齐。
+
+public struct TokenUsage: Equatable {
+    public var tokens24h: Int = 0
+    public var tokensTotal: Int = 0
+    public var cost24h: Double = 0
+    public var costTotal: Double = 0
+
+    public var isEmpty: Bool { tokensTotal == 0 && costTotal == 0 }
+
+    public init() {}
+    public init(tokens24h: Int, tokensTotal: Int, cost24h: Double, costTotal: Double) {
+        self.tokens24h = tokens24h
+        self.tokensTotal = tokensTotal
+        self.cost24h = cost24h
+        self.costTotal = costTotal
+    }
+
+    public static func + (lhs: TokenUsage, rhs: TokenUsage) -> TokenUsage {
+        TokenUsage(tokens24h: lhs.tokens24h + rhs.tokens24h,
+                   tokensTotal: lhs.tokensTotal + rhs.tokensTotal,
+                   cost24h: lhs.cost24h + rhs.cost24h,
+                   costTotal: lhs.costTotal + rhs.costTotal)
+    }
+
+    /// 1.23M / 45.6k / 890 式紧凑格式
+    public static func compact(_ n: Int) -> String {
+        switch n {
+        case 1_000_000_000...: return String(format: "%.2fB", Double(n) / 1_000_000_000)
+        case 1_000_000...: return String(format: "%.2fM", Double(n) / 1_000_000)
+        case 10_000...: return String(format: "%.1fk", Double(n) / 1_000)
+        default: return "\(n)"
+        }
+    }
+
+    /// $1.23 / $0.45 / <$0.01；0 或负返回空串
+    public static func cost(_ c: Double) -> String {
+        guard c > 0 else { return "" }
+        if c < 0.01 { return "<$0.01" }
+        return String(format: "$%.2f", c)
+    }
+}
+
+// MARK: - 详情页数据行
+
+public struct ModelUsage: Identifiable, Equatable {
+    public let modelId: String
+    public let messages: Int
+    public let tokens: Int
+    public let cost: Double
+    public var id: String { modelId }
+}
+
+public struct SessionUsage: Identifiable, Equatable {
+    public let sessionId: String
+    public let directory: String?   // Finder 跳转目标（不存在为 nil）
+    public let messages: Int
+    public let tokens: Int
+    public let cost: Double
+    public let lastTime: Date?
+    public var id: String { sessionId }
+}
+
+// MARK: - SQL 字符串转义（单引号翻倍，防会话/模型名带引号炸查询）
+
+extension String {
+    var escaped: String { replacingOccurrences(of: "'", with: "''") }
+}
+
+public final class TokenUsageMonitor {
+    private let lock = NSLock()
+    private var _usage: [String: TokenUsage] = [:]   // agentId → 用量
+    private var _grandTotal = TokenUsage()
+    private var timer: Timer?
+    private var lastError: String?
+    /// 刷新完成后的主线程回调（引擎用它触发重采样，让卡片高度/徽标及时跟上）
+    public var onRefresh: (@MainActor () -> Void)?
+
+    /// 各 agent 的用量快照（引擎采样时取走）
+    public var usage: [String: TokenUsage] {
+        lock.lock(); defer { lock.unlock() }
+        return _usage
+    }
+    /// 所有数据源总和（汇总栏）
+    public var grandTotal: TokenUsage {
+        lock.lock(); defer { lock.unlock() }
+        return _grandTotal
+    }
+
+    private let dimAgentDB = NSString(string: "~/.dimcode/v2/dimcode.sqlite").expandingTildeInPath
+    private let openCodeDB = NSString(string: "~/.local/share/opencode/opencode.db").expandingTildeInPath
+
+    public init() {}
+
+    public func start(interval: TimeInterval = 60.0) {
+        guard timer == nil else { return }
+        refreshAsync()   // 先刷一次，避免 UI 空数据
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.refreshAsync()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    public func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    public func refreshAsync() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.refresh()
+        }
+    }
+
+    public func refresh() {
+        let cutoffISO = Self.iso24hAgo()
+        let cutoffMs = Int64(Date().timeIntervalSince1970 - 86_400) * 1000
+
+        var usage: [String: TokenUsage] = [:]
+        usage["dim"] = queryDimAgent(cutoffISO: cutoffISO)
+        usage["opencode"] = queryOpenCode(cutoffMs: cutoffMs)
+
+        let total = usage.values.reduce(TokenUsage(), +)
+        lock.lock()
+        _usage = usage.filter { !$0.value.isEmpty }
+        _grandTotal = total
+        lock.unlock()
+        if let onRefresh {
+            Task { @MainActor in onRefresh() }
+        }
+    }
+
+    // MARK: - 详情页数据（按需查询，后台线程执行，主线程回调）
+
+    /// 按模型拆分（累计口径，按 token 降序）
+    public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            var rows: [ModelUsage] = []
+            switch agentId {
+            case "dim":
+                let sql = """
+                SELECT modelId, COUNT(*),
+                       SUM(json_extract(usage,'$.promptTokens'))+SUM(json_extract(usage,'$.completionTokens')),
+                       COALESCE(SUM(cost),0)
+                FROM usage_ledger GROUP BY modelId ORDER BY 3 DESC
+                """
+                rows = rawRows(sql, dbPath: dimAgentDB, cols: 4).map {
+                    ModelUsage(modelId: $0[0], messages: Int($0[1]) ?? 0,
+                               tokens: Int($0[2]) ?? 0, cost: Double($0[3]) ?? 0)
+                }
+            case "opencode":
+                let sql = """
+                SELECT json_extract(data,'$.modelID'), COUNT(*),
+                       SUM(json_extract(data,'$.tokens.input'))+SUM(json_extract(data,'$.tokens.output'))+SUM(json_extract(data,'$.tokens.reasoning')),
+                       COALESCE(SUM(json_extract(data,'$.cost')),0)
+                FROM message WHERE json_extract(data,'$.role')='assistant'
+                GROUP BY 1 ORDER BY 3 DESC
+                """
+                rows = rawRows(sql, dbPath: openCodeDB, cols: 4).map {
+                    ModelUsage(modelId: $0[0], messages: Int($0[1]) ?? 0,
+                               tokens: Int($0[2]) ?? 0, cost: Double($0[3]) ?? 0)
+                }
+            default:
+                rows = []
+            }
+            Task { @MainActor in completion(rows) }
+        }
+    }
+
+    /// 某模型下的会话列表（按最后活动降序）
+    public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            var rows: [SessionUsage] = []
+            switch agentId {
+            case "dim":
+                let dirPrefix = NSString(string: "~/.dimcode/v2/data/sessions").expandingTildeInPath
+                let sql = """
+                SELECT sessionId, COUNT(*),
+                       SUM(json_extract(usage,'$.promptTokens'))+SUM(json_extract(usage,'$.completionTokens')),
+                       COALESCE(SUM(cost),0), MAX(createdAt)
+                FROM usage_ledger WHERE modelId = '\(modelId.escaped)'
+                GROUP BY sessionId ORDER BY 5 DESC
+                """
+                rows = rawRows(sql, dbPath: dimAgentDB, cols: 5).map { r in
+                    let dir = dirPrefix + "/" + r[0]
+                    return SessionUsage(sessionId: r[0],
+                                        directory: FileManager.default.fileExists(atPath: dir) ? dir : nil,
+                                        messages: Int(r[1]) ?? 0, tokens: Int(r[2]) ?? 0,
+                                        cost: Double(r[3]) ?? 0,
+                                        lastTime: Self.parseISO(r[4]))
+                }
+            case "opencode":
+                let sql = """
+                SELECT m.session_id, COUNT(*),
+                       SUM(json_extract(m.data,'$.tokens.input'))+SUM(json_extract(m.data,'$.tokens.output'))+SUM(json_extract(m.data,'$.tokens.reasoning')),
+                       COALESCE(SUM(json_extract(m.data,'$.cost')),0),
+                       MAX(m.time_created), s.directory
+                FROM message m LEFT JOIN session s ON s.id = m.session_id
+                WHERE json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.modelID')='\(modelId.escaped)'
+                GROUP BY m.session_id ORDER BY 5 DESC
+                """
+                rows = rawRows(sql, dbPath: openCodeDB, cols: 6).map { r in
+                    SessionUsage(sessionId: r[0],
+                                 directory: r[5].isEmpty ? nil : r[5],
+                                 messages: Int(r[1]) ?? 0, tokens: Int(r[2]) ?? 0,
+                                 cost: Double(r[3]) ?? 0,
+                                 lastTime: Double(r[4]).map { Date(timeIntervalSince1970: $0 / 1000) })
+                }
+            default:
+                rows = []
+            }
+            Task { @MainActor in completion(rows) }
+        }
+    }
+
+    // MARK: - 24h/累计 汇总查询
+
+    private func queryDimAgent(cutoffISO: String) -> TokenUsage {
+        // createdAt 是 ISO8601 UTC 字符串（同格式字符串比较即时间比较）；cost 全表 SUM（NULL 记 0）
+        let sql24h = """
+        SELECT COALESCE(SUM(json_extract(usage,'$.promptTokens')),0)
+             + COALESCE(SUM(json_extract(usage,'$.completionTokens')),0),
+               COALESCE(SUM(cost),0)
+        FROM usage_ledger WHERE createdAt >= '\(cutoffISO)'
+        """
+        let sqlTotal = """
+        SELECT COALESCE(SUM(json_extract(usage,'$.promptTokens')),0)
+             + COALESCE(SUM(json_extract(usage,'$.completionTokens')),0),
+               COALESCE(SUM(cost),0)
+        FROM usage_ledger
+        """
+        var u = TokenUsage()
+        if let (t24, c24) = scalarSum(sql24h, dbPath: dimAgentDB),
+           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: dimAgentDB) {
+            u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
+        }
+        return u
+    }
+
+    private func queryOpenCode(cutoffMs: Int64) -> TokenUsage {
+        let tokensExpr = """
+        COALESCE(SUM(json_extract(data,'$.tokens.input')),0)
+        + COALESCE(SUM(json_extract(data,'$.tokens.output')),0)
+        + COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0)
+        """
+        let roleFilter = "json_extract(data,'$.role')='assistant'"
+        let sql24h = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter) AND time_created >= \(cutoffMs)"
+        let sqlTotal = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter)"
+        var u = TokenUsage()
+        if let (t24, c24) = scalarSum(sql24h, dbPath: openCodeDB),
+           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: openCodeDB) {
+            u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
+        }
+        return u
+    }
+
+    // MARK: - SQLite 底层
+
+    /// 两列标量查询：(token, cost)；查询失败返回 nil
+    private func scalarSum(_ sql: String, dbPath: String) -> (Int, Double)? {
+        guard let row = rawRows(sql, dbPath: dbPath, cols: 2).first else { return nil }
+        return (Int(row[0]) ?? 0, Double(row[1]) ?? 0)
+    }
+
+    /// 通用查询：全部列转字符串返回（数值/文本统一处理，空结果返回 []）
+    private func rawRows(_ sql: String, dbPath: String, cols: Int) -> [[String]] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dbPath) else {
+            lastError = "not found: \(dbPath)"
+            return []
+        }
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+            if let db { sqlite3_close(db) }
+            lastError = "open failed: \(dbPath)"
+            return []
+        }
+        defer { sqlite3_close(db) }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            lastError = "prepare failed: \(String(cString: sqlite3_errmsg(db)))"
+            return []
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var rows: [[String]] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            var row: [String] = []
+            row.reserveCapacity(cols)
+            for i in 0..<cols {
+                if let c = sqlite3_column_text(stmt, Int32(i)) {
+                    row.append(String(cString: c))
+                } else {
+                    row.append("")
+                }
+            }
+            rows.append(row)
+        }
+        return rows
+    }
+
+    static func iso24hAgo(now: Date = Date()) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: now.addingTimeInterval(-86_400))
+    }
+
+    static func parseISO(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: s)
+    }
+}

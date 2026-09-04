@@ -1,0 +1,418 @@
+import AgentIslandCore
+import SwiftUI
+import AppKit
+import ServiceManagement
+
+// MARK: - 设置窗口
+// Apple 原生风格：Form + 分组 + Action Blue 强调色
+
+struct SettingsView: View {
+    @ObservedObject var engine: ActivityEngine
+    @ObservedObject var controller: IslandPanelController
+
+    @AppStorage("workingWindow") private var workingWindow: Double = 60
+    @AppStorage("sampleInterval") private var sampleInterval: Double = 2
+    @AppStorage("idleSampleInterval") private var idleSampleInterval: Double = 15
+    @AppStorage("cpuThreshold") private var cpuThreshold: Double = 1
+    @AppStorage("activeSessionWindow") private var activeSessionWindow: Double = 600
+    @AppStorage("collapseDelay") private var collapseDelay: Double = 3
+    @AppStorage("launchAtLogin") private var launchAtLogin = false
+    @AppStorage("islandAppearance") private var islandAppearanceRaw = IslandAppearance.system.rawValue
+    @AppStorage("enabledAgents") private var enabledAgentsData: Data = Data()
+
+    private var islandAppearance: Binding<IslandAppearance> {
+        Binding(
+            get: { IslandAppearance(rawValue: islandAppearanceRaw) ?? .system },
+            set: { islandAppearanceRaw = $0.rawValue }
+        )
+    }
+
+    @State private var enabledAgents: Set<String> = []
+    @State private var customProfiles: [AgentProfile] = []
+    @State private var showAddCustom = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    appearanceSection
+                    Divider()
+                    agentSection
+                    Divider()
+                    customSection
+                    Divider()
+                    behaviorSection
+                    Divider()
+                    aboutSection
+                }
+                .padding(20)
+            }
+        }
+        .frame(width: 480, height: 620)
+        .background(Theme.parchment)
+        .onAppear(perform: loadState)
+    }
+
+    // MARK: 头部
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(Theme.actionBlue)
+            Text("AgentIsland 设置")
+                .font(Theme.displayFont(17, weight: .semibold))
+                .foregroundColor(Theme.ink)
+            Spacer()
+            Button("完成") {
+                NSApp.keyWindow?.close()
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.actionBlue)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    // MARK: Agent 开关
+
+    private var agentSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("监控的 Agent（内置）")
+                .font(Theme.bodyFont(13, weight: .semibold))
+                .foregroundColor(Theme.ink)
+
+            ForEach(AgentRegistry.builtin) { profile in
+                Toggle(isOn: binding(for: profile)) {
+                    HStack(spacing: 8) {
+                        Image(systemName: profile.icon)
+                            .foregroundColor(Theme.actionBlue)
+                            .frame(width: 18)
+                        Text(profile.name)
+                            .font(Theme.bodyFont(13))
+                            .foregroundColor(Theme.ink)
+                        if let snapshot = engine.snapshots.first(where: { $0.id == profile.id }) {
+                            Text(snapshot.level.label)
+                                .font(Theme.bodyFont(10, weight: .semibold))
+                                .foregroundColor(snapshot.level.color)
+                        }
+                    }
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.actionBlue)
+            }
+
+            // 自动发现的 CLI（只读展示）
+            let discovered = AgentRegistry.discoverCLIProfiles()
+            if !discovered.isEmpty {
+                Text("自动发现：\(discovered.map(\.name).joined(separator: "、"))")
+                    .font(Theme.bodyFont(11))
+                    .foregroundColor(Theme.inkMuted48)
+                    .padding(.top, 4)
+            }
+        }
+    }
+
+    // MARK: 自定义 Agent
+
+    private var customSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("自定义 Agent")
+                    .font(Theme.bodyFont(13, weight: .semibold))
+                    .foregroundColor(Theme.ink)
+                Spacer()
+                Button {
+                    showAddCustom = true
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .foregroundColor(Theme.actionBlue)
+                }
+                .buttonStyle(.plain)
+                .help("添加自定义 Agent（进程名 + 会话目录）")
+            }
+
+            if customProfiles.isEmpty {
+                Text("没有自定义条目。可添加内部脚本、自研 agent 等。")
+                    .font(Theme.bodyFont(11))
+                    .foregroundColor(Theme.inkMuted48)
+            }
+
+            ForEach(Array(customProfiles), id: \.id) { profile in
+                CustomAgentRowView(profile: profile, onRemove: { removeCustom(profile) })
+            }
+        }
+        .sheet(isPresented: $showAddCustom) {
+            AddCustomAgentSheet { profile in
+                addCustom(profile)
+            }
+        }
+    }
+
+    // MARK: 外观
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("外观")
+                .font(Theme.bodyFont(13, weight: .semibold))
+                .foregroundColor(Theme.ink)
+
+            Picker("灵动岛外观", selection: islandAppearance) {
+                ForEach(IslandAppearance.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: islandAppearanceRaw) { _ in
+                // 显式通知面板实时切换（不依赖跨进程 UserDefaults 通知）
+                NotificationCenter.default.post(name: .islandAppearanceChanged, object: nil)
+            }
+            Text("控制灵动岛卡片的配色；设置窗口本身跟随系统。")
+                .font(Theme.bodyFont(10))
+                .foregroundColor(Theme.inkMuted48)
+        }
+    }
+
+    // MARK: 行为参数
+
+    private var behaviorSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("行为")
+                .font(Theme.bodyFont(13, weight: .semibold))
+                .foregroundColor(Theme.ink)
+
+            sliderRow(title: "「工作中」写入窗口", value: $workingWindow, range: 10...300, unit: "秒")
+            sliderRow(title: "CPU 判定阈值", value: $cpuThreshold, range: 0.5...50, unit: "%")
+            sliderRow(title: "活跃会话窗口", value: $activeSessionWindow, range: 60...3600, unit: "秒")
+            sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
+            sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
+            sliderRow(title: "自动收起延迟", value: $collapseDelay, range: 0.2...5, step: 0.1, unit: "秒")
+
+            Toggle(isOn: $launchAtLogin) {
+                Text("登录时自动启动")
+                    .font(Theme.bodyFont(12))
+                    .foregroundColor(Theme.inkMuted80)
+            }
+            .toggleStyle(.switch)
+            .tint(Theme.actionBlue)
+            .onChange(of: launchAtLogin) { newValue in
+                applyLaunchAtLogin(newValue)
+            }
+        }
+    }
+
+    private func sliderRow(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double = 1, unit: String) -> some View {
+        HStack {
+            Text(title)
+                .font(Theme.bodyFont(12))
+                .foregroundColor(Theme.inkMuted80)
+            Spacer()
+            Text(value.wrappedValue >= 10 ? "\(Int(value.wrappedValue)) \(unit)" : String(format: "%.1f \(unit)", value.wrappedValue))
+                .font(Theme.monoFont(11))
+                .foregroundColor(Theme.inkMuted48)
+            Slider(value: value, in: range, step: step)
+                .tint(Theme.actionBlue)
+                .frame(width: 120)
+        }
+        .onChange(of: value.wrappedValue) { _ in
+            applyConfig()
+        }
+    }
+
+    // MARK: 关于
+
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("关于")
+                .font(Theme.bodyFont(13, weight: .semibold))
+                .foregroundColor(Theme.ink)
+            Text("AgentIsland — 监控本机 Agent 软件会话活动的灵动岛工具")
+                .font(Theme.bodyFont(12))
+                .foregroundColor(Theme.inkMuted48)
+            Text("v1.2.0 · 只读监控，不读取会话内容")
+                .font(Theme.bodyFont(11))
+                .foregroundColor(Theme.inkMuted48)
+            Link("GitHub: bitterSmilezzz/AgentIsland",
+                 destination: URL(string: "https://github.com/bitterSmilezzz/AgentIsland")!)
+                .font(Theme.bodyFont(11))
+                .foregroundColor(Theme.actionBlue)
+        }
+    }
+
+    // MARK: - 状态同步
+
+    private func loadState() {
+        // 启停集合
+        if let saved = try? JSONDecoder().decode([String].self, from: enabledAgentsData),
+           !saved.isEmpty {
+            enabledAgents = Set(saved)
+        } else {
+            enabledAgents = Set(AgentRegistry.builtin.filter(\.defaultEnabled).map(\.id))
+        }
+        // 自定义条目
+        customProfiles = AgentRegistry.loadCustomProfiles()
+        // 参数同步到引擎
+        applyConfig()
+        // 自启状态回显
+        launchAtLogin = (SMAppService.mainApp.status == .enabled)
+    }
+
+    private func applyConfig() {
+        engine.config.sampleInterval = sampleInterval
+        engine.config.idleSampleInterval = idleSampleInterval
+        engine.config.workingWindow = workingWindow
+        engine.config.cpuThreshold = cpuThreshold
+        engine.config.activeSessionWindow = activeSessionWindow
+        engine.config.collapseDelay = collapseDelay
+    }
+
+    private func applyLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            print("SMAppService 失败: \(error)")
+        }
+    }
+
+    private func binding(for profile: AgentProfile) -> Binding<Bool> {
+        Binding(
+            get: { enabledAgents.contains(profile.id) },
+            set: { on in
+                if on {
+                    enabledAgents.insert(profile.id)
+                } else {
+                    enabledAgents.remove(profile.id)
+                }
+                saveEnabled()
+                engine.setEnabled(enabledAgents)
+            }
+        )
+    }
+
+    private func saveEnabled() {
+        if let data = try? JSONEncoder().encode(Array(enabledAgents)) {
+            enabledAgentsData = data
+        }
+    }
+
+    // MARK: - 自定义增删
+
+    private func addCustom(_ profile: AgentProfile) {
+        customProfiles.append(profile)
+        AgentRegistry.saveCustomProfiles(customProfiles)
+        engine.addCustomProfile(profile)
+        enabledAgents.insert(profile.id)
+        saveEnabled()
+    }
+
+    private func removeCustom(_ profile: AgentProfile) {
+        customProfiles.removeAll { $0.id == profile.id }
+        AgentRegistry.saveCustomProfiles(customProfiles)
+        engine.removeCustomProfile(profile.id)
+        enabledAgents.remove(profile.id)
+        saveEnabled()
+    }
+}
+
+// MARK: - 自定义 Agent 行
+
+struct CustomAgentRowView: View {
+    let profile: AgentProfile
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: profile.icon)
+                .foregroundColor(Theme.actionBlue)
+                .frame(width: 18)
+            Text(profile.name)
+                .font(Theme.bodyFont(13))
+                .foregroundColor(Theme.ink)
+            Text(profile.processNames.joined(separator: ","))
+                .font(Theme.monoFont(10))
+                .foregroundColor(Theme.inkMuted48)
+                .lineLimit(1)
+            Spacer()
+            Button(role: .destructive, action: onRemove) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(Theme.dangerRed)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - 添加自定义 Agent 弹窗
+
+struct AddCustomAgentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let onAdd: (AgentProfile) -> Void
+
+    @State private var name = ""
+    @State private var icon = "terminal"
+    @State private var processName = ""
+    @State private var sessionDir = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("添加自定义 Agent")
+                .font(Theme.displayFont(15, weight: .semibold))
+                .foregroundColor(Theme.ink)
+
+            field("显示名", text: $name, placeholder: "例如：内部 QA Agent")
+            field("进程名", text: $processName, placeholder: "例如：qa-agent（ps 里的命令名）")
+            field("会话目录", text: $sessionDir, placeholder: "可选，例如：~/workspace/qa/sessions")
+
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("添加") {
+                    let trimmedName = name.trimmingCharacters(in: .whitespaces)
+                    let trimmedProc = processName.trimmingCharacters(in: .whitespaces)
+                    guard !trimmedName.isEmpty, !trimmedProc.isEmpty else { return }
+                    let id = "custom-\(trimmedProc.lowercased().replacingOccurrences(of: " ", with: "-"))"
+                    let dirs = sessionDir.isEmpty
+                        ? []
+                        : [(sessionDir as NSString).expandingTildeInPath]
+                    onAdd(AgentProfile(
+                        id: id,
+                        name: trimmedName,
+                        icon: icon,
+                        bundleIDs: [],
+                        processNames: [trimmedProc],
+                        sessionDirs: dirs,
+                        isCustom: true
+                    ))
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.actionBlue)
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
+                          || processName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 420)
+        .background(Theme.parchment)
+    }
+
+    private func field(_ title: String, text: Binding<String>, placeholder: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(Theme.bodyFont(11, weight: .semibold))
+                .foregroundColor(Theme.inkMuted80)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(Theme.bodyFont(12))
+        }
+    }
+}

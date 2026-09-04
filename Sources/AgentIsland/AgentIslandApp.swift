@@ -1,0 +1,144 @@
+import AgentIslandCore
+import SwiftUI
+import AppKit
+
+// MARK: - 共享应用上下文（引擎单例，App 与 AppDelegate 共用同一实例）
+
+@MainActor
+final class AppContext {
+    static let shared = AppContext()
+    let engine: ActivityEngine
+    private var _controller: IslandPanelController?
+
+    /// 控制器延迟创建：首次访问才实例化，全局唯一
+    var controller: IslandPanelController {
+        if let c = _controller { return c }
+        let c = IslandPanelController(engine: engine)
+        _controller = c
+        return c
+    }
+
+    /// 读取启停集合（设置界面持久化），无记录时用 defaultEnabled
+    private static func loadEnabledIDs(defaultRegistry: [AgentProfile]) -> Set<String> {
+        if let data = UserDefaults.standard.data(forKey: "enabledAgents"),
+           let saved = try? JSONDecoder().decode([String].self, from: data),
+           !saved.isEmpty {
+            return Set(saved)
+        }
+        return Set(defaultRegistry.filter(\.defaultEnabled).map(\.id))
+    }
+
+    private init() {
+        // 从 UserDefaults 读取设置参数（SettingsView 同步写入）
+        let ud = UserDefaults.standard
+        let config = EngineConfig(
+            sampleInterval: ud.object(forKey: "sampleInterval") as? Double ?? 2.0,
+            idleSampleInterval: ud.object(forKey: "idleSampleInterval") as? Double ?? 15.0,
+            workingWindow: ud.object(forKey: "workingWindow") as? Double ?? 60.0,
+            cpuThreshold: ud.object(forKey: "cpuThreshold") as? Double ?? 1.0,
+            activeSessionWindow: ud.object(forKey: "activeSessionWindow") as? Double ?? 600.0,
+            collapseDelay: ud.object(forKey: "collapseDelay") as? Double ?? 0.5
+        )
+        let registry = AgentRegistry.fullRegistry()
+        let enabled = AppContext.loadEnabledIDs(defaultRegistry: registry)
+        engine = ActivityEngine(
+            profiles: registry.filter { enabled.contains($0.id) },
+            config: config
+        )
+    }
+}
+
+// MARK: - AgentIsland 入口
+// 菜单栏常驻 App（LSUIElement）：MenuBarExtra + 设置窗口 + 灵动岛面板
+
+@main
+struct AgentIslandApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    init() {
+        // 无头验证模式：--probe 打印状态表后退出
+        if CommandLine.arguments.contains("--probe") {
+            exit(Probe.run())
+        }
+        // 无头自检模式：进程内断言
+        if CommandLine.arguments.contains("--selftest") {
+            exit(Selftest.run())
+        }
+    }
+
+    var body: some Scene {
+        MenuBarExtra {
+            MenuBarMenuView(controller: AppContext.shared.controller)
+        } label: {
+            MenuBarIconView(engine: AppContext.shared.engine)
+        }
+        .menuBarExtraStyle(.menu)
+
+        Settings {
+            SettingsView(engine: AppContext.shared.engine, controller: AppContext.shared.controller)
+        }
+    }
+}
+
+// MARK: - 菜单内容视图
+
+struct MenuBarMenuView: View {
+    @ObservedObject var controller: IslandPanelController
+
+    var body: some View {
+        Button(controller.displayState == .expanded ? "收起灵动岛" : "展开灵动岛") {
+            controller.toggle()
+        }
+
+        Divider()
+
+        Button("重置岛位置") {
+            AppContext.shared.controller.resetPosition()
+        }
+
+        // 打开 Settings 场景：@State 布尔不会触发窗口，必须发系统动作（macOS 13 兼容）
+        Button("设置…") {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        }
+        Button("退出") { NSApp.terminate(nil) }
+    }
+}
+
+// MARK: - 菜单栏图标（Q10：working 状态色 + 圆点角标）
+
+struct MenuBarIconView: View {
+    @ObservedObject var engine: ActivityEngine
+
+    var body: some View {
+        Image(systemName: engine.anyWorking ? "dot.radiowaves.left.and.right" : "sparkles")
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(engine.anyWorking ? Theme.statusWorking : Theme.inkMuted48)
+            .overlay(alignment: .topTrailing) {
+                if engine.anyWorking {
+                    Circle()
+                        .fill(Theme.statusWorking)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 4, y: -4)
+                }
+            }
+    }
+}
+
+// MARK: - AppDelegate（创建灵动岛面板）
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory) // 无 Dock 图标
+
+        let context = AppContext.shared
+        let controller = context.controller // 触发延迟创建
+        context.engine.start()
+        controller.show()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppContext.shared.engine.stop()
+    }
+}
