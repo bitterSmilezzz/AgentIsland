@@ -197,6 +197,8 @@ struct IslandView: View {
             }
         }
         .frame(width: 280)
+        // 背景铺满整个窗口（窗口高度可能略大于内容，消除底部透明带）
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
     }
 
@@ -369,13 +371,6 @@ extension ActivityLevel {
         case .offline: return Theme.statusOffline
         }
     }
-}
-
-// MARK: - 全局事件（悬停状态传递）
-
-final class AppEvents {
-    static let shared = AppEvents()
-    var islandHovered = false
 }
 
 extension Notification.Name {

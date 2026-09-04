@@ -84,7 +84,6 @@ public final class TokenUsageMonitor: @unchecked Sendable {
     private var _usage: [String: TokenUsage] = [:]   // agentId → 用量
     private var _grandTotal = TokenUsage()
     private var timer: Timer?
-    private var lastError: String?
     /// 刷新完成后的主线程回调（引擎用它触发重采样，让卡片高度/徽标及时跟上）
     public var onRefresh: (@MainActor () -> Void)?
 
@@ -248,11 +247,14 @@ public final class TokenUsageMonitor: @unchecked Sendable {
                 GROUP BY m.session_id ORDER BY 5 DESC
                 """
                 rows = rawRows(sql, dbPath: openCodeDB, cols: 6).map { r in
-                    SessionUsage(sessionId: r[0],
-                                 directory: r[5].isEmpty ? nil : r[5],
-                                 messages: Int(r[1]) ?? 0, tokens: Int(r[2]) ?? 0,
-                                 cost: Double(r[3]) ?? 0,
-                                 lastTime: Double(r[4]).map { Date(timeIntervalSince1970: $0 / 1000) })
+                    // 与 dim 对齐：目录已删除则置 nil（点击不再显示文件夹图标）
+                    let rawDir = r[5]
+                    let dir = (!rawDir.isEmpty && FileManager.default.fileExists(atPath: rawDir)) ? rawDir : nil
+                    return SessionUsage(sessionId: r[0],
+                                        directory: dir,
+                                        messages: Int(r[1]) ?? 0, tokens: Int(r[2]) ?? 0,
+                                        cost: Double(r[3]) ?? 0,
+                                        lastTime: Double(r[4]).map { Date(timeIntervalSince1970: $0 / 1000) })
                 }
             default:
                 rows = []
@@ -316,7 +318,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         dbQueue.sync {
             let fm = FileManager.default
             guard fm.fileExists(atPath: dbPath) else {
-                lastError = "not found: \(dbPath)"
+                debugPrint("TokenUsage: db not found \(dbPath)")
                 return []
             }
             let db: OpaquePointer
@@ -326,7 +328,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
                 var handle: OpaquePointer?
                 guard sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
                     if let handle { sqlite3_close(handle) }
-                    lastError = "open failed: \(dbPath)"
+                    debugPrint("TokenUsage: open failed \(dbPath)")
                     return []
                 }
                 db = handle
@@ -335,7 +337,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
 
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
-                lastError = "prepare failed: \(String(cString: sqlite3_errmsg(db)))"
+                debugPrint("TokenUsage: prepare failed: \(String(cString: sqlite3_errmsg(db)))")
                 return []
             }
             defer { sqlite3_finalize(stmt) }

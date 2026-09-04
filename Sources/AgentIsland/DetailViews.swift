@@ -102,6 +102,7 @@ struct AgentDetailView: View {
             }
         }
         .frame(width: 280)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
         .task(id: agentId) {
             loading = true
@@ -260,7 +261,8 @@ struct SessionListView: View {
             Divider().overlay(Theme.onDark.opacity(0.12))
 
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(spacing: 4) {
+                // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行
+                LazyVStack(spacing: 4) {
                     if loading {
                         HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
                             .padding(.top, 36)
@@ -281,6 +283,7 @@ struct SessionListView: View {
             }
         }
         .frame(width: 280)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
         .task(id: "\(agentId)/\(modelId)") {
             loading = true

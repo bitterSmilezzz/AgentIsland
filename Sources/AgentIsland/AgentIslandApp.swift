@@ -68,7 +68,7 @@ struct AgentIslandApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarMenuView(controller: AppContext.shared.controller)
+            MenuBarMenuView(controller: AppContext.shared.controller, engine: AppContext.shared.engine)
         } label: {
             MenuBarIconView(engine: AppContext.shared.engine)
         }
@@ -84,21 +84,35 @@ struct AgentIslandApp: App {
 
 struct MenuBarMenuView: View {
     @ObservedObject var controller: IslandPanelController
+    @ObservedObject var engine: ActivityEngine
 
     var body: some View {
-        Button(controller.displayState == .expanded ? "收起灵动岛" : "展开灵动岛") {
-            controller.toggle()
-        }
+        // 可发现性提示（M2）：两级交互入口语义分离，首行说明
+        Text("提示：鼠标碰屏幕顶部滑出卡片")
+            .font(Theme.bodyFont(11))
+            .foregroundColor(Theme.inkMuted48)
+            .fixedSize(horizontal: false, vertical: true)
 
         Divider()
 
-        Button("重置岛位置") {
-            AppContext.shared.controller.resetPosition()
+        // 状态摘要（M1）：忙碌时带工作数；全离线时禁用展开
+        let workingCount = engine.workingAgents().count
+        let anyOfflineOnly = !engine.anyWorking && !engine.snapshots.contains { $0.processRunning }
+        Button(controller.displayState == .expanded
+               ? "收起灵动岛"
+               : (anyOfflineOnly ? "展开灵动岛（暂无 Agent 在线）" : "展开灵动岛\(workingCount > 0 ? "（\(workingCount) 个工作中）" : "")")) {
+            controller.toggle()
         }
+        .disabled(anyOfflineOnly)
+
+        Divider()
 
         // 打开 Settings 场景：@State 布尔不会触发窗口，必须发系统动作（macOS 13 兼容）
         Button("设置…") {
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        }
+        Button("重置岛位置") {
+            AppContext.shared.controller.resetPosition()
         }
         Button("退出") { NSApp.terminate(nil) }
     }
@@ -113,12 +127,16 @@ struct MenuBarIconView: View {
         Image(systemName: engine.anyWorking ? "dot.radiowaves.left.and.right" : "sparkles")
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(engine.anyWorking ? Theme.statusWorking : Theme.inkMuted48)
+            // H2：状态切换淡入过渡（macOS 13 无 symbolEffect，用内容过渡替代）
+            .contentTransition(.opacity)
+            .animation(.easeInOut(duration: 0.25), value: engine.anyWorking)
             .overlay(alignment: .topTrailing) {
                 if engine.anyWorking {
+                    // H1：角标收进图标内圈，避免被 MenuBarExtra host 视图裁剪
                     Circle()
                         .fill(Theme.statusWorking)
-                        .frame(width: 6, height: 6)
-                        .offset(x: 4, y: -4)
+                        .frame(width: 4, height: 4)
+                        .offset(x: 1.5, y: -1.5)
                 }
             }
     }

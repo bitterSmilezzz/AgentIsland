@@ -302,7 +302,6 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     // MARK: - 悬停
 
     func islandHoveredChanged(_ hovering: Bool) {
-        AppEvents.shared.islandHovered = hovering
         if hovering {
             guard Date() >= dragCooldownUntil else { return }
             guard NSEvent.pressedMouseButtons == 0 else { return }
@@ -373,8 +372,11 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             guard let self, let panel = self.panel else { return }
             let frame = panel.frame
             self.peekRestoreFrame = frame
-            // 下滑 11pt 再收回（顶边固定锚点视觉：整体下探）
-            let down = NSRect(x: frame.origin.x, y: frame.origin.y - 11,
+            // 下滑 11pt 再收回（顶边固定锚点视觉：整体下探）；钳制不出屏幕下缘
+            // AppKit origin.y 是窗口底边，直接钳到 visible.minY（Dock 上缘）
+            let screenBottom = (panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? frame).minY
+            let downY = max(frame.origin.y - 11, screenBottom)
+            let down = NSRect(x: frame.origin.x, y: downY,
                               width: frame.width, height: frame.height + 11)
             await withCheckedContinuation { cont in
                 NSAnimationContext.runAnimationGroup({ ctx in
@@ -478,23 +480,24 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     /// 展开高度 = 顶栏 + 分隔线 + 可见行数 × 行高（上限 maxHeight）
+    /// 与 IslandView 布局对齐：header 实际 ~37pt、行含间距 ~46pt、列表上限 300
     private func expandedHeight() -> CGFloat {
         switch route {
         case .list:
             if visibleCount() == 0 {
                 // 空态：zzz 图标 + 文案 + padding ≈ 84pt，窗口高度需匹配否则底部被裁
                 let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : 25
-                return min(12 + 43 + 1 + 84 + summaryBar + 6, expandedMaxHeight)
+                return min(12 + 37 + 1 + 84 + summaryBar + 6, expandedMaxHeight)
             }
             let count = max(visibleCount(), 1)
-            let listHeight = min(CGFloat(count) * 44 + 12, 312)
+            let listHeight = min(CGFloat(count) * 46 + 10, 300)
             let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : 25
-            return min(12 + 43 + 1 + listHeight + summaryBar + 6, expandedMaxHeight)
+            return min(12 + 37 + 1 + listHeight + summaryBar + 6, expandedMaxHeight)
         case .agentDetail:
             // 详情页内容异步加载、高度不定，给固定舒适高度；内容自身可滚动
-            return min(12 + 43 + 1 + 300 + 10, expandedMaxHeight)
+            return min(12 + 37 + 1 + 300 + 10, expandedMaxHeight)
         case .sessions:
-            return min(12 + 43 + 1 + 300 + 10, expandedMaxHeight)
+            return min(12 + 37 + 1 + 300 + 10, expandedMaxHeight)
         }
     }
 

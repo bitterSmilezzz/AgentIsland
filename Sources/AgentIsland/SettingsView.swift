@@ -145,7 +145,10 @@ struct SettingsView: View {
             }
         }
         .sheet(isPresented: $showAddCustom) {
-            AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id))) { profile in
+            AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id)),
+                                knownProcessNames: AgentRegistry.fullRegistry()
+                                    .flatMap(\.processNames)
+                                    .map { $0.lowercased() }) { profile in
                 addCustom(profile)
             }
         }
@@ -359,6 +362,8 @@ struct CustomAgentRowView: View {
 struct AddCustomAgentSheet: View {
     @Environment(\.dismiss) private var dismiss
     let existingIDs: Set<String>
+    /// 内置 + 自动发现 + 已存自定义的全部进程名（小写），用于冲突提示
+    let knownProcessNames: [String]
     let onAdd: (AgentProfile) -> Void
 
     @State private var name = ""
@@ -379,11 +384,17 @@ struct AddCustomAgentSheet: View {
         let id = "custom-\(trimmed.lowercased().replacingOccurrences(of: " ", with: "-"))"
         return existingIDs.contains(id)
     }
+    /// 与内置/自动发现/已存自定义的进程名冲突（同一进程会被双份匹配计数）
+    private var nameConflict: Bool {
+        let trimmed = processName.trimmingCharacters(in: .whitespaces).lowercased()
+        return !trimmed.isEmpty && knownProcessNames.contains(trimmed)
+    }
     private var canAdd: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty
             && !processName.trimmingCharacters(in: .whitespaces).isEmpty
             && !processNameInvalid
             && !duplicateID
+            && !nameConflict
     }
 
     var body: some View {
@@ -400,6 +411,10 @@ struct AddCustomAgentSheet: View {
                     .foregroundColor(Theme.dangerRed)
             } else if duplicateID {
                 Text("该进程已存在自定义条目")
+                    .font(Theme.bodyFont(10))
+                    .foregroundColor(Theme.dangerRed)
+            } else if nameConflict {
+                Text("该进程名已被内置/自动发现条目使用（会重复计数）")
                     .font(Theme.bodyFont(10))
                     .foregroundColor(Theme.dangerRed)
             }
