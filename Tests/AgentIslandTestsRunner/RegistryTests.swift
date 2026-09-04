@@ -85,5 +85,20 @@ enum RegistryTests {
                 try expectEqual(decoded ?? ["sentinel"], [], "空数组应解码为空集（无记录才算默认）")
             }
         }
+
+        TestKit.test("引擎: bundle 命中但进程名未匹配 → 标记运行且 CPU=0（[pid:-1] 占位）") {
+            // 回归：sampleCore 单趟 matchingEntries 后 running/cpu 语义等价性
+            //（阿剩测试缺口）——bundleHit 无名字匹配应返回占位条目
+            let provider = FakeProcessProvider(processNames: ["some-other-app"],
+                                               bundleIDs: ["com.dimcode.app"])
+            let engine = ActivityEngine(profiles: AgentRegistry.builtin.filter { $0.id == "dim" },
+                                        config: EngineConfig(),
+                                        processMonitor: ProcessMonitor(provider: provider),
+                                        fileMonitor: FakeFileActivityProvider(writes: [:]))
+            let snaps = engine.sample(now: Date())
+            let dim = snaps.first { $0.id == "dim" }
+            try expectTrue(dim?.processRunning == true, "bundle 运行即 processRunning=true")
+            try expectEqual(dim?.cpuPercent ?? -1, 0, "无进程名匹配时 CPU 合计为 0")
+        }
     }
 }

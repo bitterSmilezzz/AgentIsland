@@ -54,7 +54,12 @@ struct SettingsView: View {
         }
         .frame(width: 480, height: 620)
         .background(Theme.parchment)
-        .onAppear(perform: loadState)
+        .onAppear {
+            // 打开设置页即重扫安装缓存（阿证低3：装新 CLI/App 后进设置页确认
+            // 是最常见场景，离线态下引擎低频刷新最长滞后 2 小时）
+            AgentRegistry.refreshInstalledCache()
+            loadState()
+        }
     }
 
     // MARK: 头部

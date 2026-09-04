@@ -125,6 +125,8 @@ public enum AgentRegistry {
     /// 已安装的 CLI 集合（小写命令名）
     /// 静态缓存：避免 fullRegistry/discoverCLI/refreshInstalled 各扫一遍；
     /// 运行期可 refreshInstalledCache() 重扫（阿剩低3：装新 CLI 不必重启 App）
+    /// 锁保护：refreshInstalledCache 可后台执行，读写都要加锁（阿证中1/阿剩N3）
+    private static let installedLock = NSLock()
     public private(set) static var cachedInstalledCLIs: Set<String> = Self.scanInstalledCLIs()
 
     private static func scanInstalledCLIs() -> Set<String> {
@@ -145,7 +147,11 @@ public enum AgentRegistry {
         return found
     }
 
-    public static func installedCLIs() -> Set<String> { cachedInstalledCLIs }
+    public static func installedCLIs() -> Set<String> {
+        installedLock.lock()
+        defer { installedLock.unlock() }
+        return cachedInstalledCLIs
+    }
 
     /// 已安装的 bundle id 集合（/Applications 枚举，小写）
     /// 静态缓存：一次扫描，全部消费方复用；运行期可 refreshInstalledCache() 重扫
@@ -168,12 +174,22 @@ public enum AgentRegistry {
         return found
     }
 
-    public static func installedBundleIDs() -> Set<String> { cachedInstalledBundleIDs }
+    public static func installedBundleIDs() -> Set<String> {
+        installedLock.lock()
+        defer { installedLock.unlock() }
+        return cachedInstalledBundleIDs
+    }
 
-    /// 运行期重扫安装缓存（面板展开/设置打开时调用，成本毫秒级）
+    /// 运行期重扫安装缓存（面板展开/设置打开时调用，成本毫秒级）。
+    /// 扫描本身可在任意线程执行；结果写回加锁（阿证中1：app 多时 plist 解析
+    /// 可达 30-100ms，不应占用主线程）
     public static func refreshInstalledCache() {
-        cachedInstalledCLIs = scanInstalledCLIs()
-        cachedInstalledBundleIDs = scanInstalledBundleIDs()
+        let clis = scanInstalledCLIs()
+        let bundles = scanInstalledBundleIDs()
+        installedLock.lock()
+        cachedInstalledCLIs = clis
+        cachedInstalledBundleIDs = bundles
+        installedLock.unlock()
     }
 
     /// 自动发现的额外 CLI profile（不在内置集里的 CLI，如 aider/gemini/windsurf）

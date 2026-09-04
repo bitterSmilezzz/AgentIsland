@@ -116,7 +116,7 @@ struct AgentDetailView: View {
                             Spacer(minLength: 0)
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                    .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                 }
@@ -297,14 +297,14 @@ struct SessionListView: View {
                 GeometryReader { geo in
                     ScrollView(.vertical, showsIndicators: true) {
                         // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行。
-                        // minHeight=视口高度：会话少（<5 条）时行间留白而不是整片底部玻璃
-                        //（阿菜中2）；会话多时内容超过视口，正常滚动
+                        // minHeight = 视口 - padding(10×2)：短内容不产生多余滚动（阿菜低1），
+                        // 行间留白而不是整片底部玻璃；会话多时内容超过视口，正常滚动
                         LazyVStack(spacing: 4) {
                             ForEach(sessions) { s in
                                 sessionRow(s)
                             }
                         }
-                        .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                        .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
                     }

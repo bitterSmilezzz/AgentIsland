@@ -46,7 +46,11 @@ public final class ActivityEngine: ObservableObject {
         fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
     }
 
+    private var running = false   // stop() 后阻止在飞回调重建定时器（阿剩N1）
+
     public func start() {
+        guard !running else { return }
+        running = true
         guard timer == nil else { return }
         // token 数据刷完后触发一次重采样（快照带上用量 + 卡片高度重算）
         tokenMonitor.onRefresh = { [weak self] in
@@ -57,6 +61,7 @@ public final class ActivityEngine: ObservableObject {
     }
 
     public func stop() {
+        running = false
         timer?.invalidate()
         timer = nil
         tokenMonitor.stop()
@@ -115,11 +120,21 @@ public final class ActivityEngine: ObservableObject {
 
     // MARK: - 安装检测（A4）
 
+    /// 只读快照：后台已重扫（refreshInstalledCache 在后台队列执行），这里仅加锁拷贝
     private func refreshInstalled() {
-        // 运行期重扫安装缓存（阿剩低3：运行中装新 CLI/App 不必重启即更新 installed 标记）
-        AgentRegistry.refreshInstalledCache()
         installedCLIs = AgentRegistry.installedCLIs()
         installedBundles = AgentRegistry.installedBundleIDs()
+    }
+
+    /// 后台重扫安装缓存（阿证中1：/Applications plist 解析可达 30-100ms，
+    /// 不应占用主线程；扫描与写回均带锁，可安全后台执行）
+    private func refreshInstalledInBackground() {
+        DispatchQueue.global(qos: .utility).async {
+            AgentRegistry.refreshInstalledCache()
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshInstalled()
+            }
+        }
     }
 
     private func isInstalled(_ profile: AgentProfile) -> Bool {
@@ -137,7 +152,9 @@ public final class ActivityEngine: ObservableObject {
     /// 手动触发一次采样（也用于测试与 --probe）
     /// 受 samplingInFlight 约束（阿证中1）：后台采样在飞时丢弃本次，
     /// 避免同步路径与后台采样并发导致 CPU 差分短暂失真 + 主线程瞬时开销；
-    /// 配置变更/启动等低频场景下丢弃一次无影响（下个周期自动补采）
+    /// 配置变更/启动等低频场景下丢弃一次无影响（下个周期自动补采）。
+    /// 不变量：samplingInFlight=true ⟺ 有在飞后台采样，且其必然走 sampleCore→
+    /// scheduleNext() 补调度，故丢弃分支返回 [] 不会造成采样停摆。
     @discardableResult
     public func sample(now: Date = Date()) -> [AgentSnapshot] {
         guard !samplingInFlight else { return [] }
@@ -169,12 +186,12 @@ public final class ActivityEngine: ObservableObject {
     @discardableResult
     private func sampleCore(matcher: ProcessMatcher, now: Date) -> [AgentSnapshot] {
         fileMonitor.scanAsync()
-        // 低频重扫安装缓存（阿剩低3：运行中装新 CLI/App 不必重启；
-        // 每 120 次采样 ≈ 2s 间隔下约每 4 分钟一次，毫秒级成本）
+        // 低频重扫安装缓存（阿剩低3：运行中装新 CLI/App 不必重启）；
+        // 后台执行避免主线程卡顿（阿证中1）。每 120 次采样在工作态 ≈ 每 4 分钟
         installedRefreshCounter += 1
         if installedRefreshCounter >= 120 {
             installedRefreshCounter = 0
-            refreshInstalled()
+            refreshInstalledInBackground()
         }
 
         var results: [AgentSnapshot] = []
@@ -250,6 +267,7 @@ public final class ActivityEngine: ObservableObject {
 
     /// 节电调度：有 working 快采样，闲置降频，全离线进一步拉大间隔（无 UI 需求）
     private func scheduleNext() {
+        guard running else { return }   // stop() 后在飞回调不再重建定时器（阿剩N1）
         timer?.invalidate()
         let interval: TimeInterval
         if anyWorking {
