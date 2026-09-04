@@ -124,11 +124,12 @@ public final class TokenUsageMonitor: @unchecked Sendable {
     }
 
     /// 暂停后台轮询（面板 docked 时无展示需求，省掉整条查询链路与 onRefresh 重采样）
+    /// 注意：不关闭连接（阿证中1：每次 expanded 重开 + 全表重扫产生 41.6% 尖峰；
+    /// 只读连接可长驻复用，SQLite 对同库持续写入安全）；stop() 才彻底清理
     public func pause() {
         guard timer != nil else { return }
         timer?.invalidate()
         timer = nil
-        closeConnectionsAsync()
     }
 
     /// 恢复后台轮询（面板 expanded 时），并立即刷新一次保证 UI 最新

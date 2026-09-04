@@ -55,9 +55,13 @@ struct SettingsView: View {
         .frame(width: 480, height: 620)
         .background(Theme.parchment)
         .onAppear {
-            // 打开设置页即重扫安装缓存（阿证低3：装新 CLI/App 后进设置页确认
-            // 是最常见场景，离线态下引擎低频刷新最长滞后 2 小时）
-            AgentRegistry.refreshInstalledCache()
+            // 打开设置页即重扫安装缓存（装新 CLI/App 后进设置页确认是最常见场景，
+            // 离线态下引擎低频刷新最长滞后 2 小时）。
+            // 后台执行避免 /Applications plist 扫描阻塞窗口首帧（阿证中1/阿菜/阿剩
+            // 三方同源：扫描 30-100ms 不应占用主线程）；loadState 读缓存不依赖扫描完成
+            DispatchQueue.global(qos: .utility).async {
+                AgentRegistry.refreshInstalledCache()
+            }
             loadState()
         }
     }

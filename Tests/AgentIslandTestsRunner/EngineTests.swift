@@ -180,6 +180,27 @@ enum EngineTests {
             let missing = "/nonexistent/agentisland-\(UUID().uuidString)"
             try expectNil(FileActivityMonitor.newestWrite(in: missing), "缺失目录")
         }
+
+        TestKit.test("引擎: stop 后 scheduleNext 不再重建定时器，start 可恢复采样") {
+            // 回归（阿剩低3）：stop() 置 running=false 后在飞回调不重建定时器；
+            // stop→start 重启后采样恢复工作
+            let now = Date()
+            let engine = makeEngine(
+                processNames: ["DimAgent"],
+                writes: [home + "/.dimcode/v2/data/sessions": now.addingTimeInterval(-5)]
+            )
+            engine.start()   // 启动采样
+            let first = engine.snapshots.first { $0.id == "dim" }?.level
+            try expectEqual(first, .working, "start 后应 working")
+            engine.stop()    // 停止
+            engine.sample(now: now)   // stop 后手动采样（模拟在飞回调），scheduleNext 不应重建定时器
+            // start 前 timer 应为 nil（stop 已灭，sample 不再重建）
+            try expectTrue(engine.timerIsNil, "stop 后 sample 不应重建定时器")
+            engine.start()   // 重启
+            let resumed = engine.snapshots.first { $0.id == "dim" }?.level
+            try expectEqual(resumed, .working, "重启后应恢复 working")
+            engine.stop()
+        }
     }
 
     // MARK: - 工具

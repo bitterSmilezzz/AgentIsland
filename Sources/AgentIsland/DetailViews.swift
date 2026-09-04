@@ -94,7 +94,7 @@ struct AgentDetailView: View {
                         if loading {
                             // 与 SessionListView 一致的居中 loading（阿菜低3）
                             HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-                                .frame(maxWidth: .infinity, minHeight: geo.size.height - 20)
+                                .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
                         } else {
                             // 统一垂直居中：内容短时居中消除贴顶留白（阿菜中1/2），
                             // 内容超过视口时 Spacer(minLength:0) 归零、贴顶正常滚动
@@ -305,7 +305,7 @@ struct SessionListView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                     }
                 }

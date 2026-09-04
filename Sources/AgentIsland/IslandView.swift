@@ -273,7 +273,7 @@ struct AgentRowView: View {
                 .padding(.vertical, 3)
                 .background(Capsule().fill(snapshot.level.color.opacity(0.16)))
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background(
             // 圆角与详情页模型/会话行统一为 Theme.radiusSm（阿菜低5）

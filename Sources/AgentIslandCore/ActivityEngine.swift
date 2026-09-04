@@ -25,6 +25,8 @@ public final class ActivityEngine: ObservableObject {
     public let tokenMonitor = TokenUsageMonitor()   // token 用量（expanded 时轮询，采样时取快照）
     private var lastWrites: [String: Date] = [:]   // dir -> 最近写入时间
     private var timer: Timer?
+    /// 测试观察点：定时器是否已创建（stop 后应为 nil）
+    var timerIsNil: Bool { timer == nil }
     private var samplingInFlight = false   // 后台采样进行中标志：丢弃重叠请求，防 CPU% 差分交错
     private var installedCLIs: Set<String> = []
     private var installedBundles: Set<String> = []
@@ -64,6 +66,7 @@ public final class ActivityEngine: ObservableObject {
         running = false
         timer?.invalidate()
         timer = nil
+        tokenMonitor.onRefresh = nil   // 停止后 in-flight token 刷新不再触发重采样（阿证低3）
         tokenMonitor.stop()
     }
 
