@@ -69,6 +69,9 @@ struct SettingsView: View {
                 AgentRegistry.refreshInstalledCache()
                 DispatchQueue.main.async {
                     installedScanVersion += 1
+                    // 设置页刷新后同步引擎时间戳（阿剩低3：markInstalledRefreshed 注释
+                    // 声称覆盖 AppContext 首刷/设置页两路径，之前只接了首刷一处）
+                    engine.markInstalledRefreshed()
                 }
             }
             loadState()
@@ -279,7 +282,8 @@ struct SettingsView: View {
     private static func formatSliderValue(_ v: Double, unit: String) -> String {
         let s = String(format: "%.1f", v)
         let trimmed = s.hasSuffix(".0") ? String(s.dropLast(2)) : s
-        return "\(trimmed) \(unit)"
+        // 单位不加空格：与详情卡 "7.3%" 口径统一（阿菜记录在案：'1 %' vs '7.3%'）
+        return "\(trimmed)\(unit)"
     }
 
     private func sliderRow(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double = 1, unit: String) -> some View {
@@ -342,6 +346,12 @@ struct SettingsView: View {
     }
 
     private func applyConfig() {
+        // cpuThreshold 自愈钳制 1...50：旧版持久化残留半值（0.5/1.5/2.5…）升级后
+        // thumb 被 slider range 钳制但 @AppStorage 值与引擎读值不钳（阿菜记录在案）；
+        // 这里直接写回 UserDefaults 一次清掉脏值，标签/引擎/持久化三者同步
+        if cpuThreshold < 1 || cpuThreshold > 50 {
+            cpuThreshold = min(max(cpuThreshold, 1), 50)
+        }
         // 参数钳制：sample ≤ idle（否则「闲置降频」逻辑反转）
         if sampleInterval > idleSampleInterval {
             sampleInterval = idleSampleInterval

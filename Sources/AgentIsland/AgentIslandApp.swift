@@ -35,7 +35,7 @@ final class AppContext {
             sampleInterval: ud.object(forKey: "sampleInterval") as? Double ?? 2.0,
             idleSampleInterval: ud.object(forKey: "idleSampleInterval") as? Double ?? 15.0,
             workingWindow: ud.object(forKey: "workingWindow") as? Double ?? 60.0,
-            cpuThreshold: ud.object(forKey: "cpuThreshold") as? Double ?? 1.0,
+            cpuThreshold: min(max((ud.object(forKey: "cpuThreshold") as? Double) ?? 1.0, 1.0), 50.0),
             activeSessionWindow: ud.object(forKey: "activeSessionWindow") as? Double ?? 600.0,
             collapseDelay: ud.object(forKey: "collapseDelay") as? Double ?? 0.5
         )
@@ -54,10 +54,12 @@ final class AppContext {
                 // cli-xxx，重启时旧缓存为空会导致该 CLI 被滤出引擎；这里补一次
                 // setEnabled 让其恢复监控）
                 guard let self else { return }
+                // 先标记已刷再 setEnabled（阿剩中：setEnabled 内部同步 sample → sampleCore
+                // 会检查 lastInstalledRefresh；顺序颠倒则双扫未根除）
+                self.engine.markInstalledRefreshed()
                 let registry = AgentRegistry.fullRegistry()
                 let enabled = AppContext.loadEnabledIDs(defaultRegistry: registry)
                 self.engine.setEnabled(enabled)
-                self.engine.markInstalledRefreshed()   // 避免引擎首采样再扫一次（阿剩低3）
             }
         }
     }

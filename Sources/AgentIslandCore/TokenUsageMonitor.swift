@@ -182,18 +182,27 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         let cutoffMs = Int64(Date().timeIntervalSince1970 - 86_400) * 1000
 
         var usage: [String: TokenUsage] = [:]
-        usage["dim"] = queryDimAgent(cutoffISO: cutoffISO)
-        usage["opencode"] = queryOpenCode(cutoffMs: cutoffMs)
+        // 文件缺失视为查询失败（阿剩中2）：跳过该源、保留旧 stamp 与旧值，
+        // 下次 refresh 因 stamp 不匹配仍会重查——失败结果不会被永久缓存成空数据
+        let dimExists = FileManager.default.fileExists(atPath: dimAgentDB)
+        let openCodeExists = FileManager.default.fileExists(atPath: openCodeDB)
+        if dimExists {
+            usage["dim"] = queryDimAgent(cutoffISO: cutoffISO)
+        }
+        if openCodeExists {
+            usage["opencode"] = queryOpenCode(cutoffMs: cutoffMs)
+        }
 
         let total = usage.values.reduce(TokenUsage(), +)
         // stamp 与结果同一把锁内原子更新（阿剩低：锁外写 stamp 会让并发
-        // refresh 交错时新结果配旧 stamp，显示短暂回退）
+        // refresh 交错时新结果配旧 stamp，显示短暂回退）；
+        // 仅更新查询成功的源（失败源保留旧 stamp，下次继续重查）
         lock.lock()
         _usage = usage.filter { !$0.value.isEmpty }
         _grandTotal = total
         lastUsage = _usage
-        lastDimStamp = dimStamp
-        lastOpenCodeStamp = openCodeStamp
+        if dimExists { lastDimStamp = dimStamp }
+        if openCodeExists { lastOpenCodeStamp = openCodeStamp }
         lock.unlock()
         if let onRefresh {
             Task { @MainActor in onRefresh() }
@@ -415,6 +424,9 @@ public final class TokenUsageMonitor: @unchecked Sendable {
             debugPrint("TokenUsage: open failed \(dbPath)")
             return nil
         }
+        // 降低瞬态 BUSY（阿剩中2）：只读连接遇到写锁立即返回 BUSY，
+        // 等待最多 1s 再失败，避免偶发把整次查询打成失败
+        sqlite3_busy_timeout(handle, 1000)
         dbConnections[dbPath] = handle
         dbInodes[dbPath] = currentInode(dbPath)
         return handle
