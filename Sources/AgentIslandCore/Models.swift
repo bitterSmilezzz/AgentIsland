@@ -106,7 +106,7 @@ public struct EngineConfig: Equatable {
                 workingWindow: TimeInterval = 60.0,
                 cpuThreshold: Double = 1.0,
                 activeSessionWindow: TimeInterval = 600.0,
-                collapseDelay: TimeInterval = 3.0,
+                collapseDelay: TimeInterval = 0.5,
                 minWorkingHold: TimeInterval = 10.0) {
         self.sampleInterval = sampleInterval
         self.idleSampleInterval = idleSampleInterval

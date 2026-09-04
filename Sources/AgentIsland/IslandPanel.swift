@@ -300,6 +300,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private func cancelPendingTasks() {
         collapseTask?.cancel()
+        // L2：peek 被取消（expand/拖动打断）时回退冷却，让同一 busy 边沿的提醒不被吞掉
+        if peekTask != nil {
+            lastPeekAt = .distantPast
+        }
         peekTask?.cancel()
         collapseTask = nil
         peekTask = nil

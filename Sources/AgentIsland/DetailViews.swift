@@ -322,6 +322,9 @@ struct SessionListView: View {
         .onHover { hovering in
             hoveredSessionID = hovering ? s.id : nil
         }
+        .onDisappear {
+            if hoveredSessionID == s.id { hoveredSessionID = nil }
+        }
         .onTapGesture {
             if let dir = s.directory {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dir))

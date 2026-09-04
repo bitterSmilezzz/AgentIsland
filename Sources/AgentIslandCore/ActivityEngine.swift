@@ -100,6 +100,9 @@ public final class ActivityEngine: ObservableObject {
     private func refreshWatchedDirs() {
         // 全量替换：当前启用的 profile 目录集合（移除自定义 agent 后其目录停止扫描）
         fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
+        // M5：清理已移除 profile 的滞回状态，防止长期累积
+        let activeIDs = Set(profiles.map(\.id))
+        workingSince = workingSince.filter { activeIDs.contains($0.key) }
     }
 
     // MARK: - 安装检测（A4）

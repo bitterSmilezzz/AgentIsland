@@ -56,6 +56,14 @@ public protocol ProcessProviding {
 
 public struct ProcessProvider: ProcessProviding {
 
+    /// Mach tick → 秒换算（rusage_info_v2 的 ri_user_time/ri_system_time 单位是 tick：
+    /// Apple Silicon 125/3 ns/tick，Intel 通常 1 ns/tick，必须经 timebase 换算）
+    private static let tickToSeconds: Double = {
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        return Double(tb.numer) / Double(tb.denom) / 1_000_000_000
+    }()
+
     /// 上次采样的 CPU 累计时间（pid → 秒），用于差分
     private final class CpuCache: @unchecked Sendable {
         var last: [Int32: Double] = [:]   // pid → ru_utime+ru_stime 累计秒
@@ -96,15 +104,17 @@ public struct ProcessProvider: ProcessProviding {
             }
             guard !path.isEmpty else { continue }
 
-            // 3) CPU 累计时间（rusage_info_v2：ri_user_time/ri_system_time 为微秒）
-            // 注意：proc_pid_rusage 把数据写入调用者缓冲区（rusage_info_t 只是类型伪装）
+            // 3) CPU 累计时间（rusage_info_v2）
+            // 注意：proc_pid_rusage 把数据写入调用者缓冲区（rusage_info_t 只是类型伪装）；
+            // ri_user_time/ri_system_time 是 Mach tick（Apple Silicon 125/3 ns/tick，
+            // Intel 通常 1ns/tick），必须先经 mach_timebase_info 换算再使用。
             var rusage = rusage_info_v2()
             let rc = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
                 let rebound = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: rusage_info_t?.self)
                 return proc_pid_rusage(pid, RUSAGE_INFO_V2, rebound)
             }
             let cpuTime: Double = rc == 0
-                ? (Double(rusage.ri_user_time) + Double(rusage.ri_system_time)) / 1_000_000
+                ? (Double(rusage.ri_user_time) + Double(rusage.ri_system_time)) * Self.tickToSeconds
                 : -1
 
             var cpuPercent = 0.0
@@ -141,31 +151,30 @@ public struct ProcessProvider: ProcessProviding {
 public struct ProcessMatcher {
     let snapshot: ProcessSnapshot
     let runningBundleIDs: Set<String>
-    /// 预计算缓存：profile.id → (小写 processNames, 小写 pathContains)，避免每条目重建 Set
+    /// 预计算缓存：profile.id → (小写 processNames, 小写 pathContains)
     private let profileSets: [String: (names: Set<String>, paths: Set<String>)]
 
-    public init(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>) {
+    public init(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>, profiles: [AgentProfile] = []) {
         self.snapshot = snapshot
         self.runningBundleIDs = runningBundleIDs
-        // 按需构建（profile 数量少，全量预计算便宜）
-        self.profileSets = [:]
+        // 构造时一次性预计算（profile 数量个位数，成本可忽略），彻底避免每次匹配重建 Set
+        var sets: [String: (names: Set<String>, paths: Set<String>)] = [:]
+        for p in profiles {
+            sets[p.id] = (
+                names: Set(p.processNames.map { $0.lowercased() }),
+                paths: Set(p.pathContains.map { $0.lowercased() })
+            )
+        }
+        self.profileSets = sets
     }
 
-    /// 惰性获取 profile 的小写匹配集（缓存）
+    /// 获取 profile 的小写匹配集（预计算缓存，未命中则现场构建）
     private func sets(for profile: AgentProfile) -> (names: Set<String>, paths: Set<String>) {
-        // ProcessMatcher 是值类型，这里用全局缓存按 id 共享
-        ProcessMatcher.cachedSets(for: profile)
-    }
-
-    private static var setCache: [String: (names: Set<String>, paths: Set<String>)] = [:]
-    private static func cachedSets(for profile: AgentProfile) -> (names: Set<String>, paths: Set<String>) {
-        if let c = setCache[profile.id] { return c }
-        let v = (
+        if let cached = profileSets[profile.id] { return cached }
+        return (
             names: Set(profile.processNames.map { $0.lowercased() }),
             paths: Set(profile.pathContains.map { $0.lowercased() })
         )
-        setCache[profile.id] = v
-        return v
     }
 
     /// 进程名前缀匹配（Q2：覆盖 Electron Helper / Helper (Renderer) 变体）

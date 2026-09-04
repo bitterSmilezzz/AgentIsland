@@ -43,8 +43,8 @@ public final class FileActivityMonitor: FileActivityProviding {
     private var cache: [String: Date] = [:]
     /// 活跃会话数缓存（后台扫描一并算好，主线程只读）
     private var sessionCounts: [String: Int] = [:]
-    /// 活跃会话判定窗口（引擎 config 同步进来）
-    public var activeSessionWindow: TimeInterval = 600
+    /// 活跃会话判定窗口（引擎 config 同步，经 setActiveSessionWindow 加锁写入）
+    private var activeSessionWindow: TimeInterval = 600
     private let lock = NSLock()
     private let scanQueue = DispatchQueue(label: "com.agentisland.filemonitor", qos: .utility)
     private var isScanning = false
@@ -66,7 +66,11 @@ public final class FileActivityMonitor: FileActivityProviding {
 
     public func replaceWatchedDirs(_ dirs: [String]) {
         lock.lock()
-        watchedDirs = Set(dirs)
+        let newSet = Set(dirs)
+        watchedDirs = newSet
+        // L6：清理不在新集合中的残留缓存（防止过期数据在集合变化后残留）
+        cache = cache.filter { newSet.contains($0.key) }
+        sessionCounts = sessionCounts.filter { newSet.contains($0.key) }
         lock.unlock()
     }
 
@@ -126,11 +130,14 @@ public final class FileActivityMonitor: FileActivityProviding {
         let window = activeSessionWindow
         lock.unlock()
 
+        // 单趟扫描：每目录一次遍历，同时产出最近写入时间 + 活跃会话数（M1 修复）
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
+        let now = Date()
         for dir in dirs {
-            fresh[dir] = Self.newestWrite(in: dir, maxDepth: maxDepth)
-            freshCounts[dir] = Self.activeSessionCount(in: [dir], window: window, now: Date())
+            let r = Self.scanTree(in: dir, maxDepth: maxDepth, window: window, now: now)
+            fresh[dir] = r.newest
+            freshCounts[dir] = r.activeSessions
         }
 
         lock.lock()
@@ -140,74 +147,32 @@ public final class FileActivityMonitor: FileActivityProviding {
         lock.unlock()
     }
 
-    /// 会话目录下的活跃会话数：一级子目录中「window 内存在文件写入」的数量
-    /// （目录 mtime 只在增删条目时变，不能反映文件内容写入，必须递归查文件 mtime）
-    /// 批量实现：用 enumerator 一次取一批，避免逐文件 syscall 风暴。
-    public static func activeSessionCount(in dirs: [String], window: TimeInterval, now: Date) -> Int {
-        var count = 0
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
-        for dir in dirs {
-            let url = URL(fileURLWithPath: dir)
-            guard let entries = try? FileManager.default.contentsOfDirectory(
-                at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { continue }
-            for entry in entries {
-                guard let v = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-                      v.isDirectory == true, v.isSymbolicLink != true else { continue }
-                if dirHasRecentWrite(entry.path, window: window, now: now) {
-                    count += 1
-                }
-            }
-        }
-        return count
+    public struct DirScanResult {
+        public let newest: Date?
+        public let activeSessions: Int
     }
 
-    /// 目录树内是否存在 window 内的文件写入（有限深度，找到即停）
-    static func dirHasRecentWrite(_ path: String, window: TimeInterval, now: Date, maxDepth: Int = 4) -> Bool {
-        let fm = FileManager.default
-        let url = URL(fileURLWithPath: path)
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
-        guard let en = fm.enumerator(at: url,
-                                     includingPropertiesForKeys: keys,
-                                     options: [.skipsHiddenFiles]) else { return false }
-        while let item = en.nextObject() as? URL {
-            guard en.level <= maxDepth else {
-                en.skipDescendants()
-                continue
-            }
-            guard let v = try? item.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]) else {
-                continue
-            }
-            if let date = v.contentModificationDate,
-               now.timeIntervalSince(date) <= window {
-                return true
-            }
-            if v.isDirectory == true, v.isSymbolicLink == true {
-                en.skipDescendants()   // 符号链接目录跳过，防循环
-            }
-        }
-        return false
-    }
-
-    /// 目录树内最近写入时间：目录 mtime 与递归子项 mtime 的最大值
-    /// 批量实现：FileManager.enumerator + 资源键（底层 getattrlistbulk 一次取一批，
-    /// 远快于逐文件 attributesOfItem 的 lstat/getxattr 风暴）。
-    public static func newestWrite(in dir: String, maxDepth: Int = 4) -> Date? {
+    /// 单趟全树扫描：最近写入时间 + window 内活跃的顶层子目录数（一次枚举完成）
+    /// 兼容两种 level 语义（根子项为 0 或 1）：动态记录首个目录层级作为「顶层」
+    public static func scanTree(in dir: String, maxDepth: Int = 4, window: TimeInterval, now: Date) -> DirScanResult {
         let fm = FileManager.default
         let url = URL(fileURLWithPath: dir)
         guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
               let dirDate = values.contentModificationDate else {
-            return nil
+            return DirScanResult(newest: nil, activeSessions: 0)
         }
         var newest = dirDate
+        var activeTops = Set<String>()
+        var topLevel: Int? = nil        // 首个目录条目的层级 = 顶层会话目录层级
+        var currentTop: String? = nil   // 当前所属顶层目录路径
 
         let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
         guard let en = fm.enumerator(at: url,
                                      includingPropertiesForKeys: keys,
                                      options: [.skipsHiddenFiles]) else {
-            return newest
+            return DirScanResult(newest: newest, activeSessions: 0)
         }
         while let item = en.nextObject() as? URL {
-            // level：根目录子项为 1，递归深度限制
             guard en.level <= maxDepth else {
                 en.skipDescendants()
                 continue
@@ -215,14 +180,41 @@ public final class FileActivityMonitor: FileActivityProviding {
             guard let v = try? item.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]) else {
                 continue
             }
+            let isDir = v.isDirectory == true
+            let isLink = v.isSymbolicLink == true
+            if isLink && isDir {
+                en.skipDescendants()   // 符号链接目录跳过，防循环
+                continue
+            }
             if let date = v.contentModificationDate, date > newest {
                 newest = date
             }
-            if v.isDirectory == true, v.isSymbolicLink == true {
-                en.skipDescendants()   // 符号链接目录跳过，防循环
+            if topLevel == nil, isDir {
+                topLevel = en.level
+            }
+            if let top = topLevel {
+                if en.level == top && isDir {
+                    currentTop = item.path
+                    // 顶层会话目录自身在窗口内有写入 → 活跃
+                    if let date = v.contentModificationDate, now.timeIntervalSince(date) <= window {
+                        activeTops.insert(item.path)
+                    }
+                } else if en.level > top {
+                    // 顶层目录内的任意写入 → 该会话活跃
+                    if let date = v.contentModificationDate,
+                       now.timeIntervalSince(date) <= window,
+                       let ct = currentTop {
+                        activeTops.insert(ct)
+                    }
+                }
             }
         }
-        return newest
+        return DirScanResult(newest: newest, activeSessions: activeTops.count)
+    }
+
+    /// 目录树内最近写入时间（测试/Selftest 兼容入口，基于单趟 scanTree）
+    public static func newestWrite(in dir: String, maxDepth: Int = 4) -> Date? {
+        scanTree(in: dir, maxDepth: maxDepth, window: 0, now: Date()).newest
     }
 }
 
