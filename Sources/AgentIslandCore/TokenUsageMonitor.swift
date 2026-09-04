@@ -121,12 +121,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
     public func stop() {
         timer?.invalidate()
         timer = nil
-        dbQueue.sync {
-            for (_, db) in dbConnections {
-                sqlite3_close(db)
-            }
-            dbConnections.removeAll()
-        }
+        closeConnectionsAsync()
     }
 
     /// 暂停后台轮询（面板 docked 时无展示需求，省掉整条查询链路与 onRefresh 重采样）
@@ -134,12 +129,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         guard timer != nil else { return }
         timer?.invalidate()
         timer = nil
-        dbQueue.sync {
-            for (_, db) in dbConnections {
-                sqlite3_close(db)
-            }
-            dbConnections.removeAll()
-        }
+        closeConnectionsAsync()
     }
 
     /// 恢复后台轮询（面板 expanded 时），并立即刷新一次保证 UI 最新
@@ -151,6 +141,17 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+    }
+
+    /// 异步关闭连接：不阻塞主线程（若详情页大查询在飞，等其自然结束；dbQueue 串行保证安全）
+    private func closeConnectionsAsync() {
+        dbQueue.async { [weak self] in
+            guard let self else { return }
+            for (_, db) in self.dbConnections {
+                sqlite3_close(db)
+            }
+            self.dbConnections.removeAll()
+        }
     }
 
     public func refreshAsync() {

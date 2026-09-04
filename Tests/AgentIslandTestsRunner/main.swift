@@ -7,6 +7,7 @@ import Foundation
 func runAllTests() -> Int32 {
     EngineTests.register()
     TokenUsageTests.register()
+    RegistryTests.register()
     return TestKit.runAll()
 }
 

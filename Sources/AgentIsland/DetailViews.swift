@@ -33,11 +33,13 @@ struct DetailHeader: View {
                     .font(Theme.bodyFont(12, weight: .semibold))
                     .foregroundColor(Theme.onDark)
                     .lineLimit(1)
+                    .help(title)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(Theme.monoFont(9))
                         .foregroundColor(Theme.onDarkFaint)
                         .lineLimit(1)
+                        .help(subtitle)
                 }
             }
             Spacer()

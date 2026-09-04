@@ -18,11 +18,11 @@ final class AppContext {
         return c
     }
 
-    /// 读取启停集合（设置界面持久化），无记录时用 defaultEnabled
+    /// 读取启停集合（设置界面持久化），无记录时用 defaultEnabled；
+    /// 注意：用户主动全关会存「空数组」，不能当作无记录回退默认
     private static func loadEnabledIDs(defaultRegistry: [AgentProfile]) -> Set<String> {
         if let data = UserDefaults.standard.data(forKey: "enabledAgents"),
-           let saved = try? JSONDecoder().decode([String].self, from: data),
-           !saved.isEmpty {
+           let saved = try? JSONDecoder().decode([String].self, from: data) {
             return Set(saved)
         }
         return Set(defaultRegistry.filter(\.defaultEnabled).map(\.id))

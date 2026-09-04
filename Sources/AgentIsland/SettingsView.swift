@@ -145,7 +145,7 @@ struct SettingsView: View {
             }
         }
         .sheet(isPresented: $showAddCustom) {
-            AddCustomAgentSheet { profile in
+            AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id))) { profile in
                 addCustom(profile)
             }
         }
@@ -212,12 +212,12 @@ struct SettingsView: View {
             Text(value.wrappedValue >= 10 ? "\(Int(value.wrappedValue)) \(unit)" : String(format: "%.1f \(unit)", value.wrappedValue))
                 .font(Theme.monoFont(11))
                 .foregroundColor(Theme.inkMuted48)
-            Slider(value: value, in: range, step: step)
+            // 拖动中只更新显示值，松手才 applyConfig——避免每帧重启采样定时器
+            Slider(value: value, in: range, step: step) { editing in
+                if !editing { applyConfig() }
+            }
                 .tint(Theme.actionBlue)
                 .frame(width: 120)
-        }
-        .onChange(of: value.wrappedValue) { _ in
-            applyConfig()
         }
     }
 
@@ -244,12 +244,13 @@ struct SettingsView: View {
     // MARK: - 状态同步
 
     private func loadState() {
-        // 启停集合
-        if let saved = try? JSONDecoder().decode([String].self, from: enabledAgentsData),
-           !saved.isEmpty {
+        // 启停集合：与引擎初始集一致（fullRegistry = 内置 + 自动发现 CLI + 自定义），
+        // 否则首次切换开关时 setEnabled 会把自动发现项静默移除。
+        // 注意：用户主动全关会存「空数组」，不算无记录，不能回退默认。
+        if let saved = try? JSONDecoder().decode([String].self, from: enabledAgentsData) {
             enabledAgents = Set(saved)
         } else {
-            enabledAgents = Set(AgentRegistry.builtin.filter(\.defaultEnabled).map(\.id))
+            enabledAgents = Set(AgentRegistry.fullRegistry().filter(\.defaultEnabled).map(\.id))
         }
         // 自定义条目
         customProfiles = AgentRegistry.loadCustomProfiles()
@@ -260,6 +261,10 @@ struct SettingsView: View {
     }
 
     private func applyConfig() {
+        // 参数钳制：sample ≤ idle（否则「闲置降频」逻辑反转）
+        if sampleInterval > idleSampleInterval {
+            sampleInterval = idleSampleInterval
+        }
         engine.config.sampleInterval = sampleInterval
         engine.config.idleSampleInterval = idleSampleInterval
         engine.config.workingWindow = workingWindow
@@ -353,12 +358,33 @@ struct CustomAgentRowView: View {
 
 struct AddCustomAgentSheet: View {
     @Environment(\.dismiss) private var dismiss
+    let existingIDs: Set<String>
     let onAdd: (AgentProfile) -> Void
 
     @State private var name = ""
     @State private var icon = "terminal"
     @State private var processName = ""
     @State private var sessionDir = ""
+
+    /// 进程名白名单：字母数字 + 下划线/连字符/点（ps 命令名合法字符集）
+    private static let procNameChars = CharacterSet.alphanumerics
+        .union(CharacterSet(charactersIn: "_-."))
+    private var processNameInvalid: Bool {
+        let trimmed = processName.trimmingCharacters(in: .whitespaces)
+        return !trimmed.isEmpty
+            && trimmed.unicodeScalars.contains { !Self.procNameChars.contains($0) }
+    }
+    private var duplicateID: Bool {
+        let trimmed = processName.trimmingCharacters(in: .whitespaces)
+        let id = "custom-\(trimmed.lowercased().replacingOccurrences(of: " ", with: "-"))"
+        return existingIDs.contains(id)
+    }
+    private var canAdd: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+            && !processName.trimmingCharacters(in: .whitespaces).isEmpty
+            && !processNameInvalid
+            && !duplicateID
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -368,6 +394,15 @@ struct AddCustomAgentSheet: View {
 
             field("显示名", text: $name, placeholder: "例如：内部 QA Agent")
             field("进程名", text: $processName, placeholder: "例如：qa-agent（ps 里的命令名）")
+            if processNameInvalid {
+                Text("进程名含非法字符（仅允许字母、数字、_ - .）")
+                    .font(Theme.bodyFont(10))
+                    .foregroundColor(Theme.dangerRed)
+            } else if duplicateID {
+                Text("该进程已存在自定义条目")
+                    .font(Theme.bodyFont(10))
+                    .foregroundColor(Theme.dangerRed)
+            }
             field("会话目录", text: $sessionDir, placeholder: "可选，例如：~/workspace/qa/sessions")
 
             HStack {
@@ -377,7 +412,6 @@ struct AddCustomAgentSheet: View {
                 Button("添加") {
                     let trimmedName = name.trimmingCharacters(in: .whitespaces)
                     let trimmedProc = processName.trimmingCharacters(in: .whitespaces)
-                    guard !trimmedName.isEmpty, !trimmedProc.isEmpty else { return }
                     let id = "custom-\(trimmedProc.lowercased().replacingOccurrences(of: " ", with: "-"))"
                     let dirs = sessionDir.isEmpty
                         ? []
@@ -396,8 +430,7 @@ struct AddCustomAgentSheet: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.actionBlue)
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
-                          || processName.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!canAdd)
             }
         }
         .padding(24)

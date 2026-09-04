@@ -199,6 +199,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 注意：controller 可能在 SwiftUI 场景求值阶段被创建，那时 NSScreen 未就绪、
         // placeWindow 会静默失败；这里强制重新定位一次。
         displayState = .docked
+        engine.tokenMonitor.pause()   // 初始 docked：sink 不触发 removeDuplicates，需显式暂停
         updateWindowChrome(docked: true)
         placeWindow(size: dockedSize, animated: false)
         panel.orderFrontRegardless()
