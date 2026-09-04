@@ -123,7 +123,8 @@ public enum AgentRegistry {
     ]
 
     /// 已安装的 CLI 集合（小写命令名）
-    public static func installedCLIs() -> Set<String> {
+    /// 静态缓存：应用生命周期内 PATH/安装基本不变，避免 fullRegistry/discoverCLI/refreshInstalled 各扫一遍
+    public static let cachedInstalledCLIs: Set<String> = {
         var found = Set<String>()
         let pathDirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
             .split(separator: ":").map(String.init)
@@ -137,10 +138,13 @@ public enum AgentRegistry {
             }
         }
         return found
-    }
+    }()
+
+    public static func installedCLIs() -> Set<String> { cachedInstalledCLIs }
 
     /// 已安装的 bundle id 集合（/Applications 枚举，小写）
-    public static func installedBundleIDs() -> Set<String> {
+    /// 静态缓存：一次扫描，全部消费方复用
+    public static let cachedInstalledBundleIDs: Set<String> = {
         var found = Set<String>()
         let fm = FileManager.default
         let appsDir = URL(fileURLWithPath: "/Applications")
@@ -155,7 +159,9 @@ public enum AgentRegistry {
             }
         }
         return found
-    }
+    }()
+
+    public static func installedBundleIDs() -> Set<String> { cachedInstalledBundleIDs }
 
     /// 自动发现的额外 CLI profile（不在内置集里的 CLI，如 aider/gemini/windsurf）
     public static func discoverCLIProfiles() -> [AgentProfile] {

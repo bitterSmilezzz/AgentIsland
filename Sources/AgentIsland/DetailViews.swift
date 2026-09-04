@@ -24,6 +24,7 @@ struct DetailHeader: View {
                     .frame(width: 28, height: 28)
                     .background(Circle().fill(backHovered ? Theme.hoverFill : Theme.chipFill))
                     .contentShape(Circle())
+                    .help("返回")
             }
             .buttonStyle(.plain)
             .onHover { backHovered = $0 }
@@ -82,7 +83,7 @@ struct AgentDetailView: View {
 
             Divider().overlay(Theme.onDark.opacity(0.12))
 
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 10) {
                     if loading {
                         HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
@@ -103,6 +104,7 @@ struct AgentDetailView: View {
         .task(id: agentId) {
             loading = true
             models = []
+            modelHoveredID = nil   // 数据刷新时清除残留 hover 高亮
             let token = UUID()   // 代际标记：防止旧查询结果覆盖已切换的新页面
             queryToken = token
             engine.tokenMonitor.modelBreakdown(agentId: agentId) { rows in
@@ -255,7 +257,7 @@ struct SessionListView: View {
 
             Divider().overlay(Theme.onDark.opacity(0.12))
 
-            ScrollView(.vertical, showsIndicators: false) {
+            ScrollView(.vertical, showsIndicators: true) {
                 VStack(spacing: 4) {
                     if loading {
                         HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
@@ -305,6 +307,8 @@ struct SessionListView: View {
                 Text(timeText)
                     .font(Theme.monoFont(10, weight: .semibold))
                     .foregroundColor(hasDir ? Theme.onDark : Theme.onDark.opacity(0.55))
+                    .lineLimit(1)
+                    .help(s.directory ?? s.sessionId)
                 Text(detail)
                     .font(Theme.monoFont(9))
                     .foregroundColor(Theme.onDarkFaint)

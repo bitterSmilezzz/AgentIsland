@@ -96,6 +96,14 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
             lastWall = t
             lock.unlock()
         }
+
+        /// 裁剪已退出进程：只保留本次采样仍存在的 pid，防止长期运行内存线性增长
+        func prune(keeping alivePids: Set<Int32>) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard last.count > alivePids.count * 2 else { return }   // 脏数据量小则跳过
+            last = last.filter { alivePids.contains($0.key) }
+        }
     }
     private let cache = CpuCache()
 
@@ -113,12 +121,15 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         guard got > 0 else { return ProcessSnapshot(entries: []) }
 
         var entries: [ProcessSnapshot.Entry] = []
+        var alivePids = Set<Int32>()
+        alivePids.reserveCapacity(Int(got))
         let pidCount = Int(got)
         let pathBufSize = 4096   // 足够容纳最长可执行路径（PROC_PIDPATHINFO_MAXSIZE ≈ 4KB）
 
         for i in 0..<pidCount {
             let pid = pids[i]
             guard pid > 0 else { continue }
+            alivePids.insert(pid)
 
             // 2) 完整可执行路径
             var pathBuf = [CChar](repeating: 0, count: pathBufSize)
@@ -151,6 +162,7 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         }
 
         cache.setWall(now)
+        cache.prune(keeping: alivePids)
         return ProcessSnapshot(entries: entries)
     }
 
@@ -255,8 +267,10 @@ public struct ProcessMatcher: @unchecked Sendable {
 }
 
 // MARK: - 兼容封装（引擎用）
+// @unchecked Sendable：snapshot()（libproc）可后台执行；NSWorkspace 访问
+// （runningBundleIDs）须主线程，外部已拆分为「主线程抓 bundle + 后台快照」两段
 
-public struct ProcessMonitor {
+public struct ProcessMonitor: @unchecked Sendable {
     public let provider: ProcessProviding
 
     public init(provider: ProcessProviding = ProcessProvider()) {
@@ -270,6 +284,21 @@ public struct ProcessMonitor {
     /// 快照 + bundle 一次性获取（引擎每采样调一次）
     public func matcher() -> ProcessMatcher {
         ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs())
+    }
+
+    /// 仅进程快照（可后台执行；libproc 无 UI 依赖）
+    public func snapshot() -> ProcessSnapshot {
+        provider.snapshot()
+    }
+
+    /// 仅运行中的 GUI bundle ids（须主线程：内部用 NSWorkspace，无线程安全保证）
+    public func runningBundleIDs() -> Set<String> {
+        provider.runningBundleIDs()
+    }
+
+    /// 后台快照 + 主线程 bundle 组装 matcher（避免 NSWorkspace 后台访问）
+    public func matcher(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>) -> ProcessMatcher {
+        ProcessMatcher(snapshot: snapshot, runningBundleIDs: runningBundleIDs)
     }
 }
 

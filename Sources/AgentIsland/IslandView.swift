@@ -109,7 +109,8 @@ struct IslandView: View {
 
     private var dockedSliver: some View {
         Capsule()
-            .fill(Color.black.opacity(engine.anyWorking ? (isLight ? 0.50 : 0.85) : (isLight ? 0.22 : 0.55)))
+            // 浅色模式主体加深：5pt 细条在亮壁纸上 0.22 几乎不可见，0.34 起才稳定可见
+            .fill(Color.black.opacity(engine.anyWorking ? (isLight ? 0.55 : 0.85) : (isLight ? 0.34 : 0.55)))
             .overlay(alignment: .leading) {
                 // 忙碌时左侧一粒绿点（细条内的微状态提示）
                 if engine.anyWorking {
@@ -120,7 +121,7 @@ struct IslandView: View {
                 }
             }
             .overlay(Capsule().strokeBorder(
-                Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.18), lineWidth: 0.5))
+                Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.22), lineWidth: 0.5))
             .frame(width: 176, height: 5)
             .contentShape(Capsule())
             // 点击细条兜底展开（悬停通常已展开；防止 mouseMoved 事件被系统吞掉时无响应）
@@ -176,7 +177,7 @@ struct IslandView: View {
                         .foregroundColor(Theme.onDarkFaint)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 28)
+                .padding(.vertical, 22)
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 2) {
@@ -245,6 +246,8 @@ struct AgentRowView: View {
                 Text(snapshot.profile.name)
                     .font(Theme.bodyFont(12, weight: .semibold))
                     .foregroundColor(Theme.onDark)
+                    .lineLimit(1)
+                    .help(snapshot.profile.name)
                 HStack(spacing: 6) {
                     // Token 徽标：24h 净消耗 + 花费（有数据才显示）
                     if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
@@ -299,19 +302,25 @@ struct TokenSummaryBar: View {
             Text("Token 24h \(TokenUsage.compact(total.tokens24h))")
                 .font(Theme.monoFont(10, weight: .semibold))
                 .foregroundColor(Theme.onDark.opacity(0.85))
+                .lineLimit(1)
+                .help("24h Token 用量")
             if let cost = cost24hText {
                 Text(cost)
                     .font(Theme.monoFont(10))
                     .foregroundColor(Theme.onDarkFaint)
+                    .lineLimit(1)
             }
             Spacer()
             Text("累计 \(TokenUsage.compact(total.tokensTotal))")
                 .font(Theme.monoFont(10))
                 .foregroundColor(Theme.onDarkFaint)
+                .lineLimit(1)
+                .help("累计 Token 用量")
             if !TokenUsage.cost(total.costTotal).isEmpty {
                 Text(TokenUsage.cost(total.costTotal))
                     .font(Theme.monoFont(10))
                     .foregroundColor(Theme.onDarkFaint)
+                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 14)

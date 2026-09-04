@@ -187,6 +187,14 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard !didShowOnce else { return }
         didShowOnce = true
         startTopZoneMonitor()
+        // 事件驱动补充：启动时鼠标可能已静止在热区（无 mouseMoved 事件），补一次评估；
+        // 屏幕拓扑变化（插拔外接屏）后光标位置可能跳变，同样补一次
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screenConfigChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        Task { @MainActor [weak self] in
+            self?.evaluateTopZone()
+        }
         // E3：细条始终保留 —— 启动即 docked
         // 注意：controller 可能在 SwiftUI 场景求值阶段被创建，那时 NSScreen 未就绪、
         // placeWindow 会静默失败；这里强制重新定位一次。
@@ -194,6 +202,18 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         updateWindowChrome(docked: true)
         placeWindow(size: dockedSize, animated: false)
         panel.orderFrontRegardless()
+    }
+
+    @objc private func screenConfigChanged() {
+        Task { @MainActor [weak self] in
+            self?.evaluateTopZone()
+        }
+    }
+
+    deinit {
+        if let m = mouseLocalMonitor { NSEvent.removeMonitor(m) }
+        if let m = mouseGlobalMonitor { NSEvent.removeMonitor(m) }
+        NotificationCenter.default.removeObserver(self)
     }
 
     /// 手动切换（菜单栏命令）：细条 ↔ 卡片
@@ -231,10 +251,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private func startTopZoneMonitor() {
         guard mouseLocalMonitor == nil else { return }
+        // local monitor 回调在主线程，直接节流评估，不再每事件 spawn Task
         mouseLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.onMouseMoved()
-            }
+            self?.onMouseMoved()
             return event
         }
         // global monitor 回调在后台线程，需 hop 回主线程
@@ -326,11 +345,12 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     private func cancelPendingTasks() {
-        collapseTask?.cancel()
-        // L2：peek 被取消（expand/拖动打断）时回退冷却，让同一 busy 边沿的提醒不被吞掉
-        if peekTask != nil {
-            lastPeekAt = .distantPast
+        // peek 中断时先把窗口拉回细条原始位置，避免从「下探 11pt」起跳展开
+        if let restore = peekRestoreFrame {
+            panel?.setFrame(restore, display: false)
+            peekRestoreFrame = nil
         }
+        collapseTask?.cancel()
         peekTask?.cancel()
         collapseTask = nil
         peekTask = nil
@@ -340,15 +360,18 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     /// peek 冷却：30s 内最多弹一次（防 working↔idle 抖动时细条连续弹跳）
     private var lastPeekAt: Date = .distantPast
+    /// peek 开始时的窗口 frame（中断时恢复用）
+    private var peekRestoreFrame: NSRect?
 
     private func peek() {
         guard displayState == .docked, peekTask == nil else { return }
         guard Date().timeIntervalSince(lastPeekAt) >= 30 else { return }
         lastPeekAt = Date()
         peekTask = Task { [weak self] in
-            defer { self?.peekTask = nil }
+            defer { self?.peekTask = nil; self?.peekRestoreFrame = nil }
             guard let self, let panel = self.panel else { return }
             let frame = panel.frame
+            self.peekRestoreFrame = frame
             // 下滑 11pt 再收回（顶边固定锚点视觉：整体下探）
             let down = NSRect(x: frame.origin.x, y: frame.origin.y - 11,
                               width: frame.width, height: frame.height + 11)
@@ -378,10 +401,12 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         switch state {
         case .docked:
             route = .list   // 收起时重置导航
+            engine.tokenMonitor.pause()   // 细条态无展示需求，暂停 60s 轮询省电
             updateWindowChrome(docked: true)
             panel.orderFrontRegardless()
             placeWindow(size: dockedSize, animated: true)
         case .expanded:
+            engine.tokenMonitor.resume()   // 展开即恢复轮询并立即刷新
             updateWindowChrome(docked: false)
             panel.orderFrontRegardless()
             placeWindow(size: sizeForState(), animated: true)
@@ -455,6 +480,11 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private func expandedHeight() -> CGFloat {
         switch route {
         case .list:
+            if visibleCount() == 0 {
+                // 空态：zzz 图标 + 文案 + padding ≈ 84pt，窗口高度需匹配否则底部被裁
+                let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : 25
+                return min(12 + 43 + 1 + 84 + summaryBar + 6, expandedMaxHeight)
+            }
             let count = max(visibleCount(), 1)
             let listHeight = min(CGFloat(count) * 44 + 12, 312)
             let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : 25
@@ -486,8 +516,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             cx = visible.midX
             topY = visible.maxY - 1   // 细条贴菜单栏下缘
         }
-        // 钳制不出屏
-        if let screen = Self.screenContainingMouse() {
+        // 钳制不出屏：基于「面板当前所在屏」而非鼠标所在屏，
+        // 避免细条停在 A 屏、鼠标在 B 屏触顶时窗口跨屏长距离滑动
+        if let screen = panel.screen ?? Self.screenContainingMouse() {
             let visible = screen.visibleFrame
             cx = min(max(cx, visible.minX + size.width / 2), visible.maxX - size.width / 2)
             topY = min(max(topY, visible.minY + size.height), visible.maxY - 1)
@@ -495,14 +526,27 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         let target = NSRect(x: cx - size.width / 2, y: topY - size.height,
                             width: size.width, height: size.height)
         if animated {
+            let duration: TimeInterval = 0.42   // 与内容 spring(response: 0.42) 对齐
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.38
+                context.duration = duration
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 panel.animator().setFrame(target, display: true)
             }
+            animateCornerRadius(duration: duration)
         } else {
             panel.setFrame(target, display: false)
         }
+    }
+
+    /// 圆角跟随 frame 动画插值（避免 docked↔expanded 圆角跳变：2.5 ↔ 18pt）
+    private func animateCornerRadius(duration: CFTimeInterval) {
+        guard let layer = clipContainer?.layer else { return }
+        let anim = CABasicAnimation(keyPath: "cornerRadius")
+        anim.fromValue = layer.presentation()?.cornerRadius ?? layer.cornerRadius
+        anim.toValue = layer.cornerRadius
+        anim.duration = duration
+        anim.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(anim, forKey: "cornerRadiusAnim")
     }
 
     private func syncExpandedHeight() {

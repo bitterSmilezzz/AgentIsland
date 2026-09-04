@@ -78,7 +78,8 @@ extension String {
     var escaped: String { replacingOccurrences(of: "'", with: "''") }
 }
 
-public final class TokenUsageMonitor {
+/// @unchecked Sendable：全部可变状态由 NSLock + dbQueue 串行队列保护，可跨线程调用
+public final class TokenUsageMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private var _usage: [String: TokenUsage] = [:]   // agentId → 用量
     private var _grandTotal = TokenUsage()
@@ -109,7 +110,7 @@ public final class TokenUsageMonitor {
 
     public func start(interval: TimeInterval = 60.0) {
         guard timer == nil else { return }
-        refreshAsync()   // 先刷一次，避免 UI 空数据
+        refreshAsync()   // 先刷一次，主卡汇总栏启动即有数据
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.refreshAsync()
         }
@@ -126,6 +127,30 @@ public final class TokenUsageMonitor {
             }
             dbConnections.removeAll()
         }
+    }
+
+    /// 暂停后台轮询（面板 docked 时无展示需求，省掉整条查询链路与 onRefresh 重采样）
+    public func pause() {
+        guard timer != nil else { return }
+        timer?.invalidate()
+        timer = nil
+        dbQueue.sync {
+            for (_, db) in dbConnections {
+                sqlite3_close(db)
+            }
+            dbConnections.removeAll()
+        }
+    }
+
+    /// 恢复后台轮询（面板 expanded 时），并立即刷新一次保证 UI 最新
+    public func resume(interval: TimeInterval = 60.0) {
+        guard timer == nil else { return }
+        refreshAsync()
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            self?.refreshAsync()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     public func refreshAsync() {

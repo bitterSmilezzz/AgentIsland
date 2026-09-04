@@ -22,9 +22,10 @@ public final class ActivityEngine: ObservableObject {
     private var profiles: [AgentProfile]
     private let processMonitor: ProcessMonitor
     private let fileMonitor: FileActivityProviding
-    public let tokenMonitor = TokenUsageMonitor()   // token 用量（60s 后台轮询，采样时取快照）
+    public let tokenMonitor = TokenUsageMonitor()   // token 用量（expanded 时轮询，采样时取快照）
     private var lastWrites: [String: Date] = [:]   // dir -> 最近写入时间
     private var timer: Timer?
+    private var samplingInFlight = false   // 后台采样进行中标志：丢弃重叠请求，防 CPU% 差分交错
     private var installedCLIs: Set<String> = []
     private var installedBundles: Set<String> = []
     /// 滞回：CPU 信号瞬时抖动时保持 working 的最短时长（防 peek 高频弹跳）
@@ -103,6 +104,9 @@ public final class ActivityEngine: ObservableObject {
         // M5：清理已移除 profile 的滞回状态，防止长期累积
         let activeIDs = Set(profiles.map(\.id))
         workingSince = workingSince.filter { activeIDs.contains($0.key) }
+        // 目录级缓存同步清理：移除 agent 后其会话目录的最近写入时间不再保留
+        let activeDirs = Set(profiles.flatMap(\.sessionDirs))
+        lastWrites = lastWrites.filter { activeDirs.contains($0.key) }
     }
 
     // MARK: - 安装检测（A4）
@@ -133,12 +137,18 @@ public final class ActivityEngine: ObservableObject {
     /// 定时采样入口：进程遍历（proc_listpids/proc_pidpath，开销毫秒级）在后台执行，
     /// 主线程只做装配与发布，避免与动画抢主线程。文件扫描/会话数/token 均为缓存读取。
     func sampleInBackground() {
+        guard !samplingInFlight else { return }   // 丢弃重叠请求（onRefresh 与 Timer 可能相邻）
+        samplingInFlight = true
         let monitor = processMonitor
+        // NSWorkspace 必须主线程访问（无线程安全保证），先抓 bundle 集合
+        let bundleIDs = monitor.runningBundleIDs()
         DispatchQueue.global(qos: .utility).async {
-            let matcher = monitor.matcher()
+            let snapshot = monitor.snapshot()
             Task { @MainActor [weak self] in
+                defer { self?.samplingInFlight = false }
                 guard let self else { return }
-                self.sampleCore(matcher: matcher, now: Date())
+                self.sampleCore(matcher: monitor.matcher(snapshot: snapshot, runningBundleIDs: bundleIDs),
+                                now: Date())
             }
         }
     }
@@ -215,10 +225,17 @@ public final class ActivityEngine: ObservableObject {
         return counts.values.reduce(0, +)
     }
 
-    /// 节电调度：有 working 快采样，全闲置降频
+    /// 节电调度：有 working 快采样，闲置降频，全离线进一步拉大间隔（无 UI 需求）
     private func scheduleNext() {
         timer?.invalidate()
-        let interval = anyWorking ? config.sampleInterval : config.idleSampleInterval
+        let interval: TimeInterval
+        if anyWorking {
+            interval = config.sampleInterval
+        } else if snapshots.contains(where: { $0.processRunning }) {
+            interval = config.idleSampleInterval
+        } else {
+            interval = max(config.idleSampleInterval, 60)   // 全离线：60s 起
+        }
         let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.sampleInBackground()

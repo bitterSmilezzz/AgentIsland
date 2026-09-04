@@ -66,7 +66,8 @@ enum Theme {
     static let onDarkFaint = Color(dynamicLight: 0x6e6e73, dark: 0x8e8e93)     // 弱化（浅色≥4.5:1）
 
     // 悬停/按压蒙层（浅色下用黑低透明，深色下用白低透明）
-    static let hoverFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.08)
+    // hoverFill 需要明显强于 chipFill（≥2x），否则 hover 反馈肉眼不可辨
+    static let hoverFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16)
     static let chipFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.07)
     static let cardFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.05)
 
