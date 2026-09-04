@@ -62,7 +62,7 @@ enum EngineTests {
         TestKit.test("引擎: 新写入出现 → 状态升级为 working") {
             let now = Date()
             let dir = home + "/.dimcode/v2/data/sessions"
-            var provider = FakeFileActivityProvider(writes: [dir: now.addingTimeInterval(-300)])
+            let provider = FakeFileActivityProvider(writes: [dir: now.addingTimeInterval(-300)])
             let engine = ActivityEngine(
                 profiles: AgentRegistry.builtin,
                 config: EngineConfig(workingWindow: 20),

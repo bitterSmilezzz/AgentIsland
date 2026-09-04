@@ -164,7 +164,10 @@ struct SettingsView: View {
             }
 
             ForEach(Array(customProfiles), id: \.id) { profile in
-                CustomAgentRowView(profile: profile, onRemove: { removeCustom(profile) })
+                // 自定义项可单独启停（阿剩中2：之前只能删了重加，暂停监控会丢数据）
+                CustomAgentRowView(profile: profile,
+                                   isEnabled: binding(for: profile),
+                                   onRemove: { removeCustom(profile) })
             }
         }
         .sheet(isPresented: $showAddCustom) {
@@ -386,6 +389,7 @@ struct SettingsView: View {
 
 struct CustomAgentRowView: View {
     let profile: AgentProfile
+    let isEnabled: Binding<Bool>
     let onRemove: () -> Void
 
     var body: some View {
@@ -401,6 +405,11 @@ struct CustomAgentRowView: View {
                 .foregroundColor(Theme.inkMuted48)
                 .lineLimit(1)
             Spacer()
+            // 启用开关：binding(for:) → enabledAgents + engine.setEnabled（统一路径）
+            Toggle("", isOn: isEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(Theme.actionBlue)
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash")
             }

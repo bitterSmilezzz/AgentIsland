@@ -131,13 +131,13 @@ public final class FileActivityMonitor: FileActivityProviding {
             lock.unlock()
             return
         }
-        // 节流：距上次扫描不足最小间隔则跳过（引擎 2s 采样时扫描只按 3s 节奏跑）
+        // 节流：距上次扫描完成不足最小间隔则跳过。
+        // 用「完成时间」而非开始时间（阿剩低3：若单趟耗时 ≥ 间隔，按开始计时会连续重扫）
         guard Date().timeIntervalSince(lastScanAt) >= scanMinInterval else {
             lock.unlock()
             return
         }
         isScanning = true
-        lastScanAt = Date()
         let dirs = Array(watchedDirs)
         let window = activeSessionWindow
         lock.unlock()
@@ -184,6 +184,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         cache = fresh.filter { current.contains($0.key) }
         sessionCounts = freshCounts.filter { current.contains($0.key) }
         isScanning = false
+        lastScanAt = Date()   // 记录完成时间（节流基准）
         lock.unlock()
     }
 

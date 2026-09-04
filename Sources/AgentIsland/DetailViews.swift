@@ -88,24 +88,34 @@ struct AgentDetailView: View {
             Divider().overlay(Theme.onDark.opacity(0.12))
 
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 10) {
-                    if loading {
-                        HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 60)
-                    } else if let usage, !usage.isEmpty {
-                        overviewCard(usage)
-                        if !models.isEmpty { modelList }
-                    } else {
-                        // 无 token 数据：内容短，垂直居中避免大片空白玻璃（阿菜低3）
-                        Spacer(minLength: 0)
-                        basicInfoCard
-                        Spacer(minLength: 0)
+                GeometryReader { geo in
+                    VStack(alignment: .leading, spacing: 10) {
+                        if loading {
+                            // 与 SessionListView 一致的居中 loading（阿菜低3）
+                            HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                                .frame(maxWidth: .infinity, minHeight: geo.size.height - 20)
+                        } else if let usage, !usage.isEmpty {
+                            if models.isEmpty {
+                                // usage 有数据但模型拆分无行：overviewCard 单独渲染，垂直居中
+                                // （阿菜中1：之前贴顶导致下方 ~244pt 空白玻璃）
+                                Spacer(minLength: 0)
+                                overviewCard(usage)
+                                Spacer(minLength: 0)
+                            } else {
+                                overviewCard(usage)
+                                if !models.isEmpty { modelList }
+                            }
+                        } else {
+                            // 无 token 数据：内容短，垂直居中避免大片空白玻璃（阿菜低3）
+                            Spacer(minLength: 0)
+                            basicInfoCard
+                            Spacer(minLength: 0)
+                        }
                     }
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
-                .frame(maxWidth: .infinity, minHeight: 310)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
             }
         }
         .frame(width: 280)
@@ -279,14 +289,19 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
-                    // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行
-                    LazyVStack(spacing: 4) {
-                        ForEach(sessions) { s in
-                            sessionRow(s)
+                    // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行。
+                    // minHeight=视口高度：会话少（<5 条）时行间留白而不是整片底部玻璃
+                    //（阿菜中2）；会话多时内容超过视口，正常滚动不受影响
+                    GeometryReader { geo in
+                        LazyVStack(spacing: 4) {
+                            ForEach(sessions) { s in
+                                sessionRow(s)
+                            }
                         }
+                        .frame(maxWidth: .infinity, minHeight: geo.size.height)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
                 }
             }
         }

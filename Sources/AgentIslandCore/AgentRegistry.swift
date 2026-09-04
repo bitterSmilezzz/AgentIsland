@@ -126,15 +126,17 @@ public enum AgentRegistry {
     /// 静态缓存：应用生命周期内 PATH/安装基本不变，避免 fullRegistry/discoverCLI/refreshInstalled 各扫一遍
     public static let cachedInstalledCLIs: Set<String> = {
         var found = Set<String>()
-        let pathDirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        var dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
             .split(separator: ":").map(String.init)
+        // 补扫常见非 PATH 安装目录（阿剩低4：~/.local/bin、/opt/homebrew/bin 等
+        // 未入 PATH 时 CLI 实际可用但会误判「未安装」）
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        dirs += [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", home + "/bin"]
         for cli in knownCLIs {
-            for dir in pathDirs {
-                let full = (dir as NSString).appendingPathComponent(cli)
-                if FileManager.default.isExecutableFile(atPath: full) {
-                    found.insert(cli)
-                    break
-                }
+            for dir in dirs where FileManager.default.isExecutableFile(
+                atPath: (dir as NSString).appendingPathComponent(cli)) {
+                found.insert(cli)
+                break
             }
         }
         return found

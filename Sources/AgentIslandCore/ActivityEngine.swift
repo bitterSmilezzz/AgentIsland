@@ -133,7 +133,7 @@ public final class ActivityEngine: ObservableObject {
     /// 手动触发一次采样（也用于测试与 --probe）
     @discardableResult
     public func sample(now: Date = Date()) -> [AgentSnapshot] {
-        sampleCore(matcher: processMonitor.matcher(), now: now)
+        sampleCore(matcher: processMonitor.matcher(profiles: profiles), now: now)
     }
 
     /// 定时采样入口：进程遍历（proc_listpids/proc_pidpath，开销毫秒级）在后台执行，
@@ -149,7 +149,7 @@ public final class ActivityEngine: ObservableObject {
             Task { @MainActor [weak self] in
                 defer { self?.samplingInFlight = false }
                 guard let self else { return }
-                self.sampleCore(matcher: monitor.matcher(snapshot: snapshot, runningBundleIDs: bundleIDs),
+                self.sampleCore(matcher: monitor.matcher(snapshot: snapshot, runningBundleIDs: bundleIDs, profiles: self.profiles),
                                 now: Date())
             }
         }

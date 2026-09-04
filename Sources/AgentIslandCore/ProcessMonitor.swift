@@ -97,11 +97,11 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
             lock.unlock()
         }
 
-        /// 裁剪已退出进程：只保留本次采样仍存在的 pid，防止长期运行内存线性增长
+        /// 裁剪已退出进程：只保留本次采样仍存在的 pid，防止长期运行内存线性增长。
+        /// 无条件按 alivePids 过滤（阿证低：之前 2× 阈值在 pid 大量更替场景长期不触发）
         func prune(keeping alivePids: Set<Int32>) {
             lock.lock()
             defer { lock.unlock() }
-            guard last.count > alivePids.count * 2 else { return }   // 脏数据量小则跳过
             last = last.filter { alivePids.contains($0.key) }
         }
     }
@@ -281,9 +281,13 @@ public struct ProcessMonitor: @unchecked Sendable {
         self.provider = ProcessProvider()
     }
 
-    /// 快照 + bundle 一次性获取（引擎每采样调一次）
-    public func matcher() -> ProcessMatcher {
-        ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs())
+    /// 快照 + bundle 一次性获取（引擎每采样调一次）；
+    /// profiles 传入以激活预计算匹配集（阿剩中1：之前不传导致 profileSets 恒空，
+    /// isRunning/cpuPercent 每拍对每条目重建 Set、全表扫两遍）
+    public func matcher(profiles: [AgentProfile] = []) -> ProcessMatcher {
+        ProcessMatcher(snapshot: provider.snapshot(),
+                       runningBundleIDs: provider.runningBundleIDs(),
+                       profiles: profiles)
     }
 
     /// 仅进程快照（可后台执行；libproc 无 UI 依赖）
@@ -297,8 +301,8 @@ public struct ProcessMonitor: @unchecked Sendable {
     }
 
     /// 后台快照 + 主线程 bundle 组装 matcher（避免 NSWorkspace 后台访问）
-    public func matcher(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>) -> ProcessMatcher {
-        ProcessMatcher(snapshot: snapshot, runningBundleIDs: runningBundleIDs)
+    public func matcher(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>, profiles: [AgentProfile] = []) -> ProcessMatcher {
+        ProcessMatcher(snapshot: snapshot, runningBundleIDs: runningBundleIDs, profiles: profiles)
     }
 }
 
