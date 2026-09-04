@@ -20,6 +20,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private var panel: NSPanel!
     private var hostingView: NSHostingView<IslandView>!
+    private var shadowHost: ShadowHostView?
+    private var clipContainer: NSView?
     private var engine: ActivityEngine
     private var cancellables = Set<AnyCancellable>()
     private var collapseTask: Task<Void, Never>?
@@ -35,7 +37,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private let dockedSize = NSSize(width: 176, height: 5)
     private let expandedWidth: CGFloat = 280
     private let expandedMaxHeight: CGFloat = 420
-    private let topZoneHeight: CGFloat = 150
+    private let topZoneHeight: CGFloat = 80
 
     // D3：拖动锚点（顶部中心），UserDefaults 记忆
     private var savedCenterX: CGFloat?
@@ -98,15 +100,24 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         hostingView = NSHostingView(rootView: content)
         hostingView.frame = NSRect(origin: .zero, size: dockedSize)
 
+        // 双层结构（H1 修复）：
+        // 外层 shadowHost 不裁剪，负责画圆角阴影（shadowPath 跟随圆角，随尺寸更新）；
+        // 内层 container 用 masksToBounds 裁剪内容为圆角——单层 + masksToBounds 会把
+        // SwiftUI 阴影也裁掉（之前阴影从未显示）。
         let container = NSView(frame: NSRect(origin: .zero, size: dockedSize))
         hostingView.autoresizingMask = [.width, .height]
         container.addSubview(hostingView)
-        // 圆角裁剪：窗口是矩形，若容器不裁剪，圆角弧线外会露出矩形层边框/阴影
         container.wantsLayer = true
         container.layer?.masksToBounds = true
-        container.layer?.cornerRadius = Theme.radiusLg
         container.layer?.cornerCurve = .continuous
-        panel.contentView = container
+
+        let shadowHost = ShadowHostView(frame: NSRect(origin: .zero, size: dockedSize))
+        shadowHost.wantsLayer = true
+        container.autoresizingMask = [.width, .height]
+        shadowHost.addSubview(container)
+        panel.contentView = shadowHost
+        self.shadowHost = shadowHost
+        self.clipContainer = container
 
         $displayState
             .removeDuplicates()
@@ -181,6 +192,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 注意：controller 可能在 SwiftUI 场景求值阶段被创建，那时 NSScreen 未就绪、
         // placeWindow 会静默失败；这里强制重新定位一次。
         displayState = .docked
+        updateWindowChrome(docked: true)
         placeWindow(size: dockedSize, animated: false)
         panel.orderFrontRegardless()
     }
@@ -335,12 +347,22 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         switch state {
         case .docked:
             route = .list   // 收起时重置导航
+            updateWindowChrome(docked: true)
             panel.orderFrontRegardless()
             placeWindow(size: dockedSize, animated: true)
         case .expanded:
+            updateWindowChrome(docked: false)
             panel.orderFrontRegardless()
             placeWindow(size: sizeForState(), animated: true)
         }
+    }
+
+    /// 状态相关窗口外观（H1/M1 修复）：
+    /// docked 细条：小圆角（胶囊半圆）、无阴影；expanded 卡片：18pt 圆角 + 柔和投影
+    private func updateWindowChrome(docked: Bool) {
+        let radius: CGFloat = docked ? 2.5 : Theme.radiusLg
+        clipContainer?.layer?.cornerRadius = radius
+        shadowHost?.setShadow(enabled: !docked, cornerRadius: radius)
     }
 
     // MARK: - 拖动（卡片顶栏）
@@ -479,5 +501,46 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     func windowDidResize(_ notification: Notification) {
         hostingView?.frame = panel.contentView?.bounds ?? hostingView.frame
+    }
+}
+
+// MARK: - 阴影宿主视图（H1：阴影不被 masksToBounds 裁剪）
+// 外层不裁剪，负责画圆角阴影；内层容器裁剪内容。shadowPath 跟随圆角并随尺寸变化更新。
+
+final class ShadowHostView: NSView {
+    private var shadowEnabled = false
+    private var cornerRadius: CGFloat = Theme.radiusLg
+
+    override var frame: NSRect {
+        didSet { updateShadowPath() }
+    }
+
+    override func layout() {
+        super.layout()
+        updateShadowPath()
+    }
+
+    func setShadow(enabled: Bool, cornerRadius: CGFloat) {
+        self.cornerRadius = cornerRadius
+        guard let layer else { return }
+        layer.shadowColor = NSColor.black.cgColor
+        layer.shadowOpacity = enabled ? 0.30 : 0
+        layer.shadowRadius = enabled ? 16 : 0
+        layer.shadowOffset = CGSize(width: 0, height: -6)
+        updateShadowPath()
+    }
+
+    private func updateShadowPath() {
+        guard let layer else { return }
+        if layer.shadowOpacity > 0 {
+            layer.shadowPath = CGPath(
+                roundedRect: bounds,
+                cornerWidth: cornerRadius,
+                cornerHeight: cornerRadius,
+                transform: nil
+            )
+        } else {
+            layer.shadowPath = nil
+        }
     }
 }

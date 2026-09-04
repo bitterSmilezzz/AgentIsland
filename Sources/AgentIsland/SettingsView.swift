@@ -15,7 +15,7 @@ struct SettingsView: View {
     @AppStorage("idleSampleInterval") private var idleSampleInterval: Double = 15
     @AppStorage("cpuThreshold") private var cpuThreshold: Double = 1
     @AppStorage("activeSessionWindow") private var activeSessionWindow: Double = 600
-    @AppStorage("collapseDelay") private var collapseDelay: Double = 3
+    @AppStorage("collapseDelay") private var collapseDelay: Double = 0.5
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("islandAppearance") private var islandAppearanceRaw = IslandAppearance.system.rawValue
     @AppStorage("enabledAgents") private var enabledAgentsData: Data = Data()

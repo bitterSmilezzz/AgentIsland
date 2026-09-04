@@ -62,18 +62,18 @@ enum Theme {
     static let inkMuted80 = Color(dynamicLight: 0x333333, dark: 0xbbbbbf)
     static let inkMuted48 = Color(dynamicLight: 0x7a7a7a, dark: 0x9a9aa0)
     static let onDark = Color(dynamicLight: 0x1d1d1f, dark: 0xffffff)          // 主文字
-    static let onDarkMuted = Color(dynamicLight: 0x4a4a50, dark: 0xcccccc)     // 次要
-    static let onDarkFaint = Color(dynamicLight: 0x8a8a92, dark: 0x8e8e93)     // 弱化
+    static let onDarkMuted = Color(dynamicLight: 0x3f3f45, dark: 0xcccccc)     // 次要（浅色加深保对比）
+    static let onDarkFaint = Color(dynamicLight: 0x6e6e73, dark: 0x8e8e93)     // 弱化（浅色≥4.5:1）
 
     // 悬停/按压蒙层（浅色下用黑低透明，深色下用白低透明）
     static let hoverFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.08)
     static let chipFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.07)
     static let cardFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.05)
 
-    // Status（Apple system colors；浅色下加深保证对比）
-    static let statusWorking = Color(dynamicLight: 0x1f9d4d, dark: 0x30d158)
-    static let statusIdle = Color(dynamicLight: 0xb8860b, dark: 0xffd60a)
-    static let statusOffline = Color(dynamicLight: 0x6e6e73, dark: 0x8e8e93)
+    // Status（Apple system colors；浅色下加深保证对比 ≥4.5:1）
+    static let statusWorking = Color(dynamicLight: 0x157f3c, dark: 0x30d158)
+    static let statusIdle = Color(dynamicLight: 0x8f6a00, dark: 0xffd60a)
+    static let statusOffline = Color(dynamicLight: 0x5c5c61, dark: 0x8e8e93)
     static let statusPending = Color(dynamicLight: 0x0a68c4, dark: 0x2997ff)
 
     // Typography

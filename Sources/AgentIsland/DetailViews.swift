@@ -4,24 +4,29 @@ import SwiftUI
 // MARK: - 卡内二级/三级详情页
 // 主卡列表 → 点行 → AgentDetailView（总览+模型拆分）→ 点模型 → SessionListView（会话列表）
 
-// MARK: - 二级页顶栏（返回 + 标题）
+// MARK: - 二级页顶栏（返回 + 标题；M4：与主列表一致可拖动整卡）
 
 struct DetailHeader: View {
     let title: String
     var subtitle: String?
     let onBack: () -> Void
+    /// 拖动整卡（与主列表顶栏一致；由外部传入 controller 的 drag 处理）
+    var onDragMoved: ((CGSize) -> Void)?
+    var onDragEnded: (() -> Void)?
+    @State private var backHovered = false
 
     var body: some View {
         HStack(spacing: 8) {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Theme.onDark.opacity(0.85))
-                    .frame(width: 22, height: 22)
-                    .background(Circle().fill(Theme.chipFill))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.onDark.opacity(0.9))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(backHovered ? Theme.hoverFill : Theme.chipFill))
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .onHover { backHovered = $0 }
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(Theme.bodyFont(12, weight: .semibold))
@@ -40,6 +45,11 @@ struct DetailHeader: View {
         .padding(.top, 12)
         .padding(.bottom, 8)
         .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { value in onDragMoved?(value.translation) }
+                .onEnded { _ in onDragEnded?() }
+        )
     }
 }
 
@@ -52,6 +62,7 @@ struct AgentDetailView: View {
 
     @State private var models: [ModelUsage] = []
     @State private var loading = true
+    @State private var modelHovered = false
 
     private var snapshot: AgentSnapshot? {
         engine.snapshots.first { $0.id == agentId }
@@ -64,7 +75,9 @@ struct AgentDetailView: View {
                          subtitle: usage.map {
                              "24h \(TokenUsage.compact($0.tokens24h)) · 累计 \(TokenUsage.compact($0.tokensTotal))"
                          },
-                         onBack: { controller.route = .list })
+                         onBack: { controller.route = .list },
+                         onDragMoved: { controller.dragMoved(translation: $0) },
+                         onDragEnded: { controller.dragEnded() })
 
             Divider().overlay(Theme.onDark.opacity(0.12))
 
@@ -166,8 +179,10 @@ struct AgentDetailView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.chipFill))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(modelHovered ? Theme.hoverFill : Theme.chipFill))
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .onHover { modelHovered = $0 }
                 .onTapGesture {
                     controller.route = .sessions(agentId, m.modelId)
                 }
@@ -215,6 +230,8 @@ struct SessionListView: View {
 
     @State private var sessions: [SessionUsage] = []
     @State private var loading = true
+    /// 当前 hover 的会话行 id（多行共享一个状态，避免每行各自 @State）
+    @State private var hoveredSessionID: String?
 
     /// 静态化：行 body 每次重算不再新建 DateFormatter（昂贵对象）
     private static let timeFormatter: DateFormatter = {
@@ -227,7 +244,9 @@ struct SessionListView: View {
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(title: modelId,
                          subtitle: "\(sessions.count) 个会话",
-                         onBack: { controller.route = .agentDetail(agentId) })
+                         onBack: { controller.route = .agentDetail(agentId) },
+                         onDragMoved: { controller.dragMoved(translation: $0) },
+                         onDragEnded: { controller.dragEnded() })
 
             Divider().overlay(Theme.onDark.opacity(0.12))
 
@@ -271,31 +290,43 @@ struct SessionListView: View {
         }()
         let detail = "\(s.messages) 条 · \(TokenUsage.compact(s.tokens)) tok"
             + (TokenUsage.cost(s.cost).isEmpty ? "" : " · \(TokenUsage.cost(s.cost))")
+        let isHovered = hoveredSessionID == s.id
+        let hasDir = s.directory != nil
         return HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(timeText)
                     .font(Theme.monoFont(10, weight: .semibold))
-                    .foregroundColor(Theme.onDark)
+                    .foregroundColor(hasDir ? Theme.onDark : Theme.onDark.opacity(0.55))
                 Text(detail)
                     .font(Theme.monoFont(9))
                     .foregroundColor(Theme.onDarkFaint)
                     .lineLimit(1)
             }
             Spacer()
-            if s.directory != nil {
+            if hasDir {
                 Image(systemName: "folder")
                     .font(.system(size: 10))
                     .foregroundColor(Theme.onDarkFaint)
+            } else {
+                // L7：无目录的会话行视觉降级（不可点）
+                Text("无目录")
+                    .font(Theme.monoFont(9))
+                    .foregroundColor(Theme.onDarkFaint.opacity(0.6))
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.chipFill))
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(isHovered && hasDir ? Theme.hoverFill : Theme.chipFill))
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onHover { hovering in
+            hoveredSessionID = hovering ? s.id : nil
+        }
         .onTapGesture {
             if let dir = s.directory {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dir))
             }
         }
+        .opacity(hasDir ? 1.0 : 0.75)
     }
 }

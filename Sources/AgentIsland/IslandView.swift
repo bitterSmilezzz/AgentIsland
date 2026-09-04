@@ -16,7 +16,7 @@ struct GlassCardBackground: View {
                 .fill(Color(dynamicLight: 0xffffff, dark: 0x000000).opacity(0.42))
             // 无描边：灵动岛悬浮质感靠材质对比 + 阴影，描边在浅色下会呈现为矩形框
         }
-        .shadow(color: Color.black.opacity(0.30), radius: 16, y: 6)
+        // 阴影由 ShadowHostView（AppKit layer）绘制，这里不再加 SwiftUI 阴影
     }
 }
 
@@ -91,7 +91,11 @@ struct IslandView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: controller.displayState)
+        // 成对弹簧（boring.notch 最佳实践）：展开有回弹，收起零过冲更干脆
+        .animation(controller.displayState == .expanded
+                   ? .spring(response: 0.42, dampingFraction: 0.8)
+                   : .spring(response: 0.45, dampingFraction: 1.0),
+                   value: controller.displayState)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: controller.route)
         .onHover { hovering in
             controller.islandHoveredChanged(hovering)
