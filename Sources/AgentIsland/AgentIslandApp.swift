@@ -45,6 +45,11 @@ final class AppContext {
             profiles: registry.filter { enabled.contains($0.id) },
             config: config
         )
+        // 安装缓存后台首刷（阿剩中A：类型首次访问改为空集零成本，这里显式触发
+        // 真实扫描；引擎采样循环随后会低频重扫，首次采样前 installed 标记短暂为空）
+        DispatchQueue.global(qos: .utility).async {
+            AgentRegistry.refreshInstalledCache()
+        }
     }
 }
 

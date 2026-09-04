@@ -126,9 +126,11 @@ public enum AgentRegistry {
     /// 静态缓存：避免 fullRegistry/discoverCLI/refreshInstalled 各扫一遍；
     /// 运行期可 refreshInstalledCache() 重扫（阿剩低3：装新 CLI 不必重启 App）
     /// 锁保护：refreshInstalledCache 可后台执行，读写都要加锁（阿证中1/阿剩N3）；
-    /// 存储属性 private（阿剩低2：getter 公开可绕过锁，外部一律走加锁 getter）
+    /// 存储属性 private（阿剩低2：getter 公开可绕过锁，外部一律走加锁 getter）。
+    /// 初始空集（阿剩中A：类型首次访问同步扫描 /Applications 30-100ms 会阻塞主线程
+    /// 启动路径；改为启动后显式后台刷新一次）
     private static let installedLock = NSLock()
-    private static var cachedInstalledCLIs: Set<String> = Self.scanInstalledCLIs()
+    private static var cachedInstalledCLIs: Set<String> = []
 
     private static func scanInstalledCLIs() -> Set<String> {
         var found = Set<String>()
@@ -155,8 +157,9 @@ public enum AgentRegistry {
     }
 
     /// 已安装的 bundle id 集合（/Applications 枚举，小写）
-    /// 静态缓存：一次扫描，全部消费方复用；运行期可 refreshInstalledCache() 重扫
-    private static var cachedInstalledBundleIDs: Set<String> = Self.scanInstalledBundleIDs()
+    /// 静态缓存：一次扫描，全部消费方复用；运行期可 refreshInstalledCache() 重扫。
+    /// 初始空集（同 cachedInstalledCLIs：避免类型首次访问同步扫描）
+    private static var cachedInstalledBundleIDs: Set<String> = []
 
     private static func scanInstalledBundleIDs() -> Set<String> {
         var found = Set<String>()

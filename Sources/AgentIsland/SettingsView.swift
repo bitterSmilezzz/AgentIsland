@@ -32,6 +32,8 @@ struct SettingsView: View {
     @State private var launchError: String?
     @State private var customProfiles: [AgentProfile] = []
     @State private var showAddCustom = false
+    /// 安装缓存扫描完成版本号：触发 body 重算刷新自动发现列表（阿剩低B）
+    @State private var installedScanVersion = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -58,9 +60,13 @@ struct SettingsView: View {
             // 打开设置页即重扫安装缓存（装新 CLI/App 后进设置页确认是最常见场景，
             // 离线态下引擎低频刷新最长滞后 2 小时）。
             // 后台执行避免 /Applications plist 扫描阻塞窗口首帧（阿证中1/阿菜/阿剩
-            // 三方同源：扫描 30-100ms 不应占用主线程）；loadState 读缓存不依赖扫描完成
+            // 三方同源：扫描 30-100ms 不应占用主线程）；完成后主线程 bump 版本号
+            // 触发 body 重算刷新自动发现列表（阿剩低B）
             DispatchQueue.global(qos: .utility).async {
                 AgentRegistry.refreshInstalledCache()
+                DispatchQueue.main.async {
+                    installedScanVersion += 1
+                }
             }
             loadState()
         }
@@ -264,13 +270,21 @@ struct SettingsView: View {
         }
     }
 
+    /// 滑块值统一格式：一位小数去尾零（10.0→"10"、0.5→"0.5"、12.5→"12.5"）
+    private static func formatSliderValue(_ v: Double, unit: String) -> String {
+        let s = String(format: "%.1f", v)
+        let trimmed = s.hasSuffix(".0") ? String(s.dropLast(2)) : s
+        return "\(trimmed) \(unit)"
+    }
+
     private func sliderRow(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double = 1, unit: String) -> some View {
         HStack {
             Text(title)
                 .font(Theme.bodyFont(12))
                 .foregroundColor(Theme.inkMuted80)
             Spacer()
-            Text(value.wrappedValue >= 10 ? "\(Int(value.wrappedValue)) \(unit)" : String(format: "%.1f \(unit)", value.wrappedValue))
+            // 统一格式：一位小数去尾零（10.0→"10"、0.5→"0.5"），避免 ≥10 截断丢精度（阿菜低1）
+            Text(Self.formatSliderValue(value.wrappedValue, unit: unit))
                 .font(Theme.monoFont(11))
                 .foregroundColor(Theme.inkMuted48)
             // 拖动中只更新显示值，松手才 applyConfig——避免每帧重启采样定时器

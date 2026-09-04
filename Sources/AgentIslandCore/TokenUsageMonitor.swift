@@ -103,6 +103,8 @@ public final class TokenUsageMonitor: @unchecked Sendable {
 
     /// SQLite 只读连接缓存（复用避免每查询 open/close）；查询统一走串行队列保证连接线程安全
     private var dbConnections: [String: OpaquePointer] = [:]
+    /// 连接打开时的文件 inode（外部替换主文件后据此失效缓存连接，阿证中）
+    private var dbInodes: [String: UInt64] = [:]
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
     public init() {}
@@ -151,6 +153,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
                 sqlite3_close(db)
             }
             self.dbConnections.removeAll()
+            self.dbInodes.removeAll()
         }
     }
 
@@ -322,18 +325,23 @@ public final class TokenUsageMonitor: @unchecked Sendable {
                 debugPrint("TokenUsage: db not found \(dbPath)")
                 return []
             }
+            // inode 失效检测（阿证中）：外部工具原子替换/重建主文件（VACUUM 后 rename、
+            // 备份恢复、删后重建）后，缓存只读句柄永久指向旧 inode，统计静默陈旧。
+            // 命中缓存时对比 systemFileNumber，不一致则关闭重开
             let db: OpaquePointer
             if let cached = dbConnections[dbPath] {
-                db = cached
-            } else {
-                var handle: OpaquePointer?
-                guard sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
-                    if let handle { sqlite3_close(handle) }
-                    debugPrint("TokenUsage: open failed \(dbPath)")
-                    return []
+                if isCurrentInode(dbPath, openedInode: dbInodes[dbPath]) {
+                    db = cached
+                } else {
+                    sqlite3_close(cached)
+                    dbConnections[dbPath] = nil
+                    dbInodes[dbPath] = nil
+                    guard let reopened = openReadonly(dbPath) else { return [] }
+                    db = reopened
                 }
+            } else {
+                guard let handle = openReadonly(dbPath) else { return [] }
                 db = handle
-                dbConnections[dbPath] = db
             }
 
             var stmt: OpaquePointer?
@@ -356,8 +364,37 @@ public final class TokenUsageMonitor: @unchecked Sendable {
                 }
                 rows.append(row)
             }
+            // 中途出错（SQLITE_ERROR/BUSY）不应把部分行当完整结果（阿证低）
+            if sqlite3_errcode(db) != SQLITE_OK && sqlite3_errcode(db) != SQLITE_DONE && sqlite3_errcode(db) != SQLITE_ROW {
+                debugPrint("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
+                return []
+            }
             return rows
         }
+    }
+
+    /// 只读打开并记录 inode
+    private func openReadonly(_ dbPath: String) -> OpaquePointer? {
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
+            if let handle { sqlite3_close(handle) }
+            debugPrint("TokenUsage: open failed \(dbPath)")
+            return nil
+        }
+        dbConnections[dbPath] = handle
+        dbInodes[dbPath] = currentInode(dbPath)
+        return handle
+    }
+
+    /// 当前文件 inode（stat systemFileNumber；文件缺失返回 nil）
+    private func currentInode(_ dbPath: String) -> UInt64? {
+        (try? FileManager.default.attributesOfItem(atPath: dbPath))?[.systemFileNumber] as? UInt64
+    }
+
+    /// 缓存连接对应的 inode 是否仍与磁盘一致
+    private func isCurrentInode(_ dbPath: String, openedInode: UInt64?) -> Bool {
+        guard let now = currentInode(dbPath), let openedInode else { return false }
+        return now == openedInode
     }
 
     /// 静态化：ISO8601DateFormatter 初始化昂贵且线程安全，避免每行/每次调用新建

@@ -169,6 +169,7 @@ public final class ActivityEngine: ObservableObject {
     /// 定时采样入口：进程遍历（proc_listpids/proc_pidpath，开销毫秒级）在后台执行，
     /// 主线程只做装配与发布，避免与动画抢主线程。文件扫描/会话数/token 均为缓存读取。
     func sampleInBackground() {
+        guard running else { return }   // stop() 后在飞 token 刷新不再触发采样（阿剩低C）
         guard !samplingInFlight else { return }   // 丢弃重叠请求（onRefresh 与 Timer 可能相邻）
         samplingInFlight = true
         let monitor = processMonitor

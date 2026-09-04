@@ -26,6 +26,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var cancellables = Set<AnyCancellable>()
     private var collapseTask: Task<Void, Never>?
     private var peekTask: Task<Void, Never>?
+    /// 收起动画结束后重置导航的任务（阿证中：延迟避免同帧布局毛刺）
+    private var routeResetTask: Task<Void, Never>?
     private var didShowOnce = false
     private var dragStartOrigin: NSPoint?
     private var dragCooldownUntil: Date = .distantPast
@@ -355,8 +357,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
         collapseTask?.cancel()
         peekTask?.cancel()
+        routeResetTask?.cancel()
         collapseTask = nil
         peekTask = nil
+        routeResetTask = nil
     }
 
     // MARK: - Peek（E4：忙起来时细条弹一下）
@@ -406,10 +410,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         Self.log("onStateChanged → \(state)")
         switch state {
         case .docked:
-            // 收起时无动画重置导航：route 的 0.35s spring 若与淡出并发会闪现列表内容
-            var t = Transaction(animation: nil)
-            t.disablesAnimations = true
-            withTransaction(t) { route = .list }
+            // 收起时延迟到动画结束后重置导航（阿证中：与收起动画同帧重排会造成
+            // 主线程 0.3s 布局毛刺）；无动画事务防 route 0.35s spring 闪现列表内容
+            routeResetTask?.cancel()
+            routeResetTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 450_000_000)   // 0.42s 收起动画 + 余量
+                guard let self, !Task.isCancelled, self.displayState == .docked else { return }
+                var t = Transaction(animation: nil)
+                t.disablesAnimations = true
+                withTransaction(t) { self.route = .list }
+            }
             engine.tokenMonitor.pause()   // 细条态无展示需求，暂停 60s 轮询省电
             updateWindowChrome(docked: true)
             panel.orderFrontRegardless()

@@ -46,7 +46,7 @@ struct DetailHeader: View {
             }
             Spacer()
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, Theme.pageMargin)
         .padding(.top, 12)
         .padding(.bottom, 8)
         .contentShape(Rectangle())
@@ -117,7 +117,7 @@ struct AgentDetailView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, Theme.pageMargin)
                     .padding(.vertical, 10)
                 }
             }
@@ -233,7 +233,8 @@ struct AgentDetailView: View {
                 infoRow("Token", "暂无本地 token 数据")
             }
         }
-        .padding(12)
+        .padding(.horizontal, 10)   // 与模型行内边距对齐（阿菜低2：之前 12 造成文字基线差 2pt）
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.cardFill))
     }
@@ -305,7 +306,7 @@ struct SessionListView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, Theme.pageMargin)
                         .padding(.vertical, 10)
                     }
                 }
