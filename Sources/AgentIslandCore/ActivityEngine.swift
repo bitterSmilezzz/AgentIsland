@@ -59,6 +59,10 @@ public final class ActivityEngine: ObservableObject {
         guard !running else { return }
         running = true
         guard timer == nil else { return }
+        // 首采样前标记安装缓存为已刷（阿证中1：AppContext.init 已后台首刷；
+        // 若不标记，start() 的首次 sample → sampleCore 距 distantPast ≥300s
+        // 会再触发一次扫描，实测启动双扫）
+        markInstalledRefreshed()
         // token 数据刷完后触发一次重采样（快照带上用量 + 卡片高度重算）
         tokenMonitor.onRefresh = { [weak self] in
             self?.sampleInBackground()

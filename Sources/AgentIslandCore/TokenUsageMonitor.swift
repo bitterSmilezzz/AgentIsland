@@ -173,8 +173,11 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         // 文件未变时无谓重算应避免
         let dimStamp = fileStamp(dimAgentDB)
         let openCodeStamp = fileStamp(openCodeDB)
-        if dimStamp == lastDimStamp, openCodeStamp == lastOpenCodeStamp,
-           !lastUsage.isEmpty {
+        // 读侧加锁（阿证低：stamp/lastUsage 写侧在锁内，跨线程读构成数据竞争）
+        lock.lock()
+        let cached = lastDimStamp == dimStamp && lastOpenCodeStamp == openCodeStamp && !lastUsage.isEmpty
+        lock.unlock()
+        if cached {
             return
         }
 
@@ -182,14 +185,15 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         let cutoffMs = Int64(Date().timeIntervalSince1970 - 86_400) * 1000
 
         var usage: [String: TokenUsage] = [:]
-        // 文件缺失视为查询失败（阿剩中2）：跳过该源、保留旧 stamp 与旧值，
-        // 下次 refresh 因 stamp 不匹配仍会重查——失败结果不会被永久缓存成空数据
-        let dimExists = FileManager.default.fileExists(atPath: dimAgentDB)
-        let openCodeExists = FileManager.default.fileExists(atPath: openCodeDB)
-        if dimExists {
+        // 查询前预检连接可用性（阿证中2）：WAL 库无 -shm 时只读打开返回
+        // CANTOPEN——文件存在但打开失败若仍更新 stamp，空结果会被缓存到下次写入。
+        // 打开失败视为查询失败：跳过该源、保留旧 stamp 与旧值
+        let dimOK = Self.canOpenReadonly(dimAgentDB)
+        let openCodeOK = Self.canOpenReadonly(openCodeDB)
+        if dimOK {
             usage["dim"] = queryDimAgent(cutoffISO: cutoffISO)
         }
-        if openCodeExists {
+        if openCodeOK {
             usage["opencode"] = queryOpenCode(cutoffMs: cutoffMs)
         }
 
@@ -201,12 +205,23 @@ public final class TokenUsageMonitor: @unchecked Sendable {
         _usage = usage.filter { !$0.value.isEmpty }
         _grandTotal = total
         lastUsage = _usage
-        if dimExists { lastDimStamp = dimStamp }
-        if openCodeExists { lastOpenCodeStamp = openCodeStamp }
+        if dimOK { lastDimStamp = dimStamp }
+        if openCodeOK { lastOpenCodeStamp = openCodeStamp }
         lock.unlock()
         if let onRefresh {
             Task { @MainActor in onRefresh() }
         }
+    }
+
+    /// 只读打开预检（阿证中2）：文件缺失或 WAL 库无 -shm 打开失败 → false。
+    /// 在 dbQueue 串行内执行，与 rawRows 的连接缓存一致
+    private static func canOpenReadonly(_ dbPath: String) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dbPath) else { return false }
+        var handle: OpaquePointer?
+        let ok = sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK && handle != nil
+        if let handle { sqlite3_close(handle) }
+        return ok
     }
 
     /// 文件变更戳（inode+mtime+size 组合；任一变化即视为被替换/写入）。

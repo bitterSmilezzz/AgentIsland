@@ -188,16 +188,6 @@ public enum AgentRegistry {
     /// 扫描本身可在任意线程执行；结果写回加锁（阿证中1：app 多时 plist 解析
     /// 可达 30-100ms，不应占用主线程）
     public static func refreshInstalledCache() {
-        // [TEMP-INSTRUMENT] 启动扫描计数（验证后移除）
-        if ProcessInfo.processInfo.environment["AI_SCAN_TRACE"] != nil {
-            let line = "\(Date().timeIntervalSince1970)\n"
-            let f = "/tmp/ai_scan_trace.txt"
-            if let h = FileHandle(forWritingAtPath: f) {
-                h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
-            } else {
-                try? Data(line.utf8).write(to: URL(fileURLWithPath: f))
-            }
-        }
         let clis = scanInstalledCLIs()
         let bundles = scanInstalledBundleIDs()
         installedLock.lock()
