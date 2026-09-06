@@ -1,0 +1,16 @@
+# 04 — 查询层 fixture SQLite 测试（环境解绑）
+
+**What to build:** token 数据库路径改为构造注入（默认现网路径；内部锁、增量缓存、SQL 一律不动——这是「接受依赖」的构造注入，不是并发结构调整）。4 个绑定本机真实数据的用例改为临时目录 fixture：按已知 schema 建表插行，覆盖双源汇总、净消耗口径、24h 窗口、模型拆分、会话列表、未知 agent 空结果、SQL 转义。干净机器测试套件全绿。
+
+**Blocked by:** None — can start immediately（与 01–03 独立，排最后以最小化审查面）。
+
+**Status:** ready-for-agent
+
+- [ ] 路径注入默认值不改变现网行为
+- [ ] fixture 覆盖：双源汇总 / 净消耗口径 / 24h 窗口 / 模型拆分 / 会话列表 / 未知 agent 空结果 / SQL 转义
+- [ ] 无「本机真实数据」断言，干净机器可绿
+- [ ] `swift build` + 测试 runner 全绿
+
+## Comments
+
+- 2026-09-06 发布。
