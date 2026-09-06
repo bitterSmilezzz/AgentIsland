@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] IslandPanel 内不再有任何布局镜像常量（grep headerHeight/rowHeight/emptyStateHeight 等仅 IslandMetrics）
 - [ ] 280 / 300 / 176×5 在全 target 各只有一处定义
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布。
+- 2026-09-06 完成。镜像常量清零（grep 验收）；校准值 provenance 补注；审查轴等价性逐值核对通过。

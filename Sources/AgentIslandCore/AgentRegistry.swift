@@ -244,6 +244,39 @@ public enum AgentRegistry {
         fullRegistry().first { $0.id == id }
     }
 
+    // MARK: - 进程名冲突校验（自定义 Agent 用）
+
+    /// 纯核：「已安装 或 已启用」条目的进程名集合（小写）。
+    /// - 已启用条目：同进程名必然双份计数，必须拦
+    /// - 已安装但禁用：日后启用会同名双份，也要拦
+    /// - 未安装且未启用：进程不会运行，不误拦
+    /// installed 集注入（测试 canned，生产读本类型全局缓存）
+    public static func conflictingProcessNames(
+        registry: [AgentProfile],
+        enabledIDs: Set<String>,
+        installedCLIs: Set<String>,
+        installedBundles: Set<String>
+    ) -> [String] {
+        var names = Set<String>()
+        for p in registry {
+            let installed = p.bundleIDs.contains { installedBundles.contains($0.lowercased()) }
+                || p.processNames.contains { installedCLIs.contains($0.lowercased()) }
+            if installed || enabledIDs.contains(p.id) {
+                names.formUnion(p.processNames.map { $0.lowercased() })
+            }
+        }
+        return Array(names)
+    }
+
+    /// 便捷入口：registry/installed 集取自本类型（设置表单用）
+    public static func conflictingProcessNames(enabledIDs: Set<String>) -> [String] {
+        conflictingProcessNames(
+            registry: fullRegistry(),
+            enabledIDs: enabledIDs,
+            installedCLIs: installedCLIs(),
+            installedBundles: installedBundleIDs())
+    }
+
     // MARK: - 工具
 
     private static func home(_ path: String) -> String {

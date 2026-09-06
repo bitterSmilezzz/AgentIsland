@@ -41,6 +41,11 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         case other
     }
 
+    /// 自定义条目 id 推导（设置表单校验与落库共用，规则只此一处）
+    public static func makeCustomID(_ processName: String) -> String {
+        "custom-\(processName.lowercased().replacingOccurrences(of: " ", with: "-"))"
+    }
+
     public init(id: String, name: String, icon: String,
                 bundleIDs: [String], processNames: [String], pathContains: [String] = [],
                 sessionDirs: [String],
@@ -115,5 +120,33 @@ public struct EngineConfig: Equatable {
         self.activeSessionWindow = activeSessionWindow
         self.collapseDelay = collapseDelay
         self.minWorkingHold = minWorkingHold
+    }
+
+    /// cpuThreshold 合法区间（slider range / 钳制 / 归一化唯一来源）
+    public static let cpuThresholdRange: ClosedRange<Double> = 1.0...50.0
+
+    /// 归一化：cpuThreshold 钳入合法区间（旧版持久化半值自愈）+ sample≤idle 钳平
+    /// （否则「闲置降频」逻辑反转）。设置表单与启动读取共用，钳制规则只此一处。
+    public func normalized() -> EngineConfig {
+        var c = self
+        c.cpuThreshold = min(max(c.cpuThreshold, Self.cpuThresholdRange.lowerBound),
+                             Self.cpuThresholdRange.upperBound)
+        if c.sampleInterval > c.idleSampleInterval {
+            c.sampleInterval = c.idleSampleInterval
+        }
+        return c
+    }
+
+    /// 从持久化读取（SettingKey 键，缺项回落默认）并归一化——启动即自愈脏值
+    public static func load(from defaults: UserDefaults) -> EngineConfig {
+        let base = EngineConfig()
+        return EngineConfig(
+            sampleInterval: defaults.object(forKey: SettingKey.sampleInterval) as? Double ?? base.sampleInterval,
+            idleSampleInterval: defaults.object(forKey: SettingKey.idleSampleInterval) as? Double ?? base.idleSampleInterval,
+            workingWindow: defaults.object(forKey: SettingKey.workingWindow) as? Double ?? base.workingWindow,
+            cpuThreshold: defaults.object(forKey: SettingKey.cpuThreshold) as? Double ?? base.cpuThreshold,
+            activeSessionWindow: defaults.object(forKey: SettingKey.activeSessionWindow) as? Double ?? base.activeSessionWindow,
+            collapseDelay: defaults.object(forKey: SettingKey.collapseDelay) as? Double ?? base.collapseDelay
+        ).normalized()
     }
 }
