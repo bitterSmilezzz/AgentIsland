@@ -47,8 +47,8 @@ struct DetailHeader: View {
             Spacer()
         }
         .padding(.horizontal, Theme.pageMargin)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.top, IslandMetrics.detailHeaderPaddingTop)
+        .padding(.bottom, IslandMetrics.detailHeaderPaddingBottom)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 3)
@@ -122,7 +122,7 @@ struct AgentDetailView: View {
                 }
             }
         }
-        .frame(width: 280)
+        .frame(width: IslandMetrics.cardWidth)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
         .task(id: agentId) {
@@ -313,7 +313,7 @@ struct SessionListView: View {
                 }
             }
         }
-        .frame(width: 280)
+        .frame(width: IslandMetrics.cardWidth)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
         .task(id: "\(agentId)/\(modelId)") {

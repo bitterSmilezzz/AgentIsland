@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 引擎以默认参数构造时行为与主线完全一致（现有测试全绿）
 - [ ] 引擎测试注入 fake 后，可经公开 interface 断言 start/stop 对轮询面的驱动
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布（由 spec 拆票，expand–contract 第一步）。
+- 2026-09-06 完成（7519358 配置 / ba577b0 代码）。36/36 绿；审查双轴通过；60s 默认节律收敛为 TokenUsagePollingDefaults.interval。

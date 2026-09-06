@@ -117,7 +117,7 @@ struct IslandView: View {
             }
             .overlay(Capsule().strokeBorder(
                 Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.22), lineWidth: 0.5))
-            .frame(width: 176, height: 5)
+            .frame(width: IslandMetrics.dockedWidth, height: IslandMetrics.dockedHeight)
             .contentShape(Capsule())
             // 点击细条兜底展开（悬停通常已展开；防止 mouseMoved 事件被系统吞掉时无响应）
             .onTapGesture {
@@ -146,8 +146,8 @@ struct IslandView: View {
                     .foregroundColor(Theme.onDarkFaint)
             }
             .padding(.horizontal, Theme.pageMargin)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.top, IslandMetrics.headerPaddingTop)
+            .padding(.bottom, IslandMetrics.headerPaddingBottom)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 3)
@@ -172,7 +172,7 @@ struct IslandView: View {
                         .foregroundColor(Theme.onDarkFaint)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 22)
+                .padding(.vertical, IslandMetrics.emptyStatePaddingVertical)
             } else {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 2) {
@@ -180,9 +180,9 @@ struct IslandView: View {
                             AgentRowView(snapshot: snapshot, controller: controller)
                         }
                     }
-                    .padding(.vertical, 6)
+                    .padding(.vertical, IslandMetrics.listVerticalPadding)
                 }
-                .frame(maxHeight: 300)
+                .frame(maxHeight: IslandMetrics.listMaxHeight)
             }
 
             // Token 汇总栏（双口径：24h / 累计；有数据才显示）
@@ -191,7 +191,7 @@ struct IslandView: View {
                 TokenSummaryBar(total: engine.grandTotal)
             }
         }
-        .frame(width: 280)
+        .frame(width: IslandMetrics.cardWidth)
         // 背景铺满整个窗口（窗口高度可能略大于内容，消除底部透明带）
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(GlassCardBackground(cornerRadius: Theme.radiusLg))

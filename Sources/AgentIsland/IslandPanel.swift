@@ -34,10 +34,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// docked 态重绘守卫：working 状态没变就不强制重绘细条
     private var lastAnyWorking: Bool?
 
-    // 尺寸常量
-    private let dockedSize = NSSize(width: 176, height: 5)
-    private let expandedWidth: CGFloat = 280
-    private let expandedMaxHeight: CGFloat = 420
+    // 尺寸常量（唯一事实来源在 IslandMetrics）
+    private var dockedSize: NSSize {
+        NSSize(width: IslandMetrics.dockedWidth, height: IslandMetrics.dockedHeight)
+    }
     private let topZoneHeight: CGFloat = 80
 
     // D3：拖动锚点（顶部中心），UserDefaults 记忆
@@ -493,45 +493,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         case .docked:
             return dockedSize
         case .expanded:
-            return NSSize(width: expandedWidth, height: expandedHeight())
+            return NSSize(width: IslandMetrics.cardWidth, height: expandedHeight())
         }
     }
 
     // MARK: - 展开高度
-    // 与 IslandView 布局逐项对应（任一 padding 改动需同步此处）：
-    //   header  = padding(.top,12) + 内容(状态点9/文本~17) + padding(.bottom,8) ≈ 37
-    //   divider = 1
-    //   列表    = N×行(44) + 行间(2) + ScrollView padding(.vertical,6)×2 ≈ 46N+10，上限 300
-    //   summary = Divider(1) + TokenSummaryBar ≈ 26（有数据才显示）
-    private let headerHeight: CGFloat = 37
-    private let detailHeaderHeight: CGFloat = 47   // 详情页顶栏：返回按钮 24 + padding(12+8) + subtitle 双行
-    private let dividerHeight: CGFloat = 1
-    // 行高 48：实测单行 45.5~48pt（名称 13pt semibold + 9pt mono 徽标 + padding 14 + spacing 2），
-    // 46 低估会静默裁最后一行下 padding（阿剩低4）；窗口背景铺满，略高不可见，取上界安全
-    private let rowHeight: CGFloat = 48
-    private let listMaxHeight: CGFloat = 300     // 与 ScrollView.frame(maxHeight:) 一致
-    private let emptyStateHeight: CGFloat = 87   // zzz 图标 + 文案 + padding(.vertical,22)（阿菜实测 ~87）
-    private let summaryBarHeight: CGFloat = 28   // Divider + TokenSummaryBar（阿菜实测 ~28）
-    /// 详情/会话页内容区高度（header + divider 之后；内容自身可滚动，故给足而不裁剪）
-    private let detailContentHeight: CGFloat = 310
+    // 度量与推导全部在 IslandMetrics（唯一事实来源），此处只装配输入
 
     private func expandedHeight() -> CGFloat {
-        switch route {
-        case .list:
-            if visibleCount() == 0 {
-                let summaryBar: CGFloat = engine.grandTotal.isEmpty ? 0 : summaryBarHeight
-                return min(headerHeight + dividerHeight + emptyStateHeight + summaryBar, expandedMaxHeight)
-            }
-            let count = max(visibleCount(), 1)
-            let listHeight = min(CGFloat(count) * rowHeight + 10, listMaxHeight)
-            let summaryBar: CGFloat = engine.grandTotal.isEmpty ? 0 : summaryBarHeight
-            return min(headerHeight + dividerHeight + listHeight + summaryBar, expandedMaxHeight)
-        case .agentDetail:
-            // 详情页用 detailHeaderHeight（显式，不再靠 +10 魔法补差）
-            return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
-        case .sessions:
-            return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
-        }
+        IslandMetrics.expandedHeight(route: route, visibleCount: visibleCount(), hasSummary: !engine.grandTotal.isEmpty)
     }
 
     /// 可见行数（统一走 engine.visibleSnapshots，口径单一实现）

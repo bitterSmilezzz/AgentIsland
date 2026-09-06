@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately（与 01–03 独立，排最后以最小化审查面）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 路径注入默认值不改变现网行为
 - [ ] fixture 覆盖：双源汇总 / 净消耗口径 / 24h 窗口 / 模型拆分 / 会话列表 / 未知 agent 空结果 / SQL 转义
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布。
+- 2026-09-06 完成（4741442）。路径构造注入默认现网路径；fixture 覆盖全部票面口径；39/39 绿，干净机器可复现。

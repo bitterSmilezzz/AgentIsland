@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — 呈现活跃单一 owner（懒启动）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] UI target 内不再有任何引擎 token 子对象直达引用（编译器强制）
 - [ ] 汇总栏出现/消失与展开高度计算行为不变
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布。
+- 2026-09-06 完成（402b6b9）。UI target 零 tokenMonitor 引用（grep+编译器双验证）；6 处迁移逐字等价、queryToken 代际守卫原样；40/40 绿 + probe 冒烟。
