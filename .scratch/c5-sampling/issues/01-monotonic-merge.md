@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] FileMonitor cache 写回为单调 merge；sessionCounts 仍整表替换
 - [ ] 引擎零 lastWrites 残留（grep）
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布（弹窗决策：轻量收尾 + 单调 merge，均按推荐）。
+- 2026-09-06 完成。
