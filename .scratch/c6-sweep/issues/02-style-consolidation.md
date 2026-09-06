@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately（与 01 无依赖，排后减小审查面）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 卡片外壳三连/hover 行/拖动手势/分割线/loading 行各只剩一处定义（grep 验收）
 - [ ] Theme 外硬编码色值清零（dockedSliver/蒙层/阴影）
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布（弹窗未答，按推荐执行）。
+- 2026-09-06 完成。

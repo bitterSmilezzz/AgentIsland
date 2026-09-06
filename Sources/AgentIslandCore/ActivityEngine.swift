@@ -29,7 +29,6 @@ public final class ActivityEngine: ObservableObject {
     /// 已安装缓存（注入实例；引擎是常态刷新的唯一调度者——init 首刷 + 采样循环 300s 周期。
     /// 设置页打开时的显式重扫是用户触发的例外路径，与引擎共用同一实例）
     private let installedApps: InstalledAppsCache
-    private var lastWrites: [String: Date] = [:]   // dir -> 最近写入时间
     private var timer: Timer?
     /// 测试观察点：定时器是否已创建（stop 后应为 nil）
     var timerIsNil: Bool { timer == nil }
@@ -179,9 +178,6 @@ public final class ActivityEngine: ObservableObject {
         // M5：清理已移除 profile 的滞回状态，防止长期累积
         let activeIDs = Set(profiles.map(\.id))
         workingSince = workingSince.filter { activeIDs.contains($0.key) }
-        // 目录级缓存同步清理：移除 agent 后其会话目录的最近写入时间不再保留
-        let activeDirs = Set(profiles.flatMap(\.sessionDirs))
-        lastWrites = lastWrites.filter { activeDirs.contains($0.key) }
     }
 
     // MARK: - 安装检测（A4；缓存与刷新节律见 InstalledAppsCache，引擎只读判定）
@@ -247,16 +243,11 @@ public final class ActivityEngine: ObservableObject {
             let running = !entries.isEmpty
             let cpu = entries.reduce(0) { $0 + $1.cpuPercent }
 
-            // 合并本次探测到的最新写入时间（目录不存在时保留上次值）
+            // 最近写入时间直读 FileMonitor 缓存（写回为单调 merge：扫描失败保留旧值、
+            // 只进不退，引擎无需影子副本——见 FileMonitor.runScan 与 ADR-0001）
             let fresh = fileMonitor.lastWriteDates(for: profile.sessionDirs)
-            for (dir, date) in fresh {
-                if date > (lastWrites[dir] ?? .distantPast) {
-                    lastWrites[dir] = date
-                }
-            }
             let newestAgo: TimeInterval? = {
-                let dates = profile.sessionDirs.compactMap { lastWrites[$0] }
-                guard let newest = dates.max() else { return nil }
+                guard let newest = fresh.values.max() else { return nil }
                 return now.timeIntervalSince(newest)
             }()
 

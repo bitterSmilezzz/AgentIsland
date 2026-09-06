@@ -183,6 +183,25 @@ enum EngineTests {
             try expectNil(FileActivityMonitor.newestWrite(in: missing), "缺失目录")
         }
 
+        TestKit.test("文件: 缓存单调 merge——目录暂缺保留旧值（C5 影子缓存退役后语义）") {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("agentisland-merge-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            try? Data("x".utf8).write(to: dir.appendingPathComponent("a.txt"))
+            // scanMinInterval=0 隔离节流，使两次扫描都真实执行
+            let monitor = FileActivityMonitor(scanMinInterval: 0)
+            monitor.watch(dirs: [dir.path])
+            monitor.scanSync()
+            let first = monitor.lastWriteDates(for: [dir.path])[dir.path]
+            try expectTrue(first != nil, "首扫应有值")
+            // 目录被移除（扫描失败）→ 单调 merge 保留旧值而非清空
+            try? FileManager.default.removeItem(at: dir)
+            monitor.scanSync()
+            let second = monitor.lastWriteDates(for: [dir.path])[dir.path]
+            try expectEqual(second, first, "目录暂缺应保留旧值（只进不退）")
+        }
+
         TestKit.test("引擎: stop 后 scheduleNext 不再重建定时器，start 可恢复采样") {
             // 回归（阿剩低3）：stop() 置 running=false 后在飞回调不重建定时器；
             // stop→start 重启后采样恢复工作

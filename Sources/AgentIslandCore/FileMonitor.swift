@@ -52,7 +52,7 @@ public final class FileActivityMonitor: FileActivityProviding {
     /// 扫描最小间隔（引擎 working 时 2s 采样，扫描节流避免每拍全量扫）
     /// 实测单趟全量递归 2.9GB 会话树耗时 0.23-0.30s，3s 间隔 ≈ 持续 10% CPU；
     /// 提到 15s + 快跳过（见 runScan）后工作态开销降到 ~2%。
-    private let scanMinInterval: TimeInterval = 15.0
+    private let scanMinInterval: TimeInterval
     /// 目录级快跳过缓存：目录自身 mtime + 最近写入时间（mtime 未变且 newest 仍活跃 → 复用，零枚举）
     private var lastRootDates: [String: Date] = [:]
     /// 每目录上次全量扫描时间（快跳过兜底：深层写入不改变根 mtime，
@@ -62,8 +62,9 @@ public final class FileActivityMonitor: FileActivityProviding {
     /// 深层持续写入的文件信号最长延迟该周期即被发现（阿证实测原 600s 过长）
     private let forceRescanInterval: TimeInterval = 60
 
-    public init(maxDepth: Int = 4) {
+    public init(maxDepth: Int = 4, scanMinInterval: TimeInterval = 15.0) {
         self.maxDepth = maxDepth
+        self.scanMinInterval = scanMinInterval
     }
 
     // MARK: 协议实现
@@ -181,7 +182,13 @@ public final class FileActivityMonitor: FileActivityProviding {
         // 竞态防护（阿证低3）：扫描期间 watchedDirs 可能被 replaceWatchedDirs 替换，
         // 迟到的扫描结果只写回仍在监控的目录，已停用目录的脏数据丢弃
         let current = watchedDirs
-        cache = fresh.filter { current.contains($0.key) }
+        // 单调 merge（逐目录 max）：扫描失败/目录暂缺时保留旧值，写入时间只进不退——
+        // 本缓存是「最近写入时间」的唯一事实来源，消费方（引擎）直读，无需影子副本（C5）
+        for (dir, date) in fresh where current.contains(dir) {
+            if date > (cache[dir] ?? .distantPast) {
+                cache[dir] = date
+            }
+        }
         sessionCounts = freshCounts.filter { current.contains($0.key) }
         isScanning = false
         lastScanAt = Date()   // 记录完成时间（节流基准）
