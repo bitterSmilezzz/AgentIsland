@@ -1,16 +1,16 @@
 # AgentIsland — Agent 会话灵动岛监控器
 
-监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格悬浮卡片呈现在屏幕顶部，QQ 式贴边隐藏，不占桌面空间。
+监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现在**屏幕右缘的隐藏侧边栏**，收起时完全滑出屏幕、零占用，不打扰桌面。
 
-## 功能（v1.2）
+## 功能（v1.3）
 
 ### 灵动岛交互
-- **QQ 式贴边隐藏**：收起时只露 5px 细条（忙时深色+绿点，闲时浅色），触碰屏幕顶部或悬停细条即滑出卡片，移开 0.5s 自动收回
-- **忙碌提醒 peek**：Agent 从空闲变忙碌时细条下滑弹一下
+- **右侧隐藏侧边栏**：收起时整个面板滑出屏幕右缘外（屏幕上沿与右缘零常驻物）；鼠标碰屏幕右缘 24pt 热区即水平滑出，贴右缘垂直居中，移开按「自动收起延迟」收回
+- **忙碌提醒 peek**：Agent 从空闲变忙碌时侧边栏整体滑出提醒一下，再自动收回
 - **卡内三级导航**：主列表 → 点 Agent 行看详情（双口径总览 + 按模型拆分）→ 点模型看会话列表（时间/消息数/token/花费，点击跳 Finder 目录）
-- **玻璃拟态**：NSVisualEffectView(.hudWindow) + 动态蒙层，背景内容微透，与系统通知中心一致
+- **玻璃拟态**：NSVisualEffectView(.hudWindow) + 动态蒙层，背景内容微透，与系统通知中心一致；贴边造型仅左侧圆角
 - **浅色 / 深色 / 跟随系统**：设置里一键切换，颜色全动态适配
-- **菜单栏**：working 时图标变绿 + 圆点角标；下拉菜单精简（展开/收起、重置位置、设置、退出）
+- **菜单栏**：working 时图标变绿 + 圆点角标；下拉菜单精简（展开/收起、设置、退出）
 
 ### Token 用量统计
 - **DimAgent**：读取 `~/.dimcode/v2/dimcode.sqlite` 的 usage_ledger（token 精确统计）
@@ -22,14 +22,14 @@
 - **内置注册表 + 自动发现 + 自定义**：内置 10 条（按真实 bundle id 修正），启动扫描 /Applications + PATH 自动补充 CLI，设置里可添加自定义 Agent（进程名 + 会话目录）
 - **双信号判定**：`working` = 进程在 且（60s 内有文件写入 **或** CPU > 1%）；`idle` = 进程在但两者皆不满足；`offline` = 进程不在
 - **误报防护**：按完整路径匹配（非 basename），排除系统目录前缀（`/System/`、`/usr/libexec` 等）+ 黑名单（`CursorUIViewService`、`ssh-agent` 等）
-- **高性能**：进程快照一次 `ps` 复用全部 profile；文件扫描用批量枚举 API（getattrlistbulk）替代逐文件 syscall，3s 节流 + 5s 会话数缓存，CPU 占用 <1%
+- **高性能**：进程快照一次 libproc 遍历（proc_listpids/proc_pidpath）复用全部 profile，CPU 用两次采样差分；文件扫描后台递归 + 15s 节流 + 快跳过缓存，工作态开销约 2%
 
 ### 生命周期
 - **节电平衡模式**：有活动 2s 采样，全闲置降频 15s
-- **多屏跟随**：岛显示在鼠标所在屏幕顶部
+- **多屏跟随**：侧边栏显示在鼠标所在屏幕的右缘
 - **全屏 Space 跟随**（fullScreenAuxiliary）
 - **开机自启**：设置里开关（SMAppService），默认关
-- **设置实时生效**：启停开关、阈值、采样间隔、外观直接接入，无需重启
+- **设置实时生效**：启停开关、阈值、采样间隔、收起延迟、外观直接接入，无需重启
 
 ### 其他
 - 只读监控：不读取任何会话内容，不需要辅助功能/完全磁盘访问权限
@@ -45,7 +45,7 @@
 本机无 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
-# 开发构建 + 自建测试套件（27 用例，含状态机/双信号/误报排除/文件监控/token 统计）
+# 开发构建 + 自建测试套件（48 用例，含状态机/双信号/误报排除/文件监控/token 统计/设置规则）
 swift build
 .build/debug/AgentIslandTestsRunner     # 测试
 .build/debug/AgentIsland --selftest     # 进程内自检
@@ -70,18 +70,22 @@ AgentIsland/
 │   └── make-icon.swift               # 灵动岛风格图标生成
 ├── Sources/
 │   ├── AgentIslandCore/              # 核心库（可被测试 import）
-│   │   ├── Models.swift              # ActivityLevel / AgentProfile / AgentSnapshot / EngineConfig
-│   │   ├── AgentRegistry.swift       # 内置集 + 自动发现 + 自定义存储
-│   │   ├── ProcessMonitor.swift      # ps 快照（路径+CPU）/ 系统路径过滤 / 黑名单 / matcher
-│   │   ├── FileMonitor.swift         # 后台批量枚举扫描 + 节流 + 缓存（主线程只读）
-│   │   ├── TokenUsageMonitor.swift   # token 用量统计（dimcode.sqlite / opencode.db 只读查询）
-│   │   ├── ActivityEngine.swift      # 双信号状态机 + 节电动态采样 + 启停接线
+│   │   ├── Models.swift              # ActivityLevel / AgentProfile / AgentSnapshot / EngineConfig（含归一化/持久化读取）
+│   │   ├── AgentRegistry.swift       # 内置集 + 自动发现 + 自定义存储（无全局状态）
+│   │   ├── InstalledAppsCache.swift  # 已安装 CLI/bundle 缓存（注入实例，扫描器可替换）
+│   │   ├── SettingsStore.swift       # SettingKey 键名 + EnabledAgentStore 启停集合持久化
+│   │   ├── ProcessMonitor.swift      # libproc 快照（路径+CPU差分）/ 系统路径过滤 / 黑名单 / matcher / 测试 fake
+│   │   ├── FileMonitor.swift         # 后台递归扫描 + 节流 + 单调 merge 缓存（主线程只读）
+│   │   ├── TokenUsageMonitor.swift   # token 用量统计（dimcode.sqlite / opencode.db 只读查询）+ 轮询/查询协议 seam
+│   │   ├── ActivityEngine.swift      # 双信号状态机 + 节电动态采样 + 呈现活跃单一 owner
 │   │   ├── Probe.swift               # --probe 无头探测
 │   │   └── Selftest.swift            # --selftest 进程内自检
 │   └── AgentIsland/                  # UI（SwiftUI + AppKit）
-│       ├── AgentIslandApp.swift      # @main + MenuBarExtra + AppContext 单例
-│       ├── IslandPanel.swift         # NSPanel 控制器（docked/expanded 状态机 + 多屏跟随 + peek）
-│       ├── IslandView.swift          # 玻璃拟态卡片 + QQ 交互 + 贴边细条
+│       ├── AgentIslandApp.swift      # @main + MenuBarExtra + AppContext 组合根
+│       ├── IslandPanel.swift         # NSPanel 控制器（右缘锚定/隐藏滑出/热区监控/peek）
+│       ├── IslandView.swift          # 玻璃拟态卡片 + 三级导航
+│       ├── IslandMetrics.swift       # 窗口几何唯一事实来源（尺寸常量 + 高度纯函数）
+│       ├── IslandComponents.swift    # 共享 UI 基元（卡壳/hover 行/分割线/loading）
 │       ├── DetailViews.swift         # 卡内二级/三级详情页（模型拆分 + 会话列表）
 │       ├── SettingsView.swift        # 设置（启停/自定义/参数/自启/外观）
 │       └── Theme.swift               # Apple 设计令牌 + 动态色（浅色/深色适配）
@@ -104,9 +108,9 @@ AgentIsland/
         · 进程在但静默                    → idle
         · 进程不在                        → offline
                   ▼
-        IslandPanel（NSPanel，非激活置顶，多屏跟随，全屏跟随）
-        · docked：176×5 贴边细条（忙绿点/闲浅色）
-        · expanded：280 宽玻璃卡片（列表/详情/会话三级导航）
+        IslandPanel（NSPanel，非激活置顶，右缘锚定，全屏跟随）
+        · docked：滑出屏幕右缘外（完全隐藏，零残条）
+        · expanded：280 宽玻璃卡片贴右缘（列表/详情/会话三级导航）
 ```
 
 ## 已知限制
@@ -114,4 +118,4 @@ AgentIsland/
 - 「会话进行中」以进程 + 文件写入/CPU 为信号，无法区分「思考中/已暂停」（不读内容，隐私优先）
 - Token 统计仅覆盖有本地数据源的 agent（DimAgent / OpenCode）；其他 agent 无本地 usage 记录则不显示
 - 闲置降频 15s 时，Agent 开始工作的检测最多延迟一个采样周期（可调「闲置降频间隔」）
-- 多显示器跟随鼠标所在屏（NSScreen.screens）
+- 多显示器跟随鼠标所在屏的右缘（NSScreen.screens）

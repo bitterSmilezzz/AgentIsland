@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 顶部零常驻物；收起态右缘无残条（完全屏外）
 - [ ] 右缘热区滑出/离开收回/peek 滑出提醒/菜单 toggle 全通
@@ -15,3 +15,4 @@
 ## Comments
 
 - 2026-09-06 发布（弹窗未答，按推荐执行；用户可随时要求调回）。
+- 2026-09-06 完成。人工视觉验收待用户：右缘滑出/收回/peek/三路由。
