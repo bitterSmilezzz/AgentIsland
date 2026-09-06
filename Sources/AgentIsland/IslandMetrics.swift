@@ -9,9 +9,6 @@ enum IslandMetrics {
 
     // MARK: 窗口尺寸
 
-    /// docked 细条尺寸（与 IslandView.dockedSliver 的 frame 同源）
-    static let dockedWidth: CGFloat = 176
-    static let dockedHeight: CGFloat = 5
     /// 展开卡宽度（IslandView 展开卡 / DetailViews 两页的 .frame(width:) 同源）
     static let cardWidth: CGFloat = 280
     /// 展开高度上限（内容超出即滚动）

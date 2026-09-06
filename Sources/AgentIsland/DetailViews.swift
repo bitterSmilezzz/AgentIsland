@@ -8,11 +8,8 @@ import SwiftUI
 
 struct DetailHeader: View {
     let title: String
-    var subtitle: String?
+    let subtitle: String?
     let onBack: () -> Void
-    /// 拖动整卡（与主列表顶栏一致；由外部传入 controller 的 drag 处理）
-    var onDragMoved: ((CGSize) -> Void)?
-    var onDragEnded: (() -> Void)?
     @State private var backHovered = false
 
     var body: some View {
@@ -49,8 +46,6 @@ struct DetailHeader: View {
         .padding(.horizontal, Theme.pageMargin)
         .padding(.top, IslandMetrics.detailHeaderPaddingTop)
         .padding(.bottom, IslandMetrics.detailHeaderPaddingBottom)
-        .contentShape(Rectangle())
-        .cardDrag(onMoved: { onDragMoved?($0) }, onEnded: { onDragEnded?() })
     }
 }
 
@@ -76,9 +71,7 @@ struct AgentDetailView: View {
                          subtitle: usage.map {
                              "24h \(TokenUsage.compact($0.tokens24h)) · 累计 \(TokenUsage.compact($0.tokensTotal))"
                          },
-                         onBack: { controller.route = .list },
-                         onDragMoved: { controller.dragMoved(translation: $0) },
-                         onDragEnded: { controller.dragEnded() })
+                         onBack: { controller.route = .list })
 
             DarkDivider()
 
@@ -266,9 +259,7 @@ struct SessionListView: View {
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(title: modelId,
                          subtitle: "\(sessions.count) 个会话",
-                         onBack: { controller.route = .agentDetail(agentId) },
-                         onDragMoved: { controller.dragMoved(translation: $0) },
-                         onDragEnded: { controller.dragEnded() })
+                         onBack: { controller.route = .agentDetail(agentId) })
 
             DarkDivider()
 

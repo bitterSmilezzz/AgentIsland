@@ -7,16 +7,24 @@ import AppKit
 struct GlassCardBackground: View {
     var cornerRadius: CGFloat = Theme.radiusLg
 
+    /// 侧边栏贴边造型：右缘 flush 直角、仅左侧两角圆角
+    private var edgeShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: cornerRadius,
+                               bottomLeadingRadius: cornerRadius,
+                               bottomTrailingRadius: 0,
+                               topTrailingRadius: 0,
+                               style: .continuous)
+    }
+
     var body: some View {
         ZStack {
             VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .clipShape(edgeShape)
             // 蒙层：深色下黑蒙，浅色下白蒙（动态）
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            edgeShape
                 .fill(Color(dynamicLight: 0xffffff, dark: 0x000000).opacity(Theme.glassOverlayOpacity))
             // 无描边：灵动岛悬浮质感靠材质对比 + 阴影，描边在浅色下会呈现为矩形框
         }
-        // 阴影由 ShadowHostView（AppKit layer）绘制，这里不再加 SwiftUI 阴影
     }
 }
 
@@ -41,8 +49,8 @@ struct VisualEffectView: NSViewRepresentable {
 // MARK: - 灵动岛视图状态
 
 enum IslandDisplayState: Equatable {
-    case docked         // QQ 式贴边细条（始终可见，仅露 5px）
-    case expanded       // 下拉展开卡片（多内容）
+    case docked         // 隐藏：整个面板滑出屏幕右缘外（零残条）
+    case expanded       // 侧边栏：贴右缘 flush、垂直居中
 }
 
 // MARK: - 卡内导航（主列表 → agent 详情 → 模型会话列表）
@@ -65,71 +73,25 @@ struct IslandView: View {
     // 可见列表统一走 engine.visibleSnapshots（口径单一实现，防漏改）
 
     var body: some View {
-        ZStack(alignment: .top) {
-            if controller.displayState == .expanded {
-                Group {
-                    switch controller.route {
-                    case .list:
-                        expandedCard
-                    case .agentDetail(let agentId):
-                        AgentDetailView(engine: engine, controller: controller, agentId: agentId)
-                    case .sessions(let agentId, let modelId):
-                        SessionListView(engine: engine, controller: controller,
-                                        agentId: agentId, modelId: modelId)
-                    }
-                }
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.85, anchor: .top)),
-                    removal: .opacity.combined(with: .scale(scale: 0.85, anchor: .top))
-                ))
-            } else {
-                dockedSliver
-                    .transition(.opacity)
+        Group {
+            switch controller.route {
+            case .list:
+                expandedCard
+            case .agentDetail(let agentId):
+                AgentDetailView(engine: engine, controller: controller, agentId: agentId)
+            case .sessions(let agentId, let modelId):
+                SessionListView(engine: engine, controller: controller,
+                                agentId: agentId, modelId: modelId)
             }
         }
-        // 成对弹簧（boring.notch 最佳实践）：展开有回弹，收起零过冲更干脆
-        .animation(controller.displayState == .expanded
-                   ? .spring(response: 0.42, dampingFraction: 0.8)
-                   : .spring(response: 0.45, dampingFraction: 1.0),
-                   value: controller.displayState)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: controller.route)
-        .onHover { hovering in
-            controller.islandHoveredChanged(hovering)
-        }
     }
 
-    // MARK: 贴边细条（E1：QQ 式收起态，仅露 5px；E3：忙闲都常驻）
-
-    private var dockedSliver: some View {
-        Capsule()
-            // 浅色模式主体加深：5pt 细条在亮壁纸上 0.22 几乎不可见，0.34 起才稳定可见
-            // 动态色随面板 effectiveAppearance 切换（避免 @Environment(\.colorScheme) 与强制外观不同步）
-            .fill(Theme.dockedSliverFill(working: engine.anyWorking))
-            .overlay(alignment: .leading) {
-                // 忙碌时左侧一粒绿点（细条内的微状态提示）
-                if engine.anyWorking {
-                    Circle()
-                        .fill(Theme.statusWorking)
-                        .frame(width: 3, height: 3)
-                        .padding(.leading, 3)
-                }
-            }
-            .overlay(Capsule().strokeBorder(Theme.dockedSliverStroke, lineWidth: 0.5))
-            .frame(width: IslandMetrics.dockedWidth, height: IslandMetrics.dockedHeight)
-            .contentShape(Capsule())
-            // 点击细条兜底展开（悬停通常已展开；防止 mouseMoved 事件被系统吞掉时无响应）
-            .onTapGesture {
-                if controller.displayState == .docked {
-                    controller.toggle()
-                }
-            }
-    }
-
-    // MARK: 展开卡片
+    // MARK: 侧边栏卡片
 
     private var expandedCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 顶栏：状态摘要（D3：顶栏可拖动整卡）
+            // 顶栏：状态摘要
             HStack(spacing: 8) {
                 statusDot
                     .frame(width: 9, height: 9)
@@ -146,9 +108,6 @@ struct IslandView: View {
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, IslandMetrics.headerPaddingTop)
             .padding(.bottom, IslandMetrics.headerPaddingBottom)
-            .contentShape(Rectangle())
-            .cardDrag(onMoved: { controller.dragMoved(translation: $0) },
-                      onEnded: { controller.dragEnded() })
 
             DarkDivider()
 

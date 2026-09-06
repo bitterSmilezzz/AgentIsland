@@ -61,24 +61,3 @@ struct CenteredSpinner: View {
     }
 }
 
-// MARK: 卡片拖动手势
-
-/// 顶栏拖动整卡（3pt 起拖阈值；主列表顶栏与详情页顶栏统一入口）
-private struct CardDrag: ViewModifier {
-    let onMoved: (CGSize) -> Void
-    let onEnded: () -> Void
-
-    func body(content: Content) -> some View {
-        content.gesture(
-            DragGesture(minimumDistance: 3)
-                .onChanged { onMoved($0.translation) }
-                .onEnded { _ in onEnded() }
-        )
-    }
-}
-
-extension View {
-    func cardDrag(onMoved: @escaping (CGSize) -> Void, onEnded: @escaping () -> Void) -> some View {
-        modifier(CardDrag(onMoved: onMoved, onEnded: onEnded))
-    }
-}

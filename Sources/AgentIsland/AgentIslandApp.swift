@@ -106,9 +106,6 @@ struct MenuBarMenuView: View {
         Button("设置…") {
             NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         }
-        Button("重置岛位置") {
-            AppContext.shared.controller.resetPosition()
-        }
         Button("退出") { NSApp.terminate(nil) }
     }
 }
