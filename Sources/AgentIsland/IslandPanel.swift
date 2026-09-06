@@ -84,15 +84,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         panel.animationBehavior = .none
         panel.delegate = self
         panel.isRestorable = false
-        applyAppearance()
-
-        // 设置窗口切换外观时实时生效（显式通知，可靠）
-        NotificationCenter.default.publisher(for: .islandAppearanceChanged)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.applyAppearance()
-            }
-            .store(in: &cancellables)
+        applyAppearance(Self.persistedAppearance())
 
         let content = IslandView(
             engine: engine,
@@ -141,11 +133,14 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             .store(in: &cancellables)
     }
 
-    /// 应用外观设置（浅色/深色/跟随系统）到悬浮面板
-    private func applyAppearance() {
-        let raw = UserDefaults.standard.string(forKey: "islandAppearance")
-        let mode = IslandAppearance(rawValue: raw ?? "") ?? .system
+    /// 应用外观设置（浅色/深色/跟随系统）到悬浮面板（设置页直调，带 payload）
+    func applyAppearance(_ mode: IslandAppearance) {
         panel.appearance = mode.nsAppearance
+    }
+
+    /// 启动时的持久化外观（键唯一来源 SettingKey；运行期变更由设置页直调，不回读）
+    private static func persistedAppearance() -> IslandAppearance {
+        IslandAppearance(rawValue: UserDefaults.standard.string(forKey: SettingKey.islandAppearance) ?? "") ?? .system
     }
 
     private func observe() {

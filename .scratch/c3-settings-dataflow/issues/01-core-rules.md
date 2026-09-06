@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] normalized 三态用例：半值自愈（0.5→1）/ 超上限（100→50）/ sample>idle 钳平 / 正常值不动
 - [ ] load 用例：无键返回默认 / 脏值归一化；store 三态用例（nil / 空数组 / 有值往返）
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布。
+- 2026-09-06 完成（随中断恢复核对）。5 组用例全绿，suiteName 隔离达成。

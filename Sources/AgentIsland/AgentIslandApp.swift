@@ -18,29 +18,16 @@ final class AppContext {
         return c
     }
 
-    /// 读取启停集合（设置界面持久化），无记录时用 defaultEnabled；
-    /// 注意：用户主动全关会存「空数组」，不能当作无记录回退默认
-    private static func loadEnabledIDs(defaultRegistry: [AgentProfile]) -> Set<String> {
-        if let data = UserDefaults.standard.data(forKey: "enabledAgents"),
-           let saved = try? JSONDecoder().decode([String].self, from: data) {
-            return Set(saved)
-        }
-        return Set(defaultRegistry.filter(\.defaultEnabled).map(\.id))
+    /// 启停集读取：无记录（nil）回退 defaultEnabled 集；空数组是主动全关，照常生效
+    private static func enabledOrDefault(registry: [AgentProfile]) -> Set<String> {
+        EnabledAgentStore.load() ?? Set(registry.filter(\.defaultEnabled).map(\.id))
     }
 
     private init() {
-        // 从 UserDefaults 读取设置参数（SettingsView 同步写入）
-        let ud = UserDefaults.standard
-        let config = EngineConfig(
-            sampleInterval: ud.object(forKey: "sampleInterval") as? Double ?? 2.0,
-            idleSampleInterval: ud.object(forKey: "idleSampleInterval") as? Double ?? 15.0,
-            workingWindow: ud.object(forKey: "workingWindow") as? Double ?? 60.0,
-            cpuThreshold: min(max((ud.object(forKey: "cpuThreshold") as? Double) ?? 1.0, 1.0), 50.0),
-            activeSessionWindow: ud.object(forKey: "activeSessionWindow") as? Double ?? 600.0,
-            collapseDelay: ud.object(forKey: "collapseDelay") as? Double ?? 0.5
-        )
+        // 配置：Core 唯一读取路径（缺项回落默认 + 归一化启动自愈脏值）
+        let config = EngineConfig.load(from: .standard)
         let registry = AgentRegistry.fullRegistry()
-        let enabled = AppContext.loadEnabledIDs(defaultRegistry: registry)
+        let enabled = Self.enabledOrDefault(registry: registry)
         engine = ActivityEngine(
             profiles: registry.filter { enabled.contains($0.id) },
             config: config
@@ -57,9 +44,7 @@ final class AppContext {
                 // 先标记已刷再 setEnabled（阿剩中：setEnabled 内部同步 sample → sampleCore
                 // 会检查 lastInstalledRefresh；顺序颠倒则双扫未根除）
                 self.engine.markInstalledRefreshed()
-                let registry = AgentRegistry.fullRegistry()
-                let enabled = AppContext.loadEnabledIDs(defaultRegistry: registry)
-                self.engine.setEnabled(enabled)
+                self.engine.setEnabled(Self.enabledOrDefault(registry: AgentRegistry.fullRegistry()))
             }
         }
     }

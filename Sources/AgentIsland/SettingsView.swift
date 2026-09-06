@@ -10,15 +10,16 @@ struct SettingsView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
 
-    @AppStorage("workingWindow") private var workingWindow: Double = 60
-    @AppStorage("sampleInterval") private var sampleInterval: Double = 2
-    @AppStorage("idleSampleInterval") private var idleSampleInterval: Double = 15
-    @AppStorage("cpuThreshold") private var cpuThreshold: Double = 1
-    @AppStorage("activeSessionWindow") private var activeSessionWindow: Double = 600
-    @AppStorage("collapseDelay") private var collapseDelay: Double = 0.5
-    @AppStorage("launchAtLogin") private var launchAtLogin = false
-    @AppStorage("islandAppearance") private var islandAppearanceRaw = IslandAppearance.system.rawValue
-    @AppStorage("enabledAgents") private var enabledAgentsData: Data = Data()
+    private static let defaultConfig = EngineConfig()
+
+    @AppStorage(SettingKey.workingWindow) private var workingWindow: Double = SettingsView.defaultConfig.workingWindow
+    @AppStorage(SettingKey.sampleInterval) private var sampleInterval: Double = SettingsView.defaultConfig.sampleInterval
+    @AppStorage(SettingKey.idleSampleInterval) private var idleSampleInterval: Double = SettingsView.defaultConfig.idleSampleInterval
+    @AppStorage(SettingKey.cpuThreshold) private var cpuThreshold: Double = SettingsView.defaultConfig.cpuThreshold
+    @AppStorage(SettingKey.activeSessionWindow) private var activeSessionWindow: Double = SettingsView.defaultConfig.activeSessionWindow
+    @AppStorage(SettingKey.collapseDelay) private var collapseDelay: Double = SettingsView.defaultConfig.collapseDelay
+    @AppStorage(SettingKey.launchAtLogin) private var launchAtLogin = false
+    @AppStorage(SettingKey.islandAppearance) private var islandAppearanceRaw = IslandAppearance.system.rawValue
 
     private var islandAppearance: Binding<IslandAppearance> {
         Binding(
@@ -192,30 +193,13 @@ struct SettingsView: View {
             }
         }
         .sheet(isPresented: $showAddCustom) {
+            // 冲突集合 = 「已安装 或 已启用」条目的进程名（规则与推导在 AgentRegistry，Core 可测）
             AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id)),
-                                knownProcessNames: Self.conflictProcessNames(engine: engine)) { profile in
+                                knownProcessNames: AgentRegistry.conflictingProcessNames(
+                                    enabledIDs: Set(engine.allProfiles.map(\.id)))) { profile in
                 addCustom(profile)
             }
         }
-    }
-
-    /// 冲突校验进程名集合：覆盖「已安装 或 已启用」的全部条目（内置+自动发现+自定义）。
-    /// - 已启用条目：同进程名必然双份计数，必须拦（阿剩第五轮基础）
-    /// - 已安装但禁用的内置：日后启用会同进程双份，也要拦（阿剩第六轮指正——仅引擎启用集漏检）
-    /// - 未安装的 CLI：进程不会运行，同进程名无实际冲突，不误拦（第五轮「未安装不误拦」）
-    private static func conflictProcessNames(engine: ActivityEngine) -> [String] {
-        let installedCLIs = AgentRegistry.installedCLIs()
-        let installedBundles = AgentRegistry.installedBundleIDs()
-        var names = Set<String>()
-        for p in AgentRegistry.fullRegistry() {
-            let installed = p.bundleIDs.contains { installedBundles.contains($0.lowercased()) }
-                || p.processNames.contains { installedCLIs.contains($0.lowercased()) }
-            let enabled = engine.allProfiles.contains { $0.id == p.id }
-            if installed || enabled {
-                names.formUnion(p.processNames.map { $0.lowercased() })
-            }
-        }
-        return Array(names)
     }
 
     // MARK: 外观
@@ -233,8 +217,8 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
             .onChange(of: islandAppearanceRaw) { _ in
-                // 显式通知面板实时切换（不依赖跨进程 UserDefaults 通知）
-                NotificationCenter.default.post(name: .islandAppearanceChanged, object: nil)
+                // 直调面板实时生效（带 payload，无通知/回读绕路）
+                controller.applyAppearance(IslandAppearance(rawValue: islandAppearanceRaw) ?? .system)
             }
             Text("控制灵动岛卡片的配色；设置窗口本身跟随系统。")
                 .font(Theme.bodyFont(10))
@@ -253,7 +237,7 @@ struct SettingsView: View {
             sliderRow(title: "「工作中」写入窗口", value: $workingWindow, range: 10...300, unit: "秒")
             // range 1...50（阿菜低：之前 0.5...50 + step 1 档位全是半值 0.5/1.5/2.5…，
             // 默认 1 不在档位上首次拖动即跳变）
-            sliderRow(title: "CPU 判定阈值", value: $cpuThreshold, range: 1...50, unit: "%")
+            sliderRow(title: "CPU 判定阈值", value: $cpuThreshold, range: EngineConfig.cpuThresholdRange, unit: "%")
             sliderRow(title: "活跃会话窗口", value: $activeSessionWindow, range: 60...3600, unit: "秒")
             sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
             sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
@@ -331,12 +315,8 @@ struct SettingsView: View {
         // 启停集合：以引擎当前启用集为准（避免界面显示与引擎实态脱节——
         // 之前用 fullRegistry().filter(defaultEnabled) 会把自动发现项一次性显示为开，
         // 但引擎首启只启用内置，切换任意开关会把所有自动发现项塞进引擎）。
-        // 注意：用户主动全关会存「空数组」，不算无记录，不能回退默认。
-        if let saved = try? JSONDecoder().decode([String].self, from: enabledAgentsData) {
-            enabledAgents = Set(saved)
-        } else {
-            enabledAgents = Set(engine.allProfiles.map(\.id))
-        }
+        // 无记录（nil）回退引擎当前集；空数组是主动全关，照常显示为全关。
+        enabledAgents = EnabledAgentStore.load() ?? Set(engine.allProfiles.map(\.id))
         // 自定义条目
         customProfiles = AgentRegistry.loadCustomProfiles()
         // 参数同步到引擎
@@ -346,22 +326,26 @@ struct SettingsView: View {
     }
 
     private func applyConfig() {
-        // cpuThreshold 自愈钳制 1...50：旧版持久化残留半值（0.5/1.5/2.5…）升级后
-        // thumb 被 slider range 钳制但 @AppStorage 值与引擎读值不钳（阿菜记录在案）；
-        // 这里直接写回 UserDefaults 一次清掉脏值，标签/引擎/持久化三者同步
-        if cpuThreshold < 1 || cpuThreshold > 50 {
-            cpuThreshold = min(max(cpuThreshold, 1), 50)
-        }
-        // 参数钳制：sample ≤ idle（否则「闲置降频」逻辑反转）
-        if sampleInterval > idleSampleInterval {
-            sampleInterval = idleSampleInterval
-        }
-        engine.config.sampleInterval = sampleInterval
-        engine.config.idleSampleInterval = idleSampleInterval
-        engine.config.workingWindow = workingWindow
-        engine.config.cpuThreshold = cpuThreshold
-        engine.config.activeSessionWindow = activeSessionWindow
-        engine.config.collapseDelay = collapseDelay
+        // 归一化唯一实现在 EngineConfig.normalized（cpuThreshold 区间自愈 + sample≤idle 钳平），
+        // 表单/引擎/持久化三方共用同一规则
+        let normalized = EngineConfig(
+            sampleInterval: sampleInterval,
+            idleSampleInterval: idleSampleInterval,
+            workingWindow: workingWindow,
+            cpuThreshold: cpuThreshold,
+            activeSessionWindow: activeSessionWindow,
+            collapseDelay: collapseDelay
+        ).normalized()
+        // 回写归一化结果：表单/持久化与引擎同源（normalized 未来扩展钳制字段时此处零跟进；
+        // 旧版半值残留即在此写回清除，阿菜记录在案）
+        sampleInterval = normalized.sampleInterval
+        idleSampleInterval = normalized.idleSampleInterval
+        workingWindow = normalized.workingWindow
+        cpuThreshold = normalized.cpuThreshold
+        activeSessionWindow = normalized.activeSessionWindow
+        collapseDelay = normalized.collapseDelay
+        // 一次性赋值：config didSet 触发一次（原逐属性六次触发、五次冗余重启定时器）
+        engine.config = normalized
     }
 
     private func applyLaunchAtLogin(_ enabled: Bool) {
@@ -399,9 +383,8 @@ struct SettingsView: View {
     }
 
     private func saveEnabled() {
-        if let data = try? JSONEncoder().encode(Array(enabledAgents)) {
-            enabledAgentsData = data
-        }
+        // 空集合是有意全关，照常写入（语义单点在 EnabledAgentStore）
+        EnabledAgentStore.save(enabledAgents)
     }
 
     // MARK: - 自定义增删
@@ -488,8 +471,7 @@ struct AddCustomAgentSheet: View {
     }
     private var duplicateID: Bool {
         let trimmed = processName.trimmingCharacters(in: .whitespaces)
-        let id = "custom-\(trimmed.lowercased().replacingOccurrences(of: " ", with: "-"))"
-        return existingIDs.contains(id)
+        return existingIDs.contains(AgentProfile.makeCustomID(trimmed))
     }
     /// 与内置/自动发现/已存自定义的进程名冲突（同一进程会被双份匹配计数）
     private var nameConflict: Bool {
@@ -534,7 +516,7 @@ struct AddCustomAgentSheet: View {
                 Button("添加") {
                     let trimmedName = name.trimmingCharacters(in: .whitespaces)
                     let trimmedProc = processName.trimmingCharacters(in: .whitespaces)
-                    let id = "custom-\(trimmedProc.lowercased().replacingOccurrences(of: " ", with: "-"))"
+                    let id = AgentProfile.makeCustomID(trimmedProc)
                     let dirs = sessionDir.isEmpty
                         ? []
                         : [(sessionDir as NSString).expandingTildeInPath]

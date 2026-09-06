@@ -386,8 +386,3 @@ extension ActivityLevel {
         }
     }
 }
-
-extension Notification.Name {
-    /// 设置窗口切换外观模式（同进程内可靠触发）
-    static let islandAppearanceChanged = Notification.Name("islandAppearanceChanged")
-}

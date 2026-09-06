@@ -78,9 +78,9 @@ enum RegistryTests {
             // 模拟「用户主动全关」：写入空数组后，读取路径应返回空而非默认集
             let empty: [String] = []
             if let data = try? JSONEncoder().encode(empty) {
-                UserDefaults.standard.set(data, forKey: "enabledAgents")
-                defer { UserDefaults.standard.removeObject(forKey: "enabledAgents") }
-                let raw = UserDefaults.standard.data(forKey: "enabledAgents")
+                UserDefaults.standard.set(data, forKey: SettingKey.enabledAgents)
+                defer { UserDefaults.standard.removeObject(forKey: SettingKey.enabledAgents) }
+                let raw = UserDefaults.standard.data(forKey: SettingKey.enabledAgents)
                 let decoded = raw.flatMap { try? JSONDecoder().decode([String].self, from: $0) }
                 try expectEqual(decoded ?? ["sentinel"], [], "空数组应解码为空集（无记录才算默认）")
             }

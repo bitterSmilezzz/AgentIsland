@@ -219,7 +219,7 @@ public enum AgentRegistry {
     // MARK: - 用户自定义（UserDefaults）
 
     public static func loadCustomProfiles() -> [AgentProfile] {
-        guard let data = UserDefaults.standard.data(forKey: "customAgents"),
+        guard let data = UserDefaults.standard.data(forKey: SettingKey.customAgents),
               let list = try? JSONDecoder().decode([AgentProfile].self, from: data) else {
             return []
         }
@@ -228,7 +228,7 @@ public enum AgentRegistry {
 
     public static func saveCustomProfiles(_ profiles: [AgentProfile]) {
         if let data = try? JSONEncoder().encode(profiles) {
-            UserDefaults.standard.set(data, forKey: "customAgents")
+            UserDefaults.standard.set(data, forKey: SettingKey.customAgents)
         }
     }
 
