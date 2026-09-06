@@ -136,8 +136,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         return _grandTotal
     }
 
-    private let dimAgentDB = NSString(string: "~/.dimcode/v2/dimcode.sqlite").expandingTildeInPath
-    private let openCodeDB = NSString(string: "~/.local/share/opencode/opencode.db").expandingTildeInPath
+    private let dimAgentDB: String
+    private let openCodeDB: String
 
     /// SQLite 只读连接缓存（复用避免每查询 open/close）；查询统一走串行队列保证连接线程安全
     private var dbConnections: [String: OpaquePointer] = [:]
@@ -145,7 +145,12 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private var dbInodes: [String: UInt64] = [:]
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
-    public init() {}
+    /// 数据库路径构造注入（接受依赖，不自行定位；默认现网双源路径，测试传 fixture 临时库）
+    public init(dimAgentDB: String = NSString(string: "~/.dimcode/v2/dimcode.sqlite").expandingTildeInPath,
+                openCodeDB: String = NSString(string: "~/.local/share/opencode/opencode.db").expandingTildeInPath) {
+        self.dimAgentDB = dimAgentDB
+        self.openCodeDB = openCodeDB
+    }
 
     public func start(interval: TimeInterval = TokenUsagePollingDefaults.interval) {
         guard timer == nil else { return }
