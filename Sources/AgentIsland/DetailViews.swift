@@ -10,6 +10,8 @@ struct DetailHeader: View {
     let title: String
     let subtitle: String?
     let onBack: () -> Void
+    var onMoved: ((CGSize) -> Void)? = nil
+    var onEnded: (() -> Void)? = nil
     @State private var backHovered = false
 
     var body: some View {
@@ -46,6 +48,11 @@ struct DetailHeader: View {
         .padding(.horizontal, Theme.pageMargin)
         .padding(.top, IslandMetrics.detailHeaderPaddingTop)
         .padding(.bottom, IslandMetrics.detailHeaderPaddingBottom)
+        .contentShape(Rectangle())
+        .cardDrag(
+            onMoved: { onMoved?($0) },
+            onEnded: { onEnded?() }
+        )
     }
 }
 
@@ -71,7 +78,9 @@ struct AgentDetailView: View {
                          subtitle: usage.map {
                              "24h \(TokenUsage.compact($0.tokens24h)) · 累计 \(TokenUsage.compact($0.tokensTotal))"
                          },
-                         onBack: { controller.route = .list })
+                         onBack: { controller.route = .list },
+                         onMoved: { controller.dragMoved(translation: $0) },
+                         onEnded: { controller.dragEnded() })
 
             DarkDivider()
 
@@ -110,7 +119,7 @@ struct AgentDetailView: View {
                 }
             }
         }
-        .cardShell()
+        .cardShell(dockEdge: controller.dockEdge)
         .task(id: agentId) {
             loading = true
             models = []
@@ -259,7 +268,9 @@ struct SessionListView: View {
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(title: modelId,
                          subtitle: "\(sessions.count) 个会话",
-                         onBack: { controller.route = .agentDetail(agentId) })
+                         onBack: { controller.route = .agentDetail(agentId) },
+                         onMoved: { controller.dragMoved(translation: $0) },
+                         onEnded: { controller.dragEnded() })
 
             DarkDivider()
 
@@ -293,7 +304,7 @@ struct SessionListView: View {
                 }
             }
         }
-        .cardShell()
+        .cardShell(dockEdge: controller.dockEdge)
         .task(id: "\(agentId)/\(modelId)") {
             loading = true
             sessions = []

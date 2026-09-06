@@ -61,11 +61,11 @@ struct AgentIslandApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarMenuView(controller: AppContext.shared.controller, engine: AppContext.shared.engine)
+            MenuBarPopoverView(controller: AppContext.shared.controller, engine: AppContext.shared.engine)
         } label: {
             MenuBarIconView(engine: AppContext.shared.engine)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(engine: AppContext.shared.engine,
@@ -75,38 +75,210 @@ struct AgentIslandApp: App {
     }
 }
 
-// MARK: - 菜单内容视图
+// MARK: - 菜单栏 Popover 内容视图（Compact Island Popover）
 
-struct MenuBarMenuView: View {
+struct MenuBarPopoverView: View {
     @ObservedObject var controller: IslandPanelController
     @ObservedObject var engine: ActivityEngine
 
     var body: some View {
-        // 可发现性提示（M2）：两级交互入口语义分离，首行说明
-        Text("提示：鼠标碰屏幕顶部滑出卡片")
-            .font(Theme.bodyFont(11))
-            .foregroundColor(Theme.inkMuted48)
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 10) {
+            // 顶部状态条
+            headerBar
 
-        Divider()
+            Divider()
 
-        // 状态摘要（M1）：忙碌时带工作数；全离线时菜单仍可展开（空态有提示价值）
-        // 口径与展开卡片一致：统一走 engine.visibleSnapshots（阿剩低2/阿菜低2）
-        let workingCount = engine.workingAgents().count
-        let anyOfflineOnly = engine.visibleSnapshots.isEmpty
-        Button(controller.displayState == .expanded
-               ? "收起灵动岛"
-               : (anyOfflineOnly ? "展开灵动岛（暂无 Agent 在线）" : "展开灵动岛\(workingCount > 0 ? "（\(workingCount) 个工作中）" : "")")) {
-            controller.toggle()
+            // 活跃 Agent 微缩列表
+            agentQuickSection
+
+            // Token 概览
+            if !engine.grandTotal.isEmpty {
+                Divider()
+                tokenMiniSummary
+            }
+
+            Divider()
+
+            // 底部操作栏
+            actionBar
         }
+        .padding(14)
+        .frame(width: 300)
+        .background(Theme.canvas)
+    }
 
-        Divider()
+    // MARK: 顶部状态条
+    private var headerBar: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+                .overlay(
+                    Circle()
+                        .stroke(statusColor.opacity(0.4), lineWidth: engine.anyWorking ? 3 : 0)
+                        .scaleEffect(engine.anyWorking ? 1.4 : 1.0)
+                )
 
-        // 打开 Settings 场景：@State 布尔不会触发窗口，必须发系统动作（macOS 13 兼容）
-        Button("设置…") {
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            Text(statusTitle)
+                .font(Theme.bodyFont(13, weight: .semibold))
+                .foregroundColor(Theme.ink)
+
+            Spacer()
+
+            Text("\(engine.visibleSnapshots.count) 在线")
+                .font(Theme.monoFont(10))
+                .foregroundColor(Theme.inkMuted48)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Theme.chipFill))
         }
-        Button("退出") { NSApp.terminate(nil) }
+    }
+
+    private var statusTitle: String {
+        if engine.anyWorking {
+            let count = engine.workingAgents().count
+            return "\(count) 个 Agent 工作中"
+        } else if engine.visibleSnapshots.isEmpty {
+            return "暂无活跃 Agent"
+        } else {
+            return "全部待机中"
+        }
+    }
+
+    private var statusColor: Color {
+        engine.anyWorking ? Theme.statusWorking : (engine.visibleSnapshots.isEmpty ? Theme.statusOffline : Theme.statusIdle)
+    }
+
+    // MARK: 活跃 Agent 概览列表
+    private var agentQuickSection: some View {
+        VStack(spacing: 4) {
+            let working = engine.workingAgents()
+            let displayList = working.isEmpty ? Array(engine.visibleSnapshots.prefix(3)) : working
+            if displayList.isEmpty {
+                HStack {
+                    Spacer()
+                    Text("无运行中的 Agent")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.inkMuted48)
+                        .padding(.vertical, 8)
+                    Spacer()
+                }
+            } else {
+                ForEach(displayList) { s in
+                    HStack(spacing: 8) {
+                        Image(systemName: s.profile.icon)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Theme.ink)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(Theme.tile1))
+
+                        Text(s.profile.name)
+                            .font(Theme.bodyFont(12, weight: .medium))
+                            .foregroundColor(Theme.ink)
+                            .lineLimit(1)
+
+                        Spacer()
+
+                        if let usage = s.tokenUsage, usage.tokens24h > 0 {
+                            Text(TokenUsage.compact(usage.tokens24h))
+                                .font(Theme.monoFont(9))
+                                .foregroundColor(Theme.inkMuted48)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Theme.chipFill))
+                        }
+
+                        Text(s.level.label)
+                            .font(Theme.bodyFont(10, weight: .semibold))
+                            .foregroundColor(s.level.color)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(s.level.color.opacity(0.14)))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: .clear)
+                    .onTapGesture {
+                        controller.route = .agentDetail(s.profile.id)
+                        if controller.displayState == .docked {
+                            controller.toggle()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Token 概览
+    private var tokenMiniSummary: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chart.bar.fill")
+                .font(.system(size: 9))
+                .foregroundColor(Theme.inkMuted48)
+            Text("24h \(TokenUsage.compact(engine.grandTotal.tokens24h))")
+                .font(Theme.monoFont(10, weight: .medium))
+                .foregroundColor(Theme.inkMuted80)
+            if !TokenUsage.cost(engine.grandTotal.cost24h).isEmpty {
+                Text(TokenUsage.cost(engine.grandTotal.cost24h))
+                    .font(Theme.monoFont(9))
+                    .foregroundColor(Theme.inkMuted48)
+            }
+            Spacer()
+            Text("累计 \(TokenUsage.compact(engine.grandTotal.tokensTotal))")
+                .font(Theme.monoFont(10))
+                .foregroundColor(Theme.inkMuted48)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: 底部操作栏
+    private var actionBar: some View {
+        HStack(spacing: 8) {
+            // 展开/收起侧边栏
+            Button {
+                controller.toggle()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 11))
+                    Text(controller.displayState == .expanded ? "收起侧边栏" : "展开侧边栏")
+                        .font(Theme.bodyFont(11, weight: .medium))
+                }
+                .foregroundColor(Theme.ink)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+            }
+            .buttonStyle(.plain)
+
+            // 设置
+            Button {
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.inkMuted80)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+            }
+            .buttonStyle(.plain)
+            .help("设置…")
+
+            // 退出
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Image(systemName: "power")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.dangerRed)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+            }
+            .buttonStyle(.plain)
+            .help("退出 AgentIsland")
+        }
     }
 }
 

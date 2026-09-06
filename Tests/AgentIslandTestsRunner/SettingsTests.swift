@@ -79,5 +79,29 @@ enum SettingsTests {
             try expectTrue(names.contains("dimagent") && names.contains("dim"), "未启用但已安装（CLI 命中）也要拦")
             try expectEqual(names.count, 3, "无关进程不得误拦")
         }
+
+        TestKit.test("设置: DockEdge 枚举与持久化键值") {
+            try expectEqual(DockEdge.top.rawValue, "top")
+            try expectEqual(DockEdge.right.rawValue, "right")
+            try expectEqual(DockEdge(rawValue: "top"), .top)
+            try expectEqual(DockEdge(rawValue: "right"), .right)
+            try expectNil(DockEdge(rawValue: "unknown"))
+
+            let name = "agentisland-dock-test-\(UUID().uuidString)"
+            let suite = UserDefaults(suiteName: name)!
+            defer { suite.removePersistentDomain(forName: name) }
+
+            suite.set(DockEdge.top.rawValue, forKey: SettingKey.dockEdge)
+            suite.set(120.5, forKey: SettingKey.dockAnchorX)
+            suite.set(450.0, forKey: SettingKey.dockAnchorY)
+
+            let savedEdge = suite.string(forKey: SettingKey.dockEdge).flatMap(DockEdge.init)
+            let savedX = suite.double(forKey: SettingKey.dockAnchorX)
+            let savedY = suite.double(forKey: SettingKey.dockAnchorY)
+
+            try expectEqual(savedEdge, .top, "DockEdge 应正确持久化与读取")
+            try expectEqual(savedX, 120.5, "dockAnchorX 应正确持久化")
+            try expectEqual(savedY, 450.0, "dockAnchorY 应正确持久化")
+        }
     }
 }

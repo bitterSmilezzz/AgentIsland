@@ -6,14 +6,23 @@ import AppKit
 
 struct GlassCardBackground: View {
     var cornerRadius: CGFloat = Theme.radiusLg
+    var dockEdge: DockEdge = .right
 
-    /// 侧边栏贴边造型：右缘 flush 直角、仅左侧两角圆角
+    /// 贴边造型：右侧贴边左侧两角圆角；顶部贴边下方两角圆角
     private var edgeShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(topLeadingRadius: cornerRadius,
-                               bottomLeadingRadius: cornerRadius,
-                               bottomTrailingRadius: 0,
-                               topTrailingRadius: 0,
-                               style: .continuous)
+        if dockEdge == .top {
+            return UnevenRoundedRectangle(topLeadingRadius: 0,
+                                          bottomLeadingRadius: cornerRadius,
+                                          bottomTrailingRadius: cornerRadius,
+                                          topTrailingRadius: 0,
+                                          style: .continuous)
+        } else {
+            return UnevenRoundedRectangle(topLeadingRadius: cornerRadius,
+                                          bottomLeadingRadius: cornerRadius,
+                                          bottomTrailingRadius: 0,
+                                          topTrailingRadius: 0,
+                                          style: .continuous)
+        }
     }
 
     var body: some View {
@@ -23,7 +32,9 @@ struct GlassCardBackground: View {
             // 蒙层：深色下黑蒙，浅色下白蒙（动态）
             edgeShape
                 .fill(Color(dynamicLight: 0xffffff, dark: 0x000000).opacity(Theme.glassOverlayOpacity))
-            // 无描边：灵动岛悬浮质感靠材质对比 + 阴影，描边在浅色下会呈现为矩形框
+            // 1px 晶莹微反光描边（深色微白高光，浅色微暗勾边）
+            edgeShape
+                .stroke(Theme.glassSpecularBorder, lineWidth: 1)
         }
     }
 }
@@ -49,8 +60,8 @@ struct VisualEffectView: NSViewRepresentable {
 // MARK: - 灵动岛视图状态
 
 enum IslandDisplayState: Equatable {
-    case docked         // 隐藏：整个面板滑出屏幕右缘外（零残条）
-    case expanded       // 侧边栏：贴右缘 flush、垂直居中
+    case docked         // 收起态：露出 6pt 晶莹微细条
+    case expanded       // 展开态：完整卡片
 }
 
 // MARK: - 卡内导航（主列表 → agent 详情 → 模型会话列表）
@@ -62,17 +73,26 @@ enum CardRoute: Equatable {
 }
 
 // MARK: - 灵动岛视图
-// QQ 交互逻辑：细条常驻 → 鼠标触碰屏幕顶部/悬停细条 → 直接滑出卡片
-// → 鼠标离开 → 延迟收回细条。忙闲都显示细条（菜单栏绿点 + 细条颜色深浅表状态）。
 
 struct IslandView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
 
-    /// 可见列表（Q3）：在线 + 24h 内有活动的 Agent；从未活跃的隐藏
-    // 可见列表统一走 engine.visibleSnapshots（口径单一实现，防漏改）
-
     var body: some View {
+        Group {
+            if controller.displayState == .expanded {
+                expandedContent
+                    .transition(.opacity)
+            } else {
+                dockedSliver
+                    .transition(.opacity)
+            }
+        }
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: controller.displayState)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: controller.route)
+    }
+
+    private var expandedContent: some View {
         Group {
             switch controller.route {
             case .list:
@@ -84,14 +104,56 @@ struct IslandView: View {
                                 agentId: agentId, modelId: modelId)
             }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: controller.route)
     }
 
-    // MARK: 侧边栏卡片
+    // MARK: 贴边微细条（露 6pt，晶莹质感 + 呼吸状态点）
+
+    private var dockedSliver: some View {
+        Group {
+            if controller.dockEdge == .top {
+                Capsule()
+                    .fill(Theme.dockedSliverFill(working: engine.anyWorking))
+                    .overlay(alignment: .center) {
+                        if engine.anyWorking {
+                            Circle()
+                                .fill(Theme.statusWorking)
+                                .frame(width: 4, height: 4)
+                        }
+                    }
+                    .overlay(Capsule().strokeBorder(Theme.dockedSliverStroke, lineWidth: 0.5))
+                    .frame(width: IslandMetrics.topSliverWidth, height: IslandMetrics.topSliverHeight)
+            } else {
+                Capsule()
+                    .fill(Theme.dockedSliverFill(working: engine.anyWorking))
+                    .overlay(alignment: .center) {
+                        if engine.anyWorking {
+                            Circle()
+                                .fill(Theme.statusWorking)
+                                .frame(width: 4, height: 4)
+                        }
+                    }
+                    .overlay(Capsule().strokeBorder(Theme.dockedSliverStroke, lineWidth: 0.5))
+                    .frame(width: IslandMetrics.rightSliverWidth, height: IslandMetrics.rightSliverHeight)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if controller.displayState == .docked {
+                controller.toggle()
+            }
+        }
+        .onHover { hovering in
+            if hovering && controller.displayState == .docked {
+                controller.expandFromHover()
+            }
+        }
+    }
+
+    // MARK: 展开卡片
 
     private var expandedCard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 顶栏：状态摘要
+            // 顶栏：状态摘要（支持长按拖拽卡片自由移动并贴边吸附）
             HStack(spacing: 8) {
                 statusDot
                     .frame(width: 9, height: 9)
@@ -108,10 +170,15 @@ struct IslandView: View {
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, IslandMetrics.headerPaddingTop)
             .padding(.bottom, IslandMetrics.headerPaddingBottom)
+            .contentShape(Rectangle())
+            .cardDrag(
+                onMoved: { controller.dragMoved(translation: $0) },
+                onEnded: { controller.dragEnded() }
+            )
 
             DarkDivider()
 
-            // Agent 列表（Q3：只显示在线 + 24h 活跃）
+            // Agent 列表
             if engine.visibleSnapshots.isEmpty {
                 VStack(spacing: 6) {
                     Image(systemName: "zzz")
@@ -135,13 +202,13 @@ struct IslandView: View {
                 .frame(maxHeight: IslandMetrics.listMaxHeight)
             }
 
-            // Token 汇总栏（双口径：24h / 累计；有数据才显示）
+            // Token 汇总栏
             if !engine.grandTotal.isEmpty {
                 DarkDivider()
                 TokenSummaryBar(total: engine.grandTotal)
             }
         }
-        .cardShell()
+        .cardShell(dockEdge: controller.dockEdge)
     }
 
     // MARK: 状态点

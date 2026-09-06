@@ -14,6 +14,9 @@ public enum SettingKey {
     public static let islandAppearance = "islandAppearance"
     public static let customAgents = "customAgents"
     public static let launchAtLogin = "launchAtLogin"
+    public static let dockEdge = "dockEdge"
+    public static let dockAnchorX = "dockAnchorX"
+    public static let dockAnchorY = "dockAnchorY"
 }
 
 /// 启停集合持久化：key/编解码/空数组语义单点持有。

@@ -20,6 +20,22 @@ public enum ActivityLevel: String, Codable, Equatable, Comparable {
     }
 }
 
+// MARK: - 贴边停靠模式
+
+public enum DockEdge: String, Codable, CaseIterable, Identifiable {
+    case right
+    case top
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .right: return "右侧边栏"
+        case .top: return "顶部灵动岛"
+        }
+    }
+}
+
 // MARK: - Agent 定义（注册表条目）
 
 public struct AgentProfile: Identifiable, Codable, Equatable {

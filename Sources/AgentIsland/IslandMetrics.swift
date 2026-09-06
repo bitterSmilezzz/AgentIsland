@@ -14,6 +14,12 @@ enum IslandMetrics {
     /// 展开高度上限（内容超出即滚动）
     static let expandedMaxHeight: CGFloat = 420
 
+    // MARK: 微细条尺寸（收起态保留的 6pt 悬浮指示微胶囊）
+    static let topSliverWidth: CGFloat = 140
+    static let topSliverHeight: CGFloat = 6
+    static let rightSliverWidth: CGFloat = 6
+    static let rightSliverHeight: CGFloat = 120
+
     // MARK: 展开卡纵向度量（逐项对应 IslandView.expandedCard）
 
     /// 顶栏：padding(.top) + 内容（状态点 9 / 13pt semibold 文本行高 ≈17，取大者）+ padding(.bottom) ≈ 37

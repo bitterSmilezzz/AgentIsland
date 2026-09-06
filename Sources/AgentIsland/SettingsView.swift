@@ -3,8 +3,73 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 
+// MARK: - 设置分类 Tab
+
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case agents
+    case engine
+    case about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "通用与外观"
+        case .agents: return "Agent 监控"
+        case .engine: return "引擎与性能"
+        case .about: return "关于"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: return "paintpalette"
+        case .agents: return "person.2.badge.gearshape"
+        case .engine: return "gauge.with.dots.needle.bottom.50percent"
+        case .about: return "info.circle"
+        }
+    }
+}
+
+// MARK: - 设置卡片容器（Apple Inset-Grouped Style）
+
+struct SettingsCard<Content: View>: View {
+    let title: String?
+    let content: Content
+
+    init(title: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let title {
+                Text(title)
+                    .font(Theme.bodyFont(11, weight: .semibold))
+                    .foregroundColor(Theme.inkMuted80)
+                    .textCase(.uppercase)
+                    .padding(.leading, 4)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                content
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Theme.parchment)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Theme.hairline.opacity(0.5), lineWidth: 0.5)
+                    )
+            )
+        }
+    }
+}
+
 // MARK: - 设置窗口
-// Apple 原生风格：Form + 分组 + Action Blue 强调色
 
 struct SettingsView: View {
     @ObservedObject var engine: ActivityEngine
@@ -30,240 +95,343 @@ struct SettingsView: View {
         )
     }
 
+    @State private var selectedTab: SettingsTab = .general
     @State private var enabledAgents: Set<String> = []
     /// 自启动设置失败提示（SMAppService 未签名/非 /Applications 时 register 抛错）
     @State private var launchError: String?
     @State private var customProfiles: [AgentProfile] = []
     @State private var showAddCustom = false
-    /// 安装缓存扫描完成版本号：触发 body 重算刷新自动发现列表（阿剩低B）
+    /// 安装缓存扫描完成版本号：触发 body 重算刷新自动发现列表
     @State private var installedScanVersion = 0
 
     var body: some View {
-        // 依赖注册：让 body 真正读取扫描版本号（阿剩低B 修正——@State 只有在 body
-        // 求值中被读取才会建立依赖，bump 才能触发重算刷新自动发现列表）
         _ = installedScanVersion
-        return VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    appearanceSection
-                    Divider()
-                    agentSection
-                    Divider()
-                    customSection
-                    Divider()
-                    behaviorSection
-                    Divider()
-                    aboutSection
-                }
-                .padding(20)
-            }
+        return NavigationSplitView {
+            sidebarView
+        } detail: {
+            detailView
         }
-        .frame(width: 480, height: 620)
-        .background(Theme.parchment)
+        .frame(width: 620, height: 480)
         .onAppear {
-            // 打开设置页即重扫安装缓存（装新 CLI/App 后进设置页确认是最常见场景，
-            // 离线态下引擎低频刷新最长滞后 2 小时）。
-            // refreshIfNeeded 调度即标记（后台扫描不占主线程，阿证中1）；完成后主线程
-            // bump 版本号触发 body 重算刷新自动发现列表（阿剩低B）
             installedApps.refreshIfNeeded(maxAge: 0) {
                 installedScanVersion += 1
             }
             loadState()
         }
-    }
-
-    // MARK: 头部
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(Theme.actionBlue)
-            Text("AgentIsland 设置")
-                .font(Theme.displayFont(17, weight: .semibold))
-                .foregroundColor(Theme.ink)
-            Spacer()
-            Button("完成") {
-                NSApp.keyWindow?.close()
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.actionBlue)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-    }
-
-    // MARK: Agent 开关
-
-    private var agentSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("监控的 Agent（内置）")
-                .font(Theme.bodyFont(13, weight: .semibold))
-                .foregroundColor(Theme.ink)
-
-            ForEach(AgentRegistry.builtin) { profile in
-                Toggle(isOn: binding(for: profile)) {
-                    HStack(spacing: 8) {
-                        Image(systemName: profile.icon)
-                            .foregroundColor(Theme.actionBlue)
-                            .frame(width: 18)
-                        Text(profile.name)
-                            .font(Theme.bodyFont(13))
-                            .foregroundColor(Theme.ink)
-                        if let snapshot = engine.snapshots.first(where: { $0.id == profile.id }) {
-                            Text(snapshot.level.label)
-                                .font(Theme.bodyFont(10, weight: .semibold))
-                                .foregroundColor(snapshot.level.color)
-                        }
-                    }
-                }
-                .toggleStyle(.switch)
-                .tint(Theme.actionBlue)
-            }
-
-            // 自动发现的额外 CLI：做成可开关条目（默认关闭，用户可启用监控）
-            // 之前只读展示，用户无法启用；且 defaultEnabled=false 导致首次切换
-            // 任意开关时这些项会被误塞进引擎或显示与实态脱节（阿剩中1）
-            let discovered = AgentRegistry.discoverCLIProfiles(installedCLIs: installedApps.installedCLIs())
-            if !discovered.isEmpty {
-                Text("自动发现")
-                    .font(Theme.bodyFont(13, weight: .semibold))
-                    .foregroundColor(Theme.ink)
-                    .padding(.top, 4)
-                ForEach(discovered) { profile in
-                    Toggle(isOn: binding(for: profile)) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "terminal")
-                                .foregroundColor(Theme.inkMuted48)
-                                .frame(width: 18)
-                            Text(profile.name)
-                                .font(Theme.bodyFont(13))
-                                .foregroundColor(Theme.ink)
-                            if let snapshot = engine.snapshots.first(where: { $0.id == profile.id }) {
-                                Text(snapshot.level.label)
-                                    .font(Theme.bodyFont(10, weight: .semibold))
-                                    .foregroundColor(snapshot.level.color)
-                            }
-                        }
-                    }
-                    .toggleStyle(.switch)
-                    .tint(Theme.actionBlue)
-                }
-            }
-        }
-    }
-
-    // MARK: 自定义 Agent
-
-    private var customSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("自定义 Agent")
-                    .font(Theme.bodyFont(13, weight: .semibold))
-                    .foregroundColor(Theme.ink)
-                Spacer()
-                Button {
-                    showAddCustom = true
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundColor(Theme.actionBlue)
-                }
-                .buttonStyle(.plain)
-                .help("添加自定义 Agent（进程名 + 会话目录）")
-            }
-
-            if customProfiles.isEmpty {
-                Text("没有自定义条目。可添加内部脚本、自研 agent 等。")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.inkMuted48)
-            }
-
-            ForEach(Array(customProfiles), id: \.id) { profile in
-                // 自定义项可单独启停（阿剩中2：之前只能删了重加，暂停监控会丢数据）
-                CustomAgentRowView(profile: profile,
-                                   isEnabled: binding(for: profile),
-                                   onRemove: { removeCustom(profile) })
-            }
-        }
         .sheet(isPresented: $showAddCustom) {
-            // 冲突集合 = 「已安装 或 已启用」条目的进程名（规则与推导在 AgentRegistry，Core 可测）
-            AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id)),
-                                knownProcessNames: AgentRegistry.conflictingProcessNames(
-                                    enabledIDs: Set(engine.allProfiles.map(\.id)),
-                                    installedApps: installedApps)) { profile in
+            AddCustomAgentSheet(
+                existingIDs: Set(customProfiles.map(\.id)),
+                knownProcessNames: AgentRegistry.conflictingProcessNames(
+                    enabledIDs: Set(engine.allProfiles.map(\.id)),
+                    installedApps: installedApps)) { profile in
                 addCustom(profile)
             }
         }
     }
 
-    // MARK: 外观
+    // MARK: 左侧导航栏
 
-    private var appearanceSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("外观")
-                .font(Theme.bodyFont(13, weight: .semibold))
-                .foregroundColor(Theme.ink)
+    private var sidebarView: some View {
+        List(SettingsTab.allCases, selection: $selectedTab) { tab in
+            Label(tab.title, systemImage: tab.icon)
+                .font(Theme.bodyFont(13, weight: .medium))
+                .tag(tab)
+        }
+        .listStyle(.sidebar)
+        .navigationSplitViewColumnWidth(min: 140, ideal: 160, max: 180)
+    }
 
-            Picker("灵动岛外观", selection: islandAppearance) {
-                ForEach(IslandAppearance.allCases) { mode in
-                    Text(mode.label).tag(mode)
+    // MARK: 右侧详情路由
+
+    private var detailView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                switch selectedTab {
+                case .general:
+                    generalDetailView
+                case .agents:
+                    agentsDetailView
+                case .engine:
+                    engineDetailView
+                case .about:
+                    aboutDetailView
                 }
             }
-            .pickerStyle(.segmented)
-            .onChange(of: islandAppearanceRaw) { _ in
-                // 直调面板实时生效（带 payload，无通知/回读绕路）
-                controller.applyAppearance(IslandAppearance(rawValue: islandAppearanceRaw) ?? .system)
-            }
-            Text("控制灵动岛卡片的配色；设置窗口本身跟随系统。")
-                .font(Theme.bodyFont(10))
-                .foregroundColor(Theme.inkMuted48)
+            .padding(18)
         }
+        .background(Theme.canvas)
     }
 
-    // MARK: 行为参数
+    // MARK: - Tab 1: 通用与外观
 
-    private var behaviorSection: some View {
+    private var generalDetailView: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("行为")
-                .font(Theme.bodyFont(13, weight: .semibold))
-                .foregroundColor(Theme.ink)
+            SettingsCard(title: "外观主题") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("外观模式", selection: islandAppearance) {
+                        ForEach(IslandAppearance.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: islandAppearanceRaw) { _ in
+                        controller.applyAppearance(IslandAppearance(rawValue: islandAppearanceRaw) ?? .system)
+                    }
 
-            sliderRow(title: "「工作中」写入窗口", value: $workingWindow, range: 10...300, unit: "秒")
-            // range 1...50（阿菜低：之前 0.5...50 + step 1 档位全是半值 0.5/1.5/2.5…，
-            // 默认 1 不在档位上首次拖动即跳变）
-            sliderRow(title: "CPU 判定阈值", value: $cpuThreshold, range: EngineConfig.cpuThresholdRange, unit: "%")
-            sliderRow(title: "活跃会话窗口", value: $activeSessionWindow, range: 60...3600, unit: "秒")
-            sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
-            sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
-            sliderRow(title: "自动收起延迟", value: $collapseDelay, range: 0.2...5, step: 0.1, unit: "秒",
-                      onRelease: { controller.applyCollapseDelay(collapseDelay) })
+                    Text("控制侧边栏灵动岛面板的配色；设置窗口本身跟随系统。")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.inkMuted48)
+                }
+            }
 
-            Toggle(isOn: $launchAtLogin) {
-                Text("登录时自动启动")
-                    .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted80)
+            SettingsCard(title: "启动与交互") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(isOn: $launchAtLogin) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("登录时自动启动")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("系统启动后在后台自动运行并常驻菜单栏")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+                    .onChange(of: launchAtLogin) { newValue in
+                        applyLaunchAtLogin(newValue)
+                    }
+
+                    if let launchError {
+                        Text(launchError)
+                            .font(Theme.bodyFont(10))
+                            .foregroundColor(Theme.dangerRed)
+                    }
+
+                    Divider()
+
+                    sliderRow(
+                        title: "自动收起延迟",
+                        value: $collapseDelay,
+                        range: 0.2...5,
+                        step: 0.1,
+                        unit: "秒",
+                        onRelease: { controller.applyCollapseDelay(collapseDelay) }
+                    )
+                    Text("鼠标移出卡片后，延迟多长时间平滑收回为屏幕边缘的微细条。")
+                        .font(Theme.bodyFont(10))
+                        .foregroundColor(Theme.inkMuted48)
+                }
             }
-            .toggleStyle(.switch)
-            .tint(Theme.actionBlue)
-            .onChange(of: launchAtLogin) { newValue in
-                applyLaunchAtLogin(newValue)
-            }
-            if let launchError {
-                Text(launchError)
-                    .font(Theme.bodyFont(10))
-                    .foregroundColor(Theme.dangerRed)
-                    .fixedSize(horizontal: false, vertical: true)
+
+            SettingsCard(title: "停靠贴边与吸附") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("停靠位置", selection: Binding(
+                        get: { controller.dockEdge },
+                        set: { controller.setDockEdge($0) }
+                    )) {
+                        ForEach(DockEdge.allCases) { edge in
+                            Text(edge.label).tag(edge)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    HStack {
+                        Text("长按展开卡片的顶栏可自由拖动，松手自动智能吸附贴边；收起时在屏幕边缘保留 6pt 晶莹微细条。")
+                            .font(Theme.bodyFont(10))
+                            .foregroundColor(Theme.inkMuted48)
+                        Spacer()
+                        Button("重置位置") {
+                            controller.resetPosition()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
             }
         }
     }
 
-    /// 滑块值统一格式：一位小数去尾零（10.0→"10"、0.5→"0.5"、12.5→"12.5"）
+    // MARK: - Tab 2: Agent 监控
+
+    private var agentsDetailView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SettingsCard(title: "内置 Agent") {
+                VStack(spacing: 8) {
+                    ForEach(AgentRegistry.builtin) { profile in
+                        Toggle(isOn: binding(for: profile)) {
+                            HStack(spacing: 8) {
+                                Image(systemName: profile.icon)
+                                    .foregroundColor(Theme.actionBlue)
+                                    .frame(width: 18)
+                                Text(profile.name)
+                                    .font(Theme.bodyFont(13))
+                                    .foregroundColor(Theme.ink)
+                                Spacer()
+                                if let snapshot = engine.snapshots.first(where: { $0.id == profile.id }) {
+                                    Text(snapshot.level.label)
+                                        .font(Theme.bodyFont(10, weight: .semibold))
+                                        .foregroundColor(snapshot.level.color)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(snapshot.level.color.opacity(0.12)))
+                                }
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .tint(Theme.actionBlue)
+                    }
+                }
+            }
+
+            let discovered = AgentRegistry.discoverCLIProfiles(installedCLIs: installedApps.installedCLIs())
+            if !discovered.isEmpty {
+                SettingsCard(title: "自动发现 (PATH / Applications)") {
+                    VStack(spacing: 8) {
+                        ForEach(discovered) { profile in
+                            Toggle(isOn: binding(for: profile)) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "terminal")
+                                        .foregroundColor(Theme.inkMuted48)
+                                        .frame(width: 18)
+                                    Text(profile.name)
+                                        .font(Theme.bodyFont(13))
+                                        .foregroundColor(Theme.ink)
+                                    Spacer()
+                                    if let snapshot = engine.snapshots.first(where: { $0.id == profile.id }) {
+                                        Text(snapshot.level.label)
+                                            .font(Theme.bodyFont(10, weight: .semibold))
+                                            .foregroundColor(snapshot.level.color)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Capsule().fill(snapshot.level.color.opacity(0.12)))
+                                    }
+                                }
+                            }
+                            .toggleStyle(.switch)
+                            .tint(Theme.actionBlue)
+                        }
+                    }
+                }
+            }
+
+            SettingsCard(title: "自定义 Agent") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("自定义列表")
+                            .font(Theme.bodyFont(12))
+                            .foregroundColor(Theme.inkMuted80)
+                        Spacer()
+                        Button {
+                            showAddCustom = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus.circle.fill")
+                                Text("添加")
+                            }
+                            .font(Theme.bodyFont(11, weight: .medium))
+                            .foregroundColor(Theme.actionBlue)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    if customProfiles.isEmpty {
+                        Text("没有自定义条目。可添加内部脚本或自研 agent。")
+                            .font(Theme.bodyFont(11))
+                            .foregroundColor(Theme.inkMuted48)
+                            .padding(.vertical, 4)
+                    } else {
+                        ForEach(Array(customProfiles), id: \.id) { profile in
+                            CustomAgentRowView(
+                                profile: profile,
+                                isEnabled: binding(for: profile),
+                                onRemove: { removeCustom(profile) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Tab 3: 引擎与性能
+
+    private var engineDetailView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SettingsCard(title: "活动判定规则") {
+                VStack(spacing: 12) {
+                    sliderRow(title: "「工作中」写入窗口", value: $workingWindow, range: 10...300, unit: "秒")
+                    sliderRow(title: "CPU 判定阈值", value: $cpuThreshold, range: EngineConfig.cpuThresholdRange, unit: "%")
+                    sliderRow(title: "活跃会话窗口", value: $activeSessionWindow, range: 60...3600, unit: "秒")
+                }
+            }
+
+            SettingsCard(title: "采样节律与能耗") {
+                VStack(alignment: .leading, spacing: 12) {
+                    sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
+                    sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
+
+                    Text("当有 Agent 处于活跃工作中时，引擎以活动采样间隔高频探测（默认 2s）；当全部待机或离线时，自动降频至闲置间隔以节省 CPU 与电量。")
+                        .font(Theme.bodyFont(10))
+                        .foregroundColor(Theme.inkMuted48)
+                }
+            }
+        }
+    }
+
+    // MARK: - Tab 4: 关于
+
+    private var aboutDetailView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SettingsCard {
+                HStack(spacing: 12) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundColor(Theme.actionBlue)
+                        .frame(width: 48, height: 48)
+                        .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("AgentIsland")
+                            .font(Theme.displayFont(16, weight: .bold))
+                            .foregroundColor(Theme.ink)
+                        Text("v1.4.0 · macOS 灵动岛 Agent 会话监控器")
+                            .font(Theme.bodyFont(11))
+                            .foregroundColor(Theme.inkMuted80)
+                    }
+                }
+                .padding(.vertical, 4)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("只读监控：绝不读取会话内容、私钥凭据与隐私数据", systemImage: "lock.shield")
+                    Label("高性能低能耗：空闲自动降频，工作态 CPU 开销约 1%", systemImage: "bolt.badge.clock")
+                    Label("自由拖拽与智能贴边：顶部/右侧自由拖动吸附，6pt 微细条触碰自动弹出", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                }
+                .font(Theme.bodyFont(11))
+                .foregroundColor(Theme.inkMuted80)
+            }
+
+            SettingsCard(title: "开源与仓库") {
+                HStack {
+                    Image(systemName: "link")
+                        .foregroundColor(Theme.actionBlue)
+                    Link("github.com/bitterSmilezzz/AgentIsland",
+                         destination: URL(string: "https://github.com/bitterSmilezzz/AgentIsland")!)
+                        .font(Theme.bodyFont(12))
+                        .foregroundColor(Theme.actionBlue)
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    // MARK: - 滑块行构建
+
     private static func formatSliderValue(_ v: Double, unit: String) -> String {
         let s = String(format: "%.1f", v)
         let trimmed = s.hasSuffix(".0") ? String(s.dropLast(2)) : s
-        // 单位不加空格：与详情卡 "7.3%" 口径统一（阿菜记录在案：'1 %' vs '7.3%'）
         return "\(trimmed)\(unit)"
     }
 
@@ -272,63 +440,32 @@ struct SettingsView: View {
         HStack {
             Text(title)
                 .font(Theme.bodyFont(12))
-                .foregroundColor(Theme.inkMuted80)
+                .foregroundColor(Theme.ink)
             Spacer()
-            // 统一格式：一位小数去尾零（10.0→"10"、0.5→"0.5"），避免 ≥10 截断丢精度（阿菜低1）
             Text(Self.formatSliderValue(value.wrappedValue, unit: unit))
                 .font(Theme.monoFont(11))
                 .foregroundColor(Theme.inkMuted48)
-            // 拖动中只更新显示值，松手才生效——避免每帧重启采样定时器
             Slider(value: value, in: range, step: step) { editing in
                 if !editing {
                     applyConfig()
                     onRelease?()
                 }
             }
-                .tint(Theme.actionBlue)
-                .frame(width: 120)
+            .tint(Theme.actionBlue)
+            .frame(width: 140)
         }
     }
 
-    // MARK: 关于
-
-    private var aboutSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("关于")
-                .font(Theme.bodyFont(13, weight: .semibold))
-                .foregroundColor(Theme.ink)
-            Text("AgentIsland — 监控本机 Agent 软件会话活动的灵动岛工具")
-                .font(Theme.bodyFont(12))
-                .foregroundColor(Theme.inkMuted48)
-            Text("v1.2.0 · 只读监控，不读取会话内容")
-                .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.inkMuted48)
-            Link("GitHub: bitterSmilezzz/AgentIsland",
-                 destination: URL(string: "https://github.com/bitterSmilezzz/AgentIsland")!)
-                .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.actionBlue)
-        }
-    }
-
-    // MARK: - 状态同步
+    // MARK: - 状态同步与持久化
 
     private func loadState() {
-        // 启停集合：以引擎当前启用集为准（避免界面显示与引擎实态脱节——
-        // 之前用 fullRegistry().filter(defaultEnabled) 会把自动发现项一次性显示为开，
-        // 但引擎首启只启用内置，切换任意开关会把所有自动发现项塞进引擎）。
-        // 无记录（nil）回退引擎当前集；空数组是主动全关，照常显示为全关。
         enabledAgents = EnabledAgentStore.load() ?? Set(engine.allProfiles.map(\.id))
-        // 自定义条目
         customProfiles = AgentRegistry.loadCustomProfiles()
-        // 参数同步到引擎
         applyConfig()
-        // 自启状态回显
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
     }
 
     private func applyConfig() {
-        // 归一化唯一实现在 EngineConfig.normalized（cpuThreshold 区间自愈 + sample≤idle 钳平），
-        // 表单/引擎/持久化三方共用同一规则
         let normalized = EngineConfig(
             sampleInterval: sampleInterval,
             idleSampleInterval: idleSampleInterval,
@@ -336,20 +473,15 @@ struct SettingsView: View {
             cpuThreshold: cpuThreshold,
             activeSessionWindow: activeSessionWindow
         ).normalized()
-        // 回写归一化结果：表单/持久化与引擎同源（normalized 未来扩展钳制字段时此处零跟进；
-        // 旧版半值残留即在此写回清除，阿菜记录在案）
         sampleInterval = normalized.sampleInterval
         idleSampleInterval = normalized.idleSampleInterval
         workingWindow = normalized.workingWindow
         cpuThreshold = normalized.cpuThreshold
         activeSessionWindow = normalized.activeSessionWindow
-        // 一次性赋值：config didSet 触发一次（原逐属性六次触发、五次冗余重启定时器）
         engine.config = normalized
     }
 
     private func applyLaunchAtLogin(_ enabled: Bool) {
-        // 防误触：loadState 回显 launchAtLogin 也会走 onChange；
-        // 目标状态与系统实际状态一致时直接跳过，避免每次打开设置页都 register/unregister
         guard enabled != (SMAppService.mainApp.status == .enabled) else { return }
         do {
             if enabled {
@@ -359,9 +491,8 @@ struct SettingsView: View {
             }
             launchError = nil
         } catch {
-            // 失败必须回显到 UI（未签名/非 /Applications 安装时 register 会抛错）
             print("SMAppService 失败: \(error)")
-            launchAtLogin = SMAppService.mainApp.status == .enabled   // 回滚开关状态
+            launchAtLogin = SMAppService.mainApp.status == .enabled
             launchError = "自启动设置失败：\(error.localizedDescription)"
         }
     }
@@ -382,7 +513,6 @@ struct SettingsView: View {
     }
 
     private func saveEnabled() {
-        // 空集合是有意全关，照常写入（语义单点在 EnabledAgentStore）
         EnabledAgentStore.save(enabledAgents)
     }
 
@@ -421,19 +551,18 @@ struct CustomAgentRowView: View {
                 .font(Theme.bodyFont(13))
                 .foregroundColor(Theme.ink)
                 .lineLimit(1)
-                .layoutPriority(1)   // 名称优先占位，进程名可压缩（阿剩低2）
+                .layoutPriority(1)
             Text(profile.processNames.joined(separator: ","))
                 .font(Theme.monoFont(10))
                 .foregroundColor(Theme.inkMuted48)
                 .lineLimit(1)
                 .layoutPriority(0)
             Spacer()
-            // 启用开关：binding(for:) → enabledAgents + engine.setEnabled（统一路径）
             Toggle("", isOn: isEnabled)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .tint(Theme.actionBlue)
-                .accessibilityLabel("启用 \(profile.name)")   // 空标签 Toggle 补 a11y（阿剩低2）
+                .accessibilityLabel("启用 \(profile.name)")
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash")
             }
@@ -451,7 +580,6 @@ struct CustomAgentRowView: View {
 struct AddCustomAgentSheet: View {
     @Environment(\.dismiss) private var dismiss
     let existingIDs: Set<String>
-    /// 内置 + 自动发现 + 已存自定义的全部进程名（小写），用于冲突提示
     let knownProcessNames: [String]
     let onAdd: (AgentProfile) -> Void
 
@@ -460,7 +588,6 @@ struct AddCustomAgentSheet: View {
     @State private var processName = ""
     @State private var sessionDir = ""
 
-    /// 进程名白名单：字母数字 + 下划线/连字符/点（ps 命令名合法字符集）
     private static let procNameChars = CharacterSet.alphanumerics
         .union(CharacterSet(charactersIn: "_-."))
     private var processNameInvalid: Bool {
@@ -472,7 +599,6 @@ struct AddCustomAgentSheet: View {
         let trimmed = processName.trimmingCharacters(in: .whitespaces)
         return existingIDs.contains(AgentProfile.makeCustomID(trimmed))
     }
-    /// 与内置/自动发现/已存自定义的进程名冲突（同一进程会被双份匹配计数）
     private var nameConflict: Bool {
         let trimmed = processName.trimmingCharacters(in: .whitespaces).lowercased()
         return !trimmed.isEmpty && knownProcessNames.contains(trimmed)

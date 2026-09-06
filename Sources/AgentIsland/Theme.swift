@@ -78,12 +78,21 @@ enum Theme {
     static let statusPending = Color(dynamicLight: 0x0a68c4, dark: 0x2997ff)
 
     // 面板视觉（细条/蒙层/阴影；岛专属令牌，改主题一并看三路由视觉）
+    /// docked 细条填充：忙碌加深（浅色 0.55/深色 0.85），闲置 0.34/0.55
+    static func dockedSliverFill(working: Bool) -> Color {
+        Color(dynamic: NSColor(hex: 0x000000, alpha: working ? 0.55 : 0.34),
+              dark: NSColor(hex: 0x000000, alpha: working ? 0.85 : 0.55))
+    }
+    /// docked 细条描边
+    static let dockedSliverStroke = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.22)
     /// 玻璃卡黑/白蒙层不透明度（GlassCardBackground）
-    static let glassOverlayOpacity: Double = 0.42
+    static let glassOverlayOpacity: Double = 0.38
+    /// 玻璃卡 1px 晶莹微反光边缘（深色微白高光，浅色微暗勾边）
+    static let glassSpecularBorder = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.12)
     /// 悬浮面板 AppKit 阴影（ShadowHostView；随窗口动画同步淡入淡出）
-    static let panelShadowOpacity: Float = 0.30
-    static let panelShadowRadius: CGFloat = 16
-    static let panelShadowOffsetY: CGFloat = -6
+    static let panelShadowOpacity: Float = 0.28
+    static let panelShadowRadius: CGFloat = 20
+    static let panelShadowOffsetY: CGFloat = -4
 
     // Typography
     static func displayFont(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
