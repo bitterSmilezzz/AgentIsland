@@ -9,14 +9,17 @@ enum RegistryTests {
 
     static func register() {
         TestKit.test("注册表: discoverCLIProfiles 幂等去重") {
-            let a = AgentRegistry.discoverCLIProfiles()
-            let b = AgentRegistry.discoverCLIProfiles()
+            let installed: Set<String> = ["aider", "dim", "gemini"]   // dim 为内置已含，不应重复发现
+            let a = AgentRegistry.discoverCLIProfiles(installedCLIs: installed)
+            let b = AgentRegistry.discoverCLIProfiles(installedCLIs: installed)
             try expectEqual(Set(a.map(\.id)), Set(b.map(\.id)), "两次发现应一致")
             try expectEqual(a.count, Set(a.map(\.id)).count, "id 不应重复")
             // 内置集已含的 CLI 不应出现在自动发现里
             let existing = Set(AgentRegistry.builtin.flatMap { $0.processNames.map { $0.lowercased() } })
             try expectTrue(!a.contains { existing.contains($0.processNames.first?.lowercased() ?? "") },
                            "内置 CLI 不应重复发现")
+            try expectTrue(a.contains { $0.id == "cli-aider" } && a.contains { $0.id == "cli-gemini" },
+                           "已安装未内置 CLI 应被发现")
         }
 
         TestKit.test("注册表: 自定义 profile 持久化往返") {
@@ -37,13 +40,14 @@ enum RegistryTests {
                                  sessionDirs: [], isCustom: true)
             AgentRegistry.saveCustomProfiles([p])
             defer { AgentRegistry.saveCustomProfiles([]) }
-            let full = AgentRegistry.fullRegistry()
+            let full = AgentRegistry.fullRegistry(installedCLIs: [])
             try expectTrue(full.contains { $0.id == "dim" }, "含内置 dim")
             try expectTrue(full.contains { $0.id == "custom-tmp" }, "含自定义")
             // 引擎的 guard 防重复
             let engine = ActivityEngine(profiles: full, config: EngineConfig(),
                                         processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: [], bundleIDs: [])),
-                                        fileMonitor: FakeFileActivityProvider(writes: [:]))
+                                        fileMonitor: FakeFileActivityProvider(writes: [:]),
+                                        installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             engine.addCustomProfile(p)
             let count = engine.allProfiles.filter { $0.id == "custom-tmp" }.count
             try expectEqual(count, 1, "重复添加应被引擎 guard 拒绝")
@@ -54,7 +58,8 @@ enum RegistryTests {
         TestKit.test("引擎: setEnabled 过滤启停集合") {
             let engine = ActivityEngine(profiles: AgentRegistry.builtin, config: EngineConfig(),
                                         processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: [])),
-                                        fileMonitor: FakeFileActivityProvider(writes: [:]))
+                                        fileMonitor: FakeFileActivityProvider(writes: [:]),
+                                        installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             engine.setEnabled(["dim"])
             try expectEqual(engine.allProfiles.map(\.id), ["dim"], "只保留启用项")
         }
@@ -64,7 +69,8 @@ enum RegistryTests {
             // 「关闭后再开启」的 agent 本会话内永久丢失监控
             let engine = ActivityEngine(profiles: AgentRegistry.builtin, config: EngineConfig(),
                                         processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent", "Codex"], bundleIDs: [])),
-                                        fileMonitor: FakeFileActivityProvider(writes: [:]))
+                                        fileMonitor: FakeFileActivityProvider(writes: [:]),
+                                        installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             engine.setEnabled(["dim"])                      // 只启用 dim
             try expectEqual(engine.allProfiles.map(\.id), ["dim"], "只保留启用项")
             engine.setEnabled(["dim", "claude"])            // 再开启 claude
@@ -94,7 +100,8 @@ enum RegistryTests {
             let engine = ActivityEngine(profiles: AgentRegistry.builtin.filter { $0.id == "dim" },
                                         config: EngineConfig(),
                                         processMonitor: ProcessMonitor(provider: provider),
-                                        fileMonitor: FakeFileActivityProvider(writes: [:]))
+                                        fileMonitor: FakeFileActivityProvider(writes: [:]),
+                                        installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             let snaps = engine.sample(now: Date())
             let dim = snaps.first { $0.id == "dim" }
             try expectTrue(dim?.processRunning == true, "bundle 运行即 processRunning=true")

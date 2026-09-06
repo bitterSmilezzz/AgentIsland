@@ -9,6 +9,7 @@ func runAllTests() -> Int32 {
     TokenUsageTests.register()
     RegistryTests.register()
     SettingsTests.register()
+    InstalledAppsTests.register()
     return TestKit.runAll()
 }
 

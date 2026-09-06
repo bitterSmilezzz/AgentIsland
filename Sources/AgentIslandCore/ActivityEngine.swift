@@ -23,36 +23,45 @@ public final class ActivityEngine: ObservableObject {
     private let processMonitor: ProcessMonitor
     private let fileMonitor: FileActivityProviding
     /// token 用量子系统（seam：轮询面 + 查询面；测试经 init 注入 fake）。
-    /// 私有实现细节——UI 一律走本类的数据面（grandTotal / modelBreakdown / sessions）
+    /// 私有实现细节——UI 一律走本类的数据出口（grandTotal / modelBreakdown / sessions）
     private let tokenMonitor: any TokenUsagePolling & TokenUsageQuerying
+    /// 已安装缓存（注入实例；引擎是常态刷新的唯一调度者——init 首刷 + 采样循环 300s 周期。
+    /// 设置页打开时的显式重扫是用户触发的例外路径，与引擎共用同一实例）
+    private let installedApps: InstalledAppsCache
     private var lastWrites: [String: Date] = [:]   // dir -> 最近写入时间
     private var timer: Timer?
     /// 测试观察点：定时器是否已创建（stop 后应为 nil）
     var timerIsNil: Bool { timer == nil }
     private var samplingInFlight = false   // 后台采样进行中标志：丢弃重叠请求，防 CPU% 差分交错
-    private var installedCLIs: Set<String> = []
-    private var installedBundles: Set<String> = []
     /// 滞回：CPU 信号瞬时抖动时保持 working 的最短时长（防 peek 高频弹跳）
     private var workingSince: [String: Date] = [:]
-    /// 安装缓存重扫时间戳（距上次 ≥5min 刷一次，见 sampleCore）
-    private var lastInstalledRefresh = Date.distantPast
 
-    /// 标记安装缓存已由外部（AppContext 首刷/设置页）刷新过（阿剩低3：避免启动双扫）
-    public func markInstalledRefreshed() {
-        lastInstalledRefresh = Date()
-    }
-
-    public init(profiles: [AgentProfile] = AgentRegistry.fullRegistry(),
+    /// - Parameters:
+    ///   - profiles: 初始启用档案（组合根/测试显式给定；无默认值——安装判定依赖注入的缓存，
+    ///     隐式全量会掩盖「组合根没接缓存」的错误）
+    ///   - enabledIDs: 持久化启用集（首刷重放用；nil 则按 profiles 推导）
+    public init(profiles: [AgentProfile],
          config: EngineConfig = EngineConfig(),
          processMonitor: ProcessMonitor = ProcessMonitor(),
          fileMonitor: FileActivityProviding = FileActivityMonitor(),
-         tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor()) {
+         tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor(),
+         installedApps: InstalledAppsCache,
+         enabledIDs: Set<String>? = nil) {
         self.profiles = profiles
         self.config = config
         self.processMonitor = processMonitor
         self.fileMonitor = fileMonitor
         self.tokenMonitor = tokenMonitor
-        refreshInstalled()
+        self.installedApps = installedApps
+        // 启用集记录（组合根传持久化集；nil 则按当前 profiles 推导）——首刷完成后重放用
+        self.lastEnabledIDs = enabledIDs ?? Set(profiles.map(\.id))
+        // 安装缓存首刷（warmUp：已热幂等跳过，与组合根/Probe 预热互不双扫）。
+        // 冷启动完成后重放启用集：自动发现 cli-* 依据扫描结果才可见，重放让「用户已启用
+        // 的自动发现项」重启后恢复监控（原 AppContext 二次 setEnabled 舞步的等价物）
+        installedApps.warmUp { [weak self] in
+            guard let self else { return }
+            self.setEnabled(self.lastEnabledIDs)
+        }
         // 注册监控目录（后台扫描用，全量替换）
         fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
     }
@@ -69,15 +78,13 @@ public final class ActivityEngine: ObservableObject {
     private var presentationActive = false
     /// token 轮询当前是否已启动（引擎侧幂等标记；失活暂停后复位置 false）
     private var tokenPollingStarted = false
+    /// 最近一次启停集合（首刷完成后重放；见 init）
+    private var lastEnabledIDs: Set<String>
 
     public func start() {
         guard !running else { return }
         running = true
         guard timer == nil else { return }
-        // 首采样前标记安装缓存为已刷（阿证中1：AppContext.init 已后台首刷；
-        // 若不标记，start() 的首次 sample → sampleCore 距 distantPast ≥300s
-        // 会再触发一次扫描，实测启动双扫）
-        markInstalledRefreshed()
         sample()               // sample() 末尾自带 scheduleNext()
         // token 轮询懒启动：仅呈现活跃时开启（面板 docked 态启动时零开销；
         // 先展开后启动的顺序在启动时补开）
@@ -127,9 +134,11 @@ public final class ActivityEngine: ObservableObject {
 
     /// 更新启停集合（enabledAgents）
     /// 从全量注册表（内置+自动发现+自定义）过滤：避免只从当前已缩水列表过滤，
-    /// 否则「关闭后再开启」的 agent 本会话内永久丢失监控（阿剩高优）
+    /// 否则「关闭后再开启」的 agent 本会话内永久丢失监控（阿剩高优）。
+    /// 记录启用集供安装缓存首刷完成后重放（见 init）
     public func setEnabled(_ enabledIDs: Set<String>) {
-        let all = AgentRegistry.fullRegistry()
+        lastEnabledIDs = enabledIDs
+        let all = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
         profiles = all.filter { enabledIDs.contains($0.id) }
         refreshWatchedDirs()
         sample()
@@ -174,34 +183,7 @@ public final class ActivityEngine: ObservableObject {
         lastWrites = lastWrites.filter { activeDirs.contains($0.key) }
     }
 
-    // MARK: - 安装检测（A4）
-
-    /// 只读快照：后台已重扫（refreshInstalledCache 在后台队列执行），这里仅加锁拷贝
-    private func refreshInstalled() {
-        installedCLIs = AgentRegistry.installedCLIs()
-        installedBundles = AgentRegistry.installedBundleIDs()
-    }
-
-    /// 后台重扫安装缓存（阿证中1：/Applications plist 解析可达 30-100ms，
-    /// 不应占用主线程；扫描与写回均带锁，可安全后台执行）
-    private func refreshInstalledInBackground() {
-        DispatchQueue.global(qos: .utility).async {
-            AgentRegistry.refreshInstalledCache()
-            DispatchQueue.main.async { [weak self] in
-                self?.refreshInstalled()
-            }
-        }
-    }
-
-    private func isInstalled(_ profile: AgentProfile) -> Bool {
-        if profile.bundleIDs.contains(where: { installedBundles.contains($0.lowercased()) }) {
-            return true
-        }
-        if profile.processNames.contains(where: { installedCLIs.contains($0.lowercased()) }) {
-            return true
-        }
-        return false
-    }
+    // MARK: - 安装检测（A4；缓存与刷新节律见 InstalledAppsCache，引擎只读判定）
 
     // MARK: - 采样
 
@@ -243,13 +225,10 @@ public final class ActivityEngine: ObservableObject {
     @discardableResult
     private func sampleCore(matcher: ProcessMatcher, now: Date) -> [AgentSnapshot] {
         fileMonitor.scanAsync()
-        // 低频重扫安装缓存（运行中装新 CLI/App 不必重启）；后台执行避免主线程卡顿。
-        // 用时间戳阈值（距上次 ≥5min）而非采样计数——计数在工作态 2s/离线 60s 间隔下
-        // 粒度漂移 30 倍（阿剩低：离线态最长拖 2 小时），时间戳保证两态刷新粒度一致
-        if now.timeIntervalSince(lastInstalledRefresh) >= 300 {
-            lastInstalledRefresh = now
-            refreshInstalledInBackground()
-        }
+        // 低频重扫安装缓存（运行中装新 CLI/App 不必重启；调度即标记，后台执行）。
+        // 时间戳阈值 300s：计数在工作态 2s/离线 60s 间隔下粒度漂移 30 倍
+        // （阿剩低：离线态最长拖 2 小时），时间戳保证两态刷新粒度一致
+        installedApps.refreshIfNeeded(maxAge: 300)
 
         var results: [AgentSnapshot] = []
         var anyWork = false
@@ -297,7 +276,7 @@ public final class ActivityEngine: ObservableObject {
                 level: level,
                 processRunning: running,
                 cpuPercent: cpu,
-                installed: isInstalled(profile),
+                installed: installedApps.isInstalled(profile),
                 activeSessions: sessionCount(for: profile, running: running),
                 lastActivityAgo: newestAgo,
                 lastActivityText: Self.formatAgo(newestAgo),

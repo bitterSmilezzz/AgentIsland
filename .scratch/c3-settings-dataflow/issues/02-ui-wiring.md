@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Core 规则下沉
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 默认值/键名/区间在 UI target 内零字面量残留（grep 验收）
 - [ ] engine.config 赋值一次性（didSet 单次触发）
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布。
+- 2026-09-06 完成。grep 验收零字面量残留；engine.config 整体赋值经核实等价（minWorkingHold 无非默认路径）。

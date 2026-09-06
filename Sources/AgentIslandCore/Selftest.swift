@@ -65,7 +65,8 @@ public enum Selftest {
                 profiles: AgentRegistry.builtin,
                 config: EngineConfig(workingWindow: 20),
                 processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: [], cpu: 0)),
-                fileMonitor: provider
+                fileMonitor: provider,
+                installedApps: Self.emptyInstalledCache
             )
             _ = engine.sample(now: now)
             provider.writes = [dir: now.addingTimeInterval(-3)]
@@ -143,9 +144,13 @@ public enum Selftest {
             profiles: AgentRegistry.builtin,
             config: EngineConfig(workingWindow: 20),
             processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu)),
-            fileMonitor: FakeFileActivityProvider(writes: writes)
+            fileMonitor: FakeFileActivityProvider(writes: writes),
+            installedApps: Self.emptyInstalledCache
         )
     }
+
+    /// canned 零扫描缓存（测试零真实文件系统；init 首刷/重放均为空操作成本）
+    private static let emptyInstalledCache = InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
 
     private static func check(_ condition: Bool, _ name: String, failures: inout Int) {
         if condition {

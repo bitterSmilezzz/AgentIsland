@@ -67,7 +67,8 @@ enum EngineTests {
                 profiles: AgentRegistry.builtin,
                 config: EngineConfig(workingWindow: 20),
                 processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: [])),
-                fileMonitor: provider
+                fileMonitor: provider,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
             )
             _ = engine.sample(now: now)
             provider.writes = [dir: now.addingTimeInterval(-3)]
@@ -168,7 +169,8 @@ enum EngineTests {
                 profiles: [dim],
                 config: EngineConfig(workingWindow: 60),
                 processMonitor: ProcessMonitor(),
-                fileMonitor: monitor
+                fileMonitor: monitor,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
             )
             let snaps = engine.sample(now: Date())
             let dimSnap = snaps.first
@@ -271,18 +273,35 @@ enum EngineTests {
             try expectTrue(fake.calls.contains("modelBreakdown"), "下钻查询经引擎转发")
             try expectTrue(fake.calls.contains("sessions"), "会话查询经引擎转发")
         }
+
+        TestKit.test("引擎: 安装缓存首刷完成后重放启用集，自动发现项恢复监控") {
+            let cache = InstalledAppsCache(scanCLIs: { ["fakecli"] }, scanBundles: { [] })
+            let engine = makeEngine(processNames: [], writes: [:],
+                                    installedApps: cache, enabledIDs: ["dim", "cli-fakecli"])
+            try expectTrue(!engine.allProfiles.contains { $0.id == "cli-fakecli" }, "首刷前 cli-fakecli 缺席（冷缓存）")
+            let deadline = Date().addingTimeInterval(5)
+            while !engine.allProfiles.contains(where: { $0.id == "cli-fakecli" }) && Date() < deadline {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            }
+            try expectTrue(engine.allProfiles.contains { $0.id == "cli-fakecli" }, "首刷重放后自动发现项恢复监控")
+            try expectTrue(engine.allProfiles.contains { $0.id == "dim" }, "重放不丢内置启用项")
+        }
     }
 
     // MARK: - 工具
 
     static func makeEngine(processNames: Set<String>, writes: [String: Date], cpu: Double = 0,
-                           tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor()) -> ActivityEngine {
+                           tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor(),
+                           installedApps: InstalledAppsCache? = nil,
+                           enabledIDs: Set<String>? = nil) -> ActivityEngine {
         ActivityEngine(
             profiles: AgentRegistry.builtin,
             config: EngineConfig(workingWindow: 20),
             processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu)),
             fileMonitor: FakeFileActivityProvider(writes: writes),
-            tokenMonitor: tokenMonitor
+            tokenMonitor: tokenMonitor,
+            installedApps: installedApps ?? InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }),
+            enabledIDs: enabledIDs
         )
     }
 }

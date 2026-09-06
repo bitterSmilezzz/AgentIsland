@@ -8,6 +8,8 @@ import AppKit
 final class AppContext {
     static let shared = AppContext()
     let engine: ActivityEngine
+    /// 已安装缓存（组合根创建；刷新节律由引擎驱动，设置页只读 + 打开时触发重扫）
+    let installedApps = InstalledAppsCache()
     private var _controller: IslandPanelController?
 
     /// 控制器延迟创建：首次访问才实例化，全局唯一
@@ -26,27 +28,16 @@ final class AppContext {
     private init() {
         // 配置：Core 唯一读取路径（缺项回落默认 + 归一化启动自愈脏值）
         let config = EngineConfig.load(from: .standard)
-        let registry = AgentRegistry.fullRegistry()
+        let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
         let enabled = Self.enabledOrDefault(registry: registry)
         engine = ActivityEngine(
             profiles: registry.filter { enabled.contains($0.id) },
-            config: config
+            config: config,
+            installedApps: installedApps,
+            enabledIDs: enabled
         )
-        // 安装缓存后台首刷（阿剩中A：类型首次访问改为空集零成本，这里显式触发
-        // 真实扫描；引擎采样循环随后会低频重扫，首次采样前 installed 标记短暂为空）
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            AgentRegistry.refreshInstalledCache()
-            DispatchQueue.main.async {
-                // 首刷完成后用最新注册表重建启用集（阿剩中：若用户启用过自动发现
-                // cli-xxx，重启时旧缓存为空会导致该 CLI 被滤出引擎；这里补一次
-                // setEnabled 让其恢复监控）
-                guard let self else { return }
-                // 先标记已刷再 setEnabled（阿剩中：setEnabled 内部同步 sample → sampleCore
-                // 会检查 lastInstalledRefresh；顺序颠倒则双扫未根除）
-                self.engine.markInstalledRefreshed()
-                self.engine.setEnabled(Self.enabledOrDefault(registry: AgentRegistry.fullRegistry()))
-            }
-        }
+        // 安装缓存首刷由引擎 init 自排（唯一刷新驱动）；首刷完成回调里引擎自行重放
+        // 启用集恢复自动发现监控——组合根不再编排「刷新+打标+二次 setEnabled」舞步
     }
 }
 
@@ -77,7 +68,9 @@ struct AgentIslandApp: App {
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(engine: AppContext.shared.engine, controller: AppContext.shared.controller)
+            SettingsView(engine: AppContext.shared.engine,
+                         controller: AppContext.shared.controller,
+                         installedApps: AppContext.shared.installedApps)
         }
     }
 }

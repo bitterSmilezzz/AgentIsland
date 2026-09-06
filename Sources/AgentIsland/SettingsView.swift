@@ -9,6 +9,8 @@ import ServiceManagement
 struct SettingsView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
+    /// 已安装缓存（组合根注入；与引擎共用同一实例，本页只读 + 打开时触发重扫）
+    let installedApps: InstalledAppsCache
 
     private static let defaultConfig = EngineConfig()
 
@@ -63,17 +65,10 @@ struct SettingsView: View {
         .onAppear {
             // 打开设置页即重扫安装缓存（装新 CLI/App 后进设置页确认是最常见场景，
             // 离线态下引擎低频刷新最长滞后 2 小时）。
-            // 后台执行避免 /Applications plist 扫描阻塞窗口首帧（阿证中1/阿菜/阿剩
-            // 三方同源：扫描 30-100ms 不应占用主线程）；完成后主线程 bump 版本号
-            // 触发 body 重算刷新自动发现列表（阿剩低B）
-            DispatchQueue.global(qos: .utility).async {
-                AgentRegistry.refreshInstalledCache()
-                DispatchQueue.main.async {
-                    installedScanVersion += 1
-                    // 设置页刷新后同步引擎时间戳（阿剩低3：markInstalledRefreshed 注释
-                    // 声称覆盖 AppContext 首刷/设置页两路径，之前只接了首刷一处）
-                    engine.markInstalledRefreshed()
-                }
+            // refreshIfNeeded 调度即标记（后台扫描不占主线程，阿证中1）；完成后主线程
+            // bump 版本号触发 body 重算刷新自动发现列表（阿剩低B）
+            installedApps.refreshIfNeeded(maxAge: 0) {
+                installedScanVersion += 1
             }
             loadState()
         }
@@ -131,7 +126,7 @@ struct SettingsView: View {
             // 自动发现的额外 CLI：做成可开关条目（默认关闭，用户可启用监控）
             // 之前只读展示，用户无法启用；且 defaultEnabled=false 导致首次切换
             // 任意开关时这些项会被误塞进引擎或显示与实态脱节（阿剩中1）
-            let discovered = AgentRegistry.discoverCLIProfiles()
+            let discovered = AgentRegistry.discoverCLIProfiles(installedCLIs: installedApps.installedCLIs())
             if !discovered.isEmpty {
                 Text("自动发现")
                     .font(Theme.bodyFont(13, weight: .semibold))
@@ -196,7 +191,8 @@ struct SettingsView: View {
             // 冲突集合 = 「已安装 或 已启用」条目的进程名（规则与推导在 AgentRegistry，Core 可测）
             AddCustomAgentSheet(existingIDs: Set(customProfiles.map(\.id)),
                                 knownProcessNames: AgentRegistry.conflictingProcessNames(
-                                    enabledIDs: Set(engine.allProfiles.map(\.id)))) { profile in
+                                    enabledIDs: Set(engine.allProfiles.map(\.id)),
+                                    installedApps: installedApps)) { profile in
                 addCustom(profile)
             }
         }

@@ -8,7 +8,10 @@ public enum Probe {
     @MainActor
     public static func run() -> Int32 {
         print("AgentIsland probe — 真实环境状态采样")
-        let registry = AgentRegistry.fullRegistry()
+        // 一次性 CLI 工具：同步扫描安装缓存可接受
+        let installedApps = InstalledAppsCache()
+        installedApps.refresh()
+        let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
         // 真实文件监控：先同步扫一次填缓存，再采样
         let monitor = FileActivityMonitor()
         monitor.watch(dirs: registry.flatMap(\.sessionDirs))
@@ -18,7 +21,8 @@ public enum Probe {
             profiles: registry,
             config: EngineConfig(),
             processMonitor: ProcessMonitor(),          // 真实进程
-            fileMonitor: monitor                        // 真实文件系统（后台扫描）
+            fileMonitor: monitor,                       // 真实文件系统（后台扫描）
+            installedApps: installedApps                // 已热缓存（init 首刷跳过，不双扫）
         )
         let snaps = engine.sample()
 

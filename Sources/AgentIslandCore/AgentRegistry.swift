@@ -1,7 +1,8 @@
 import Foundation
 
 // MARK: - Agent 注册表
-// 内置集（按 2026-09 本机调查修正）+ 自动发现（/Applications + PATH）+ 用户自定义（UserDefaults）
+// 内置集（按 2026-09 本机调查修正）+ 自动发现（按传入的已安装集判定）+ 用户自定义（UserDefaults）
+// 无全局可变状态：安装判定一律经注入的 InstalledAppsCache（见 InstalledAppsCache.swift）
 
 public enum AgentRegistry {
 
@@ -104,104 +105,12 @@ public enum AgentRegistry {
 
     // MARK: - 自动发现
 
-    /// 已知 CLI 名（PATH 扫描用）
-    static let knownCLIs = ["dim", "codex", "claude", "cursor", "trae", "opencode",
-                            "hermes-agent", "aider", "gemini", "windsurf", "agent-browser",
-                            "tiny-agents", "continue"]
-
-    /// 已知 GUI bundle id（/Applications 扫描用）
-    static let knownBundleIDs: [String: String] = [
-        "com.dimcode.app": "dim",
-        "com.anthropic.claudefordesktop": "claude",
-        "com.anthropic.claudecode": "claude",
-        "com.openai.codex": "codex",
-        "com.todesktop.230113mital1efw": "cursor",
-        "cn.trae.solo.app": "trae",
-        "com.tencent.imamac": "copilot",
-        "com.tencent.workbuddy.mac": "workbuddy",
-        "com.continue.continue": "continue",
-    ]
-
-    /// 已安装的 CLI 集合（小写命令名）
-    /// 静态缓存：避免 fullRegistry/discoverCLI/refreshInstalled 各扫一遍；
-    /// 运行期可 refreshInstalledCache() 重扫（阿剩低3：装新 CLI 不必重启 App）
-    /// 锁保护：refreshInstalledCache 可后台执行，读写都要加锁（阿证中1/阿剩N3）；
-    /// 存储属性 private（阿剩低2：getter 公开可绕过锁，外部一律走加锁 getter）。
-    /// 初始空集（阿剩中A：类型首次访问同步扫描 /Applications 30-100ms 会阻塞主线程
-    /// 启动路径；改为启动后显式后台刷新一次）
-    private static let installedLock = NSLock()
-    private static var cachedInstalledCLIs: Set<String> = []
-
-    private static func scanInstalledCLIs() -> Set<String> {
-        var found = Set<String>()
-        var dirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map(String.init)
-        // 补扫常见非 PATH 安装目录（阿剩低4：~/.local/bin、/opt/homebrew/bin 等
-        // 未入 PATH 时 CLI 实际可用但会误判「未安装」）
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        dirs += [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", home + "/bin"]
-        for cli in knownCLIs {
-            for dir in dirs where FileManager.default.isExecutableFile(
-                atPath: (dir as NSString).appendingPathComponent(cli)) {
-                found.insert(cli)
-                break
-            }
-        }
-        return found
-    }
-
-    public static func installedCLIs() -> Set<String> {
-        installedLock.lock()
-        defer { installedLock.unlock() }
-        return cachedInstalledCLIs
-    }
-
-    /// 已安装的 bundle id 集合（/Applications 枚举，小写）
-    /// 静态缓存：一次扫描，全部消费方复用；运行期可 refreshInstalledCache() 重扫。
-    /// 初始空集（同 cachedInstalledCLIs：避免类型首次访问同步扫描）
-    private static var cachedInstalledBundleIDs: Set<String> = []
-
-    private static func scanInstalledBundleIDs() -> Set<String> {
-        var found = Set<String>()
-        let fm = FileManager.default
-        let appsDir = URL(fileURLWithPath: "/Applications")
-        if let apps = try? fm.contentsOfDirectory(at: appsDir, includingPropertiesForKeys: [.isDirectoryKey]) {
-            for app in apps where app.pathExtension == "app" {
-                let plistPath = app.appendingPathComponent("Contents/Info.plist").path
-                if let data = fm.contents(atPath: plistPath),
-                   let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-                   let bid = plist["CFBundleIdentifier"] as? String {
-                    found.insert(bid.lowercased())
-                }
-            }
-        }
-        return found
-    }
-
-    public static func installedBundleIDs() -> Set<String> {
-        installedLock.lock()
-        defer { installedLock.unlock() }
-        return cachedInstalledBundleIDs
-    }
-
-    /// 运行期重扫安装缓存（面板展开/设置打开时调用，成本毫秒级）。
-    /// 扫描本身可在任意线程执行；结果写回加锁（阿证中1：app 多时 plist 解析
-    /// 可达 30-100ms，不应占用主线程）
-    public static func refreshInstalledCache() {
-        let clis = scanInstalledCLIs()
-        let bundles = scanInstalledBundleIDs()
-        installedLock.lock()
-        cachedInstalledCLIs = clis
-        cachedInstalledBundleIDs = bundles
-        installedLock.unlock()
-    }
-
-    /// 自动发现的额外 CLI profile（不在内置集里的 CLI，如 aider/gemini/windsurf）
-    public static func discoverCLIProfiles() -> [AgentProfile] {
-        let installed = installedCLIs()
+    /// 自动发现的额外 CLI profile（不在内置集里的 CLI，如 aider/gemini/windsurf）。
+    /// installedCLIs 由调用方从 InstalledAppsCache 取得——本类型不读任何全局状态
+    public static func discoverCLIProfiles(installedCLIs: Set<String>) -> [AgentProfile] {
         let existing = Set(builtin.flatMap { $0.processNames.map { $0.lowercased() } })
         var extra: [AgentProfile] = []
-        for cli in installed where !existing.contains(cli) {
+        for cli in installedCLIs where !existing.contains(cli) {
             extra.append(AgentProfile(
                 id: "cli-\(cli)",
                 name: cli,
@@ -232,16 +141,17 @@ public enum AgentRegistry {
         }
     }
 
-    /// 完整注册表：内置 + 自动发现 CLI + 自定义
-    public static func fullRegistry() -> [AgentProfile] {
+    /// 完整注册表：内置 + 自动发现 CLI（按传入已安装集）+ 自定义
+    public static func fullRegistry(installedCLIs: Set<String>) -> [AgentProfile] {
         var list = builtin
-        list.append(contentsOf: discoverCLIProfiles())
+        list.append(contentsOf: discoverCLIProfiles(installedCLIs: installedCLIs))
         list.append(contentsOf: loadCustomProfiles())
         return list
     }
 
+    /// 单条查找（内置 + 自定义；自动发现条目不在本查找范围，须走 fullRegistry）
     public static func profile(id: String) -> AgentProfile? {
-        fullRegistry().first { $0.id == id }
+        fullRegistry(installedCLIs: []).first { $0.id == id }
     }
 
     // MARK: - 进程名冲突校验（自定义 Agent 用）
@@ -268,13 +178,16 @@ public enum AgentRegistry {
         return Array(names)
     }
 
-    /// 便捷入口：registry/installed 集取自本类型（设置表单用）
-    public static func conflictingProcessNames(enabledIDs: Set<String>) -> [String] {
+    /// 便捷入口：registry 取全量、installed 集取自注入缓存（设置表单用）
+    public static func conflictingProcessNames(
+        enabledIDs: Set<String>,
+        installedApps: InstalledAppsCache
+    ) -> [String] {
         conflictingProcessNames(
-            registry: fullRegistry(),
+            registry: fullRegistry(installedCLIs: installedApps.installedCLIs()),
             enabledIDs: enabledIDs,
-            installedCLIs: installedCLIs(),
-            installedBundles: installedBundleIDs())
+            installedCLIs: installedApps.installedCLIs(),
+            installedBundles: installedApps.installedBundleIDs())
     }
 
     // MARK: - 工具
