@@ -22,8 +22,9 @@ public final class ActivityEngine: ObservableObject {
     private var profiles: [AgentProfile]
     private let processMonitor: ProcessMonitor
     private let fileMonitor: FileActivityProviding
-    /// token 用量子系统（seam：轮询面 + 查询面；测试注入 fake，见 TokenUsageMonitor.swift）
-    public let tokenMonitor: any TokenUsagePolling & TokenUsageQuerying
+    /// token 用量子系统（seam：轮询面 + 查询面；测试经 init 注入 fake）。
+    /// 私有实现细节——UI 一律走本类的数据面（grandTotal / modelBreakdown / sessions）
+    private let tokenMonitor: any TokenUsagePolling & TokenUsageQuerying
     private var lastWrites: [String: Date] = [:]   // dir -> 最近写入时间
     private var timer: Timer?
     /// 测试观察点：定时器是否已创建（stop 后应为 nil）
@@ -345,6 +346,21 @@ public final class ActivityEngine: ObservableObject {
     /// 最近 N 秒内有 Agent 变为 working（供通知/自动展开用）
     public func workingAgents() -> [AgentSnapshot] {
         snapshots.filter { $0.level == .working }
+    }
+
+    // MARK: - token 数据出口（UI 唯一入口；经 seam 转发给 token 子系统）
+
+    /// 所有数据源总和（语义见 TokenUsagePolling.grandTotal；汇总栏显示 / 展开高度判断）
+    public var grandTotal: TokenUsage { tokenMonitor.grandTotal }
+
+    /// 按模型拆分下钻（详情页）
+    public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
+        tokenMonitor.modelBreakdown(agentId: agentId, completion: completion)
+    }
+
+    /// 某模型下的会话列表下钻（会话页）
+    public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
+        tokenMonitor.sessions(agentId: agentId, modelId: modelId, completion: completion)
     }
 
     /// 可见口径（唯一实现）：在线 + 24h 内活跃。

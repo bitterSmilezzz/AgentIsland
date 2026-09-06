@@ -519,12 +519,12 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         switch route {
         case .list:
             if visibleCount() == 0 {
-                let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : summaryBarHeight
+                let summaryBar: CGFloat = engine.grandTotal.isEmpty ? 0 : summaryBarHeight
                 return min(headerHeight + dividerHeight + emptyStateHeight + summaryBar, expandedMaxHeight)
             }
             let count = max(visibleCount(), 1)
             let listHeight = min(CGFloat(count) * rowHeight + 10, listMaxHeight)
-            let summaryBar: CGFloat = engine.tokenMonitor.grandTotal.isEmpty ? 0 : summaryBarHeight
+            let summaryBar: CGFloat = engine.grandTotal.isEmpty ? 0 : summaryBarHeight
             return min(headerHeight + dividerHeight + listHeight + summaryBar, expandedMaxHeight)
         case .agentDetail:
             // 详情页用 detailHeaderHeight（显式，不再靠 +10 魔法补差）

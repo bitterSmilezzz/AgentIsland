@@ -186,9 +186,9 @@ struct IslandView: View {
             }
 
             // Token 汇总栏（双口径：24h / 累计；有数据才显示）
-            if !engine.tokenMonitor.grandTotal.isEmpty {
+            if !engine.grandTotal.isEmpty {
                 Divider().overlay(Theme.onDark.opacity(0.12))
-                TokenSummaryBar(total: engine.tokenMonitor.grandTotal)
+                TokenSummaryBar(total: engine.grandTotal)
             }
         }
         .frame(width: 280)

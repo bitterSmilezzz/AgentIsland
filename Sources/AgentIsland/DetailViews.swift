@@ -131,7 +131,7 @@ struct AgentDetailView: View {
             modelHoveredID = nil   // 数据刷新时清除残留 hover 高亮
             let token = UUID()   // 代际标记：防止旧查询结果覆盖已切换的新页面
             queryToken = token
-            engine.tokenMonitor.modelBreakdown(agentId: agentId) { rows in
+            engine.modelBreakdown(agentId: agentId) { rows in
                 guard queryToken == token else { return }
                 models = rows
                 loading = false
@@ -321,7 +321,7 @@ struct SessionListView: View {
             sessions = []
             let token = UUID()   // 代际标记：防止旧查询结果覆盖已切换的新页面
             queryToken = token
-            engine.tokenMonitor.sessions(agentId: agentId, modelId: modelId) { rows in
+            engine.sessions(agentId: agentId, modelId: modelId) { rows in
                 guard queryToken == token else { return }
                 sessions = rows
                 loading = false

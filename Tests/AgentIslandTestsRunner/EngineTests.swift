@@ -260,6 +260,17 @@ enum EngineTests {
             engine.stop()
             try expectEqual(fake.calls, [], "未启动轮询时 stop 不应调用 token 侧")
         }
+
+        TestKit.test("引擎: grandTotal 与下钻查询经 seam 透出（UI 唯一入口）") {
+            let fake = FakeTokenUsageMonitor()
+            fake.grandTotal = TokenUsage(tokens24h: 10, tokensTotal: 100, cost24h: 0.1, costTotal: 1.0)
+            let engine = makeEngine(processNames: [], writes: [:], tokenMonitor: fake)
+            try expectEqual(engine.grandTotal, fake.grandTotal, "grandTotal 经引擎透出")
+            engine.modelBreakdown(agentId: "dim") { _ in }
+            engine.sessions(agentId: "dim", modelId: "m") { _ in }
+            try expectTrue(fake.calls.contains("modelBreakdown"), "下钻查询经引擎转发")
+            try expectTrue(fake.calls.contains("sessions"), "会话查询经引擎转发")
+        }
     }
 
     // MARK: - 工具

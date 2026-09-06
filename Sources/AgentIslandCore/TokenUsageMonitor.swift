@@ -516,12 +516,12 @@ public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying 
     public func pause() { calls.append("pause") }
 
     public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
-        calls.append("modelBreakdown")
+        calls.append("modelBreakdown")   // 同步记录：调用即刻可断言；回调异步送达
         Task { @MainActor in completion([]) }
     }
 
     public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
-        calls.append("sessions")
+        calls.append("sessions")   // 同步记录：调用即刻可断言；回调异步送达
         Task { @MainActor in completion([]) }
     }
 }
