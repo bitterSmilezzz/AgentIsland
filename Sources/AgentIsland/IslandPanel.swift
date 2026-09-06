@@ -612,9 +612,9 @@ final class ShadowHostView: NSView {
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.42)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
-        layer.shadowOpacity = enabled ? 0.30 : 0
-        layer.shadowRadius = enabled ? 16 : 0
-        layer.shadowOffset = CGSize(width: 0, height: -6)
+        layer.shadowOpacity = enabled ? Theme.panelShadowOpacity : 0
+        layer.shadowRadius = enabled ? Theme.panelShadowRadius : 0
+        layer.shadowOffset = CGSize(width: 0, height: Theme.panelShadowOffsetY)
         CATransaction.commit()
         updateShadowPath()
     }

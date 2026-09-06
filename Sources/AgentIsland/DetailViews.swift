@@ -50,11 +50,7 @@ struct DetailHeader: View {
         .padding(.top, IslandMetrics.detailHeaderPaddingTop)
         .padding(.bottom, IslandMetrics.detailHeaderPaddingBottom)
         .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 3)
-                .onChanged { value in onDragMoved?(value.translation) }
-                .onEnded { _ in onDragEnded?() }
-        )
+        .cardDrag(onMoved: { onDragMoved?($0) }, onEnded: { onDragEnded?() })
     }
 }
 
@@ -68,7 +64,6 @@ struct AgentDetailView: View {
     @State private var models: [ModelUsage] = []
     @State private var loading = true
     @State private var queryToken = UUID()
-    @State private var modelHoveredID: String?
 
     private var snapshot: AgentSnapshot? {
         engine.snapshots.first { $0.id == agentId }
@@ -85,7 +80,7 @@ struct AgentDetailView: View {
                          onDragMoved: { controller.dragMoved(translation: $0) },
                          onDragEnded: { controller.dragEnded() })
 
-            Divider().overlay(Theme.onDark.opacity(0.12))
+            DarkDivider()
 
             // GeometryReader 必须在 ScrollView 外层（同 SessionListView，防长内容不可滚动）
             GeometryReader { geo in
@@ -93,7 +88,7 @@ struct AgentDetailView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         if loading {
                             // 与 SessionListView 一致的居中 loading（阿菜低3）
-                            HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                            CenteredSpinner()
                                 .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
                         } else {
                             // 统一垂直居中：内容短时居中消除贴顶留白（阿菜中1/2），
@@ -122,13 +117,10 @@ struct AgentDetailView: View {
                 }
             }
         }
-        .frame(width: IslandMetrics.cardWidth)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
+        .cardShell()
         .task(id: agentId) {
             loading = true
             models = []
-            modelHoveredID = nil   // 数据刷新时清除残留 hover 高亮
             let token = UUID()   // 代际标记：防止旧查询结果覆盖已切换的新页面
             queryToken = token
             engine.modelBreakdown(agentId: agentId) { rows in
@@ -210,10 +202,7 @@ struct AgentDetailView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                    .fill(modelHoveredID == m.modelId ? Theme.hoverFill : Theme.chipFill))
-                .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous))
-                .onHover { modelHoveredID = $0 ? m.modelId : nil }
+                .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: Theme.chipFill)
                 .onTapGesture {
                     controller.route = .sessions(agentId, m.modelId)
                 }
@@ -281,12 +270,12 @@ struct SessionListView: View {
                          onDragMoved: { controller.dragMoved(translation: $0) },
                          onDragEnded: { controller.dragEnded() })
 
-            Divider().overlay(Theme.onDark.opacity(0.12))
+            DarkDivider()
 
             // 列表态用 ScrollView+LazyVStack（懒加载）；loading/空态直接铺满剩余空间并居中，
             // 避免窗口固定高度下大片空白玻璃（阿菜低3）
             if loading {
-                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                CenteredSpinner()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if sessions.isEmpty {
                 Text("该模型暂无会话记录")
@@ -313,9 +302,7 @@ struct SessionListView: View {
                 }
             }
         }
-        .frame(width: IslandMetrics.cardWidth)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
+        .cardShell()
         .task(id: "\(agentId)/\(modelId)") {
             loading = true
             sessions = []
@@ -337,7 +324,6 @@ struct SessionListView: View {
 // MARK: - 会话行（hover 态在行内自持，避免整列表重绘：阿证低优）
 private struct SessionRowView: View {
     let session: SessionUsage
-    @State private var isHovered = false
 
     var body: some View {
         let timeText: String = {
@@ -373,10 +359,7 @@ private struct SessionRowView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-            .fill(isHovered && hasDir ? Theme.hoverFill : Theme.chipFill))
-        .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous))
-        .onHover { isHovered = $0 }
+        .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: Theme.chipFill, hoverEnabled: hasDir)
         .onTapGesture {
             if let dir = session.directory {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dir))

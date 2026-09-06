@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] ProcessMonitor struct 不存在；引擎全部调用点经 ProcessProviding（Fake/Provider 直传）
 - [ ] EngineConfig 无 collapseDelay；设置页滑块调整仍实时生效（持久化 + 面板行为）
@@ -14,3 +14,4 @@
 ## Comments
 
 - 2026-09-06 发布（弹窗未答，按推荐执行）。
+- 2026-09-06 完成。

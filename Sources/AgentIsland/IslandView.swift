@@ -13,7 +13,7 @@ struct GlassCardBackground: View {
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             // 蒙层：深色下黑蒙，浅色下白蒙（动态）
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color(dynamicLight: 0xffffff, dark: 0x000000).opacity(0.42))
+                .fill(Color(dynamicLight: 0xffffff, dark: 0x000000).opacity(Theme.glassOverlayOpacity))
             // 无描边：灵动岛悬浮质感靠材质对比 + 阴影，描边在浅色下会呈现为矩形框
         }
         // 阴影由 ShadowHostView（AppKit layer）绘制，这里不再加 SwiftUI 阴影
@@ -104,8 +104,7 @@ struct IslandView: View {
         Capsule()
             // 浅色模式主体加深：5pt 细条在亮壁纸上 0.22 几乎不可见，0.34 起才稳定可见
             // 动态色随面板 effectiveAppearance 切换（避免 @Environment(\.colorScheme) 与强制外观不同步）
-            .fill(Color(dynamic: NSColor(hex: 0x000000, alpha: engine.anyWorking ? 0.55 : 0.34),
-                        dark: NSColor(hex: 0x000000, alpha: engine.anyWorking ? 0.85 : 0.55)))
+            .fill(Theme.dockedSliverFill(working: engine.anyWorking))
             .overlay(alignment: .leading) {
                 // 忙碌时左侧一粒绿点（细条内的微状态提示）
                 if engine.anyWorking {
@@ -115,8 +114,7 @@ struct IslandView: View {
                         .padding(.leading, 3)
                 }
             }
-            .overlay(Capsule().strokeBorder(
-                Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.22), lineWidth: 0.5))
+            .overlay(Capsule().strokeBorder(Theme.dockedSliverStroke, lineWidth: 0.5))
             .frame(width: IslandMetrics.dockedWidth, height: IslandMetrics.dockedHeight)
             .contentShape(Capsule())
             // 点击细条兜底展开（悬停通常已展开；防止 mouseMoved 事件被系统吞掉时无响应）
@@ -149,17 +147,10 @@ struct IslandView: View {
             .padding(.top, IslandMetrics.headerPaddingTop)
             .padding(.bottom, IslandMetrics.headerPaddingBottom)
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 3)
-                    .onChanged { value in
-                        controller.dragMoved(translation: value.translation)
-                    }
-                    .onEnded { _ in
-                        controller.dragEnded()
-                    }
-            )
+            .cardDrag(onMoved: { controller.dragMoved(translation: $0) },
+                      onEnded: { controller.dragEnded() })
 
-            Divider().overlay(Theme.onDark.opacity(0.12))
+            DarkDivider()
 
             // Agent 列表（Q3：只显示在线 + 24h 活跃）
             if engine.visibleSnapshots.isEmpty {
@@ -187,14 +178,11 @@ struct IslandView: View {
 
             // Token 汇总栏（双口径：24h / 累计；有数据才显示）
             if !engine.grandTotal.isEmpty {
-                Divider().overlay(Theme.onDark.opacity(0.12))
+                DarkDivider()
                 TokenSummaryBar(total: engine.grandTotal)
             }
         }
-        .frame(width: IslandMetrics.cardWidth)
-        // 背景铺满整个窗口（窗口高度可能略大于内容，消除底部透明带）
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(GlassCardBackground(cornerRadius: Theme.radiusLg))
+        .cardShell()
     }
 
     // MARK: 状态点
@@ -224,7 +212,6 @@ struct IslandView: View {
 struct AgentRowView: View {
     let snapshot: AgentSnapshot
     @ObservedObject var controller: IslandPanelController
-    @State private var hovering = false
 
     /// Token 徽标文本："1.23M" 或 "1.23M $0.42"
     static func tokenBadge(_ usage: TokenUsage) -> String {
@@ -275,13 +262,7 @@ struct AgentRowView: View {
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, 7)
-        .background(
-            // 圆角与详情页模型/会话行统一为 Theme.radiusSm（阿菜低5）
-            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                .fill(hovering ? Theme.hoverFill : Color.clear)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous))
-        .onHover { hovering = $0 }
+        .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: .clear)
         .onTapGesture {
             // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表）
             controller.route = .agentDetail(snapshot.profile.id)
