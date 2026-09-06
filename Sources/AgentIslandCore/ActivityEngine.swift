@@ -57,6 +57,17 @@ public final class ActivityEngine: ObservableObject {
     }
 
     private var running = false   // stop() 后阻止在飞回调重建定时器（阿剩N1）
+    // MARK: token 轮询生命周期（单一 owner：引擎）
+    // 三状态合法组合（其余组合按不变量不可达）：
+    //   running=false ∧ tokenPollingStarted=false   —— 初始 / 已停止（presentationActive 任意，
+    //      stop() 刻意不清它：重启后按面板最后一次状态补开）
+    //   running=true  ∧ tokenPollingStarted=false   —— 未呈现活跃（docked）或激活先于 start（记状态待补开）
+    //   running=true  ∧ tokenPollingStarted=true    —— presentationActive=true（轮询运行中）
+    // start() 的 timer 守卫提前返回时不得跳过补开（当前无此路径：running 置位后守卫只在重复 start 触发）
+    /// 呈现活跃（面板展开）：token 轮询的唯一驱动源（懒启动）
+    private var presentationActive = false
+    /// token 轮询当前是否已启动（引擎侧幂等标记；失活暂停后复位置 false）
+    private var tokenPollingStarted = false
 
     public func start() {
         guard !running else { return }
@@ -66,12 +77,37 @@ public final class ActivityEngine: ObservableObject {
         // 若不标记，start() 的首次 sample → sampleCore 距 distantPast ≥300s
         // 会再触发一次扫描，实测启动双扫）
         markInstalledRefreshed()
+        sample()               // sample() 末尾自带 scheduleNext()
+        // token 轮询懒启动：仅呈现活跃时开启（面板 docked 态启动时零开销；
+        // 先展开后启动的顺序在启动时补开）
+        if presentationActive {
+            startTokenPollingIfNeeded()
+        }
+    }
+
+    /// 呈现活跃切换（面板 docked/expanded 唯一入口；幂等，吸收「sink 不去重」的重复通知）
+    /// - active=true：启动轮询（内含立即首刷；暂停后重启连接沿用缓存）
+    /// - active=false：暂停轮询（连接保留，保持 docked 态省电语义）
+    public func setPresentationActive(_ active: Bool) {
+        guard presentationActive != active else { return }
+        presentationActive = active
+        guard running else { return }   // 引擎未运行：仅记状态，start() 时补开
+        if active {
+            startTokenPollingIfNeeded()
+        } else {
+            tokenMonitor.pause()
+            tokenPollingStarted = false
+        }
+    }
+
+    private func startTokenPollingIfNeeded() {
+        guard !tokenPollingStarted else { return }
+        tokenPollingStarted = true
         // token 数据刷完后触发一次重采样（快照带上用量 + 卡片高度重算）
         tokenMonitor.onRefresh = { [weak self] in
             self?.sampleInBackground()
         }
-        tokenMonitor.start()   // token 用量轮询（60s，后台队列）
-        sample()               // sample() 末尾自带 scheduleNext()
+        tokenMonitor.start()   // start 内含立即首刷
     }
 
     public func stop() {
@@ -79,7 +115,11 @@ public final class ActivityEngine: ObservableObject {
         timer?.invalidate()
         timer = nil
         tokenMonitor.onRefresh = nil   // 停止后 in-flight token 刷新不再触发重采样（阿证低3）
-        tokenMonitor.stop()
+        // 条件调用：轮询未启动时无需关闭连接（连接惰性打开，未启动即不存在）
+        if tokenPollingStarted {
+            tokenMonitor.stop()
+            tokenPollingStarted = false
+        }
     }
 
     // MARK: - 动态配置（设置界面接线）

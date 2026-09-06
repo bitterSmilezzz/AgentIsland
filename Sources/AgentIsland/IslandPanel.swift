@@ -201,7 +201,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 注意：controller 可能在 SwiftUI 场景求值阶段被创建，那时 NSScreen 未就绪、
         // placeWindow 会静默失败；这里强制重新定位一次。
         displayState = .docked
-        engine.tokenMonitor.pause()   // 初始 docked：sink 不触发 removeDuplicates，需显式暂停
+        // 显式调用是双保险：displayState 赋值经 sink 也会触发 onStateChanged(.docked)→失活，
+        // 但 sink 无 removeDuplicates 且首帧时序不稳；setPresentationActive 幂等，重复调用无代价
+        engine.setPresentationActive(false)
         updateWindowChrome(docked: true)
         placeWindow(size: dockedSize, animated: false)
         panel.orderFrontRegardless()
@@ -420,12 +422,12 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 t.disablesAnimations = true
                 withTransaction(t) { self.route = .list }
             }
-            engine.tokenMonitor.pause()   // 细条态无展示需求，暂停 60s 轮询省电
+            engine.setPresentationActive(false)   // 细条态无展示需求：呈现失活，暂停轮询省电
             updateWindowChrome(docked: true)
             panel.orderFrontRegardless()
             placeWindow(size: dockedSize, animated: true)
         case .expanded:
-            engine.tokenMonitor.resume()   // 展开即恢复轮询并立即刷新
+            engine.setPresentationActive(true)   // 呈现活跃：启动/恢复轮询并立即刷新
             updateWindowChrome(docked: false)
             panel.orderFrontRegardless()
             placeWindow(size: sizeForState(), animated: true)

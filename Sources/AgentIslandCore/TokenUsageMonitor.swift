@@ -94,8 +94,6 @@ public protocol TokenUsagePolling: AnyObject {
     func stop()
     /// 暂停轮询（连接保留；「呈现活跃」失活时由引擎调用）
     func pause()
-    /// 恢复轮询并立即刷新（「呈现活跃」激活时由引擎调用）
-    func resume(interval: TimeInterval)
 }
 
 /// 默认轮询节律（唯一来源：类签名默认参数与无参便利方法共用）
@@ -106,7 +104,6 @@ public enum TokenUsagePollingDefaults {
 public extension TokenUsagePolling {
     /// 协议要求不带默认参数；无参形式走默认节律
     func start() { start(interval: TokenUsagePollingDefaults.interval) }
-    func resume() { resume(interval: TokenUsagePollingDefaults.interval) }
 }
 
 /// 查询面：详情页按需下钻（引擎转发时消费）
@@ -166,24 +163,14 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         closeConnectionsAsync()
     }
 
-    /// 暂停后台轮询（面板 docked 时无展示需求，省掉整条查询链路与 onRefresh 重采样）
+    /// 暂停后台轮询（「呈现活跃」失活时由引擎调用，省掉整条查询链路与 onRefresh 重采样）
     /// 注意：不关闭连接（阿证中1：每次 expanded 重开 + 全表重扫产生 41.6% 尖峰；
-    /// 只读连接可长驻复用，SQLite 对同库持续写入安全）；stop() 才彻底清理
+    /// 只读连接可长驻复用，SQLite 对同库持续写入安全）；stop() 才彻底清理。
+    /// 暂停后重启走 start()：timer 已空则立即首刷并重建定时器，连接不受影响
     public func pause() {
         guard timer != nil else { return }
         timer?.invalidate()
         timer = nil
-    }
-
-    /// 恢复后台轮询（面板 expanded 时），并立即刷新一次保证 UI 最新
-    public func resume(interval: TimeInterval = TokenUsagePollingDefaults.interval) {
-        guard timer == nil else { return }
-        refreshAsync()
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.refreshAsync()
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
     }
 
     /// 异步关闭连接：不阻塞主线程（若详情页大查询在飞，等其自然结束；dbQueue 串行保证安全）
@@ -514,7 +501,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 // MARK: - 测试用假实现（MainActor 内使用；记录轮询面调用序列，零 I/O）
 
 public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying {
-    /// 轮询面调用序列："start" / "stop" / "pause" / "resume"
+    /// 轮询面调用序列："start" / "stop" / "pause"
     public private(set) var calls: [String] = []
     public var usage: [String: TokenUsage] = [:]
     public var grandTotal = TokenUsage()
@@ -527,8 +514,6 @@ public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying 
     public func stop() { calls.append("stop") }
 
     public func pause() { calls.append("pause") }
-
-    public func resume(interval: TimeInterval) { calls.append("resume") }
 
     public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
         calls.append("modelBreakdown")

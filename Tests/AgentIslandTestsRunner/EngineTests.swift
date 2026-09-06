@@ -202,20 +202,63 @@ enum EngineTests {
             engine.stop()
         }
 
-        TestKit.test("引擎: start/stop 经 seam 驱动 token 轮询面") {
+        TestKit.test("引擎: token 轮询懒启动——呈现活跃才开启，重复激活幂等") {
             let fake = FakeTokenUsageMonitor()
             let engine = makeEngine(
                 processNames: ["DimAgent"],
                 writes: [home + "/.dimcode/v2/data/sessions": Date().addingTimeInterval(-5)],
                 tokenMonitor: fake
             )
-            try expectEqual(fake.calls, [], "启动前轮询面应无调用")
             engine.start()
-            try expectEqual(fake.calls, ["start"], "start 应驱动 token 轮询启动")
+            try expectEqual(fake.calls, [], "懒启动：start 不应开启 token 轮询")
+            engine.setPresentationActive(true)
+            try expectEqual(fake.calls, ["start"], "呈现活跃应启动轮询")
             try expectTrue(fake.onRefresh != nil, "onRefresh 应被接线（刷完触发重采样）")
+            engine.setPresentationActive(true)
+            try expectEqual(fake.calls, ["start"], "重复激活应幂等")
             engine.stop()
             try expectEqual(fake.calls, ["start", "stop"], "stop 应全停 token 轮询")
             try expectNil(fake.onRefresh, "stop 后刷新回调应清空")
+        }
+
+        TestKit.test("引擎: 呈现失活→暂停；再激活→重启；重复失活幂等") {
+            let fake = FakeTokenUsageMonitor()
+            let engine = makeEngine(
+                processNames: ["DimAgent"],
+                writes: [home + "/.dimcode/v2/data/sessions": Date().addingTimeInterval(-5)],
+                tokenMonitor: fake
+            )
+            engine.start()
+            engine.setPresentationActive(true)
+            engine.setPresentationActive(false)
+            try expectEqual(fake.calls, ["start", "pause"], "失活应暂停（连接保留）")
+            engine.setPresentationActive(false)
+            try expectEqual(fake.calls, ["start", "pause"], "重复失活应幂等")
+            engine.setPresentationActive(true)
+            try expectEqual(fake.calls, ["start", "pause", "start"], "再激活应重启轮询（暂停后 start 即首刷）")
+            engine.stop()
+            try expectEqual(fake.calls, ["start", "pause", "start", "stop"], "stop 应全停")
+        }
+
+        TestKit.test("引擎: 呈现活跃先于引擎启动 → start 时补开轮询") {
+            let fake = FakeTokenUsageMonitor()
+            let engine = makeEngine(
+                processNames: ["DimAgent"],
+                writes: [home + "/.dimcode/v2/data/sessions": Date().addingTimeInterval(-5)],
+                tokenMonitor: fake
+            )
+            engine.setPresentationActive(true)
+            try expectEqual(fake.calls, [], "引擎未运行时不应启动轮询（仅记状态）")
+            engine.start()
+            try expectEqual(fake.calls, ["start"], "引擎启动时应补开轮询")
+            engine.stop()
+        }
+
+        TestKit.test("引擎: 从未启动轮询时 stop 不触碰 token 面") {
+            let fake = FakeTokenUsageMonitor()
+            let engine = makeEngine(processNames: [], writes: [:], tokenMonitor: fake)
+            engine.stop()
+            try expectEqual(fake.calls, [], "未启动轮询时 stop 不应调用 token 侧")
         }
     }
 
