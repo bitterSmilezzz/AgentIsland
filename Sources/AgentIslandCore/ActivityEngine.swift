@@ -20,7 +20,8 @@ public final class ActivityEngine: ObservableObject {
     }
 
     private var profiles: [AgentProfile]
-    private let processMonitor: ProcessMonitor
+    /// 进程提供 seam（线程契约见协议注释：主线程抓 bundle + 任意线程快照）
+    private let processMonitor: ProcessProviding
     private let fileMonitor: FileActivityProviding
     /// token 用量子系统（seam：轮询面 + 查询面；测试经 init 注入 fake）。
     /// 私有实现细节——UI 一律走本类的数据出口（grandTotal / modelBreakdown / sessions）
@@ -42,7 +43,7 @@ public final class ActivityEngine: ObservableObject {
     ///   - enabledIDs: 持久化启用集（首刷重放用；nil 则按 profiles 推导）
     public init(profiles: [AgentProfile],
          config: EngineConfig = EngineConfig(),
-         processMonitor: ProcessMonitor = ProcessMonitor(),
+         processMonitor: ProcessProviding = ProcessProvider(),
          fileMonitor: FileActivityProviding = FileActivityMonitor(),
          tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor(),
          installedApps: InstalledAppsCache,
@@ -198,7 +199,12 @@ public final class ActivityEngine: ObservableObject {
         guard !samplingInFlight else { return [] }
         samplingInFlight = true
         defer { samplingInFlight = false }
-        return sampleCore(matcher: processMonitor.matcher(profiles: profiles), now: now)
+        // 主线程同步路径：bundle（NSWorkspace）与快照（libproc）都可在此线程直接取
+        let matcher = ProcessMatcher(
+            snapshot: processMonitor.snapshot(),
+            runningBundleIDs: processMonitor.runningBundleIDs(),
+            profiles: profiles)
+        return sampleCore(matcher: matcher, now: now)
     }
 
     /// 定时采样入口：进程遍历（proc_listpids/proc_pidpath，开销毫秒级）在后台执行，
@@ -207,16 +213,16 @@ public final class ActivityEngine: ObservableObject {
         guard running else { return }   // stop() 后在飞 token 刷新不再触发采样（阿剩低C）
         guard !samplingInFlight else { return }   // 丢弃重叠请求（onRefresh 与 Timer 可能相邻）
         samplingInFlight = true
-        let monitor = processMonitor
-        // NSWorkspace 必须主线程访问（无线程安全保证），先抓 bundle 集合
-        let bundleIDs = monitor.runningBundleIDs()
+        let provider = processMonitor
+        // NSWorkspace 必须主线程访问（无线程安全保证，见 ProcessProviding 契约），先抓 bundle 集合
+        let bundleIDs = provider.runningBundleIDs()
         DispatchQueue.global(qos: .utility).async {
-            let snapshot = monitor.snapshot()
+            let snapshot = provider.snapshot()   // libproc 任意线程
             Task { @MainActor [weak self] in
                 defer { self?.samplingInFlight = false }
                 guard let self else { return }
-                self.sampleCore(matcher: monitor.matcher(snapshot: snapshot, runningBundleIDs: bundleIDs, profiles: self.profiles),
-                                now: Date())
+                let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: bundleIDs, profiles: self.profiles)
+                self.sampleCore(matcher: matcher, now: Date())
             }
         }
     }

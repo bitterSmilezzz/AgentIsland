@@ -20,7 +20,7 @@ public enum Probe {
         let engine = ActivityEngine(
             profiles: registry,
             config: EngineConfig(),
-            processMonitor: ProcessMonitor(),          // 真实进程
+            processMonitor: ProcessProvider(),         // 真实进程
             fileMonitor: monitor,                       // 真实文件系统（后台扫描）
             installedApps: installedApps                // 已热缓存（init 首刷跳过，不双扫）
         )

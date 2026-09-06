@@ -64,7 +64,7 @@ public enum Selftest {
             let engine = ActivityEngine(
                 profiles: AgentRegistry.builtin,
                 config: EngineConfig(workingWindow: 20),
-                processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: [], cpu: 0)),
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: [], cpu: 0),
                 fileMonitor: provider,
                 installedApps: Self.emptyInstalledCache
             )
@@ -92,11 +92,11 @@ public enum Selftest {
 
         // 7. 进程匹配（GUI bundle + CLI 名，经 matcher）
         do {
-            let monitor = ProcessMonitor(provider: FakeProcessProvider(
+            let provider = FakeProcessProvider(
                 processNames: ["dim", "claude"],
                 bundleIDs: ["com.dimcode.app"]
-            ))
-            let matcher = monitor.matcher()
+            )
+            let matcher = ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs(), profiles: [])
             check(matcher.isRunning(AgentRegistry.builtin.first { $0.id == "dim" }!), "bundle/CLI 匹配 dim", failures: &failures)
             check(matcher.isRunning(AgentRegistry.builtin.first { $0.id == "claude" }!), "CLI 匹配 claude", failures: &failures)
             check(!matcher.isRunning(AgentRegistry.builtin.first { $0.id == "codex" }!), "codex 不应误报", failures: &failures)
@@ -143,7 +143,7 @@ public enum Selftest {
         ActivityEngine(
             profiles: AgentRegistry.builtin,
             config: EngineConfig(workingWindow: 20),
-            processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu)),
+            processMonitor: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu),
             fileMonitor: FakeFileActivityProvider(writes: writes),
             installedApps: Self.emptyInstalledCache
         )

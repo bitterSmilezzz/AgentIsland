@@ -45,7 +45,7 @@ enum RegistryTests {
             try expectTrue(full.contains { $0.id == "custom-tmp" }, "含自定义")
             // 引擎的 guard 防重复
             let engine = ActivityEngine(profiles: full, config: EngineConfig(),
-                                        processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: [], bundleIDs: [])),
+                                        processMonitor: FakeProcessProvider(processNames: [], bundleIDs: []),
                                         fileMonitor: FakeFileActivityProvider(writes: [:]),
                                         installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             engine.addCustomProfile(p)
@@ -57,7 +57,7 @@ enum RegistryTests {
 
         TestKit.test("引擎: setEnabled 过滤启停集合") {
             let engine = ActivityEngine(profiles: AgentRegistry.builtin, config: EngineConfig(),
-                                        processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: [])),
+                                        processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
                                         fileMonitor: FakeFileActivityProvider(writes: [:]),
                                         installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             engine.setEnabled(["dim"])
@@ -68,7 +68,7 @@ enum RegistryTests {
             // 回归：阿剩第六轮高优——之前 setEnabled 只从当前已缩水列表过滤，
             // 「关闭后再开启」的 agent 本会话内永久丢失监控
             let engine = ActivityEngine(profiles: AgentRegistry.builtin, config: EngineConfig(),
-                                        processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent", "Codex"], bundleIDs: [])),
+                                        processMonitor: FakeProcessProvider(processNames: ["DimAgent", "Codex"], bundleIDs: []),
                                         fileMonitor: FakeFileActivityProvider(writes: [:]),
                                         installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             engine.setEnabled(["dim"])                      // 只启用 dim
@@ -99,7 +99,7 @@ enum RegistryTests {
                                                bundleIDs: ["com.dimcode.app"])
             let engine = ActivityEngine(profiles: AgentRegistry.builtin.filter { $0.id == "dim" },
                                         config: EngineConfig(),
-                                        processMonitor: ProcessMonitor(provider: provider),
+                                        processMonitor: provider,
                                         fileMonitor: FakeFileActivityProvider(writes: [:]),
                                         installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
             let snaps = engine.sample(now: Date())

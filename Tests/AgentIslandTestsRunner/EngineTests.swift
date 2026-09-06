@@ -16,7 +16,7 @@ enum EngineTests {
         TestKit.test("进程: provider 原始大小写也能匹配") {
             let names: Set<String> = ["DimAgent"]
             let provider = FakeProcessProvider(processNames: names, bundleIDs: [])
-            let matcher = ProcessMonitor(provider: provider).matcher()
+            let matcher = ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs(), profiles: [])
             try expectTrue(matcher.isRunning(dim), "原始大小写匹配")
         }
 
@@ -66,7 +66,7 @@ enum EngineTests {
             let engine = ActivityEngine(
                 profiles: AgentRegistry.builtin,
                 config: EngineConfig(workingWindow: 20),
-                processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: [])),
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
                 fileMonitor: provider,
                 installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
             )
@@ -96,11 +96,11 @@ enum EngineTests {
         }
 
         TestKit.test("进程: GUI bundle + CLI 进程名匹配") {
-            let monitor = ProcessMonitor(provider: FakeProcessProvider(
+            let provider = FakeProcessProvider(
                 processNames: ["dim", "claude"],
                 bundleIDs: ["com.dimcode.app"]
-            ))
-            let matcher = monitor.matcher()
+            )
+            let matcher = ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs(), profiles: [])
             let claude = AgentRegistry.builtin.first { $0.id == "claude" }!
             let codex = AgentRegistry.builtin.first { $0.id == "codex" }!
             try expectTrue(matcher.isRunning(dim), "bundle/CLI 匹配 dim")
@@ -109,11 +109,11 @@ enum EngineTests {
         }
 
         TestKit.test("进程: 大小写不敏感匹配") {
-            let monitor = ProcessMonitor(provider: FakeProcessProvider(
+            let provider = FakeProcessProvider(
                 processNames: ["DIMAGENT"],
                 bundleIDs: []
-            ))
-            try expectTrue(monitor.matcher().isRunning(dim), "大小写不敏感")
+            )
+            try expectTrue(ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs(), profiles: []).isRunning(dim), "大小写不敏感")
         }
 
         TestKit.test("进程: 系统路径 + 黑名单排除") {
@@ -168,7 +168,7 @@ enum EngineTests {
             let engine = ActivityEngine(
                 profiles: [dim],
                 config: EngineConfig(workingWindow: 60),
-                processMonitor: ProcessMonitor(),
+                processMonitor: ProcessProvider(),
                 fileMonitor: monitor,
                 installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
             )
@@ -297,7 +297,7 @@ enum EngineTests {
         ActivityEngine(
             profiles: AgentRegistry.builtin,
             config: EngineConfig(workingWindow: 20),
-            processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu)),
+            processMonitor: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu),
             fileMonitor: FakeFileActivityProvider(writes: writes),
             tokenMonitor: tokenMonitor,
             installedApps: installedApps ?? InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }),

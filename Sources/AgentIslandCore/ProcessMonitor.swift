@@ -44,6 +44,10 @@ public struct ProcessSnapshot {
 }
 
 // MARK: - 进程提供协议
+// 线程契约（调用方编排依据）：
+//   snapshot()         —— 任意线程（libproc 无 UI 依赖，可后台执行）
+//   runningBundleIDs() —— 必须主线程（内部 NSWorkspace，无线程安全保证）
+// 消费方（ActivityEngine）据此做「主线程抓 bundle + 后台快照」两段式采样。
 
 public protocol ProcessProviding {
     /// 当前全部进程快照（一次采样；CPU 为差分窗口值）
@@ -263,46 +267,6 @@ public struct ProcessMatcher: @unchecked Sendable {
     /// 相关进程 CPU 总和（双信号用）
     public func cpuPercent(_ profile: AgentProfile) -> Double {
         matchingEntries(for: profile).reduce(0) { $0 + $1.cpuPercent }
-    }
-}
-
-// MARK: - 兼容封装（引擎用）
-// @unchecked Sendable：snapshot()（libproc）可后台执行；NSWorkspace 访问
-// （runningBundleIDs）须主线程，外部已拆分为「主线程抓 bundle + 后台快照」两段
-
-public struct ProcessMonitor: @unchecked Sendable {
-    public let provider: ProcessProviding
-
-    public init(provider: ProcessProviding = ProcessProvider()) {
-        self.provider = provider
-    }
-
-    public init() {
-        self.provider = ProcessProvider()
-    }
-
-    /// 快照 + bundle 一次性获取（引擎每采样调一次）；
-    /// profiles 传入以激活预计算匹配集（阿剩中1：之前不传导致 profileSets 恒空，
-    /// isRunning/cpuPercent 每拍对每条目重建 Set、全表扫两遍）
-    public func matcher(profiles: [AgentProfile] = []) -> ProcessMatcher {
-        ProcessMatcher(snapshot: provider.snapshot(),
-                       runningBundleIDs: provider.runningBundleIDs(),
-                       profiles: profiles)
-    }
-
-    /// 仅进程快照（可后台执行；libproc 无 UI 依赖）
-    public func snapshot() -> ProcessSnapshot {
-        provider.snapshot()
-    }
-
-    /// 仅运行中的 GUI bundle ids（须主线程：内部用 NSWorkspace，无线程安全保证）
-    public func runningBundleIDs() -> Set<String> {
-        provider.runningBundleIDs()
-    }
-
-    /// 后台快照 + 主线程 bundle 组装 matcher（避免 NSWorkspace 后台访问）
-    public func matcher(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>, profiles: [AgentProfile] = []) -> ProcessMatcher {
-        ProcessMatcher(snapshot: snapshot, runningBundleIDs: runningBundleIDs, profiles: profiles)
     }
 }
 

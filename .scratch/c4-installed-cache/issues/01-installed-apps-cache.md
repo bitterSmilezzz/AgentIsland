@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] AgentRegistry 零全局安装状态（installedLock/cached*/refreshInstalledCache/scanInstalled* 迁出）
 - [ ] markInstalledRefreshed 删除；AppContext 首刷舞步整段删除（组合根只 new cache 并注入）
@@ -15,3 +15,4 @@
 ## Comments
 
 - 2026-09-06 发布。单票理由：Registry 签名变化扇出全部调用方，expand–contract 拆票无法单独保绿。
+- 2026-09-06 完成。审查轴抓到 Probe/init 双扫缺陷（maxAge:0 无法表达已热跳过），以 warmUp 修复；引擎死默认参数删除。

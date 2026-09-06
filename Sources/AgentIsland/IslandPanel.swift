@@ -39,6 +39,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         NSSize(width: IslandMetrics.dockedWidth, height: IslandMetrics.dockedHeight)
     }
     private let topZoneHeight: CGFloat = 80
+    /// 鼠标离开后自动收起延迟（纯面板行为参数；持久化键 SettingKey.collapseDelay）
+    private var collapseDelay: TimeInterval
+
+    /// 设置页直调生效（与外观同一模式；持久化由设置页 @AppStorage 负责）
+    func applyCollapseDelay(_ delay: TimeInterval) {
+        collapseDelay = max(0.2, delay)
+    }
 
     // D3：拖动锚点（顶部中心），UserDefaults 记忆
     private var savedCenterX: CGFloat?
@@ -48,6 +55,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     init(engine: ActivityEngine) {
         self.engine = engine
+        // 收起延迟初始值（持久化由设置页 @AppStorage 负责；非法/缺项回落 0.5s）
+        self.collapseDelay = UserDefaults.standard.object(forKey: SettingKey.collapseDelay) as? Double ?? 0.5
         super.init()
         // 恢复锚点（校验必须落在某块屏幕内，否则丢弃走默认位）
         let ud = UserDefaults.standard
@@ -322,7 +331,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private func scheduleCollapse() {
         guard displayState == .expanded else { return }
         if collapseTask != nil { return } // 幂等
-        let delay = engine.config.collapseDelay
+        let delay = collapseDelay
         Self.log("collapse scheduled, delay \(delay)")
         collapseTask = Task { [weak self] in
             defer { self?.collapseTask = nil }

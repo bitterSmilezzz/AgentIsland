@@ -103,7 +103,6 @@ public struct EngineConfig: Equatable {
     public var workingWindow: TimeInterval = 60.0      // 该窗口内有文件写入 → working（双信号之一）
     public var cpuThreshold: Double = 1.0              // 进程 CPU% 超过 → working（双信号之二，ps 平均值偏低故取 1%）
     public var activeSessionWindow: TimeInterval = 600.0 // 活跃会话计数窗口（10 分钟）
-    public var collapseDelay: TimeInterval = 0.5      // 鼠标离开后自动收起延迟
     public var minWorkingHold: TimeInterval = 10.0    // 滞回：working 信号消失后保持最短时长（防抖动）
 
     public init(sampleInterval: TimeInterval = 2.0,
@@ -111,14 +110,12 @@ public struct EngineConfig: Equatable {
                 workingWindow: TimeInterval = 60.0,
                 cpuThreshold: Double = 1.0,
                 activeSessionWindow: TimeInterval = 600.0,
-                collapseDelay: TimeInterval = 0.5,
                 minWorkingHold: TimeInterval = 10.0) {
         self.sampleInterval = sampleInterval
         self.idleSampleInterval = idleSampleInterval
         self.workingWindow = workingWindow
         self.cpuThreshold = cpuThreshold
         self.activeSessionWindow = activeSessionWindow
-        self.collapseDelay = collapseDelay
         self.minWorkingHold = minWorkingHold
     }
 
@@ -145,8 +142,7 @@ public struct EngineConfig: Equatable {
             idleSampleInterval: defaults.object(forKey: SettingKey.idleSampleInterval) as? Double ?? base.idleSampleInterval,
             workingWindow: defaults.object(forKey: SettingKey.workingWindow) as? Double ?? base.workingWindow,
             cpuThreshold: defaults.object(forKey: SettingKey.cpuThreshold) as? Double ?? base.cpuThreshold,
-            activeSessionWindow: defaults.object(forKey: SettingKey.activeSessionWindow) as? Double ?? base.activeSessionWindow,
-            collapseDelay: defaults.object(forKey: SettingKey.collapseDelay) as? Double ?? base.collapseDelay
+            activeSessionWindow: defaults.object(forKey: SettingKey.activeSessionWindow) as? Double ?? base.activeSessionWindow
         ).normalized()
     }
 }

@@ -19,7 +19,7 @@ struct SettingsView: View {
     @AppStorage(SettingKey.idleSampleInterval) private var idleSampleInterval: Double = SettingsView.defaultConfig.idleSampleInterval
     @AppStorage(SettingKey.cpuThreshold) private var cpuThreshold: Double = SettingsView.defaultConfig.cpuThreshold
     @AppStorage(SettingKey.activeSessionWindow) private var activeSessionWindow: Double = SettingsView.defaultConfig.activeSessionWindow
-    @AppStorage(SettingKey.collapseDelay) private var collapseDelay: Double = SettingsView.defaultConfig.collapseDelay
+    @AppStorage(SettingKey.collapseDelay) private var collapseDelay: Double = 0.5   // 面板行为参数（非引擎采样配置）
     @AppStorage(SettingKey.launchAtLogin) private var launchAtLogin = false
     @AppStorage(SettingKey.islandAppearance) private var islandAppearanceRaw = IslandAppearance.system.rawValue
 
@@ -237,7 +237,8 @@ struct SettingsView: View {
             sliderRow(title: "活跃会话窗口", value: $activeSessionWindow, range: 60...3600, unit: "秒")
             sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
             sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
-            sliderRow(title: "自动收起延迟", value: $collapseDelay, range: 0.2...5, step: 0.1, unit: "秒")
+            sliderRow(title: "自动收起延迟", value: $collapseDelay, range: 0.2...5, step: 0.1, unit: "秒",
+                      onRelease: { controller.applyCollapseDelay(collapseDelay) })
 
             Toggle(isOn: $launchAtLogin) {
                 Text("登录时自动启动")
@@ -266,7 +267,8 @@ struct SettingsView: View {
         return "\(trimmed)\(unit)"
     }
 
-    private func sliderRow(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double = 1, unit: String) -> some View {
+    private func sliderRow(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double = 1, unit: String,
+                           onRelease: (() -> Void)? = nil) -> some View {
         HStack {
             Text(title)
                 .font(Theme.bodyFont(12))
@@ -276,9 +278,12 @@ struct SettingsView: View {
             Text(Self.formatSliderValue(value.wrappedValue, unit: unit))
                 .font(Theme.monoFont(11))
                 .foregroundColor(Theme.inkMuted48)
-            // 拖动中只更新显示值，松手才 applyConfig——避免每帧重启采样定时器
+            // 拖动中只更新显示值，松手才生效——避免每帧重启采样定时器
             Slider(value: value, in: range, step: step) { editing in
-                if !editing { applyConfig() }
+                if !editing {
+                    applyConfig()
+                    onRelease?()
+                }
             }
                 .tint(Theme.actionBlue)
                 .frame(width: 120)
@@ -329,8 +334,7 @@ struct SettingsView: View {
             idleSampleInterval: idleSampleInterval,
             workingWindow: workingWindow,
             cpuThreshold: cpuThreshold,
-            activeSessionWindow: activeSessionWindow,
-            collapseDelay: collapseDelay
+            activeSessionWindow: activeSessionWindow
         ).normalized()
         // 回写归一化结果：表单/持久化与引擎同源（normalized 未来扩展钳制字段时此处零跟进；
         // 旧版半值残留即在此写回清除，阿菜记录在案）
@@ -339,7 +343,6 @@ struct SettingsView: View {
         workingWindow = normalized.workingWindow
         cpuThreshold = normalized.cpuThreshold
         activeSessionWindow = normalized.activeSessionWindow
-        collapseDelay = normalized.collapseDelay
         // 一次性赋值：config didSet 触发一次（原逐属性六次触发、五次冗余重启定时器）
         engine.config = normalized
     }
