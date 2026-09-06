@@ -22,7 +22,8 @@ public final class ActivityEngine: ObservableObject {
     private var profiles: [AgentProfile]
     private let processMonitor: ProcessMonitor
     private let fileMonitor: FileActivityProviding
-    public let tokenMonitor = TokenUsageMonitor()   // token 用量（expanded 时轮询，采样时取快照）
+    /// token 用量子系统（seam：轮询面 + 查询面；测试注入 fake，见 TokenUsageMonitor.swift）
+    public let tokenMonitor: any TokenUsagePolling & TokenUsageQuerying
     private var lastWrites: [String: Date] = [:]   // dir -> 最近写入时间
     private var timer: Timer?
     /// 测试观察点：定时器是否已创建（stop 后应为 nil）
@@ -43,11 +44,13 @@ public final class ActivityEngine: ObservableObject {
     public init(profiles: [AgentProfile] = AgentRegistry.fullRegistry(),
          config: EngineConfig = EngineConfig(),
          processMonitor: ProcessMonitor = ProcessMonitor(),
-         fileMonitor: FileActivityProviding = FileActivityMonitor()) {
+         fileMonitor: FileActivityProviding = FileActivityMonitor(),
+         tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor()) {
         self.profiles = profiles
         self.config = config
         self.processMonitor = processMonitor
         self.fileMonitor = fileMonitor
+        self.tokenMonitor = tokenMonitor
         refreshInstalled()
         // 注册监控目录（后台扫描用，全量替换）
         fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))

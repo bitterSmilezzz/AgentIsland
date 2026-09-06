@@ -78,8 +78,45 @@ extension String {
     var escaped: String { replacingOccurrences(of: "'", with: "''") }
 }
 
+// MARK: - Token 子系统 seam（轮询面 / 查询面）
+// 引擎与测试只依赖这两个小 interface；TokenUsageMonitor 是现网 adapter，
+// 测试替身为本文件末尾的 FakeTokenUsageMonitor。
+
+/// 轮询面：生命周期 + 缓存读取 + 刷新回调（引擎消费）
+public protocol TokenUsagePolling: AnyObject {
+    /// 各 agent 的用量快照（agentId → 用量；查询失败的源缺席）
+    var usage: [String: TokenUsage] { get }
+    /// 所有数据源总和（汇总栏 / 高度判断）
+    var grandTotal: TokenUsage { get }
+    /// 刷新完成后的主线程回调（引擎接线：触发重采样）
+    var onRefresh: (@MainActor () -> Void)? { get set }
+    func start(interval: TimeInterval)
+    func stop()
+    /// 暂停轮询（连接保留；「呈现活跃」失活时由引擎调用）
+    func pause()
+    /// 恢复轮询并立即刷新（「呈现活跃」激活时由引擎调用）
+    func resume(interval: TimeInterval)
+}
+
+/// 默认轮询节律（唯一来源：类签名默认参数与无参便利方法共用）
+public enum TokenUsagePollingDefaults {
+    public static let interval: TimeInterval = 60.0
+}
+
+public extension TokenUsagePolling {
+    /// 协议要求不带默认参数；无参形式走默认节律
+    func start() { start(interval: TokenUsagePollingDefaults.interval) }
+    func resume() { resume(interval: TokenUsagePollingDefaults.interval) }
+}
+
+/// 查询面：详情页按需下钻（引擎转发时消费）
+public protocol TokenUsageQuerying: AnyObject {
+    func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void)
+    func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void)
+}
+
 /// @unchecked Sendable：全部可变状态由 NSLock + dbQueue 串行队列保护，可跨线程调用
-public final class TokenUsageMonitor: @unchecked Sendable {
+public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @unchecked Sendable {
     private let lock = NSLock()
     private var _usage: [String: TokenUsage] = [:]   // agentId → 用量
     private var _grandTotal = TokenUsage()
@@ -113,7 +150,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
 
     public init() {}
 
-    public func start(interval: TimeInterval = 60.0) {
+    public func start(interval: TimeInterval = TokenUsagePollingDefaults.interval) {
         guard timer == nil else { return }
         refreshAsync()   // 先刷一次，主卡汇总栏启动即有数据
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
@@ -139,7 +176,7 @@ public final class TokenUsageMonitor: @unchecked Sendable {
     }
 
     /// 恢复后台轮询（面板 expanded 时），并立即刷新一次保证 UI 最新
-    public func resume(interval: TimeInterval = 60.0) {
+    public func resume(interval: TimeInterval = TokenUsagePollingDefaults.interval) {
         guard timer == nil else { return }
         refreshAsync()
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
@@ -471,5 +508,35 @@ public final class TokenUsageMonitor: @unchecked Sendable {
 
     static func parseISO(_ s: String) -> Date? {
         isoFormatter.date(from: s)
+    }
+}
+
+// MARK: - 测试用假实现（MainActor 内使用；记录轮询面调用序列，零 I/O）
+
+public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying {
+    /// 轮询面调用序列："start" / "stop" / "pause" / "resume"
+    public private(set) var calls: [String] = []
+    public var usage: [String: TokenUsage] = [:]
+    public var grandTotal = TokenUsage()
+    public var onRefresh: (@MainActor () -> Void)?
+
+    public init() {}
+
+    public func start(interval: TimeInterval) { calls.append("start") }
+
+    public func stop() { calls.append("stop") }
+
+    public func pause() { calls.append("pause") }
+
+    public func resume(interval: TimeInterval) { calls.append("resume") }
+
+    public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
+        calls.append("modelBreakdown")
+        Task { @MainActor in completion([]) }
+    }
+
+    public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
+        calls.append("sessions")
+        Task { @MainActor in completion([]) }
     }
 }

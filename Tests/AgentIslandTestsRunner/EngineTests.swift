@@ -201,16 +201,34 @@ enum EngineTests {
             try expectEqual(resumed, .working, "重启后应恢复 working")
             engine.stop()
         }
+
+        TestKit.test("引擎: start/stop 经 seam 驱动 token 轮询面") {
+            let fake = FakeTokenUsageMonitor()
+            let engine = makeEngine(
+                processNames: ["DimAgent"],
+                writes: [home + "/.dimcode/v2/data/sessions": Date().addingTimeInterval(-5)],
+                tokenMonitor: fake
+            )
+            try expectEqual(fake.calls, [], "启动前轮询面应无调用")
+            engine.start()
+            try expectEqual(fake.calls, ["start"], "start 应驱动 token 轮询启动")
+            try expectTrue(fake.onRefresh != nil, "onRefresh 应被接线（刷完触发重采样）")
+            engine.stop()
+            try expectEqual(fake.calls, ["start", "stop"], "stop 应全停 token 轮询")
+            try expectNil(fake.onRefresh, "stop 后刷新回调应清空")
+        }
     }
 
     // MARK: - 工具
 
-    static func makeEngine(processNames: Set<String>, writes: [String: Date], cpu: Double = 0) -> ActivityEngine {
+    static func makeEngine(processNames: Set<String>, writes: [String: Date], cpu: Double = 0,
+                           tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor()) -> ActivityEngine {
         ActivityEngine(
             profiles: AgentRegistry.builtin,
             config: EngineConfig(workingWindow: 20),
             processMonitor: ProcessMonitor(provider: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu)),
-            fileMonitor: FakeFileActivityProvider(writes: writes)
+            fileMonitor: FakeFileActivityProvider(writes: writes),
+            tokenMonitor: tokenMonitor
         )
     }
 }
