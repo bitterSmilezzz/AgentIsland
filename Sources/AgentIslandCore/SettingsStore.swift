@@ -12,6 +12,7 @@ public enum SettingKey {
     public static let collapseDelay = "collapseDelay"
     public static let enabledAgents = "enabledAgents"
     public static let islandAppearance = "islandAppearance"
+    public static let notificationPolicy = "notificationPolicy"
     public static let customAgents = "customAgents"
     public static let launchAtLogin = "launchAtLogin"
     public static let dockEdge = "dockEdge"
@@ -100,3 +101,71 @@ public enum IslandAppearance: String, CaseIterable, Identifiable, Sendable {
         }
     }
 }
+
+// MARK: - 通知策略分级（标准模式 / 专注免打扰 / 完全静默）
+
+public enum NotificationPolicy: String, CaseIterable, Identifiable, Sendable {
+    case standard   // 标准模式：全部事件均弹窗 Peek + 提示音
+    case focus      // 专注免打扰（推荐）：普通完成静默；仅 costSpike（熔断/死循环告警）弹窗微窥并报警
+    case silent     // 完全静默：全部事件绝不弹窗微窥，不播放声音
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .standard: return "标准模式"
+        case .focus: return "专注免打扰"
+        case .silent: return "完全静默"
+        }
+    }
+
+    public var shortLabel: String {
+        switch self {
+        case .standard: return "标准"
+        case .focus: return "专注"
+        case .silent: return "静默"
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .standard: return "bell.fill"
+        case .focus: return "bell.badge.slash.fill"
+        case .silent: return "bell.slash.fill"
+        }
+    }
+
+    public var detailDescription: String {
+        switch self {
+        case .standard: return "任务完成与告警均触发弹窗预览与声音提示"
+        case .focus: return "普通完成静默更新；仅熔断/死循环告警弹窗并报警"
+        case .silent: return "不弹窗微窥、不响提示音，仅静默记录与展示"
+        }
+    }
+
+    /// 贴边状态下是否应该触发微窥滑出预览卡片
+    public func shouldPeek(for eventType: AgentTaskEvent.EventType) -> Bool {
+        switch self {
+        case .standard:
+            return true
+        case .focus:
+            return eventType == .costSpike
+        case .silent:
+            return false
+        }
+    }
+
+    /// 是否应该播放提示音（受全局声音主开关 soundEnabled 与当前通知策略共同裁决）
+    public func shouldPlaySound(for eventType: AgentTaskEvent.EventType, soundEnabled: Bool) -> Bool {
+        guard soundEnabled else { return false }
+        switch self {
+        case .standard:
+            return true
+        case .focus:
+            return eventType == .costSpike
+        case .silent:
+            return false
+        }
+    }
+}
+

@@ -72,6 +72,12 @@ func expectTrue(_ value: Bool, _ label: String = "") throws {
     }
 }
 
+func expectFalse(_ value: Bool, _ label: String = "") throws {
+    if value {
+        throw TestError(message: "\(label) 期望 false")
+    }
+}
+
 func expectNil<T>(_ value: T?, _ label: String = "") throws {
     if value != nil {
         throw TestError(message: "\(label) 期望 nil")

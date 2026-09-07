@@ -278,6 +278,31 @@ struct MenuBarPopoverView: View {
             .fixedSize()
             .help("外观主题：\(controller.appearanceMode.label)")
 
+            // 通知模式切换
+            Menu {
+                ForEach(NotificationPolicy.allCases) { policy in
+                    Button {
+                        controller.applyNotificationPolicy(policy)
+                    } label: {
+                        HStack {
+                            Text(policy.label)
+                            if controller.notificationPolicy == policy {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: controller.notificationPolicy.icon)
+                    .font(.system(size: 11))
+                    .foregroundColor(controller.notificationPolicy == .focus ? Theme.focusBlue : Theme.inkMuted80)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("通知策略：\(controller.notificationPolicy.label)（\(controller.notificationPolicy.detailDescription)）")
+
             // 设置
             Button {
                 NSApp.activate(ignoringOtherApps: true)

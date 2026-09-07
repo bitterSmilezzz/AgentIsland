@@ -28,6 +28,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// 外观模式状态（跟随系统 / 浅色 / 深色）
     @Published public private(set) var appearanceMode: IslandAppearance = .system
 
+    /// 通知策略分级（标准模式 / 专注免打扰 / 完全静默）
+    @Published public private(set) var notificationPolicy: NotificationPolicy = .focus
+
     /// 拖动相关状态
     private var dragStartOrigin: NSPoint?
     private var isDragging = false
@@ -86,6 +89,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             self.savedRightY = CGFloat(sy)
         }
         self.appearanceMode = Self.persistedAppearance()
+        self.notificationPolicy = Self.persistedNotificationPolicy()
 
         super.init()
         setupPanel()
@@ -198,20 +202,20 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         IslandAppearance(rawValue: UserDefaults.standard.string(forKey: SettingKey.islandAppearance) ?? "") ?? .system
     }
 
-    private func observe() {
-        engine.$anyWorking
-            .dropFirst()
-            .removeDuplicates()
-            .sink { [weak self] working in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if working {
-                        self.peek()
-                    }
-                }
-            }
-            .store(in: &cancellables)
+    func applyNotificationPolicy(_ policy: NotificationPolicy) {
+        notificationPolicy = policy
+        UserDefaults.standard.set(policy.rawValue, forKey: SettingKey.notificationPolicy)
+    }
 
+    private static func persistedNotificationPolicy() -> NotificationPolicy {
+        if let raw = UserDefaults.standard.string(forKey: SettingKey.notificationPolicy),
+           let policy = NotificationPolicy(rawValue: raw) {
+            return policy
+        }
+        return .focus // 默认推荐专注免打扰
+    }
+
+    private func observe() {
         engine.$updatedAt
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -539,61 +543,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     // MARK: - Peek
 
-    private var lastPeekAt: Date = .distantPast
-
-    private func peek() {
-        guard displayState == .docked, peekTask == nil, !isDragging else { return }
-        guard Date().timeIntervalSince(lastPeekAt) >= 30 else { return }
-        lastPeekAt = Date()
-        peekTask = Task { [weak self] in
-            defer { self?.peekTask = nil }
-            guard let self, let panel = self.panel else { return }
-            let initialRect = panel.frame
-            var shownRect = panel.frame
-            guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
-            let visible = screen.visibleFrame
-            let cardH = self.expandedHeight()
-
-            switch self.dockEdge {
-            case .right:
-                var y = self.savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
-                y = min(max(y, visible.minY + self.screenVerticalMargin), visible.maxY - cardH - self.screenVerticalMargin)
-                shownRect = NSRect(x: visible.maxX - IslandMetrics.cardWidth, y: y,
-                                   width: IslandMetrics.cardWidth, height: cardH)
-            case .top:
-                var x = self.savedTopX.map { $0 - IslandMetrics.cardWidth / 2 } ?? (visible.midX - IslandMetrics.cardWidth / 2)
-                x = min(max(x, visible.minX + self.screenHorizontalMargin), visible.maxX - IslandMetrics.cardWidth - self.screenHorizontalMargin)
-                shownRect = NSRect(x: x, y: visible.maxY - cardH,
-                                   width: IslandMetrics.cardWidth, height: cardH)
-            }
-
-            await withCheckedContinuation { cont in
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = 0.30
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
-                    panel.animator().setFrame(shownRect, display: false)
-                }, completionHandler: { cont.resume() })
-            }
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            guard !Task.isCancelled, self.displayState == .docked else { return }
-            await withCheckedContinuation { cont in
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = 0.26
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 1.0, 0.35, 1.0)
-                    panel.animator().setFrame(initialRect, display: false)
-                }, completionHandler: { cont.resume() })
-            }
-        }
-    }
-
     private func handleTaskEvent(_ event: AgentTaskEvent?) {
         guard let event else {
             syncExpandedHeight()
             return
         }
 
-        // 1. 播放系统提示音（默认开启；成本/死循环突增告警播放警示音）
-        if UserDefaults.standard.object(forKey: SettingKey.playCompletionSound) as? Bool ?? true {
+        // 1. 播放系统提示音（受 notificationPolicy 与全局开关 playCompletionSound 共同裁决）
+        let soundEnabled = UserDefaults.standard.object(forKey: SettingKey.playCompletionSound) as? Bool ?? true
+        if notificationPolicy.shouldPlaySound(for: event.eventType, soundEnabled: soundEnabled) {
             if event.eventType == .costSpike {
                 if let sound = NSSound(named: "Sosumi") ?? NSSound(named: "Basso") {
                     sound.play()
@@ -608,8 +566,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 2. 窗口高度自适应扩展
         syncExpandedHeight()
 
-        // 3. 若当前处于收起态（docked），触发专用事件微弹窗 Peek
-        if displayState == .docked {
+        // 3. 若当前处于收起态（docked），按分级策略决定是否触发微弹窗 Peek
+        if displayState == .docked && notificationPolicy.shouldPeek(for: event.eventType) {
             peekForEvent(event)
         }
     }

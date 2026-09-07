@@ -210,6 +210,45 @@ struct SettingsView: View {
                 }
             }
 
+            SettingsCard(title: "通知与免打扰模式") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
+                        ForEach(NotificationPolicy.allCases) { policy in
+                            let isSelected = controller.notificationPolicy == policy
+                            Button {
+                                controller.applyNotificationPolicy(policy)
+                            } label: {
+                                VStack(spacing: 8) {
+                                    Image(systemName: policy.icon)
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundColor(isSelected ? Theme.focusBlue : Theme.ink)
+                                        .frame(height: 24)
+
+                                    Text(policy.label)
+                                        .font(Theme.bodyFont(12, weight: isSelected ? .semibold : .regular))
+                                        .foregroundColor(isSelected ? Theme.focusBlue : Theme.ink)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(isSelected ? Theme.focusBlue.opacity(0.12) : Theme.tile1)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(isSelected ? Theme.focusBlue : Theme.hairline, lineWidth: isSelected ? 1.5 : 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    Text(controller.notificationPolicy.detailDescription)
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.inkMuted48)
+                }
+            }
+
             SettingsCard(title: "启动与交互") {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle(isOn: $launchAtLogin) {
@@ -481,7 +520,7 @@ struct SettingsView: View {
                         Text("AgentIsland")
                             .font(Theme.displayFont(16, weight: .bold))
                             .foregroundColor(Theme.ink)
-                        Text("v1.5.1 · macOS 灵动岛 Agent 会话监控器")
+                        Text("v1.6.0 · macOS 灵动岛 Agent 会话监控器")
                             .font(Theme.bodyFont(11))
                             .foregroundColor(Theme.inkMuted80)
                     }

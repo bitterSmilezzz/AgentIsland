@@ -2,11 +2,15 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v1.5.1）
+## 功能（v1.6.0）
 
 ### 实时伴侣与指令中心
+- **免打扰与通知分级（Focus Mode）**：
+  - **专注免打扰（默认推荐）**：普通任务执行完毕静默更新（绝不弹窗微窥、不响提示音），不打断正常编码心流；仅在**成本激增、死循环熔断告警**等重大异常时立即滑出 6s 微弹窗并播放告警音；
+  - **标准模式 / 完全静默**：挂机等待交付可一键切换为标准模式；需要绝对清净可随时一键切换为完全静默；
+  - **移除冗余弹窗**：彻底移除 Agent 一启动工作就弹窗微窥的打扰行为。
 - **原生支持 Google Antigravity & ZCode**：支持 Electron 与 CLI 进程扫描、实时轨迹日志解析（tool_use 与动作上下文）、会话监控与窗口直达
-- **任务完成主动提醒与 Peek 微窥**：Agent 结束持续工作（≥3.5s）转为空闲时，自动播放轻脆系统提示音（Glass），并在收起态下自动滑出 3.5 秒 Peek 微弹窗；若光标移入则自动转换为常驻展开，无需手动翻找进度
+- **任务完成主动提醒与 Peek 微窥**：标准模式下 Agent 结束持续工作（≥3.5s）转为空闲时，自动播放轻脆系统提示音（Glass），并在收起态下自动滑出 3.5 秒 Peek 微弹窗；若光标移入则自动转换为常驻展开，无需手动翻找进度
 - **终端与 IDE 窗口一键直达**：
   - **GUI 智能体（Cursor、Trae、Antigravity 等）**：通过 BundleID / PID 一键拉至最前并聚焦；
   - **CLI 智能体（Claude Code、Codex、Dim 等）**：毫秒级递归追溯进程树父节点，精准定位 Terminal、iTerm2、VS Code、Ghostty、Warp 等终端宿主窗口，一键将黑底终端置顶呼出
@@ -55,7 +59,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.5.1.zip`，解压后拖入「应用程序」或直接运行。
+从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.6.0.zip`，解压后拖入「应用程序」或直接运行。
 
 > 未公证（ad-hoc 签名），首次打开需右键 → 打开。
 
@@ -64,7 +68,7 @@
 本机无 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
-# 开发构建 + 自建测试套件（56 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/命令清洗/token 统计）
+# 开发构建 + 自建测试套件（57 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）
 swift build
 .build/debug/AgentIslandTestsRunner     # 测试
 .build/debug/AgentIsland --selftest     # 进程内自检

@@ -111,6 +111,20 @@ struct IslandView: View {
                     }
                 }
             }
+            Menu("通知模式") {
+                ForEach(NotificationPolicy.allCases) { policy in
+                    Button {
+                        controller.applyNotificationPolicy(policy)
+                    } label: {
+                        HStack {
+                            Text(policy.label)
+                            if controller.notificationPolicy == policy {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
             Divider()
             Button("偏好设置…") {
                 NSApp.activate(ignoringOtherApps: true)

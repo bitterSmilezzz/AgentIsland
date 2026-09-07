@@ -131,5 +131,61 @@ enum SettingsTests {
             let loaded = suite.string(forKey: SettingKey.islandAppearance).flatMap(IslandAppearance.init)
             try expectEqual(loaded, .dark, "IslandAppearance 应正确持久化并读取")
         }
+
+        TestKit.test("设置: NotificationPolicy 分级策略、微窥判定与声音判定及持久化") {
+            try expectEqual(NotificationPolicy.standard.rawValue, "standard")
+            try expectEqual(NotificationPolicy.focus.rawValue, "focus")
+            try expectEqual(NotificationPolicy.silent.rawValue, "silent")
+
+            try expectEqual(NotificationPolicy.standard.label, "标准模式")
+            try expectEqual(NotificationPolicy.focus.label, "专注免打扰")
+            try expectEqual(NotificationPolicy.silent.label, "完全静默")
+
+            // 1. shouldPeek 规则测试
+            // 标准模式：全部事件均 Peek
+            try expectTrue(NotificationPolicy.standard.shouldPeek(for: .completed), "标准模式: completed 触发微窥")
+            try expectTrue(NotificationPolicy.standard.shouldPeek(for: .attention), "标准模式: attention 触发微窥")
+            try expectTrue(NotificationPolicy.standard.shouldPeek(for: .costSpike), "标准模式: costSpike 触发微窥")
+
+            // 专注模式：普通完成静默，仅 costSpike 触发 Peek
+            try expectFalse(NotificationPolicy.focus.shouldPeek(for: .completed), "专注模式: completed 不触发微窥")
+            try expectFalse(NotificationPolicy.focus.shouldPeek(for: .attention), "专注模式: attention 不触发微窥")
+            try expectTrue(NotificationPolicy.focus.shouldPeek(for: .costSpike), "专注模式: costSpike 触发微窥")
+
+            // 静默模式：全部事件均不 Peek
+            try expectFalse(NotificationPolicy.silent.shouldPeek(for: .completed), "静默模式: completed 不触发微窥")
+            try expectFalse(NotificationPolicy.silent.shouldPeek(for: .attention), "静默模式: attention 不触发微窥")
+            try expectFalse(NotificationPolicy.silent.shouldPeek(for: .costSpike), "静默模式: costSpike 不触发微窥")
+
+            // 2. shouldPlaySound 规则测试
+            // 全局声音主开关关闭时，任何策略均不发声
+            try expectFalse(NotificationPolicy.standard.shouldPlaySound(for: .completed, soundEnabled: false), "主开关关: 标准模式不发声")
+            try expectFalse(NotificationPolicy.focus.shouldPlaySound(for: .costSpike, soundEnabled: false), "主开关关: 专注模式不发声")
+            try expectFalse(NotificationPolicy.silent.shouldPlaySound(for: .costSpike, soundEnabled: false), "主开关关: 静默模式不发声")
+
+            // 全局声音主开关开启时：
+            // 标准模式：全部事件均发声
+            try expectTrue(NotificationPolicy.standard.shouldPlaySound(for: .completed, soundEnabled: true), "主开关开: 标准模式 completed 发声")
+            try expectTrue(NotificationPolicy.standard.shouldPlaySound(for: .attention, soundEnabled: true), "主开关开: 标准模式 attention 发声")
+            try expectTrue(NotificationPolicy.standard.shouldPlaySound(for: .costSpike, soundEnabled: true), "主开关开: 标准模式 costSpike 发声")
+
+            // 专注模式：仅 costSpike 报警发声
+            try expectFalse(NotificationPolicy.focus.shouldPlaySound(for: .completed, soundEnabled: true), "主开关开: 专注模式 completed 不发声")
+            try expectFalse(NotificationPolicy.focus.shouldPlaySound(for: .attention, soundEnabled: true), "主开关开: 专注模式 attention 不发声")
+            try expectTrue(NotificationPolicy.focus.shouldPlaySound(for: .costSpike, soundEnabled: true), "主开关开: 专注模式 costSpike 发声报警")
+
+            // 静默模式：全部事件均不发声
+            try expectFalse(NotificationPolicy.silent.shouldPlaySound(for: .completed, soundEnabled: true), "主开关开: 静默模式 completed 不发声")
+            try expectFalse(NotificationPolicy.silent.shouldPlaySound(for: .costSpike, soundEnabled: true), "主开关开: 静默模式 costSpike 不发声")
+
+            // 3. 持久化测试
+            let name = "agentisland-policy-test-\(UUID().uuidString)"
+            let suite = UserDefaults(suiteName: name)!
+            defer { suite.removePersistentDomain(forName: name) }
+
+            suite.set(NotificationPolicy.focus.rawValue, forKey: SettingKey.notificationPolicy)
+            let loaded = suite.string(forKey: SettingKey.notificationPolicy).flatMap(NotificationPolicy.init)
+            try expectEqual(loaded, .focus, "NotificationPolicy 应正确持久化并读取")
+        }
     }
 }
