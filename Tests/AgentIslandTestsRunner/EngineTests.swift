@@ -177,6 +177,22 @@ enum EngineTests {
             try expectTrue(ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs(), profiles: []).isRunning(dim), "大小写不敏感")
         }
 
+        TestKit.test("进程: pathContains 约束——同名 Electron 进程不跨 App 误报") {
+            let trae = AgentRegistry.builtin.first { $0.id == "trae" }!
+            let workbuddy = AgentRegistry.builtin.first { $0.id == "workbuddy" }!
+            let snapshot = ProcessSnapshot(entries: [
+                ProcessSnapshot.Entry(
+                    pid: 1001,
+                    path: "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+                    basename: "electron",
+                    cpuPercent: 0
+                )
+            ])
+            let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: [], profiles: [trae, workbuddy])
+            try expectTrue(!matcher.isRunning(trae), "WorkBuddy 的 Electron 进程不应被 Trae 误报运行")
+            try expectTrue(matcher.isRunning(workbuddy), "WorkBuddy 应正确命中自身 Electron 进程")
+        }
+
         TestKit.test("进程: 系统路径 + 黑名单排除") {
             let snapshot = ProcessSnapshot(entries: [
                 ProcessSnapshot.Entry(

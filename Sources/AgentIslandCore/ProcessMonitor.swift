@@ -232,13 +232,18 @@ public struct ProcessMatcher: @unchecked Sendable {
         return pathContains.contains { p.contains($0) }
     }
 
-    /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串 + 非系统路径 + 非黑名单）
+    /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串约束 + 非系统路径 + 非黑名单）
     func matchesProfile(_ profile: AgentProfile, entry: ProcessSnapshot.Entry) -> Bool {
         let s = sets(for: profile)
         let nameHit = Self.matchesProcessNames(s.names, basename: entry.basename)
-        let pathHit = Self.matchesPathContains(s.paths, path: entry.path)
-        return (nameHit || pathHit)
-            && !ProcessSnapshot.isSystemPath(entry.path)
+        guard nameHit else { return false }
+
+        // 若配置了 pathContains（如 Electron 应用通用名 "Electron"），可执行路径必须同时命中子串约束
+        if !s.paths.isEmpty {
+            guard Self.matchesPathContains(s.paths, path: entry.path) else { return false }
+        }
+
+        return !ProcessSnapshot.isSystemPath(entry.path)
             && !ProcessSnapshot.isBlacklisted(entry.basename)
     }
 
