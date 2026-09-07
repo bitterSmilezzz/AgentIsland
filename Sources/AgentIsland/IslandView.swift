@@ -91,6 +91,12 @@ struct IslandView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.dockEdge == .top ? .bottom : .leading)
         .preferredColorScheme(controller.appearanceMode.colorScheme)
         .contextMenu {
+            if controller.displayState == .expanded {
+                Button("收起灵动岛") {
+                    controller.collapse()
+                }
+                Divider()
+            }
             Menu("外观主题") {
                 ForEach(IslandAppearance.allCases) { mode in
                     Button {
@@ -177,7 +183,7 @@ struct IslandView: View {
     private var expandedCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 顶栏：状态摘要（支持长按拖拽卡片自由移动并贴边吸附）
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 statusDot
                     .frame(width: 9, height: 9)
                 if let active = engine.visibleSnapshots.first(where: { $0.level == .working }),
@@ -193,11 +199,12 @@ struct IslandView: View {
                         .font(Theme.bodyFont(13, weight: .semibold))
                         .foregroundColor(Theme.onDark)
                 }
-                Spacer()
+                Spacer(minLength: 4)
                 Text("\(engine.visibleSnapshots.count)/\(engine.snapshots.count) 可见")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.onDarkFaint)
 
+                // 外观模式切换
                 Menu {
                     ForEach(IslandAppearance.allCases) { mode in
                         Button {
@@ -221,11 +228,23 @@ struct IslandView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("外观主题：\(controller.appearanceMode.label)（点击切换）")
+
+                // 一键收起按钮
+                Button {
+                    controller.collapse()
+                } label: {
+                    Image(systemName: controller.dockEdge == .top ? "chevron.up" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Theme.onDarkFaint)
+                        .padding(4)
+                        .background(Circle().fill(Theme.chipFill))
+                }
+                .buttonStyle(.plain)
+                .help("收起灵动岛（或光标移出卡片自动收起）")
             }
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, IslandMetrics.headerPaddingTop)
             .padding(.bottom, IslandMetrics.headerPaddingBottom)
-            .contentShape(Rectangle())
             .cardDrag(controller: controller)
 
             DarkDivider()

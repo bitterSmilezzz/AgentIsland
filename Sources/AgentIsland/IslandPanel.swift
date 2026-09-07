@@ -257,6 +257,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         edgeZoneTimer?.invalidate()
         if let m = mouseLocalMonitor { NSEvent.removeMonitor(m) }
         if let m = mouseGlobalMonitor { NSEvent.removeMonitor(m) }
+        if let m = clickLocalMonitor { NSEvent.removeMonitor(m) }
+        if let m = clickGlobalMonitor { NSEvent.removeMonitor(m) }
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -268,18 +270,26 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             cancelPendingTasks()
             expandCooldownUntil = .distantPast
             dragCooldownUntil = .distantPast
-            manualOpenGraceUntil = Date().addingTimeInterval(3.5)
+            manualOpenGraceUntil = Date().addingTimeInterval(3.0)
             displayState = .expanded
         case .expanded:
-            manualOpenGraceUntil = .distantPast
-            displayState = .docked
-            expandCooldownUntil = Date().addingTimeInterval(0.4)
+            collapse()
         }
+    }
+
+    /// 显式收起灵动岛（带防抖冷却并即刻重置保护期）
+    func collapse() {
+        guard displayState == .expanded else { return }
+        cancelPendingTasks()
+        manualOpenGraceUntil = .distantPast
+        expandCooldownUntil = Date().addingTimeInterval(0.4)
+        displayState = .docked
     }
 
     func expandFromHover() {
         guard displayState == .docked, !isDragging, Date() >= dragCooldownUntil else { return }
         cancelPendingTasks()
+        manualOpenGraceUntil = .distantPast
         displayState = .expanded
     }
 
@@ -335,10 +345,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
 
         updateChrome()
-        snapToDockEdge(animated: true)
+        if displayState == .expanded {
+            snapToDockEdge(animated: true)
+        } else {
+            placeWindow(animated: true)
+        }
     }
 
     func snapToDockEdge(animated: Bool) {
+        guard displayState == .expanded else { return }
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
         let visible = screen.visibleFrame
         let cardW = IslandMetrics.cardWidth
@@ -380,6 +395,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private var mouseLocalMonitor: Any?
     private var mouseGlobalMonitor: Any?
+    private var clickLocalMonitor: Any?
+    private var clickGlobalMonitor: Any?
     private var edgeZoneTimer: Timer?
     private var lastEvalAt = Date.distantPast
     private let evalMinInterval: TimeInterval = 0.05
@@ -387,7 +404,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private func startEdgeZoneMonitor() {
         guard edgeZoneTimer == nil else { return }
 
-        // 使用 Timer 定期检测光标位置（0.06s 间隔，低开销且无需任何 AX 辅助功能权限）
+        // 1. 定时检测光标位置（0.06s 间隔，低开销无辅助功能权限要求）
         let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.evaluateEdgeZone()
@@ -396,7 +413,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         RunLoop.main.add(timer, forMode: .common)
         edgeZoneTimer = timer
 
-        // 同时保留本地与全局事件监听
+        // 2. 本地与全局鼠标移动监听
         mouseLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.evaluateEdgeZone()
@@ -407,6 +424,27 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             Task { @MainActor [weak self] in
                 self?.evaluateEdgeZone()
             }
+        }
+
+        // 3. 点击外部区域即刻收起（全局与应用内失焦收起）
+        clickGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.displayState == .expanded,
+                      !self.isDragging,
+                      !Self.isMouseInsidePanel(self.panel) else { return }
+                self.collapse()
+            }
+        }
+        clickLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self,
+                      self.displayState == .expanded,
+                      !self.isDragging,
+                      !Self.isMouseInsidePanel(self.panel) else { return }
+                self.collapse()
+            }
+            return event
         }
     }
 
@@ -431,31 +469,33 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             var inZone = false
             switch dockEdge {
             case .right:
-                // 右边缘细条检测：光标位于屏幕右边缘区域且在细条垂直范围内
-                if loc.x >= visible.maxX - 18 || panel.frame.contains(loc) {
-                    let cy = panel.frame.midY
-                    inZone = abs(loc.y - cy) <= (IslandMetrics.rightSliverHeight / 2 + 15)
+                // 右边缘细条检测：光标位于屏幕右边缘微区域且在细条垂直范围内
+                let cy = savedRightY.map { min(max($0, visible.minY + 60), visible.maxY - 60) } ?? visible.midY
+                if loc.x >= visible.maxX - (IslandMetrics.rightSliverWidth + 12) {
+                    inZone = abs(loc.y - cy) <= (IslandMetrics.rightSliverHeight / 2 + 12)
                 }
             case .top:
-                // 顶边缘细条检测：光标位于屏幕顶部边缘区域且在细条水平范围内
-                if loc.y >= visible.maxY - 18 || panel.frame.contains(loc) {
-                    let cx = panel.frame.midX
-                    inZone = abs(loc.x - cx) <= (IslandMetrics.topSliverWidth / 2 + 15)
+                // 顶边缘细条检测：光标位于屏幕顶部边缘微区域且在细条水平范围内
+                let cx = savedTopX.map { min(max($0, visible.minX + 70), visible.maxX - 70) } ?? visible.midX
+                if loc.y >= visible.maxY - (IslandMetrics.topSliverHeight + 12) {
+                    inZone = abs(loc.x - cx) <= (IslandMetrics.topSliverWidth / 2 + 12)
                 }
             }
             if inZone {
                 cancelPendingTasks()
+                manualOpenGraceUntil = .distantPast
                 displayState = .expanded
             }
         } else if displayState == .expanded {
             if Self.isMouseInsidePanel(panel) {
-                // 光标在面板内，取消任何收回计划
+                // 光标已在面板内，即刻解除手动展开保护期，取消任何收起计划
+                manualOpenGraceUntil = .distantPast
                 if collapseTask != nil {
                     collapseTask?.cancel()
                     collapseTask = nil
                 }
             } else {
-                // 光标离开面板，且超过了手动展开的保护期，安排收起
+                // 光标离开面板，且超过了保护期，安排收起
                 guard Date() >= manualOpenGraceUntil else { return }
                 scheduleCollapse()
             }
@@ -477,6 +517,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                   self.displayState == .expanded,
                   Date() >= self.manualOpenGraceUntil,
                   !Self.isMouseInsidePanel(self.panel) else { return }
+            self.expandCooldownUntil = Date().addingTimeInterval(0.35)
             self.displayState = .docked
         }
     }

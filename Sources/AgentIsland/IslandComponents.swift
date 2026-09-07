@@ -108,7 +108,7 @@ struct WindowDragHandleView: NSViewRepresentable {
 extension View {
     /// 顶栏与特定区域原生拖拽（按住调用 performDrag，由 WindowServer 硬件级直接移动）
     func cardDrag(controller: IslandPanelController) -> some View {
-        self.overlay(
+        self.background(
             WindowDragHandleView(
                 onDragStart: { controller.beginDrag() },
                 onDragEnded: { controller.dragEnded() }
@@ -118,7 +118,7 @@ extension View {
 
     /// 兼容闭包调用（映射为原生拖拽）
     func cardDrag(onMoved: ((CGSize) -> Void)? = nil, onEnded: @escaping () -> Void) -> some View {
-        self.overlay(
+        self.background(
             WindowDragHandleView(
                 onDragStart: { onMoved?(.zero) },
                 onDragEnded: { onEnded() }
