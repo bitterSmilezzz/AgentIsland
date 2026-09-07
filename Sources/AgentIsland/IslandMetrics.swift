@@ -55,8 +55,8 @@ enum IslandMetrics {
     /// 详情/会话页内容区高度（header + divider 之后；内容自身可滚动，故给足而不裁剪）
     static let detailContentHeight: CGFloat = 310
 
-    /// 事件提醒栏高度（任务完成/等待确认横幅）
-    static let eventBannerHeight: CGFloat = 34
+    /// 事件提醒栏高度（任务完成/等待确认/熔断双行卡片）
+    static let eventBannerHeight: CGFloat = 62
 
     // MARK: 展开高度（纯函数）
 

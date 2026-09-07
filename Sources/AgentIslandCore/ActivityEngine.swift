@@ -83,6 +83,10 @@ public final class ActivityEngine: ObservableObject {
     private var lastEnabledIDs: Set<String>
     /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于差分与激增检测
     private var tokenRateBaseline: [String: (timestamp: Date, tokens: Int)] = [:]
+    /// 持续高负载时间追踪（agentId → 开始高负载的时间戳），用于判定真正的死循环
+    private var highCpuSince: [String: Date] = [:]
+    /// 上次高负载告警时间（agentId → 告警时间），防止每个采样周期重复轰炸
+    private var lastRunawayAlertedAt: [String: Date] = [:]
 
     public func start() {
         guard !running else { return }
@@ -262,6 +266,8 @@ public final class ActivityEngine: ObservableObject {
                     recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
                 }
                 workingSince[profile.id] = nil
+                highCpuSince[profile.id] = nil
+                lastRunawayAlertedAt[profile.id] = nil
             } else if (newestAgo.map { $0 <= config.workingWindow } ?? false) || cpu > config.cpuThreshold {
                 level = .working
                 if workingSince[profile.id] == nil { workingSince[profile.id] = now }
@@ -345,24 +351,37 @@ public final class ActivityEngine: ObservableObject {
 
         if config.runawayCpuAlert {
             for profile in profiles {
-                guard let since = workingSince[profile.id] else { continue }
-                let workDuration = now.timeIntervalSince(since)
-                if workDuration >= 180 {
-                    let cycle = Int(workDuration) % 180
-                    if cycle < Int(config.sampleInterval * 2) && (latestEvent == nil || latestEvent?.agentId != profile.id) {
-                        let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
-                        postEvent(AgentTaskEvent(
-                            agentId: profile.id,
-                            agentName: profile.name,
-                            eventType: .costSpike,
-                            duration: workDuration,
-                            timestamp: now,
-                            pid: matchedPID,
-                            message: "⚠️ \(profile.name) 持续运行超 \(Int(workDuration / 60)) 分钟"
-                        ))
+                let cpu = matcher.cpuPercent(profile)
+                if cpu >= config.runawayCpuThreshold {
+                    let start = highCpuSince[profile.id] ?? now
+                    if highCpuSince[profile.id] == nil {
+                        highCpuSince[profile.id] = now
                     }
+                    let highDuration = now.timeIntervalSince(start)
+                    if highDuration >= config.runawayDurationThreshold {
+                        let lastAlert = lastRunawayAlertedAt[profile.id]
+                        if lastAlert == nil || now.timeIntervalSince(lastAlert!) >= config.runawayDurationThreshold {
+                            lastRunawayAlertedAt[profile.id] = now
+                            let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
+                            postEvent(AgentTaskEvent(
+                                agentId: profile.id,
+                                agentName: profile.name,
+                                eventType: .costSpike,
+                                duration: highDuration,
+                                timestamp: now,
+                                pid: matchedPID,
+                                message: "⚠️ \(profile.name) 持续高负载超 \(Int(highDuration / 60)) 分钟 (CPU \(Int(cpu))%)"
+                            ))
+                        }
+                    }
+                } else {
+                    highCpuSince[profile.id] = nil
+                    lastRunawayAlertedAt[profile.id] = nil
                 }
             }
+        } else {
+            highCpuSince.removeAll()
+            lastRunawayAlertedAt.removeAll()
         }
     }
 
@@ -373,6 +392,8 @@ public final class ActivityEngine: ObservableObject {
             ProcessTerminator.terminate(pid: pid)
         }
         workingSince[agentId] = nil
+        highCpuSince[agentId] = nil
+        lastRunawayAlertedAt[agentId] = nil
         latestEvent = AgentTaskEvent(
             agentId: agentId,
             agentName: name,

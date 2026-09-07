@@ -184,66 +184,82 @@ struct IslandView: View {
 
             DarkDivider()
 
-            // 任务事件横幅（完成/等待确认/资源与Token熔断告警）
+            // 任务事件横幅（完成/等待确认/资源与Token熔断告警双行卡片）
             if let event = engine.latestEvent {
-                HStack(spacing: 8) {
-                    Image(systemName: eventIcon(for: event.eventType))
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(eventColor(for: event.eventType))
-                    Text(event.summaryText)
-                        .font(Theme.bodyFont(11, weight: .medium))
-                        .foregroundColor(Theme.onDark)
-                        .lineLimit(1)
-                    Spacer()
-                    if event.eventType == .costSpike, let pid = event.pid {
+                VStack(alignment: .leading, spacing: 6) {
+                    // 第一行：状态图标 + 完整描述（多行自适应、支持 Tooltip）+ 关闭按钮
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: eventIcon(for: event.eventType))
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(eventColor(for: event.eventType))
+                            .padding(.top, 1)
+
+                        Text(event.summaryText)
+                            .font(Theme.bodyFont(11, weight: .medium))
+                            .foregroundColor(Theme.onDark)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(event.summaryText)
+
+                        Spacer(minLength: 4)
+
                         Button {
-                            engine.terminateAgent(pid: pid, agentId: event.agentId)
+                            engine.clearLatestEvent()
                         } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "xmark.octagon.fill")
-                                    .font(.system(size: 9))
-                                Text("熔断")
-                                    .font(Theme.bodyFont(10, weight: .bold))
-                            }
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(Color.red.opacity(0.85)))
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(Theme.onDarkFaint)
+                                .padding(3)
                         }
                         .buttonStyle(.plain)
-                        .help("立即终止该 Agent 进程树，阻止持续消耗")
+                        .help("关闭提醒")
                     }
 
-                    Button {
-                        if let snap = engine.snapshots.first(where: { $0.id == event.agentId }) {
-                            AppActivator.activate(pid: snap.pid, bundleIDs: snap.profile.bundleIDs)
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "arrow.up.forward.app")
-                                .font(.system(size: 9))
-                            Text("直达")
-                                .font(Theme.bodyFont(10, weight: .semibold))
-                        }
-                        .foregroundColor(Theme.onDark)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Theme.chipFill))
-                    }
-                    .buttonStyle(.plain)
+                    // 第二行：操作快捷按钮
+                    HStack(spacing: 8) {
+                        Spacer()
 
-                    Button {
-                        engine.clearLatestEvent()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9))
-                            .foregroundColor(Theme.onDarkFaint)
-                            .padding(4)
+                        if event.eventType == .costSpike, let pid = event.pid {
+                            Button {
+                                engine.terminateAgent(pid: pid, agentId: event.agentId)
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "xmark.octagon.fill")
+                                        .font(.system(size: 9))
+                                    Text("熔断")
+                                        .font(Theme.bodyFont(10, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.red.opacity(0.85)))
+                            }
+                            .buttonStyle(.plain)
+                            .help("立即终止该 Agent 进程树，阻止持续消耗")
+                        }
+
+                        Button {
+                            if let snap = engine.snapshots.first(where: { $0.id == event.agentId }) {
+                                AppActivator.activate(pid: snap.pid, bundleIDs: snap.profile.bundleIDs)
+                            }
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "arrow.up.forward.app")
+                                    .font(.system(size: 9))
+                                Text("直达")
+                                    .font(Theme.bodyFont(10, weight: .semibold))
+                            }
+                            .foregroundColor(Theme.onDark)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Theme.chipFill))
+                        }
+                        .buttonStyle(.plain)
+                        .help("拉至前台并激活窗口")
                     }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, Theme.pageMargin)
-                .padding(.vertical, 6)
+                .padding(.vertical, 7)
                 .background(event.eventType == .costSpike ? Color.red.opacity(0.18) : Color.white.opacity(0.06))
 
                 DarkDivider()

@@ -430,7 +430,7 @@ struct SettingsView: View {
                             Text("异常长耗时死循环告警")
                                 .font(Theme.bodyFont(13))
                                 .foregroundColor(Theme.ink)
-                            Text("智能体持续高负荷运行超过 3 分钟时自动提醒，防止背景任务死循环")
+                            Text("智能体持续高负荷运行（CPU > 70% 且超 5 分钟）时自动预警，防止死循环无限消耗")
                                 .font(Theme.bodyFont(10))
                                 .foregroundColor(Theme.inkMuted48)
                         }

@@ -131,6 +131,23 @@ enum EngineTests {
             try expectTrue(engine.latestEvent?.message?.contains("Token 激增") == true, "应显示激增提示")
         }
 
+        TestKit.test("熔断保护: 持续死循环/高负载告警（低占用不误报，持续高 CPU 触发）") {
+            // 1. 低 CPU（2%）：即使运行 6 分钟也不应触发死循环告警
+            let lowEngine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 2.0)
+            let start = Date()
+            _ = lowEngine.sample(now: start)
+            _ = lowEngine.sample(now: start.addingTimeInterval(360))
+            try expectNil(lowEngine.latestEvent, "低占用长耗时不应误报死循环")
+
+            // 2. 持续高 CPU（80%）：达到 5 分钟阈值触发预警
+            let highEngine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 80.0)
+            _ = highEngine.sample(now: start)
+            try expectNil(highEngine.latestEvent, "首次高 CPU 仅建基准不告警")
+            _ = highEngine.sample(now: start.addingTimeInterval(305))
+            try expectEqual(highEngine.latestEvent?.eventType, .costSpike, "持续高 CPU 超 5 分钟应触发告警")
+            try expectTrue(highEngine.latestEvent?.message?.contains("持续高负载") == true, "文案应提示高负载")
+        }
+
         TestKit.test("引擎: 目录缺失时保持离线且不崩溃") {
             let engine = makeEngine(processNames: [], writes: [:])
             let snaps = engine.sample(now: Date())

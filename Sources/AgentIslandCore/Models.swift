@@ -172,7 +172,9 @@ public struct EngineConfig: Equatable {
     public var minWorkingHold: TimeInterval = 10.0    // 滞回：working 信号消失后保持最短时长（防抖动）
     public var tokenAlertEnabled: Bool = true          // 是否开启 Token 突增告警
     public var tokenAlertThreshold: Int = 100_000      // 单分钟内 Token 增量阈值（默认 100k）
-    public var runawayCpuAlert: Bool = true            // 是否开启持续工作超长死循环告警
+    public var runawayCpuAlert: Bool = true            // 是否开启持续高负荷死循环告警
+    public var runawayCpuThreshold: Double = 70.0      // 持续死循环/高负载判定阈值 (70% CPU)
+    public var runawayDurationThreshold: TimeInterval = 300 // 持续高负载时长阈值 (5 分钟)
 
     public init(sampleInterval: TimeInterval = 2.0,
                 idleSampleInterval: TimeInterval = 15.0,
@@ -182,7 +184,9 @@ public struct EngineConfig: Equatable {
                 minWorkingHold: TimeInterval = 10.0,
                 tokenAlertEnabled: Bool = true,
                 tokenAlertThreshold: Int = 100_000,
-                runawayCpuAlert: Bool = true) {
+                runawayCpuAlert: Bool = true,
+                runawayCpuThreshold: Double = 70.0,
+                runawayDurationThreshold: TimeInterval = 300) {
         self.sampleInterval = sampleInterval
         self.idleSampleInterval = idleSampleInterval
         self.workingWindow = workingWindow
@@ -192,6 +196,8 @@ public struct EngineConfig: Equatable {
         self.tokenAlertEnabled = tokenAlertEnabled
         self.tokenAlertThreshold = tokenAlertThreshold
         self.runawayCpuAlert = runawayCpuAlert
+        self.runawayCpuThreshold = runawayCpuThreshold
+        self.runawayDurationThreshold = runawayDurationThreshold
     }
 
     /// cpuThreshold 合法区间（slider range / 钳制 / 归一化唯一来源）
