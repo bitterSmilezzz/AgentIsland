@@ -1,30 +1,35 @@
 # AgentIsland — Agent 会话灵动岛监控器
 
-监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**与**光标触碰自动弹性弹出**。
+监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v1.5）
+## 功能（v1.5.1）
 
 ### 实时伴侣与指令中心
+- **原生支持 Google Antigravity & ZCode**：支持 Electron 与 CLI 进程扫描、实时轨迹日志解析（tool_use 与动作上下文）、会话监控与窗口直达
 - **任务完成主动提醒与 Peek 微窥**：Agent 结束持续工作（≥3.5s）转为空闲时，自动播放轻脆系统提示音（Glass），并在收起态下自动滑出 3.5 秒 Peek 微弹窗；若光标移入则自动转换为常驻展开，无需手动翻找进度
 - **终端与 IDE 窗口一键直达**：
-  - **GUI 智能体（Cursor、Trae 等）**：通过 BundleID / PID 一键拉至最前并聚焦；
+  - **GUI 智能体（Cursor、Trae、Antigravity 等）**：通过 BundleID / PID 一键拉至最前并聚焦；
   - **CLI 智能体（Claude Code、Codex、Dim 等）**：毫秒级递归追溯进程树父节点，精准定位 Terminal、iTerm2、VS Code、Ghostty、Warp 等终端宿主窗口，一键将黑底终端置顶呼出
 - **实时操作透视**：
   - 子进程命令实时提取（`git diff`、`swift test`、`npm run build` 等）并智能清洗包裹层；
-  - DimAgent / Claude / Codex 会话日志解析，直观呈现 `正在修改: IslandView.swift`、`正在执行: pytest` 等动态徽标；
+  - DimAgent / Claude / Codex / Antigravity 会话日志解析，直观呈现 `正在修改: IslandView.swift`、`正在执行: pytest` 等动态徽标；
 - **成本与异常熔断保护（逃生舱）**：
-  - **Token 暴涨检测**：滑动差分监测单分钟 Token 增量，超阈值时弹出琥珀色/红色警告并播放警示音；
-  - **异常长耗时死循环告警**：持续高负荷工作超 3 分钟未释放时自动预警；
+  - **Token 暴涨检测**：滑动差分监测单分钟 Token 增量，超阈值时弹出双行自适应告警卡片并播放警示音；
+  - **异常长耗时死循环告警**：基于基准采样的防误报算法，持续异常高负荷工作未释放时自动预警；
   - **一键 Kill 逃生舱**：红色熔断横幅直达终止；列表行悬浮红色「终止」按钮，带 3 秒防误触确认态，一键彻底杀死进程树及其子任务；
 
-### 灵动岛交互
-- **自由移动与智能贴边吸附**：展开卡片的顶栏按住即可在屏幕任意位置自由拖拽；松手根据物理距离智能吸附到屏幕顶部或右侧，并持久化锚点坐标记忆
-- **6pt 晶莹微细条（Sliver）与触碰弹出**：收起时在屏幕边缘保留一条 6pt 厚度的半透明微细条（含 Agent 工作状态呼吸绿灯），光标碰触微细条即以 Apple 级流体弹簧动效自动弹出完整卡片，移开后按延迟时间平滑收回
+### 灵动岛交互与外观
+- **浅色 / 深色 / 跟随系统模式**：灵动岛顶栏快捷图标、菜单栏 Popover、分栏设置面板与右键上下文菜单全入口支持一键热切换，玻璃拟态与阴影投影自适应
+- **折叠与收起极致顺滑**：
+  - **光标离开自动折叠**：无缝计算防抖延时，移出卡片稳定贴边，绝不回弹；
+  - **全局失焦点击收起（Click-outside）**：点击外部桌面或其他窗口任意位置即刻平滑折叠；
+  - **一键显式折叠**：顶栏右侧新增一键收起按钮，右键菜单同步支持「收起灵动岛」；
+- **自由移动与智能贴边吸附**：展开卡片顶栏按住即可在屏幕任意位置自由拖拽；松手根据物理距离智能吸附到屏幕顶部或右侧，并持久化锚点坐标记忆
+- **6pt 晶莹微细条（Sliver）与触碰弹出**：收起时在屏幕边缘保留一条 6pt 厚度的半透明微细条（含 Agent 工作状态呼吸绿灯），光标碰触微细条即以 Apple 级流体弹簧动效自动弹出完整卡片
 - **顶部菜单栏 Compact Island Popover**：菜单栏采用现代 macOS 原生浮窗（`.window`），实时显示呼吸状态灯、活跃 Agent 概览、Token 统计与操作直达
 - **卡内三级导航**：主列表 → 点 Agent 行看详情（双口径总览 + 按模型拆分）→ 点模型看会话列表（时间/消息数/token/花费，点击跳 Finder 目录）
-- **动态单向圆角与玻璃拟态**：NSVisualEffectView(.hudWindow) + 动态蒙层 + 1px 晶莹微高光描边；顶部贴边下方圆角，右侧贴边左侧圆角
-- **现代分栏设置窗口**：macOS 原生 NavigationSplitView 四大分类（通用与外观、Agent 监控、引擎与性能、关于），支持熔断阈值调节、提示音开关与停靠重置
-- **浅色 / 深色 / 跟随系统**：设置里一键切换，颜色与微反光全动态自适应
+- **动态单向圆角与玻璃拟态**：NSVisualEffectView(.popover) + 动态蒙层 + 1px 晶莹微高光描边；顶部贴边下方圆角，右侧贴边左侧圆角
+- **现代分栏设置窗口**：macOS 原生 NavigationSplitView 四大分类（通用与外观、Agent 监控、引擎与性能、关于），支持外观模式、熔断阈值调节、提示音开关与停靠重置
 
 ### Token 用量统计
 - **DimAgent**：读取 `~/.dimcode/v2/dimcode.sqlite` 的 usage_ledger（token 精确统计）
@@ -33,7 +38,7 @@
 - 60s 后台轮询，SQLite 只读打开，不锁库、不碰凭证
 
 ### 检测层
-- **内置注册表 + 自动发现 + 自定义**：内置 10 条（按真实 bundle id 修正），启动扫描 /Applications + PATH 自动补充 CLI，设置里可添加自定义 Agent（进程名 + 会话目录）
+- **内置注册表 + 自动发现 + 自定义**：内置 12 条（新增 Antigravity、ZCode），启动扫描 /Applications + PATH 自动补充 CLI，设置里可添加自定义 Agent（进程名 + 会话目录）
 - **双信号判定**：`working` = 进程在 且（60s 内有文件写入 **或** CPU > 1%）；`idle` = 进程在但两者皆不满足；`offline` = 进程不在
 - **误报防护**：按完整路径匹配（非 basename），排除系统目录前缀（`/System/`、`/usr/libexec` 等）+ 黑名单（`CursorUIViewService`、`ssh-agent` 等）
 - **高性能**：进程快照一次 libproc 遍历（proc_listpids/proc_pidpath）复用全部 profile，CPU 用两次采样差分；文件扫描后台递归 + 15s 节流 + 快跳过缓存，工作态开销约 1%
@@ -50,7 +55,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.5.0.zip`，解压后拖入「应用程序」或直接运行。
+从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.5.1.zip`，解压后拖入「应用程序」或直接运行。
 
 > 未公证（ad-hoc 签名），首次打开需右键 → 打开。
 
@@ -59,7 +64,7 @@
 本机无 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
-# 开发构建 + 自建测试套件（53 用例，含状态机/双信号/事件唤醒/进程树熔断/命令清洗/token 统计）
+# 开发构建 + 自建测试套件（56 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/命令清洗/token 统计）
 swift build
 .build/debug/AgentIslandTestsRunner     # 测试
 .build/debug/AgentIsland --selftest     # 进程内自检
