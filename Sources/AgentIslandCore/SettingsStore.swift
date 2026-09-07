@@ -44,3 +44,59 @@ public enum EnabledAgentStore {
         }
     }
 }
+
+#if canImport(AppKit)
+import AppKit
+#endif
+
+// MARK: - 外观主题定义（跟随系统 / 浅色模式 / 深色模式）
+
+public enum IslandAppearance: String, CaseIterable, Identifiable, Sendable {
+    case system
+    case light
+    case dark
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色模式"
+        case .dark: return "深色模式"
+        }
+    }
+
+    public var shortLabel: String {
+        switch self {
+        case .system: return "跟随系统"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .system: return "laptopcomputer"
+        case .light: return "sun.max.fill"
+        case .dark: return "moon.fill"
+        }
+    }
+
+    #if canImport(AppKit)
+    public var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+    #endif
+
+    public func next() -> IslandAppearance {
+        switch self {
+        case .system: return .light
+        case .light: return .dark
+        case .dark: return .system
+        }
+    }
+}

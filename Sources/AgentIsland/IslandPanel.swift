@@ -25,6 +25,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var routeResetTask: Task<Void, Never>?
     private var didShowOnce = false
 
+    /// 外观模式状态（跟随系统 / 浅色 / 深色）
+    @Published public private(set) var appearanceMode: IslandAppearance = .system
+
     /// 拖动相关状态
     private var dragStartOrigin: NSPoint?
     private var isDragging = false
@@ -82,6 +85,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         if let sy = UserDefaults.standard.object(forKey: SettingKey.dockAnchorY) as? Double {
             self.savedRightY = CGFloat(sy)
         }
+        self.appearanceMode = Self.persistedAppearance()
 
         super.init()
         setupPanel()
@@ -179,7 +183,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     func applyAppearance(_ mode: IslandAppearance) {
-        panel.appearance = mode.nsAppearance
+        appearanceMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: SettingKey.islandAppearance)
+        panel?.appearance = mode.nsAppearance
+        // 同步应用到非面板窗口（例如设置窗口）
+        for window in NSApp.windows {
+            if !(window is NSPanel) {
+                window.appearance = mode.nsAppearance
+            }
+        }
     }
 
     private static func persistedAppearance() -> IslandAppearance {

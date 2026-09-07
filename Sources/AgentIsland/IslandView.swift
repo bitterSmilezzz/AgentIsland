@@ -27,7 +27,7 @@ struct GlassCardBackground: View {
 
     var body: some View {
         ZStack {
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+            VisualEffectView(material: .popover, blendingMode: .behindWindow)
                 .clipShape(edgeShape)
             // 蒙层：深色下黑蒙，浅色下白蒙（动态）
             edgeShape
@@ -89,6 +89,28 @@ struct IslandView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.dockEdge == .top ? .bottom : .leading)
+        .preferredColorScheme(controller.appearanceMode.colorScheme)
+        .contextMenu {
+            Menu("外观主题") {
+                ForEach(IslandAppearance.allCases) { mode in
+                    Button {
+                        controller.applyAppearance(mode)
+                    } label: {
+                        HStack {
+                            Text(mode.label)
+                            if controller.appearanceMode == mode {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("偏好设置…") {
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        }
         .animation(.easeInOut(duration: 0.22), value: controller.displayState)
         .animation(.spring(response: 0.32, dampingFraction: 0.84), value: controller.route)
     }
@@ -175,6 +197,30 @@ struct IslandView: View {
                 Text("\(engine.visibleSnapshots.count)/\(engine.snapshots.count) 可见")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.onDarkFaint)
+
+                Menu {
+                    ForEach(IslandAppearance.allCases) { mode in
+                        Button {
+                            controller.applyAppearance(mode)
+                        } label: {
+                            HStack {
+                                Text(mode.label)
+                                if controller.appearanceMode == mode {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: controller.appearanceMode.icon)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.onDarkFaint)
+                        .padding(4)
+                        .background(Circle().fill(Theme.chipFill))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("外观主题：\(controller.appearanceMode.label)（点击切换）")
             }
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, IslandMetrics.headerPaddingTop)

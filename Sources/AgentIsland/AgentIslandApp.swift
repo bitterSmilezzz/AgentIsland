@@ -105,6 +105,7 @@ struct MenuBarPopoverView: View {
         .padding(14)
         .frame(width: 300)
         .background(Theme.canvas)
+        .preferredColorScheme(controller.appearanceMode.colorScheme)
     }
 
     // MARK: 顶部状态条
@@ -251,6 +252,31 @@ struct MenuBarPopoverView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
             }
             .buttonStyle(.plain)
+
+            // 外观主题切换
+            Menu {
+                ForEach(IslandAppearance.allCases) { mode in
+                    Button {
+                        controller.applyAppearance(mode)
+                    } label: {
+                        HStack {
+                            Text(mode.label)
+                            if controller.appearanceMode == mode {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: controller.appearanceMode.icon)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.inkMuted80)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("外观主题：\(controller.appearanceMode.label)")
 
             // 设置
             Button {

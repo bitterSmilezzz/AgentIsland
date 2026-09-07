@@ -118,27 +118,17 @@ enum Theme {
     static let spaceLg: CGFloat = 24
 }
 
-// MARK: - 外观模式管理（浅色/深色/跟随系统）
+import AgentIslandCore
 
-enum IslandAppearance: String, CaseIterable, Identifiable {
-    case system
-    case light
-    case dark
+// MARK: - 外观模式 SwiftUI 扩展
 
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .system: return "跟随系统"
-        case .light: return "浅色"
-        case .dark: return "深色"
-        }
-    }
-    /// 应用到悬浮面板的 NSAppearance（system = nil 跟随系统）
-    var nsAppearance: NSAppearance? {
+extension IslandAppearance {
+    /// 对应的 SwiftUI 配色环境（nil 为跟随系统）
+    public var colorScheme: ColorScheme? {
         switch self {
         case .system: return nil
-        case .light: return NSAppearance(named: .aqua)
-        case .dark: return NSAppearance(named: .darkAqua)
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 }

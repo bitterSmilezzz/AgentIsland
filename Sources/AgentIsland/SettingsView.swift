@@ -116,6 +116,7 @@ struct SettingsView: View {
             detailView
         }
         .frame(width: 620, height: 480)
+        .preferredColorScheme(controller.appearanceMode.colorScheme)
         .onAppear {
             installedApps.refreshIfNeeded(maxAge: 0) {
                 installedScanVersion += 1
@@ -171,18 +172,39 @@ struct SettingsView: View {
     private var generalDetailView: some View {
         VStack(alignment: .leading, spacing: 14) {
             SettingsCard(title: "外观主题") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Picker("外观模式", selection: islandAppearance) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
                         ForEach(IslandAppearance.allCases) { mode in
-                            Text(mode.label).tag(mode)
+                            let isSelected = controller.appearanceMode == mode
+                            Button {
+                                controller.applyAppearance(mode)
+                            } label: {
+                                VStack(spacing: 8) {
+                                    Image(systemName: mode.icon)
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundColor(isSelected ? Theme.focusBlue : Theme.ink)
+                                        .frame(height: 24)
+
+                                    Text(mode.label)
+                                        .font(Theme.bodyFont(12, weight: isSelected ? .semibold : .regular))
+                                        .foregroundColor(isSelected ? Theme.focusBlue : Theme.ink)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(isSelected ? Theme.focusBlue.opacity(0.12) : Theme.tile1)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(isSelected ? Theme.focusBlue : Theme.hairline, lineWidth: isSelected ? 1.5 : 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .onChange(of: islandAppearanceRaw) { _ in
-                        controller.applyAppearance(IslandAppearance(rawValue: islandAppearanceRaw) ?? .system)
-                    }
 
-                    Text("控制侧边栏灵动岛面板的配色；设置窗口本身跟随系统。")
+                    Text("控制全局界面与悬浮灵动岛面板的显示风格，支持浅色模式、深色模式与跟随系统。")
                         .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.inkMuted48)
                 }

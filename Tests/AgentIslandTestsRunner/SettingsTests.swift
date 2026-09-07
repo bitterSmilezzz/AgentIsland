@@ -103,5 +103,33 @@ enum SettingsTests {
             try expectEqual(savedX, 120.5, "dockAnchorX 应正确持久化")
             try expectEqual(savedY, 450.0, "dockAnchorY 应正确持久化")
         }
+
+        TestKit.test("设置: IslandAppearance 枚举、轮换与持久化") {
+            try expectEqual(IslandAppearance.system.rawValue, "system")
+            try expectEqual(IslandAppearance.light.rawValue, "light")
+            try expectEqual(IslandAppearance.dark.rawValue, "dark")
+
+            try expectEqual(IslandAppearance.system.label, "跟随系统")
+            try expectEqual(IslandAppearance.light.label, "浅色模式")
+            try expectEqual(IslandAppearance.dark.label, "深色模式")
+
+            try expectEqual(IslandAppearance.system.icon, "laptopcomputer")
+            try expectEqual(IslandAppearance.light.icon, "sun.max.fill")
+            try expectEqual(IslandAppearance.dark.icon, "moon.fill")
+
+            // 轮换测试
+            try expectEqual(IslandAppearance.system.next(), .light)
+            try expectEqual(IslandAppearance.light.next(), .dark)
+            try expectEqual(IslandAppearance.dark.next(), .system)
+
+            // 持久化测试
+            let name = "agentisland-appearance-test-\(UUID().uuidString)"
+            let suite = UserDefaults(suiteName: name)!
+            defer { suite.removePersistentDomain(forName: name) }
+
+            suite.set(IslandAppearance.dark.rawValue, forKey: SettingKey.islandAppearance)
+            let loaded = suite.string(forKey: SettingKey.islandAppearance).flatMap(IslandAppearance.init)
+            try expectEqual(loaded, .dark, "IslandAppearance 应正确持久化并读取")
+        }
     }
 }
