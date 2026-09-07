@@ -92,13 +92,15 @@ public struct AgentSnapshot: Identifiable, Equatable {
     public let lastActivityAgo: TimeInterval?  // 距最近一次文件活动的时间（nil=从未）
     public let lastActivityText: String
     public let tokenUsage: TokenUsage?         // token 用量（数据源缺失时为 nil）
+    public let pid: Int32?                     // 匹配到的进程 PID（若运行中）
+    public let currentAction: String?          // 实时动作透传（执行的命令/修改的文件/思考等）
 
     public var id: String { profile.id }
 
     public init(profile: AgentProfile, level: ActivityLevel, processRunning: Bool,
                 cpuPercent: Double, installed: Bool, activeSessions: Int,
                 lastActivityAgo: TimeInterval?, lastActivityText: String,
-                tokenUsage: TokenUsage? = nil) {
+                tokenUsage: TokenUsage? = nil, pid: Int32? = nil, currentAction: String? = nil) {
         self.profile = profile
         self.level = level
         self.processRunning = processRunning
@@ -108,6 +110,54 @@ public struct AgentSnapshot: Identifiable, Equatable {
         self.lastActivityAgo = lastActivityAgo
         self.lastActivityText = lastActivityText
         self.tokenUsage = tokenUsage
+        self.pid = pid
+        self.currentAction = currentAction
+    }
+}
+
+// MARK: - 任务事件（生命周期关键节点）
+
+public struct AgentTaskEvent: Identifiable, Equatable {
+    public let id: UUID
+    public let agentId: String
+    public let agentName: String
+    public let eventType: EventType
+    public let duration: TimeInterval
+    public let timestamp: Date
+    public let pid: Int32?
+    public let message: String?
+
+    public enum EventType: String, Equatable {
+        case completed  // 任务执行完毕
+        case attention  // 需要关注/等待确认
+        case costSpike  // 消耗突增/死循环熔断告警
+    }
+
+    public init(id: UUID = UUID(), agentId: String, agentName: String, eventType: EventType, duration: TimeInterval, timestamp: Date = Date(), pid: Int32? = nil, message: String? = nil) {
+        self.id = id
+        self.agentId = agentId
+        self.agentName = agentName
+        self.eventType = eventType
+        self.duration = duration
+        self.timestamp = timestamp
+        self.pid = pid
+        self.message = message
+    }
+
+    public var summaryText: String {
+        if let message, !message.isEmpty {
+            return message
+        }
+        switch eventType {
+        case .completed:
+            let d = Int(duration)
+            let timeStr = d >= 60 ? "\(d / 60)分\(d % 60)秒" : "\(d)秒"
+            return "\(agentName) 任务完成 (\(timeStr))"
+        case .attention:
+            return "\(agentName) 等待确认操作"
+        case .costSpike:
+            return "⚠️ \(agentName) 资源/Token 消耗突增"
+        }
     }
 }
 
@@ -120,19 +170,28 @@ public struct EngineConfig: Equatable {
     public var cpuThreshold: Double = 1.0              // 进程 CPU% 超过 → working（双信号之二，ps 平均值偏低故取 1%）
     public var activeSessionWindow: TimeInterval = 600.0 // 活跃会话计数窗口（10 分钟）
     public var minWorkingHold: TimeInterval = 10.0    // 滞回：working 信号消失后保持最短时长（防抖动）
+    public var tokenAlertEnabled: Bool = true          // 是否开启 Token 突增告警
+    public var tokenAlertThreshold: Int = 100_000      // 单分钟内 Token 增量阈值（默认 100k）
+    public var runawayCpuAlert: Bool = true            // 是否开启持续工作超长死循环告警
 
     public init(sampleInterval: TimeInterval = 2.0,
                 idleSampleInterval: TimeInterval = 15.0,
                 workingWindow: TimeInterval = 60.0,
                 cpuThreshold: Double = 1.0,
                 activeSessionWindow: TimeInterval = 600.0,
-                minWorkingHold: TimeInterval = 10.0) {
+                minWorkingHold: TimeInterval = 10.0,
+                tokenAlertEnabled: Bool = true,
+                tokenAlertThreshold: Int = 100_000,
+                runawayCpuAlert: Bool = true) {
         self.sampleInterval = sampleInterval
         self.idleSampleInterval = idleSampleInterval
         self.workingWindow = workingWindow
         self.cpuThreshold = cpuThreshold
         self.activeSessionWindow = activeSessionWindow
         self.minWorkingHold = minWorkingHold
+        self.tokenAlertEnabled = tokenAlertEnabled
+        self.tokenAlertThreshold = tokenAlertThreshold
+        self.runawayCpuAlert = runawayCpuAlert
     }
 
     /// cpuThreshold 合法区间（slider range / 钳制 / 归一化唯一来源）
@@ -158,7 +217,10 @@ public struct EngineConfig: Equatable {
             idleSampleInterval: defaults.object(forKey: SettingKey.idleSampleInterval) as? Double ?? base.idleSampleInterval,
             workingWindow: defaults.object(forKey: SettingKey.workingWindow) as? Double ?? base.workingWindow,
             cpuThreshold: defaults.object(forKey: SettingKey.cpuThreshold) as? Double ?? base.cpuThreshold,
-            activeSessionWindow: defaults.object(forKey: SettingKey.activeSessionWindow) as? Double ?? base.activeSessionWindow
+            activeSessionWindow: defaults.object(forKey: SettingKey.activeSessionWindow) as? Double ?? base.activeSessionWindow,
+            tokenAlertEnabled: defaults.object(forKey: SettingKey.tokenAlertEnabled) as? Bool ?? base.tokenAlertEnabled,
+            tokenAlertThreshold: defaults.object(forKey: SettingKey.tokenAlertThreshold) as? Int ?? base.tokenAlertThreshold,
+            runawayCpuAlert: defaults.object(forKey: SettingKey.runawayCpuAlert) as? Bool ?? base.runawayCpuAlert
         ).normalized()
     }
 }

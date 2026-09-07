@@ -101,7 +101,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
-        panel.isMovable = false
+        panel.isMovable = true
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
@@ -146,6 +146,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
                     self?.syncExpandedHeight()
+                }
+            }
+            .store(in: &cancellables)
+
+        engine.$latestEvent
+            .removeDuplicates()
+            .sink { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.handleTaskEvent(event)
                 }
             }
             .store(in: &cancellables)
@@ -233,19 +242,26 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     deinit {
+        edgeZoneTimer?.invalidate()
         if let m = mouseLocalMonitor { NSEvent.removeMonitor(m) }
         if let m = mouseGlobalMonitor { NSEvent.removeMonitor(m) }
         NotificationCenter.default.removeObserver(self)
     }
 
+    private var manualOpenGraceUntil: Date = .distantPast
+
     func toggle() {
         switch displayState {
         case .docked:
             cancelPendingTasks()
+            expandCooldownUntil = .distantPast
+            dragCooldownUntil = .distantPast
+            manualOpenGraceUntil = Date().addingTimeInterval(3.5)
             displayState = .expanded
         case .expanded:
+            manualOpenGraceUntil = .distantPast
             displayState = .docked
-            expandCooldownUntil = Date().addingTimeInterval(1.0)
+            expandCooldownUntil = Date().addingTimeInterval(0.4)
         }
     }
 
@@ -255,7 +271,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         displayState = .expanded
     }
 
-    // MARK: - 拖动卡片
+    // MARK: - 拖动与智能吸附
+
+    func beginDrag() {
+        guard panel != nil, displayState == .expanded else { return }
+        isDragging = true
+        cancelPendingTasks()
+    }
 
     func dragMoved(translation: CGSize) {
         guard let panel, displayState == .expanded else { return }
@@ -278,7 +300,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard let panel, isDragging else { return }
         isDragging = false
         dragStartOrigin = nil
-        dragCooldownUntil = Date().addingTimeInterval(0.8)
+        dragCooldownUntil = Date().addingTimeInterval(0.6)
 
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
         let visible = screen.visibleFrame
@@ -301,25 +323,77 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
 
         updateChrome()
-        placeWindow(animated: true)
+        snapToDockEdge(animated: true)
+    }
+
+    func snapToDockEdge(animated: Bool) {
+        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+        let visible = screen.visibleFrame
+        let cardW = IslandMetrics.cardWidth
+        let cardH = expandedHeight()
+        let targetOrigin: NSPoint
+
+        switch dockEdge {
+        case .right:
+            var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
+            y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
+            targetOrigin = NSPoint(x: visible.maxX - cardW, y: y)
+        case .top:
+            var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
+            x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
+            targetOrigin = NSPoint(x: x, y: visible.maxY - cardH)
+        }
+
+        let targetRect = NSRect(origin: targetOrigin, size: NSSize(width: cardW, height: cardH))
+        let dx = targetOrigin.x - panel.frame.origin.x
+        let dy = targetOrigin.y - panel.frame.origin.y
+        let dist = hypot(dx, dy)
+
+        guard animated, dist >= 1.5 else {
+            panel.setFrame(targetRect, display: false)
+            return
+        }
+
+        let duration: TimeInterval = min(0.35, max(0.18, Double(sqrt(dist / 800.0)) * 0.28))
+        let timing = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = timing
+            panel.animator().setFrame(targetRect, display: false)
+        }
     }
 
     // MARK: - 边缘与光标监控
 
     private var mouseLocalMonitor: Any?
     private var mouseGlobalMonitor: Any?
+    private var edgeZoneTimer: Timer?
     private var lastEvalAt = Date.distantPast
-    private let evalMinInterval: TimeInterval = 0.1
+    private let evalMinInterval: TimeInterval = 0.05
 
     private func startEdgeZoneMonitor() {
-        guard mouseLocalMonitor == nil else { return }
+        guard edgeZoneTimer == nil else { return }
+
+        // 使用 Timer 定期检测光标位置（0.06s 间隔，低开销且无需任何 AX 辅助功能权限）
+        let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.evaluateEdgeZone()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        edgeZoneTimer = timer
+
+        // 同时保留本地与全局事件监听
         mouseLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            self?.onMouseMoved()
+            MainActor.assumeIsolated {
+                self?.evaluateEdgeZone()
+            }
             return event
         }
         mouseGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.onMouseMoved()
+                self?.evaluateEdgeZone()
             }
         }
     }
@@ -345,14 +419,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             var inZone = false
             switch dockEdge {
             case .right:
-                if loc.x >= visible.maxX - 14 {
-                    let cy = savedRightY ?? visible.midY
-                    inZone = (loc.y >= cy - 80 && loc.y <= cy + 80)
+                // 右边缘细条检测：光标位于屏幕右边缘区域且在细条垂直范围内
+                if loc.x >= visible.maxX - 18 || panel.frame.contains(loc) {
+                    let cy = panel.frame.midY
+                    inZone = abs(loc.y - cy) <= (IslandMetrics.rightSliverHeight / 2 + 15)
                 }
             case .top:
-                if loc.y >= visible.maxY - 14 {
-                    let cx = savedTopX ?? visible.midX
-                    inZone = (loc.x >= cx - 90 && loc.x <= cx + 90)
+                // 顶边缘细条检测：光标位于屏幕顶部边缘区域且在细条水平范围内
+                if loc.y >= visible.maxY - 18 || panel.frame.contains(loc) {
+                    let cx = panel.frame.midX
+                    inZone = abs(loc.x - cx) <= (IslandMetrics.topSliverWidth / 2 + 15)
                 }
             }
             if inZone {
@@ -360,7 +436,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 displayState = .expanded
             }
         } else if displayState == .expanded {
-            if !Self.isMouseInsidePanel(panel) {
+            if Self.isMouseInsidePanel(panel) {
+                // 光标在面板内，取消任何收回计划
+                if collapseTask != nil {
+                    collapseTask?.cancel()
+                    collapseTask = nil
+                }
+            } else {
+                // 光标离开面板，且超过了手动展开的保护期，安排收起
+                guard Date() >= manualOpenGraceUntil else { return }
                 scheduleCollapse()
             }
         }
@@ -379,6 +463,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                   !Task.isCancelled,
                   !self.isDragging,
                   self.displayState == .expanded,
+                  Date() >= self.manualOpenGraceUntil,
                   !Self.isMouseInsidePanel(self.panel) else { return }
             self.displayState = .docked
         }
@@ -386,7 +471,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     static func isMouseInsidePanel(_ panel: NSPanel?) -> Bool {
         guard let panel, panel.isVisible else { return false }
-        let frame = panel.frame.insetBy(dx: -4, dy: -4)
+        let frame = panel.frame.insetBy(dx: -8, dy: -8)
         return frame.contains(NSEvent.mouseLocation)
     }
 
@@ -432,8 +517,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             await withCheckedContinuation { cont in
                 NSAnimationContext.runAnimationGroup({ ctx in
                     ctx.duration = 0.30
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-                    panel.animator().setFrame(shownRect, display: true)
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+                    panel.animator().setFrame(shownRect, display: false)
                 }, completionHandler: { cont.resume() })
             }
             try? await Task.sleep(nanoseconds: 700_000_000)
@@ -441,8 +526,91 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             await withCheckedContinuation { cont in
                 NSAnimationContext.runAnimationGroup({ ctx in
                     ctx.duration = 0.26
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
-                    panel.animator().setFrame(initialRect, display: true)
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 1.0, 0.35, 1.0)
+                    panel.animator().setFrame(initialRect, display: false)
+                }, completionHandler: { cont.resume() })
+            }
+        }
+    }
+
+    private func handleTaskEvent(_ event: AgentTaskEvent?) {
+        guard let event else {
+            syncExpandedHeight()
+            return
+        }
+
+        // 1. 播放系统提示音（默认开启；成本/死循环突增告警播放警示音）
+        if UserDefaults.standard.object(forKey: SettingKey.playCompletionSound) as? Bool ?? true {
+            if event.eventType == .costSpike {
+                if let sound = NSSound(named: "Sosumi") ?? NSSound(named: "Basso") {
+                    sound.play()
+                } else {
+                    NSSound(named: "Glass")?.play()
+                }
+            } else {
+                NSSound(named: "Glass")?.play()
+            }
+        }
+
+        // 2. 窗口高度自适应扩展
+        syncExpandedHeight()
+
+        // 3. 若当前处于收起态（docked），触发专用事件微弹窗 Peek
+        if displayState == .docked {
+            peekForEvent(event)
+        }
+    }
+
+    private func peekForEvent(_ event: AgentTaskEvent) {
+        guard displayState == .docked, peekTask == nil, !isDragging else { return }
+        peekTask = Task { [weak self] in
+            defer { self?.peekTask = nil }
+            guard let self, let panel = self.panel else { return }
+            let initialRect = panel.frame
+            var shownRect = panel.frame
+            guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+            let visible = screen.visibleFrame
+            let cardH = self.expandedHeight()
+
+            switch self.dockEdge {
+            case .right:
+                var y = self.savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
+                y = min(max(y, visible.minY + self.screenVerticalMargin), visible.maxY - cardH - self.screenVerticalMargin)
+                shownRect = NSRect(x: visible.maxX - IslandMetrics.cardWidth, y: y,
+                                   width: IslandMetrics.cardWidth, height: cardH)
+            case .top:
+                var x = self.savedTopX.map { $0 - IslandMetrics.cardWidth / 2 } ?? (visible.midX - IslandMetrics.cardWidth / 2)
+                x = min(max(x, visible.minX + self.screenHorizontalMargin), visible.maxX - IslandMetrics.cardWidth - self.screenHorizontalMargin)
+                shownRect = NSRect(x: x, y: visible.maxY - cardH,
+                                   width: IslandMetrics.cardWidth, height: cardH)
+            }
+
+            // 平滑滑出
+            await withCheckedContinuation { cont in
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = 0.32
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+                    panel.animator().setFrame(shownRect, display: false)
+                }, completionHandler: { cont.resume() })
+            }
+
+            // 保持展示供用户查看（普通事件 3.5 秒，成本/死循环熔断保持 6 秒供用户查看或操作）
+            let peekDuration: UInt64 = event.eventType == .costSpike ? 6_000_000_000 : 3_500_000_000
+            try? await Task.sleep(nanoseconds: peekDuration)
+
+            // 若用户光标在展示期间已移入面板，转为常驻展开态，不自动收回！
+            guard !Task.isCancelled, self.displayState == .docked else { return }
+            if Self.isMouseInsidePanel(self.panel) {
+                self.displayState = .expanded
+                return
+            }
+
+            // 平滑收回
+            await withCheckedContinuation { cont in
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = 0.28
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 1.0, 0.35, 1.0)
+                    panel.animator().setFrame(initialRect, display: false)
                 }, completionHandler: { cont.resume() })
             }
         }
@@ -479,18 +647,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     // MARK: - 窗口帧度量与放置
 
     private func sizeForState() -> NSSize {
-        switch displayState {
-        case .docked:
-            return dockEdge == .top
-                ? NSSize(width: IslandMetrics.topSliverWidth, height: IslandMetrics.topSliverHeight)
-                : NSSize(width: IslandMetrics.rightSliverWidth, height: IslandMetrics.rightSliverHeight)
-        case .expanded:
-            return NSSize(width: IslandMetrics.cardWidth, height: expandedHeight())
-        }
+        NSSize(width: IslandMetrics.cardWidth, height: expandedHeight())
     }
 
     private func expandedHeight() -> CGFloat {
-        IslandMetrics.expandedHeight(route: route, visibleCount: visibleCount(), hasSummary: !engine.grandTotal.isEmpty)
+        IslandMetrics.expandedHeight(
+            route: route,
+            visibleCount: visibleCount(),
+            hasSummary: !engine.grandTotal.isEmpty,
+            hasEvent: engine.latestEvent != nil
+        )
     }
 
     private func visibleCount() -> Int {
@@ -500,47 +666,56 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private func placeWindow(animated: Bool) {
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
         let visible = screen.visibleFrame
-        let size = sizeForState()
-        let target: NSRect
+        let cardW = IslandMetrics.cardWidth
+        let cardH = expandedHeight()
+        let targetSize = NSSize(width: cardW, height: cardH)
 
+        let targetOrigin: NSPoint
         switch displayState {
         case .expanded:
             switch dockEdge {
             case .right:
-                var y = savedRightY.map { $0 - size.height / 2 } ?? (visible.midY - size.height / 2)
-                y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - size.height - screenVerticalMargin)
-                target = NSRect(x: visible.maxX - size.width, y: y, width: size.width, height: size.height)
+                var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
+                y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
+                targetOrigin = NSPoint(x: visible.maxX - cardW, y: y)
             case .top:
-                var x = savedTopX.map { $0 - size.width / 2 } ?? (visible.midX - size.width / 2)
-                x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - size.width - screenHorizontalMargin)
-                target = NSRect(x: x, y: visible.maxY - size.height, width: size.width, height: size.height)
+                var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
+                x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
+                targetOrigin = NSPoint(x: x, y: visible.maxY - cardH)
             }
         case .docked:
             switch dockEdge {
             case .right:
-                var y = savedRightY.map { $0 - size.height / 2 } ?? (visible.midY - size.height / 2)
-                y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - size.height - screenVerticalMargin)
-                target = NSRect(x: visible.maxX - size.width, y: y, width: size.width, height: size.height)
+                var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
+                y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
+                targetOrigin = NSPoint(x: visible.maxX - IslandMetrics.rightSliverWidth, y: y)
             case .top:
-                var x = savedTopX.map { $0 - size.width / 2 } ?? (visible.midX - size.width / 2)
-                x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - size.width - screenHorizontalMargin)
-                target = NSRect(x: x, y: visible.maxY - size.height, width: size.width, height: size.height)
+                var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
+                x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
+                targetOrigin = NSPoint(x: x, y: visible.maxY - IslandMetrics.topSliverHeight)
             }
         }
 
-        if animated {
+        let targetRect = NSRect(origin: targetOrigin, size: targetSize)
+        let dx = targetOrigin.x - panel.frame.origin.x
+        let dy = targetOrigin.y - panel.frame.origin.y
+        let dist = hypot(dx, dy)
+
+        if animated, dist > 1.0 {
             let isExpanding = (displayState == .expanded)
-            let duration: TimeInterval = isExpanding ? 0.34 : 0.28
+            let baseDuration: TimeInterval = isExpanding ? 0.32 : 0.26
+            let duration: TimeInterval = min(0.36, max(0.18, Double(sqrt(dist / (isExpanding ? cardW : 300.0))) * baseDuration))
             let timing = isExpanding
-                ? CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-                : CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
+                ? CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
+                : CAMediaTimingFunction(controlPoints: 0.25, 1.0, 0.35, 1.0)
+
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = duration
                 context.timingFunction = timing
-                panel.animator().setFrame(target, display: true)
+                panel.animator().setFrame(targetRect, display: false)
             }
         } else {
-            panel.setFrame(target, display: false)
+            panel.setFrame(targetRect, display: false)
         }
     }
 

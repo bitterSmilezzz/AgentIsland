@@ -7,14 +7,24 @@ import AgentIslandCore
 // MARK: 卡片外壳
 
 extension View {
-    /// 卡片外壳三连：固定卡宽 + 背景铺满窗口消除透明带 + 玻璃拟态背景。
+    /// 卡片外壳三连：固定卡宽 + 背景铺满窗口消除透明带 + 玻璃拟态背景 + 空白区原生拖拽。
     /// IslandView 展开卡 / DetailViews 两页统一入口。
-    func cardShell(dockEdge: DockEdge = .right) -> some View {
+    func cardShell(dockEdge: DockEdge = .right, controller: IslandPanelController? = nil) -> some View {
         self
             .frame(width: IslandMetrics.cardWidth)
             // 背景铺满整个窗口（窗口高度可能略大于内容，消除底部透明带）
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(GlassCardBackground(cornerRadius: Theme.radiusLg, dockEdge: dockEdge))
+            .background(
+                ZStack {
+                    GlassCardBackground(cornerRadius: Theme.radiusLg, dockEdge: dockEdge)
+                    if let controller {
+                        WindowDragHandleView(
+                            onDragStart: { controller.beginDrag() },
+                            onDragEnded: { controller.dragEnded() }
+                        )
+                    }
+                }
+            )
     }
 }
 
@@ -63,25 +73,57 @@ struct CenteredSpinner: View {
     }
 }
 
-// MARK: 卡片拖动手势
+// MARK: 原生窗口拖拽视图与修饰符
 
-/// 顶栏拖动整卡（3pt 起拖阈值；主列表顶栏与详情页顶栏统一入口）
-private struct CardDrag: ViewModifier {
-    let onMoved: (CGSize) -> Void
-    let onEnded: () -> Void
+/// 原生 AppKit 硬件级窗口拖拽视图（120Hz WindowServer 直接接管）
+final class WindowDragNSView: NSView {
+    var onDragStart: (() -> Void)?
+    var onDragEnded: (() -> Void)?
 
-    func body(content: Content) -> some View {
-        content.gesture(
-            DragGesture(minimumDistance: 3)
-                .onChanged { onMoved($0.translation) }
-                .onEnded { _ in onEnded() }
-        )
+    override func mouseDown(with event: NSEvent) {
+        guard let window = self.window else { return }
+        onDragStart?()
+        window.performDrag(with: event)
+        onDragEnded?()
+    }
+}
+
+struct WindowDragHandleView: NSViewRepresentable {
+    var onDragStart: () -> Void
+    var onDragEnded: () -> Void
+
+    func makeNSView(context: Context) -> WindowDragNSView {
+        let view = WindowDragNSView()
+        view.onDragStart = onDragStart
+        view.onDragEnded = onDragEnded
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowDragNSView, context: Context) {
+        nsView.onDragStart = onDragStart
+        nsView.onDragEnded = onDragEnded
     }
 }
 
 extension View {
-    func cardDrag(onMoved: @escaping (CGSize) -> Void, onEnded: @escaping () -> Void) -> some View {
-        modifier(CardDrag(onMoved: onMoved, onEnded: onEnded))
+    /// 顶栏与特定区域原生拖拽（按住调用 performDrag，由 WindowServer 硬件级直接移动）
+    func cardDrag(controller: IslandPanelController) -> some View {
+        self.overlay(
+            WindowDragHandleView(
+                onDragStart: { controller.beginDrag() },
+                onDragEnded: { controller.dragEnded() }
+            )
+        )
+    }
+
+    /// 兼容闭包调用（映射为原生拖拽）
+    func cardDrag(onMoved: ((CGSize) -> Void)? = nil, onEnded: @escaping () -> Void) -> some View {
+        self.overlay(
+            WindowDragHandleView(
+                onDragStart: { onMoved?(.zero) },
+                onDragEnded: { onEnded() }
+            )
+        )
     }
 }
 

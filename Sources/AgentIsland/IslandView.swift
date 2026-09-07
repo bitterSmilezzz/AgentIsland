@@ -79,7 +79,7 @@ struct IslandView: View {
     @ObservedObject var controller: IslandPanelController
 
     var body: some View {
-        Group {
+        ZStack(alignment: controller.dockEdge == .top ? .bottom : .leading) {
             if controller.displayState == .expanded {
                 expandedContent
                     .transition(.opacity)
@@ -88,8 +88,9 @@ struct IslandView: View {
                     .transition(.opacity)
             }
         }
-        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: controller.displayState)
-        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: controller.route)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.dockEdge == .top ? .bottom : .leading)
+        .animation(.easeInOut(duration: 0.22), value: controller.displayState)
+        .animation(.spring(response: 0.32, dampingFraction: 0.84), value: controller.route)
     }
 
     private var expandedContent: some View {
@@ -157,11 +158,19 @@ struct IslandView: View {
             HStack(spacing: 8) {
                 statusDot
                     .frame(width: 9, height: 9)
-                Text(engine.anyWorking
-                     ? "\(engine.workingAgents().count) 个 Agent 正在工作"
-                     : "当前没有 Agent 在工作")
-                    .font(Theme.bodyFont(13, weight: .semibold))
-                    .foregroundColor(Theme.onDark)
+                if let active = engine.visibleSnapshots.first(where: { $0.level == .working }),
+                   let action = active.currentAction {
+                    Text("\(active.profile.name): \(action)")
+                        .font(Theme.bodyFont(13, weight: .semibold))
+                        .foregroundColor(Theme.onDark)
+                        .lineLimit(1)
+                } else {
+                    Text(engine.anyWorking
+                         ? "\(engine.workingAgents().count) 个 Agent 正在工作"
+                         : "当前没有 Agent 在工作")
+                        .font(Theme.bodyFont(13, weight: .semibold))
+                        .foregroundColor(Theme.onDark)
+                }
                 Spacer()
                 Text("\(engine.visibleSnapshots.count)/\(engine.snapshots.count) 可见")
                     .font(Theme.bodyFont(11))
@@ -171,12 +180,74 @@ struct IslandView: View {
             .padding(.top, IslandMetrics.headerPaddingTop)
             .padding(.bottom, IslandMetrics.headerPaddingBottom)
             .contentShape(Rectangle())
-            .cardDrag(
-                onMoved: { controller.dragMoved(translation: $0) },
-                onEnded: { controller.dragEnded() }
-            )
+            .cardDrag(controller: controller)
 
             DarkDivider()
+
+            // 任务事件横幅（完成/等待确认/资源与Token熔断告警）
+            if let event = engine.latestEvent {
+                HStack(spacing: 8) {
+                    Image(systemName: eventIcon(for: event.eventType))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(eventColor(for: event.eventType))
+                    Text(event.summaryText)
+                        .font(Theme.bodyFont(11, weight: .medium))
+                        .foregroundColor(Theme.onDark)
+                        .lineLimit(1)
+                    Spacer()
+                    if event.eventType == .costSpike, let pid = event.pid {
+                        Button {
+                            engine.terminateAgent(pid: pid, agentId: event.agentId)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "xmark.octagon.fill")
+                                    .font(.system(size: 9))
+                                Text("熔断")
+                                    .font(Theme.bodyFont(10, weight: .bold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.red.opacity(0.85)))
+                        }
+                        .buttonStyle(.plain)
+                        .help("立即终止该 Agent 进程树，阻止持续消耗")
+                    }
+
+                    Button {
+                        if let snap = engine.snapshots.first(where: { $0.id == event.agentId }) {
+                            AppActivator.activate(pid: snap.pid, bundleIDs: snap.profile.bundleIDs)
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.system(size: 9))
+                            Text("直达")
+                                .font(Theme.bodyFont(10, weight: .semibold))
+                        }
+                        .foregroundColor(Theme.onDark)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Theme.chipFill))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        engine.clearLatestEvent()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9))
+                            .foregroundColor(Theme.onDarkFaint)
+                            .padding(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, Theme.pageMargin)
+                .padding(.vertical, 6)
+                .background(event.eventType == .costSpike ? Color.red.opacity(0.18) : Color.white.opacity(0.06))
+
+                DarkDivider()
+            }
 
             // Agent 列表
             if engine.visibleSnapshots.isEmpty {
@@ -194,7 +265,7 @@ struct IslandView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 2) {
                         ForEach(engine.visibleSnapshots) { snapshot in
-                            AgentRowView(snapshot: snapshot, controller: controller)
+                            AgentRowView(snapshot: snapshot, engine: engine, controller: controller)
                         }
                     }
                     .padding(.vertical, IslandMetrics.listVerticalPadding)
@@ -208,7 +279,7 @@ struct IslandView: View {
                 TokenSummaryBar(total: engine.grandTotal)
             }
         }
-        .cardShell(dockEdge: controller.dockEdge)
+        .cardShell(dockEdge: controller.dockEdge, controller: controller)
     }
 
     // MARK: 状态点
@@ -231,13 +302,31 @@ struct IslandView: View {
     private var statusColor: Color {
         engine.anyWorking ? Theme.statusWorking : Theme.statusIdle
     }
+
+    private func eventIcon(for type: AgentTaskEvent.EventType) -> String {
+        switch type {
+        case .completed: return "checkmark.circle.fill"
+        case .attention: return "exclamationmark.triangle.fill"
+        case .costSpike: return "exclamationmark.octagon.fill"
+        }
+    }
+
+    private func eventColor(for type: AgentTaskEvent.EventType) -> Color {
+        switch type {
+        case .completed: return Theme.statusWorking
+        case .attention: return .orange
+        case .costSpike: return Color.red
+        }
+    }
 }
 
 // MARK: - Agent 行
 
 struct AgentRowView: View {
     let snapshot: AgentSnapshot
+    @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
+    @State private var confirmingKill = false
 
     /// Token 徽标文本："1.23M" 或 "1.23M $0.42"
     static func tokenBadge(_ usage: TokenUsage) -> String {
@@ -261,8 +350,17 @@ struct AgentRowView: View {
                     .lineLimit(1)
                     .help(snapshot.profile.name)
                 HStack(spacing: 6) {
-                    // Token 徽标：24h 净消耗 + 花费（有数据才显示）
-                    if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
+                    if snapshot.level == .working, let action = snapshot.currentAction {
+                        HStack(spacing: 3) {
+                            Image(systemName: "terminal.fill")
+                                .font(.system(size: 8))
+                                .foregroundColor(Theme.statusWorking)
+                            Text(action)
+                                .font(Theme.monoFont(9))
+                                .foregroundColor(Theme.statusWorking)
+                                .lineLimit(1)
+                        }
+                    } else if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
                         Text(Self.tokenBadge(usage))
                             .font(Theme.monoFont(9))
                             .foregroundColor(Theme.onDark.opacity(0.75))
@@ -285,6 +383,55 @@ struct AgentRowView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(Capsule().fill(snapshot.level.color.opacity(0.16)))
+
+            if snapshot.processRunning {
+                HStack(spacing: 4) {
+                    if confirmingKill {
+                        Button {
+                            engine.terminateAgent(pid: snapshot.pid, agentId: snapshot.profile.id)
+                            confirmingKill = false
+                        } label: {
+                            Text("终止?")
+                                .font(Theme.bodyFont(10, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color.red.opacity(0.9)))
+                        }
+                        .buttonStyle(.plain)
+                        .help("再次点击立即强制终止该 Agent 进程")
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                confirmingKill = false
+                            }
+                        }
+                    } else if snapshot.level == .working {
+                        Button {
+                            confirmingKill = true
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Color.red.opacity(0.85))
+                                .padding(5)
+                                .background(Circle().fill(Color.red.opacity(0.15)))
+                        }
+                        .buttonStyle(.plain)
+                        .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
+                    }
+
+                    Button {
+                        AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs)
+                    } label: {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Theme.onDark.opacity(0.7))
+                            .padding(5)
+                            .background(Circle().fill(Theme.chipFill))
+                    }
+                    .buttonStyle(.plain)
+                    .help("置顶并激活该智能体窗口/终端")
+                }
+            }
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, 7)

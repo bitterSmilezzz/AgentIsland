@@ -76,10 +76,71 @@ enum EngineTests {
             try expectEqual(snaps.first { $0.id == "dim" }?.level, .working, "升级后应 working")
         }
 
+        TestKit.test("引擎: working 持续超时后转 idle → 触发任务完成事件") {
+            let start = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let provider = FakeFileActivityProvider(writes: [dir: start])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 5, minWorkingHold: 2),
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
+                fileMonitor: provider,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            // 第一拍：working
+            _ = engine.sample(now: start)
+            try expectTrue(engine.anyWorking, "第一拍应 working")
+            try expectNil(engine.latestEvent, "进行中不应有完成事件")
+
+            // 第二拍：8秒后，无新写入且超过滞回时间 → 转 idle
+            let finishTime = start.addingTimeInterval(8)
+            _ = engine.sample(now: finishTime)
+            try expectEqual(engine.latestEvent?.agentId, "dim")
+            try expectEqual(engine.latestEvent?.eventType, .completed)
+            try expectTrue((engine.latestEvent?.duration ?? 0) >= 7.5, "任务持续时长应记录")
+        }
+
+        TestKit.test("引擎: terminateAgent 终止逃生舱更新事件与状态") {
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+            engine.terminateAgent(pid: 999999, agentId: "dim")
+            try expectEqual(engine.latestEvent?.eventType, .attention)
+            try expectTrue(engine.latestEvent?.message?.contains("进程已终止") == true, "应提示已终止")
+        }
+
+        TestKit.test("熔断保护: Token 激增告警触发") {
+            let fake = FakeTokenUsageMonitor()
+            fake.usage["dim"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)
+            let config = EngineConfig(tokenAlertEnabled: true, tokenAlertThreshold: 50_000)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: config,
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                tokenMonitor: fake,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            _ = engine.sample(now: now)
+            try expectNil(engine.latestEvent, "首拍记录基准，不应告警")
+
+            // 10秒后，Token 暴增 80,000
+            fake.usage["dim"] = TokenUsage(tokens24h: 90_000, tokensTotal: 90_000, cost24h: 0, costTotal: 0)
+            _ = engine.sample(now: now.addingTimeInterval(10))
+            try expectEqual(engine.latestEvent?.eventType, .costSpike, "激增超过 50k 应触发 costSpike")
+            try expectTrue(engine.latestEvent?.message?.contains("Token 激增") == true, "应显示激增提示")
+        }
+
         TestKit.test("引擎: 目录缺失时保持离线且不崩溃") {
             let engine = makeEngine(processNames: [], writes: [:])
             let snaps = engine.sample(now: Date())
             try expectEqual(snaps.count, AgentRegistry.builtin.count, "快照应覆盖全部内置 Agent")
+        }
+
+        TestKit.test("动作透传: 命令清洗与规整") {
+            try expectEqual(AgentActionInspector.cleanCommand("/bin/zsh -c 'swift test'"), "swift test")
+            try expectEqual(AgentActionInspector.cleanCommand("/usr/bin/git diff"), "git diff")
+            try expectEqual(AgentActionInspector.cleanCommand("npm run build"), "npm run build")
         }
 
         TestKit.test("工具: formatAgo 文案") {

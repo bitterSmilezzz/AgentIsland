@@ -119,7 +119,7 @@ struct AgentDetailView: View {
                 }
             }
         }
-        .cardShell(dockEdge: controller.dockEdge)
+        .cardShell(dockEdge: controller.dockEdge, controller: controller)
         .task(id: agentId) {
             loading = true
             models = []
@@ -304,7 +304,7 @@ struct SessionListView: View {
                 }
             }
         }
-        .cardShell(dockEdge: controller.dockEdge)
+        .cardShell(dockEdge: controller.dockEdge, controller: controller)
         .task(id: "\(agentId)/\(modelId)") {
             loading = true
             sessions = []

@@ -14,6 +14,7 @@ public final class ActivityEngine: ObservableObject {
     @Published public private(set) var snapshots: [AgentSnapshot] = []
     @Published public private(set) var anyWorking = false
     @Published public private(set) var updatedAt = Date()
+    @Published public private(set) var latestEvent: AgentTaskEvent? = nil
 
     public var config: EngineConfig {
         didSet { applyConfig() }
@@ -80,6 +81,8 @@ public final class ActivityEngine: ObservableObject {
     private var tokenPollingStarted = false
     /// 最近一次启停集合（首刷完成后重放；见 init）
     private var lastEnabledIDs: Set<String>
+    /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于差分与激增检测
+    private var tokenRateBaseline: [String: (timestamp: Date, tokens: Int)] = [:]
 
     public func start() {
         guard !running else { return }
@@ -241,6 +244,7 @@ public final class ActivityEngine: ObservableObject {
             // bundleHit 无名字匹配时返回 [pid:-1] 占位条目，CPU 合计为 0）
             let entries = matcher.matchingEntries(for: profile)
             let running = !entries.isEmpty
+            let matchedPID = entries.first(where: { $0.pid > 0 })?.pid
             let cpu = entries.reduce(0) { $0 + $1.cpuPercent }
 
             // 最近写入时间直读 FileMonitor 缓存（写回为单调 merge：扫描失败保留旧值、
@@ -254,6 +258,9 @@ public final class ActivityEngine: ObservableObject {
             let level: ActivityLevel
             if !running {
                 level = .offline
+                if let since = workingSince[profile.id] {
+                    recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
+                }
                 workingSince[profile.id] = nil
             } else if (newestAgo.map { $0 <= config.workingWindow } ?? false) || cpu > config.cpuThreshold {
                 level = .working
@@ -264,10 +271,20 @@ public final class ActivityEngine: ObservableObject {
                 level = .working
             } else {
                 level = .idle
+                if let since = workingSince[profile.id] {
+                    recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
+                }
                 workingSince[profile.id] = nil
             }
 
-            if level == .working { anyWork = true }
+            let action: String?
+            if level == .working {
+                anyWork = true
+                action = AgentActionInspector.inspectAction(pid: matchedPID, profile: profile, sessionDirs: profile.sessionDirs)
+            } else {
+                action = nil
+            }
+
             results.append(AgentSnapshot(
                 profile: profile,
                 level: level,
@@ -277,7 +294,9 @@ public final class ActivityEngine: ObservableObject {
                 activeSessions: sessionCount(for: profile, running: running),
                 lastActivityAgo: newestAgo,
                 lastActivityText: Self.formatAgo(newestAgo),
-                tokenUsage: tokenMonitor.usage[profile.id]
+                tokenUsage: tokenMonitor.usage[profile.id],
+                pid: matchedPID,
+                currentAction: action
             ))
         }
 
@@ -287,8 +306,107 @@ public final class ActivityEngine: ObservableObject {
             anyWorking = anyWork
             updatedAt = now
         }
+
+        // 成本与异常熔断保护：检测 Token 激增与死循环运行
+        checkCostSpikeAndRunaway(matcher: matcher, now: now)
+
         scheduleNext()
         return results
+    }
+
+    private func checkCostSpikeAndRunaway(matcher: ProcessMatcher, now: Date) {
+        if config.tokenAlertEnabled {
+            for profile in profiles {
+                guard let usage = tokenMonitor.usage[profile.id], usage.tokensTotal > 0 else { continue }
+                if let base = tokenRateBaseline[profile.id] {
+                    let timeSpan = now.timeIntervalSince(base.timestamp)
+                    let deltaTokens = usage.tokensTotal - base.tokens
+                    // 在短时间（<= 300 秒）内增量达到或超过配置阈值
+                    if deltaTokens >= config.tokenAlertThreshold && timeSpan <= 300 {
+                        let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
+                        postEvent(AgentTaskEvent(
+                            agentId: profile.id,
+                            agentName: profile.name,
+                            eventType: .costSpike,
+                            duration: timeSpan,
+                            timestamp: now,
+                            pid: matchedPID,
+                            message: "⚠️ \(profile.name) Token 激增 (+\(TokenUsage.compact(deltaTokens)))"
+                        ))
+                        tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
+                    } else if timeSpan >= 60 {
+                        tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
+                    }
+                } else {
+                    tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
+                }
+            }
+        }
+
+        if config.runawayCpuAlert {
+            for profile in profiles {
+                guard let since = workingSince[profile.id] else { continue }
+                let workDuration = now.timeIntervalSince(since)
+                if workDuration >= 180 {
+                    let cycle = Int(workDuration) % 180
+                    if cycle < Int(config.sampleInterval * 2) && (latestEvent == nil || latestEvent?.agentId != profile.id) {
+                        let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
+                        postEvent(AgentTaskEvent(
+                            agentId: profile.id,
+                            agentName: profile.name,
+                            eventType: .costSpike,
+                            duration: workDuration,
+                            timestamp: now,
+                            pid: matchedPID,
+                            message: "⚠️ \(profile.name) 持续运行超 \(Int(workDuration / 60)) 分钟"
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    /// 终止智能体进程逃生舱：关闭目标 Agent 及其子进程，并更新状态
+    public func terminateAgent(pid: Int32?, agentId: String) {
+        let name = profiles.first(where: { $0.id == agentId })?.name ?? agentId
+        if let pid = pid {
+            ProcessTerminator.terminate(pid: pid)
+        }
+        workingSince[agentId] = nil
+        latestEvent = AgentTaskEvent(
+            agentId: agentId,
+            agentName: name,
+            eventType: .attention,
+            duration: 0,
+            timestamp: Date(),
+            pid: pid,
+            message: "\(name) 进程已终止"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.sample()
+        }
+    }
+
+    private func recordTaskCompleted(profile: AgentProfile, since: Date, now: Date, pid: Int32?) {
+        let duration = now.timeIntervalSince(since)
+        // 持续至少 3.5 秒的实质工作才视作完成一次任务（过滤瞬时微抖动）
+        guard duration >= 3.5 else { return }
+        latestEvent = AgentTaskEvent(
+            agentId: profile.id,
+            agentName: profile.name,
+            eventType: .completed,
+            duration: duration,
+            timestamp: now,
+            pid: pid
+        )
+    }
+
+    public func clearLatestEvent() {
+        latestEvent = nil
+    }
+
+    public func postEvent(_ event: AgentTaskEvent) {
+        latestEvent = event
     }
 
     /// 活跃会话数（离线 agent 直接 0；在线读 FileMonitor 后台扫描缓存，主线程零扫描）

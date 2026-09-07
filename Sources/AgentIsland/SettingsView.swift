@@ -87,6 +87,10 @@ struct SettingsView: View {
     @AppStorage(SettingKey.collapseDelay) private var collapseDelay: Double = 0.5   // 面板行为参数（非引擎采样配置）
     @AppStorage(SettingKey.launchAtLogin) private var launchAtLogin = false
     @AppStorage(SettingKey.islandAppearance) private var islandAppearanceRaw = IslandAppearance.system.rawValue
+    @AppStorage(SettingKey.playCompletionSound) private var playCompletionSound = true
+    @AppStorage(SettingKey.tokenAlertEnabled) private var tokenAlertEnabled = true
+    @AppStorage(SettingKey.tokenAlertThreshold) private var tokenAlertThreshold = 100_000
+    @AppStorage(SettingKey.runawayCpuAlert) private var runawayCpuAlert = true
 
     private var islandAppearance: Binding<IslandAppearance> {
         Binding(
@@ -207,6 +211,21 @@ struct SettingsView: View {
                             .font(Theme.bodyFont(10))
                             .foregroundColor(Theme.dangerRed)
                     }
+
+                    Divider()
+
+                    Toggle(isOn: $playCompletionSound) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("任务完成提示音")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("智能体执行完毕从工作切入空闲时，播放轻微提示音")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
 
                     Divider()
 
@@ -376,6 +395,51 @@ struct SettingsView: View {
                         .foregroundColor(Theme.inkMuted48)
                 }
             }
+
+            SettingsCard(title: "成本与异常熔断保护") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(isOn: $tokenAlertEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Token 暴涨告警与熔断")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("短时间内 Token 消耗异常暴增时，灵动岛自动弹出警报并提供一键熔断")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+                    .onChange(of: tokenAlertEnabled) { _ in applyConfig() }
+
+                    if tokenAlertEnabled {
+                        Picker("激增报警阈值", selection: $tokenAlertThreshold) {
+                            Text("30k tokens / 分钟").tag(30_000)
+                            Text("50k tokens / 分钟").tag(50_000)
+                            Text("100k tokens / 分钟 (默认)").tag(100_000)
+                            Text("200k tokens / 分钟").tag(200_000)
+                        }
+                        .font(Theme.bodyFont(12))
+                        .onChange(of: tokenAlertThreshold) { _ in applyConfig() }
+                    }
+
+                    Divider()
+
+                    Toggle(isOn: $runawayCpuAlert) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("异常长耗时死循环告警")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("智能体持续高负荷运行超过 3 分钟时自动提醒，防止背景任务死循环")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+                    .onChange(of: runawayCpuAlert) { _ in applyConfig() }
+                }
+            }
         }
     }
 
@@ -395,7 +459,7 @@ struct SettingsView: View {
                         Text("AgentIsland")
                             .font(Theme.displayFont(16, weight: .bold))
                             .foregroundColor(Theme.ink)
-                        Text("v1.4.0 · macOS 灵动岛 Agent 会话监控器")
+                        Text("v1.5.0 · macOS 灵动岛 Agent 会话监控器")
                             .font(Theme.bodyFont(11))
                             .foregroundColor(Theme.inkMuted80)
                     }
@@ -471,7 +535,10 @@ struct SettingsView: View {
             idleSampleInterval: idleSampleInterval,
             workingWindow: workingWindow,
             cpuThreshold: cpuThreshold,
-            activeSessionWindow: activeSessionWindow
+            activeSessionWindow: activeSessionWindow,
+            tokenAlertEnabled: tokenAlertEnabled,
+            tokenAlertThreshold: tokenAlertThreshold,
+            runawayCpuAlert: runawayCpuAlert
         ).normalized()
         sampleInterval = normalized.sampleInterval
         idleSampleInterval = normalized.idleSampleInterval

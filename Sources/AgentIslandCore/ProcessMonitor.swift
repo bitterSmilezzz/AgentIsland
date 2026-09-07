@@ -298,3 +298,118 @@ public struct FakeProcessProvider: ProcessProviding {
 
     public func runningBundleIDs() -> Set<String> { bundleIDs }
 }
+
+// MARK: - 智能体窗口/终端一键激活器
+
+public enum AppActivator {
+    /// 直达并置顶目标智能体对应的 App / 终端窗口
+    @discardableResult
+    public static func activate(pid: Int32?, bundleIDs: [String]) -> Bool {
+        // 1. 优先尝试直接匹配 GUI Bundle
+        for bid in bundleIDs {
+            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bid).first {
+                return activateApp(app)
+            }
+        }
+
+        // 2. 若有 PID，尝试匹配本进程是否为普通 GUI App
+        guard let pid = pid, pid > 1 else { return false }
+        if let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular {
+            return activateApp(app)
+        }
+
+        // 3. 若为 CLI 进程（如 claude, codex, dim），向上追溯父进程找到承载的 GUI 终端（Terminal, iTerm2, VSCode, Cursor 等）
+        var current = pid
+        for _ in 0..<10 {
+            let pipe = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/ps")
+            process.arguments = ["-o", "ppid=", "-p", "\(current)"]
+            process.standardOutput = pipe
+            guard (try? process.run()) != nil else { break }
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let ppid = Int32(str), ppid > 1, ppid != current else {
+                break
+            }
+            if let app = NSRunningApplication(processIdentifier: ppid), app.activationPolicy == .regular {
+                return activateApp(app)
+            }
+            current = ppid
+        }
+        return false
+    }
+
+    private static func activateApp(_ app: NSRunningApplication) -> Bool {
+        if #available(macOS 14.0, *) {
+            app.activate()
+            return true
+        } else {
+            return app.activate(options: [.activateIgnoringOtherApps])
+        }
+    }
+}
+
+// MARK: - 智能体进程安全熔断与终止
+
+public enum ProcessTerminator {
+    /// 终止指定 PID 进程（包括其派生的子进程树），先尝试 GUI terminate / SIGTERM，超时未退出则强制 SIGKILL
+    @discardableResult
+    public static func terminate(pid: Int32, force: Bool = false) -> Bool {
+        guard pid > 1 else { return false }
+
+        // 1. 如果是 GUI App，先尝试标准 terminate
+        if let app = NSRunningApplication(processIdentifier: pid) {
+            app.terminate()
+        }
+
+        // 2. 收集整棵进程树（包括所有子进程）
+        let pidsToKill = getProcessTree(rootPid: pid)
+        let sig = force ? SIGKILL : SIGTERM
+
+        for p in pidsToKill.reversed() {
+            kill(p, sig)
+        }
+
+        if !force {
+            // 给子进程/主进程 300ms 优雅退出机会，仍存活则发 SIGKILL
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.3) {
+                for p in pidsToKill.reversed() {
+                    if kill(p, 0) == 0 {
+                        kill(p, SIGKILL)
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    /// 获取进程及其所有子进程 PID 列表
+    public static func getProcessTree(rootPid: Int32) -> [Int32] {
+        var tree: [Int32] = [rootPid]
+        var queue: [Int32] = [rootPid]
+
+        while !queue.isEmpty {
+            let current = queue.removeFirst()
+            let pipe = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+            process.arguments = ["-P", "\(current)"]
+            process.standardOutput = pipe
+            guard (try? process.run()) != nil else { continue }
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                let childPids = output.split(separator: "\n")
+                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+                for cp in childPids where !tree.contains(cp) {
+                    tree.append(cp)
+                    queue.append(cp)
+                }
+            }
+        }
+        return tree
+    }
+}
+

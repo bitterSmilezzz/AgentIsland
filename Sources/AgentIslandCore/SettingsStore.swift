@@ -17,6 +17,10 @@ public enum SettingKey {
     public static let dockEdge = "dockEdge"
     public static let dockAnchorX = "dockAnchorX"
     public static let dockAnchorY = "dockAnchorY"
+    public static let playCompletionSound = "playCompletionSound"
+    public static let tokenAlertEnabled = "tokenAlertEnabled"
+    public static let tokenAlertThreshold = "tokenAlertThreshold"
+    public static let runawayCpuAlert = "runawayCpuAlert"
 }
 
 /// 启停集合持久化：key/编解码/空数组语义单点持有。
