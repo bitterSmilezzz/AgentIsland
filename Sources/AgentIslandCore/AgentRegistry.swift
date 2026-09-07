@@ -74,6 +74,19 @@ public enum AgentRegistry {
             category: .assistant
         ),
         AgentProfile(
+            id: "zcode",
+            name: "ZCode",
+            icon: "curlybraces.square.fill",
+            bundleIDs: ["dev.zcode.app"],
+            processNames: ["ZCode", "zcode-host-local-1", "zcode-cli", "Electron"],
+            pathContains: ["zcode"],
+            sessionDirs: [
+                home(".zcode/v2"),
+                home("Library/Application Support/ZCode/session")
+            ],
+            category: .codeEditor
+        ),
+        AgentProfile(
             id: "opencode",
             name: "OpenCode",
             icon: "terminal.fill",

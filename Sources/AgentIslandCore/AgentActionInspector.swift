@@ -27,6 +27,10 @@ public enum AgentActionInspector {
             if let claudeAction = inspectClaudeAction(sessionDirs: sessionDirs) {
                 return claudeAction
             }
+        } else if profile.id == "zcode" {
+            if let zcodeAction = inspectZCodeAction() {
+                return zcodeAction
+            }
         }
 
         return nil
@@ -204,5 +208,39 @@ public enum AgentActionInspector {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         return lines.last
+    }
+
+    // MARK: - 5. ZCode 任务数据库探测
+
+    public static func inspectZCodeAction() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dbPath = "\(home)/.zcode/v2/tasks-index.sqlite"
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_close(db) }
+
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let tenMinAgoMs = nowMs - (10 * 60 * 1000)
+        let sql = "SELECT title, task_status FROM tasks WHERE updated_at >= \(tenMinAgoMs) ORDER BY updated_at DESC LIMIT 1;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+            if !title.isEmpty {
+                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                let display = cleanTitle.count > 30 ? String(cleanTitle.prefix(27)) + "..." : cleanTitle
+                if status == "completed" {
+                    return "任务已完成: \(display)"
+                } else {
+                    return "正在处理: \(display)"
+                }
+            }
+        }
+        return nil
     }
 }

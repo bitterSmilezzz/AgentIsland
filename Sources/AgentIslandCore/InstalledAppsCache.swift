@@ -104,7 +104,7 @@ public final class InstalledAppsCache: @unchecked Sendable {
     /// 已知 CLI 名（PATH 扫描用）
     private static let knownCLIs = ["dim", "codex", "claude", "cursor", "trae", "opencode",
                             "hermes-agent", "aider", "gemini", "windsurf", "agent-browser",
-                            "tiny-agents", "continue"]
+                            "tiny-agents", "continue", "zcode", "zcode-cli"]
 
     /// 已知 GUI bundle id（/Applications 扫描用）
     private static let knownBundleIDs: [String: String] = [
@@ -116,6 +116,7 @@ public final class InstalledAppsCache: @unchecked Sendable {
         "cn.trae.solo.app": "trae",
         "com.tencent.imamac": "copilot",
         "com.tencent.workbuddy.mac": "workbuddy",
+        "dev.zcode.app": "zcode",
         "com.continue.continue": "continue",
     ]
 
