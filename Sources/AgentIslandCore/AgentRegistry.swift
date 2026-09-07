@@ -87,6 +87,20 @@ public enum AgentRegistry {
             category: .codeEditor
         ),
         AgentProfile(
+            id: "antigravity",
+            name: "Antigravity",
+            icon: "atom",
+            bundleIDs: ["com.google.antigravity"],
+            processNames: ["Antigravity", "language_server", "agentapi", "Electron"],
+            pathContains: ["antigravity"],
+            sessionDirs: [
+                home(".gemini/antigravity/conversations"),
+                home(".gemini/antigravity/brain"),
+                home("Library/Application Support/Antigravity")
+            ],
+            category: .codeEditor
+        ),
+        AgentProfile(
             id: "opencode",
             name: "OpenCode",
             icon: "terminal.fill",

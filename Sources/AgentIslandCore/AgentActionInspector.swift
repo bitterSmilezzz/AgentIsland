@@ -31,6 +31,10 @@ public enum AgentActionInspector {
             if let zcodeAction = inspectZCodeAction() {
                 return zcodeAction
             }
+        } else if profile.id == "antigravity" {
+            if let agyAction = inspectAntigravityAction() {
+                return agyAction
+            }
         }
 
         return nil
@@ -195,19 +199,23 @@ public enum AgentActionInspector {
         return newestURL
     }
 
-    private static func readLastNonEmptyLine(from file: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+    private static func readLastLines(from file: URL, maxLines: Int = 10) -> [String] {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return [] }
         defer { try? handle.close() }
         let fileSize = handle.seekToEndOfFile()
-        let readLen = min(fileSize, 4096)
-        guard readLen > 0 else { return nil }
+        let readLen = min(fileSize, 16384)
+        guard readLen > 0 else { return [] }
         handle.seek(toFileOffset: fileSize - readLen)
         let data = handle.readDataToEndOfFile()
-        guard let content = String(data: data, encoding: .utf8) else { return nil }
+        guard let content = String(data: data, encoding: .utf8) else { return [] }
         let lines = content.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        return lines.last
+        return Array(lines.suffix(maxLines))
+    }
+
+    private static func readLastNonEmptyLine(from file: URL) -> String? {
+        readLastLines(from: file, maxLines: 1).last
     }
 
     // MARK: - 5. ZCode 任务数据库探测
@@ -241,6 +249,68 @@ public enum AgentActionInspector {
                 }
             }
         }
+        return nil
+    }
+
+    // MARK: - 6. Antigravity 轨迹日志探测
+
+    public static func inspectAntigravityAction() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
+        guard let subdirs = try? FileManager.default.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
+            return nil
+        }
+        var newestFile: URL?
+        var newestTime: Date = .distantPast
+        for sub in subdirs {
+            let logFile = sub.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: logFile.path),
+               let mtime = attrs[.modificationDate] as? Date, mtime > newestTime {
+                newestTime = mtime
+                newestFile = logFile
+            }
+        }
+        guard let target = newestFile, Date().timeIntervalSince(newestTime) < 300 else {
+            return nil
+        }
+
+        let lines = readLastLines(from: target, maxLines: 10)
+        guard !lines.isEmpty else { return nil }
+
+        for line in lines.reversed() {
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+
+            if let toolCalls = obj["tool_calls"] as? [[String: Any]], let firstTool = toolCalls.first {
+                var actionText: String?
+                if let args = firstTool["args"] as? [String: Any] {
+                    if let rawAction = args["toolAction"] as? String {
+                        actionText = rawAction
+                    } else if let rawSummary = args["toolSummary"] as? String {
+                        actionText = rawSummary
+                    }
+                }
+                if actionText == nil, let name = firstTool["name"] as? String {
+                    actionText = name
+                }
+
+                if var text = actionText {
+                    text = text.trimmingCharacters(in: CharacterSet(charactersIn: "\" \t\n\r"))
+                    if !text.isEmpty {
+                        return "正在: \(text)"
+                    }
+                }
+            }
+
+            if let type = obj["type"] as? String {
+                if type == "PLANNER_RESPONSE", let thinking = obj["thinking"] as? String, !thinking.isEmpty {
+                    return "思考规划中"
+                }
+            }
+        }
+
         return nil
     }
 }

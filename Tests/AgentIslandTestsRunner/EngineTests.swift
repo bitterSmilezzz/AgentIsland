@@ -150,10 +150,12 @@ enum EngineTests {
             try expectEqual(ActivityEngine.formatAgo(nil), "—")
         }
 
-        TestKit.test("注册表: id 唯一、含 dim") {
+        TestKit.test("注册表: id 唯一、含 dim、zcode 与 antigravity") {
             let ids = AgentRegistry.builtin.map(\.id)
             try expectEqual(Set(ids).count, ids.count, "id 唯一")
             try expectTrue(AgentRegistry.builtin.contains { $0.id == "dim" }, "含 dim")
+            try expectTrue(AgentRegistry.builtin.contains { $0.id == "zcode" }, "含 zcode")
+            try expectTrue(AgentRegistry.builtin.contains { $0.id == "antigravity" }, "含 antigravity")
         }
 
         TestKit.test("进程: GUI bundle + CLI 进程名匹配") {
