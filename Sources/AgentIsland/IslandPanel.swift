@@ -172,16 +172,14 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard let clip = clipContainer?.layer else { return }
         if displayState == .docked {
             let radius = (dockEdge == .top ? IslandMetrics.topSliverHeight : IslandMetrics.rightSliverWidth) / 2
+            clip.masksToBounds = true
             clip.cornerRadius = radius
             clip.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
             shadowHost?.setShadow(enabled: false, cornerRadius: 0, dockEdge: dockEdge)
         } else {
-            clip.cornerRadius = Theme.radiusLg
-            if dockEdge == .right {
-                clip.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
-            } else {
-                clip.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-            }
+            // 展开态下由 SwiftUI 的 SideNotchShape 精准裁切反向倒角，避免 AppKit 简单矩形圆角切除倒角
+            clip.masksToBounds = false
+            clip.cornerRadius = 0
             shadowHost?.setShadow(enabled: true, cornerRadius: Theme.radiusLg, dockEdge: dockEdge)
         }
     }
@@ -780,43 +778,9 @@ final class ShadowHostView: NSView {
     private func updateShadowPath() {
         guard let layer else { return }
         if layer.shadowOpacity > 0 {
-            if dockEdge == .top {
-                layer.shadowPath = Self.bottomRoundedPath(bounds: bounds, radius: cornerRadius)
-            } else {
-                layer.shadowPath = Self.leftRoundedPath(bounds: bounds, radius: cornerRadius)
-            }
+            layer.shadowPath = SideNotchShape.cgPath(bounds: bounds, dockEdge: dockEdge, cornerRadius: cornerRadius, curlRadius: 10)
         } else {
             layer.shadowPath = nil
         }
-    }
-
-    private static func leftRoundedPath(bounds: NSRect, radius: CGFloat) -> CGPath {
-        let r = min(radius, bounds.height / 2)
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: bounds.minX, y: bounds.minY + r))
-        path.addArc(center: CGPoint(x: bounds.minX + r, y: bounds.minY + r), radius: r,
-                    startAngle: .pi, endAngle: .pi * 1.5, clockwise: false)
-        path.addLine(to: CGPoint(x: bounds.maxX, y: bounds.minY))
-        path.addLine(to: CGPoint(x: bounds.maxX, y: bounds.maxY))
-        path.addLine(to: CGPoint(x: bounds.minX + r, y: bounds.maxY))
-        path.addArc(center: CGPoint(x: bounds.minX + r, y: bounds.maxY - r), radius: r,
-                    startAngle: .pi * 1.5, endAngle: .pi * 2, clockwise: false)
-        path.closeSubpath()
-        return path
-    }
-
-    private static func bottomRoundedPath(bounds: NSRect, radius: CGFloat) -> CGPath {
-        let r = min(radius, min(bounds.width / 2, bounds.height / 2))
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: bounds.minX, y: bounds.maxY))
-        path.addLine(to: CGPoint(x: bounds.maxX, y: bounds.maxY))
-        path.addLine(to: CGPoint(x: bounds.maxX, y: bounds.minY + r))
-        path.addArc(center: CGPoint(x: bounds.maxX - r, y: bounds.minY + r), radius: r,
-                    startAngle: 0, endAngle: .pi * 1.5, clockwise: false)
-        path.addLine(to: CGPoint(x: bounds.minX + r, y: bounds.minY))
-        path.addArc(center: CGPoint(x: bounds.minX + r, y: bounds.minY + r), radius: r,
-                    startAngle: .pi * 1.5, endAngle: .pi, clockwise: false)
-        path.closeSubpath()
-        return path
     }
 }

@@ -8,32 +8,20 @@ struct GlassCardBackground: View {
     var cornerRadius: CGFloat = Theme.radiusLg
     var dockEdge: DockEdge = .right
 
-    /// 贴边造型：右侧贴边左侧两角圆角；顶部贴边下方两角圆角
-    private var edgeShape: UnevenRoundedRectangle {
-        if dockEdge == .top {
-            return UnevenRoundedRectangle(topLeadingRadius: 0,
-                                          bottomLeadingRadius: cornerRadius,
-                                          bottomTrailingRadius: cornerRadius,
-                                          topTrailingRadius: 0,
-                                          style: .continuous)
-        } else {
-            return UnevenRoundedRectangle(topLeadingRadius: cornerRadius,
-                                          bottomLeadingRadius: cornerRadius,
-                                          bottomTrailingRadius: 0,
-                                          topTrailingRadius: 0,
-                                          style: .continuous)
-        }
+    /// 贴边造型：采用 SideNotchShape 赋予反向倒角一体化贴边质感
+    private var notchShape: SideNotchShape {
+        SideNotchShape(dockEdge: dockEdge, curlRadius: 10, cornerRadius: cornerRadius)
     }
 
     var body: some View {
         ZStack {
             VisualEffectView(material: .popover, blendingMode: .behindWindow)
-                .clipShape(edgeShape)
+                .clipShape(notchShape)
             // 蒙层：深色下黑蒙，浅色下白蒙（动态）
-            edgeShape
+            notchShape
                 .fill(Color(dynamicLight: 0xffffff, dark: 0x000000).opacity(Theme.glassOverlayOpacity))
             // 1px 晶莹微反光描边（深色微白高光，浅色微暗勾边）
-            edgeShape
+            notchShape
                 .stroke(Theme.glassSpecularBorder, lineWidth: 1)
         }
     }
@@ -263,6 +251,45 @@ struct IslandView: View {
 
             DarkDivider()
 
+            // 实时活动环微看板（Quick Rings Shelf · CodeNotch 灵感）
+            let activeSnapshots = engine.visibleSnapshots.filter { $0.level == .working || ($0.tokenUsage?.tokens24h ?? 0) > 0 }
+            if !activeSnapshots.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(activeSnapshots) { snap in
+                            Button {
+                                controller.route = .agentDetail(snap.profile.id)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    AgentRingView(snapshot: snap, size: 24)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(snap.profile.name)
+                                            .font(Theme.bodyFont(10, weight: .semibold))
+                                            .foregroundColor(Theme.onDark)
+                                            .lineLimit(1)
+                                        Text(snap.level == .working ? "工作中" : (snap.tokenUsage.map { TokenUsage.compact($0.tokens24h) } ?? snap.level.label))
+                                            .font(Theme.monoFont(8))
+                                            .foregroundColor(snap.level == .working ? Palette.ringGreen : Theme.onDarkFaint)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .padding(.vertical, 3)
+                                .padding(.horizontal, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(snap.level == .working ? Theme.hoverFill : Theme.chipFill)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .help("\(snap.profile.name): \(snap.level.label)")
+                        }
+                    }
+                    .padding(.horizontal, Theme.pageMargin)
+                    .padding(.vertical, 5)
+                }
+                DarkDivider()
+            }
+
             // 任务事件横幅（完成/等待确认/资源与Token熔断告警双行卡片）
             if let event = engine.latestEvent {
                 VStack(alignment: .leading, spacing: 6) {
@@ -422,6 +449,7 @@ struct AgentRowView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
     @State private var confirmingKill = false
+    @State private var showingTooltip = false
 
     /// Token 徽标文本："1.23M" 或 "1.23M $0.42"
     static func tokenBadge(_ usage: TokenUsage) -> String {
@@ -432,11 +460,13 @@ struct AgentRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: snapshot.profile.icon)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(Theme.onDark)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Theme.tile1))
+            AgentRingView(snapshot: snapshot, size: 28)
+                .onHover { h in
+                    showingTooltip = h
+                }
+                .popover(isPresented: $showingTooltip, arrowEdge: controller.dockEdge == .top ? .bottom : .leading) {
+                    AgentHoverTooltipCard(snapshot: snapshot, engine: engine, controller: controller)
+                }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(snapshot.profile.name)

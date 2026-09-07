@@ -2,7 +2,22 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v1.6.0）
+## 功能（v1.7.0）
+
+### 设计美学与 CodeNotch 灵动交互
+- **反向倒角一体化贴边（Inverse Rounded Corner / Bezel Flares）**：
+  - 基于数学级三次 Bézier 曲线实现 `SideNotchShape`，支持右侧（`.right`）与顶部（`.top`）贴边；
+  - 边缘向屏幕物理边框平滑过渡，如同从屏幕外壳硬件级一体化生长出来，彻底告别悬空矩形与割裂感；
+  - 玻璃拟态卡片背景与 AppKit 投射阴影（`ShadowHostView`）共用精准几何路径。
+- **环形微仪表盘与双层动态活动弧（Micro-Dashboards & Activity Arcs）**：
+  - **4 级状态水位环**：荧光绿（工作）、琥珀黄（等待/降频）、预警橙（高负载）、极光红（熔断告警/离线）；
+  - **内圈高精度动态弧**：工作状态下呈现 `0.25` 弧长、1.2s 无级平滑旋转的渐变微弧（`SpinningActivityArc`）；
+  - **呼吸警戒环（PulsingAttentionArc）**：告警/等待状态下呈现平滑呼吸缩放光环，状态一目了然；
+  - **顶部活跃微看板（Quick Rings Shelf）**：展开卡片顶部直观罗列当前活跃的所有 Agent 微仪表盘，点击秒切。
+- **精准悬停透视卡片与指向小尾巴（Hover Tooltip Card & Tail）**：
+  - 光标悬停在任意 Agent 环或列表项时，秒出半透明指向气泡浮层（带几何小尖角 `TooltipTail`）；
+  - **零点击透视**：直达实时执行命令、正在修改的代码文件、系统进程 PID、24h / 累计 Token 消耗与计费；
+  - **内嵌快捷动作**：悬停卡片直接集成「直达窗口」与一键防误触「终止进程逃生舱」。
 
 ### 实时伴侣与指令中心
 - **免打扰与通知分级（Focus Mode）**：
@@ -32,7 +47,6 @@
 - **6pt 晶莹微细条（Sliver）与触碰弹出**：收起时在屏幕边缘保留一条 6pt 厚度的半透明微细条（含 Agent 工作状态呼吸绿灯），光标碰触微细条即以 Apple 级流体弹簧动效自动弹出完整卡片
 - **顶部菜单栏 Compact Island Popover**：菜单栏采用现代 macOS 原生浮窗（`.window`），实时显示呼吸状态灯、活跃 Agent 概览、Token 统计与操作直达
 - **卡内三级导航**：主列表 → 点 Agent 行看详情（双口径总览 + 按模型拆分）→ 点模型看会话列表（时间/消息数/token/花费，点击跳 Finder 目录）
-- **动态单向圆角与玻璃拟态**：NSVisualEffectView(.popover) + 动态蒙层 + 1px 晶莹微高光描边；顶部贴边下方圆角，右侧贴边左侧圆角
 - **现代分栏设置窗口**：macOS 原生 NavigationSplitView 四大分类（通用与外观、Agent 监控、引擎与性能、关于），支持外观模式、熔断阈值调节、提示音开关与停靠重置
 
 ### Token 用量统计
@@ -59,7 +73,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.6.0.zip`，解压后拖入「应用程序」或直接运行。
+从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.7.0.zip`，解压后拖入「应用程序」或直接运行。
 
 > 未公证（ad-hoc 签名），首次打开需右键 → 打开。
 
@@ -107,6 +121,9 @@ AgentIsland/
 │       ├── AgentIslandApp.swift      # @main + MenuBarExtra(Compact Island Popover) + AppContext 组合根
 │       ├── IslandPanel.swift         # NSPanel 控制器（自由拖拽/智能贴边/微细条常驻/触碰弹出/peek）
 │       ├── IslandView.swift          # 玻璃拟态卡片 + 贴边微细条 + 三级导航
+│       ├── SideNotchShape.swift      # 反向倒角一体化贴边贝塞尔形状（边缘平滑向屏幕外壳过渡）
+│       ├── AgentRingView.swift       # 环形微仪表盘（4级状态水位环 + 旋转微弧 + 呼吸警戒环 + 顶部微看板）
+│       ├── AgentHoverTooltip.swift   # 悬停透视卡片与指向小尾巴（实时命令/文件/PID/Token/操作）
 │       ├── IslandMetrics.swift       # 窗口几何唯一事实来源（尺寸常量 + 高度纯函数）
 │       ├── IslandComponents.swift    # 共享 UI 基元（卡壳/hover 行/拖拽手势/分割线/loading）
 │       ├── DetailViews.swift         # 卡内二级/三级详情页（模型拆分 + 会话列表）

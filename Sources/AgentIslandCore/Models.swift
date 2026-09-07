@@ -22,7 +22,7 @@ public enum ActivityLevel: String, Codable, Equatable, Comparable {
 
 // MARK: - 贴边停靠模式
 
-public enum DockEdge: String, Codable, CaseIterable, Identifiable {
+public enum DockEdge: String, Codable, CaseIterable, Identifiable, Sendable {
     case right
     case top
 
