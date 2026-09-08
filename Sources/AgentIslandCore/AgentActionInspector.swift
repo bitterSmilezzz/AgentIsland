@@ -35,6 +35,22 @@ public enum AgentActionInspector {
             if let agyAction = inspectAntigravityAction() {
                 return agyAction
             }
+        } else if profile.id == "workbuddy" {
+            if let wbAction = inspectWorkBuddyAction() {
+                return wbAction
+            }
+        } else if profile.id == "opencode" {
+            if let ocAction = inspectOpenCodeAction() {
+                return ocAction
+            }
+        } else if profile.id == "dsh" {
+            if let dshAction = inspectDSHAction(pid: pid) {
+                return dshAction
+            }
+        } else if profile.id == "hermes" {
+            if let hermesAction = inspectHermesAction() {
+                return hermesAction
+            }
         }
 
         return nil
@@ -230,8 +246,8 @@ public enum AgentActionInspector {
         defer { sqlite3_close(db) }
 
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let tenMinAgoMs = nowMs - (10 * 60 * 1000)
-        let sql = "SELECT title, task_status FROM tasks WHERE updated_at >= \(tenMinAgoMs) ORDER BY updated_at DESC LIMIT 1;"
+        let twoHourAgoMs = nowMs - (2 * 60 * 60 * 1000)
+        let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 AND updated_at >= \(twoHourAgoMs) ORDER BY updated_at DESC LIMIT 1;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
@@ -241,7 +257,7 @@ public enum AgentActionInspector {
             let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
             if !title.isEmpty {
                 let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                let display = cleanTitle.count > 30 ? String(cleanTitle.prefix(27)) + "..." : cleanTitle
+                let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
                 if status == "completed" {
                     return "任务已完成: \(display)"
                 } else {
@@ -311,6 +327,137 @@ public enum AgentActionInspector {
             }
         }
 
+        return nil
+    }
+
+    // MARK: - 7. WorkBuddy 会话数据库探测
+
+    public static func inspectWorkBuddyAction() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dbPath = "\(home)/.workbuddy/workbuddy.db"
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_close(db) }
+
+        // 查询未软删除的最新活跃/最近会话
+        let sql = "SELECT COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+            let updatedAtMs = sqlite3_column_int64(stmt, 3)
+            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+
+            if !title.isEmpty {
+                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
+                if status.lowercased() == "active" {
+                    return "正在: \(display)"
+                } else if nowMs - updatedAtMs < 60 * 60 * 1000 { // 1 小时内活跃
+                    return "任务: \(display)"
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - 8. OpenCode 会话数据库探测
+
+    public static func inspectOpenCodeAction() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dbPath = "\(home)/.local/share/opencode/opencode.db"
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_close(db) }
+
+        let sql = "SELECT s.title, p.data, s.time_updated FROM session s LEFT JOIN part p ON p.session_id = s.id ORDER BY s.time_updated DESC, p.time_updated DESC LIMIT 1;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            let partDataStr = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
+            let timeUpdatedMs = sqlite3_column_int64(stmt, 2)
+            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+
+            if let dataStr = partDataStr, let data = dataStr.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let type = json["type"] as? String {
+                    if type == "reasoning" {
+                        return "思考规划中"
+                    } else if type == "tool-call", let toolName = json["toolName"] as? String {
+                        return "正在调用: \(toolName)"
+                    }
+                }
+            }
+
+            if !title.isEmpty && !title.hasPrefix("New session -") {
+                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
+                if nowMs - timeUpdatedMs < 60 * 60 * 1000 {
+                    return "会话: \(display)"
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - 9. DSH (DeepSeek Harness) 运行模式探测
+
+    public static func inspectDSHAction(pid: Int32?) -> String? {
+        if let pid = pid, pid > 1 {
+            let pipe = Pipe()
+            let ps = Process()
+            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+            ps.arguments = ["-o", "command=", "-p", "\(pid)"]
+            ps.standardOutput = pipe
+            if (try? ps.run()) != nil {
+                ps.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    if raw.contains(" web") {
+                        return "Web 协作服务运行中"
+                    } else if raw.contains(" run ") || raw.contains(" exec ") {
+                        return "执行任务中: " + cleanCommand(raw)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - 10. Hermes 会话数据库探测
+
+    public static func inspectHermesAction() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dbPath = "\(home)/.hermes/state.db"
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            return nil
+        }
+        defer { sqlite3_close(db) }
+
+        let sql = "SELECT COALESCE(NULLIF(title, ''), NULLIF(last_activity_description, ''), ''), started_at FROM sessions ORDER BY started_at DESC LIMIT 1;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let desc = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            if !desc.isEmpty {
+                let clean = desc.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                let display = clean.count > 26 ? String(clean.prefix(23)) + "..." : clean
+                return "任务: \(display)"
+            }
+        }
         return nil
     }
 }

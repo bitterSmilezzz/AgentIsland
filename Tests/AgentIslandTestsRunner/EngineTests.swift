@@ -403,6 +403,15 @@ enum EngineTests {
             try expectTrue(engine.allProfiles.contains { $0.id == "cli-fakecli" }, "首刷重放后自动发现项恢复监控")
             try expectTrue(engine.allProfiles.contains { $0.id == "dim" }, "重放不丢内置启用项")
         }
+
+        TestKit.test("动作透传: WorkBuddy/OpenCode/DSH/Hermes 探测器安全运行") {
+            // 真实/缺省环境均可安全执行，不抛出异常不崩溃
+            _ = AgentActionInspector.inspectWorkBuddyAction()
+            _ = AgentActionInspector.inspectOpenCodeAction()
+            _ = AgentActionInspector.inspectDSHAction(pid: -1)
+            _ = AgentActionInspector.inspectHermesAction()
+            _ = AgentActionInspector.inspectZCodeAction()
+        }
     }
 
     // MARK: - 工具
