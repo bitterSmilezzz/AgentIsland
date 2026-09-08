@@ -337,7 +337,8 @@ public final class ActivityEngine: ObservableObject {
                             duration: timeSpan,
                             timestamp: now,
                             pid: matchedPID,
-                            message: "⚠️ \(profile.name) Token 激增 (+\(TokenUsage.compact(deltaTokens)))"
+                            message: "⚠️ \(profile.name) Token 激增 (+\(TokenUsage.compact(deltaTokens)))",
+                            detail: "在 \(Int(timeSpan)) 秒内 Token 消耗突增 +\(TokenUsage.compact(deltaTokens))（设置报警阈值: \(TokenUsage.compact(config.tokenAlertThreshold))）。常见原因：长上下文灌入、复杂循环或多 Agent 并发。建议点击直达检查会话状态。"
                         ))
                         tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
                     } else if timeSpan >= 60 {
@@ -363,6 +364,7 @@ public final class ActivityEngine: ObservableObject {
                         if lastAlert == nil || now.timeIntervalSince(lastAlert!) >= config.runawayDurationThreshold {
                             lastRunawayAlertedAt[profile.id] = now
                             let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
+                            let minutes = max(1, Int(highDuration / 60))
                             postEvent(AgentTaskEvent(
                                 agentId: profile.id,
                                 agentName: profile.name,
@@ -370,7 +372,8 @@ public final class ActivityEngine: ObservableObject {
                                 duration: highDuration,
                                 timestamp: now,
                                 pid: matchedPID,
-                                message: "⚠️ \(profile.name) 持续高负载超 \(Int(highDuration / 60)) 分钟 (CPU \(Int(cpu))%)"
+                                message: "⚠️ \(profile.name) 持续高负载超 \(minutes) 分钟 (CPU \(Int(cpu))%)",
+                                detail: "进程持续高负载占用 CPU \(Int(cpu))% 已达 \(minutes) 分钟（报警阈值: ≥\(Int(config.runawayCpuThreshold))% 持续超 \(Int(config.runawayDurationThreshold / 60)) 分钟）。若任务卡死或非预期，可点击【熔断】安全结束。"
                             ))
                         }
                     }
@@ -401,7 +404,8 @@ public final class ActivityEngine: ObservableObject {
             duration: 0,
             timestamp: Date(),
             pid: pid,
-            message: "\(name) 进程已终止"
+            message: "\(name) 进程已终止",
+            detail: pid != nil ? "已向 PID \(pid!) 及其关联子进程发送 SIGTERM/SIGKILL 终止信号，系统资源已释放。" : "已向该 Agent 执行终止指令。"
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.sample()
@@ -412,13 +416,15 @@ public final class ActivityEngine: ObservableObject {
         let duration = now.timeIntervalSince(since)
         // 持续至少 3.5 秒的实质工作才视作完成一次任务（过滤瞬时微抖动）
         guard duration >= 3.5 else { return }
+        let durationText = duration >= 60 ? "\(Int(duration / 60))分\(Int(duration) % 60)秒" : "\(Int(duration))秒"
         latestEvent = AgentTaskEvent(
             agentId: profile.id,
             agentName: profile.name,
             eventType: .completed,
             duration: duration,
             timestamp: now,
-            pid: pid
+            pid: pid,
+            detail: "\(profile.name) 本次工作持续 \(durationText)，所有子步骤已完成，现已转为空闲状态。"
         )
     }
 

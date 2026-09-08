@@ -129,6 +129,8 @@ enum EngineTests {
             _ = engine.sample(now: now.addingTimeInterval(10))
             try expectEqual(engine.latestEvent?.eventType, .costSpike, "激增超过 50k 应触发 costSpike")
             try expectTrue(engine.latestEvent?.message?.contains("Token 激增") == true, "应显示激增提示")
+            try expectTrue(engine.latestEvent?.detail?.contains("Token 消耗突增") == true, "应包含详细排查说明")
+            try expectTrue(engine.latestEvent?.copyableDiagnosticText.contains("详情:") == true, "可复制诊断应包含详情")
         }
 
         TestKit.test("熔断保护: 持续死循环/高负载告警（低占用不误报，持续高 CPU 触发）") {

@@ -55,19 +55,22 @@ enum IslandMetrics {
     /// 详情/会话页内容区高度（header + divider 之后；内容自身可滚动，故给足而不裁剪）
     static let detailContentHeight: CGFloat = 310
 
-    /// 事件提醒栏高度（任务完成/等待确认/熔断双行卡片）
-    static let eventBannerHeight: CGFloat = 62
+    /// 事件提醒栏高度（紧凑态与展开态）
+    static let eventBannerHeight: CGFloat = 66
+    static let eventBannerCollapsedHeight: CGFloat = 66
+    static let eventBannerExpandedHeight: CGFloat = 142
 
     // MARK: 展开高度（纯函数）
 
     /// 展开卡窗口高度。visibleCount 经 engine.visibleSnapshots（可见口径唯一实现）；
     /// hasSummary = !engine.grandTotal.isEmpty（汇总栏有数据才占高）
-    /// hasEvent = 存在活跃事件通知条
-    static func expandedHeight(route: CardRoute, visibleCount: Int, hasSummary: Bool, hasEvent: Bool = false) -> CGFloat {
+    /// hasEvent = 存在活跃事件通知条；eventExpanded = 事件栏是否展开详细排查信息
+    static func expandedHeight(route: CardRoute, visibleCount: Int, hasSummary: Bool, hasEvent: Bool = false, eventExpanded: Bool = false) -> CGFloat {
         switch route {
         case .list:
             let summary: CGFloat = hasSummary ? summaryBarHeight : 0
-            let eventH: CGFloat = hasEvent ? (eventBannerHeight + dividerHeight) : 0
+            let bannerH = eventExpanded ? eventBannerExpandedHeight : eventBannerCollapsedHeight
+            let eventH: CGFloat = hasEvent ? (bannerH + dividerHeight) : 0
             if visibleCount == 0 {
                 return min(headerHeight + dividerHeight + eventH + emptyStateHeight + summary, expandedMaxHeight)
             }

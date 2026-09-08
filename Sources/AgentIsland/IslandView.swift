@@ -290,84 +290,9 @@ struct IslandView: View {
                 DarkDivider()
             }
 
-            // 任务事件横幅（完成/等待确认/资源与Token熔断告警双行卡片）
+            // 任务事件横幅（完成/等待确认/资源与Token熔断告警富文本交互卡片）
             if let event = engine.latestEvent {
-                VStack(alignment: .leading, spacing: 6) {
-                    // 第一行：状态图标 + 完整描述（多行自适应、支持 Tooltip）+ 关闭按钮
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: eventIcon(for: event.eventType))
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(eventColor(for: event.eventType))
-                            .padding(.top, 1)
-
-                        Text(event.summaryText)
-                            .font(Theme.bodyFont(11, weight: .medium))
-                            .foregroundColor(Theme.onDark)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .help(event.summaryText)
-
-                        Spacer(minLength: 4)
-
-                        Button {
-                            engine.clearLatestEvent()
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(Theme.onDarkFaint)
-                                .padding(3)
-                        }
-                        .buttonStyle(.plain)
-                        .help("关闭提醒")
-                    }
-
-                    // 第二行：操作快捷按钮
-                    HStack(spacing: 8) {
-                        Spacer()
-
-                        if event.eventType == .costSpike, let pid = event.pid {
-                            Button {
-                                engine.terminateAgent(pid: pid, agentId: event.agentId)
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "xmark.octagon.fill")
-                                        .font(.system(size: 9))
-                                    Text("熔断")
-                                        .font(Theme.bodyFont(10, weight: .bold))
-                                }
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(Color.red.opacity(0.85)))
-                            }
-                            .buttonStyle(.plain)
-                            .help("立即终止该 Agent 进程树，阻止持续消耗")
-                        }
-
-                        Button {
-                            if let snap = engine.snapshots.first(where: { $0.id == event.agentId }) {
-                                AppActivator.activate(pid: snap.pid, bundleIDs: snap.profile.bundleIDs)
-                            }
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "arrow.up.forward.app")
-                                    .font(.system(size: 9))
-                                Text("直达")
-                                    .font(Theme.bodyFont(10, weight: .semibold))
-                            }
-                            .foregroundColor(Theme.onDark)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(Theme.chipFill))
-                        }
-                        .buttonStyle(.plain)
-                        .help("拉至前台并激活窗口")
-                    }
-                }
-                .padding(.horizontal, Theme.pageMargin)
-                .padding(.vertical, 7)
-                .background(event.eventType == .costSpike ? Color.red.opacity(0.18) : Color.white.opacity(0.06))
-
+                EventBannerView(event: event, engine: engine, controller: controller)
                 DarkDivider()
             }
 
@@ -423,22 +348,6 @@ struct IslandView: View {
 
     private var statusColor: Color {
         engine.anyWorking ? Theme.statusWorking : Theme.statusIdle
-    }
-
-    private func eventIcon(for type: AgentTaskEvent.EventType) -> String {
-        switch type {
-        case .completed: return "checkmark.circle.fill"
-        case .attention: return "exclamationmark.triangle.fill"
-        case .costSpike: return "exclamationmark.octagon.fill"
-        }
-    }
-
-    private func eventColor(for type: AgentTaskEvent.EventType) -> Color {
-        switch type {
-        case .completed: return Theme.statusWorking
-        case .attention: return .orange
-        case .costSpike: return Color.red
-        }
     }
 }
 
@@ -662,6 +571,178 @@ extension ActivityLevel {
         case .working: return Theme.statusWorking
         case .idle: return Theme.statusIdle
         case .offline: return Theme.statusOffline
+        }
+    }
+}
+
+// MARK: - 事件通知横幅富文本卡片 (v1.7.2)
+
+struct EventBannerView: View {
+    let event: AgentTaskEvent
+    @ObservedObject var engine: ActivityEngine
+    @ObservedObject var controller: IslandPanelController
+    @State private var copiedFeedback = false
+
+    private var isExpanded: Bool {
+        controller.eventBannerExpanded
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            // 第一行：状态图标 + 摘要标题 + 展开/折叠按钮 + 关闭
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: eventIcon(for: event.eventType))
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(eventColor(for: event.eventType))
+
+                Text(event.summaryText)
+                    .font(Theme.bodyFont(11, weight: .semibold))
+                    .foregroundColor(Theme.onDark)
+                    .lineLimit(isExpanded ? nil : 1)
+                    .fixedSize(horizontal: false, vertical: isExpanded)
+                    .help(event.summaryText)
+
+                Spacer(minLength: 4)
+
+                // 详情折叠/展开指示器
+                if event.detail != nil {
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                            controller.eventBannerExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 2) {
+                            Text(isExpanded ? "收起" : "原因")
+                                .font(Theme.bodyFont(9, weight: .medium))
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                        }
+                        .foregroundColor(Theme.onDarkMuted)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                    }
+                    .buttonStyle(.plain)
+                    .help(isExpanded ? "收起排查详情" : "展开警告产生的原因与排查建议")
+                }
+
+                Button {
+                    controller.eventBannerExpanded = false
+                    engine.clearLatestEvent()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(Theme.onDarkFaint)
+                        .padding(3)
+                }
+                .buttonStyle(.plain)
+                .help("关闭提醒")
+            }
+
+            // 第二部分：展开态下的完整排查建议与触发原因（富文本自适应高度）
+            if isExpanded, let detail = event.detail {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(detail)
+                        .font(Theme.bodyFont(10))
+                        .foregroundColor(Theme.onDarkMuted)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.black.opacity(0.24))
+                )
+            }
+
+            // 第三行：快捷操作栏
+            HStack(spacing: 6) {
+                if isExpanded {
+                    // 复制诊断信息
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(event.copyableDiagnosticText, forType: .string)
+                        copiedFeedback = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                            copiedFeedback = false
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: copiedFeedback ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 8))
+                            Text(copiedFeedback ? "已复制" : "复制诊断")
+                                .font(Theme.bodyFont(9, weight: .medium))
+                        }
+                        .foregroundColor(copiedFeedback ? Theme.statusWorking : Theme.onDarkMuted)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
+                        .background(Capsule().fill(Color.white.opacity(0.06)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("一键复制告警信息、PID 及触发时间戳")
+                }
+
+                Spacer()
+
+                if event.eventType == .costSpike, let pid = event.pid {
+                    Button {
+                        engine.terminateAgent(pid: pid, agentId: event.agentId)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "xmark.octagon.fill")
+                                .font(.system(size: 9))
+                            Text("熔断")
+                                .font(Theme.bodyFont(10, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.red.opacity(0.85)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("立即终止该 Agent 进程树，阻止持续消耗")
+                }
+
+                Button {
+                    if let snap = engine.snapshots.first(where: { $0.id == event.agentId }) {
+                        AppActivator.activate(pid: snap.pid, bundleIDs: snap.profile.bundleIDs)
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 9))
+                        Text("直达")
+                            .font(Theme.bodyFont(10, weight: .semibold))
+                    }
+                    .foregroundColor(Theme.onDark)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Theme.chipFill))
+                }
+                .buttonStyle(.plain)
+                .help("拉至前台并激活窗口")
+            }
+        }
+        .padding(.horizontal, Theme.pageMargin)
+        .padding(.vertical, 6)
+        .background(event.eventType == .costSpike ? Color.red.opacity(0.18) : Color.white.opacity(0.06))
+    }
+
+    private func eventIcon(for type: AgentTaskEvent.EventType) -> String {
+        switch type {
+        case .completed: return "checkmark.circle.fill"
+        case .attention: return "exclamationmark.triangle.fill"
+        case .costSpike: return "exclamationmark.octagon.fill"
+        }
+    }
+
+    private func eventColor(for type: AgentTaskEvent.EventType) -> Color {
+        switch type {
+        case .completed: return Theme.statusWorking
+        case .attention: return .orange
+        case .costSpike: return Color.red
         }
     }
 }

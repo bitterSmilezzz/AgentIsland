@@ -126,6 +126,7 @@ public struct AgentTaskEvent: Identifiable, Equatable {
     public let timestamp: Date
     public let pid: Int32?
     public let message: String?
+    public let detail: String?
 
     public enum EventType: String, Equatable {
         case completed  // 任务执行完毕
@@ -133,7 +134,7 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         case costSpike  // 消耗突增/死循环熔断告警
     }
 
-    public init(id: UUID = UUID(), agentId: String, agentName: String, eventType: EventType, duration: TimeInterval, timestamp: Date = Date(), pid: Int32? = nil, message: String? = nil) {
+    public init(id: UUID = UUID(), agentId: String, agentName: String, eventType: EventType, duration: TimeInterval, timestamp: Date = Date(), pid: Int32? = nil, message: String? = nil, detail: String? = nil) {
         self.id = id
         self.agentId = agentId
         self.agentName = agentName
@@ -142,6 +143,7 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         self.timestamp = timestamp
         self.pid = pid
         self.message = message
+        self.detail = detail
     }
 
     public var summaryText: String {
@@ -158,6 +160,17 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         case .costSpike:
             return "⚠️ \(agentName) 资源/Token 消耗突增"
         }
+    }
+
+    public var copyableDiagnosticText: String {
+        var lines = [
+            "[\(eventType.rawValue.uppercased())] \(agentName) (ID: \(agentId))",
+            "时间: \(timestamp)",
+            "摘要: \(summaryText)"
+        ]
+        if let pid { lines.append("PID: \(pid)") }
+        if let detail, !detail.isEmpty { lines.append("详情: \(detail)") }
+        return lines.joined(separator: "\n")
     }
 }
 

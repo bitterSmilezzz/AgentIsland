@@ -31,6 +31,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// 通知策略分级（标准模式 / 专注免打扰 / 完全静默）
     @Published public private(set) var notificationPolicy: NotificationPolicy = .focus
 
+    /// 事件提醒横幅是否展开详情（支持多行排查信息展示与动态窗口高度拓展）
+    @Published public var eventBannerExpanded: Bool = false {
+        didSet {
+            if oldValue != eventBannerExpanded {
+                syncExpandedHeight()
+            }
+        }
+    }
+
     /// 拖动相关状态
     private var dragStartOrigin: NSPoint?
     private var isDragging = false
@@ -543,8 +552,14 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private func handleTaskEvent(_ event: AgentTaskEvent?) {
         guard let event else {
+            eventBannerExpanded = false
             syncExpandedHeight()
             return
+        }
+
+        // 若是熔断类严重告警，默认展开详情以提供排查指导
+        if event.eventType == .costSpike {
+            eventBannerExpanded = true
         }
 
         // 1. 播放系统提示音（受 notificationPolicy 与全局开关 playCompletionSound 共同裁决）
@@ -664,7 +679,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             route: route,
             visibleCount: visibleCount(),
             hasSummary: !engine.grandTotal.isEmpty,
-            hasEvent: engine.latestEvent != nil
+            hasEvent: engine.latestEvent != nil,
+            eventExpanded: eventBannerExpanded
         )
     }
 
