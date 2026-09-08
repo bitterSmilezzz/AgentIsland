@@ -520,7 +520,7 @@ struct SettingsView: View {
                         Text("AgentIsland")
                             .font(Theme.displayFont(16, weight: .bold))
                             .foregroundColor(Theme.ink)
-                        Text("v1.7.4 · macOS 灵动岛 Agent 会话监控器")
+                        Text("v1.7.5 · macOS 灵动岛 Agent 会话监控器")
                             .font(Theme.bodyFont(11))
                             .foregroundColor(Theme.inkMuted80)
                     }

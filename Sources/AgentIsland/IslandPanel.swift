@@ -222,15 +222,20 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         return .focus // 默认推荐专注免打扰
     }
 
+    private var lastEventId: UUID?
+
     private func observe() {
         engine.$updatedAt
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if self.displayState == .docked, self.lastAnyWorking == self.engine.anyWorking {
+                    let workingChanged = self.lastAnyWorking != self.engine.anyWorking
+                    let eventChanged = self.lastEventId != self.engine.latestEvent?.id
+                    if self.displayState == .docked && !workingChanged && !eventChanged {
                         return
                     }
                     self.lastAnyWorking = self.engine.anyWorking
+                    self.lastEventId = self.engine.latestEvent?.id
                     self.hostingView?.needsDisplay = true
                     if self.displayState == .expanded {
                         self.syncExpandedHeight()
