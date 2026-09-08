@@ -105,7 +105,8 @@ public final class InstalledAppsCache: @unchecked Sendable {
     private static let knownCLIs = ["dim", "codex", "claude", "cursor", "trae", "opencode",
                             "hermes-agent", "aider", "gemini", "windsurf", "agent-browser",
                             "tiny-agents", "continue", "zcode", "zcode-cli", "antigravity", "agy",
-                            "dsh"]
+                            "dsh", "ego-browser", "vibe-usage", "openviking", "ov", "vikingbot",
+                            "bsk", "cua-driver"]
 
     /// 已知 GUI bundle id（/Applications 扫描用）
     private static let knownBundleIDs: [String: String] = [
@@ -118,9 +119,12 @@ public final class InstalledAppsCache: @unchecked Sendable {
         "com.tencent.workbuddy.mac": "workbuddy",
         "dev.zcode.app": "zcode",
         "com.google.antigravity": "antigravity",
+        "com.yuzhiqiang.antigravity.studio": "antigravity",
         "com.continue.continue": "continue",
         "ai.opencode.desktop": "opencode",
         "com.openai.codex": "chatgpt",
+        "com.citrolabs.ego.lite": "ego-browser",
+        "ai.vibecafe.vibe-usage": "vibe-usage",
     ]
 
     /// PATH 扫描 + 补扫常见非 PATH 安装目录（~/.local/bin 等未入 PATH 时 CLI 实际可用）

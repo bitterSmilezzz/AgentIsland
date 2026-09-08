@@ -234,6 +234,10 @@ public final class FileActivityMonitor: FileActivityProviding {
                 en.skipDescendants()   // 符号链接目录跳过，防循环
                 continue
             }
+            // 过滤无实质代码任务的纯心跳/锁/守护进程 PID 保活文件
+            if !isDir && isHeartbeatOrNoiseFile(item) {
+                continue
+            }
             if let date = v.contentModificationDate, date > newest {
                 newest = date
             }
@@ -263,6 +267,26 @@ public final class FileActivityMonitor: FileActivityProviding {
     /// 目录树内最近写入时间（测试/Selftest 兼容入口，基于单趟 scanTree）
     public static func newestWrite(in dir: String, maxDepth: Int = 4) -> Date? {
         scanTree(in: dir, maxDepth: maxDepth, window: 0, now: Date()).newest
+    }
+
+    /// 排除纯心跳/锁文件（不代表智能体实质任务代码工作）
+    public static func isHeartbeatOrNoiseFile(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        // 1. 锁/套接字/临时文件
+        if name.hasSuffix(".lock") || name.hasSuffix(".pid") || name.hasSuffix(".sock") || name.hasSuffix(".tmp") {
+            return true
+        }
+        // 2. 纯 PID 形式的心跳 JSON（如 WorkBuddy 的 33485.json、33162.json）
+        let stem = url.deletingPathExtension().lastPathComponent
+        if url.pathExtension == "json" && Int(stem) != nil {
+            return true
+        }
+        // 3. 显式心跳与遥测文件
+        let lower = name.lowercased()
+        if lower.contains("heartbeat") || lower.contains("crashpad") || lower.contains("telemetry") {
+            return true
+        }
+        return false
     }
 }
 

@@ -180,7 +180,7 @@ public struct EngineConfig: Equatable {
     public var sampleInterval: TimeInterval = 2.0      // 有活动时采样间隔
     public var idleSampleInterval: TimeInterval = 5.0  // 全闲置时降频采样间隔（5s：反应速度与节能平衡）
     public var workingWindow: TimeInterval = 60.0      // 该窗口内有文件写入 → working（双信号之一）
-    public var cpuThreshold: Double = 1.0              // 进程 CPU% 超过 → working（双信号之二，ps 平均值偏低故取 1%）
+    public var cpuThreshold: Double = 6.0              // 进程 CPU% 超过 → working（6%：过滤 Electron/Chromium 空闲微抖动，保证真工作才触发）
     public var activeSessionWindow: TimeInterval = 600.0 // 活跃会话计数窗口（10 分钟）
     public var minWorkingHold: TimeInterval = 10.0    // 滞回：working 信号消失后保持最短时长（防抖动）
     public var tokenAlertEnabled: Bool = true          // 是否开启 Token 突增告警
@@ -192,7 +192,7 @@ public struct EngineConfig: Equatable {
     public init(sampleInterval: TimeInterval = 2.0,
                 idleSampleInterval: TimeInterval = 5.0,
                 workingWindow: TimeInterval = 60.0,
-                cpuThreshold: Double = 1.0,
+                cpuThreshold: Double = 6.0,
                 activeSessionWindow: TimeInterval = 600.0,
                 minWorkingHold: TimeInterval = 10.0,
                 tokenAlertEnabled: Bool = true,

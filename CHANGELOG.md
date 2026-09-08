@@ -4,6 +4,24 @@
 
 ---
 
+## [1.7.4] - 2026-09-08
+
+### 🎯 状态判断精准化与 Agent 工具生态全覆盖
+
+- **消除 Electron 后台待机误报 WORKING**：
+  - 将 `cpuThreshold` 默认阈值微调为 `6.0%`，彻底避开 Electron/Chromium UI 渲染器固有空闲抖动（1%~5%），真正在进行代码编译、大文件检索或模型计算时才触发 CPU 状态跃迁
+  - 修正 WorkBuddy `sessionDirs` 为实际数据目录（`~/.workbuddy/sessions`, `~/.workbuddy/tasks`, `~/.workbuddy/memory`）
+- **WorkBuddy 动作与状态时效性强校验**：
+  - 加入 5 分钟更新新鲜度校验，超过 5 分钟未更新的会话标记为「待机」，绝不因陈旧未归档记录误报「正在处理」
+- **补全本机 AI Agent 工具全生态覆盖**：
+  - **Antigravity Studio**：支持 `com.yuzhiqiang.antigravity.studio` 独立识别并归并至 Antigravity 生态
+  - **Ego Browser (Ego Lite)**：支持 Agent 专用隔离浏览器（`com.citrolabs.ego.lite` / `ego-browser`）
+  - **Vibe Usage**：支持智能体 Token 用量聚合看板（`ai.vibecafe.vibe-usage` / `vibe-usage`）
+  - **OpenViking**：支持本地 AI 知识库与智能体执行器（`openviking`, `openviking-server`, `ov`, `vikingbot`）
+  - **扩充 CLI 检测池**：覆盖 `bsk` (Browser Skill)、`cua-driver` (Computer Use Driver) 等
+
+---
+
 ## [1.7.3] - 2026-09-08
 
 ### ⚡️ 扩展主流 Agent 深度动作透传与会话解析

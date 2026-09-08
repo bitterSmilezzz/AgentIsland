@@ -356,9 +356,14 @@ public enum AgentActionInspector {
             if !title.isEmpty {
                 let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
                 let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
+                let timeAgoMs = nowMs - updatedAtMs
                 if status.lowercased() == "active" {
-                    return "正在: \(display)"
-                } else if nowMs - updatedAtMs < 60 * 60 * 1000 { // 1 小时内活跃
+                    if timeAgoMs <= 5 * 60 * 1000 { // 5 分钟内活跃更新才视作真正运行中
+                        return "正在: \(display)"
+                    } else if timeAgoMs <= 2 * 60 * 60 * 1000 { // 2 小时内挂起会话
+                        return "待机: \(display)"
+                    }
+                } else if timeAgoMs <= 60 * 60 * 1000 { // 1 小时内活跃
                     return "任务: \(display)"
                 }
             }

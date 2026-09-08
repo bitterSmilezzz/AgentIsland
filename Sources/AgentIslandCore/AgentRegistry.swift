@@ -70,7 +70,11 @@ public enum AgentRegistry {
             bundleIDs: ["com.tencent.workbuddy.mac"],
             processNames: ["WorkBuddy", "workbuddy", "Electron"],
             pathContains: ["workbuddy"],
-            sessionDirs: [home(".workbuddy/traces")],
+            sessionDirs: [
+                home(".workbuddy/sessions"),
+                home(".workbuddy/tasks"),
+                home(".workbuddy/memory")
+            ],
             category: .assistant
         ),
         AgentProfile(
@@ -90,7 +94,7 @@ public enum AgentRegistry {
             id: "antigravity",
             name: "Antigravity",
             icon: "atom",
-            bundleIDs: ["com.google.antigravity"],
+            bundleIDs: ["com.google.antigravity", "com.yuzhiqiang.antigravity.studio"],
             processNames: ["Antigravity", "language_server", "agentapi", "Electron"],
             pathContains: ["antigravity"],
             sessionDirs: [
@@ -145,6 +149,34 @@ public enum AgentRegistry {
             processNames: ["dsh"],
             pathContains: ["deepseek-harness"],
             sessionDirs: [home(".dsh/sessions"), home(".dsh/storages")],
+            category: .assistant
+        ),
+        AgentProfile(
+            id: "ego-browser",
+            name: "Ego Browser",
+            icon: "globe.americas.fill",
+            bundleIDs: ["com.citrolabs.ego.lite"],
+            processNames: ["ego-browser", "ego lite", "ego"],
+            sessionDirs: [home(".local/share/ego"), home("Library/Application Support/ego lite")],
+            category: .assistant
+        ),
+        AgentProfile(
+            id: "vibe-usage",
+            name: "Vibe Usage",
+            icon: "chart.bar.xaxis",
+            bundleIDs: ["ai.vibecafe.vibe-usage"],
+            processNames: ["vibe-usage", "Vibe Usage"],
+            sessionDirs: [home(".vibe-usage"), home("Library/Application Support/Vibe Usage")],
+            category: .assistant
+        ),
+        AgentProfile(
+            id: "openviking",
+            name: "OpenViking",
+            icon: "shippingbox.fill",
+            bundleIDs: [],
+            processNames: ["openviking", "openviking-server", "ov", "vikingbot"],
+            pathContains: ["openviking"],
+            sessionDirs: [home(".openviking"), home(".local/share/uv/tools/openviking")],
             category: .assistant
         ),
     ]
