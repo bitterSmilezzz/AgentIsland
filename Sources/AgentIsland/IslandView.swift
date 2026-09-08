@@ -59,6 +59,7 @@ enum CardRoute: Equatable {
     case agentDetail(String)      // agent 详情：总览 + 模型拆分
     case sessions(String, String) // agentId + modelId：该模型会话列表
     case toolbox                  // 快捷工具箱：孤儿进程/假死死锁扫描与清理
+    case liveStream(String)       // 实时事件与日志抽屉：agentId
 }
 
 // MARK: - 灵动岛视图
@@ -136,6 +137,8 @@ struct IslandView: View {
                                 agentId: agentId, modelId: modelId)
             case .toolbox:
                 ToolboxView(engine: engine, controller: controller)
+            case .liveStream(let agentId):
+                LiveLogStreamView(engine: engine, controller: controller, agentId: agentId)
             }
         }
     }
@@ -475,6 +478,18 @@ struct AgentRowView: View {
                         .buttonStyle(.plain)
                         .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
                     }
+
+                    Button {
+                        controller.route = .liveStream(snapshot.profile.id)
+                    } label: {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.onDark.opacity(0.7))
+                            .padding(5)
+                            .background(Circle().fill(Theme.chipFill))
+                    }
+                    .buttonStyle(.plain)
+                    .help("查看 \(snapshot.profile.name) 实时事件与输出流水")
 
                     Button {
                         AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs)

@@ -515,6 +515,16 @@ public final class ActivityEngine: ObservableObject {
         tokenMonitor.sessions(agentId: agentId, modelId: modelId, completion: completion)
     }
 
+    /// 获取智能体实时事件流水（后台异步解析，主线程回调）
+    public func fetchLogStream(agentId: String, limit: Int = 20, completion: @escaping @MainActor ([AgentLogEvent]) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let events = AgentLogStreamer.fetchRecentEvents(agentId: agentId, limit: limit)
+            Task { @MainActor in
+                completion(events)
+            }
+        }
+    }
+
     /// 可见口径（唯一实现）：在线 + 24h 内活跃。
     /// 展开卡片列表、菜单摘要、高度计算统一消费此属性，改口径只改这一处。
     public var visibleSnapshots: [AgentSnapshot] {

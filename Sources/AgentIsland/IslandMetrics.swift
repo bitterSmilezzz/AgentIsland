@@ -78,7 +78,7 @@ enum IslandMetrics {
             return min(headerHeight + dividerHeight + eventH + listHeight + summary, expandedMaxHeight)
         case .agentDetail, .sessions:
             return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
-        case .toolbox:
+        case .toolbox, .liveStream:
             return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
         }
     }

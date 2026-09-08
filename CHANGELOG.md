@@ -4,6 +4,23 @@
 
 ---
 
+## [1.7.8] - 2026-09-08
+
+### ⚡ 智能体实时事件流与日志流水抽屉 (Live Log Stream)
+
+- **智能体事件流与日志流水提取引擎 (`AgentLogStreamer`)**：
+  - 支持多源并发智能日志采集：零侵入解析 Antigravity (`transcript.jsonl`)、Codex (`rollout-*.jsonl`)、DimAgent (`dimcode.sqlite`)、Claude Code、OpenCode、ZCode、WorkBuddy、Hermes 等
+  - 提取高价值时序结构化数据：精准识别终端命令执行 (`EXEC`)、工具/MCP调用 (`TOOL`)、代码文件编辑 (`EDIT`)、深度推理思考 (`THINK`) 与模型对话流 (`MSG`)
+- **原生极客暗黑风实时流水视图 (`LiveLogStreamView`)**：
+  - 灵动岛主卡行与二级详情页增设终端图标（`terminal`）直达流水抽屉
+  - 极客暗黑终端配色、彩色事件类型徽标、时间戳微调与参数展开查看
+  - 支持实时静默自动跟随刷新（每 2 秒）与随时暂停切换
+  - 提供一键复制全部诊断日志流水至剪贴板功能，便于排查与分析
+- **窗口几何与导航联动**：
+  - 深度集成 `IslandMetrics` 与 `IslandPanel` 自适应高度体系，保障展开卡片内无缝平滑滚动
+
+---
+
 ## [1.7.7] - 2026-09-08
 
 ### 🛠️ 智能体维护工作台与进程清理系统 (Agent Workbench Cleaner)

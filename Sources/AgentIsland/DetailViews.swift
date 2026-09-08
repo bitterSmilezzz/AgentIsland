@@ -248,6 +248,29 @@ struct AgentDetailView: View {
             }
             .padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous).fill(Theme.cardFill))
+
+            // 实时流水抽屉入口
+            Button {
+                controller.route = .liveStream(agentId)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.statusWorking)
+                    Text("查看实时事件与输出流水")
+                        .font(Theme.bodyFont(11, weight: .medium))
+                        .foregroundColor(Theme.onDark)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(Theme.onDarkFaint)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.chipFill))
+            }
+            .buttonStyle(.plain)
+            .help("展开该智能体的实时工具调用与输出时序抽屉")
         }
     }
 

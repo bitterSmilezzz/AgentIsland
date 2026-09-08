@@ -130,6 +130,37 @@ enum EngineTests {
             try expectTrue(engine.latestEvent?.message?.contains("已安全清理") == true)
         }
 
+        TestKit.test("实时流水: AgentLogStreamer 事件流模型与解析") {
+            let event = AgentLogEvent(
+                kind: .command,
+                title: "git status",
+                detail: "On branch main",
+                agentId: "test-agent"
+            )
+            try expectEqual(event.kind.label, "EXEC")
+            try expectEqual(event.title, "git status")
+            try expectEqual(event.agentId, "test-agent")
+
+            // 未知 agent 返回空列表
+            let unknown = AgentLogStreamer.fetchRecentEvents(agentId: "unknown-agent-xyz")
+            try expectEqual(unknown.count, 0)
+
+            // 引擎方法能正常调用
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            let exp = SelfPollExpectation()
+            var returnedRows: [AgentLogEvent]? = nil
+            engine.fetchLogStream(agentId: "unknown-agent-xyz", limit: 5) { rows in
+                returnedRows = rows
+                exp.fulfill()
+            }
+            let deadline = Date().addingTimeInterval(3.0)
+            while !exp.isFulfilled && Date() < deadline {
+                RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            }
+            try expectTrue(exp.isFulfilled, "fetchLogStream 应当异步回调")
+            try expectEqual(returnedRows?.count ?? -1, 0)
+        }
+
         TestKit.test("熔断保护: Token 激增告警触发") {
             let fake = FakeTokenUsageMonitor()
             fake.usage["dim"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)
