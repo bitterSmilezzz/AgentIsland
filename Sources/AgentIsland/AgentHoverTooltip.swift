@@ -93,8 +93,9 @@ struct AgentHoverTooltipCard: View {
                     .lineLimit(1)
 
                 if let pid = snapshot.pid, snapshot.processRunning {
-                    let cpuStr = snapshot.cpuPercent > 0 ? String(format: "%.1f%% CPU", snapshot.cpuPercent) : "运行中"
-                    Text("PID: \(pid) · \(cpuStr)")
+                    let cpuStr = snapshot.cpuPercent > 0 ? String(format: "%.1f%%", snapshot.cpuPercent) : "0%"
+                    let memStr = snapshot.memoryBytes > 0 ? " · \(snapshot.memoryText)" : ""
+                    Text("PID: \(pid) · \(cpuStr)\(memStr)")
                         .font(Theme.monoFont(9))
                         .foregroundColor(Theme.onDarkFaint)
                 } else {
@@ -106,12 +107,21 @@ struct AgentHoverTooltipCard: View {
 
             Spacer(minLength: 4)
 
-            Text(snapshot.level.label)
-                .font(Theme.bodyFont(9, weight: .semibold))
-                .foregroundColor(snapshot.level.color)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(snapshot.level.color.opacity(0.18)))
+            if snapshot.isHung {
+                Text("卡死告警")
+                    .font(Theme.bodyFont(8, weight: .bold))
+                    .foregroundColor(Theme.dangerRed)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.dangerRed.opacity(0.2)))
+            } else {
+                Text(snapshot.level.label)
+                    .font(Theme.bodyFont(9, weight: .semibold))
+                    .foregroundColor(snapshot.level.color)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(snapshot.level.color.opacity(0.18)))
+            }
         }
     }
 

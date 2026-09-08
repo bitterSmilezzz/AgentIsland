@@ -98,16 +98,22 @@ struct AgentDetailView: View {
                             Spacer(minLength: 0)
                             Group {
                                 if let usage, !usage.isEmpty {
-                                    if models.isEmpty {
+                                    VStack(alignment: .leading, spacing: 10) {
                                         overviewCard(usage)
-                                    } else {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            overviewCard(usage)
+                                        if let s = snapshot, s.processRunning {
+                                            performanceCard(s)
+                                        }
+                                        if !models.isEmpty {
                                             modelList
                                         }
                                     }
                                 } else {
-                                    basicInfoCard
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        basicInfoCard
+                                        if let s = snapshot, s.processRunning {
+                                            performanceCard(s)
+                                        }
+                                    }
                                 }
                             }
                             Spacer(minLength: 0)
@@ -214,6 +220,37 @@ struct AgentDetailView: View {
         }
     }
 
+    /// 性能与健康监控卡片（v1.7.6）
+    private func performanceCard(_ s: AgentSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("性能与健康")
+                    .font(Theme.bodyFont(10, weight: .semibold))
+                    .foregroundColor(Theme.onDarkFaint)
+                Spacer()
+                if s.isHung {
+                    Text("疑似卡死")
+                        .font(Theme.bodyFont(9, weight: .bold))
+                        .foregroundColor(Theme.dangerRed)
+                } else if s.processRunning {
+                    Text("运行正常")
+                        .font(Theme.bodyFont(9, weight: .medium))
+                        .foregroundColor(Theme.statusWorking)
+                }
+            }
+
+            HStack(spacing: 0) {
+                overviewCell("CPU", s.cpuPercent > 0 ? String(format: "%.1f%%", s.cpuPercent) : "0%", cost: nil)
+                Rectangle().fill(Theme.onDark.opacity(0.10)).frame(width: 1, height: 26)
+                overviewCell("内存 (RSS)", s.memoryText, cost: nil)
+                Rectangle().fill(Theme.onDark.opacity(0.10)).frame(width: 1, height: 26)
+                overviewCell("PID", s.pid.map { "\($0)" } ?? "—", cost: nil)
+            }
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous).fill(Theme.cardFill))
+        }
+    }
+
     /// 无 token 数据的 agent：显示主卡瘦身撤下的基础信息
     private var basicInfoCard: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -221,7 +258,9 @@ struct AgentDetailView: View {
                 infoRow("状态", s.level.label)
                 infoRow("活动", s.lastActivityText)
                 if s.activeSessions > 0 { infoRow("会话", "\(s.activeSessions) 个活跃") }
-                if s.cpuPercent > 1 { infoRow("CPU", String(format: "%.1f%%", s.cpuPercent)) }
+                if s.cpuPercent > 0.1 { infoRow("CPU", String(format: "%.1f%%", s.cpuPercent)) }
+                if s.memoryBytes > 0 { infoRow("内存", s.memoryText) }
+                if let pid = s.pid { infoRow("PID", "\(pid)") }
                 infoRow("Token", "暂无本地 token 数据")
             }
         }

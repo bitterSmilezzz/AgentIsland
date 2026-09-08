@@ -393,12 +393,37 @@ struct AgentRowView: View {
 
             Spacer()
 
-            Text(snapshot.level.label)
-                .font(Theme.bodyFont(10, weight: .semibold))
-                .foregroundColor(snapshot.level.color)
-                .padding(.horizontal, 8)
+            // 内存占用与健康状态指示（v1.7.6）
+            if snapshot.processRunning && snapshot.memoryBytes > 0 {
+                Text(snapshot.memoryText)
+                    .font(Theme.monoFont(9))
+                    .foregroundColor(Theme.onDarkFaint)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Theme.chipFill))
+                    .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
+            }
+
+            if snapshot.isHung {
+                HStack(spacing: 2) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 8))
+                    Text("疑似卡死")
+                        .font(Theme.bodyFont(9, weight: .bold))
+                }
+                .foregroundColor(Theme.dangerRed)
+                .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(Capsule().fill(snapshot.level.color.opacity(0.16)))
+                .background(Capsule().fill(Theme.dangerRed.opacity(0.18)))
+                .help("检测到进程持续异常高负荷且缺乏会话响应，疑似处于死循环或线程死锁状态")
+            } else {
+                Text(snapshot.level.label)
+                    .font(Theme.bodyFont(10, weight: .semibold))
+                    .foregroundColor(snapshot.level.color)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(snapshot.level.color.opacity(0.16)))
+            }
 
             if snapshot.processRunning {
                 HStack(spacing: 4) {

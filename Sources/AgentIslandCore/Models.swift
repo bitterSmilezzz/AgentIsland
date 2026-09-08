@@ -94,13 +94,27 @@ public struct AgentSnapshot: Identifiable, Equatable {
     public let tokenUsage: TokenUsage?         // token 用量（数据源缺失时为 nil）
     public let pid: Int32?                     // 匹配到的进程 PID（若运行中）
     public let currentAction: String?          // 实时动作透传（执行的命令/修改的文件/思考等）
+    public let memoryBytes: UInt64             // 物理内存占用（RSS 字节数）
+    public let isHung: Bool                    // 进程是否疑似死锁/僵死卡顿
 
     public var id: String { profile.id }
+
+    /// 紧凑易读的内存显示文案（如 "128M"、"1.4G"）
+    public var memoryText: String {
+        guard memoryBytes > 0 else { return "—" }
+        let mb = Double(memoryBytes) / (1024 * 1024)
+        if mb >= 1024 {
+            return String(format: "%.1fG", mb / 1024.0)
+        } else {
+            return "\(Int(mb))M"
+        }
+    }
 
     public init(profile: AgentProfile, level: ActivityLevel, processRunning: Bool,
                 cpuPercent: Double, installed: Bool, activeSessions: Int,
                 lastActivityAgo: TimeInterval?, lastActivityText: String,
-                tokenUsage: TokenUsage? = nil, pid: Int32? = nil, currentAction: String? = nil) {
+                tokenUsage: TokenUsage? = nil, pid: Int32? = nil, currentAction: String? = nil,
+                memoryBytes: UInt64 = 0, isHung: Bool = false) {
         self.profile = profile
         self.level = level
         self.processRunning = processRunning
@@ -112,6 +126,8 @@ public struct AgentSnapshot: Identifiable, Equatable {
         self.tokenUsage = tokenUsage
         self.pid = pid
         self.currentAction = currentAction
+        self.memoryBytes = memoryBytes
+        self.isHung = isHung
     }
 }
 

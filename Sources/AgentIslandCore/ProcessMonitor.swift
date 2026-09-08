@@ -12,6 +12,15 @@ public struct ProcessSnapshot {
         public let path: String       // 完整可执行路径（libproc 无空格截断问题）
         public let basename: String   // 路径最后一段（小写）
         public let cpuPercent: Double // 窗口利用率（差分），首拍为 0
+        public let rssBytes: UInt64   // 物理内存占用（RSS），字节数
+
+        public init(pid: Int32, path: String, basename: String, cpuPercent: Double, rssBytes: UInt64 = 0) {
+            self.pid = pid
+            self.path = path
+            self.basename = basename
+            self.cpuPercent = cpuPercent
+            self.rssBytes = rssBytes
+        }
     }
 
     public let entries: [Entry]
@@ -157,12 +166,13 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
             let cpuTime: Double = rc == 0
                 ? (Double(rusage.ri_user_time) + Double(rusage.ri_system_time)) * Self.tickToSeconds
                 : -1
+            let rss: UInt64 = rc == 0 ? rusage.ri_resident_size : 0
 
             // 4) 差分 CPU%（锁内更新缓存，线程安全）
             let cpuPercent = cpuTime >= 0 ? cache.update(pid: pid, cpuTime: cpuTime, wallDelta: wallDelta) : 0
 
             let base = (path as NSString).lastPathComponent.lowercased()
-            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent))
+            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent, rssBytes: rss))
         }
 
         cache.setWall(now)
@@ -273,6 +283,11 @@ public struct ProcessMatcher: @unchecked Sendable {
     public func cpuPercent(_ profile: AgentProfile) -> Double {
         matchingEntries(for: profile).reduce(0) { $0 + $1.cpuPercent }
     }
+
+    /// 相关进程物理内存（RSS）总和（字节）
+    public func memoryBytes(_ profile: AgentProfile) -> UInt64 {
+        matchingEntries(for: profile).reduce(0) { $0 + $1.rssBytes }
+    }
 }
 
 // MARK: - 测试用假实现
@@ -295,7 +310,8 @@ public struct FakeProcessProvider: ProcessProviding {
                 pid: 1,
                 path: path,
                 basename: name.lowercased(),
-                cpuPercent: cpuByProcess[name] ?? 0
+                cpuPercent: cpuByProcess[name] ?? 0,
+                rssBytes: 104_857_600 // 默认 100MB 假数据
             )
         }
         return ProcessSnapshot(entries: entries)

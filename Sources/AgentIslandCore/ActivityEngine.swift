@@ -291,6 +291,9 @@ public final class ActivityEngine: ObservableObject {
                 action = nil
             }
 
+            let memory = entries.reduce(UInt64(0)) { $0 + $1.rssBytes }
+            let isHung = (highCpuSince[profile.id].map { now.timeIntervalSince($0) >= config.runawayDurationThreshold } ?? false)
+
             results.append(AgentSnapshot(
                 profile: profile,
                 level: level,
@@ -302,7 +305,9 @@ public final class ActivityEngine: ObservableObject {
                 lastActivityText: Self.formatAgo(newestAgo),
                 tokenUsage: tokenMonitor.usage[profile.id],
                 pid: matchedPID,
-                currentAction: action
+                currentAction: action,
+                memoryBytes: memory,
+                isHung: isHung
             ))
         }
 

@@ -32,12 +32,13 @@ public enum Probe {
         let snaps = engine.sample()
 
         print("")
-        print(pad("AGENT", 12) + pad("LEVEL", 9) + pad("CPU%", 6) + pad("PROC", 5) + pad("INST", 5) + pad("SESS", 5) + pad("ACTION", 22) + "LAST ACTIVITY")
-        print(String(repeating: "-", count: 84))
+        print(pad("AGENT", 12) + pad("LEVEL", 9) + pad("CPU%", 6) + pad("MEM", 7) + pad("PROC", 5) + pad("INST", 5) + pad("SESS", 5) + pad("ACTION", 22) + "LAST ACTIVITY")
+        print(String(repeating: "-", count: 91))
         for s in snaps {
             print(pad(s.profile.name, 12)
-                  + pad(s.level.rawValue.uppercased(), 9)
+                  + pad(s.isHung ? "HUNG" : s.level.rawValue.uppercased(), 9)
                   + pad(String(format: "%.1f", s.cpuPercent), 6)
+                  + pad(s.memoryText, 7)
                   + pad(s.processRunning ? "YES" : "no", 5)
                   + pad(s.installed ? "yes" : "no", 5)
                   + pad("\(s.activeSessions)", 5)
