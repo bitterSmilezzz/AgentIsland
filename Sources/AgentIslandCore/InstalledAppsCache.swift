@@ -104,14 +104,14 @@ public final class InstalledAppsCache: @unchecked Sendable {
     /// 已知 CLI 名（PATH 扫描用）
     private static let knownCLIs = ["dim", "codex", "claude", "cursor", "trae", "opencode",
                             "hermes-agent", "aider", "gemini", "windsurf", "agent-browser",
-                            "tiny-agents", "continue", "zcode", "zcode-cli", "antigravity", "agy"]
+                            "tiny-agents", "continue", "zcode", "zcode-cli", "antigravity", "agy",
+                            "dsh"]
 
     /// 已知 GUI bundle id（/Applications 扫描用）
     private static let knownBundleIDs: [String: String] = [
         "com.dimcode.app": "dim",
         "com.anthropic.claudefordesktop": "claude",
         "com.anthropic.claudecode": "claude",
-        "com.openai.codex": "codex",
         "com.todesktop.230113mital1efw": "cursor",
         "cn.trae.solo.app": "trae",
         "com.tencent.imamac": "copilot",
@@ -119,6 +119,8 @@ public final class InstalledAppsCache: @unchecked Sendable {
         "dev.zcode.app": "zcode",
         "com.google.antigravity": "antigravity",
         "com.continue.continue": "continue",
+        "ai.opencode.desktop": "opencode",
+        "com.openai.codex": "chatgpt",
     ]
 
     /// PATH 扫描 + 补扫常见非 PATH 安装目录（~/.local/bin 等未入 PATH 时 CLI 实际可用）

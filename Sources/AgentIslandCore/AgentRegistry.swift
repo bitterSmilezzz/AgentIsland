@@ -30,7 +30,7 @@ public enum AgentRegistry {
             id: "codex",
             name: "Codex",
             icon: "chevron.left.forwardslash.chevron.right",
-            bundleIDs: ["com.openai.codex"],
+            bundleIDs: [],
             processNames: ["codex", "Codex"],
             sessionDirs: [home(".codex/sessions"), home(".codex")],
             category: .assistant
@@ -104,9 +104,9 @@ public enum AgentRegistry {
             id: "opencode",
             name: "OpenCode",
             icon: "terminal.fill",
-            bundleIDs: [],
+            bundleIDs: ["ai.opencode.desktop"],
             processNames: ["opencode"],
-            sessionDirs: [home(".config/opencode")],
+            sessionDirs: [home(".config/opencode"), home(".local/share/opencode")],
             category: .assistant
         ),
         AgentProfile(
@@ -115,7 +115,7 @@ public enum AgentRegistry {
             icon: "wand.and.stars",
             bundleIDs: [],
             processNames: ["hermes-agent", "hermes"],
-            sessionDirs: [home(".local/share/hermes")],
+            sessionDirs: [home(".hermes/sessions"), home(".hermes/logs")],
             category: .assistant
         ),
         AgentProfile(
@@ -127,6 +127,25 @@ public enum AgentRegistry {
             sessionDirs: [home(".continue")],
             defaultEnabled: false,
             category: .codeEditor
+        ),
+        AgentProfile(
+            id: "chatgpt",
+            name: "ChatGPT",
+            icon: "brain.head.profile",
+            bundleIDs: ["com.openai.codex"],
+            processNames: ["ChatGPT"],
+            sessionDirs: [home("Library/Application Support/com.openai.codex")],
+            category: .assistant
+        ),
+        AgentProfile(
+            id: "dsh",
+            name: "DSH",
+            icon: "bolt.horizontal.fill",
+            bundleIDs: [],
+            processNames: ["dsh"],
+            pathContains: ["deepseek-harness"],
+            sessionDirs: [home(".dsh/sessions"), home(".dsh/storages")],
+            category: .assistant
         ),
     ]
 

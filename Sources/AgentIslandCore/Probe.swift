@@ -1,13 +1,13 @@
 import Foundation
 
 // MARK: - 无头探测（--probe）
-// 用真实监控器采样一次，打印各 Agent 状态表，用于快速验证引擎。
+// 用真实监控器采样两次（间隔 1.5s），输出真实 CPU 差分百分比。
 
 public enum Probe {
 
     @MainActor
     public static func run() -> Int32 {
-        print("AgentIsland probe — 真实环境状态采样")
+        print("AgentIsland probe — 真实环境状态采样（双拍 CPU 差分）")
         // 一次性 CLI 工具：同步扫描安装缓存可接受
         let installedApps = InstalledAppsCache()
         installedApps.refresh()
@@ -24,6 +24,11 @@ public enum Probe {
             fileMonitor: monitor,                       // 真实文件系统（后台扫描）
             installedApps: installedApps                // 已热缓存（init 首刷跳过，不双扫）
         )
+        // 第一次采样：建立 CPU 差分基线（所有 PID 首次见到返回 0）
+        engine.sample()
+        print("  ⏳ 采集 CPU 基线…（1.5s）")
+        Thread.sleep(forTimeInterval: 1.5)
+        // 第二次采样：此次 CPU% 为真实窗口差分值
         let snaps = engine.sample()
 
         print("")

@@ -165,7 +165,7 @@ public struct AgentTaskEvent: Identifiable, Equatable {
 
 public struct EngineConfig: Equatable {
     public var sampleInterval: TimeInterval = 2.0      // 有活动时采样间隔
-    public var idleSampleInterval: TimeInterval = 15.0 // 全闲置时降频采样间隔
+    public var idleSampleInterval: TimeInterval = 5.0  // 全闲置时降频采样间隔（5s：反应速度与节能平衡）
     public var workingWindow: TimeInterval = 60.0      // 该窗口内有文件写入 → working（双信号之一）
     public var cpuThreshold: Double = 1.0              // 进程 CPU% 超过 → working（双信号之二，ps 平均值偏低故取 1%）
     public var activeSessionWindow: TimeInterval = 600.0 // 活跃会话计数窗口（10 分钟）
@@ -177,7 +177,7 @@ public struct EngineConfig: Equatable {
     public var runawayDurationThreshold: TimeInterval = 300 // 持续高负载时长阈值 (5 分钟)
 
     public init(sampleInterval: TimeInterval = 2.0,
-                idleSampleInterval: TimeInterval = 15.0,
+                idleSampleInterval: TimeInterval = 5.0,
                 workingWindow: TimeInterval = 60.0,
                 cpuThreshold: Double = 1.0,
                 activeSessionWindow: TimeInterval = 600.0,

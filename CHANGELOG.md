@@ -4,6 +4,21 @@
 
 ---
 
+## [1.7.1] - 2026-09-08
+
+### 🔧 Agent 识别与状态检测全面修复
+
+- **修复 ChatGPT/Codex BundleID 冲突**：`com.openai.codex` 实为 ChatGPT 桌面版，已独立为 ChatGPT profile，Codex 改为纯 CLI 检测
+- **新增 ChatGPT 内置 profile**：`com.openai.codex` bundleID，独立监控 ChatGPT 桌面版运行状态
+- **新增 DSH (DeepSeek Harness) 内置 profile**：进程名 `dsh` + pathContains `deepseek-harness`，会话目录 `~/.dsh/sessions` & `~/.dsh/storages`
+- **修复 OpenCode.app 不被识别**：添加 `ai.opencode.desktop` bundleID，GUI 与 CLI 双路径均可检测
+- **修复 Hermes sessionDirs 路径错误**：`~/.local/share/hermes`（不存在）→ `~/.hermes/sessions` + `~/.hermes/logs`（实际数据位置）
+- **Probe CPU 双拍差分**：`--probe` 改为两次采样（1.5s 间隔），输出真实 CPU% 窗口值（修复永远 0.0 的问题）
+- **闲置态采样提速 3×**：`idleSampleInterval` 从 15s 降至 5s，Agent 开始工作后最迟 5s 即被感知
+- **InstalledAppsCache 同步**：`knownBundleIDs` 与 `knownCLIs` 与注册表完全同步
+
+---
+
 ## [1.7.0] - 2026-09-07
 
 ### 💎 深度设计重构（CodeNotch 灵感：一体化反向倒角、微仪表环与悬停透视卡片）
