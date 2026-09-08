@@ -15,6 +15,7 @@ public final class ActivityEngine: ObservableObject {
     @Published public private(set) var anyWorking = false
     @Published public private(set) var updatedAt = Date()
     @Published public private(set) var latestEvent: AgentTaskEvent? = nil
+    public private(set) var cleaner: AgentCleaner!
 
     public var config: EngineConfig {
         didSet { applyConfig() }
@@ -54,6 +55,7 @@ public final class ActivityEngine: ObservableObject {
         self.fileMonitor = fileMonitor
         self.tokenMonitor = tokenMonitor
         self.installedApps = installedApps
+        self.cleaner = AgentCleaner(processMonitor: processMonitor)
         // 启用集记录（组合根传持久化集；nil 则按当前 profiles 推导）——首刷完成后重放用
         self.lastEnabledIDs = enabledIDs ?? Set(profiles.map(\.id))
         // 安装缓存首刷（warmUp：已热幂等跳过，与组合根/Probe 预热互不双扫）。
@@ -413,6 +415,30 @@ public final class ActivityEngine: ObservableObject {
             detail: pid != nil ? "已向 PID \(pid!) 及其关联子进程发送 SIGTERM/SIGKILL 终止信号，系统资源已释放。" : "已向该 Agent 执行终止指令。"
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.sample()
+        }
+    }
+
+    /// 智能体工作台一键清理：安全清理指定的异常/孤儿进程并展示清理横幅
+    public func cleanAnomalies(_ anomalies: [AgentAnomaly]) {
+        guard !anomalies.isEmpty else { return }
+        let res = cleaner.clean(anomalies: anomalies)
+        for a in anomalies {
+            workingSince[a.profileId] = nil
+            highCpuSince[a.profileId] = nil
+            lastRunawayAlertedAt[a.profileId] = nil
+        }
+        latestEvent = AgentTaskEvent(
+            agentId: "workbench-cleaner",
+            agentName: "工作台维护",
+            eventType: .completed,
+            duration: 0,
+            timestamp: Date(),
+            pid: nil,
+            message: "已安全清理 \(res.terminatedCount) 个异常进程",
+            detail: "工作台已成功释放 \(res.terminatedCount) 个孤儿/假死智能体进程，预估回收 \(res.reclaimedMemoryText) 物理内存，系统资源已就绪。"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.sample()
         }
     }

@@ -13,13 +13,15 @@ public struct ProcessSnapshot {
         public let basename: String   // 路径最后一段（小写）
         public let cpuPercent: Double // 窗口利用率（差分），首拍为 0
         public let rssBytes: UInt64   // 物理内存占用（RSS），字节数
+        public let ppid: Int32        // 父进程 PID
 
-        public init(pid: Int32, path: String, basename: String, cpuPercent: Double, rssBytes: UInt64 = 0) {
+        public init(pid: Int32, path: String, basename: String, cpuPercent: Double, rssBytes: UInt64 = 0, ppid: Int32 = 0) {
             self.pid = pid
             self.path = path
             self.basename = basename
             self.cpuPercent = cpuPercent
             self.rssBytes = rssBytes
+            self.ppid = ppid
         }
     }
 
@@ -134,9 +136,9 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         guard got > 0 else { return ProcessSnapshot(entries: []) }
 
         var entries: [ProcessSnapshot.Entry] = []
+        let pidCount = min(pids.count, Int(got) / MemoryLayout<pid_t>.size)
         var alivePids = Set<Int32>()
-        alivePids.reserveCapacity(Int(got))
-        let pidCount = Int(got)
+        alivePids.reserveCapacity(pidCount)
         let pathBufSize = 4096   // 足够容纳最长可执行路径（PROC_PIDPATHINFO_MAXSIZE ≈ 4KB）
 
         for i in 0..<pidCount {
@@ -171,8 +173,13 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
             // 4) 差分 CPU%（锁内更新缓存，线程安全）
             let cpuPercent = cpuTime >= 0 ? cache.update(pid: pid, cpuTime: cpuTime, wallDelta: wallDelta) : 0
 
+            // 5) 父进程 PPID（用于孤儿进程检测）
+            var bsd = proc_bsdinfo()
+            let bsdRc = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout<proc_bsdinfo>.size))
+            let ppid: Int32 = bsdRc > 0 ? Int32(bsd.pbi_ppid) : 0
+
             let base = (path as NSString).lastPathComponent.lowercased()
-            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent, rssBytes: rss))
+            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent, rssBytes: rss, ppid: ppid))
         }
 
         cache.setWall(now)
@@ -288,6 +295,31 @@ public struct ProcessMatcher: @unchecked Sendable {
     public func memoryBytes(_ profile: AgentProfile) -> UInt64 {
         matchingEntries(for: profile).reduce(0) { $0 + $1.rssBytes }
     }
+
+    /// 获取所有匹配任一已配置 Agent 的进程条目
+    public func allMatchingEntries() -> [ProcessSnapshot.Entry] {
+        var result: [ProcessSnapshot.Entry] = []
+        var seenPids = Set<Int32>()
+        for entry in snapshot.entries where entry.pid > 0 {
+            for (_, sets) in profileSets {
+                let nameHit = Self.matchesProcessNames(sets.names, basename: entry.basename)
+                if nameHit {
+                    if sets.paths.isEmpty || Self.matchesPathContains(sets.paths, path: entry.path) {
+                        if !ProcessSnapshot.isSystemPath(entry.path) && !ProcessSnapshot.isBlacklisted(entry.basename) {
+                            if !seenPids.contains(entry.pid) {
+                                seenPids.insert(entry.pid)
+                                result.append(entry)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /// 获取底层 ProcessSnapshot
+    public var rawSnapshot: ProcessSnapshot { snapshot }
 }
 
 // MARK: - 测试用假实现

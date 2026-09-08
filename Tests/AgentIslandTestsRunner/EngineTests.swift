@@ -108,6 +108,28 @@ enum EngineTests {
             try expectTrue(engine.latestEvent?.message?.contains("进程已终止") == true, "应提示已终止")
         }
 
+        TestKit.test("工作台维护: scanAnomalies 孤儿/异常检测与 cleanAnomalies 一键清理") {
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+            let anomaly = AgentAnomaly(
+                id: "test-anomaly",
+                pid: 88888,
+                ppid: 1,
+                agentName: "DimAgent",
+                profileId: "dim",
+                commandPath: "/usr/local/bin/dim",
+                cpuPercent: 50.0,
+                memoryBytes: 524_288_000,
+                anomalyType: .orphan,
+                reason: "测试孤儿进程"
+            )
+            try expectEqual(anomaly.memoryText, "500M")
+            engine.cleanAnomalies([anomaly])
+            try expectEqual(engine.latestEvent?.agentId, "workbench-cleaner")
+            try expectEqual(engine.latestEvent?.eventType, .completed)
+            try expectTrue(engine.latestEvent?.message?.contains("已安全清理") == true)
+        }
+
         TestKit.test("熔断保护: Token 激增告警触发") {
             let fake = FakeTokenUsageMonitor()
             fake.usage["dim"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)

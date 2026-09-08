@@ -58,6 +58,7 @@ enum CardRoute: Equatable {
     case list                     // 主卡：agent 列表 + 汇总栏
     case agentDetail(String)      // agent 详情：总览 + 模型拆分
     case sessions(String, String) // agentId + modelId：该模型会话列表
+    case toolbox                  // 快捷工具箱：孤儿进程/假死死锁扫描与清理
 }
 
 // MARK: - 灵动岛视图
@@ -133,6 +134,8 @@ struct IslandView: View {
             case .sessions(let agentId, let modelId):
                 SessionListView(engine: engine, controller: controller,
                                 agentId: agentId, modelId: modelId)
+            case .toolbox:
+                ToolboxView(engine: engine, controller: controller)
             }
         }
     }
@@ -212,6 +215,19 @@ struct IslandView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("外观主题：\(controller.appearanceMode.label)（点击切换）")
+
+                // 工作台快捷维护工具箱（v1.7.7）
+                Button {
+                    controller.route = .toolbox
+                } label: {
+                    Image(systemName: "wrench.and.screwdriver")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.onDarkFaint)
+                        .padding(4)
+                        .background(Circle().fill(Theme.chipFill))
+                }
+                .buttonStyle(.plain)
+                .help("智能体维护工作台：扫描清理孤儿进程、死锁与内存泄露")
 
                 // 一键收起按钮
                 Button {
