@@ -32,7 +32,9 @@ public enum AgentRegistry {
             icon: "chevron.left.forwardslash.chevron.right",
             bundleIDs: [],
             processNames: ["codex", "Codex"],
-            sessionDirs: [home(".codex/sessions"), home(".codex")],
+            // 只监控会话 JSONL 目录；~/.codex 根目录含 sqlite/WAL/cache，被 app 后台高频刷新，
+            // 会导致 Codex 仅打开但未运行任务时被误判为 WORKING
+            sessionDirs: [home(".codex/sessions")],
             category: .assistant
         ),
         AgentProfile(
