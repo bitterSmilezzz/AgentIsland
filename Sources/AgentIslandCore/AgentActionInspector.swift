@@ -107,18 +107,26 @@ public enum AgentActionInspector {
 
     // MARK: - 2. DimAgent 会话数据库探测
 
-    public static func inspectDimAction() -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.dimcode/v2/dimcode.sqlite"
+    public static func inspectDimAction(dbPath: String? = nil, now: Date = Date()) -> String? {
+        let path: String
+        if let custom = dbPath {
+            path = custom
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            path = "\(home)/.dimcode/v2/dimcode.sqlite"
+        }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+
         var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             return nil
         }
         defer { sqlite3_close(db) }
 
+        // 查询最新的 1 条消息（按 createdAt 降序）
         let sql = """
-        SELECT role, toolMetadata, parts FROM messages 
-        WHERE createdAt >= datetime('now', '-5 minutes')
+        SELECT role, toolMetadata, parts, unixepoch(updatedAt), unixepoch(createdAt), updatedAt, createdAt 
+        FROM messages 
         ORDER BY createdAt DESC LIMIT 1;
         """
         var stmt: OpaquePointer?
@@ -126,22 +134,130 @@ public enum AgentActionInspector {
         defer { sqlite3_finalize(stmt) }
 
         if sqlite3_step(stmt) == SQLITE_ROW {
+            let role = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
             let toolMeta = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
             let parts = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+            let updatedEpoch = sqlite3_column_int64(stmt, 3)
+            let createdEpoch = sqlite3_column_int64(stmt, 4)
 
-            if !toolMeta.isEmpty {
-                if toolMeta.contains("\"write\"") { return "正在编辑代码" }
-                if toolMeta.contains("\"bash\"") || toolMeta.contains("\"run\"") { return "正在执行终端命令" }
-                if toolMeta.contains("\"view\"") || toolMeta.contains("\"read\"") { return "正在阅读代码" }
-                if let name = extractToolName(from: toolMeta) {
-                    return "正在使用工具: \(name)"
-                }
+            var effectiveEpoch = max(Double(updatedEpoch), Double(createdEpoch))
+            if effectiveEpoch <= 0 {
+                let updatedStr = sqlite3_column_text(stmt, 5).map { String(cString: $0) } ?? ""
+                let createdStr = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? ""
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let d1 = formatter.date(from: updatedStr)?.timeIntervalSince1970 ?? 0
+                let d2 = formatter.date(from: createdStr)?.timeIntervalSince1970 ?? 0
+                effectiveEpoch = max(d1, d2)
             }
-            if parts.contains("\"thinking\"") {
-                return "思考规划中"
-            }
+
+            let age = now.timeIntervalSince1970 - effectiveEpoch
+            return parseDimMessage(role: role, toolMeta: toolMeta, parts: parts, age: age)
         }
         return nil
+    }
+
+    /// 解析 DimCode 消息并提取实时运行动作（纯函数，隔离测试）
+    public static func parseDimMessage(role: String, toolMeta: String, parts: String, age: TimeInterval) -> String? {
+        // 1. 超过活跃窗口（90s）判定为完全闲置，不透传任何动作
+        guard age >= 0 && age <= 90 else { return nil }
+
+        // 2. 若用户刚发送 Prompt（role = user），等待模型响应中
+        if role == "user" {
+            return "思考规划中"
+        }
+
+        // 3. 若工具刚返回结果（role = tool_result），等待模型消化结果并规划下一步
+        if role == "tool_result" {
+            return "思考规划中"
+        }
+
+        // 4. 若为 assistant 角色，深度校验在途状态与思考/工具调用
+        if role == "assistant" {
+            // 4.1 优先检查 toolMetadata 是否包含正在执行（running / pending）的工具
+            if !toolMeta.isEmpty {
+                if let (name, status) = extractRunningDimToolCall(from: toolMeta) {
+                    if status != "completed" && status != "success" && status != "error" {
+                        return mapDimToolAction(name)
+                    }
+                }
+            }
+
+            // 4.2 深度解析 parts JSON
+            if let data = parts.data(using: .utf8),
+               let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+               let lastPart = array.last {
+
+                let hasEndTime = lastPart["endTime"] != nil
+                let type = lastPart["type"] as? String ?? ""
+
+                // 核心修复：若最后一个 part 包含 endTime，说明当前回复阶段已全部完成！绝不误报「思考规划中」
+                if hasEndTime {
+                    return nil
+                }
+
+                if type == "thinking" {
+                    return "思考规划中"
+                } else if type == "text" {
+                    return "正在生成回复"
+                } else if type == "tool_use" {
+                    let toolName = lastPart["name"] as? String ?? ""
+                    return mapDimToolAction(toolName)
+                }
+            }
+
+            // 4.3 parts 降级兜底：只有包含 thinking 且明确不含 endTime 时才报思考
+            if parts.contains("\"thinking\"") && !parts.contains("\"endTime\"") {
+                return "思考规划中"
+            }
+            if parts.contains("\"text\"") && !parts.contains("\"endTime\"") {
+                return "正在生成回复"
+            }
+        }
+
+        return nil
+    }
+
+    /// 从 toolMetadata 中提取首个工具及其状态
+    public static func extractRunningDimToolCall(from json: String) -> (name: String, status: String)? {
+        guard let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let toolCalls = dict["toolCalls"] as? [[String: Any]] {
+            for call in toolCalls {
+                let name = call["name"] as? String ?? ""
+                let status = call["status"] as? String ?? ""
+                if !name.isEmpty {
+                    return (name, status)
+                }
+            }
+        }
+        if let name = dict["toolName"] as? String {
+            let status = dict["status"] as? String ?? ""
+            return (name, status)
+        }
+        return nil
+    }
+
+    /// 映射 DimAgent 工具名称为高质自然语言文案
+    public static func mapDimToolAction(_ rawName: String) -> String {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return "正在调用工具" }
+        let lower = name.lowercased()
+        if lower.contains("write") || lower.contains("edit") || lower.contains("todowrite") || lower.contains("patch") {
+            return "正在编辑代码"
+        }
+        if lower.contains("bash") || lower.contains("exec") || lower.contains("run") || lower.contains("command") {
+            return "正在执行终端命令"
+        }
+        if lower.contains("view") || lower.contains("read") || lower.contains("glob") || lower.contains("list") {
+            return "正在阅读代码"
+        }
+        if lower.contains("search") || lower.contains("websearch") {
+            return "正在搜索网络"
+        }
+        return "正在使用工具: \(name)"
     }
 
     // MARK: - 3. Codex 会话探测
@@ -364,7 +480,7 @@ public enum AgentActionInspector {
 
     // MARK: - 7. WorkBuddy 会话数据库探测
 
-    public static func inspectWorkBuddyAction() -> String? {
+    public static func inspectWorkBuddyAction(now: Date = Date()) -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.workbuddy/workbuddy.db"
         var db: OpaquePointer?
@@ -374,30 +490,75 @@ public enum AgentActionInspector {
         defer { sqlite3_close(db) }
 
         // 查询未软删除的最新活跃/最近会话
-        let sql = "SELECT COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
+        let sql = "SELECT id, COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
 
         if sqlite3_step(stmt) == SQLITE_ROW {
-            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            let updatedAtMs = sqlite3_column_int64(stmt, 3)
-            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            let sessionId = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            let title = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+            let status = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+            let updatedAtMs = sqlite3_column_int64(stmt, 4)
+            let nowMs = Int64(now.timeIntervalSince1970 * 1000)
 
             if !title.isEmpty {
                 let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
                 let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
                 let timeAgoMs = nowMs - updatedAtMs
-                if status.lowercased() == "active" {
-                    if timeAgoMs <= 5 * 60 * 1000 { // 5 分钟内活跃更新才视作真正运行中
-                        return "正在: \(display)"
-                    } else if timeAgoMs <= 2 * 60 * 60 * 1000 { // 2 小时内挂起会话
-                        return "待机: \(display)"
-                    }
-                } else if timeAgoMs <= 60 * 60 * 1000 { // 1 小时内活跃
-                    return "任务: \(display)"
+
+                // 核心修复：会话闲置超过 120 秒（2分钟）或非 active，判定为非在途状态，返回 nil（防止在后台挂起时误报「待机」使引擎误判为 working）
+                guard timeAgoMs <= 120 * 1000 && status.lowercased() == "active" else {
+                    return nil
                 }
+
+                // 尝试细粒度探测会话 jsonl 日志中的最新动作
+                if let detailedAction = inspectWorkBuddySessionLog(sessionId: sessionId, home: home) {
+                    return detailedAction
+                }
+
+                return "正在: \(display)"
+            }
+        }
+        return nil
+    }
+
+    /// 探测 WorkBuddy 会话日志获取具体动作
+    private static func inspectWorkBuddySessionLog(sessionId: String, home: String) -> String? {
+        guard !sessionId.isEmpty else { return nil }
+        let projectsDir = URL(fileURLWithPath: "\(home)/.workbuddy/projects")
+        let fm = FileManager.default
+        guard let subdirs = try? fm.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil) else {
+            return nil
+        }
+        for sub in subdirs {
+            let jsonlURL = sub.appendingPathComponent("\(sessionId).jsonl")
+            if fm.fileExists(atPath: jsonlURL.path) {
+                if let lastLine = readLastNonEmptyLine(from: jsonlURL) {
+                    if lastLine.contains("\"status\":\"completed\"") && lastLine.contains("\"type\":\"message\"") {
+                        // 该轮已完成回复
+                        return nil
+                    }
+                    if lastLine.contains("\"type\":\"reasoning\"") {
+                        return "思考规划中"
+                    }
+                    if lastLine.contains("\"type\":\"function_call\"") {
+                        if lastLine.contains("\"Edit\"") || lastLine.contains("\"Write\"") {
+                            return "正在编辑代码"
+                        }
+                        if lastLine.contains("\"WebSearch\"") || lastLine.contains("\"Search\"") {
+                            return "正在搜索网络"
+                        }
+                        if lastLine.contains("\"Bash\"") || lastLine.contains("\"Run\"") {
+                            return "正在执行终端命令"
+                        }
+                        if let name = extractToolName(from: lastLine) {
+                            return "正在使用工具: \(name)"
+                        }
+                        return "正在调用工具"
+                    }
+                }
+                break
             }
         }
         return nil

@@ -471,6 +471,70 @@ enum EngineTests {
             _ = AgentActionInspector.inspectDSHAction(pid: -1)
             _ = AgentActionInspector.inspectHermesAction()
             _ = AgentActionInspector.inspectZCodeAction()
+            _ = AgentActionInspector.inspectDimAction()
+        }
+
+        TestKit.test("动作透传: DimAgent parseDimMessage 消息解析与已完成思考防误报") {
+            // 1. 已完成思考与回复（含 endTime）→ 严禁报「思考规划中」，必须返回 nil
+            let completedParts = """
+            [
+              {"type":"thinking","thinking":"查了一圈，已有证据","startTime":"2026-09-09T05:30:00.000Z","endTime":"2026-09-09T05:30:05.000Z"},
+              {"type":"text","text":"结论是官方桌面版在做","startTime":"2026-09-09T05:30:05.000Z","endTime":"2026-09-09T05:30:10.000Z"}
+            ]
+            """
+            let r1 = AgentActionInspector.parseDimMessage(role: "assistant", toolMeta: "", parts: completedParts, age: 5)
+            try expectNil(r1, "已完成回复（含 endTime）应返回 nil，绝不可误报思考中")
+
+            // 2. 真正处于思考阶段（thinking 无 endTime）→ 返回「思考规划中」
+            let thinkingParts = """
+            [
+              {"type":"thinking","thinking":"正在深度调研主仓提交记录...","startTime":"2026-09-09T05:30:00.000Z"}
+            ]
+            """
+            let r2 = AgentActionInspector.parseDimMessage(role: "assistant", toolMeta: "", parts: thinkingParts, age: 3)
+            try expectEqual(r2, "思考规划中", "在途思考应准确识别")
+
+            // 3. 正在流式生成文本（text 无 endTime）→ 返回「正在生成回复」
+            let streamingParts = """
+            [
+              {"type":"thinking","thinking":"思考完成","startTime":"2026-09-09T05:30:00.000Z","endTime":"2026-09-09T05:30:05.000Z"},
+              {"type":"text","text":"下面是分析结果...","startTime":"2026-09-09T05:30:05.000Z"}
+            ]
+            """
+            let r3 = AgentActionInspector.parseDimMessage(role: "assistant", toolMeta: "", parts: streamingParts, age: 2)
+            try expectEqual(r3, "正在生成回复", "在途文本流式生成应识别")
+
+            // 4. 正在调用工具（tool_use 无 endTime）
+            let toolParts = """
+            [
+              {"type":"thinking","thinking":"先跑一下测试","endTime":"2026-09-09T05:30:05.000Z"},
+              {"type":"tool_use","name":"exec","input":{"command":"swift test"},"startTime":"2026-09-09T05:30:06.000Z"}
+            ]
+            """
+            let r4 = AgentActionInspector.parseDimMessage(role: "assistant", toolMeta: "", parts: toolParts, age: 4)
+            try expectEqual(r4, "正在执行终端命令", "在途 exec 应映射为终端命令")
+
+            // 5. 超过 90 秒活跃窗口 → 即使有内容也返回 nil（完全闲置）
+            let r5 = AgentActionInspector.parseDimMessage(role: "assistant", toolMeta: "", parts: thinkingParts, age: 120)
+            try expectNil(r5, "超过 90s 的旧消息应视为已挂起闲置")
+
+            // 6. 用户新提问（role = user）在 90s 内 → 进入「思考规划中」
+            let r6 = AgentActionInspector.parseDimMessage(role: "user", toolMeta: "", parts: "[]", age: 10)
+            try expectEqual(r6, "思考规划中", "刚发送的 user 消息应进入思考规划态")
+        }
+
+        TestKit.test("引擎: DimAgent / WorkBuddy 过滤 Electron 辅助进程空闲 CPU 抖动") {
+            let now = Date()
+            // 模拟 DimAgent 在后台挂起：无新写入、无活跃在途动作、进程存在但仅有 8% 的 Electron 空闲渲染抖动
+            let engine = makeEngine(
+                processNames: ["DimAgent"],
+                writes: [home + "/.dimcode/v2/data/sessions": now.addingTimeInterval(-300)],
+                cpu: 8.0 // 超过默认 6.0% 阈值，但属于 Electron 空闲辅助进程抖动
+            )
+            let snaps = engine.sample(now: now)
+            let dimSnap = snaps.first { $0.id == "dim" }
+            try expectEqual(dimSnap?.level, .idle, "DimAgent 8% 的 Electron 空闲 CPU 抖动应保持 idle")
+            try expectNil(dimSnap?.currentAction, "空闲挂起时不应透传任何错误动作")
         }
     }
 

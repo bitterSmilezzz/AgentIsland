@@ -261,6 +261,24 @@ public final class ActivityEngine: ObservableObject {
                 return now.timeIntervalSince(newest)
             }()
 
+            // 先行透传检查：如果已有明确在途动作（如正在思考/正在编辑），直接构成核心工作信号
+            let detectedAction = running ? AgentActionInspector.inspectAction(pid: matchedPID, profile: profile, sessionDirs: profile.sessionDirs) : nil
+
+            let hasRecentWrite = newestAgo.map { $0 <= config.workingWindow } ?? false
+            let hasActiveAction = detectedAction != nil
+
+            // 智能 CPU 判定：
+            // 对于具备专有会话数据库/日志追踪的 GUI 智能体（如 DimAgent、WorkBuddy）：
+            // 若数据库明确无在途会话（detectedAction == nil）且会话目录无新写入，
+            // 过滤 Electron 辅助进程渲染与 IPC 空闲微抖动（4%~15%），仅当 CPU 达真正高算力（>= 20.0%）才触发 working；
+            // 其它智能体维持通用 cpuThreshold。
+            let hasHighCpu: Bool
+            if profile.id == "dim" || profile.id == "workbuddy" {
+                hasHighCpu = cpu >= 20.0
+            } else {
+                hasHighCpu = cpu > config.cpuThreshold
+            }
+
             let level: ActivityLevel
             if !running {
                 level = .offline
@@ -270,7 +288,7 @@ public final class ActivityEngine: ObservableObject {
                 workingSince[profile.id] = nil
                 highCpuSince[profile.id] = nil
                 lastRunawayAlertedAt[profile.id] = nil
-            } else if (newestAgo.map { $0 <= config.workingWindow } ?? false) || cpu > config.cpuThreshold {
+            } else if hasRecentWrite || hasActiveAction || hasHighCpu {
                 level = .working
                 if workingSince[profile.id] == nil { workingSince[profile.id] = now }
             } else if let since = workingSince[profile.id],
@@ -283,12 +301,13 @@ public final class ActivityEngine: ObservableObject {
                     recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
                 }
                 workingSince[profile.id] = nil
+                highCpuSince[profile.id] = nil
             }
 
             let action: String?
             if level == .working {
                 anyWork = true
-                action = AgentActionInspector.inspectAction(pid: matchedPID, profile: profile, sessionDirs: profile.sessionDirs)
+                action = detectedAction
             } else {
                 action = nil
             }
