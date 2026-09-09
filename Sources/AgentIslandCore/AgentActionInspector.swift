@@ -312,11 +312,8 @@ public enum AgentActionInspector {
                     actionText = name
                 }
 
-                if var text = actionText {
-                    text = text.trimmingCharacters(in: CharacterSet(charactersIn: "\" \t\n\r"))
-                    if !text.isEmpty {
-                        return "正在: \(text)"
-                    }
+                if let text = actionText, !text.isEmpty {
+                    return cleanAntigravityAction(text)
                 }
             }
 
@@ -328,6 +325,41 @@ public enum AgentActionInspector {
         }
 
         return nil
+    }
+
+    /// 清洗与汉化 Antigravity 动作文案（移除冗余前缀、动词本土化、长度归一）
+    public static func cleanAntigravityAction(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\" \t\n\r"))
+        let prefixMap: [(String, String)] = [
+            ("Viewing ", "查看: "),
+            ("Reading ", "读取: "),
+            ("Listing ", "列出: "),
+            ("Editing ", "编辑: "),
+            ("Writing ", "写入: "),
+            ("Searching ", "搜索: "),
+            ("Running ", "运行: "),
+            ("Building ", "构建: "),
+            ("Analyzing ", "分析: "),
+            ("Checking ", "检查: "),
+            ("Finding ", "查找: "),
+            ("Sending ", "发送: "),
+            ("Pushing ", "推送: "),
+            ("Updating ", "更新: "),
+            ("Executing ", "执行: ")
+        ]
+        for (eng, chn) in prefixMap {
+            if text.hasPrefix(eng) {
+                text = chn + text.dropFirst(eng.count)
+                break
+            }
+        }
+        if !text.contains(":") && !text.contains("：") && !text.hasPrefix("正在") && !text.hasPrefix("思考") {
+            text = "执行: \(text)"
+        }
+        if text.count > 42 {
+            text = String(text.prefix(39)) + "..."
+        }
+        return text
     }
 
     // MARK: - 7. WorkBuddy 会话数据库探测

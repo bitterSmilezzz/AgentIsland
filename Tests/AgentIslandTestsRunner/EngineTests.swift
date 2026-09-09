@@ -215,6 +215,13 @@ enum EngineTests {
             try expectEqual(AgentActionInspector.cleanCommand("npm run build"), "npm run build")
         }
 
+        TestKit.test("动作透传: cleanAntigravityAction 动作清洗与汉化") {
+            try expectEqual(AgentActionInspector.cleanAntigravityAction("\"Viewing HistoryTrendChart implementation\""), "查看: HistoryTrendChart implementation")
+            try expectEqual(AgentActionInspector.cleanAntigravityAction("Reading Theme.swift"), "读取: Theme.swift")
+            try expectEqual(AgentActionInspector.cleanAntigravityAction("Pushing to origin main"), "推送: to origin main")
+            try expectEqual(AgentActionInspector.cleanAntigravityAction("git status"), "执行: git status")
+        }
+
         TestKit.test("工具: formatAgo 文案") {
             try expectEqual(ActivityEngine.formatAgo(2), "刚刚")
             try expectEqual(ActivityEngine.formatAgo(30), "30s 前")

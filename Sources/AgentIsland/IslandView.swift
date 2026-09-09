@@ -178,10 +178,19 @@ struct IslandView: View {
                     .frame(width: 9, height: 9)
                 if let active = engine.visibleSnapshots.first(where: { $0.level == .working }),
                    let action = active.currentAction {
-                    Text("\(active.profile.name): \(action)")
-                        .font(Theme.bodyFont(13, weight: .semibold))
-                        .foregroundColor(Theme.onDark)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(active.profile.name)
+                            .font(Theme.bodyFont(13, weight: .bold))
+                            .foregroundColor(Theme.onDark)
+                        Text("·")
+                            .foregroundColor(Theme.onDarkFaint)
+                        Text(action)
+                            .font(Theme.bodyFont(12, weight: .medium))
+                            .foregroundColor(Theme.statusWorking)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .help("\(active.profile.name): \(action)")
                 } else {
                     Text(engine.anyWorking
                          ? "\(engine.workingAgents().count) 个 Agent 正在工作"
@@ -369,144 +378,160 @@ struct AgentRowView: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            AgentRingView(snapshot: snapshot, size: 28)
-                .onHover { h in
-                    showingTooltip = h
-                }
-                .popover(isPresented: $showingTooltip, arrowEdge: controller.dockEdge == .top ? .bottom : .leading) {
-                    AgentHoverTooltipCard(snapshot: snapshot, engine: engine, controller: controller)
-                }
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                AgentRingView(snapshot: snapshot, size: 26)
+                    .onHover { h in
+                        showingTooltip = h
+                    }
+                    .popover(isPresented: $showingTooltip, arrowEdge: controller.dockEdge == .top ? .bottom : .leading) {
+                        AgentHoverTooltipCard(snapshot: snapshot, engine: engine, controller: controller)
+                    }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(snapshot.profile.name)
-                    .font(Theme.bodyFont(12, weight: .semibold))
-                    .foregroundColor(Theme.onDark)
-                    .lineLimit(1)
-                    .help(snapshot.profile.name)
-                HStack(spacing: 6) {
-                    if snapshot.level == .working, let action = snapshot.currentAction {
-                        HStack(spacing: 3) {
-                            Image(systemName: "terminal.fill")
-                                .font(.system(size: 8))
-                                .foregroundColor(Theme.statusWorking)
-                            Text(action)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(snapshot.profile.name)
+                        .font(Theme.bodyFont(12.5, weight: .semibold))
+                        .foregroundColor(Theme.onDark)
+                        .lineLimit(1)
+                        .help(snapshot.profile.name)
+
+                    if snapshot.level != .working || snapshot.currentAction == nil {
+                        if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
+                            Text(Self.tokenBadge(usage))
                                 .font(Theme.monoFont(9))
-                                .foregroundColor(Theme.statusWorking)
-                                .lineLimit(1)
+                                .foregroundColor(Theme.onDark.opacity(0.75))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Theme.chipFill))
+                        } else {
+                            Text(snapshot.lastActivityText)
+                                .font(Theme.bodyFont(9.5))
+                                .foregroundColor(Theme.onDarkFaint)
                         }
-                    } else if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
-                        Text(Self.tokenBadge(usage))
-                            .font(Theme.monoFont(9))
-                            .foregroundColor(Theme.onDark.opacity(0.75))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Theme.chipFill))
-                    } else {
-                        Text(snapshot.lastActivityText)
-                            .font(Theme.bodyFont(10))
-                            .foregroundColor(Theme.onDarkFaint)
                     }
                 }
-            }
 
-            Spacer()
+                Spacer(minLength: 4)
 
-            // 内存占用与健康状态指示（v1.7.6）
-            if snapshot.processRunning && snapshot.memoryBytes > 0 {
-                Text(snapshot.memoryText)
-                    .font(Theme.monoFont(9))
-                    .foregroundColor(Theme.onDarkFaint)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Theme.chipFill))
-                    .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
-            }
-
-            if snapshot.isHung {
-                HStack(spacing: 2) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 8))
-                    Text("疑似卡死")
-                        .font(Theme.bodyFont(9, weight: .bold))
+                // 内存占用与健康状态指示（v1.7.6）
+                if snapshot.processRunning && snapshot.memoryBytes > 0 {
+                    Text(snapshot.memoryText)
+                        .font(Theme.monoFont(9))
+                        .foregroundColor(Theme.onDarkFaint)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Theme.chipFill))
+                        .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
                 }
-                .foregroundColor(Theme.dangerRed)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(Theme.dangerRed.opacity(0.18)))
-                .help("检测到进程持续异常高负荷且缺乏会话响应，疑似处于死循环或线程死锁状态")
-            } else {
-                Text(snapshot.level.label)
-                    .font(Theme.bodyFont(10, weight: .semibold))
-                    .foregroundColor(snapshot.level.color)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(snapshot.level.color.opacity(0.16)))
-            }
 
-            if snapshot.processRunning {
-                HStack(spacing: 4) {
-                    if confirmingKill {
-                        Button {
-                            engine.terminateAgent(pid: snapshot.pid, agentId: snapshot.profile.id)
-                            confirmingKill = false
-                        } label: {
-                            Text("终止?")
-                                .font(Theme.bodyFont(10, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(Color.red.opacity(0.9)))
-                        }
-                        .buttonStyle(.plain)
-                        .help("再次点击立即强制终止该 Agent 进程")
-                        .onAppear {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                if snapshot.isHung {
+                    HStack(spacing: 2) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 8))
+                        Text("疑似卡死")
+                            .font(Theme.bodyFont(9, weight: .bold))
+                    }
+                    .foregroundColor(Theme.dangerRed)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(Capsule().fill(Theme.dangerRed.opacity(0.18)))
+                    .help("检测到进程持续异常高负荷且缺乏会话响应，疑似处于死循环或线程死锁状态")
+                } else {
+                    Text(snapshot.level.label)
+                        .font(Theme.bodyFont(10, weight: .semibold))
+                        .foregroundColor(snapshot.level.color)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2.5)
+                        .background(Capsule().fill(snapshot.level.color.opacity(0.16)))
+                }
+
+                if snapshot.processRunning {
+                    HStack(spacing: 3) {
+                        if confirmingKill {
+                            Button {
+                                engine.terminateAgent(pid: snapshot.pid, agentId: snapshot.profile.id)
                                 confirmingKill = false
+                            } label: {
+                                Text("终止?")
+                                    .font(Theme.bodyFont(9, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.red.opacity(0.9)))
                             }
+                            .buttonStyle(.plain)
+                            .help("再次点击立即强制终止该 Agent 进程")
+                            .onAppear {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    confirmingKill = false
+                                }
+                            }
+                        } else if snapshot.level == .working {
+                            Button {
+                                confirmingKill = true
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(Color.red.opacity(0.85))
+                                    .padding(4)
+                                    .background(Circle().fill(Color.red.opacity(0.15)))
+                            }
+                            .buttonStyle(.plain)
+                            .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
                         }
-                    } else if snapshot.level == .working {
+
                         Button {
-                            confirmingKill = true
+                            controller.route = .liveStream(snapshot.profile.id)
                         } label: {
-                            Image(systemName: "xmark.circle")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(Color.red.opacity(0.85))
-                                .padding(5)
-                                .background(Circle().fill(Color.red.opacity(0.15)))
+                            Image(systemName: "terminal")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(Theme.onDark.opacity(0.75))
+                                .padding(4)
+                                .background(Circle().fill(Theme.chipFill))
                         }
                         .buttonStyle(.plain)
-                        .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
-                    }
+                        .help("查看 \(snapshot.profile.name) 实时事件与输出流水")
 
-                    Button {
-                        controller.route = .liveStream(snapshot.profile.id)
-                    } label: {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(Theme.onDark.opacity(0.7))
-                            .padding(5)
-                            .background(Circle().fill(Theme.chipFill))
+                        Button {
+                            AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs)
+                        } label: {
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(Theme.onDark.opacity(0.75))
+                                .padding(4)
+                                .background(Circle().fill(Theme.chipFill))
+                        }
+                        .buttonStyle(.plain)
+                        .help("置顶并激活该智能体窗口/终端")
                     }
-                    .buttonStyle(.plain)
-                    .help("查看 \(snapshot.profile.name) 实时事件与输出流水")
-
-                    Button {
-                        AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs)
-                    } label: {
-                        Image(systemName: "arrow.up.forward.app")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Theme.onDark.opacity(0.7))
-                            .padding(5)
-                            .background(Circle().fill(Theme.chipFill))
-                    }
-                    .buttonStyle(.plain)
-                    .help("置顶并激活该智能体窗口/终端")
                 }
+            }
+
+            // 第二行：工作状态下的专属实时动作横条（全宽展示，彻底根治截断问题）
+            if snapshot.level == .working, let action = snapshot.currentAction, !action.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 8))
+                        .foregroundColor(Theme.statusWorking)
+                    Text(action)
+                        .font(Theme.monoFont(9.5))
+                        .foregroundColor(Theme.statusWorking)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Theme.statusWorking.opacity(0.10))
+                )
+                .padding(.leading, 34) // 与 Agent 名称对齐
+                .help(action)
             }
         }
         .padding(.horizontal, Theme.pageMargin)
-        .padding(.vertical, 7)
+        .padding(.vertical, snapshot.level == .working && snapshot.currentAction != nil ? 5 : 4)
         .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: .clear)
         .onTapGesture {
             // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表）

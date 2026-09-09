@@ -10,9 +10,9 @@ enum IslandMetrics {
     // MARK: 窗口尺寸
 
     /// 展开卡宽度（IslandView 展开卡 / DetailViews 两页的 .frame(width:) 同源）
-    static let cardWidth: CGFloat = 280
+    static let cardWidth: CGFloat = 330
     /// 展开高度上限（内容超出即滚动）
-    static let expandedMaxHeight: CGFloat = 420
+    static let expandedMaxHeight: CGFloat = 460
 
     // MARK: 微细条尺寸（收起态保留的 6pt 悬浮指示微胶囊）
     static let topSliverWidth: CGFloat = 140
@@ -30,15 +30,15 @@ enum IslandMetrics {
 
     static let dividerHeight: CGFloat = 1
 
-    /// Agent 行高：实测单行 45.5~48pt（名称 13pt semibold + 9pt mono 徽标 + padding 14 + spacing 2）；
-    /// 46 低估会静默裁最后一行下 padding（阿剩低4）；窗口背景铺满，略高不可见，取上界安全
-    static let rowHeight: CGFloat = 48
+    /// Agent 行高：实测单行 ~50-52pt（含名称、徽标及工作态动作横条）；
+    /// 取 52pt 充足安全度量
+    static let rowHeight: CGFloat = 52
     /// 列表区：行间 spacing 2 + ScrollView .padding(.vertical) 6×2 ≈ +10
     static let listVerticalPadding: CGFloat = 6
     /// 实测校准值（spacing+padding 净贡献，勿按推导式单独改）
     static let listExtraHeight: CGFloat = 10
     /// 与 ScrollView .frame(maxHeight:) 同源
-    static let listMaxHeight: CGFloat = 300
+    static let listMaxHeight: CGFloat = 340
 
     /// 空态：zzz 图标 22 + spacing 6 + 文案 + padding(.vertical)×2 ≈ 87（阿菜实测）
     static let emptyStatePaddingVertical: CGFloat = 22
