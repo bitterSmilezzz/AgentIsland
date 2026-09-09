@@ -22,12 +22,18 @@ public enum SettingKey {
     public static let tokenAlertEnabled = "tokenAlertEnabled"
     public static let tokenAlertThreshold = "tokenAlertThreshold"
     public static let runawayCpuAlert = "runawayCpuAlert"
+    public static let knownAgents = "knownAgents"
 }
 
 /// 启停集合持久化：key/编解码/空数组语义单点持有。
 /// 「无记录」与「空数组」是两个状态——空集合是用户主动全关，照常存取；
-/// 无记录时的回退策略（defaultEnabled 集 / 引擎当前集）由调用方决定，store 不掺和。
+/// 提供 resolvedEnabled(registry:defaults:) 实现版本升级与历史配置向前兼容自愈。
 public enum EnabledAgentStore {
+
+    /// 引入版本前已知的所有内置 Agent ID（用于旧版本无 knownAgents 记录时的平滑迁移基线）
+    public static let legacyKnownAgentIDs: Set<String> = [
+        "dim", "claude", "codex", "cursor", "trae", "copilot", "workbuddy", "opencode", "hermes", "continue"
+    ]
 
     /// nil = 无记录（键不存在或解码失败）
     public static func load(from defaults: UserDefaults = .standard) -> Set<String>? {
@@ -43,6 +49,63 @@ public enum EnabledAgentStore {
         if let data = try? JSONEncoder().encode(Array(ids)) {
             defaults.set(data, forKey: SettingKey.enabledAgents)
         }
+    }
+
+    /// 读取已记录的已知 Agent ID 集合（nil = 无记录，表示需要从 legacy 迁移或全新安装）
+    public static func loadKnownAgents(from defaults: UserDefaults = .standard) -> Set<String>? {
+        guard let data = defaults.data(forKey: SettingKey.knownAgents),
+              let saved = try? JSONDecoder().decode([String].self, from: data) else {
+            return nil
+        }
+        return Set(saved)
+    }
+
+    /// 保存已知 Agent ID 集合
+    public static func saveKnownAgents(_ ids: Set<String>, to defaults: UserDefaults = .standard) {
+        if let data = try? JSONEncoder().encode(Array(ids)) {
+            defaults.set(data, forKey: SettingKey.knownAgents)
+        }
+    }
+
+    /// 求解并自愈启停集合（解决版本升级新加内置/自动发现 Agent 被历史持久化集静默锁死的问题）
+    /// - 首次运行（load 为 nil）：按 registry.filter(\.defaultEnabled) 全量初始化并固化
+    /// - 用户全关（load 为 []）：严格尊重用户全关意图，保持空集不强行覆写
+    /// - 存量迁移/版本升级：找出所有在已知集之外且 defaultEnabled 的新增 Agent，自动合并补齐并写回
+    public static func resolvedEnabled(
+        registry: [AgentProfile],
+        defaults: UserDefaults = .standard
+    ) -> Set<String> {
+        let allRegistryIDs = Set(registry.map(\.id))
+        guard var currentEnabled = load(from: defaults) else {
+            // 首次安装：初始化为默认开启集
+            let defaultsEnabled = Set(registry.filter(\.defaultEnabled).map(\.id))
+            save(defaultsEnabled, to: defaults)
+            saveKnownAgents(allRegistryIDs, to: defaults)
+            return defaultsEnabled
+        }
+
+        // 空集合表示用户主动全关，尊重用户选择，只更新 knownAgents 避免后续重入触发
+        if currentEnabled.isEmpty {
+            saveKnownAgents(allRegistryIDs, to: defaults)
+            return []
+        }
+
+        // 读取已知 ID 集；若为 nil 则使用旧版基线迁移
+        let known = loadKnownAgents(from: defaults) ?? legacyKnownAgentIDs
+        let newlyAddedProfiles = registry.filter { !known.contains($0.id) && $0.defaultEnabled }
+
+        if !newlyAddedProfiles.isEmpty {
+            for profile in newlyAddedProfiles {
+                currentEnabled.insert(profile.id)
+            }
+            save(currentEnabled, to: defaults)
+        }
+
+        // 将当前全量 ID 集合更新进 knownAgents
+        let updatedKnown = known.union(allRegistryIDs)
+        saveKnownAgents(updatedKnown, to: defaults)
+
+        return currentEnabled
     }
 }
 

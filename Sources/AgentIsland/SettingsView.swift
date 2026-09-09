@@ -520,7 +520,7 @@ struct SettingsView: View {
                         Text("AgentIsland")
                             .font(Theme.displayFont(16, weight: .bold))
                             .foregroundColor(Theme.ink)
-                        Text("v1.7.8 · macOS 灵动岛 Agent 会话监控器")
+                        Text("v1.7.9 · macOS 灵动岛 Agent 会话监控器")
                             .font(Theme.bodyFont(11))
                             .foregroundColor(Theme.inkMuted80)
                     }
@@ -584,7 +584,8 @@ struct SettingsView: View {
     // MARK: - 状态同步与持久化
 
     private func loadState() {
-        enabledAgents = EnabledAgentStore.load() ?? Set(engine.allProfiles.map(\.id))
+        let all = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
+        enabledAgents = EnabledAgentStore.resolvedEnabled(registry: all)
         customProfiles = AgentRegistry.loadCustomProfiles()
         applyConfig()
         launchAtLogin = (SMAppService.mainApp.status == .enabled)

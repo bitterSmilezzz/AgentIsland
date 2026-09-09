@@ -20,9 +20,9 @@ final class AppContext {
         return c
     }
 
-    /// 启停集读取：无记录（nil）回退 defaultEnabled 集；空数组是主动全关，照常生效
+    /// 启停集读取与自愈：纯核 resolvedEnabled 计算（空数组主动全关照常生效；存量升级自动补全新增内置项）
     private static func enabledOrDefault(registry: [AgentProfile]) -> Set<String> {
-        EnabledAgentStore.load() ?? Set(registry.filter(\.defaultEnabled).map(\.id))
+        EnabledAgentStore.resolvedEnabled(registry: registry)
     }
 
     private init() {
