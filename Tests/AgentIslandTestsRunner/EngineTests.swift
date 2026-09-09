@@ -536,6 +536,41 @@ enum EngineTests {
             try expectEqual(dimSnap?.level, .idle, "DimAgent 8% 的 Electron 空闲 CPU 抖动应保持 idle")
             try expectNil(dimSnap?.currentAction, "空闲挂起时不应透传任何错误动作")
         }
+
+        TestKit.test("动作透传: isInternalHelperProcess 过滤应用内辅助与守护进程，放行真实命令") {
+            // 1. ChatGPT 及 Chromium / Electron 内部辅助进程应全部过滤
+            let chatgptService = "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/152.0.7977.83/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service) --type=utility --utility-sub-type=network.mojom.NetworkService"
+            let chatgptRenderer = "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/152.0.7977.83/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer"
+            let modifierMonitor = "/Applications/ChatGPT.app/Contents/Resources/native/bare-modifier-monitor --key DoubleCommand --immediate"
+            let appServer = "/Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server"
+            let codeModeHost = "/Applications/ChatGPT.app/Contents/Resources/codex-code-mode-host"
+
+            try expectTrue(AgentActionInspector.isInternalHelperProcess(command: chatgptService), "ChatGPT NetworkService 必须过滤")
+            try expectTrue(AgentActionInspector.isInternalHelperProcess(command: chatgptRenderer), "ChatGPT Renderer 必须过滤")
+            try expectTrue(AgentActionInspector.isInternalHelperProcess(command: modifierMonitor), "ChatGPT modifier monitor 必须过滤")
+            try expectTrue(AgentActionInspector.isInternalHelperProcess(command: appServer), "ChatGPT app-server 必须过滤")
+            try expectTrue(AgentActionInspector.isInternalHelperProcess(command: codeModeHost), "ChatGPT code-mode-host 必须过滤")
+
+            // 2. 真实用户/Agent 执行的命令必须放行
+            try expectFalse(AgentActionInspector.isInternalHelperProcess(command: "git diff --stat"), "git 命令不可被过滤")
+            try expectFalse(AgentActionInspector.isInternalHelperProcess(command: "npm test"), "npm 命令不可被过滤")
+            try expectFalse(AgentActionInspector.isInternalHelperProcess(command: "swift test"), "swift 命令不可被过滤")
+            try expectFalse(AgentActionInspector.isInternalHelperProcess(command: "python3 -m unittest"), "python 命令不可被过滤")
+            try expectFalse(AgentActionInspector.isInternalHelperProcess(command: "/bin/zsh -c 'cargo check'"), "cargo 脚本不可被过滤")
+        }
+
+        TestKit.test("引擎: ChatGPT 桌面版空闲微抖动与无动作时正确保持 idle") {
+            let now = Date()
+            let engine = makeEngine(
+                processNames: ["ChatGPT"],
+                writes: [home + "/Library/Application Support/com.openai.codex": now.addingTimeInterval(-3600)],
+                cpu: 8.0 // 超过默认 6.0% 阈值，但属于 GUI 辅助渲染与 IPC 抖动
+            )
+            let snaps = engine.sample(now: now)
+            let chatgptSnap = snaps.first { $0.id == "chatgpt" }
+            try expectEqual(chatgptSnap?.level, .idle, "ChatGPT 8% 的 GUI 空闲抖动应保持 idle")
+            try expectNil(chatgptSnap?.currentAction, "ChatGPT 空闲时不应透传任何错误动作")
+        }
     }
 
     // MARK: - 工具

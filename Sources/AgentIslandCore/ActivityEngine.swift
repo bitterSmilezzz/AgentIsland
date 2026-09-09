@@ -268,12 +268,12 @@ public final class ActivityEngine: ObservableObject {
             let hasActiveAction = detectedAction != nil
 
             // 智能 CPU 判定：
-            // 对于具备专有会话数据库/日志追踪的 GUI 智能体（如 DimAgent、WorkBuddy）：
-            // 若数据库明确无在途会话（detectedAction == nil）且会话目录无新写入，
-            // 过滤 Electron 辅助进程渲染与 IPC 空闲微抖动（4%~15%），仅当 CPU 达真正高算力（>= 20.0%）才触发 working；
-            // 其它智能体维持通用 cpuThreshold。
+            // 对于桌面/GUI 智能体（如 DimAgent、WorkBuddy、ChatGPT，或声明了 bundleIDs 的桌面应用）：
+            // 若明确无在途动作（detectedAction == nil）且会话目录无新写入，
+            // 过滤 Electron / Chromium / WebKit 辅助进程渲染与 IPC 空闲微抖动（4%~15%），仅当 CPU 达真正高算力（>= 20.0%）才触发 working；
+            // 纯 CLI 智能体维持通用 cpuThreshold（默认 6.0%）。
             let hasHighCpu: Bool
-            if profile.id == "dim" || profile.id == "workbuddy" {
+            if profile.id == "dim" || profile.id == "workbuddy" || profile.id == "chatgpt" || !profile.bundleIDs.isEmpty {
                 hasHighCpu = cpu >= 20.0
             } else {
                 hasHighCpu = cpu > config.cpuThreshold

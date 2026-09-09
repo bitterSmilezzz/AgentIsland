@@ -69,20 +69,59 @@ public enum AgentActionInspector {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let str = String(data: data, encoding: .utf8) else { return nil }
         let pids = str.components(separatedBy: .newlines).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-        guard let firstChild = pids.first else { return nil }
+        guard !pids.isEmpty else { return nil }
 
-        let psPipe = Pipe()
-        let ps = Process()
-        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-        ps.arguments = ["-o", "command=", "-p", "\(firstChild)"]
-        ps.standardOutput = psPipe
-        guard (try? ps.run()) != nil else { return nil }
-        ps.waitUntilExit()
-        let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
-        guard let raw = String(data: psData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-            return nil
+        for childPid in pids {
+            let psPipe = Pipe()
+            let ps = Process()
+            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+            ps.arguments = ["-o", "command=", "-p", "\(childPid)"]
+            ps.standardOutput = psPipe
+            guard (try? ps.run()) != nil else { continue }
+            ps.waitUntilExit()
+            let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
+            guard let raw = String(data: psData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                continue
+            }
+            if isInternalHelperProcess(command: raw) {
+                continue
+            }
+            return cleanCommand(raw)
         }
-        return cleanCommand(raw)
+        return nil
+    }
+
+    /// 判定是否为桌面应用/Electron/Chromium 自身的内部辅助进程、渲染器或守护服务（非用户任务执行命令）
+    public static func isInternalHelperProcess(command: String) -> Bool {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        let lower = trimmed.lowercased()
+
+        // 1. 排除应用内部 Frameworks、Helpers、Plugins、Resources 路径及各类内部 helper app
+        if lower.contains("/frameworks/") || lower.contains("/helpers/") ||
+           lower.contains(".framework/") || lower.contains("helper.app") ||
+           lower.contains(".app/contents/") {
+            return true
+        }
+
+        // 2. 排除 Chromium / Electron / WebKit 核心类型标记（如渲染、GPU、实用程序进程等）
+        if lower.contains("--type=utility") || lower.contains("--type=renderer") ||
+           lower.contains("--type=gpu-process") || lower.contains("--type=crashpad-handler") ||
+           lower.contains("--type=zygote") || lower.contains("--type=watcher") ||
+           lower.contains("--user-data-dir=") {
+            return true
+        }
+
+        // 3. 排除各类辅助保活/守护/心跳子命令
+        if lower.contains("crashpad") || lower.contains("bare-modifier-monitor") ||
+           lower.contains("app-server") || lower.contains("code_mode_host") ||
+           lower.contains("code-mode-host") ||
+           lower.contains("webprocess") || lower.contains("networkservice") ||
+           lower.contains("codex (service)") || lower.contains("codex (renderer)") {
+            return true
+        }
+
+        return false
     }
 
     public static func cleanCommand(_ raw: String) -> String {
