@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v1.7.0）
+## 功能（v1.7.11）
 
 ### 设计美学与 CodeNotch 灵动交互
 - **反向倒角一体化贴边（Inverse Rounded Corner / Bezel Flares）**：
@@ -70,10 +70,13 @@
 
 ### 其他
 - 只读监控：不读取任何会话隐私数据，不需要辅助功能/完全磁盘访问权限
+- 任务通知：任务完成、等待确认、Token/CPU 异常均进入 macOS 通知中心，并使用系统提示音
+- 状态准确性：DeepSeek Harness 深层会话快速重扫；DimAgent 编辑历史与附件缓存不再误报工作中
+- 告警可读性：展开页显示告警摘要与排查说明，长文本单行省略，悬停可查看完整内容
 
 ## 安装
 
-从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.7.0.zip`，解压后拖入「应用程序」或直接运行。
+从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-1.7.11.zip`，解压后拖入「应用程序」或直接运行。
 
 > 未公证（ad-hoc 签名），首次打开需右键 → 打开。
 
