@@ -204,29 +204,31 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
 public struct ProcessMatcher: @unchecked Sendable {
     let snapshot: ProcessSnapshot
     let runningBundleIDs: Set<String>
-    /// 预计算缓存：profile.id → (小写 processNames, 小写 pathContains)
-    private let profileSets: [String: (names: Set<String>, paths: Set<String>)]
+    /// 预计算缓存：profile.id → (小写 processNames, 小写 pathContains, 小写 pathExcludes)
+    private let profileSets: [String: (names: Set<String>, paths: Set<String>, excludes: Set<String>)]
 
     public init(snapshot: ProcessSnapshot, runningBundleIDs: Set<String>, profiles: [AgentProfile] = []) {
         self.snapshot = snapshot
         self.runningBundleIDs = runningBundleIDs
         // 构造时一次性预计算（profile 数量个位数，成本可忽略），彻底避免每次匹配重建 Set
-        var sets: [String: (names: Set<String>, paths: Set<String>)] = [:]
+        var sets: [String: (names: Set<String>, paths: Set<String>, excludes: Set<String>)] = [:]
         for p in profiles {
             sets[p.id] = (
                 names: Set(p.processNames.map { $0.lowercased() }),
-                paths: Set(p.pathContains.map { $0.lowercased() })
+                paths: Set(p.pathContains.map { $0.lowercased() }),
+                excludes: Set(p.pathExcludes.map { $0.lowercased() })
             )
         }
         self.profileSets = sets
     }
 
     /// 获取 profile 的小写匹配集（预计算缓存，未命中则现场构建）
-    private func sets(for profile: AgentProfile) -> (names: Set<String>, paths: Set<String>) {
+    private func sets(for profile: AgentProfile) -> (names: Set<String>, paths: Set<String>, excludes: Set<String>) {
         if let cached = profileSets[profile.id] { return cached }
         return (
             names: Set(profile.processNames.map { $0.lowercased() }),
-            paths: Set(profile.pathContains.map { $0.lowercased() })
+            paths: Set(profile.pathContains.map { $0.lowercased() }),
+            excludes: Set(profile.pathExcludes.map { $0.lowercased() })
         )
     }
 
@@ -249,11 +251,17 @@ public struct ProcessMatcher: @unchecked Sendable {
         return pathContains.contains { p.contains($0) }
     }
 
-    /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串约束 + 非系统路径 + 非黑名单）
+    /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串约束 + 路径排除 + 非系统路径 + 非黑名单）
     func matchesProfile(_ profile: AgentProfile, entry: ProcessSnapshot.Entry) -> Bool {
         let s = sets(for: profile)
         let nameHit = Self.matchesProcessNames(s.names, basename: entry.basename)
         guard nameHit else { return false }
+
+        // 路径排除优先于包含：宿主应用内嵌的同名二进制不算本 Agent
+        // （ChatGPT.app 内的 codex 属于 ChatGPT，不属于独立 Codex CLI）
+        if !s.excludes.isEmpty, Self.matchesPathContains(s.excludes, path: entry.path) {
+            return false
+        }
 
         // 若配置了 pathContains（如 Electron 应用通用名 "Electron"），可执行路径必须同时命中子串约束
         if !s.paths.isEmpty {
@@ -304,7 +312,10 @@ public struct ProcessMatcher: @unchecked Sendable {
             for (_, sets) in profileSets {
                 let nameHit = Self.matchesProcessNames(sets.names, basename: entry.basename)
                 if nameHit {
-                    if sets.paths.isEmpty || Self.matchesPathContains(sets.paths, path: entry.path) {
+                    let excluded = !sets.excludes.isEmpty
+                        && Self.matchesPathContains(sets.excludes, path: entry.path)
+                    if !excluded,
+                       sets.paths.isEmpty || Self.matchesPathContains(sets.paths, path: entry.path) {
                         if !ProcessSnapshot.isSystemPath(entry.path) && !ProcessSnapshot.isBlacklisted(entry.basename) {
                             if !seenPids.contains(entry.pid) {
                                 seenPids.insert(entry.pid)
@@ -344,6 +355,35 @@ public struct FakeProcessProvider: ProcessProviding {
                 basename: name.lowercased(),
                 cpuPercent: cpuByProcess[name] ?? 0,
                 rssBytes: 104_857_600 // 默认 100MB 假数据
+            )
+        }
+        return ProcessSnapshot(entries: entries)
+    }
+
+    public func runningBundleIDs() -> Set<String> { bundleIDs }
+}
+
+/// 可变进程集 fake（引用语义）：模拟进程在采样之间退出/启动
+/// （struct 的 FakeProcessProvider 无法在引擎持有后改变进程集合）
+public final class MutableProcessProvider: ProcessProviding {
+    public var names: Set<String>          // 小写 basename
+    public var bundleIDs: Set<String>
+    public var cpu: Double
+
+    public init(names: Set<String>, bundleIDs: Set<String> = [], cpu: Double = 0) {
+        self.names = names
+        self.bundleIDs = bundleIDs
+        self.cpu = cpu
+    }
+
+    public func snapshot() -> ProcessSnapshot {
+        let entries = names.map { name -> ProcessSnapshot.Entry in
+            ProcessSnapshot.Entry(
+                pid: 1,
+                path: "/Applications/FakeApp.app/Contents/MacOS/\(name)",
+                basename: name.lowercased(),
+                cpuPercent: cpu,
+                rssBytes: 104_857_600
             )
         }
         return ProcessSnapshot(entries: entries)
