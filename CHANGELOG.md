@@ -4,6 +4,66 @@
 
 ---
 
+## [1.7.10] - 2026-09-09
+
+### 🐛 修复状态跟踪误报、Token 口径虚高、底部汇总栏裁切与贴边阴影
+
+- **进程关闭不再误报「任务已完成」**：
+  - 此前 `offline` 分支复用完成事件路径，把「进程被用户关闭」等同于「任务执行完毕」，手动退出 ChatGPT 也会弹出完成横幅
+  - 现在进程消失只静默转 `offline`；完成事件仅由「进程仍在但工作信号消失」产生
+- **Token 净消耗口径统一（dim 源）**：
+  - `usage_ledger.usage.promptTokens` 含缓存命中部分，此前直接与 completion 相加导致缓存重复计入，本机实测累计虚高 32 倍（39.6 亿 vs 净 1.22 亿）
+  - 汇总、模型拆分、会话列表三处统一改为 `(prompt − cacheRead) + completion` 并逐行钳制非负，与 opencode 侧口径对齐
+- **激增告警改为速率制 + 连续确认**：
+  - 此前「300 秒内增量 ≥ 阈值」把长任务结束时的一次性账本落盘（单条 1700 万 token）当成瞬时激增
+  - 现在按每分钟净消耗速率判定，且需连续 3 个周期超阈值才告警；正常绘画/长任务不再误报
+- **修复 peek 微弹窗导致侧边条错位**：
+  - 此前 peek 只拉伸窗口 frame、`displayState` 仍为 `docked`，SwiftUI 只渲染 6pt 细条，于是细条被拉到展开位置且卡片内容缺失
+  - 现在 peek 走真实 `displayState` 切换，与窗口尺寸同源，展开内容正常呈现
+- **修复展开卡底部 Token 汇总栏被裁切**：
+  - `IslandMetrics.expandedHeight` 漏算顶部「实时活动环微看板」（40pt 内容 + 1pt 分割线），渲染内容比窗口高出约 56pt，超出 460pt 上限的部分从底部裁掉，汇总栏只露出半行
+  - 现在展开高度计入看板（新增 `chromeHeight`/`listHeight` 纯函数统一口径），触顶时压缩可滚动的 Agent 列表（保底一行）而非裁切汇总栏
+  - 二次修复（首次展开正常、挪动后又被裁）：实测 `NSHostingView.fittingSize` 比常量推导值高 5.5pt——顶栏内容行高按 17pt 估算偏小（圆形图标按钮实际约 23pt），且汇总栏自身那 1pt 分割线未计入 `chromeHeight`。现按实测校准常量，并让窗口高度取「常量推导」与「内容理想高度」的较大值（`resolvedExpandedHeight`），`placeWindow`/`snapToDockEdge`/`syncExpandedHeight` 三处同源，常量再漏算也不会把汇总栏挤出窗口
+- **移除面板阴影内渗，消除贴边侧上下暗带**：
+  - 面板窗口与玻璃卡尺寸完全相同（330×447），AppKit 阴影没有卡片之外的落地空间，只会沿轮廓边缘向卡内渗入约一个模糊半径，在贴屏幕一侧的上下直角区域形成暗块（用户反馈的「两侧直角矩形的上下阴影」）
+  - 现已停用面板阴影；一体化贴边的观感由玻璃卡自身的 1px 高光边缘与反向倒角承担
+- **修复 ChatGPT 与 Codex 重复显示为两个 Agent**：
+  - ChatGPT 桌面版把 Codex 打包进 `/Applications/ChatGPT.app/Contents/Resources/codex`，其 basename 与独立 `codex` CLI 相同且共用 `~/.codex` 会话目录，此前被数成两个 Agent
+  - `AgentProfile` 新增 `pathExcludes`（路径排除）与 `hostBundleIDs`（宿主识别）：宿主已安装且该组件无独立安装时不再单独成条目；独立安装 codex CLI 的用户仍照常监控
+  - 手写 `Codable` 解码（`decodeIfPresent` + 默认值），保证升级前保存的自定义 Agent 不因新增字段而整条失效
+- **修复展开卡内容超高时底部汇总栏被压掉**：
+  - 事件提醒栏出现后内容超过 460pt 上限，此前由 `VStack` 自行分配压缩，末尾的 Token 汇总栏成了牺牲品
+  - 现给列表 `layoutPriority(-1)`、汇总栏 `layoutPriority(1)`：空间不足时只压可滚动的列表，汇总栏保持完整
+- **性能：消除每 2 秒的主线程阻塞与 CPU 尖峰**（多 Agent 审查实测发现）：
+  - `AgentActionInspector.activeChildCommand` 原先 fork `/usr/bin/pgrep` + `/bin/ps` 并 `waitUntilExit()`，单次 67ms，17 个 Agent 一轮 762ms 全部落在主线程；改为 sysctl `KERN_PROCARGS2` 直读命令行 + 复用采样快照做内存 BFS，`inspectDimAction` 单次由 170–220ms 降至 **0.9ms**
+  - `inspectDimAction` 的 `ORDER BY createdAt DESC LIMIT 1` 在 5.4 万行 / 254MB 的 `messages` 表上退化为全表扫描 + 临时 B 树排序（220ms/次）；改用 `rowid = (SELECT max(rowid) …)` 走主键查找
+  - `inspectOpenCodeAction` 的 `session LEFT JOIN part` 全表排序实测 330–964ms；改为「先取最新会话，再取该会话最新 part」，降至 8ms
+  - `ProcessTerminator.getProcessTree` 与 `AppActivator` 的父进程追溯同样去掉逐节点 fork，改用一次快照内存遍历
+  - 实测收起态 CPU 由均值 8.0% / 峰值 39.2% 降至 **1.2% / 2.8%**
+- **修复状态误判：Agent 恒显「工作中」**：
+  - `inspectAction` 返回的「最近动作」被当作核心工作信号，而各探测源在 Agent 空闲挂起时仍可能命中旧记录（dim 分支甚至无视注入的 fake 直读真实 SQLite），导致 `working` 永不消退、完成事件永不产生。现在工作状态只由「文件写入 + CPU」决定，动作仅作展示字段
+  - 长驻子进程（MCP server、language server、`server.js`、`--liftoff-only` 索引进程）不再被判为「正在执行的任务」
+  - `KERN_PROCARGS2` 解析按 `argc` 截断，避免把 `PATH=…` 等环境变量当成用户命令
+  - 修复滞回锚点：原用「首次进入 working 的时刻」判断，任何超过 `minWorkingHold` 的任务滞回完全失效；改用每拍刷新的 `lastSignalAt`
+  - 修复后 3 个长期失败的环境依赖用例全部转绿，测试 **84 通过 / 0 失败**
+- **修复危险操作的可信度**：
+  - 终止按钮在 `pid == nil`（GUI bundle 命中但进程名未匹配）时此前不发信号却宣告「进程已终止」——假成功；现在如实提示「无法终止：未定位到进程」并返回 `false`
+  - 终止成功由 `attention` 改为 `completed`，收起态细条不再误报红色告警
+  - 工具箱单条清理补二次确认（杀的是整棵进程树）；`overweight`/`hung` 不再把 `/Applications/*.app/Contents/MacOS` 主进程列为可清理项（开着大项目的 Electron IDE 占 2.5GB 属正常）
+  - `ProcessTerminator.terminate` 返回真实信号发送结果，清理横幅不再谎报「已释放 N 个进程」
+  - 工具箱扫描的 `NSWorkspace` 调用移回主线程（`ProcessProviding` 线程契约）
+- **修复交互与显示缺陷**：
+  - hover tooltip 内的按钮永远点不到：popover 由 26×26 环的 `onHover` 驱动，鼠标移向 popover 时立即触发关闭；改为 400ms 延迟关闭 + popover 内 hover 取消
+  - 终止确认态不再于 Agent 转 idle 后残留（避免误杀已空闲进程），并用可取消 `Task` 替代 `DispatchQueue` 定时器
+  - 顶栏优先展示「带动作」的 working Agent 并显示 `+N` 并行数；可见计数降为可压缩，长名称/动作不再被挤断
+  - 事件横幅的按钮/背景改用动态色，浅色主题下不再白底白字不可见；关闭按钮热区 15→21pt
+  - 「直达」在无对应 Agent 时置灰并说明，不再点击无反馈；熔断按钮在无 PID 时给出去向指引
+  - 工作态 Agent 也显示 token 徽标（正在消耗的最需要关注）；活动环副标题与行内口径统一
+  - 实时流水页返回按钮回到进入前的层级；事件 id 改为确定性生成，展开的详情不再每 2 秒被强制折叠
+  - 脉冲与呼吸动画尊重系统「减弱动态效果」；版本号从 bundle 读取而非硬编码
+
+---
+
 ## [1.7.9] - 2026-09-09
 
 ### 🩺 修复 Antigravity 监控识别与偏好设置自动自愈迁移
