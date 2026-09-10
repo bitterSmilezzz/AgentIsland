@@ -6,10 +6,13 @@ import SQLite3
 public enum AgentActionInspector {
 
     /// 提取智能体当前正在执行的具体动作/命令/上下文
-    public static func inspectAction(pid: Int32?, profile: AgentProfile, sessionDirs: [String]) -> String? {
+    /// - Parameter snapshot: 调用方已有的进程快照（引擎采样时传入）。传入可让子进程查找
+    ///   零成本完成；不传则退化为现场枚举（--probe 等低频路径）。
+    public static func inspectAction(pid: Int32?, profile: AgentProfile, sessionDirs: [String],
+                                     snapshot: ProcessSnapshot? = nil) -> String? {
         // 1. 优先检查进程级正在执行的子命令（最实时、零延迟）
         if let pid = pid, pid > 1 {
-            if let cmd = activeChildCommand(of: pid) {
+            if let cmd = activeChildCommand(of: pid, in: snapshot) {
                 return "正在执行: \(cmd)"
             }
         }
@@ -44,7 +47,7 @@ public enum AgentActionInspector {
                 return ocAction
             }
         } else if profile.id == "dsh" {
-            if let dshAction = inspectDSHAction(pid: pid) {
+            if let dshAction = inspectDSHAction(pid: pid, snapshot: snapshot) {
                 return dshAction
             }
         } else if profile.id == "hermes" {
@@ -58,37 +61,97 @@ public enum AgentActionInspector {
 
     // MARK: - 1. 进程级子命令探测
 
-    public static func activeChildCommand(of ppid: Int32) -> String? {
-        let pipe = Pipe()
-        let pgrep = Process()
-        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        pgrep.arguments = ["-P", "\(ppid)"]
-        pgrep.standardOutput = pipe
-        guard (try? pgrep.run()) != nil else { return nil }
-        pgrep.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let str = String(data: data, encoding: .utf8) else { return nil }
-        let pids = str.components(separatedBy: .newlines).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-        guard !pids.isEmpty else { return nil }
+    /// 查找指定进程当前在跑的子命令（用于透传「正在执行: xxx」）
+    ///
+    /// 性能关键路径：引擎每 2s 采样一次、每个 Agent 调一次，必须零 fork。
+    /// 早期实现用 `pgrep -P` + `ps -o command=` 两次 `Process` 调用并 `waitUntilExit()`，
+    /// 实测单次 67ms，17 个 Agent 一轮 762ms 全部落在主线程——直接造成周期性 CPU 尖峰
+    /// 与界面卡顿。现改为纯内存计算：进程表与命令行都由调用方的快照/一次性 sysctl 提供。
+    ///
+    /// - Parameter snapshot: 已有的进程快照；为 nil 时现场枚举一次（低频路径）。
+    public static func activeChildCommand(of ppid: Int32, in snapshot: ProcessSnapshot? = nil) -> String? {
+        let table = snapshot ?? ProcessProvider().snapshot()
+        let children = table.entries.filter { $0.ppid == ppid && $0.pid > 0 }
+        guard !children.isEmpty else { return nil }
 
-        for childPid in pids {
-            let psPipe = Pipe()
-            let ps = Process()
-            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-            ps.arguments = ["-o", "command=", "-p", "\(childPid)"]
-            ps.standardOutput = psPipe
-            guard (try? ps.run()) != nil else { continue }
-            ps.waitUntilExit()
-            let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
-            guard let raw = String(data: psData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-                continue
-            }
-            if isInternalHelperProcess(command: raw) {
-                continue
-            }
+        for child in children {
+            guard let raw = commandLine(of: child.pid) ?? (child.path.isEmpty ? nil : child.path),
+                  !raw.isEmpty else { continue }
+            if isInternalHelperProcess(command: raw) { continue }
+            // 长驻服务（MCP server / language server / 桥接守护）常驻于 Agent 生命周期内，
+            // 并不代表「有任务在途」。早期只看「存在非辅助子进程」会导致任何挂了 MCP 的
+            // Agent 恒被判 working（实测 DimAgent 的 openviking-bridge/server.js 常驻）。
+            if isLongLivedService(command: raw) { continue }
             return cleanCommand(raw)
         }
         return nil
+    }
+
+    /// 长驻服务判定：这些进程随 Agent 启动而常驻，不作为「正在执行的任务」信号。
+    /// 判定刻意保守——只认明确的工具/服务特征，避免误杀用户自己的
+    /// `node server.js`、`npm run watcher`、`cargo run --bin daemon` 等真实任务命令。
+    public static func isLongLivedService(command: String) -> Bool {
+        let lower = command.lowercased()
+        // 1. MCP 服务（路径或参数里出现 mcp 且是服务入口）
+        if lower.contains("mcp") && (lower.contains("server") || lower.contains("bridge")) {
+            return true
+        }
+        // 2. 语言服务 / 索引守护（这些名字本身就是常驻服务，不会出现在用户任务里）
+        let serviceMarkers = [
+            "language-server", "languageserver", "language_server", "lsp-server",
+            "typescript-language", "tsserver", "pyright", "gopls", "rust-analyzer",
+            "--liftoff-only",          // codegraph / v8 常驻索引进程
+            "codegraph",               // 索引服务目录
+        ]
+        if serviceMarkers.contains(where: { lower.contains($0) }) { return true }
+        return false
+    }
+
+    /// 读取进程完整命令行（sysctl KERN_PROCARGS2，纯系统调用，无子进程）。
+    /// 返回形如 `/path/to/exe arg1 arg2`（与 `ps -o command=` 一致）。
+    /// 失败返回 nil，调用方回退到快照里的可执行路径。
+    public static func commandLine(of pid: Int32) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+
+        // 布局：[argc(int32)][exec_path\0][padding\0...][argv0\0][argv1\0]...[env0\0]...
+        // 必须按 argc 截断：参数区之后紧跟环境变量区，仅靠空字节分隔会把
+        // `PATH=...`、`USER=...` 误当成用户命令（实测曾因此漏掉所有真实子命令）。
+        // argv[0] 必须保留：isInternalHelperProcess 的过滤标记（/frameworks/、
+        // .app/contents/、helper.app、bare-modifier-monitor 等）都来自可执行路径，
+        // 丢掉它会让 ChatGPT 的内部辅助进程被当成用户命令透传。
+        let headerSize = MemoryLayout<Int32>.size
+        guard size > headerSize else { return nil }
+        let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc > 0, argc < 4096 else { return nil }
+        let args = buffer.withUnsafeBytes { raw -> [String] in
+            var offset = headerSize
+            let bytes = raw.bindMemory(to: UInt8.self)
+            // 跳过 exec_path 与对齐用的空字节
+            while offset < size, bytes[offset] != 0 { offset += 1 }
+            while offset < size, bytes[offset] == 0 { offset += 1 }
+            var result: [String] = []
+            var current: [UInt8] = []
+            while offset < size, result.count < Int(argc) {
+                let b = bytes[offset]
+                if b == 0 {
+                    result.append(String(decoding: current, as: UTF8.self))
+                    current.removeAll(keepingCapacity: true)
+                } else {
+                    current.append(b)
+                }
+                offset += 1
+            }
+            return result
+        }
+        // 防御：缓冲区被内核截断时可能一个参数都读不到（第二次读取 size 不足），
+        // 直接返回 nil 而非崩溃
+        guard let exe = args.first, !exe.isEmpty else { return nil }
+        let rest = args.dropFirst()
+        return rest.isEmpty ? exe : "\(exe) \(rest.joined(separator: " "))"
     }
 
     /// 判定是否为桌面应用/Electron/Chromium 自身的内部辅助进程、渲染器或守护服务（非用户任务执行命令）
@@ -162,11 +225,15 @@ public enum AgentActionInspector {
         }
         defer { sqlite3_close(db) }
 
-        // 查询最新的 1 条消息（按 createdAt 降序）
+        // 查询最新的 1 条消息。
+        // 性能关键：不能 `ORDER BY createdAt DESC LIMIT 1`——messages 表没有 createdAt
+        // 索引（现有索引均以 sessionId 打头），实测 5.4 万行 / 254MB 会退化成
+        // 「全表扫描 + 临时 B 树排序」，单次约 220ms，而本函数每 2 秒在主线程调用一次。
+        // 用 max(rowid) 定位最新行（rowid 是隐含主键，O(1)），再按主键精确取该行。
         let sql = """
         SELECT role, toolMetadata, parts, unixepoch(updatedAt), unixepoch(createdAt), updatedAt, createdAt 
         FROM messages 
-        ORDER BY createdAt DESC LIMIT 1;
+        WHERE rowid = (SELECT max(rowid) FROM messages);
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -614,7 +681,16 @@ public enum AgentActionInspector {
         }
         defer { sqlite3_close(db) }
 
-        let sql = "SELECT s.title, p.data, s.time_updated FROM session s LEFT JOIN part p ON p.session_id = s.id ORDER BY s.time_updated DESC, p.time_updated DESC LIMIT 1;"
+        // 性能关键：原实现 `LEFT JOIN part ... ORDER BY s.time_updated DESC, p.time_updated DESC
+        // LIMIT 1` 会对 24 万行 / 250MB 的 part 表做全表 join + 排序（实测 90ms，每 2 秒一次）。
+        // 改为两步：先按 session 的 time_updated 取最新会话（有索引），再取该会话最新的 part。
+        let sql = """
+        SELECT s.title, p.data, s.time_updated FROM session s
+        LEFT JOIN part p ON p.id = (
+            SELECT id FROM part WHERE session_id = s.id ORDER BY time_updated DESC LIMIT 1
+        )
+        WHERE s.id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1);
+        """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
@@ -649,22 +725,19 @@ public enum AgentActionInspector {
 
     // MARK: - 9. DSH (DeepSeek Harness) 运行模式探测
 
-    public static func inspectDSHAction(pid: Int32?) -> String? {
+    public static func inspectDSHAction(pid: Int32?, snapshot: ProcessSnapshot? = nil) -> String? {
         if let pid = pid, pid > 1 {
-            let pipe = Pipe()
-            let ps = Process()
-            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-            ps.arguments = ["-o", "command=", "-p", "\(pid)"]
-            ps.standardOutput = pipe
-            if (try? ps.run()) != nil {
-                ps.waitUntilExit()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
-                    if raw.contains(" web") {
-                        return "Web 协作服务运行中"
-                    } else if raw.contains(" run ") || raw.contains(" exec ") {
-                        return "执行任务中: " + cleanCommand(raw)
-                    }
+            // 用 libproc 直读命令行，避免 fork /bin/ps（单次 ~67ms 的主线程开销）
+            let raw = commandLine(of: pid)
+                ?? snapshot?.entries.first { $0.pid == pid }?.path
+            if let raw, !raw.isEmpty {
+                // 用词边界匹配：commandLine 以可执行路径开头（如 "/path/dsh run foo"），
+                // 直接 contains(" run ") 在子命令紧跟路径时会漏判
+                let tokens = raw.split(separator: " ").map(String.init)
+                if tokens.contains("web") {
+                    return "Web 协作服务运行中"
+                } else if tokens.contains("run") || tokens.contains("exec") {
+                    return "执行任务中: " + cleanCommand(raw)
                 }
             }
         }

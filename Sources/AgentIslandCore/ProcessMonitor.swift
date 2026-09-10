@@ -412,24 +412,18 @@ public enum AppActivator {
         }
 
         // 3. 若为 CLI 进程（如 claude, codex, dim），向上追溯父进程找到承载的 GUI 终端（Terminal, iTerm2, VSCode, Cursor 等）
+        // 用一次进程快照在内存里回溯（零 fork）；早期实现对每层父进程同步执行
+        // `ps -o ppid=` 并 waitUntilExit，最多 10 次 fork，点击时主线程冻结数百毫秒。
+        let snapshot = ProcessProvider().snapshot()
+        var ppidByPid: [Int32: Int32] = [:]
+        for e in snapshot.entries where e.ppid > 0 { ppidByPid[e.pid] = e.ppid }
         var current = pid
         for _ in 0..<10 {
-            let pipe = Pipe()
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/ps")
-            process.arguments = ["-o", "ppid=", "-p", "\(current)"]
-            process.standardOutput = pipe
-            guard (try? process.run()) != nil else { break }
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let ppid = Int32(str), ppid > 1, ppid != current else {
-                break
-            }
-            if let app = NSRunningApplication(processIdentifier: ppid), app.activationPolicy == .regular {
+            guard let next = ppidByPid[current], next > 1, next != current else { break }
+            if let app = NSRunningApplication(processIdentifier: next), app.activationPolicy == .regular {
                 return activateApp(app)
             }
-            current = ppid
+            current = next
         }
         return false
     }
@@ -448,6 +442,8 @@ public enum AppActivator {
 
 public enum ProcessTerminator {
     /// 终止指定 PID 进程（包括其派生的子进程树），先尝试 GUI terminate / SIGTERM，超时未退出则强制 SIGKILL
+    /// - Returns: 是否至少成功向目标进程发出了信号（用 `kill(pid, 0)` 复核存活）。
+    ///   此前恒返回 true，导致上层把「进程已退出/无权限」也计为清理成功并谎报回收内存。
     @discardableResult
     public static func terminate(pid: Int32, force: Bool = false) -> Bool {
         guard pid > 1 else { return false }
@@ -461,8 +457,9 @@ public enum ProcessTerminator {
         let pidsToKill = getProcessTree(rootPid: pid)
         let sig = force ? SIGKILL : SIGTERM
 
-        for p in pidsToKill.reversed() {
-            kill(p, sig)
+        var signalSent = false
+        for p in pidsToKill.reversed() where kill(p, sig) == 0 {
+            signalSent = true
         }
 
         if !force {
@@ -475,31 +472,33 @@ public enum ProcessTerminator {
                 }
             }
         }
-        return true
+        return signalSent
     }
 
-    /// 获取进程及其所有子进程 PID 列表
+    /// 获取进程及其所有子进程 PID 列表。
+    /// 用一次进程快照在内存里 BFS（零 fork）；早期实现对树中每个节点同步执行
+    /// `pgrep -P` 并 `waitUntilExit()`，Electron 应用数十节点 = 数十次同步 fork，
+    /// 调用点在主线程时冻结界面数百毫秒。
     public static func getProcessTree(rootPid: Int32) -> [Int32] {
+        let snapshot = ProcessProvider().snapshot()
+        return processTree(rootPid: rootPid, in: snapshot)
+    }
+
+    /// 纯函数版本：基于已有快照构建进程树（可测试，无系统调用）
+    public static func processTree(rootPid: Int32, in snapshot: ProcessSnapshot) -> [Int32] {
+        var childrenByParent: [Int32: [Int32]] = [:]
+        for e in snapshot.entries where e.ppid > 0 {
+            childrenByParent[e.ppid, default: []].append(e.pid)
+        }
         var tree: [Int32] = [rootPid]
         var queue: [Int32] = [rootPid]
-
+        var seen: Set<Int32> = [rootPid]
         while !queue.isEmpty {
             let current = queue.removeFirst()
-            let pipe = Pipe()
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-            process.arguments = ["-P", "\(current)"]
-            process.standardOutput = pipe
-            guard (try? process.run()) != nil else { continue }
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                let childPids = output.split(separator: "\n")
-                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-                for cp in childPids where !tree.contains(cp) {
-                    tree.append(cp)
-                    queue.append(cp)
-                }
+            for child in childrenByParent[current] ?? [] where !seen.contains(child) {
+                seen.insert(child)
+                tree.append(child)
+                queue.append(child)
             }
         }
         return tree
