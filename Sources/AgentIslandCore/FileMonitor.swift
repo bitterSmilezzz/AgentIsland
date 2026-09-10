@@ -14,6 +14,10 @@ public protocol FileActivityProviding {
     /// 设置活跃会话判定窗口（引擎 config 同步）
     func setActiveSessionWindow(_ window: TimeInterval)
 
+    /// 设置「工作中」判定窗口（引擎 config 同步）：决定快跳过兜底的重扫周期，
+    /// 保证文件信号时效性与用户设定的窗口一致
+    func setWorkingWindow(_ window: TimeInterval)
+
     /// 注册监控目录（假实现为空操作）
     func watch(dirs: [String])
 
@@ -30,6 +34,7 @@ public extension FileActivityProviding {
     func scanAsync() {}
     func activeSessionCounts(for dirs: [String]) -> [String: Int] { [:] }
     func setActiveSessionWindow(_ window: TimeInterval) {}
+    func setWorkingWindow(_ window: TimeInterval) {}
 }
 
 /// 后台扫描 + 缓存实现：
@@ -58,9 +63,11 @@ public final class FileActivityMonitor: FileActivityProviding {
     /// 每目录上次全量扫描时间（快跳过兜底：深层写入不改变根 mtime，
     /// 超过 forceRescanInterval 未全量扫 → 强制重扫，保证文件信号时效性）
     private var lastFullScans: [String: Date] = [:]
-    /// 快跳过兜底周期：与引擎 workingWindow(60s) 同量级，
-    /// 深层持续写入的文件信号最长延迟该周期即被发现（阿证实测原 600s 过长）
-    private let forceRescanInterval: TimeInterval = 60
+    /// 快跳过兜底周期：与引擎 workingWindow 同量级，
+    /// 深层持续写入的文件信号最长延迟该周期即被发现（阿证实测原 600s 过长）。
+    /// 由引擎按 config.workingWindow 注入（见 setWorkingWindow）：写死 60s 会与
+    /// 用户可调窗口脱钩——窗口调小则漏判 working，调大则把旧时间戳当新写入。
+    private var forceRescanInterval: TimeInterval = 60
 
     public init(maxDepth: Int = 4, scanMinInterval: TimeInterval = 15.0) {
         self.maxDepth = maxDepth
@@ -113,6 +120,13 @@ public final class FileActivityMonitor: FileActivityProviding {
         lock.unlock()
     }
 
+    public func setWorkingWindow(_ window: TimeInterval) {
+        lock.lock()
+        // 下限 5s：窗口过小时重扫会过于频繁；上限 60s 与历史行为一致
+        forceRescanInterval = min(max(window, 5), 60)
+        lock.unlock()
+    }
+
     public func scanAsync() {
         scanQueue.async { [weak self] in
             self?.runScan()
@@ -160,10 +174,13 @@ public final class FileActivityMonitor: FileActivityProviding {
             let cachedNewest = cache[dir]
             let cachedCount = sessionCounts[dir]
             let lastFull = lastFullScans[dir]
+            // 同一临界区内读取：forceRescanInterval 可被 setWorkingWindow 改写，
+            // 锁外读取虽不撕裂但会读到跨周期的旧值
+            let rescanInterval = forceRescanInterval
             lock.unlock()
             if let rootDate, let cachedRoot, rootDate == cachedRoot,
                let cachedNewest, let cachedCount,
-               now.timeIntervalSince(lastFull ?? .distantPast) < forceRescanInterval {
+               now.timeIntervalSince(lastFull ?? .distantPast) < rescanInterval {
                 // 根 mtime 未变（无新顶层子项）+ 60s 内刚全量扫过：复用缓存，不枚举目录树
                 fresh[dir] = cachedNewest
                 freshCounts[dir] = cachedCount

@@ -37,6 +37,10 @@ public final class ActivityEngine: ObservableObject {
     private var samplingInFlight = false   // 后台采样进行中标志：丢弃重叠请求，防 CPU% 差分交错
     /// 滞回：CPU 信号瞬时抖动时保持 working 的最短时长（防 peek 高频弹跳）
     private var workingSince: [String: Date] = [:]
+    /// 最近一次「有工作信号」的时刻（滞回锚点）。
+    /// 与 workingSince 的区别：workingSince 是本次工作区间的起点（仅用于计算任务时长），
+    /// lastSignalAt 每拍有信号就刷新（用于滞回判断，否则长任务滞回永不生效）。
+    private var lastSignalAt: [String: Date] = [:]
 
     /// - Parameters:
     ///   - profiles: 初始启用档案（组合根/测试显式给定；无默认值——安装判定依赖注入的缓存，
@@ -67,6 +71,9 @@ public final class ActivityEngine: ObservableObject {
         }
         // 注册监控目录（后台扫描用，全量替换）
         fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
+        // 初始配置同步（applyConfig 只在 config didSet 时触发，init 传入的配置需显式应用）
+        fileMonitor.setActiveSessionWindow(config.activeSessionWindow)
+        fileMonitor.setWorkingWindow(config.workingWindow)
     }
 
     private var running = false   // stop() 后阻止在飞回调重建定时器（阿剩N1）
@@ -83,8 +90,14 @@ public final class ActivityEngine: ObservableObject {
     private var tokenPollingStarted = false
     /// 最近一次启停集合（首刷完成后重放；见 init）
     private var lastEnabledIDs: Set<String>
-    /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于差分与激增检测
+    /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于速率差分
     private var tokenRateBaseline: [String: (timestamp: Date, tokens: Int)] = [:]
+    /// 连续超过速率阈值的评估档数（agentId → 档数）；达到确认档数才告警
+    private var tokenSpikeStreak: [String: Int] = [:]
+    /// 激增评估档长：满一档才结算一次速率，一次性落盘会被摊平
+    static let tokenRateWindow: TimeInterval = 60
+    /// 需连续多少档超阈值才告警（滤掉长任务结束时的一次性账本落盘）
+    static let tokenSpikeConfirmations = 3
     /// 持续高负载时间追踪（agentId → 开始高负载的时间戳），用于判定真正的死循环
     private var highCpuSince: [String: Date] = [:]
     /// 上次高负载告警时间（agentId → 告警时间），防止每个采样周期重复轰炸
@@ -147,7 +160,8 @@ public final class ActivityEngine: ObservableObject {
     /// 记录启用集供安装缓存首刷完成后重放（见 init）
     public func setEnabled(_ enabledIDs: Set<String>) {
         lastEnabledIDs = enabledIDs
-        let all = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
+        let all = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
+                                             installedBundles: installedApps.installedBundleIDs())
         profiles = all.filter { enabledIDs.contains($0.id) }
         refreshWatchedDirs()
         sample()
@@ -173,6 +187,9 @@ public final class ActivityEngine: ObservableObject {
     private func applyConfig() {
         // 活跃会话判定窗口同步给后台扫描器
         fileMonitor.setActiveSessionWindow(config.activeSessionWindow)
+        // 工作判定窗口同步给扫描器：快跳过兜底周期必须与 workingWindow 同口径，
+        // 否则用户调小窗口会漏判、调大窗口会把旧时间戳当新写入
+        fileMonitor.setWorkingWindow(config.workingWindow)
         // 采样间隔变化 → 重启定时器
         if timer != nil {
             timer?.invalidate()
@@ -187,6 +204,11 @@ public final class ActivityEngine: ObservableObject {
         // M5：清理已移除 profile 的滞回状态，防止长期累积
         let activeIDs = Set(profiles.map(\.id))
         workingSince = workingSince.filter { activeIDs.contains($0.key) }
+        lastSignalAt = lastSignalAt.filter { activeIDs.contains($0.key) }
+        highCpuSince = highCpuSince.filter { activeIDs.contains($0.key) }
+        lastRunawayAlertedAt = lastRunawayAlertedAt.filter { activeIDs.contains($0.key) }
+        tokenSpikeStreak = tokenSpikeStreak.filter { activeIDs.contains($0.key) }
+        tokenRateBaseline = tokenRateBaseline.filter { activeIDs.contains($0.key) }
     }
 
     // MARK: - 安装检测（A4；缓存与刷新节律见 InstalledAppsCache，引擎只读判定）
@@ -261,15 +283,21 @@ public final class ActivityEngine: ObservableObject {
                 return now.timeIntervalSince(newest)
             }()
 
-            // 先行透传检查：如果已有明确在途动作（如正在思考/正在编辑），直接构成核心工作信号
-            let detectedAction = running ? AgentActionInspector.inspectAction(pid: matchedPID, profile: profile, sessionDirs: profile.sessionDirs) : nil
+            // 动作透传：仅用于展示「正在执行 xxx」。
+            // 传入 matcher.snapshot 复用本次采样已枚举的进程表：子进程查找零额外系统调用。
+            //
+            // 注意：动作不参与工作状态判定。它只是「最近 90s 有过活动」的弱信号，
+            // 且各 Agent 的探测源（SQLite 最新行 / 日志尾部）在 Agent 空闲挂起时依然可能
+            // 命中旧记录，一旦当作工作信号会让 Agent 恒显「工作中」并永不产生完成事件。
+            // 工作状态只由「文件写入 + CPU」这两个可观测信号决定。
+            let detectedAction = running ? AgentActionInspector.inspectAction(
+                pid: matchedPID, profile: profile, sessionDirs: profile.sessionDirs,
+                snapshot: matcher.snapshot) : nil
 
             let hasRecentWrite = newestAgo.map { $0 <= config.workingWindow } ?? false
-            let hasActiveAction = detectedAction != nil
 
             // 智能 CPU 判定：
             // 对于桌面/GUI 智能体（如 DimAgent、WorkBuddy、ChatGPT，或声明了 bundleIDs 的桌面应用）：
-            // 若明确无在途动作（detectedAction == nil）且会话目录无新写入，
             // 过滤 Electron / Chromium / WebKit 辅助进程渲染与 IPC 空闲微抖动（4%~15%），仅当 CPU 达真正高算力（>= 20.0%）才触发 working；
             // 纯 CLI 智能体维持通用 cpuThreshold（默认 6.0%）。
             let hasHighCpu: Bool
@@ -281,19 +309,23 @@ public final class ActivityEngine: ObservableObject {
 
             let level: ActivityLevel
             if !running {
+                // 进程消失 = Agent 被关闭/退出，不是任务完成：静默转 offline，不发完成事件。
+                // （此前会误报「任务已完成」——完成事件只应由「进程仍在但工作信号消失」产生）
                 level = .offline
-                if let since = workingSince[profile.id] {
-                    recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
-                }
                 workingSince[profile.id] = nil
+                lastSignalAt[profile.id] = nil
                 highCpuSince[profile.id] = nil
                 lastRunawayAlertedAt[profile.id] = nil
-            } else if hasRecentWrite || hasActiveAction || hasHighCpu {
+                tokenSpikeStreak[profile.id] = nil
+            } else if hasRecentWrite || hasHighCpu {
                 level = .working
                 if workingSince[profile.id] == nil { workingSince[profile.id] = now }
-            } else if let since = workingSince[profile.id],
-                      now.timeIntervalSince(since) < config.minWorkingHold {
-                // 滞回：信号刚消失时保持 working 最短时长，防 CPU 临界抖动导致 peek 高频弹跳
+                lastSignalAt[profile.id] = now
+            } else if let lastSignal = lastSignalAt[profile.id],
+                      now.timeIntervalSince(lastSignal) < config.minWorkingHold {
+                // 滞回：信号刚消失时保持 working 最短时长，防 CPU 临界抖动导致 peek 高频弹跳。
+                // 锚点必须是「最后一次有信号」的时刻而非首次进入 working 的时刻——
+                // 用 workingSince 会让任何超过 minWorkingHold 的任务滞回完全失效。
                 level = .working
             } else {
                 level = .idle
@@ -301,6 +333,7 @@ public final class ActivityEngine: ObservableObject {
                     recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
                 }
                 workingSince[profile.id] = nil
+                lastSignalAt[profile.id] = nil
                 highCpuSince[profile.id] = nil
             }
 
@@ -350,28 +383,36 @@ public final class ActivityEngine: ObservableObject {
         if config.tokenAlertEnabled {
             for profile in profiles {
                 guard let usage = tokenMonitor.usage[profile.id], usage.tokensTotal > 0 else { continue }
-                if let base = tokenRateBaseline[profile.id] {
-                    let timeSpan = now.timeIntervalSince(base.timestamp)
-                    let deltaTokens = usage.tokensTotal - base.tokens
-                    // 在短时间（<= 300 秒）内增量达到或超过配置阈值
-                    if deltaTokens >= config.tokenAlertThreshold && timeSpan <= 300 {
-                        let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
-                        postEvent(AgentTaskEvent(
-                            agentId: profile.id,
-                            agentName: profile.name,
-                            eventType: .costSpike,
-                            duration: timeSpan,
-                            timestamp: now,
-                            pid: matchedPID,
-                            message: "⚠️ \(profile.name) Token 激增 (+\(TokenUsage.compact(deltaTokens)))",
-                            detail: "在 \(Int(timeSpan)) 秒内 Token 消耗突增 +\(TokenUsage.compact(deltaTokens))（设置报警阈值: \(TokenUsage.compact(config.tokenAlertThreshold))）。常见原因：长上下文灌入、复杂循环或多 Agent 并发。建议点击直达检查会话状态。"
-                        ))
-                        tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
-                    } else if timeSpan >= 60 {
-                        tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
-                    }
-                } else {
+                guard let base = tokenRateBaseline[profile.id] else {
                     tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
+                    continue
+                }
+                let timeSpan = now.timeIntervalSince(base.timestamp)
+                // 不足一档不结算：一次采样就把长任务的账本落盘当激增会误报
+                guard timeSpan >= Self.tokenRateWindow else { continue }
+                let deltaTokens = usage.tokensTotal - base.tokens
+                tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
+                // 折算为每分钟速率：正常绘画/长任务摊到多档后低于阈值，不再触发
+                let tokensPerMinute = Double(deltaTokens) / timeSpan * 60.0
+                if deltaTokens > 0, tokensPerMinute >= Double(config.tokenAlertThreshold) {
+                    let streak = (tokenSpikeStreak[profile.id] ?? 0) + 1
+                    tokenSpikeStreak[profile.id] = streak
+                    // 需连续多档超阈值才告警：滤掉单次账本补写（如长任务结束时一次性落盘）
+                    guard streak >= Self.tokenSpikeConfirmations else { continue }
+                    let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
+                    postEvent(AgentTaskEvent(
+                        agentId: profile.id,
+                        agentName: profile.name,
+                        eventType: .costSpike,
+                        duration: timeSpan * Double(streak),
+                        timestamp: now,
+                        pid: matchedPID,
+                        message: "⚠️ \(profile.name) Token 激增 (+\(TokenUsage.compact(deltaTokens)))",
+                        detail: "近 \(Int(timeSpan)) 秒 Token 净消耗 +\(TokenUsage.compact(deltaTokens))，约 \(TokenUsage.compact(Int(tokensPerMinute)))/分钟，已连续 \(streak) 个周期超过阈值（设置报警阈值: \(TokenUsage.compact(config.tokenAlertThreshold))/分钟）。常见原因：长上下文灌入、复杂循环或多 Agent 并发。建议点击直达检查会话状态。"
+                    ))
+                    tokenSpikeStreak[profile.id] = 0   // 告警后重置，避免每档重复轰炸
+                } else {
+                    tokenSpikeStreak[profile.id] = 0
                 }
             }
         }
@@ -415,27 +456,60 @@ public final class ActivityEngine: ObservableObject {
     }
 
     /// 终止智能体进程逃生舱：关闭目标 Agent 及其子进程，并更新状态
-    public func terminateAgent(pid: Int32?, agentId: String) {
+    /// - Returns: 是否真正发出了终止信号。pid 缺失时返回 false 且不发送成功事件，
+    ///   避免「假成功」——此前无论有无 pid 都宣告「进程已终止」，用户以为已熔断，
+    ///   实际进程仍在烧 token（GUI bundle 命中但进程名未匹配时 pid 为 nil）。
+    @discardableResult
+    public func terminateAgent(pid: Int32?, agentId: String) -> Bool {
         let name = profiles.first(where: { $0.id == agentId })?.name ?? agentId
-        if let pid = pid {
-            ProcessTerminator.terminate(pid: pid)
+        guard let pid, pid > 1 else {
+            latestEvent = AgentTaskEvent(
+                agentId: agentId,
+                agentName: name,
+                eventType: .attention,
+                duration: 0,
+                timestamp: Date(),
+                pid: nil,
+                message: "无法终止 \(name)：未定位到进程",
+                detail: "检测到 \(name) 处于活动状态，但未能匹配到可终止的进程 PID（可能是 Electron 辅助进程或权限受限）。请从菜单栏图标或活动监视器手动处理。"
+            )
+            return false
+        }
+        // 消费 terminate 的真实结果：无权限 / 进程已消失时 kill 返回非 0，
+        // 不能一律宣告成功（否则「假成功」只修了 pid 缺失那一半）
+        guard ProcessTerminator.terminate(pid: pid) else {
+            latestEvent = AgentTaskEvent(
+                agentId: agentId,
+                agentName: name,
+                eventType: .attention,
+                duration: 0,
+                timestamp: Date(),
+                pid: pid,
+                message: "无法终止 \(name)：信号发送失败",
+                detail: "已尝试终止 PID \(pid)，但未能向其发送信号（进程可能已退出，或需要更高权限）。请确认进程状态或在活动监视器中处理。"
+            )
+            return false
         }
         workingSince[agentId] = nil
+        lastSignalAt[agentId] = nil
         highCpuSince[agentId] = nil
         lastRunawayAlertedAt[agentId] = nil
+        tokenSpikeStreak[agentId] = nil
         latestEvent = AgentTaskEvent(
             agentId: agentId,
             agentName: name,
-            eventType: .attention,
+            // 终止成功是「已完成」而非「需关注」：用 attention 会让收起态细条误报红色告警
+            eventType: .completed,
             duration: 0,
             timestamp: Date(),
             pid: pid,
             message: "\(name) 进程已终止",
-            detail: pid != nil ? "已向 PID \(pid!) 及其关联子进程发送 SIGTERM/SIGKILL 终止信号，系统资源已释放。" : "已向该 Agent 执行终止指令。"
+            detail: "已向 PID \(pid) 及其关联子进程发送 SIGTERM/SIGKILL 终止信号，系统资源已释放。"
         )
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.sample()
         }
+        return true
     }
 
     /// 智能体工作台一键清理：安全清理指定的异常/孤儿进程并展示清理横幅
@@ -444,8 +518,10 @@ public final class ActivityEngine: ObservableObject {
         let res = cleaner.clean(anomalies: anomalies)
         for a in anomalies {
             workingSince[a.profileId] = nil
+            lastSignalAt[a.profileId] = nil
             highCpuSince[a.profileId] = nil
             lastRunawayAlertedAt[a.profileId] = nil
+            tokenSpikeStreak[a.profileId] = nil
         }
         latestEvent = AgentTaskEvent(
             agentId: "workbench-cleaner",
@@ -550,6 +626,12 @@ public final class ActivityEngine: ObservableObject {
         snapshots.filter {
             $0.processRunning || ($0.lastActivityAgo ?? .infinity) < 24 * 3600
         }
+    }
+
+    /// 顶部活动环微看板的数据源（工作态或 24h 有用量）。
+    /// 视图渲染与窗口高度计算共用此口径，避免「视图显示了但高度没算」导致底部汇总栏被裁切。
+    public var ringShelfSnapshots: [AgentSnapshot] {
+        visibleSnapshots.filter { $0.level == .working || ($0.tokenUsage?.tokens24h ?? 0) > 0 }
     }
 
     public static func formatAgo(_ interval: TimeInterval?) -> String {
