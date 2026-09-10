@@ -17,7 +17,7 @@ swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
 iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
 
 echo "==> 组装 .app"
-rm -rf "dist"
+rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/"
 cp "$ICON_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
@@ -30,8 +30,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>AgentIsland</string>
     <key>CFBundleDisplayName</key><string>AgentIsland</string>
     <key>CFBundleIdentifier</key><string>com.agentisland.app</string>
-    <key>CFBundleVersion</key><string>1.7.11</string>
-    <key>CFBundleShortVersionString</key><string>1.7.11</string>
+    <key>CFBundleVersion</key><string>0.0.1</string>
+    <key>CFBundleShortVersionString</key><string>0.0.1</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>AgentIsland</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
