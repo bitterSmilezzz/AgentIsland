@@ -227,7 +227,7 @@ public enum AgentActionInspector {
 
         // 查询最新的 1 条消息。
         // 性能关键：不能 `ORDER BY createdAt DESC LIMIT 1`——messages 表没有 createdAt
-        // 索引（现有索引均以 sessionId 打头），实测 5.4 万行 / 254MB 会退化成
+        // 索引（现有索引均以 sessionId 打头），实测数万行 / 数百 MB 会退化成
         // 「全表扫描 + 临时 B 树排序」，单次约 220ms，而本函数每 2 秒在主线程调用一次。
         // 用 max(rowid) 定位最新行（rowid 是隐含主键，O(1)），再按主键精确取该行。
         let sql = """
@@ -682,7 +682,7 @@ public enum AgentActionInspector {
         defer { sqlite3_close(db) }
 
         // 性能关键：原实现 `LEFT JOIN part ... ORDER BY s.time_updated DESC, p.time_updated DESC
-        // LIMIT 1` 会对 24 万行 / 250MB 的 part 表做全表 join + 排序（实测 90ms，每 2 秒一次）。
+        // LIMIT 1` 会对数十万行的 part 表做全表 join + 排序（实测 90ms，每 2 秒一次）。
         // 改为两步：先按 session 的 time_updated 取最新会话（有索引），再取该会话最新的 part。
         let sql = """
         SELECT s.title, p.data, s.time_updated FROM session s

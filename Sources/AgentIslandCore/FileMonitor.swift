@@ -55,7 +55,7 @@ public final class FileActivityMonitor: FileActivityProviding {
     private var isScanning = false
     private var lastScanAt = Date.distantPast
     /// 扫描最小间隔（引擎 working 时 2s 采样，扫描节流避免每拍全量扫）
-    /// 实测单趟全量递归 2.9GB 会话树耗时 0.23-0.30s，3s 间隔 ≈ 持续 10% CPU；
+    /// 实测单趟全量递归大型会话树耗时数百毫秒，3s 间隔 ≈ 持续 10% CPU；
     /// 提到 15s + 快跳过（见 runScan）后工作态开销降到 ~2%。
     private let scanMinInterval: TimeInterval
     /// 目录级快跳过缓存：目录自身 mtime + 最近写入时间（mtime 未变且 newest 仍活跃 → 复用，零枚举）

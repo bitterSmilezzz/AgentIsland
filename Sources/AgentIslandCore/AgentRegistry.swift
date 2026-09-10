@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - Agent 注册表
-// 内置集（按 2026-09 本机调查修正）+ 自动发现（按传入的已安装集判定）+ 用户自定义（UserDefaults）
+// 内置集（按主流 Agent 工具的实际安装形态维护）+ 自动发现（按传入的已安装集判定）+ 用户自定义（UserDefaults）
 // 无全局可变状态：安装判定一律经注入的 InstalledAppsCache（见 InstalledAppsCache.swift）
 
 public enum AgentRegistry {

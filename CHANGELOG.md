@@ -36,7 +36,7 @@
   - 现给列表 `layoutPriority(-1)`、汇总栏 `layoutPriority(1)`：空间不足时只压可滚动的列表，汇总栏保持完整
 - **性能：消除每 2 秒的主线程阻塞与 CPU 尖峰**（实测发现）：
   - `AgentActionInspector.activeChildCommand` 原先 fork `/usr/bin/pgrep` + `/bin/ps` 并 `waitUntilExit()`，单次 67ms，17 个 Agent 一轮 762ms 全部落在主线程；改为 sysctl `KERN_PROCARGS2` 直读命令行 + 复用采样快照做内存 BFS，`inspectDimAction` 单次由 170–220ms 降至 **0.9ms**
-  - `inspectDimAction` 的 `ORDER BY createdAt DESC LIMIT 1` 在 5.4 万行 / 254MB 的 `messages` 表上退化为全表扫描 + 临时 B 树排序（220ms/次）；改用 `rowid = (SELECT max(rowid) …)` 走主键查找
+  - `inspectDimAction` 的 `ORDER BY createdAt DESC LIMIT 1` 在数万行 / 数百 MB 的 `messages` 表上退化为全表扫描 + 临时 B 树排序（220ms/次）；改用 `rowid = (SELECT max(rowid) …)` 走主键查找
   - `inspectOpenCodeAction` 的 `session LEFT JOIN part` 全表排序实测 330–964ms；改为「先取最新会话，再取该会话最新 part」，降至 8ms
   - `ProcessTerminator.getProcessTree` 与 `AppActivator` 的父进程追溯同样去掉逐节点 fork，改用一次快照内存遍历
   - 实测收起态 CPU 由均值 8.0% / 峰值 39.2% 降至 **1.2% / 2.8%**

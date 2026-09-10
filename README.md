@@ -79,7 +79,7 @@
 
 ## 构建与运行
 
-本机无 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
+无需 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
 # 开发构建 + 自建测试套件（57 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）

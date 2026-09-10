@@ -81,7 +81,7 @@ extension String {
 // MARK: - dim 净消耗 SQL 片段（唯一事实来源，汇总/模型/会话三处共用）
 //
 // usage_ledger.usage.promptTokens 含缓存命中部分（cacheReadTokens），直接相加会
-// 把缓存重复计入：本机实测累计虚高 32 倍（39.6 亿 vs 净 1.22 亿）。净消耗 =
+// 把缓存重复计入，累计用量被大幅虚高（数十倍量级）。净消耗 =
 // (prompt - cacheRead) + completion，逐行钳制非负（个别行缺失/异常时不产生负值）。
 
 enum DimUsageSQL {
@@ -259,8 +259,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     /// 文件变更戳（inode+mtime+size 组合；任一变化即视为被替换/写入）。
     /// 必须纳入 `-wal` 文件（WAL 模式连接持有中 commit 只写 wal，
-    /// 主文件戳在 checkpoint 前不变——本机 dim WAL 已 13MB 未 checkpoint，
-    /// 只查主文件会导致活跃写入期间统计静默冻结）；mtime 用 Double 避免整秒截断漏检
+    /// 主文件戳在 checkpoint 前不变——长时间未 checkpoint 的库只查主文件
+    /// 会导致活跃写入期间统计静默冻结）；mtime 用 Double 避免整秒截断漏检
     private func fileStamp(_ path: String) -> String {
         func stamp(_ p: String) -> String {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: p) else { return "missing" }
