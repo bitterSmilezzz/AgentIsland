@@ -78,13 +78,27 @@ extension String {
     var escaped: String { replacingOccurrences(of: "'", with: "''") }
 }
 
+// MARK: - dim 净消耗 SQL 片段（唯一事实来源，汇总/模型/会话三处共用）
+//
+// usage_ledger.usage.promptTokens 含缓存命中部分（cacheReadTokens），直接相加会
+// 把缓存重复计入：本机实测累计虚高 32 倍（39.6 亿 vs 净 1.22 亿）。净消耗 =
+// (prompt - cacheRead) + completion，逐行钳制非负（个别行缺失/异常时不产生负值）。
+
+enum DimUsageSQL {
+    /// 净 token 表达式（对 usage 列逐行求值，供 SUM 使用）
+    static let netTokens = """
+    COALESCE(SUM(MAX(COALESCE(json_extract(usage,'$.promptTokens'),0) - COALESCE(json_extract(usage,'$.cacheReadTokens'),0), 0)),0)
+         + COALESCE(SUM(json_extract(usage,'$.completionTokens')),0)
+    """
+}
+
 // MARK: - Token 子系统 seam（轮询面 / 查询面）
 // 引擎与测试只依赖这两个小 interface；TokenUsageMonitor 是现网 adapter，
 // 测试替身为本文件末尾的 FakeTokenUsageMonitor。
 
 /// 轮询面：生命周期 + 缓存读取 + 刷新回调（引擎消费）
 public protocol TokenUsagePolling: AnyObject {
-    /// 各 agent 的用量快照（agentId → 用量；查询失败的源缺席）
+    /// 各 agent 的用量快照（agentId → 用量；查询失败时保留上次成功值）
     var usage: [String: TokenUsage] { get }
     /// 所有数据源总和（汇总栏 / 高度判断）
     var grandTotal: TokenUsage { get }
@@ -117,8 +131,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private let lock = NSLock()
     private var _usage: [String: TokenUsage] = [:]   // agentId → 用量
     private var _grandTotal = TokenUsage()
-    /// 增量缓存（阿证低）：文件未变时的上次结果副本，避免全表聚合重算
-    private var lastUsage: [String: TokenUsage] = [:]
+    /// 串行化整次刷新，避免并发查询交错发布旧结果。
+    private let refreshLock = NSLock()
+    private var lastDimRefresh: Date?
+    private var lastOpenCodeRefresh: Date?
     private var lastDimStamp = ""
     private var lastOpenCodeStamp = ""
     private var timer: Timer?
@@ -197,60 +213,48 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     }
 
     public func refresh() {
-        // 增量缓存（阿证低）：两库文件戳（含 -wal）未变则跳过全表聚合重算。
-        // 只读连接 + stat 微秒级；token 表行数到十万级时全表 SUM 可达数百 ms，
-        // 文件未变时无谓重算应避免
+        refresh(now: Date())
+    }
+
+    /// 同一次刷新共用时间边界；文件未变也需定期推进 24h 窗口。
+    func refresh(now: Date) {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
         let dimStamp = fileStamp(dimAgentDB)
         let openCodeStamp = fileStamp(openCodeDB)
-        // 读侧加锁（阿证低：stamp/lastUsage 写侧在锁内，跨线程读构成数据竞争）
+        func isFresh(_ date: Date?) -> Bool {
+            guard let date else { return false }
+            let age = now.timeIntervalSince(date)
+            return age >= 0 && age < TokenUsagePollingDefaults.interval
+        }
+        let refreshDim = lastDimStamp != dimStamp || !isFresh(lastDimRefresh)
+        let refreshOpenCode = lastOpenCodeStamp != openCodeStamp || !isFresh(lastOpenCodeRefresh)
+        guard refreshDim || refreshOpenCode else { return }
+
+        var updated = usage
+        var succeeded = false
+        if refreshDim, let value = queryDimAgent(cutoffISO: Self.iso24hAgo(now: now)) {
+            updated["dim"] = value
+            lastDimStamp = dimStamp
+            lastDimRefresh = now
+            succeeded = true
+        }
+        if refreshOpenCode,
+           let value = queryOpenCode(cutoffMs: Int64(now.addingTimeInterval(-86_400).timeIntervalSince1970 * 1000)) {
+            updated["opencode"] = value
+            lastOpenCodeStamp = openCodeStamp
+            lastOpenCodeRefresh = now
+            succeeded = true
+        }
+        // 打开成功不等于查询成功：失败源保留旧值与旧戳，下次刷新重试。
+        guard succeeded else { return }
         lock.lock()
-        let cached = lastDimStamp == dimStamp && lastOpenCodeStamp == openCodeStamp && !lastUsage.isEmpty
-        lock.unlock()
-        if cached {
-            return
-        }
-
-        let cutoffISO = Self.iso24hAgo()
-        let cutoffMs = Int64(Date().timeIntervalSince1970 - 86_400) * 1000
-
-        var usage: [String: TokenUsage] = [:]
-        // 查询前预检连接可用性（阿证中2）：WAL 库无 -shm 时只读打开返回
-        // CANTOPEN——文件存在但打开失败若仍更新 stamp，空结果会被缓存到下次写入。
-        // 打开失败视为查询失败：跳过该源、保留旧 stamp 与旧值
-        let dimOK = Self.canOpenReadonly(dimAgentDB)
-        let openCodeOK = Self.canOpenReadonly(openCodeDB)
-        if dimOK {
-            usage["dim"] = queryDimAgent(cutoffISO: cutoffISO)
-        }
-        if openCodeOK {
-            usage["opencode"] = queryOpenCode(cutoffMs: cutoffMs)
-        }
-
-        let total = usage.values.reduce(TokenUsage(), +)
-        // stamp 与结果同一把锁内原子更新（阿剩低：锁外写 stamp 会让并发
-        // refresh 交错时新结果配旧 stamp，显示短暂回退）；
-        // 仅更新查询成功的源（失败源保留旧 stamp，下次继续重查）
-        lock.lock()
-        _usage = usage.filter { !$0.value.isEmpty }
-        _grandTotal = total
-        lastUsage = _usage
-        if dimOK { lastDimStamp = dimStamp }
-        if openCodeOK { lastOpenCodeStamp = openCodeStamp }
+        _usage = updated.filter { !$0.value.isEmpty }
+        _grandTotal = updated.values.reduce(TokenUsage(), +)
         lock.unlock()
         if let onRefresh {
             Task { @MainActor in onRefresh() }
         }
-    }
-
-    /// 只读打开预检（阿证中2）：文件缺失或 WAL 库无 -shm 打开失败 → false。
-    /// 在 dbQueue 串行内执行，与 rawRows 的连接缓存一致
-    private static func canOpenReadonly(_ dbPath: String) -> Bool {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: dbPath) else { return false }
-        var handle: OpaquePointer?
-        let ok = sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK && handle != nil
-        if let handle { sqlite3_close(handle) }
-        return ok
     }
 
     /// 文件变更戳（inode+mtime+size 组合；任一变化即视为被替换/写入）。
@@ -278,7 +282,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             case "dim":
                 let sql = """
                 SELECT modelId, COUNT(*),
-                       SUM(json_extract(usage,'$.promptTokens'))+SUM(json_extract(usage,'$.completionTokens')),
+                       \(DimUsageSQL.netTokens),
                        COALESCE(SUM(cost),0)
                 FROM usage_ledger GROUP BY modelId ORDER BY 3 DESC
                 """
@@ -289,7 +293,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             case "opencode":
                 let sql = """
                 SELECT json_extract(data,'$.modelID'), COUNT(*),
-                       SUM(json_extract(data,'$.tokens.input'))+SUM(json_extract(data,'$.tokens.output'))+SUM(json_extract(data,'$.tokens.reasoning')),
+                       COALESCE(SUM(json_extract(data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0),
                        COALESCE(SUM(json_extract(data,'$.cost')),0)
                 FROM message WHERE json_extract(data,'$.role')='assistant'
                 GROUP BY 1 ORDER BY 3 DESC
@@ -314,7 +318,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 let dirPrefix = NSString(string: "~/.dimcode/v2/data/sessions").expandingTildeInPath
                 let sql = """
                 SELECT sessionId, COUNT(*),
-                       SUM(json_extract(usage,'$.promptTokens'))+SUM(json_extract(usage,'$.completionTokens')),
+                       \(DimUsageSQL.netTokens),
                        COALESCE(SUM(cost),0), MAX(createdAt)
                 FROM usage_ledger WHERE modelId = '\(modelId.escaped)'
                 GROUP BY sessionId ORDER BY 5 DESC LIMIT 200
@@ -330,7 +334,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             case "opencode":
                 let sql = """
                 SELECT m.session_id, COUNT(*),
-                       SUM(json_extract(m.data,'$.tokens.input'))+SUM(json_extract(m.data,'$.tokens.output'))+SUM(json_extract(m.data,'$.tokens.reasoning')),
+                       COALESCE(SUM(json_extract(m.data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.reasoning')),0),
                        COALESCE(SUM(json_extract(m.data,'$.cost')),0),
                        MAX(m.time_created), s.directory
                 FROM message m LEFT JOIN session s ON s.id = m.session_id
@@ -356,21 +360,19 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     // MARK: - 24h/累计 汇总查询
 
-    private func queryDimAgent(cutoffISO: String) -> TokenUsage {
+    private func queryDimAgent(cutoffISO: String) -> TokenUsage? {
         // createdAt 是 ISO8601 UTC 字符串（同格式字符串比较即时间比较）；cost 全表 SUM（NULL 记 0）
         let sql24h = """
-        SELECT COALESCE(SUM(json_extract(usage,'$.promptTokens')),0)
-             + COALESCE(SUM(json_extract(usage,'$.completionTokens')),0),
+        SELECT \(DimUsageSQL.netTokens),
                COALESCE(SUM(cost),0)
         FROM usage_ledger WHERE createdAt >= '\(cutoffISO)'
         """
         let sqlTotal = """
-        SELECT COALESCE(SUM(json_extract(usage,'$.promptTokens')),0)
-             + COALESCE(SUM(json_extract(usage,'$.completionTokens')),0),
+        SELECT \(DimUsageSQL.netTokens),
                COALESCE(SUM(cost),0)
         FROM usage_ledger
         """
-        var u = TokenUsage()
+        var u: TokenUsage?
         if let (t24, c24) = scalarSum(sql24h, dbPath: dimAgentDB),
            let (tAll, cAll) = scalarSum(sqlTotal, dbPath: dimAgentDB) {
             u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
@@ -378,7 +380,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         return u
     }
 
-    private func queryOpenCode(cutoffMs: Int64) -> TokenUsage {
+    private func queryOpenCode(cutoffMs: Int64) -> TokenUsage? {
         let tokensExpr = """
         COALESCE(SUM(json_extract(data,'$.tokens.input')),0)
         + COALESCE(SUM(json_extract(data,'$.tokens.output')),0)
@@ -387,7 +389,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         let roleFilter = "json_extract(data,'$.role')='assistant'"
         let sql24h = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter) AND time_created >= \(cutoffMs)"
         let sqlTotal = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter)"
-        var u = TokenUsage()
+        var u: TokenUsage?
         if let (t24, c24) = scalarSum(sql24h, dbPath: openCodeDB),
            let (tAll, cAll) = scalarSum(sqlTotal, dbPath: openCodeDB) {
             u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
@@ -400,7 +402,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     /// 两列标量查询：(token, cost)；查询失败返回 nil
     private func scalarSum(_ sql: String, dbPath: String) -> (Int, Double)? {
         guard let row = rawRows(sql, dbPath: dbPath, cols: 2).first else { return nil }
-        return (Int(row[0]) ?? 0, Double(row[1]) ?? 0)
+        // 经 Double 中转：SQLite 对 REAL 列求和会输出 "19067783.5" 这类带小数文本，
+        // 直接 Int("...") 会返回 nil 并被 ?? 0 静默归零（统计整体消失且无任何报错）。
+        let tokens = Int(row[0]) ?? Double(row[0]).map { Int($0) } ?? 0
+        return (tokens, Double(row[1]) ?? 0)
     }
 
     /// 通用查询：全部列转字符串返回（数值/文本统一处理，空结果返回 []）
@@ -409,7 +414,6 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         dbQueue.sync {
             let fm = FileManager.default
             guard fm.fileExists(atPath: dbPath) else {
-                debugPrint("TokenUsage: db not found \(dbPath)")
                 return []
             }
             // inode 失效检测（阿证中）：外部工具原子替换/重建主文件（VACUUM 后 rename、

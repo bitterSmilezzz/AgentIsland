@@ -37,7 +37,7 @@ enum TokenUsageTests {
             let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
             m.refresh()
             let total = m.grandTotal
-            // 口径 = 净消耗（input+output+reasoning / prompt+completion），cache.read 不计
+            // 口径 = 净消耗（input+output+reasoning / (prompt-cacheRead)+completion），cache.read 不计
             try expectEqual(total.tokens24h, 345, "24h token（dim 300 + opencode 45，cache.read 不计）")
             try expectEqual(total.tokensTotal, 1545, "累计 token")
             try expectTrue(abs(total.cost24h - 0.75) < 0.0001, "24h cost")
@@ -50,6 +50,37 @@ enum TokenUsageTests {
             let oc = try XCTUnwrap(m.usage["opencode"], "opencode 源缺席")
             try expectEqual(oc.tokens24h, 45, "opencode 24h：35+10，cache.read 999 必须不计")
             try expectEqual(oc.tokensTotal, 245, "opencode 累计")
+        }
+
+        TestKit.test("dim 净消耗口径：promptTokens 中的 cacheRead 必须扣除") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            // m1 两条记录补上 cacheReadTokens（原 150 tok/条，缓存命中 120 → 净 30/条）
+            try TokenFixture.exec(dbs.dimDB, [
+                "UPDATE usage_ledger SET usage = '{\"promptTokens\":100,\"completionTokens\":50,\"cacheReadTokens\":120}' WHERE modelId = 'm1'",
+            ])
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            m.refresh()
+            // m1 净 = (100-120 钳制为 0) + 50 = 50/条 → 2 条 100；m2 1000 → 累计 1100
+            try expectEqual(m.usage["dim"]?.tokensTotal, 1100, "dim 累计应扣除 cacheRead 并逐行钳制非负")
+            try expectEqual(m.usage["dim"]?.tokens24h, 100, "dim 24h 同步扣除")
+
+            var models: [ModelUsage]?
+            var sessions: [SessionUsage]?
+            let exp = Self.makeExpectation()
+            m.modelBreakdown(agentId: "dim") { rows in
+                models = rows
+                m.sessions(agentId: "dim", modelId: "m1") { rows in
+                    sessions = rows
+                    exp.fulfill()
+                }
+            }
+            Self.waitMainActor(exp, timeout: 10)
+            let modelRows = try XCTUnwrap(models, "模型查询超时")
+            let sessionRows = try XCTUnwrap(sessions, "会话查询超时")
+            try expectEqual(modelRows.first { $0.modelId == "m1" }?.tokens, 100, "模型拆分口径一致")
+            try expectEqual(sessionRows.reduce(0) { $0 + $1.tokens }, 100, "会话口径一致")
+            try expectEqual(modelRows.reduce(0) { $0 + $1.tokens }, m.usage["dim"]?.tokensTotal, "模型合计 == 汇总")
         }
 
         TestKit.test("AgentSnapshot tokenUsage 默认 nil 兼容") {
@@ -153,6 +184,84 @@ enum TokenUsageTests {
             try expectEqual(try XCTUnwrap(rows).count, 0, "未知 agent 应返回空")
         }
 
+        TestKit.test("数据库无写入时 24h 窗口仍会过期") {
+            let now = Date()
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            m.refresh(now: now)
+            try expectEqual(m.grandTotal.tokens24h, 345, "初始窗口")
+            m.refresh(now: now.addingTimeInterval(86_400))
+            try expectEqual(m.grandTotal.tokens24h, 0, "未写入也应移出 24h 窗口")
+            try expectEqual(m.grandTotal.tokensTotal, 1545, "累计保持")
+        }
+
+        TestKit.test("SQL 查询失败保留旧值，修复后继续更新") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            m.refresh()
+            let before = m.grandTotal
+            try TokenFixture.exec(dbs.dimDB, ["ALTER TABLE usage_ledger RENAME TO unavailable"])
+            try TokenFixture.exec(dbs.openCodeDB, ["UPDATE message SET data = json_set(data, '$.tokens.input', 20) WHERE session_id = 's1'"])
+            m.refresh()
+            try expectEqual(m.usage["dim"]?.tokensTotal, 1300, "失败源保留")
+            try expectEqual(m.grandTotal.tokensTotal, before.tokensTotal + 10, "健康源仍更新")
+            try TokenFixture.exec(dbs.dimDB, ["ALTER TABLE unavailable RENAME TO usage_ledger", "UPDATE usage_ledger SET usage = '{\"promptTokens\":200,\"completionTokens\":50}' WHERE modelId = 'm1'"])
+            m.refresh()
+            try expectEqual(m.usage["dim"]?.tokensTotal, 1500, "恢复后重新查询")
+        }
+
+        TestKit.test("数据库暂时缺失保留旧统计") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            m.refresh()
+            let before = m.grandTotal
+            try FileManager.default.moveItem(atPath: dbs.dimDB, toPath: dbs.dimDB + ".backup")
+            m.refresh()
+            try expectEqual(m.grandTotal, before, "缺失不能表现为消耗下降")
+        }
+
+        TestKit.test("成功查询空库会清除旧统计") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            m.refresh()
+            try TokenFixture.exec(dbs.dimDB, ["DELETE FROM usage_ledger"])
+            try TokenFixture.exec(dbs.openCodeDB, ["DELETE FROM message"])
+            m.refresh()
+            try expectEqual(m.grandTotal, TokenUsage(), "空数据与失败不同")
+            try expectTrue(m.usage.isEmpty)
+        }
+
+        TestKit.test("详情缺少可选 token 字段仍与汇总一致") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            try TokenFixture.exec(dbs.dimDB, ["UPDATE usage_ledger SET usage = '{\"promptTokens\":100}' WHERE modelId = 'm1'"])
+            try TokenFixture.exec(dbs.openCodeDB, ["UPDATE message SET data = json_remove(data, '$.tokens.reasoning')"])
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            m.refresh()
+            for (agent, model, expected) in [("dim", "m1", 200), ("opencode", "oc1", 40)] {
+                var models: [ModelUsage]?
+                var sessions: [SessionUsage]?
+                let exp = Self.makeExpectation()
+                m.modelBreakdown(agentId: agent) { rows in
+                    models = rows
+                    m.sessions(agentId: agent, modelId: model) { rows in
+                        sessions = rows
+                        exp.fulfill()
+                    }
+                }
+                Self.waitMainActor(exp, timeout: 10)
+                let modelRows = try XCTUnwrap(models, "模型查询超时")
+                let sessionRows = try XCTUnwrap(sessions, "会话查询超时")
+                try expectEqual(modelRows.first { $0.modelId == model }?.tokens, expected, agent + " 模型")
+                try expectEqual(sessionRows.reduce(0) { $0 + $1.tokens }, expected, agent + " 会话")
+                try expectEqual(modelRows.reduce(0) { $0 + $1.tokens }, m.usage[agent]?.tokensTotal, agent + " 累计一致")
+            }
+        }
+
         // MARK: 等待辅助：主线程轮询 RunLoop（避免信号量死锁 MainActor）
     }
 
@@ -219,7 +328,7 @@ enum TokenFixture {
         try? FileManager.default.removeItem(at: dbs.dir)
     }
 
-    private static func exec(_ path: String, _ statements: [String]) throws {
+    static func exec(_ path: String, _ statements: [String]) throws {
         var db: OpaquePointer?
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK, let db else {
             throw TestError(message: "fixture 建库失败 \(path)")
