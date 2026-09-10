@@ -262,6 +262,59 @@ enum TokenUsageTests {
             }
         }
 
+        TestKit.test("Token 刷新仅在统计变化时通知，窗口过期仍通知") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let monitor = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            var notifications = 0
+            monitor.onRefresh = { notifications += 1 }
+            let now = Date()
+            func drainCallbacks() {
+                let end = Date().addingTimeInterval(0.1)
+                while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            }
+            monitor.refresh(now: now)
+            monitor.refresh(now: now.addingTimeInterval(60))
+            monitor.refresh(now: now.addingTimeInterval(120))
+            drainCallbacks()
+            try expectEqual(notifications, 1, "三次查询只有首次数据变化")
+            try TokenFixture.exec(dbs.dimDB, ["UPDATE usage_ledger SET cost = cost + 1 WHERE modelId = 'm1'"])
+            monitor.refresh(now: now.addingTimeInterval(180))
+            drainCallbacks()
+            try expectEqual(notifications, 2, "仅成本变化也应通知")
+            monitor.refresh(now: now.addingTimeInterval(86_400))
+            drainCallbacks()
+            try expectEqual(notifications, 3, "24h 窗口过期应通知")
+            try expectEqual(monitor.grandTotal.tokens24h, 0)
+        }
+
+        TestKit.test("REAL 形式 Token 在汇总与模型会话详情均能读取") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            try TokenFixture.exec(dbs.dimDB, ["UPDATE usage_ledger SET usage = '{\"promptTokens\":100.5,\"completionTokens\":50}' WHERE modelId = 'm1'"])
+            try TokenFixture.exec(dbs.openCodeDB, ["UPDATE message SET data = json_set(data, '$.tokens.input', 10.5) WHERE session_id = 's1'"])
+            let monitor = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            monitor.refresh()
+            for (agent, model, expected) in [("dim", "m1", 301), ("opencode", "oc1", 45)] {
+                var models: [ModelUsage]?
+                var sessions: [SessionUsage]?
+                let done = Self.makeExpectation()
+                monitor.modelBreakdown(agentId: agent) { rows in
+                    models = rows
+                    monitor.sessions(agentId: agent, modelId: model) { rows in
+                        sessions = rows
+                        done.fulfill()
+                    }
+                }
+                Self.waitMainActor(done, timeout: 5)
+                let modelRows = try XCTUnwrap(models)
+                let sessionRows = try XCTUnwrap(sessions)
+                try expectEqual(modelRows.first { $0.modelId == model }?.tokens, expected, agent + " 模型")
+                try expectEqual(sessionRows.reduce(0) { $0 + $1.tokens }, expected, agent + " 会话")
+                try expectEqual(modelRows.reduce(0) { $0 + $1.tokens }, monitor.usage[agent]?.tokensTotal, agent + " 汇总")
+            }
+        }
+
         // MARK: 等待辅助：主线程轮询 RunLoop（避免信号量死锁 MainActor）
     }
 

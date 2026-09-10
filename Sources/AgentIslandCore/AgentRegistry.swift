@@ -80,9 +80,9 @@ public enum AgentRegistry {
             processNames: ["WorkBuddy", "workbuddy", "Electron"],
             pathContains: ["workbuddy"],
             sessionDirs: [
-                home(".workbuddy/sessions"),
-                home(".workbuddy/tasks"),
-                home(".workbuddy/memory")
+                // sessions/*.json 是宿主心跳/连接登记，不代表有任务；
+                // memory 也会被后台同步触碰。任务产物才是工作信号。
+                home(".workbuddy/tasks")
             ],
             category: .assistant
         ),
@@ -94,8 +94,9 @@ public enum AgentRegistry {
             processNames: ["ZCode", "zcode-host-local-1", "zcode-cli", "Electron"],
             pathContains: ["zcode"],
             sessionDirs: [
-                home(".zcode/v2"),
-                home("Library/Application Support/ZCode/session")
+                // v2 根目录包含 bot 状态、轮询日志和 sqlite；这些会在空闲时持续更新。
+                // checkpoints 才对应一次实际 Agent 运行的状态落盘。
+                home(".zcode/v2/checkpoints")
             ],
             category: .codeEditor
         ),
@@ -152,12 +153,17 @@ public enum AgentRegistry {
         ),
         AgentProfile(
             id: "dsh",
-            name: "DSH",
+            name: "DeepSeek Harness",
             icon: "bolt.horizontal.fill",
             bundleIDs: [],
+            // web 模式由 Node 启动 bin.js，最终可执行 basename 是 node；
+            // 仅靠 dsh 进程名会漏掉当前桌面/网页宿主形态。
             processNames: ["dsh"],
             pathContains: ["deepseek-harness"],
-            sessionDirs: [home(".dsh/sessions"), home(".dsh/storages")],
+            pathExcludes: [".codegraph"],
+            // storages/workspace.json 是网页宿主的工作区状态，会在空闲时被后台刷新；
+            // 只有真实会话目录才代表 DSH 正在执行任务。
+            sessionDirs: [home(".dsh/sessions")],
             category: .assistant
         ),
         AgentProfile(

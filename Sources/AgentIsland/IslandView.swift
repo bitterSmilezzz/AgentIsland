@@ -10,7 +10,7 @@ struct GlassCardBackground: View {
 
     /// 贴边造型：采用 SideNotchShape 赋予反向倒角一体化贴边质感
     private var notchShape: SideNotchShape {
-        SideNotchShape(dockEdge: dockEdge, curlRadius: 10, cornerRadius: cornerRadius)
+        SideNotchShape(dockEdge: dockEdge, curlRadius: IslandMetrics.notchInset, cornerRadius: cornerRadius)
     }
 
     var body: some View {
@@ -146,8 +146,18 @@ struct IslandView: View {
     // MARK: 贴边微细条（露 6pt，晶莹质感 + 多状态状态呼吸光晕）
 
     private var hasActiveAlert: Bool {
-        guard let event = engine.latestEvent else { return false }
-        return event.eventType == .costSpike || event.eventType == .attention
+        activeAlertEvent != nil
+    }
+
+    /// 当前仍需用户注意的事件。完成事件不占用顶部状态摘要，避免把正常完成误显示成告警。
+    private var activeAlertEvent: AgentTaskEvent? {
+        guard let event = engine.latestEvent,
+              event.eventType == .costSpike || event.eventType == .attention else { return nil }
+        return event
+    }
+
+    private func alertColor(for eventType: AgentTaskEvent.EventType) -> Color {
+        eventType == .costSpike ? Theme.dangerRed : Theme.warningOrange
     }
 
     private var dockedSliver: some View {
@@ -178,7 +188,17 @@ struct IslandView: View {
                     .frame(width: 9, height: 9)
                 // 优先展示「有动作」的 working agent：若第一个 working 恰好无动作，
                 // 此前会整段退化，明明有 Agent 带动作也不显示
-                if let active = engine.visibleSnapshots.first(where: {
+                if let alert = activeAlertEvent {
+                    Text(alert.summaryText)
+                        .font(Theme.bodyFont(12, weight: .semibold))
+                        .foregroundColor(alertColor(for: alert.eventType))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
+                        .contentShape(Rectangle())
+                        .help(alert.detail.map { "\(alert.summaryText)\n\($0)" } ?? alert.summaryText)
+                        .accessibilityLabel(alert.detail.map { "\(alert.summaryText)。\($0)" } ?? alert.summaryText)
+                } else if let active = engine.visibleSnapshots.first(where: {
                     $0.level == .working && !($0.currentAction ?? "").isEmpty
                 }), let action = active.currentAction {
                     HStack(spacing: 4) {
@@ -208,15 +228,23 @@ struct IslandView: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: false, vertical: true)
                     .layoutPriority(1)
+                    .contentShape(Rectangle())
+                    // 正文保持单行省略；悬停时展示未截断的 Agent 名和动作。
                     .help("\(active.profile.name): \(action)")
+                    .accessibilityLabel("\(active.profile.name)：\(action)")
                 } else {
-                    Text(engine.anyWorking
-                         ? "\(engine.workingAgents().count) 个 Agent 正在工作"
-                         : "当前没有 Agent 在工作")
+                    let statusText = engine.anyWorking
+                        ? "\(engine.workingAgents().count) 个 Agent 正在工作"
+                        : "当前没有 Agent 在工作"
+                    Text(statusText)
                         .font(Theme.bodyFont(13, weight: .semibold))
                         .foregroundColor(Theme.onDark)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                         .layoutPriority(1)
+                        .contentShape(Rectangle())
+                        .help(statusText)
+                        .accessibilityLabel(statusText)
                 }
                 Spacer(minLength: 4)
                 // 可见计数是次要信息：去掉 fixedSize 让它可被压缩，
@@ -331,6 +359,12 @@ struct IslandView: View {
                 // 按事件身份隔离视图：新事件到来时重置内部状态（如「已复制」反馈）
                 EventBannerView(event: event, engine: engine, controller: controller)
                     .id(event.id)
+                    // 关闭提醒时先淡出并收缩横幅，再让窗口同步缩短；
+                    // 没有显式 transition 时 SwiftUI 会在窗口动画期间瞬间移除内容。
+                    .transition(.asymmetric(
+                        insertion: .opacity,
+                        removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
+                    ))
                 DarkDivider()
             }
 
@@ -371,10 +405,13 @@ struct IslandView: View {
             if !engine.grandTotal.isEmpty {
                 DarkDivider()
                 TokenSummaryBar(total: engine.grandTotal)
+                    .fixedSize(horizontal: false, vertical: true)
                     // 高优先级：VStack 分配空间时优先满足汇总栏的完整高度
                     .layoutPriority(1)
             }
         }
+        // 事件横幅的插入/移除与列表布局使用同一时长，避免关闭按钮导致内容硬切。
+        .animation(.easeInOut(duration: 0.24), value: engine.latestEvent?.id)
         .cardShell(dockEdge: controller.dockEdge, controller: controller)
     }
 
@@ -876,8 +913,10 @@ struct EventBannerView: View {
                 }
 
                 Button {
-                    controller.eventBannerExpanded = false
-                    engine.clearLatestEvent()
+                    withAnimation(.easeInOut(duration: 0.24)) {
+                        controller.eventBannerExpanded = false
+                        engine.clearLatestEvent()
+                    }
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .semibold))

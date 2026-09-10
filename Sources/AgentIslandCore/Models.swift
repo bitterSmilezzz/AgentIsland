@@ -241,7 +241,7 @@ public struct EngineConfig: Equatable {
     public var activeSessionWindow: TimeInterval = 600.0 // 活跃会话计数窗口（10 分钟）
     public var minWorkingHold: TimeInterval = 10.0    // 滞回：working 信号消失后保持最短时长（防抖动）
     public var tokenAlertEnabled: Bool = true          // 是否开启 Token 突增告警
-    public var tokenAlertThreshold: Int = 100_000      // 单分钟内 Token 增量阈值（默认 100k）
+    public var tokenAlertThreshold: Int = 200_000      // 单分钟内 Token 增量阈值（默认 200k）
     public var runawayCpuAlert: Bool = true            // 是否开启持续高负荷死循环告警
     public var runawayCpuThreshold: Double = 70.0      // 持续死循环/高负载判定阈值 (70% CPU)
     public var runawayDurationThreshold: TimeInterval = 300 // 持续高负载时长阈值 (5 分钟)
@@ -253,7 +253,7 @@ public struct EngineConfig: Equatable {
                 activeSessionWindow: TimeInterval = 600.0,
                 minWorkingHold: TimeInterval = 10.0,
                 tokenAlertEnabled: Bool = true,
-                tokenAlertThreshold: Int = 100_000,
+                tokenAlertThreshold: Int = 200_000,
                 runawayCpuAlert: Bool = true,
                 runawayCpuThreshold: Double = 70.0,
                 runawayDurationThreshold: TimeInterval = 300) {

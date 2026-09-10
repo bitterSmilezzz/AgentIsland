@@ -5,6 +5,7 @@ import Foundation
 
 @MainActor
 func runAllTests() -> Int32 {
+    FileIOTests.register()
     EngineTests.register()
     TokenUsageTests.register()
     RegistryTests.register()

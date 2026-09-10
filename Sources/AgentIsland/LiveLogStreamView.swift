@@ -15,6 +15,8 @@ struct LiveLogStreamView: View {
     @State private var copiedFeedback = false
     @State private var expandedEventId: String? = nil
     @State private var timer: Timer?
+    /// 日志解析可能超过 2 秒；合并在途请求，避免旧结果覆盖新结果和并发扫盘。
+    @State private var refreshInFlight = false
 
     private var snapshot: AgentSnapshot? {
         engine.snapshots.first { $0.id == agentId }
@@ -252,7 +254,14 @@ struct LiveLogStreamView: View {
     // MARK: - 数据流控制
 
     private func refreshLogs() {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
         engine.fetchLogStream(agentId: agentId, limit: 30) { result in
+            defer { self.refreshInFlight = false }
+            guard result != self.events else {
+                self.loading = false
+                return
+            }
             self.events = result
             self.loading = false
         }
@@ -263,7 +272,10 @@ struct LiveLogStreamView: View {
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak engine] _ in
             Task { @MainActor in
                 guard autoRefresh, let engine else { return }
+                guard !refreshInFlight else { return }
+                refreshInFlight = true
                 engine.fetchLogStream(agentId: agentId, limit: 30) { result in
+                    defer { self.refreshInFlight = false }
                     if result != self.events {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             self.events = result

@@ -95,7 +95,7 @@ struct SettingsView: View {
     @AppStorage(SettingKey.islandAppearance) private var islandAppearanceRaw = IslandAppearance.system.rawValue
     @AppStorage(SettingKey.playCompletionSound) private var playCompletionSound = true
     @AppStorage(SettingKey.tokenAlertEnabled) private var tokenAlertEnabled = true
-    @AppStorage(SettingKey.tokenAlertThreshold) private var tokenAlertThreshold = 100_000
+    @AppStorage(SettingKey.tokenAlertThreshold) private var tokenAlertThreshold = 200_000
     @AppStorage(SettingKey.runawayCpuAlert) private var runawayCpuAlert = true
 
     /// 内置 Agent 列表（与 fullRegistry 同口径：排除宿主内嵌且未独立安装的组件）
@@ -522,8 +522,9 @@ struct SettingsView: View {
                         Picker("激增报警阈值", selection: $tokenAlertThreshold) {
                             Text("30k tokens / 分钟").tag(30_000)
                             Text("50k tokens / 分钟").tag(50_000)
-                            Text("100k tokens / 分钟 (默认)").tag(100_000)
+                            Text("100k tokens / 分钟").tag(100_000)
                             Text("200k tokens / 分钟").tag(200_000)
+                            Text("500k tokens / 分钟").tag(500_000)
                         }
                         .font(Theme.bodyFont(12))
                         .onChange(of: tokenAlertThreshold) { _ in applyConfig() }

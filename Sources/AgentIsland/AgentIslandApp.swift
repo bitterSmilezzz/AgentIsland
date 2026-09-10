@@ -1,6 +1,7 @@
 import AgentIslandCore
 import SwiftUI
 import AppKit
+import UserNotifications
 
 // MARK: - 共享应用上下文（引擎单例，App 与 AppDelegate 共用同一实例）
 
@@ -367,6 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // 无 Dock 图标
+        CompletionNotification.requestAuthorization()
 
         let context = AppContext.shared
         let controller = context.controller // 触发延迟创建

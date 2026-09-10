@@ -52,24 +52,23 @@ public final class FileActivityMonitor: FileActivityProviding {
     private var activeSessionWindow: TimeInterval = 600
     private let lock = NSLock()
     private let scanQueue = DispatchQueue(label: "com.agentisland.filemonitor", qos: .utility)
+    private var scanGeneration: UInt64 = 0
     private var isScanning = false
     private var lastScanAt = Date.distantPast
-    /// 扫描最小间隔（引擎 working 时 2s 采样，扫描节流避免每拍全量扫）
-    /// 实测单趟全量递归大型会话树耗时数百毫秒，3s 间隔 ≈ 持续 10% CPU；
-    /// 提到 15s + 快跳过（见 runScan）后工作态开销降到 ~2%。
+    /// 扫描最小间隔（引擎 working 时 2s 采样，扫描节流避免每拍全量扫）。
+    /// 深层会话文件不会改变根目录 mtime，因此这里不能过大，否则 UI 会长时间滞后。
     private let scanMinInterval: TimeInterval
     /// 目录级快跳过缓存：目录自身 mtime + 最近写入时间（mtime 未变且 newest 仍活跃 → 复用，零枚举）
     private var lastRootDates: [String: Date] = [:]
     /// 每目录上次全量扫描时间（快跳过兜底：深层写入不改变根 mtime，
     /// 超过 forceRescanInterval 未全量扫 → 强制重扫，保证文件信号时效性）
     private var lastFullScans: [String: Date] = [:]
-    /// 快跳过兜底周期：与引擎 workingWindow 同量级，
-    /// 深层持续写入的文件信号最长延迟该周期即被发现（原 600s 过长）。
+    /// 快跳过兜底周期：深层持续写入的文件信号最长延迟该周期即被发现（原 60s 过长）。
     /// 由引擎按 config.workingWindow 注入（见 setWorkingWindow）：写死 60s 会与
     /// 用户可调窗口脱钩——窗口调小则漏判 working，调大则把旧时间戳当新写入。
-    private var forceRescanInterval: TimeInterval = 60
+    private var forceRescanInterval: TimeInterval = 5
 
-    public init(maxDepth: Int = 4, scanMinInterval: TimeInterval = 15.0) {
+    public init(maxDepth: Int = 4, scanMinInterval: TimeInterval = 3.0) {
         self.maxDepth = maxDepth
         self.scanMinInterval = scanMinInterval
     }
@@ -78,13 +77,16 @@ public final class FileActivityMonitor: FileActivityProviding {
 
     public func watch(dirs: [String]) {
         lock.lock()
-        for dir in dirs { watchedDirs.insert(dir) }
+        let previous = watchedDirs
+        watchedDirs.formUnion(dirs)
+        if watchedDirs != previous { invalidateScan() }
         lock.unlock()
     }
 
     public func replaceWatchedDirs(_ dirs: [String]) {
         lock.lock()
         let newSet = Set(dirs)
+        if watchedDirs != newSet { invalidateScan() }
         watchedDirs = newSet
         // L6：清理不在新集合中的残留缓存（防止过期数据在集合变化后残留）
         cache = cache.filter { newSet.contains($0.key) }
@@ -116,14 +118,22 @@ public final class FileActivityMonitor: FileActivityProviding {
 
     public func setActiveSessionWindow(_ window: TimeInterval) {
         lock.lock()
-        activeSessionWindow = window
+        if activeSessionWindow != window {
+            activeSessionWindow = window
+            sessionCounts.removeAll()
+            invalidateScan()
+        }
         lock.unlock()
     }
 
     public func setWorkingWindow(_ window: TimeInterval) {
         lock.lock()
-        // 下限 5s：窗口过小时重扫会过于频繁；上限 60s 与历史行为一致
-        forceRescanInterval = min(max(window, 5), 60)
+        // 深层会话写入不会更新根目录 mtime，最多 5s 重扫一次即可保持状态及时。
+        let interval = min(max(window, 3), 5)
+        if forceRescanInterval != interval {
+            forceRescanInterval = interval
+            invalidateScan()
+        }
         lock.unlock()
     }
 
@@ -140,6 +150,13 @@ public final class FileActivityMonitor: FileActivityProviding {
 
     // MARK: 内部
 
+    /// 调用方持锁。旧扫描不得覆盖新配置，也不能推迟新目录的首扫。
+    private func invalidateScan() {
+        scanGeneration &+= 1
+        lastFullScans.removeAll()
+        lastScanAt = .distantPast
+    }
+
     private func runScan() {
         lock.lock()
         guard !isScanning else {
@@ -154,17 +171,20 @@ public final class FileActivityMonitor: FileActivityProviding {
         }
         isScanning = true
         let dirs = Array(watchedDirs)
+        let generation = scanGeneration
         let window = activeSessionWindow
         lock.unlock()
 
         // 单趟扫描：每目录一次遍历，同时产出最近写入时间 + 活跃会话数（M1 修复）
-        // 快跳过：根目录 mtime 未变（无新顶层子项）且距上次全量扫描 < forceRescanInterval（60s）
-        // → 复用缓存，零枚举。深层写入不改变根 mtime，故 60s 兜底强制重扫保证信号时效
-        //   （工作态信号最长延迟 60s 被发现）；空闲超 60s 后同样强制重扫，确认 idle 期间
+        // 快跳过：根目录 mtime 未变（无新顶层子项）且距上次全量扫描 < forceRescanInterval（5s）
+        // → 复用缓存，零枚举。深层写入不改变根 mtime，故 5s 兜底强制重扫保证信号时效
+        //   （工作态信号最长延迟 5s 被发现）；空闲超 5s 后同样强制重扫，确认 idle 期间
         //   无新会话/写入（不再要求 newest 活跃——否则长空闲时「newest 活跃」恒不满足，
         //   每次扫描都全量枚举）。
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
+        var freshRoots: [String: Date] = [:]
+        var freshFullScans: [String: Date] = [:]
         let now = Date()
         for dir in dirs {
             let rootURL = URL(fileURLWithPath: dir)
@@ -181,7 +201,7 @@ public final class FileActivityMonitor: FileActivityProviding {
             if let rootDate, let cachedRoot, rootDate == cachedRoot,
                let cachedNewest, let cachedCount,
                now.timeIntervalSince(lastFull ?? .distantPast) < rescanInterval {
-                // 根 mtime 未变（无新顶层子项）+ 60s 内刚全量扫过：复用缓存，不枚举目录树
+                // 根 mtime 未变（无新顶层子项）+ 5s 内刚全量扫过：复用缓存，不枚举目录树
                 fresh[dir] = cachedNewest
                 freshCounts[dir] = cachedCount
                 continue
@@ -189,22 +209,26 @@ public final class FileActivityMonitor: FileActivityProviding {
             let r = Self.scanTree(in: dir, maxDepth: maxDepth, window: window, now: now)
             fresh[dir] = r.newest
             freshCounts[dir] = r.activeSessions
-            lock.lock()
-            lastRootDates[dir] = rootDate ?? Date.distantPast
-            lastFullScans[dir] = now
-            lock.unlock()
+            freshRoots[dir] = rootDate ?? Date.distantPast
+            freshFullScans[dir] = now
         }
 
         lock.lock()
+        guard generation == scanGeneration else {
+            isScanning = false
+            lock.unlock()
+            return
+        }
+        lastRootDates.merge(freshRoots) { _, new in new }
+        lastFullScans.merge(freshFullScans) { _, new in new }
         // 竞态防护：扫描期间 watchedDirs 可能被 replaceWatchedDirs 替换，
         // 迟到的扫描结果只写回仍在监控的目录，已停用目录的脏数据丢弃
         let current = watchedDirs
-        // 单调 merge（逐目录 max）：扫描失败/目录暂缺时保留旧值，写入时间只进不退——
-        // 本缓存是「最近写入时间」的唯一事实来源，消费方（引擎）直读，无需影子副本（C5）
+        // 成功扫描到的目录直接替换缓存：最近写入时间必须允许自然变旧，
+        // 否则一次历史写入会永久把 Agent 判成 working。扫描失败/目录暂缺时
+        // fresh 不含该目录，才保留旧值，避免短暂 I/O 抖动清空工作信号。
         for (dir, date) in fresh where current.contains(dir) {
-            if date > (cache[dir] ?? .distantPast) {
-                cache[dir] = date
-            }
+            cache[dir] = date
         }
         sessionCounts = freshCounts.filter { current.contains($0.key) }
         isScanning = false
@@ -249,6 +273,13 @@ public final class FileActivityMonitor: FileActivityProviding {
             let isLink = v.isSymbolicLink == true
             if isLink && isDir {
                 en.skipDescendants()   // 符号链接目录跳过，防循环
+                continue
+            }
+            // DimAgent 会在 sessions 下持续维护编辑历史和附件缓存；这些目录的 mtime
+            // 会随后台同步变化，但不代表有 Agent 任务在执行。目录本身也必须跳过，
+            // 否则即使过滤了文件，父目录 mtime 仍会把它们算进 newest。
+            if isIgnoredActivityPath(item) {
+                if isDir { en.skipDescendants() }
                 continue
             }
             // 过滤无实质代码任务的纯心跳/锁/守护进程 PID 保活文件
@@ -304,6 +335,12 @@ public final class FileActivityMonitor: FileActivityProviding {
             return true
         }
         return false
+    }
+
+    /// 不代表任务执行的会话子树。路径组件匹配而不是字符串 contains，避免误伤项目名。
+    private static func isIgnoredActivityPath(_ url: URL) -> Bool {
+        let ignored = Set(["file-history", "blobs"])
+        return url.pathComponents.contains { ignored.contains($0.lowercased()) }
     }
 }
 

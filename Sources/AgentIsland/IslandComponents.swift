@@ -11,6 +11,10 @@ extension View {
     /// IslandView 展开卡 / DetailViews 两页统一入口。
     func cardShell(dockEdge: DockEdge = .right, controller: IslandPanelController? = nil) -> some View {
         self
+            // 右侧造型上下各内缩 notchInset；顶部造型左右各内缩同样距离。
+            // 内容与窗口度量共用留白，防止消息移除后 Token 文字落入透明倒角区。
+            .padding(.vertical, IslandMetrics.notchInset)
+            .padding(.horizontal, dockEdge == .top ? IslandMetrics.notchInset : 0)
             .frame(width: IslandMetrics.cardWidth)
             // 背景铺满整个窗口（窗口高度可能略大于内容，消除底部透明带）
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

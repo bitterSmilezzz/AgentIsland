@@ -274,6 +274,42 @@ enum EngineTests {
             try expectNil(engine.latestEvent, "无后续增量则速率归零，不应告警")
         }
 
+        TestKit.test("熔断保护: 同一轮 Token 激增关闭后不重复弹窗") {
+            let fake = FakeTokenUsageMonitor()
+            fake.usage["dim"] = TokenUsage(tokens24h: 1_000, tokensTotal: 1_000, cost24h: 0, costTotal: 0)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(tokenAlertEnabled: true, tokenAlertThreshold: 50_000),
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
+                fileMonitor: FakeFileActivityProvider(writes: [:]), tokenMonitor: fake,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }))
+            let now = Date()
+            _ = engine.sample(now: now)
+            for beat in 1...3 {
+                let total = 1_000 + beat * 80_000
+                fake.usage["dim"] = TokenUsage(tokens24h: total, tokensTotal: total, cost24h: 0, costTotal: 0)
+                _ = engine.sample(now: now.addingTimeInterval(Double(beat) * 60))
+            }
+            try expectTrue(engine.latestEvent?.message?.contains("Token 激增") == true)
+            engine.clearLatestEvent()
+            // 继续增长，但属于同一轮异常；关闭后不应再次产生事件。
+            for beat in 4...6 {
+                let total = 1_000 + beat * 80_000
+                fake.usage["dim"] = TokenUsage(tokens24h: total, tokensTotal: total, cost24h: 0, costTotal: 0)
+                _ = engine.sample(now: now.addingTimeInterval(Double(beat) * 60))
+            }
+            try expectNil(engine.latestEvent, "同一轮异常关闭后不应重复弹窗")
+            // 速率恢复后重新武装，下一轮异常仍可告警。
+            fake.usage["dim"] = TokenUsage(tokens24h: 481_000, tokensTotal: 481_000, cost24h: 0, costTotal: 0)
+            _ = engine.sample(now: now.addingTimeInterval(420))
+            for beat in 8...10 {
+                let total = 481_000 + (beat - 7) * 80_000
+                fake.usage["dim"] = TokenUsage(tokens24h: total, tokensTotal: total, cost24h: 0, costTotal: 0)
+                _ = engine.sample(now: now.addingTimeInterval(Double(beat) * 60))
+            }
+            try expectEqual(engine.latestEvent?.eventType, .costSpike, "恢复后新一轮异常仍应告警")
+        }
+
         TestKit.test("熔断保护: 持续死循环/高负载告警（低占用不误报，持续高 CPU 触发）") {
             // 1. 低 CPU（2%）：即使运行 6 分钟也不应触发死循环告警
             let lowEngine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 2.0)
@@ -532,7 +568,7 @@ enum EngineTests {
             try expectNil(FileActivityMonitor.newestWrite(in: missing), "缺失目录")
         }
 
-        TestKit.test("文件: 缓存单调 merge——目录暂缺保留旧值（C5 影子缓存退役后语义）") {
+        TestKit.test("文件: 扫描失败时目录暂缺保留旧值") {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("agentisland-merge-\(UUID().uuidString)")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -549,6 +585,32 @@ enum EngineTests {
             monitor.scanSync()
             let second = monitor.lastWriteDates(for: [dir.path])[dir.path]
             try expectEqual(second, first, "目录暂缺应保留旧值（只进不退）")
+        }
+
+        TestKit.test("文件: 成功扫描允许最近写入时间自然过期") {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("agentisland-expiry-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let file = dir.appendingPathComponent("session.json")
+            try? Data("x".utf8).write(to: file)
+            let old = Date().addingTimeInterval(-300)
+            try? FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: file.path)
+            try? FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: dir.path)
+
+            let monitor = FileActivityMonitor(scanMinInterval: 0)
+            monitor.watch(dirs: [dir.path])
+            monitor.scanSync()
+            let first = monitor.lastWriteDates(for: [dir.path])[dir.path]
+            try expectTrue(first != nil, "首扫应有值")
+
+            let recent = Date()
+            try? Data("y".utf8).write(to: file)
+            try? FileManager.default.setAttributes([.modificationDate: recent], ofItemAtPath: file.path)
+            try? FileManager.default.setAttributes([.modificationDate: recent], ofItemAtPath: dir.path)
+            monitor.scanSync()
+            let second = monitor.lastWriteDates(for: [dir.path])[dir.path]
+            try expectTrue(second != nil && second! > first!, "成功扫描后应更新为最新时间")
         }
 
         TestKit.test("引擎: stop 后 scheduleNext 不再重建定时器，start 可恢复采样") {
@@ -726,6 +788,21 @@ enum EngineTests {
             let dimSnap = snaps.first { $0.id == "dim" }
             try expectEqual(dimSnap?.level, .idle, "DimAgent 8% 的 Electron 空闲 CPU 抖动应保持 idle")
             try expectNil(dimSnap?.currentAction, "空闲挂起时不应透传任何错误动作")
+
+            let workbuddyProfile = AgentProfile(
+                id: "workbuddy", name: "WorkBuddy", icon: "briefcase.fill",
+                bundleIDs: [], processNames: ["Electron"], sessionDirs: [home + "/.workbuddy/tasks"]
+            )
+            let workbuddyEngine = ActivityEngine(
+                profiles: [workbuddyProfile],
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: FakeProcessProvider(processNames: ["Electron"], bundleIDs: [], cpu: 25.0),
+                fileMonitor: FakeFileActivityProvider(writes: [home + "/.workbuddy/tasks": now.addingTimeInterval(-300)]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let workbuddySnap = workbuddyEngine.sample(now: now).first
+            try expectEqual(workbuddySnap?.level, .idle,
+                            "WorkBuddy prewarm 汇总 25% CPU 且无近期任务写入时应保持 idle")
         }
 
         TestKit.test("动作透传: isInternalHelperProcess 过滤应用内辅助与守护进程，放行真实命令") {

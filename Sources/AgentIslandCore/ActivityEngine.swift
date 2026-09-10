@@ -94,6 +94,8 @@ public final class ActivityEngine: ObservableObject {
     private var tokenRateBaseline: [String: (timestamp: Date, tokens: Int)] = [:]
     /// 连续超过速率阈值的评估档数（agentId → 档数）；达到确认档数才告警
     private var tokenSpikeStreak: [String: Int] = [:]
+    /// 同一轮持续超阈值只提醒一次，速率恢复后重新武装。
+    private var tokenSpikeAlerted: Set<String> = []
     /// 激增评估档长：满一档才结算一次速率，一次性落盘会被摊平
     static let tokenRateWindow: TimeInterval = 60
     /// 需连续多少档超阈值才告警（滤掉长任务结束时的一次性账本落盘）
@@ -208,6 +210,7 @@ public final class ActivityEngine: ObservableObject {
         highCpuSince = highCpuSince.filter { activeIDs.contains($0.key) }
         lastRunawayAlertedAt = lastRunawayAlertedAt.filter { activeIDs.contains($0.key) }
         tokenSpikeStreak = tokenSpikeStreak.filter { activeIDs.contains($0.key) }
+        tokenSpikeAlerted = tokenSpikeAlerted.filter { activeIDs.contains($0) }
         tokenRateBaseline = tokenRateBaseline.filter { activeIDs.contains($0.key) }
     }
 
@@ -298,10 +301,14 @@ public final class ActivityEngine: ObservableObject {
 
             // 智能 CPU 判定：
             // 对于桌面/GUI 智能体（如 DimAgent、WorkBuddy、ChatGPT，或声明了 bundleIDs 的桌面应用）：
-            // 过滤 Electron / Chromium / WebKit 辅助进程渲染与 IPC 空闲微抖动（4%~15%），仅当 CPU 达真正高算力（>= 20.0%）才触发 working；
+            // 过滤 Electron / Chromium / WebKit 辅助进程渲染与 IPC 空闲微抖动（4%~15%）。
+            // WorkBuddy 还会常驻多个 prewarm codebuddy 进程，CPU 汇总更容易抬高，
+            // 因此只有明显高负载（>= 35%）才允许 CPU 单独触发工作态；任务目录写入仍可立即触发。
             // 纯 CLI 智能体维持通用 cpuThreshold（默认 6.0%）。
             let hasHighCpu: Bool
-            if profile.id == "dim" || profile.id == "workbuddy" || profile.id == "chatgpt" || !profile.bundleIDs.isEmpty {
+            if profile.id == "workbuddy" {
+                hasHighCpu = cpu >= 35.0
+            } else if profile.id == "dim" || profile.id == "chatgpt" || !profile.bundleIDs.isEmpty {
                 hasHighCpu = cpu >= 20.0
             } else {
                 hasHighCpu = cpu > config.cpuThreshold
@@ -317,6 +324,7 @@ public final class ActivityEngine: ObservableObject {
                 highCpuSince[profile.id] = nil
                 lastRunawayAlertedAt[profile.id] = nil
                 tokenSpikeStreak[profile.id] = nil
+                tokenSpikeAlerted.remove(profile.id)
             } else if hasRecentWrite || hasHighCpu {
                 level = .working
                 if workingSince[profile.id] == nil { workingSince[profile.id] = now }
@@ -398,7 +406,8 @@ public final class ActivityEngine: ObservableObject {
                     let streak = (tokenSpikeStreak[profile.id] ?? 0) + 1
                     tokenSpikeStreak[profile.id] = streak
                     // 需连续多档超阈值才告警：滤掉单次账本补写（如长任务结束时一次性落盘）
-                    guard streak >= Self.tokenSpikeConfirmations else { continue }
+                    guard streak >= Self.tokenSpikeConfirmations,
+                          !tokenSpikeAlerted.contains(profile.id) else { continue }
                     let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
                     postEvent(AgentTaskEvent(
                         agentId: profile.id,
@@ -410,9 +419,10 @@ public final class ActivityEngine: ObservableObject {
                         message: "⚠️ \(profile.name) Token 激增 (+\(TokenUsage.compact(deltaTokens)))",
                         detail: "近 \(Int(timeSpan)) 秒 Token 净消耗 +\(TokenUsage.compact(deltaTokens))，约 \(TokenUsage.compact(Int(tokensPerMinute)))/分钟，已连续 \(streak) 个周期超过阈值（设置报警阈值: \(TokenUsage.compact(config.tokenAlertThreshold))/分钟）。常见原因：长上下文灌入、复杂循环或多 Agent 并发。建议点击直达检查会话状态。"
                     ))
-                    tokenSpikeStreak[profile.id] = 0   // 告警后重置，避免每档重复轰炸
+                    tokenSpikeAlerted.insert(profile.id)
                 } else {
                     tokenSpikeStreak[profile.id] = 0
+                    tokenSpikeAlerted.remove(profile.id)
                 }
             }
         }
@@ -428,7 +438,7 @@ public final class ActivityEngine: ObservableObject {
                     let highDuration = now.timeIntervalSince(start)
                     if highDuration >= config.runawayDurationThreshold {
                         let lastAlert = lastRunawayAlertedAt[profile.id]
-                        if lastAlert == nil || now.timeIntervalSince(lastAlert!) >= config.runawayDurationThreshold {
+                        if lastAlert == nil {
                             lastRunawayAlertedAt[profile.id] = now
                             let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
                             let minutes = max(1, Int(highDuration / 60))
@@ -452,6 +462,7 @@ public final class ActivityEngine: ObservableObject {
         } else {
             highCpuSince.removeAll()
             lastRunawayAlertedAt.removeAll()
+            tokenSpikeAlerted.removeAll()
         }
     }
 
@@ -495,6 +506,7 @@ public final class ActivityEngine: ObservableObject {
         highCpuSince[agentId] = nil
         lastRunawayAlertedAt[agentId] = nil
         tokenSpikeStreak[agentId] = nil
+        tokenSpikeAlerted.remove(agentId)
         latestEvent = AgentTaskEvent(
             agentId: agentId,
             agentName: name,
@@ -522,6 +534,7 @@ public final class ActivityEngine: ObservableObject {
             highCpuSince[a.profileId] = nil
             lastRunawayAlertedAt[a.profileId] = nil
             tokenSpikeStreak[a.profileId] = nil
+            tokenSpikeAlerted.remove(a.profileId)
         }
         latestEvent = AgentTaskEvent(
             agentId: "workbench-cleaner",

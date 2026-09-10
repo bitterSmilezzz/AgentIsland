@@ -254,7 +254,16 @@ public struct ProcessMatcher: @unchecked Sendable {
     /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串约束 + 路径排除 + 非系统路径 + 非黑名单）
     func matchesProfile(_ profile: AgentProfile, entry: ProcessSnapshot.Entry) -> Bool {
         let s = sets(for: profile)
-        let nameHit = Self.matchesProcessNames(s.names, basename: entry.basename)
+        var nameHit = Self.matchesProcessNames(s.names, basename: entry.basename)
+        // DeepSeek Harness 的 web 模式由外部 Node 启动，进程 basename 只有 node，
+        // 可执行路径也不包含仓库名；用已有的无 fork sysctl 命令行探测补齐这一形态。
+        // 仅对 node/dsh 候选调用，避免每个采样周期遍历所有 PID。
+        if !nameHit, profile.id == "dsh",
+           ["node", "dsh"].contains(entry.basename.lowercased()), entry.pid > 1,
+           let command = AgentActionInspector.commandLine(of: entry.pid)?.lowercased(),
+           command.contains("deepseek-harness") || command.contains("/dsh ") {
+            nameHit = true
+        }
         guard nameHit else { return false }
 
         // 路径排除优先于包含：宿主应用内嵌的同名二进制不算本 Agent
@@ -264,7 +273,9 @@ public struct ProcessMatcher: @unchecked Sendable {
         }
 
         // 若配置了 pathContains（如 Electron 应用通用名 "Electron"），可执行路径必须同时命中子串约束
-        if !s.paths.isEmpty {
+        let dshCommandHit = profile.id == "dsh" && nameHit
+            && !Self.matchesProcessNames(s.names, basename: entry.basename)
+        if !s.paths.isEmpty && !dshCommandHit {
             guard Self.matchesPathContains(s.paths, path: entry.path) else { return false }
         }
 
@@ -504,4 +515,3 @@ public enum ProcessTerminator {
         return tree
     }
 }
-

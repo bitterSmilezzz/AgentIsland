@@ -7,6 +7,9 @@ import Foundation
 
 enum IslandMetrics {
 
+    /// 反向倒角占据的边缘区域，内容必须避让。
+    static let notchInset: CGFloat = 10
+
     // MARK: 窗口尺寸
 
     /// 展开卡宽度（IslandView 展开卡 / DetailViews 两页的 .frame(width:) 同源）
@@ -78,7 +81,7 @@ enum IslandMetrics {
         let rings: CGFloat = hasRings ? (ringsShelfHeight + dividerHeight) : 0
         let bannerH = eventExpanded ? eventBannerExpandedHeight : eventBannerCollapsedHeight
         let eventH: CGFloat = hasEvent ? (bannerH + dividerHeight) : 0
-        return headerHeight + dividerHeight + rings + eventH + summary
+        return 2 * notchInset + headerHeight + dividerHeight + rings + eventH + summary
     }
 
     /// 列表区高度（封顶时压缩列表，保住底部汇总栏——列表可滚动，汇总栏不可）。
@@ -111,9 +114,9 @@ enum IslandMetrics {
                                   eventExpanded: eventExpanded)
             return min(chrome + list, expandedMaxHeight)
         case .agentDetail, .sessions:
-            return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
+            return min(2 * notchInset + detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
         case .toolbox, .liveStream:
-            return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
+            return min(2 * notchInset + detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
         }
     }
 }

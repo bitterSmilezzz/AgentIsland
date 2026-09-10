@@ -437,19 +437,8 @@ public enum AgentActionInspector {
         return newestURL
     }
 
-    private static func readLastLines(from file: URL, maxLines: Int = 10) -> [String] {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return [] }
-        defer { try? handle.close() }
-        let fileSize = handle.seekToEndOfFile()
-        let readLen = min(fileSize, 16384)
-        guard readLen > 0 else { return [] }
-        handle.seek(toFileOffset: fileSize - readLen)
-        let data = handle.readDataToEndOfFile()
-        guard let content = String(data: data, encoding: .utf8) else { return [] }
-        let lines = content.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        return Array(lines.suffix(maxLines))
+    static func readLastLines(from file: URL, maxLines: Int = 10) -> [String] {
+        LogTailReader.read(from: file, maxLines: maxLines, maxBytes: 16384)
     }
 
     private static func readLastNonEmptyLine(from file: URL) -> String? {

@@ -249,9 +249,16 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         // 打开成功不等于查询成功：失败源保留旧值与旧戳，下次刷新重试。
         guard succeeded else { return }
         lock.lock()
-        _usage = updated.filter { !$0.value.isEmpty }
-        _grandTotal = updated.values.reduce(TokenUsage(), +)
+        let previousUsage = _usage
+        let previousTotal = _grandTotal
+        let newUsage = updated.filter { !$0.value.isEmpty }
+        let newTotal = updated.values.reduce(TokenUsage(), +)
+        _usage = newUsage
+        _grandTotal = newTotal
         lock.unlock()
+        // 数据库仍被轮询但结果没有变化时，不触发引擎重采样；
+        // 只有统计值真的变化（含 24h 窗口过期）才刷新 UI。
+        guard previousUsage != newUsage || previousTotal != newTotal else { return }
         if let onRefresh {
             Task { @MainActor in onRefresh() }
         }
@@ -287,8 +294,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 FROM usage_ledger GROUP BY modelId ORDER BY 3 DESC
                 """
                 rows = rawRows(sql, dbPath: dimAgentDB, cols: 4).map {
-                    ModelUsage(modelId: $0[0], messages: Int($0[1]) ?? 0,
-                               tokens: Int($0[2]) ?? 0, cost: Double($0[3]) ?? 0)
+                    ModelUsage(modelId: $0[0], messages: Self.parseInt($0[1]),
+                               tokens: Self.parseInt($0[2]), cost: Double($0[3]) ?? 0)
                 }
             case "opencode":
                 let sql = """
@@ -299,8 +306,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 GROUP BY 1 ORDER BY 3 DESC
                 """
                 rows = rawRows(sql, dbPath: openCodeDB, cols: 4).map {
-                    ModelUsage(modelId: $0[0], messages: Int($0[1]) ?? 0,
-                               tokens: Int($0[2]) ?? 0, cost: Double($0[3]) ?? 0)
+                    ModelUsage(modelId: $0[0], messages: Self.parseInt($0[1]),
+                               tokens: Self.parseInt($0[2]), cost: Double($0[3]) ?? 0)
                 }
             default:
                 rows = []
@@ -327,7 +334,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                     let dir = dirPrefix + "/" + r[0]
                     return SessionUsage(sessionId: r[0],
                                         directory: FileManager.default.fileExists(atPath: dir) ? dir : nil,
-                                        messages: Int(r[1]) ?? 0, tokens: Int(r[2]) ?? 0,
+                                        messages: Self.parseInt(r[1]), tokens: Self.parseInt(r[2]),
                                         cost: Double(r[3]) ?? 0,
                                         lastTime: Self.parseISO(r[4]))
                 }
@@ -347,7 +354,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                     let dir = (!rawDir.isEmpty && FileManager.default.fileExists(atPath: rawDir)) ? rawDir : nil
                     return SessionUsage(sessionId: r[0],
                                         directory: dir,
-                                        messages: Int(r[1]) ?? 0, tokens: Int(r[2]) ?? 0,
+                                        messages: Self.parseInt(r[1]), tokens: Self.parseInt(r[2]),
                                         cost: Double(r[3]) ?? 0,
                                         lastTime: Double(r[4]).map { Date(timeIntervalSince1970: $0 / 1000) })
                 }
@@ -504,6 +511,11 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     static func parseISO(_ s: String) -> Date? {
         isoFormatter.date(from: s)
+    }
+
+    /// SQLite REAL 聚合可能返回 "301.0"；统一按数值解析，避免静默归零。
+    private static func parseInt(_ value: String) -> Int {
+        Int(value) ?? (Double(value).map { Int($0) } ?? 0)
     }
 }
 

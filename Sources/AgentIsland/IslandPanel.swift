@@ -577,6 +577,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             return
         }
 
+        // 任务完成时同步投递 macOS 通知中心通知；事件有唯一 UUID，不会因重复采样重复发送。
+        CompletionNotification.post(for: event)
+
         // 事件类型决定初始展开态：熔断类严重告警默认展开详情以提供排查指导，
         // 其他事件收起。此前只在 costSpike 时置 true、从不复位，导致一次告警后
         // 后续所有完成事件也保持 142pt 的展开高度。
