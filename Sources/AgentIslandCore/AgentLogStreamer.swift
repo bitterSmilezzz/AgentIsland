@@ -31,13 +31,16 @@ public struct AgentLogEvent: Identifiable, Equatable, Sendable {
         }
     }
 
-    public init(id: String = UUID().uuidString,
+    /// - Parameter id: 稳定标识。默认按「agentId + 时间戳 + 标题」推导（同一事件每次查询得到
+    ///   相同 id），使视图能识别「还是同一条」而不全量重建。此前用随机 UUID，导致每 2 秒
+    ///   刷新时 `result != events` 恒为真：用户展开的详情被强制折叠、滚动位置跳回顶部。
+    public init(id: String? = nil,
                 timestamp: Date = Date(),
                 kind: EventKind,
                 title: String,
                 detail: String? = nil,
                 agentId: String) {
-        self.id = id
+        self.id = id ?? "\(agentId)-\(Int(timestamp.timeIntervalSince1970 * 1000))-\(title)"
         self.timestamp = timestamp
         self.kind = kind
         self.title = title
