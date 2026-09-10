@@ -32,6 +32,13 @@ public enum AgentRegistry {
             icon: "chevron.left.forwardslash.chevron.right",
             bundleIDs: [],
             processNames: ["codex", "Codex"],
+            // 排除 ChatGPT 桌面版内嵌的 Codex（/Applications/ChatGPT.app/Contents/Resources/codex
+            // 及其 Codex Framework 辅助进程）：与独立 codex CLI 同名同 basename，
+            // 不排除会把同一个 ChatGPT 同时数成 ChatGPT 和 Codex 两个 Agent
+            pathExcludes: ["/Applications/ChatGPT.app/"],
+            // ChatGPT 桌面版内嵌 Codex（同一份 ~/.codex 会话目录、同一进程族）：
+            // 宿主已装且 codex 无独立安装时不单独成条目，避免同一份程序显示两行
+            hostBundleIDs: ["com.openai.codex"],
             // 只监控会话 JSONL 目录；~/.codex 根目录含 sqlite/WAL/cache，被 app 后台高频刷新，
             // 会导致 Codex 仅打开但未运行任务时被误判为 WORKING
             sessionDirs: [home(".codex/sessions")],
@@ -187,8 +194,13 @@ public enum AgentRegistry {
 
     /// 自动发现的额外 CLI profile（不在内置集里的 CLI，如 aider/gemini/windsurf）。
     /// installedCLIs 由调用方从 InstalledAppsCache 取得——本类型不读任何全局状态
-    public static func discoverCLIProfiles(installedCLIs: Set<String>) -> [AgentProfile] {
-        let existing = Set(builtin.flatMap { $0.processNames.map { $0.lowercased() } })
+    public static func discoverCLIProfiles(installedCLIs: Set<String>,
+                                           installedBundles: Set<String> = []) -> [AgentProfile] {
+        // 判重基线用 filteredBuiltin（含宿主内嵌过滤），与调用方展示/启停口径一致：
+        // 否则被 hostBundleIDs 过滤掉的组件仍会在这里以 CLI 形式重复出现
+        let existing = Set(filteredBuiltin(installedCLIs: installedCLIs,
+                                           installedBundles: installedBundles)
+            .flatMap { $0.processNames.map { $0.lowercased() } })
         var extra: [AgentProfile] = []
         for cli in installedCLIs where !existing.contains(cli) {
             extra.append(AgentProfile(
@@ -221,12 +233,30 @@ public enum AgentRegistry {
         }
     }
 
-    /// 完整注册表：内置 + 自动发现 CLI（按传入已安装集）+ 自定义
-    public static func fullRegistry(installedCLIs: Set<String>) -> [AgentProfile] {
-        var list = builtin
-        list.append(contentsOf: discoverCLIProfiles(installedCLIs: installedCLIs))
+    /// 完整注册表：内置 + 自动发现 CLI（按传入已安装集）+ 自定义。
+    /// installedBundles 用于识别「宿主内嵌组件」：宿主已装而本组件无独立安装时跳过，
+    /// 避免同一份程序（ChatGPT 桌面版内嵌的 Codex）在列表里显示成两个 Agent。
+    public static func fullRegistry(installedCLIs: Set<String>,
+                                    installedBundles: Set<String> = []) -> [AgentProfile] {
+        var list = filteredBuiltin(installedCLIs: installedCLIs, installedBundles: installedBundles)
+        list.append(contentsOf: discoverCLIProfiles(installedCLIs: installedCLIs,
+                                                    installedBundles: installedBundles))
         list.append(contentsOf: loadCustomProfiles())
         return list
+    }
+
+    /// 内置条目按「宿主内嵌」规则过滤（fullRegistry 与 discoverCLIProfiles 的共用基线，
+    /// 抽成独立函数以打断两者的相互调用）
+    static func filteredBuiltin(installedCLIs: Set<String>,
+                                installedBundles: Set<String>) -> [AgentProfile] {
+        builtin.filter { profile in
+            guard !profile.hostBundleIDs.isEmpty else { return true }
+            let hostInstalled = profile.hostBundleIDs.contains { installedBundles.contains($0.lowercased()) }
+            guard hostInstalled else { return true }
+            let selfInstalled = profile.bundleIDs.contains { installedBundles.contains($0.lowercased()) }
+                || profile.processNames.contains { installedCLIs.contains($0.lowercased()) }
+            return selfInstalled
+        }
     }
 
     /// 单条查找（内置 + 自定义；自动发现条目不在本查找范围，须走 fullRegistry）
@@ -264,7 +294,8 @@ public enum AgentRegistry {
         installedApps: InstalledAppsCache
     ) -> [String] {
         conflictingProcessNames(
-            registry: fullRegistry(installedCLIs: installedApps.installedCLIs()),
+            registry: fullRegistry(installedCLIs: installedApps.installedCLIs(),
+                                   installedBundles: installedApps.installedBundleIDs()),
             enabledIDs: enabledIDs,
             installedCLIs: installedApps.installedCLIs(),
             installedBundles: installedApps.installedBundleIDs())

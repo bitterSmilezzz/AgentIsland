@@ -101,10 +101,8 @@ enum Theme {
     static let glassOverlayOpacity: Double = 0.38
     /// 玻璃卡 1px 晶莹微反光边缘（深色微白高光，浅色微暗勾边）
     static let glassSpecularBorder = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.12)
-    /// 悬浮面板 AppKit 阴影（ShadowHostView；随窗口动画同步淡入淡出）
-    static let panelShadowOpacity: Float = 0.28
-    static let panelShadowRadius: CGFloat = 20
-    static let panelShadowOffsetY: CGFloat = -4
+    // 面板 AppKit 阴影已停用（见 ShadowHostView）：窗口与玻璃卡同尺寸，阴影无处落地，
+    // 只会向卡内渗入形成暗带。贴边观感由玻璃卡高光边缘与反向倒角承担。
 
     // Typography
     static func displayFont(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {

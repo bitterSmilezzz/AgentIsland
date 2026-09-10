@@ -28,7 +28,8 @@ final class AppContext {
     private init() {
         // 配置：Core 唯一读取路径（缺项回落默认 + 归一化启动自愈脏值）
         let config = EngineConfig.load(from: .standard)
-        let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
+        let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
+                                                  installedBundles: installedApps.installedBundleIDs())
         let enabled = Self.enabledOrDefault(registry: registry)
         engine = ActivityEngine(
             profiles: registry.filter { enabled.contains($0.id) },

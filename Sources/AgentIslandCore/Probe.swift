@@ -11,7 +11,8 @@ public enum Probe {
         // 一次性 CLI 工具：同步扫描安装缓存可接受
         let installedApps = InstalledAppsCache()
         installedApps.refresh()
-        let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
+        let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
+                                                  installedBundles: installedApps.installedBundleIDs())
         // 真实文件监控：先同步扫一次填缓存，再采样
         let monitor = FileActivityMonitor()
         monitor.watch(dirs: registry.flatMap(\.sessionDirs))

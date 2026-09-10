@@ -45,6 +45,15 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
     public let bundleIDs: [String]        // GUI App bundle id（NSWorkspace 匹配）
     public let processNames: [String]     // 进程名前缀（GUI/CLI，ps 匹配，大小写不敏感）
     public let pathContains: [String]     // 可执行路径子串（Electron 应用区分用）
+    /// 可执行路径排除子串：命中即不算本 Agent。
+    /// 用于宿主应用内嵌同名二进制的场景——ChatGPT 桌面版把 Codex 打包进
+    /// /Applications/ChatGPT.app/Contents/Resources/codex，basename 与独立 codex CLI
+    /// 相同，仅靠 pathContains 白名单无法区分，会把同一份 ChatGPT 数成两个 Agent。
+    public let pathExcludes: [String]
+    /// 宿主应用 bundle id：这些 App 已安装且本 profile 自身未独立安装时，
+    /// 说明该 Agent 是宿主的内嵌组件而非独立产品（如 ChatGPT 桌面版内嵌 Codex，
+    /// 二者共用 ~/.codex 会话目录），不再单独成行，避免同一份程序数成两个 Agent。
+    public let hostBundleIDs: [String]
     public let sessionDirs: [String]      // 会话目录（后台扫描）
     public let defaultEnabled: Bool
     public let category: AgentCategory
@@ -64,6 +73,8 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
 
     public init(id: String, name: String, icon: String,
                 bundleIDs: [String], processNames: [String], pathContains: [String] = [],
+                pathExcludes: [String] = [],
+                hostBundleIDs: [String] = [],
                 sessionDirs: [String],
                 defaultEnabled: Bool = true, category: AgentCategory = .assistant,
                 isCustom: Bool = false) {
@@ -73,10 +84,38 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         self.bundleIDs = bundleIDs
         self.processNames = processNames
         self.pathContains = pathContains
+        self.pathExcludes = pathExcludes
+        self.hostBundleIDs = hostBundleIDs
         self.sessionDirs = sessionDirs
         self.defaultEnabled = defaultEnabled
         self.category = category
         self.isCustom = isCustom
+    }
+
+    // MARK: Codable（手写以兼容历史存档）
+    // 合成的解码器要求新增的非可选字段在 JSON 中必须存在，会让升级前保存的
+    // 自定义 Agent 整条解码失败（表现为用户配置凭空消失）。这里逐字段
+    // decodeIfPresent + 默认值，新旧存档都能读。
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, icon, bundleIDs, processNames, pathContains, pathExcludes
+        case hostBundleIDs, sessionDirs, defaultEnabled, category, isCustom
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        icon = try c.decode(String.self, forKey: .icon)
+        bundleIDs = try c.decodeIfPresent([String].self, forKey: .bundleIDs) ?? []
+        processNames = try c.decodeIfPresent([String].self, forKey: .processNames) ?? []
+        pathContains = try c.decodeIfPresent([String].self, forKey: .pathContains) ?? []
+        pathExcludes = try c.decodeIfPresent([String].self, forKey: .pathExcludes) ?? []
+        hostBundleIDs = try c.decodeIfPresent([String].self, forKey: .hostBundleIDs) ?? []
+        sessionDirs = try c.decodeIfPresent([String].self, forKey: .sessionDirs) ?? []
+        defaultEnabled = try c.decodeIfPresent(Bool.self, forKey: .defaultEnabled) ?? true
+        category = try c.decodeIfPresent(AgentCategory.self, forKey: .category) ?? .assistant
+        isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom) ?? false
     }
 }
 
@@ -105,6 +144,8 @@ public struct AgentSnapshot: Identifiable, Equatable {
         let mb = Double(memoryBytes) / (1024 * 1024)
         if mb >= 1024 {
             return String(format: "%.1fG", mb / 1024.0)
+        } else if mb < 1 {
+            return "<1M"   // 此前 Int(mb) 截断为 0，显示「0M」易被误读为无占用
         } else {
             return "\(Int(mb))M"
         }

@@ -22,10 +22,13 @@ enum IslandMetrics {
 
     // MARK: 展开卡纵向度量（逐项对应 IslandView.expandedCard）
 
-    /// 顶栏：padding(.top) + 内容（状态点 9 / 13pt semibold 文本行高 ≈17，取大者）+ padding(.bottom) ≈ 37
+    /// 顶栏：padding(.top) + 内容 + padding(.bottom)
     static let headerPaddingTop: CGFloat = 12
     static let headerPaddingBottom: CGFloat = 8
-    static let headerContentHeight: CGFloat = 17
+    /// 顶栏内容行高：由右侧圆形图标按钮决定（10pt 图标 + 上下各 4pt padding ≈ 18，
+    /// 加 SF Symbol 行高余量取 23）。实测校准：取值偏小会让窗口比 SwiftUI 内容矮
+    /// （NSHostingView.fittingSize 比本组常量高约 5.5pt），底部 Token 汇总栏被裁。
+    static let headerContentHeight: CGFloat = 23
     static var headerHeight: CGFloat { headerPaddingTop + headerContentHeight + headerPaddingBottom }
 
     static let dividerHeight: CGFloat = 1
@@ -55,6 +58,11 @@ enum IslandMetrics {
     /// 详情/会话页内容区高度（header + divider 之后；内容自身可滚动，故给足而不裁剪）
     static let detailContentHeight: CGFloat = 310
 
+    /// 实时活动环微看板（Quick Rings Shelf）内容高度：AgentRingView 24 + 内层 padding 3×2
+    /// + 外层 padding(.vertical) 5×2 = 40（其下 DarkDivider 另计）
+    /// （实测校准值；漏算此项会导致底部 Token 汇总栏被窗口下边缘裁切）
+    static let ringsShelfHeight: CGFloat = 40
+
     /// 事件提醒栏高度（紧凑态与展开态）
     static let eventBannerHeight: CGFloat = 66
     static let eventBannerCollapsedHeight: CGFloat = 66
@@ -62,20 +70,46 @@ enum IslandMetrics {
 
     // MARK: 展开高度（纯函数）
 
+    /// 列表区之外的固定高度合计：顶栏 + 各分割线 + 活动环看板 + 事件栏 + 汇总栏。
+    /// 与 IslandView.expandedCard 的子视图顺序一一对应，改动布局须同步本函数。
+    static func chromeHeight(hasSummary: Bool, hasRings: Bool, hasEvent: Bool, eventExpanded: Bool) -> CGFloat {
+        // 汇总栏 = 自身分割线 + TokenSummaryBar（分割线在 IslandView 中与栏一起出现）
+        let summary: CGFloat = hasSummary ? (summaryBarHeight + dividerHeight) : 0
+        let rings: CGFloat = hasRings ? (ringsShelfHeight + dividerHeight) : 0
+        let bannerH = eventExpanded ? eventBannerExpandedHeight : eventBannerCollapsedHeight
+        let eventH: CGFloat = hasEvent ? (bannerH + dividerHeight) : 0
+        return headerHeight + dividerHeight + rings + eventH + summary
+    }
+
+    /// 列表区高度（封顶时压缩列表，保住底部汇总栏——列表可滚动，汇总栏不可）。
+    /// IslandView 的 ScrollView frame 与 expandedHeight 共用本函数，避免两处口径漂移。
+    static func listHeight(visibleCount: Int, hasSummary: Bool, hasRings: Bool,
+                           hasEvent: Bool, eventExpanded: Bool) -> CGFloat {
+        let chrome = chromeHeight(hasSummary: hasSummary, hasRings: hasRings,
+                                  hasEvent: hasEvent, eventExpanded: eventExpanded)
+        let contentHeight = CGFloat(max(visibleCount, 1)) * rowHeight + listExtraHeight
+        let available = max(expandedMaxHeight - chrome, rowHeight)   // 保底一行，避免压成 0
+        return min(min(contentHeight, listMaxHeight), available)
+    }
+
     /// 展开卡窗口高度。visibleCount 经 engine.visibleSnapshots（可见口径唯一实现）；
     /// hasSummary = !engine.grandTotal.isEmpty（汇总栏有数据才占高）
+    /// hasRings = 顶部活动环看板是否显示（engine.ringShelfSnapshots 非空）
     /// hasEvent = 存在活跃事件通知条；eventExpanded = 事件栏是否展开详细排查信息
-    static func expandedHeight(route: CardRoute, visibleCount: Int, hasSummary: Bool, hasEvent: Bool = false, eventExpanded: Bool = false) -> CGFloat {
+    static func expandedHeight(route: CardRoute, visibleCount: Int, hasSummary: Bool,
+                               hasRings: Bool = false, hasEvent: Bool = false,
+                               eventExpanded: Bool = false) -> CGFloat {
         switch route {
         case .list:
-            let summary: CGFloat = hasSummary ? summaryBarHeight : 0
-            let bannerH = eventExpanded ? eventBannerExpandedHeight : eventBannerCollapsedHeight
-            let eventH: CGFloat = hasEvent ? (bannerH + dividerHeight) : 0
+            let chrome = chromeHeight(hasSummary: hasSummary, hasRings: hasRings,
+                                      hasEvent: hasEvent, eventExpanded: eventExpanded)
             if visibleCount == 0 {
-                return min(headerHeight + dividerHeight + eventH + emptyStateHeight + summary, expandedMaxHeight)
+                return min(chrome + emptyStateHeight, expandedMaxHeight)
             }
-            let listHeight = min(CGFloat(max(visibleCount, 1)) * rowHeight + listExtraHeight, listMaxHeight)
-            return min(headerHeight + dividerHeight + eventH + listHeight + summary, expandedMaxHeight)
+            let list = listHeight(visibleCount: visibleCount, hasSummary: hasSummary,
+                                  hasRings: hasRings, hasEvent: hasEvent,
+                                  eventExpanded: eventExpanded)
+            return min(chrome + list, expandedMaxHeight)
         case .agentDetail, .sessions:
             return min(detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
         case .toolbox, .liveStream:
