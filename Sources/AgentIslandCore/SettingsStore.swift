@@ -67,6 +67,15 @@ public enum EnabledAgentStore {
         }
     }
 
+    /// 把单个 ID 并入已知集合。
+    /// 用于「用户刚创建的自定义 Agent」：登记后它不再被 resolvedEnabled 当作
+    /// 「版本升级新增的默认启用项」而自动补回启用集（否则用户关掉它会被静默覆盖）。
+    public static func markKnown(_ id: String, to defaults: UserDefaults = .standard) {
+        var known = loadKnownAgents(from: defaults) ?? legacyKnownAgentIDs
+        known.insert(id)
+        saveKnownAgents(known, to: defaults)
+    }
+
     /// 求解并自愈启停集合（解决版本升级新加内置/自动发现 Agent 被历史持久化集静默锁死的问题）
     /// - 首次运行（load 为 nil）：按 registry.filter(\.defaultEnabled) 全量初始化并固化
     /// - 用户全关（load 为 []）：严格尊重用户全关意图，保持空集不强行覆写
@@ -92,7 +101,11 @@ public enum EnabledAgentStore {
 
         // 读取已知 ID 集；若为 nil 则使用旧版基线迁移
         let known = loadKnownAgents(from: defaults) ?? legacyKnownAgentIDs
-        let newlyAddedProfiles = registry.filter { !known.contains($0.id) && $0.defaultEnabled }
+        // 只把「内置/自动发现」的新条目自动补入启用集：用户自定义条目（isCustom）
+        // 可能刚被用户主动关闭，若因不在 knownAgents 而重入，会静默覆盖用户意图。
+        let newlyAddedProfiles = registry.filter {
+            !known.contains($0.id) && $0.defaultEnabled && !$0.isCustom
+        }
 
         if !newlyAddedProfiles.isEmpty {
             for profile in newlyAddedProfiles {

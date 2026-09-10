@@ -79,6 +79,12 @@ struct SettingsView: View {
 
     private static let defaultConfig = EngineConfig()
 
+    /// 版本号从 bundle 读取（与 Info.plist 同源）。
+    /// 此前硬编码 "v1.7.9"，发版后忘记同步就会显示错误版本。
+    static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
     @AppStorage(SettingKey.workingWindow) private var workingWindow: Double = SettingsView.defaultConfig.workingWindow
     @AppStorage(SettingKey.sampleInterval) private var sampleInterval: Double = SettingsView.defaultConfig.sampleInterval
     @AppStorage(SettingKey.idleSampleInterval) private var idleSampleInterval: Double = SettingsView.defaultConfig.idleSampleInterval
@@ -92,8 +98,14 @@ struct SettingsView: View {
     @AppStorage(SettingKey.tokenAlertThreshold) private var tokenAlertThreshold = 100_000
     @AppStorage(SettingKey.runawayCpuAlert) private var runawayCpuAlert = true
 
-    private var islandAppearance: Binding<IslandAppearance> {
-        Binding(
+    /// 内置 Agent 列表（与 fullRegistry 同口径：排除宿主内嵌且未独立安装的组件）
+    private var builtinProfiles: [AgentProfile] {
+        AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
+                                   installedBundles: installedApps.installedBundleIDs())
+            .filter { !$0.isCustom && !$0.id.hasPrefix("cli-") }
+    }
+
+    private var islandAppearance: Binding<IslandAppearance> {        Binding(
             get: { IslandAppearance(rawValue: islandAppearanceRaw) ?? .system },
             set: { islandAppearanceRaw = $0.rawValue }
         )
@@ -105,6 +117,10 @@ struct SettingsView: View {
     @State private var launchError: String?
     @State private var customProfiles: [AgentProfile] = []
     @State private var showAddCustom = false
+    /// 待删除的自定义 Agent（用于二次确认弹窗）
+    @State private var pendingRemove: AgentProfile?
+    /// 重置位置确认
+    @State private var confirmingResetPosition = false
     /// 安装缓存扫描完成版本号：触发 body 重算刷新自动发现列表
     @State private var installedScanVersion = 0
 
@@ -280,7 +296,7 @@ struct SettingsView: View {
                             Text("任务完成提示音")
                                 .font(Theme.bodyFont(13))
                                 .foregroundColor(Theme.ink)
-                            Text("智能体执行完毕从工作切入空闲时，播放轻微提示音")
+                            Text("智能体执行完毕从工作切入空闲时，播放轻微提示音（专注免打扰模式下仅告警发声）")
                                 .font(Theme.bodyFont(10))
                                 .foregroundColor(Theme.inkMuted48)
                         }
@@ -322,10 +338,19 @@ struct SettingsView: View {
                             .foregroundColor(Theme.inkMuted48)
                         Spacer()
                         Button("重置位置") {
-                            controller.resetPosition()
+                            // 会抹掉用户拖好的吸附锚点且不可恢复，故二次确认
+                            confirmingResetPosition = true
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .confirmationDialog("重置灵动岛位置？",
+                                            isPresented: $confirmingResetPosition,
+                                            titleVisibility: .visible) {
+                            Button("重置", role: .destructive) { controller.resetPosition() }
+                            Button("取消", role: .cancel) {}
+                        } message: {
+                            Text("将清除已记住的贴边锚点，灵动岛回到默认停靠位置。")
+                        }
                     }
                 }
             }
@@ -338,7 +363,10 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 14) {
             SettingsCard(title: "内置 Agent") {
                 VStack(spacing: 8) {
-                    ForEach(AgentRegistry.builtin) { profile in
+                    // 用 fullRegistry 而非 builtin：与主列表/引擎同口径。
+                    // 否则宿主内嵌且未独立安装的组件（如 ChatGPT 里的 Codex）已被主列表
+                    // 隐藏，设置页却仍列出，用户会看到「幽灵条目」。
+                    ForEach(builtinProfiles) { profile in
                         Toggle(isOn: binding(for: profile)) {
                             HStack(spacing: 8) {
                                 Image(systemName: profile.icon)
@@ -364,7 +392,9 @@ struct SettingsView: View {
                 }
             }
 
-            let discovered = AgentRegistry.discoverCLIProfiles(installedCLIs: installedApps.installedCLIs())
+            let discovered = AgentRegistry.discoverCLIProfiles(
+                installedCLIs: installedApps.installedCLIs(),
+                installedBundles: installedApps.installedBundleIDs())
             if !discovered.isEmpty {
                 SettingsCard(title: "自动发现 (PATH / Applications)") {
                     VStack(spacing: 8) {
@@ -425,12 +455,27 @@ struct SettingsView: View {
                             CustomAgentRowView(
                                 profile: profile,
                                 isEnabled: binding(for: profile),
-                                onRemove: { removeCustom(profile) }
+                                onRemove: { pendingRemove = profile }
                             )
                         }
                     }
                 }
             }
+        }
+        // 删除是不可逆操作：与工作台清理保持同样的二次确认标准
+        .confirmationDialog(
+            "删除自定义 Agent「\(pendingRemove?.name ?? "")」？",
+            isPresented: Binding(get: { pendingRemove != nil },
+                                 set: { if !$0 { pendingRemove = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                if let p = pendingRemove { removeCustom(p) }
+                pendingRemove = nil
+            }
+            Button("取消", role: .cancel) { pendingRemove = nil }
+        } message: {
+            Text("该条目的监控配置将被移除，且无法撤销。")
         }
     }
 
@@ -520,7 +565,7 @@ struct SettingsView: View {
                         Text("AgentIsland")
                             .font(Theme.displayFont(16, weight: .bold))
                             .foregroundColor(Theme.ink)
-                        Text("v1.7.9 · macOS 灵动岛 Agent 会话监控器")
+                        Text("v\(Self.appVersion) · macOS 灵动岛 Agent 会话监控器")
                             .font(Theme.bodyFont(11))
                             .foregroundColor(Theme.inkMuted80)
                     }
@@ -584,7 +629,8 @@ struct SettingsView: View {
     // MARK: - 状态同步与持久化
 
     private func loadState() {
-        let all = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs())
+        let all = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
+                                             installedBundles: installedApps.installedBundleIDs())
         enabledAgents = EnabledAgentStore.resolvedEnabled(registry: all)
         customProfiles = AgentRegistry.loadCustomProfiles()
         applyConfig()
@@ -653,6 +699,9 @@ struct SettingsView: View {
         engine.addCustomProfile(profile)
         enabledAgents.insert(profile.id)
         saveEnabled()
+        // 登记为「已知」：否则用户在同一次会话内关掉它后重开设置页，
+        // resolvedEnabled 会把它当作版本升级新增项重新启用（静默覆盖用户意图）
+        EnabledAgentStore.markKnown(profile.id)
     }
 
     private func removeCustom(_ profile: AgentProfile) {
@@ -681,11 +730,12 @@ struct CustomAgentRowView: View {
                 .foregroundColor(Theme.ink)
                 .lineLimit(1)
                 .layoutPriority(1)
-            Text(profile.processNames.joined(separator: ","))
+            Text(profile.processNames.joined(separator: ", "))
                 .font(Theme.monoFont(10))
                 .foregroundColor(Theme.inkMuted48)
                 .lineLimit(1)
                 .layoutPriority(0)
+                .help(profile.processNames.joined(separator: ", "))
             Spacer()
             Toggle("", isOn: isEnabled)
                 .toggleStyle(.switch)
