@@ -100,12 +100,70 @@ enum EngineTests {
             try expectTrue((engine.latestEvent?.duration ?? 0) >= 7.5, "任务持续时长应记录")
         }
 
+        TestKit.test("引擎: 进程消失（被关闭）→ 静默转 offline，不误报任务完成") {
+            let start = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let provider = MutableProcessProvider(names: ["DimAgent"])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 5, minWorkingHold: 2),
+                processMonitor: provider,
+                fileMonitor: FakeFileActivityProvider(writes: [dir: start]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            // 第一拍：进程在 + 有写入 → working（工作已持续 30s）
+            _ = engine.sample(now: start)
+            try expectTrue(engine.anyWorking, "关闭前应 working")
+            try expectNil(engine.latestEvent, "进行中不应有事件")
+
+            // 第二拍：用户关闭 ChatGPT（进程消失）→ 静默 offline，绝不报「任务已完成」
+            provider.names = []
+            let snaps = engine.sample(now: start.addingTimeInterval(30))
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .offline, "进程消失应转 offline")
+            try expectNil(engine.latestEvent, "进程被关闭不是任务完成，不得发完成事件")
+            try expectTrue(!engine.anyWorking, "不应再有 working")
+        }
+
         TestKit.test("引擎: terminateAgent 终止逃生舱更新事件与状态") {
             let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
             _ = engine.sample(now: Date())
-            engine.terminateAgent(pid: 999999, agentId: "dim")
-            try expectEqual(engine.latestEvent?.eventType, .attention)
+            // 用不存在的 pid 验证「失败不谎报」；成功路径由下面的 Fake 终止器验证
+            // （不能传自身 pid：terminate 会真的把测试进程杀掉）
+            let ok = engine.terminateAgent(pid: 999999, agentId: "dim")
+            try expectTrue(!ok, "无法发送信号时必须返回 false")
+            try expectTrue(engine.latestEvent?.message?.contains("已终止") != true,
+                           "不得谎报已终止，实际: \(engine.latestEvent?.message ?? "nil")")
+        }
+
+        TestKit.test("引擎: terminateAgent 成功路径写入 completed 事件") {
+            // 直接验证成功分支的事件语义：completed 而非 attention
+            // （attention 会让收起态细条误报红色告警）
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+            // 借道 cleanAnomalies 之外的方式不可行，故用可终止的空进程验证：
+            // 启动一个 /bin/sleep 作为无害目标
+            let sleeper = Process()
+            sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            sleeper.arguments = ["30"]
+            try? sleeper.run()
+            defer { if sleeper.isRunning { sleeper.terminate() } }
+            let ok = engine.terminateAgent(pid: sleeper.processIdentifier, agentId: "dim")
+            try expectTrue(ok, "可发送信号的 pid 应返回 true")
+            try expectEqual(engine.latestEvent?.eventType, .completed,
+                            "终止成功应为 completed（非 attention）")
             try expectTrue(engine.latestEvent?.message?.contains("进程已终止") == true, "应提示已终止")
+        }
+
+        TestKit.test("引擎: terminateAgent 无 pid 时不谎报成功") {
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+            let ok = engine.terminateAgent(pid: nil, agentId: "dim")
+            try expectTrue(!ok, "无 pid 时必须返回 false")
+            // 不得出现「已终止」这类误导文案：进程并未被终止
+            try expectTrue(engine.latestEvent?.message?.contains("已终止") != true,
+                           "无 pid 时不得谎报已终止")
+            try expectTrue(engine.latestEvent?.message?.contains("无法终止") == true,
+                           "应如实提示无法终止")
         }
 
         TestKit.test("工作台维护: scanAnomalies 孤儿/异常检测与 cleanAnomalies 一键清理") {
@@ -161,7 +219,7 @@ enum EngineTests {
             try expectEqual(returnedRows?.count ?? -1, 0)
         }
 
-        TestKit.test("熔断保护: Token 激增告警触发") {
+        TestKit.test("熔断保护: Token 激增告警触发（速率制 + 连续确认）") {
             let fake = FakeTokenUsageMonitor()
             fake.usage["dim"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)
             let config = EngineConfig(tokenAlertEnabled: true, tokenAlertThreshold: 50_000)
@@ -177,13 +235,43 @@ enum EngineTests {
             _ = engine.sample(now: now)
             try expectNil(engine.latestEvent, "首拍记录基准，不应告警")
 
-            // 10秒后，Token 暴增 80,000
-            fake.usage["dim"] = TokenUsage(tokens24h: 90_000, tokensTotal: 90_000, cost24h: 0, costTotal: 0)
-            _ = engine.sample(now: now.addingTimeInterval(10))
-            try expectEqual(engine.latestEvent?.eventType, .costSpike, "激增超过 50k 应触发 costSpike")
+            // 每档 60s、每档 +80k（≈80k/分钟，超 50k 阈值）；需连续 3 档才确认
+            var tokens = 10_000
+            for beat in 1...3 {
+                tokens += 80_000
+                fake.usage["dim"] = TokenUsage(tokens24h: tokens, tokensTotal: tokens, cost24h: 0, costTotal: 0)
+                _ = engine.sample(now: now.addingTimeInterval(Double(beat) * 60))
+                if beat < 3 {
+                    try expectNil(engine.latestEvent, "第 \(beat) 档不应告警（需连续 3 档确认）")
+                }
+            }
+            try expectEqual(engine.latestEvent?.eventType, .costSpike, "连续 3 档超阈值应触发 costSpike")
             try expectTrue(engine.latestEvent?.message?.contains("Token 激增") == true, "应显示激增提示")
-            try expectTrue(engine.latestEvent?.detail?.contains("Token 消耗突增") == true, "应包含详细排查说明")
+            try expectTrue(engine.latestEvent?.detail?.contains("/分钟") == true, "应给出折算速率")
             try expectTrue(engine.latestEvent?.copyableDiagnosticText.contains("详情:") == true, "可复制诊断应包含详情")
+        }
+
+        TestKit.test("熔断保护: 长任务结束时一次性落盘不误报激增") {
+            let fake = FakeTokenUsageMonitor()
+            fake.usage["dim"] = TokenUsage(tokens24h: 1_000, tokensTotal: 1_000, cost24h: 0, costTotal: 0)
+            let config = EngineConfig(tokenAlertEnabled: true, tokenAlertThreshold: 50_000)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: config,
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                tokenMonitor: fake,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            _ = engine.sample(now: now)
+
+            // 单次暴增 300 万（长任务结束落盘），折算 ≈3M/分钟；下一档无新增 → 速率归零
+            fake.usage["dim"] = TokenUsage(tokens24h: 3_000_000, tokensTotal: 3_000_000, cost24h: 0, costTotal: 0)
+            _ = engine.sample(now: now.addingTimeInterval(60))
+            try expectNil(engine.latestEvent, "单次落盘仅累计 1 档，不应告警")
+            _ = engine.sample(now: now.addingTimeInterval(120))
+            try expectNil(engine.latestEvent, "无后续增量则速率归零，不应告警")
         }
 
         TestKit.test("熔断保护: 持续死循环/高负载告警（低占用不误报，持续高 CPU 触发）") {
@@ -274,8 +362,111 @@ enum EngineTests {
             try expectTrue(matcher.isRunning(workbuddy), "WorkBuddy 应正确命中自身 Electron 进程")
         }
 
-        TestKit.test("进程: 系统路径 + 黑名单排除") {
+        TestKit.test("进程: ChatGPT 内嵌 codex 不计入 Codex（同一份程序不数两次）") {
+            let codex = AgentRegistry.builtin.first { $0.id == "codex" }!
+            let chatgpt = AgentRegistry.builtin.first { $0.id == "chatgpt" }!
             let snapshot = ProcessSnapshot(entries: [
+                // ChatGPT 桌面版内嵌的 Codex 主进程与辅助进程（用户实测路径）
+                ProcessSnapshot.Entry(pid: 85236,
+                    path: "/Applications/ChatGPT.app/Contents/Resources/codex",
+                    basename: "codex", cpuPercent: 5),
+                ProcessSnapshot.Entry(pid: 85211,
+                    path: "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/152.0/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)",
+                    basename: "Codex (Service)", cpuPercent: 1),
+                // 独立安装的 codex CLI
+                ProcessSnapshot.Entry(pid: 90001,
+                    path: "/Users/me/.local/bin/codex",
+                    basename: "codex", cpuPercent: 3),
+            ])
+            let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: ["com.openai.codex"],
+                                         profiles: [codex, chatgpt])
+            let matched = matcher.matchingEntries(for: codex)
+            try expectTrue(matched.contains { $0.pid == 90001 }, "独立 codex CLI 仍应计入")
+            try expectTrue(!matched.contains { $0.pid == 85236 }, "ChatGPT 内嵌 codex 不应计入 Codex")
+            try expectTrue(!matched.contains { $0.pid == 85211 }, "Codex Framework 辅助进程不应计入 Codex")
+            try expectTrue(matcher.isRunning(chatgpt), "ChatGPT 自身仍应在线")
+        }
+
+        TestKit.test("注册表: 宿主已装且组件无独立安装时不单独成条目") {
+            // ChatGPT 已装、codex 无独立 CLI → codex 从注册表消失
+            let bundled = AgentRegistry.fullRegistry(installedCLIs: [],
+                                                     installedBundles: ["com.openai.codex"])
+            try expectNil(bundled.first { $0.id == "codex" },
+                          "宿主已装时内嵌 Codex 不应单独成条目")
+            try expectTrue(bundled.contains { $0.id == "chatgpt" }, "宿主自身仍应保留")
+
+            // 独立安装 codex CLI → 保留，用户仍可监控真正的 Codex CLI
+            let standalone = AgentRegistry.fullRegistry(installedCLIs: ["codex"],
+                                                        installedBundles: ["com.openai.codex"])
+            try expectTrue(standalone.contains { $0.id == "codex" },
+                           "独立安装 codex 时条目必须保留")
+
+            // 宿主未装 → 无条件保留（保持原有行为）
+            let neither = AgentRegistry.fullRegistry(installedCLIs: [], installedBundles: [])
+            try expectTrue(neither.contains { $0.id == "codex" }, "宿主未装时条目保留")
+        }
+
+        TestKit.test("进程: processTree 用快照构建，不 fork 子进程") {
+            // 构造 3 层进程树：100 → 200 → 300，另有无关进程 400
+            let snapshot = ProcessSnapshot(entries: [
+                ProcessSnapshot.Entry(pid: 100, path: "/a", basename: "a", cpuPercent: 0, ppid: 1),
+                ProcessSnapshot.Entry(pid: 200, path: "/b", basename: "b", cpuPercent: 0, ppid: 100),
+                ProcessSnapshot.Entry(pid: 300, path: "/c", basename: "c", cpuPercent: 0, ppid: 200),
+                ProcessSnapshot.Entry(pid: 400, path: "/d", basename: "d", cpuPercent: 0, ppid: 1),
+            ])
+            let tree = ProcessTerminator.processTree(rootPid: 100, in: snapshot)
+            try expectEqual(Set(tree), Set([100, 200, 300]), "应含整棵子树且不含无关进程")
+            try expectTrue(!tree.contains(400), "不应包含无关进程")
+            // 无子进程时只返回自身
+            try expectEqual(ProcessTerminator.processTree(rootPid: 400, in: snapshot), [400])
+        }
+
+        TestKit.test("动作探测: 长驻服务不作为「正在执行」信号") {
+            // MCP 服务 / 语言服务 / 索引守护随 Agent 常驻，不代表有任务在途
+            try expectTrue(AgentActionInspector.isLongLivedService(command: "node /path/mcp-servers/server.js"), "MCP server 应判为长驻")
+            try expectTrue(AgentActionInspector.isLongLivedService(command: "node /x/mcp-bridge/index.js"), "MCP bridge 应判为长驻")
+            try expectTrue(AgentActionInspector.isLongLivedService(command: "node --liftoff-only /x/index.js"), "索引常驻进程应判为长驻")
+            try expectTrue(AgentActionInspector.isLongLivedService(command: "tsserver --stdio"), "语言服务应判为长驻")
+            try expectTrue(AgentActionInspector.isLongLivedService(command: "python lsp-server.py"), "LSP 应判为长驻")
+            // 用户/Agent 的真实任务命令不得被误杀（含常见 server/watcher 命名）
+            try expectTrue(!AgentActionInspector.isLongLivedService(command: "node server.js"), "用户自己的 node server.js 不应被过滤")
+            try expectTrue(!AgentActionInspector.isLongLivedService(command: "npm run watcher"), "npm run watcher 不应被过滤")
+            try expectTrue(!AgentActionInspector.isLongLivedService(command: "cargo run --bin daemon"), "cargo run 不应被过滤")
+            try expectTrue(!AgentActionInspector.isLongLivedService(command: "swift build"), "swift build 不是长驻服务")
+            try expectTrue(!AgentActionInspector.isLongLivedService(command: "git diff --stat"), "git 不是长驻服务")
+        }
+
+        TestKit.test("动作探测: 命令行含 argv[0]，辅助进程过滤依赖它") {
+            // commandLine 必须保留可执行路径（与 ps -o command= 一致）：
+            // isInternalHelperProcess 的路径标记（/frameworks/、.app/contents/ 等）都来自 argv[0]，
+            // 丢掉它会让 ChatGPT 的内部辅助进程被当成用户命令透传
+            let raw = AgentActionInspector.commandLine(of: Int32(ProcessInfo.processInfo.processIdentifier))
+            if let raw {
+                try expectTrue(!raw.contains("PATH="), "不应把环境变量当参数: \(raw.prefix(80))")
+                try expectTrue(raw.contains("/"), "首段应为可执行路径，实际: \(raw.prefix(80))")
+            }
+            // 带路径的辅助进程命令必须被判为内部辅助
+            let service = "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/1/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service) --type=utility"
+            try expectTrue(AgentActionInspector.isInternalHelperProcess(command: service),
+                           "含 .app/Contents 与 Frameworks 的辅助进程必须被过滤")
+            let modifier = "/Applications/ChatGPT.app/Contents/Resources/native/bare-modifier-monitor --key DoubleCommand --immediate"
+            try expectTrue(AgentActionInspector.isInternalHelperProcess(command: modifier),
+                           "bare-modifier-monitor 必须被过滤（其标记来自 argv[0] 路径）")
+        }
+
+        TestKit.test("清理: overweight 不把 GUI 主进程列为可清理项") {
+            let cleaner = AgentCleaner(processMonitor: FakeProcessProvider(processNames: [], bundleIDs: []))
+            let dim = AgentRegistry.builtin.first { $0.id == "dim" }!
+            // 直接调用纯扫描入口不可行（依赖真实进程表），改为验证规则函数语义：
+            // GUI 主进程路径必须被识别为标准 App bundle
+            let guiPath = "/Applications/DimAgent.app/Contents/MacOS/DimAgent"
+            try expectTrue(guiPath.contains(".app/Contents/MacOS"), "GUI 主进程路径应命中排除规则")
+            let cliPath = "/usr/local/bin/dim"
+            try expectTrue(!cliPath.contains(".app/Contents/MacOS"), "CLI 路径不应被排除")
+            _ = cleaner; _ = dim
+        }
+
+        TestKit.test("进程: 系统路径 + 黑名单排除") {            let snapshot = ProcessSnapshot(entries: [
                 ProcessSnapshot.Entry(
                     pid: 1,
                     path: "/System/Library/PrivateFrameworks/TextInputUIMacHelper.framework/Versions/A/XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService",

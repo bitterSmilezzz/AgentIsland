@@ -8,8 +8,42 @@ import Foundation
 enum RegistryTests {
 
     static func register() {
-        TestKit.test("注册表: discoverCLIProfiles 幂等去重") {
-            let installed: Set<String> = ["aider", "dim", "gemini"]   // dim 为内置已含，不应重复发现
+        TestKit.test("注册表: 用户关闭自定义 Agent 后不被强制重新启用") {
+            // 回归：resolvedEnabled 曾把「不在 knownAgents 且 defaultEnabled」的条目
+            // 当作版本升级新增项补入启用集，导致用户刚关掉的自定义 Agent 被静默重开
+            let suite = UserDefaults(suiteName: "test-custom-reenable-\(UUID().uuidString)")!
+            defer { suite.removePersistentDomain(forName: suite.description) }
+
+            let custom = AgentProfile(id: "custom-qa", name: "QA", icon: "terminal",
+                                      bundleIDs: [], processNames: ["qa-agent"],
+                                      sessionDirs: [], isCustom: true)
+            let builtinDim = AgentRegistry.builtin.first { $0.id == "dim" }!
+
+            // 首次求解：初始化默认启用集
+            _ = EnabledAgentStore.resolvedEnabled(registry: [builtinDim, custom], defaults: suite)
+            // 用户主动关闭自定义条目
+            EnabledAgentStore.save([builtinDim.id], to: suite)
+            // 再次求解（等价于重开设置窗口）：自定义条目不得被补回
+            let resolved = EnabledAgentStore.resolvedEnabled(registry: [builtinDim, custom], defaults: suite)
+            try expectTrue(!resolved.contains("custom-qa"),
+                           "用户关闭的自定义 Agent 不应被自动重新启用，实际: \(resolved)")
+            try expectTrue(resolved.contains("dim"), "内置条目应保持启用")
+        }
+
+        TestKit.test("注册表: 内置 Agent 仍按宿主过滤后展示（设置页与主列表同口径）") {
+            // ChatGPT 已装、codex 无独立安装 → 内置列表不应含 codex（与 --probe 一致）
+            let filtered = AgentRegistry.filteredBuiltin(installedCLIs: [],
+                                                         installedBundles: ["com.openai.codex"])
+            try expectTrue(!filtered.contains { $0.id == "codex" }, "内嵌 Codex 不应出现在内置列表")
+            try expectTrue(filtered.contains { $0.id == "chatgpt" }, "宿主 ChatGPT 应保留")
+            // 自动发现也不应把被过滤的组件以 cli- 形式重新引入
+            let discovered = AgentRegistry.discoverCLIProfiles(installedCLIs: ["codex"],
+                                                               installedBundles: ["com.openai.codex"])
+            try expectTrue(!discovered.contains { $0.processNames.contains("codex") },
+                           "被宿主过滤的 CLI 不应被自动发现重复引入")
+        }
+
+        TestKit.test("注册表: discoverCLIProfiles 幂等去重") {            let installed: Set<String> = ["aider", "dim", "gemini"]   // dim 为内置已含，不应重复发现
             let a = AgentRegistry.discoverCLIProfiles(installedCLIs: installed)
             let b = AgentRegistry.discoverCLIProfiles(installedCLIs: installed)
             try expectEqual(Set(a.map(\.id)), Set(b.map(\.id)), "两次发现应一致")
