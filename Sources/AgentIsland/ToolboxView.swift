@@ -11,6 +11,8 @@ struct ToolboxView: View {
     @State private var isScanning = false
     @State private var confirmingCleanAll = false
     @State private var cleaningPid: Int32? = nil
+    /// 单条清理确认态的自动复位任务（可取消）
+    @State private var singleConfirmTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -174,15 +176,42 @@ struct ToolboxView: View {
                         }
                     }
 
-                    Button {
-                        cleanSingle(item)
-                    } label: {
-                        Image(systemName: "trash.circle")
-                            .font(.system(size: 15))
-                            .foregroundColor(Theme.dangerRed.opacity(0.85))
+                    // 单条清理同样需要二次确认：杀的是整棵进程树，误触代价是用户编辑器退出
+                    if cleaningPid == item.pid {
+                        Button {
+                            cleanSingle(item)
+                            cleaningPid = nil
+                        } label: {
+                            Text("确认?")
+                                .font(Theme.bodyFont(9, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Theme.dangerRed))
+                        }
+                        .buttonStyle(.plain)
+                        .help("再次点击终止 PID \(item.pid) 及其子进程树")
+                        .accessibilityLabel("确认清理 \(item.agentName) PID \(item.pid)")
+                        .onAppear {
+                            singleConfirmTask?.cancel()
+                            singleConfirmTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                guard !Task.isCancelled else { return }
+                                cleaningPid = nil
+                            }
+                        }
+                    } else {
+                        Button {
+                            cleaningPid = item.pid
+                        } label: {
+                            Image(systemName: "trash.circle")
+                                .font(.system(size: 15))
+                                .foregroundColor(Theme.dangerRed.opacity(0.85))
+                        }
+                        .buttonStyle(.plain)
+                        .help("安全终止该异常进程（需二次确认）")
+                        .accessibilityLabel("清理 \(item.agentName) PID \(item.pid)")
                     }
-                    .buttonStyle(.plain)
-                    .help("安全终止该异常进程")
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.cardFill))
@@ -262,8 +291,12 @@ struct ToolboxView: View {
         let hungIDs = Set(engine.snapshots.filter { $0.isHung }.map { $0.profile.id })
         let profiles = engine.allProfiles
         let cleaner = engine.cleaner
+        // NSWorkspace 必须主线程访问（ProcessProviding 契约）：先在主线程抓 bundle 集合，
+        // 再进后台做快照与匹配。此前整段丢到后台队列，违反线程契约。
+        let bundleIDs = ProcessProvider().runningBundleIDs()
         DispatchQueue.global(qos: .userInitiated).async {
-            let found = cleaner?.scanAnomalies(profiles: profiles, hungAgentIDs: hungIDs) ?? []
+            let found = cleaner?.scanAnomalies(profiles: profiles, hungAgentIDs: hungIDs,
+                                               runningBundleIDs: bundleIDs) ?? []
             DispatchQueue.main.async {
                 self.anomalies = found
                 self.isScanning = false
