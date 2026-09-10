@@ -29,7 +29,7 @@ struct LiveLogStreamView: View {
             DetailHeader(
                 title: "\(agentName) 实时流水",
                 subtitle: "Live Log Stream · \(events.count) 条事件",
-                onBack: { controller.route = .list },
+                onBack: { controller.closeLiveStream() },
                 onMoved: { controller.dragMoved(translation: $0) },
                 onEnded: { controller.dragEnded() }
             )

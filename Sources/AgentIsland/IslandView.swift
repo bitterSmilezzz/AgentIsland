@@ -176,12 +176,17 @@ struct IslandView: View {
             HStack(spacing: 6) {
                 statusDot
                     .frame(width: 9, height: 9)
-                if let active = engine.visibleSnapshots.first(where: { $0.level == .working }),
-                   let action = active.currentAction {
+                // 优先展示「有动作」的 working agent：若第一个 working 恰好无动作，
+                // 此前会整段退化，明明有 Agent 带动作也不显示
+                if let active = engine.visibleSnapshots.first(where: {
+                    $0.level == .working && !($0.currentAction ?? "").isEmpty
+                }), let action = active.currentAction {
                     HStack(spacing: 4) {
                         Text(active.profile.name)
                             .font(Theme.bodyFont(13, weight: .bold))
                             .foregroundColor(Theme.onDark)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                         Text("·")
                             .foregroundColor(Theme.onDarkFaint)
                         Text(action)
@@ -189,7 +194,20 @@ struct IslandView: View {
                             .foregroundColor(Theme.statusWorking)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                        // 多 Agent 并行时提示还有几个在工作，避免只看到第一个造成误解
+                        let others = engine.workingAgents().count - 1
+                        if others > 0 {
+                            Text("+\(others)")
+                                .font(Theme.monoFont(10, weight: .semibold))
+                                .foregroundColor(Theme.onDarkFaint)
+                        }
                     }
+                    // 顶栏必须恒为单行：IslandMetrics.headerContentHeight 按单行文本行高
+                    // 校准，一旦名称/动作折行，顶栏实际高度会多出约 17pt，使总内容超过
+                    // 窗口高度上限，底部 Token 汇总栏被裁（拖动后动作文字变长时必现）。
+                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
                     .help("\(active.profile.name): \(action)")
                 } else {
                     Text(engine.anyWorking
@@ -197,11 +215,18 @@ struct IslandView: View {
                          : "当前没有 Agent 在工作")
                         .font(Theme.bodyFont(13, weight: .semibold))
                         .foregroundColor(Theme.onDark)
+                        .lineLimit(1)
+                        .layoutPriority(1)
                 }
                 Spacer(minLength: 4)
+                // 可见计数是次要信息：去掉 fixedSize 让它可被压缩，
+                // 避免挤占左侧「Agent 名 + 实时动作」这一最需要看的信息
                 Text("\(engine.visibleSnapshots.count)/\(engine.snapshots.count) 可见")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.onDarkFaint)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
+                    .help("当前可见 \(engine.visibleSnapshots.count) 个，共监控 \(engine.snapshots.count) 个")
 
                 // 外观模式切换
                 Menu {
@@ -262,7 +287,7 @@ struct IslandView: View {
             DarkDivider()
 
             // 实时活动环微看板（Quick Rings Shelf · CodeNotch 灵感）
-            let activeSnapshots = engine.visibleSnapshots.filter { $0.level == .working || ($0.tokenUsage?.tokens24h ?? 0) > 0 }
+            let activeSnapshots = engine.ringShelfSnapshots
             if !activeSnapshots.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -277,7 +302,7 @@ struct IslandView: View {
                                             .font(Theme.bodyFont(10, weight: .semibold))
                                             .foregroundColor(Theme.onDark)
                                             .lineLimit(1)
-                                        Text(snap.level == .working ? "工作中" : (snap.tokenUsage.map { TokenUsage.compact($0.tokens24h) } ?? snap.level.label))
+                                        Text(shelfSubtitle(snap))
                                             .font(Theme.monoFont(8))
                                             .foregroundColor(snap.level == .working ? Palette.ringGreen : Theme.onDarkFaint)
                                             .lineLimit(1)
@@ -291,7 +316,8 @@ struct IslandView: View {
                                 )
                             }
                             .buttonStyle(.plain)
-                            .help("\(snap.profile.name): \(snap.level.label)")
+                            // help 与正文同口径：正文显示 token 时不能再提示「待机」
+                            .help("\(snap.profile.name): \(shelfSubtitle(snap))")
                         }
                     }
                     .padding(.horizontal, Theme.pageMargin)
@@ -302,7 +328,9 @@ struct IslandView: View {
 
             // 任务事件横幅（完成/等待确认/资源与Token熔断告警富文本交互卡片）
             if let event = engine.latestEvent {
+                // 按事件身份隔离视图：新事件到来时重置内部状态（如「已复制」反馈）
                 EventBannerView(event: event, engine: engine, controller: controller)
+                    .id(event.id)
                 DarkDivider()
             }
 
@@ -327,19 +355,39 @@ struct IslandView: View {
                     }
                     .padding(.vertical, IslandMetrics.listVerticalPadding)
                 }
-                .frame(maxHeight: IslandMetrics.listMaxHeight)
+                // 与窗口高度同源（IslandMetrics.listHeight）：封顶时压缩列表而非裁掉底部汇总栏
+                .frame(maxHeight: IslandMetrics.listHeight(
+                    visibleCount: engine.visibleSnapshots.count,
+                    hasSummary: !engine.grandTotal.isEmpty,
+                    hasRings: !activeSnapshots.isEmpty,
+                    hasEvent: engine.latestEvent != nil,
+                    eventExpanded: controller.eventBannerExpanded))
+                // 空间不足时只压列表：列表可滚动，压缩不丢信息；
+                // 汇总栏是不可滚动的定高条，被压就会截断（用户反馈「多一个元素就被截」）
+                .layoutPriority(-1)
             }
 
             // Token 汇总栏
             if !engine.grandTotal.isEmpty {
                 DarkDivider()
                 TokenSummaryBar(total: engine.grandTotal)
+                    // 高优先级：VStack 分配空间时优先满足汇总栏的完整高度
+                    .layoutPriority(1)
             }
         }
         .cardShell(dockEdge: controller.dockEdge, controller: controller)
     }
 
     // MARK: 状态点
+
+    /// 活动环微看板副标题（正文与 help 共用，避免两处口径漂移）
+    private func shelfSubtitle(_ snap: AgentSnapshot) -> String {
+        if snap.level == .working { return "工作中" }
+        if let usage = snap.tokenUsage, usage.tokens24h > 0 {
+            return AgentRowView.tokenBadge(usage)
+        }
+        return snap.level.label
+    }
 
     private var statusDot: some View {
         ZStack {
@@ -369,6 +417,11 @@ struct AgentRowView: View {
     @ObservedObject var controller: IslandPanelController
     @State private var confirmingKill = false
     @State private var showingTooltip = false
+    /// 关闭 tooltip 的延迟任务（可取消）：鼠标从环移向 popover 的途中会先触发
+    /// onHover(false)，若立即关闭则 popover 里的按钮永远点不到。
+    @State private var tooltipCloseTask: Task<Void, Never>?
+    /// 终止确认态的自动复位任务（可取消）
+    @State private var confirmResetTask: Task<Void, Never>?
 
     /// Token 徽标文本："1.23M" 或 "1.23M $0.42"
     static func tokenBadge(_ usage: TokenUsage) -> String {
@@ -377,15 +430,35 @@ struct AgentRowView: View {
         return cost.isEmpty ? tokens : "\(tokens) \(cost)"
     }
 
+    /// 是否显示实时动作横条（与内边距共用同一判定，避免 2pt 行高漂移）
+    private var hasActionBar: Bool {
+        snapshot.level == .working && !(snapshot.currentAction ?? "").isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 AgentRingView(snapshot: snapshot, size: 26)
                     .onHover { h in
-                        showingTooltip = h
+                        // 延迟关闭：给用户时间把鼠标从 26×26 的环移到 popover 上，
+                        // 否则 popover 里的「终止 / 直达窗口」永远来不及点。
+                        tooltipCloseTask?.cancel()
+                        if h {
+                            showingTooltip = true
+                        } else {
+                            tooltipCloseTask = Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 400_000_000)
+                                guard !Task.isCancelled else { return }
+                                showingTooltip = false
+                            }
+                        }
                     }
                     .popover(isPresented: $showingTooltip, arrowEdge: controller.dockEdge == .top ? .bottom : .leading) {
                         AgentHoverTooltipCard(snapshot: snapshot, engine: engine, controller: controller)
+                            // 鼠标进入 popover 时取消关闭任务，让按钮可点
+                            .onHover { inside in
+                                if inside { tooltipCloseTask?.cancel() }
+                            }
                     }
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -447,7 +520,9 @@ struct AgentRowView: View {
 
                 if snapshot.processRunning {
                     HStack(spacing: 3) {
-                        if confirmingKill {
+                        // 确认态仅在仍处于工作时有效：若 3 秒内 Agent 已转 idle，
+                        // 继续显示红色「终止?」会诱导用户终止一个已空闲的进程
+                        if confirmingKill && snapshot.level == .working {
                             Button {
                                 engine.terminateAgent(pid: snapshot.pid, agentId: snapshot.profile.id)
                                 confirmingKill = false
@@ -461,8 +536,14 @@ struct AgentRowView: View {
                             }
                             .buttonStyle(.plain)
                             .help("再次点击立即强制终止该 Agent 进程")
+                            .accessibilityLabel("确认终止 \(snapshot.profile.name)")
                             .onAppear {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                // Task 可随视图销毁取消；DispatchQueue 版本会在行消失后
+                                // 继续向失效的 @State 写值
+                                confirmResetTask?.cancel()
+                                confirmResetTask = Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                    guard !Task.isCancelled else { return }
                                     confirmingKill = false
                                 }
                             }
@@ -478,10 +559,11 @@ struct AgentRowView: View {
                             }
                             .buttonStyle(.plain)
                             .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
+                            .accessibilityLabel("终止 \(snapshot.profile.name)")
                         }
 
                         Button {
-                            controller.route = .liveStream(snapshot.profile.id)
+                            controller.openLiveStream(agentId: snapshot.profile.id)
                         } label: {
                             Image(systemName: "terminal")
                                 .font(.system(size: 10, weight: .medium))
@@ -508,7 +590,7 @@ struct AgentRowView: View {
             }
 
             // 第二行：工作状态下的专属实时动作横条（全宽展示，彻底根治截断问题）
-            if snapshot.level == .working, let action = snapshot.currentAction, !action.isEmpty {
+            if hasActionBar, let action = snapshot.currentAction {
                 HStack(spacing: 5) {
                     Image(systemName: "terminal.fill")
                         .font(.system(size: 8))
@@ -519,6 +601,15 @@ struct AgentRowView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 0)
+                    // 工作态也保留 token 徽标：正在消耗的 Agent 恰是最需要关注的，
+                    // 此前它只在非工作态显示，工作中反而看不到用量
+                    if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
+                        Text(Self.tokenBadge(usage))
+                            .font(Theme.monoFont(8))
+                            .foregroundColor(Theme.statusWorking.opacity(0.85))
+                            .lineLimit(1)
+                            .help("24h \(TokenUsage.compact(usage.tokens24h)) token")
+                    }
                 }
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
@@ -531,7 +622,8 @@ struct AgentRowView: View {
             }
         }
         .padding(.horizontal, Theme.pageMargin)
-        .padding(.vertical, snapshot.level == .working && snapshot.currentAction != nil ? 5 : 4)
+        // 与横条显示条件严格一致：空字符串动作不显示横条，也不应多出 2pt 内边距
+        .padding(.vertical, hasActionBar ? 5 : 4)
         .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: .clear)
         .onTapGesture {
             // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表）
@@ -562,6 +654,7 @@ struct TokenSummaryBar: View {
                     .font(Theme.monoFont(10))
                     .foregroundColor(Theme.onDarkFaint)
                     .lineLimit(1)
+                    .help("24h 花费")
             }
             Spacer()
             Text("累计 \(TokenUsage.compact(total.tokensTotal))")
@@ -602,6 +695,7 @@ struct DockedSliverCapsule: View {
     let onTap: () -> Void
     let onHover: (Bool) -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var breathing = false
 
     private var activeColor: Color {
@@ -667,13 +761,14 @@ struct DockedSliverCapsule: View {
     }
 
     private func updateAnimationState() {
-        if shouldAnimate {
+        // 尊重系统「减弱动态效果」：开启时只保留静态状态色，不跑无限循环动画
+        guard shouldAnimate, !reduceMotion else {
             breathing = false
-            withAnimation(.easeInOut(duration: hasAlert ? 1.2 : 2.0).repeatForever(autoreverses: true)) {
-                breathing = true
-            }
-        } else {
-            breathing = false
+            return
+        }
+        breathing = false
+        withAnimation(.easeInOut(duration: hasAlert ? 1.2 : 2.0).repeatForever(autoreverses: true)) {
+            breathing = true
         }
     }
 }
@@ -682,29 +777,26 @@ struct DockedSliverCapsule: View {
 
 struct PulseAnimation: ViewModifier {
     let isActive: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulsing = false
+
+    private func startPulse() {
+        guard isActive, !reduceMotion else {
+            pulsing = false
+            return
+        }
+        pulsing = false
+        withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) {
+            pulsing = true
+        }
+    }
 
     func body(content: Content) -> some View {
         content
             .scaleEffect(pulsing ? 1.0 : 0.6)
             .opacity(pulsing ? 0 : 0.4)
-            .onChange(of: isActive) { active in
-                if active {
-                    pulsing = false
-                    withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) {
-                        pulsing = true
-                    }
-                } else {
-                    pulsing = false
-                }
-            }
-            .onAppear {
-                guard isActive else { return }
-                pulsing = false
-                withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) {
-                    pulsing = true
-                }
-            }
+            .onChange(of: isActive) { _ in startPulse() }
+            .onAppear { startPulse() }
     }
 }
 
@@ -735,6 +827,8 @@ struct EventBannerView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
     @State private var copiedFeedback = false
+    /// 复制反馈的复位任务（可取消）
+    @State private var copyFeedbackTask: Task<Void, Never>?
 
     private var isExpanded: Bool {
         controller.eventBannerExpanded
@@ -773,10 +867,12 @@ struct EventBannerView: View {
                         .foregroundColor(Theme.onDarkMuted)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.white.opacity(0.08)))
+                        // 动态色：浅色主题下白色胶囊不可见
+                        .background(Capsule().fill(Theme.chipFill))
                     }
                     .buttonStyle(.plain)
                     .help(isExpanded ? "收起排查详情" : "展开警告产生的原因与排查建议")
+                    .accessibilityLabel(isExpanded ? "收起排查详情" : "展开排查详情")
                 }
 
                 Button {
@@ -786,10 +882,12 @@ struct EventBannerView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(Theme.onDarkFaint)
-                        .padding(3)
+                        .padding(6)   // 15×15 → 21×21 热区：贴边小图标此前很难点中
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("关闭提醒")
+                .accessibilityLabel("关闭提醒")
             }
 
             // 第二部分：展开态下的完整排查建议与触发原因（富文本自适应高度）
@@ -806,7 +904,8 @@ struct EventBannerView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.black.opacity(0.24))
+                        // 动态色：浅色主题下深色块过重且与白玻璃割裂
+                        .fill(Color(dynamicLight: 0x000000, dark: 0x000000).opacity(0.06))
                 )
             }
 
@@ -818,7 +917,12 @@ struct EventBannerView: View {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(event.copyableDiagnosticText, forType: .string)
                         copiedFeedback = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                        // 用 Task 而非 DispatchQueue：可随视图身份变化取消，
+                        // 避免新事件到来后仍显示上一条的「已复制」
+                        copyFeedbackTask?.cancel()
+                        copyFeedbackTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_800_000_000)
+                            guard !Task.isCancelled else { return }
                             copiedFeedback = false
                         }
                     } label: {
@@ -831,37 +935,49 @@ struct EventBannerView: View {
                         .foregroundColor(copiedFeedback ? Theme.statusWorking : Theme.onDarkMuted)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2.5)
-                        .background(Capsule().fill(Color.white.opacity(0.06)))
+                        // 用动态色而非硬编码白色：浅色主题下白玻璃 + 白色 6% 会让按钮完全不可见
+                        .background(Capsule().fill(Theme.chipFill))
                     }
                     .buttonStyle(.plain)
                     .help("一键复制告警信息、PID 及触发时间戳")
+                    .accessibilityLabel("复制诊断信息")
                 }
 
                 Spacer()
 
-                if event.eventType == .costSpike, let pid = event.pid {
-                    Button {
-                        engine.terminateAgent(pid: pid, agentId: event.agentId)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "xmark.octagon.fill")
-                                .font(.system(size: 9))
-                            Text("熔断")
-                                .font(Theme.bodyFont(10, weight: .bold))
+                // 熔断：costSpike 且能定位到进程时才提供；pid 缺失时给出去向指引而非直接消失
+                if event.eventType == .costSpike {
+                    if let pid = event.pid {
+                        Button {
+                            engine.terminateAgent(pid: pid, agentId: event.agentId)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "xmark.octagon.fill")
+                                    .font(.system(size: 9))
+                                Text("熔断")
+                                    .font(Theme.bodyFont(10, weight: .bold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.red.opacity(0.85)))
                         }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.red.opacity(0.85)))
+                        .buttonStyle(.plain)
+                        .help("立即终止该 Agent 进程树，阻止持续消耗")
+                        .accessibilityLabel("熔断 \(event.agentName)")
+                    } else {
+                        Text("未定位到进程，请在活动监视器处理")
+                            .font(Theme.bodyFont(9))
+                            .foregroundColor(Theme.onDarkMuted)
                     }
-                    .buttonStyle(.plain)
-                    .help("立即终止该 Agent 进程树，阻止持续消耗")
                 }
 
+                // 直达：仅在事件对应 Agent 仍在快照中时可点（工作台清理事件没有对应 Agent，
+                // 此前点击完全无反馈，用户以为按钮坏了）
+                let target = engine.snapshots.first { $0.id == event.agentId }
                 Button {
-                    if let snap = engine.snapshots.first(where: { $0.id == event.agentId }) {
-                        AppActivator.activate(pid: snap.pid, bundleIDs: snap.profile.bundleIDs)
-                    }
+                    guard let target else { return }
+                    AppActivator.activate(pid: target.pid, bundleIDs: target.profile.bundleIDs)
                 } label: {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.up.forward.app")
@@ -873,14 +989,20 @@ struct EventBannerView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Capsule().fill(Theme.chipFill))
+                    .opacity(target == nil ? 0.45 : 1)
                 }
                 .buttonStyle(.plain)
-                .help("拉至前台并激活窗口")
+                .disabled(target == nil)
+                .help(target == nil ? "该提醒没有对应的运行中 Agent" : "拉至前台并激活窗口")
+                .accessibilityLabel("直达 \(event.agentName) 窗口")
             }
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, 6)
-        .background(event.eventType == .costSpike ? Color.red.opacity(0.18) : Color.white.opacity(0.06))
+        // 动态色：硬编码白色在浅色主题下会让整条横幅失去视觉分组
+        .background(event.eventType == .costSpike
+                    ? Color.red.opacity(0.18)
+                    : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
     }
 
     private func eventIcon(for type: AgentTaskEvent.EventType) -> String {

@@ -97,7 +97,22 @@ struct AgentDetailView: View {
                             // 内容超过视口时 Spacer(minLength:0) 归零、贴顶正常滚动
                             Spacer(minLength: 0)
                             Group {
-                                if let usage, !usage.isEmpty {
+                                if snapshot == nil {
+                                    // agent 被禁用/移除后仍停留在详情页时，此前内容区一片空白
+                                    VStack(spacing: 6) {
+                                        Image(systemName: "questionmark.circle")
+                                            .font(.system(size: 20))
+                                            .foregroundColor(Theme.onDarkFaint)
+                                        Text("该智能体已不在监控列表")
+                                            .font(Theme.bodyFont(11))
+                                            .foregroundColor(Theme.onDarkFaint)
+                                        Button("返回列表") { controller.route = .list }
+                                            .buttonStyle(.plain)
+                                            .font(Theme.bodyFont(11, weight: .semibold))
+                                            .foregroundColor(Theme.actionBlue)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                } else if let usage, !usage.isEmpty {
                                     VStack(alignment: .leading, spacing: 10) {
                                         overviewCard(usage)
                                         if let s = snapshot, s.processRunning {
@@ -251,7 +266,7 @@ struct AgentDetailView: View {
 
             // 实时流水抽屉入口
             Button {
-                controller.route = .liveStream(agentId)
+                controller.openLiveStream(agentId: agentId)
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "terminal.fill")

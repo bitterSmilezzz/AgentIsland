@@ -11,6 +11,19 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     @Published var displayState: IslandDisplayState = .docked
     /// 卡内导航路由（仅 expanded 时有意义）
     @Published var route: CardRoute = .list
+    /// 进入实时流水页前的路由（用于返回时回到正确层级：主列表 or Agent 详情页）
+    private var liveStreamOrigin: CardRoute = .list
+
+    /// 打开实时流水页并记录来源（返回时据此还原）
+    func openLiveStream(agentId: String) {
+        if case .liveStream = route {} else { liveStreamOrigin = route }
+        route = .liveStream(agentId)
+    }
+
+    /// 从实时流水页返回：回到进入前的页面
+    func closeLiveStream() {
+        route = liveStreamOrigin
+    }
     /// 停靠贴边方位（顶部 / 右侧）
     @Published var dockEdge: DockEdge = .right
 
@@ -373,7 +386,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
         let visible = screen.visibleFrame
         let cardW = IslandMetrics.cardWidth
-        let cardH = expandedHeight()
+        // 与 placeWindow 同源：吸附同样以内容实际高度为准，否则拖动结束后
+        // 窗口会被缩回常量推导值，底部汇总栏再次被裁
+        let cardH = resolvedExpandedHeight(availableHeight: visible.height)
         let targetOrigin: NSPoint
 
         switch dockEdge {
@@ -562,10 +577,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             return
         }
 
-        // 若是熔断类严重告警，默认展开详情以提供排查指导
-        if event.eventType == .costSpike {
-            eventBannerExpanded = true
-        }
+        // 事件类型决定初始展开态：熔断类严重告警默认展开详情以提供排查指导，
+        // 其他事件收起。此前只在 costSpike 时置 true、从不复位，导致一次告警后
+        // 后续所有完成事件也保持 142pt 的展开高度。
+        eventBannerExpanded = (event.eventType == .costSpike)
 
         // 1. 播放系统提示音（受 notificationPolicy 与全局开关 playCompletionSound 共同裁决）
         let soundEnabled = UserDefaults.standard.object(forKey: SettingKey.playCompletionSound) as? Bool ?? true
@@ -592,56 +607,22 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private func peekForEvent(_ event: AgentTaskEvent) {
         guard displayState == .docked, peekTask == nil, !isDragging else { return }
+        // 普通事件 3.5 秒，成本/死循环熔断保持 6 秒供用户查看或操作
+        let peekDuration: TimeInterval = event.eventType == .costSpike ? 6.0 : 3.5
         peekTask = Task { [weak self] in
             defer { self?.peekTask = nil }
-            guard let self, let panel = self.panel else { return }
-            let initialRect = panel.frame
-            var shownRect = panel.frame
-            guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
-            let visible = screen.visibleFrame
-            let cardH = self.expandedHeight()
+            guard let self, self.displayState == .docked, !self.isDragging else { return }
 
-            switch self.dockEdge {
-            case .right:
-                var y = self.savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
-                y = min(max(y, visible.minY + self.screenVerticalMargin), visible.maxY - cardH - self.screenVerticalMargin)
-                shownRect = NSRect(x: visible.maxX - IslandMetrics.cardWidth, y: y,
-                                   width: IslandMetrics.cardWidth, height: cardH)
-            case .top:
-                var x = self.savedTopX.map { $0 - IslandMetrics.cardWidth / 2 } ?? (visible.midX - IslandMetrics.cardWidth / 2)
-                x = min(max(x, visible.minX + self.screenHorizontalMargin), visible.maxX - IslandMetrics.cardWidth - self.screenHorizontalMargin)
-                shownRect = NSRect(x: x, y: visible.maxY - cardH,
-                                   width: IslandMetrics.cardWidth, height: cardH)
-            }
+            // 走真实状态切换：窗口尺寸与 SwiftUI 内容同源（此前只动窗口 frame、displayState
+            // 仍为 docked，导致 6pt 细条被拉到展开位置且卡片内容缺失）
+            self.manualOpenGraceUntil = Date().addingTimeInterval(peekDuration)
+            self.displayState = .expanded
 
-            // 平滑滑出
-            await withCheckedContinuation { cont in
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = 0.32
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
-                    panel.animator().setFrame(shownRect, display: false)
-                }, completionHandler: { cont.resume() })
-            }
-
-            // 保持展示供用户查看（普通事件 3.5 秒，成本/死循环熔断保持 6 秒供用户查看或操作）
-            let peekDuration: UInt64 = event.eventType == .costSpike ? 6_000_000_000 : 3_500_000_000
-            try? await Task.sleep(nanoseconds: peekDuration)
-
-            // 若用户光标在展示期间已移入面板，转为常驻展开态，不自动收回！
-            guard !Task.isCancelled, self.displayState == .docked else { return }
-            if Self.isMouseInsidePanel(self.panel) {
-                self.displayState = .expanded
-                return
-            }
-
-            // 平滑收回
-            await withCheckedContinuation { cont in
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = 0.28
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 1.0, 0.35, 1.0)
-                    panel.animator().setFrame(initialRect, display: false)
-                }, completionHandler: { cont.resume() })
-            }
+            try? await Task.sleep(nanoseconds: UInt64(peekDuration * 1_000_000_000))
+            guard !Task.isCancelled, self.displayState == .expanded else { return }
+            // 用户光标已移入面板（或主动操作）→ 转为常驻展开，不自动收回
+            guard !Self.isMouseInsidePanel(self.panel) else { return }
+            self.collapse()
         }
     }
 
@@ -684,6 +665,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             route: route,
             visibleCount: visibleCount(),
             hasSummary: !engine.grandTotal.isEmpty,
+            hasRings: !engine.ringShelfSnapshots.isEmpty,
             hasEvent: engine.latestEvent != nil,
             eventExpanded: eventBannerExpanded
         )
@@ -693,11 +675,25 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         engine.visibleSnapshots.count
     }
 
+    /// 展开态窗口高度：常量推导值与 SwiftUI 内容实际理想高度取较大者。
+    /// 常量漏算（文本行高、分割线等）时窗口会偏矮，超出部分从底部裁掉——被裁的
+    /// 正是不可滚动的 Token 汇总栏。这里兜住这一类问题：内容多高，窗口至少多高。
+    /// 上限取屏幕可用高度，避免常量大幅低估时窗口溢出屏幕。
+    private func resolvedExpandedHeight(availableHeight: CGFloat) -> CGFloat {
+        let computed = expandedHeight()
+        guard let fitting = hostingView?.fittingSize.height, fitting.isFinite, fitting > 0 else {
+            return computed
+        }
+        return min(max(computed, fitting), availableHeight)
+    }
+
     private func placeWindow(animated: Bool) {
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
         let visible = screen.visibleFrame
         let cardW = IslandMetrics.cardWidth
-        let cardH = expandedHeight()
+        let cardH = displayState == .expanded
+            ? resolvedExpandedHeight(availableHeight: visible.height)
+            : expandedHeight()
         let targetSize = NSSize(width: cardW, height: cardH)
 
         let targetOrigin: NSPoint
@@ -750,7 +746,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     private func syncExpandedHeight() {
-        if displayState == .expanded, abs(panel.frame.height - expandedHeight()) > 1 {
+        guard displayState == .expanded else { return }
+        let available = (panel.screen ?? Self.screenContainingMouse())?.visibleFrame.height ?? .greatestFiniteMagnitude
+        if abs(panel.frame.height - resolvedExpandedHeight(availableHeight: available)) > 1 {
             placeWindow(animated: true)
         }
     }
@@ -764,44 +762,15 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
 // MARK: - 阴影宿主视图
 
+/// 面板阴影宿主。当前**不投射阴影**：
+/// 面板窗口与玻璃卡尺寸完全相同（cardWidth × expandedHeight），CALayer 阴影没有
+/// 卡片之外的落地空间，只会沿轮廓边缘向内渗入约一个模糊半径，在贴屏幕那一侧的
+/// 上下直角区域形成暗块（用户反馈的「两侧直角矩形的上下阴影」），并使卡片边缘发灰。
+/// 一体化贴边的观感依靠玻璃卡自身的 1px 高光边缘与反向倒角，无需阴影。
 final class ShadowHostView: NSView {
-    private var shadowEnabled = false
-    private var cornerRadius: CGFloat = Theme.radiusLg
-    private var dockEdge: DockEdge = .right
-
-    override var frame: NSRect {
-        didSet { updateShadowPath() }
-    }
-
-    override func layout() {
-        super.layout()
-        updateShadowPath()
-    }
-
     func setShadow(enabled: Bool, cornerRadius: CGFloat, dockEdge: DockEdge) {
-        self.cornerRadius = cornerRadius
-        self.dockEdge = dockEdge
-        guard let layer else { return }
-        layer.shadowColor = NSColor.black.cgColor
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(enabled ? 0.34 : 0.28)
-        CATransaction.setAnimationTimingFunction(
-            enabled ? CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-                    : CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
-        )
-        layer.shadowOpacity = enabled ? Theme.panelShadowOpacity : 0
-        layer.shadowRadius = enabled ? Theme.panelShadowRadius : 0
-        layer.shadowOffset = CGSize(width: 0, height: Theme.panelShadowOffsetY)
-        CATransaction.commit()
-        updateShadowPath()
-    }
-
-    private func updateShadowPath() {
-        guard let layer else { return }
-        if layer.shadowOpacity > 0 {
-            layer.shadowPath = SideNotchShape.cgPath(bounds: bounds, dockEdge: dockEdge, cornerRadius: cornerRadius, curlRadius: 10)
-        } else {
-            layer.shadowPath = nil
-        }
+        // 见类型注释：当前恒不投射阴影，保留签名以兼容调用点。
+        layer?.shadowOpacity = 0
+        layer?.shadowPath = nil
     }
 }
