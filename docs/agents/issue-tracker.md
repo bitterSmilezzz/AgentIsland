@@ -1,6 +1,6 @@
 # Issue tracker: Local Markdown
 
-Issues and specs for this repo live as markdown files in `.scratch/`.（单人开发，2026-09-06 由 GitHub Issues 切换而来；历史存档：spec C1 在 GitHub issue #1。）
+Issues and specs for this repo live as markdown files in `.scratch/`（单人开发；该目录为本地工作区，不入库）。
 
 ## Conventions
 

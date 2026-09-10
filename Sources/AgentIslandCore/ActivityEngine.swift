@@ -76,7 +76,7 @@ public final class ActivityEngine: ObservableObject {
         fileMonitor.setWorkingWindow(config.workingWindow)
     }
 
-    private var running = false   // stop() 后阻止在飞回调重建定时器（阿剩N1）
+    private var running = false   // stop() 后阻止在飞回调重建定时器
     // MARK: token 轮询生命周期（单一 owner：引擎）
     // 三状态合法组合（其余组合按不变量不可达）：
     //   running=false ∧ tokenPollingStarted=false   —— 初始 / 已停止（presentationActive 任意，
@@ -144,7 +144,7 @@ public final class ActivityEngine: ObservableObject {
         running = false
         timer?.invalidate()
         timer = nil
-        tokenMonitor.onRefresh = nil   // 停止后 in-flight token 刷新不再触发重采样（阿证低3）
+        tokenMonitor.onRefresh = nil   // 停止后 in-flight token 刷新不再触发重采样
         // 条件调用：轮询未启动时无需关闭连接（连接惰性打开，未启动即不存在）
         if tokenPollingStarted {
             tokenMonitor.stop()
@@ -156,7 +156,7 @@ public final class ActivityEngine: ObservableObject {
 
     /// 更新启停集合（enabledAgents）
     /// 从全量注册表（内置+自动发现+自定义）过滤：避免只从当前已缩水列表过滤，
-    /// 否则「关闭后再开启」的 agent 本会话内永久丢失监控（阿剩高优）。
+    /// 否则「关闭后再开启」的 agent 本会话内永久丢失监控。
     /// 记录启用集供安装缓存首刷完成后重放（见 init）
     public func setEnabled(_ enabledIDs: Set<String>) {
         lastEnabledIDs = enabledIDs
@@ -216,7 +216,7 @@ public final class ActivityEngine: ObservableObject {
     // MARK: - 采样
 
     /// 手动触发一次采样（也用于测试与 --probe）
-    /// 受 samplingInFlight 约束（阿证中1）：后台采样在飞时丢弃本次，
+    /// 受 samplingInFlight 约束：后台采样在飞时丢弃本次，
     /// 避免同步路径与后台采样并发导致 CPU 差分短暂失真 + 主线程瞬时开销；
     /// 配置变更/启动等低频场景下丢弃一次无影响（下个周期自动补采）。
     /// 不变量：samplingInFlight=true ⟺ 有在飞后台采样，且其必然走 sampleCore→
@@ -237,7 +237,7 @@ public final class ActivityEngine: ObservableObject {
     /// 定时采样入口：进程遍历（proc_listpids/proc_pidpath，开销毫秒级）在后台执行，
     /// 主线程只做装配与发布，避免与动画抢主线程。文件扫描/会话数/token 均为缓存读取。
     func sampleInBackground() {
-        guard running else { return }   // stop() 后在飞 token 刷新不再触发采样（阿剩低C）
+        guard running else { return }   // stop() 后在飞 token 刷新不再触发采样
         guard !samplingInFlight else { return }   // 丢弃重叠请求（onRefresh 与 Timer 可能相邻）
         samplingInFlight = true
         let provider = processMonitor
@@ -260,14 +260,14 @@ public final class ActivityEngine: ObservableObject {
         fileMonitor.scanAsync()
         // 低频重扫安装缓存（运行中装新 CLI/App 不必重启；调度即标记，后台执行）。
         // 时间戳阈值 300s：计数在工作态 2s/离线 60s 间隔下粒度漂移 30 倍
-        // （阿剩低：离线态最长拖 2 小时），时间戳保证两态刷新粒度一致
+        // （离线态最长拖 2 小时），时间戳保证两态刷新粒度一致
         installedApps.refreshIfNeeded(maxAge: 300)
 
         var results: [AgentSnapshot] = []
         var anyWork = false
 
         for profile in profiles {
-            // 每 profile 只调一次 matchingEntries（阿剩低1：isRunning+cpuPercent 各遍历一遍
+            // 每 profile 只调一次 matchingEntries（isRunning+cpuPercent 各遍历一遍
             // 全表，合并为单趟；running 由「有匹配条目」推导，与 isRunning 语义等价——
             // bundleHit 无名字匹配时返回 [pid:-1] 占位条目，CPU 合计为 0）
             let entries = matcher.matchingEntries(for: profile)
@@ -571,7 +571,7 @@ public final class ActivityEngine: ObservableObject {
 
     /// 节电调度：有 working 快采样，闲置降频，全离线进一步拉大间隔（无 UI 需求）
     private func scheduleNext() {
-        guard running else { return }   // stop() 后在飞回调不再重建定时器（阿剩N1）
+        guard running else { return }   // stop() 后在飞回调不再重建定时器
         timer?.invalidate()
         let interval: TimeInterval
         if anyWorking {

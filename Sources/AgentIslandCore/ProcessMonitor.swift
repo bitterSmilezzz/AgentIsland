@@ -113,7 +113,7 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         }
 
         /// 裁剪已退出进程：只保留本次采样仍存在的 pid，防止长期运行内存线性增长。
-        /// 无条件按 alivePids 过滤（阿证低：之前 2× 阈值在 pid 大量更替场景长期不触发）
+        /// 无条件按 alivePids 过滤（之前 2× 阈值在 pid 大量更替场景长期不触发）
         func prune(keeping alivePids: Set<Int32>) {
             lock.lock()
             defer { lock.unlock() }

@@ -120,7 +120,7 @@ enum Theme {
     static let radiusMd: CGFloat = 11
     static let radiusLg: CGFloat = 18
     static let radiusPill: CGFloat = 9999
-    /// 页面级水平边距：顶栏/主卡行/详情内容/会话内容/汇总栏统一（阿菜低3，防再漂移）
+    /// 页面级水平边距：顶栏/主卡行/详情内容/会话内容/汇总栏统一（防再漂移）
     static let pageMargin: CGFloat = 14
     static let spaceXs: CGFloat = 8
     static let spaceSm: CGFloat = 12

@@ -552,7 +552,7 @@ enum EngineTests {
         }
 
         TestKit.test("引擎: stop 后 scheduleNext 不再重建定时器，start 可恢复采样") {
-            // 回归（阿剩低3）：stop() 置 running=false 后在飞回调不重建定时器；
+            // 回归：stop() 置 running=false 后在飞回调不重建定时器；
             // stop→start 重启后采样恢复工作
             let now = Date()
             let engine = makeEngine(

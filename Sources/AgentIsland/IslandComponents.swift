@@ -30,7 +30,7 @@ extension View {
 
 // MARK: 可 hover 圆角行
 
-/// hover 态自持在行内，避免整列表重绘（阿证低优）
+/// hover 态自持在行内，避免整列表重绘
 private struct HoverRowBackground: ViewModifier {
     let cornerRadius: CGFloat
     let idleFill: Color

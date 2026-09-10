@@ -64,7 +64,7 @@ public final class FileActivityMonitor: FileActivityProviding {
     /// 超过 forceRescanInterval 未全量扫 → 强制重扫，保证文件信号时效性）
     private var lastFullScans: [String: Date] = [:]
     /// 快跳过兜底周期：与引擎 workingWindow 同量级，
-    /// 深层持续写入的文件信号最长延迟该周期即被发现（阿证实测原 600s 过长）。
+    /// 深层持续写入的文件信号最长延迟该周期即被发现（原 600s 过长）。
     /// 由引擎按 config.workingWindow 注入（见 setWorkingWindow）：写死 60s 会与
     /// 用户可调窗口脱钩——窗口调小则漏判 working，调大则把旧时间戳当新写入。
     private var forceRescanInterval: TimeInterval = 60
@@ -147,7 +147,7 @@ public final class FileActivityMonitor: FileActivityProviding {
             return
         }
         // 节流：距上次扫描完成不足最小间隔则跳过。
-        // 用「完成时间」而非开始时间（阿剩低3：若单趟耗时 ≥ 间隔，按开始计时会连续重扫）
+        // 用「完成时间」而非开始时间（若单趟耗时 ≥ 间隔，按开始计时会连续重扫）
         guard Date().timeIntervalSince(lastScanAt) >= scanMinInterval else {
             lock.unlock()
             return
@@ -162,7 +162,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         // → 复用缓存，零枚举。深层写入不改变根 mtime，故 60s 兜底强制重扫保证信号时效
         //   （工作态信号最长延迟 60s 被发现）；空闲超 60s 后同样强制重扫，确认 idle 期间
         //   无新会话/写入（不再要求 newest 活跃——否则长空闲时「newest 活跃」恒不满足，
-        //   每次扫描都全量枚举，阿证中1）。
+        //   每次扫描都全量枚举）。
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
         let now = Date()
@@ -196,7 +196,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         }
 
         lock.lock()
-        // 竞态防护（阿证低3）：扫描期间 watchedDirs 可能被 replaceWatchedDirs 替换，
+        // 竞态防护：扫描期间 watchedDirs 可能被 replaceWatchedDirs 替换，
         // 迟到的扫描结果只写回仍在监控的目录，已停用目录的脏数据丢弃
         let current = watchedDirs
         // 单调 merge（逐目录 max）：扫描失败/目录暂缺时保留旧值，写入时间只进不退——

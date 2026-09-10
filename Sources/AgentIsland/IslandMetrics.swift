@@ -43,7 +43,7 @@ enum IslandMetrics {
     /// 与 ScrollView .frame(maxHeight:) 同源
     static let listMaxHeight: CGFloat = 340
 
-    /// 空态：zzz 图标 22 + spacing 6 + 文案 + padding(.vertical)×2 ≈ 87（阿菜实测）
+    /// 空态：zzz 图标 22 + spacing 6 + 文案 + padding(.vertical)×2 ≈ 87
     static let emptyStatePaddingVertical: CGFloat = 22
     static let emptyStateHeight: CGFloat = 87
 

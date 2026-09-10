@@ -397,7 +397,7 @@ struct IslandView: View {
                     .fill(statusColor)
                     .scaleEffect(1.6)
                     .opacity(0.35)
-                    // 仅展开态运行动画（阿证中2：docked 态 repeatForever 60fps 布局风暴，
+                    // 仅展开态运行动画（docked 态 repeatForever 60fps 布局风暴，
                     // 是工作态 CPU 峰值主因；收起即停止）
                     .modifier(PulseAnimation(isActive: controller.displayState == .expanded))
             }

@@ -89,11 +89,11 @@ struct AgentDetailView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 10) {
                         if loading {
-                            // 与 SessionListView 一致的居中 loading（阿菜低3）
+                            // 与 SessionListView 一致的居中 loading
                             CenteredSpinner()
                                 .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 20, 0))
                         } else {
-                            // 统一垂直居中：内容短时居中消除贴顶留白（阿菜中1/2），
+                            // 统一垂直居中：内容短时居中消除贴顶留白，
                             // 内容超过视口时 Spacer(minLength:0) 归零、贴顶正常滚动
                             Spacer(minLength: 0)
                             Group {
@@ -202,7 +202,7 @@ struct AgentDetailView: View {
                             .font(Theme.monoFont(10, weight: .semibold))
                             .foregroundColor(Theme.onDark)
                             .lineLimit(1)
-                            .help(m.modelId)   // 长模型名截断时可看全名（阿菜低3）
+                            .help(m.modelId)   // 长模型名截断时可看全名
                         HStack(spacing: 5) {
                             Text("\(TokenUsage.compact(m.tokens)) tok")
                                 .font(Theme.monoFont(9))
@@ -302,7 +302,7 @@ struct AgentDetailView: View {
                 infoRow("Token", "暂无本地 token 数据")
             }
         }
-        .padding(.horizontal, 10)   // 与模型行内边距对齐（阿菜低2：之前 12 造成文字基线差 2pt）
+        .padding(.horizontal, 10)   // 与模型行内边距对齐（之前 12 造成文字基线差 2pt）
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.cardFill))
@@ -352,7 +352,7 @@ struct SessionListView: View {
             DarkDivider()
 
             // 列表态用 ScrollView+LazyVStack（懒加载）；loading/空态直接铺满剩余空间并居中，
-            // 避免窗口固定高度下大片空白玻璃（阿菜低3）
+            // 避免窗口固定高度下大片空白玻璃
             if loading {
                 CenteredSpinner()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -363,11 +363,11 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // 注意：GeometryReader 必须在 ScrollView 外层——放内层会令 ScrollView
-                // 内容尺寸 = 视口，长内容不可滚动（阿菜高优回归实测 documentH=视口）
+                // 内容尺寸 = 视口，长内容不可滚动（documentH=视口）
                 GeometryReader { geo in
                     ScrollView(.vertical, showsIndicators: true) {
                         // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行。
-                        // minHeight = 视口 - padding(10×2)：短内容不产生多余滚动（阿菜低1），
+                        // minHeight = 视口 - padding(10×2)：短内容不产生多余滚动，
                         // 行间留白而不是整片底部玻璃；会话多时内容超过视口，正常滚动
                         LazyVStack(spacing: 4) {
                             ForEach(sessions) { s in
@@ -400,7 +400,7 @@ struct SessionListView: View {
     }
 }
 
-// MARK: - 会话行（hover 态在行内自持，避免整列表重绘：阿证低优）
+// MARK: - 会话行（hover 态在行内自持，避免整列表重绘）
 private struct SessionRowView: View {
     let session: SessionUsage
 
@@ -444,7 +444,7 @@ private struct SessionRowView: View {
                 NSWorkspace.shared.open(URL(fileURLWithPath: dir))
             }
         }
-        // a11y：有目录的行是按钮（打开目录）；无目录行隐藏交互语义（阿菜中2）
+        // a11y：有目录的行是按钮（打开目录）；无目录行隐藏交互语义
         .accessibilityAddTraits(hasDir ? .isButton : [])
         .accessibilityLabel(hasDir ? "打开 \(session.directory ?? "")" : "会话，无目录")
         .opacity(hasDir ? 1.0 : 0.75)

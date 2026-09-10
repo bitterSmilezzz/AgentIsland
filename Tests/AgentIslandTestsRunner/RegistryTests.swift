@@ -99,7 +99,7 @@ enum RegistryTests {
         }
 
         TestKit.test("引擎: setEnabled 从全量注册表过滤（关→再开不丢失监控）") {
-            // 回归：阿剩第六轮高优——之前 setEnabled 只从当前已缩水列表过滤，
+            // 回归：之前 setEnabled 只从当前已缩水列表过滤，
             // 「关闭后再开启」的 agent 本会话内永久丢失监控
             let engine = ActivityEngine(profiles: AgentRegistry.builtin, config: EngineConfig(),
                                         processMonitor: FakeProcessProvider(processNames: ["DimAgent", "Codex"], bundleIDs: []),
@@ -128,7 +128,7 @@ enum RegistryTests {
 
         TestKit.test("引擎: bundle 命中但进程名未匹配 → 标记运行且 CPU=0（[pid:-1] 占位）") {
             // 回归：sampleCore 单趟 matchingEntries 后 running/cpu 语义等价性
-            //（阿剩测试缺口）——bundleHit 无名字匹配应返回占位条目
+            //（测试缺口）——bundleHit 无名字匹配应返回占位条目
             let provider = FakeProcessProvider(processNames: ["some-other-app"],
                                                bundleIDs: ["com.dimcode.app"])
             let engine = ActivityEngine(profiles: AgentRegistry.builtin.filter { $0.id == "dim" },

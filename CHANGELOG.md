@@ -12,10 +12,10 @@
   - 此前 `offline` 分支复用完成事件路径，把「进程被用户关闭」等同于「任务执行完毕」，手动退出 ChatGPT 也会弹出完成横幅
   - 现在进程消失只静默转 `offline`；完成事件仅由「进程仍在但工作信号消失」产生
 - **Token 净消耗口径统一（dim 源）**：
-  - `usage_ledger.usage.promptTokens` 含缓存命中部分，此前直接与 completion 相加导致缓存重复计入，本机实测累计虚高 32 倍（39.6 亿 vs 净 1.22 亿）
+  - `usage_ledger.usage.promptTokens` 含缓存命中部分，此前直接与 completion 相加导致缓存重复计入，累计用量被大幅虚高（数十倍量级）
   - 汇总、模型拆分、会话列表三处统一改为 `(prompt − cacheRead) + completion` 并逐行钳制非负，与 opencode 侧口径对齐
 - **激增告警改为速率制 + 连续确认**：
-  - 此前「300 秒内增量 ≥ 阈值」把长任务结束时的一次性账本落盘（单条 1700 万 token）当成瞬时激增
+  - 此前「300 秒内增量 ≥ 阈值」把长任务结束时一次性落盘的巨额 ledger 记录当成瞬时激增
   - 现在按每分钟净消耗速率判定，且需连续 3 个周期超阈值才告警；正常绘画/长任务不再误报
 - **修复 peek 微弹窗导致侧边条错位**：
   - 此前 peek 只拉伸窗口 frame、`displayState` 仍为 `docked`，SwiftUI 只渲染 6pt 细条，于是细条被拉到展开位置且卡片内容缺失
@@ -34,7 +34,7 @@
 - **修复展开卡内容超高时底部汇总栏被压掉**：
   - 事件提醒栏出现后内容超过 460pt 上限，此前由 `VStack` 自行分配压缩，末尾的 Token 汇总栏成了牺牲品
   - 现给列表 `layoutPriority(-1)`、汇总栏 `layoutPriority(1)`：空间不足时只压可滚动的列表，汇总栏保持完整
-- **性能：消除每 2 秒的主线程阻塞与 CPU 尖峰**（多 Agent 审查实测发现）：
+- **性能：消除每 2 秒的主线程阻塞与 CPU 尖峰**（实测发现）：
   - `AgentActionInspector.activeChildCommand` 原先 fork `/usr/bin/pgrep` + `/bin/ps` 并 `waitUntilExit()`，单次 67ms，17 个 Agent 一轮 762ms 全部落在主线程；改为 sysctl `KERN_PROCARGS2` 直读命令行 + 复用采样快照做内存 BFS，`inspectDimAction` 单次由 170–220ms 降至 **0.9ms**
   - `inspectDimAction` 的 `ORDER BY createdAt DESC LIMIT 1` 在 5.4 万行 / 254MB 的 `messages` 表上退化为全表扫描 + 临时 B 树排序（220ms/次）；改用 `rowid = (SELECT max(rowid) …)` 走主键查找
   - `inspectOpenCodeAction` 的 `session LEFT JOIN part` 全表排序实测 330–964ms；改为「先取最新会话，再取该会话最新 part」，降至 8ms

@@ -157,7 +157,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     /// SQLite 只读连接缓存（复用避免每查询 open/close）；查询统一走串行队列保证连接线程安全
     private var dbConnections: [String: OpaquePointer] = [:]
-    /// 连接打开时的文件 inode（外部替换主文件后据此失效缓存连接，阿证中）
+    /// 连接打开时的文件 inode（外部替换主文件后据此失效缓存连接）
     private var dbInodes: [String: UInt64] = [:]
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
@@ -185,7 +185,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     }
 
     /// 暂停后台轮询（「呈现活跃」失活时由引擎调用，省掉整条查询链路与 onRefresh 重采样）
-    /// 注意：不关闭连接（阿证中1：每次 expanded 重开 + 全表重扫产生 41.6% 尖峰；
+    /// 注意：不关闭连接（每次 expanded 重开 + 全表重扫产生 41.6% 尖峰；
     /// 只读连接可长驻复用，SQLite 对同库持续写入安全）；stop() 才彻底清理。
     /// 暂停后重启走 start()：timer 已空则立即首刷并重建定时器，连接不受影响
     public func pause() {
@@ -258,7 +258,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     }
 
     /// 文件变更戳（inode+mtime+size 组合；任一变化即视为被替换/写入）。
-    /// 必须纳入 `-wal` 文件（阿剩中：WAL 模式连接持有中 commit 只写 wal，
+    /// 必须纳入 `-wal` 文件（WAL 模式连接持有中 commit 只写 wal，
     /// 主文件戳在 checkpoint 前不变——本机 dim WAL 已 13MB 未 checkpoint，
     /// 只查主文件会导致活跃写入期间统计静默冻结）；mtime 用 Double 避免整秒截断漏检
     private func fileStamp(_ path: String) -> String {
@@ -416,7 +416,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             guard fm.fileExists(atPath: dbPath) else {
                 return []
             }
-            // inode 失效检测（阿证中）：外部工具原子替换/重建主文件（VACUUM 后 rename、
+            // inode 失效检测：外部工具原子替换/重建主文件（VACUUM 后 rename、
             // 备份恢复、删后重建）后，缓存只读句柄永久指向旧 inode，统计静默陈旧。
             // 命中缓存时对比 systemFileNumber，不一致则关闭重开
             let db: OpaquePointer
@@ -455,7 +455,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 }
                 rows.append(row)
             }
-            // 中途出错（SQLITE_ERROR/BUSY）不应把部分行当完整结果（阿证低）
+            // 中途出错（SQLITE_ERROR/BUSY）不应把部分行当完整结果
             if sqlite3_errcode(db) != SQLITE_OK && sqlite3_errcode(db) != SQLITE_DONE && sqlite3_errcode(db) != SQLITE_ROW {
                 debugPrint("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
                 return []
@@ -472,7 +472,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             debugPrint("TokenUsage: open failed \(dbPath)")
             return nil
         }
-        // 降低瞬态 BUSY（阿剩中2）：只读连接遇到写锁立即返回 BUSY，
+        // 降低瞬态 BUSY：只读连接遇到写锁立即返回 BUSY，
         // 等待最多 1s 再失败，避免偶发把整次查询打成失败
         sqlite3_busy_timeout(handle, 1000)
         dbConnections[dbPath] = handle
