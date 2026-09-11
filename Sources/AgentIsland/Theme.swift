@@ -93,7 +93,7 @@ enum Theme {
     static let glassOverlayOpacity: Double = 0.38
     /// 玻璃卡 1px 晶莹微反光边缘（深色微白高光，浅色微暗勾边）
     static let glassSpecularBorder = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.12)
-    // 面板 AppKit 阴影已停用（见 ShadowHostView）：窗口与玻璃卡同尺寸，阴影无处落地，
+    // 面板 AppKit 阴影已停用（见 IslandPanelController.updateChrome）：窗口与玻璃卡同尺寸，阴影无处落地，
     // 只会向卡内渗入形成暗带。贴边观感由玻璃卡高光边缘与反向倒角承担。
 
     // Typography

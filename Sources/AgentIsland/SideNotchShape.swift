@@ -21,7 +21,7 @@ struct SideNotchShape: Shape {
         Path(Self.cgPath(bounds: rect, dockEdge: dockEdge, cornerRadius: cornerRadius, curlRadius: curlRadius))
     }
 
-    /// 跨 SwiftUI 与 AppKit（ShadowHostView）共用的 CGPath 核心生成函数
+    /// 跨 SwiftUI 形状与面板容器共用的 CGPath 核心生成函数
     static func cgPath(bounds rect: CGRect,
                        dockEdge: DockEdge,
                        cornerRadius: CGFloat = Theme.radiusLg,

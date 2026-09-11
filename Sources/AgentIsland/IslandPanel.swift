@@ -29,7 +29,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private var panel: NSPanel!
     private var hostingView: NSHostingView<IslandView>!
-    private var shadowHost: ShadowHostView?
+    private var shadowHost: NSView?
     private var clipContainer: NSView?
     private var engine: ActivityEngine
     private var cancellables = Set<AnyCancellable>()
@@ -164,7 +164,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         container.layer?.masksToBounds = true
         container.layer?.cornerCurve = .continuous
 
-        let shadowHost = ShadowHostView(frame: NSRect(origin: .zero, size: initialSize))
+        let shadowHost = NSView(frame: NSRect(origin: .zero, size: initialSize))
         shadowHost.wantsLayer = true
         container.autoresizingMask = [.width, .height]
         shadowHost.addSubview(container)
@@ -210,12 +210,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             clip.masksToBounds = true
             clip.cornerRadius = radius
             clip.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
-            shadowHost?.setShadow(enabled: false, cornerRadius: 0, dockEdge: dockEdge)
         } else {
             // 展开态下由 SwiftUI 的 SideNotchShape 精准裁切反向倒角，避免 AppKit 简单矩形圆角切除倒角
             clip.masksToBounds = false
             clip.cornerRadius = 0
-            shadowHost?.setShadow(enabled: true, cornerRadius: Theme.radiusLg, dockEdge: dockEdge)
         }
     }
 
@@ -414,25 +412,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     func snapToDockEdge(animated: Bool) {
         guard displayState == .expanded else { return }
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
-        let visible = screen.visibleFrame
-        let cardW = IslandMetrics.cardWidth
-        // 与 placeWindow 同源：吸附同样以内容实际高度为准，否则拖动结束后
-        // 窗口会被缩回常量推导值，底部汇总栏再次被裁
-        let cardH = resolvedExpandedHeight(availableHeight: visible.height)
-        let targetOrigin: NSPoint
-
-        switch dockEdge {
-        case .right:
-            var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
-            y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
-            targetOrigin = NSPoint(x: visible.maxX - cardW, y: y)
-        case .top:
-            var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
-            x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
-            targetOrigin = NSPoint(x: x, y: visible.maxY - cardH)
-        }
-
-        let targetRect = NSRect(origin: targetOrigin, size: NSSize(width: cardW, height: cardH))
+        let targetRect = dockTargetFrame(for: screen)
+        let targetOrigin = targetRect.origin
         let dx = targetOrigin.x - panel.frame.origin.x
         let dy = targetOrigin.y - panel.frame.origin.y
         let dist = hypot(dx, dy)
@@ -637,7 +618,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
     }
 
-    /// 收起态细条的可视矩形（与 placeWindow docked 分支的锚点/钳制逻辑同源；
+    /// 收起态细条的可视矩形（与 dockTargetFrame docked 分支的锚点/钳制逻辑同源；
     /// 两处必须同步修改）
     private func sliverRect(for screen: NSScreen) -> NSRect {
         let visible = screen.visibleFrame
@@ -865,8 +846,14 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         return min(max(computed, fitting), availableHeight)
     }
 
-    private func placeWindow(animated: Bool) {
-        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+    /// 贴边目标帧（placeWindow 与 snapToDockEdge 的唯一口径）：
+    /// 按 displayState/dockEdge 决定尺寸，clamp 锚点后给出目标 origin。
+    /// expanded 态高度用 resolvedExpandedHeight(availableHeight:)，与 SwiftUI 内容
+    /// 实际理想高度对齐——吸附同样以内容实际高度为准，否则拖动结束后窗口会被
+    /// 缩回常量推导值，底部汇总栏再次被裁。
+    /// docked 态保持历史几何：整卡 expandedHeight() 尺寸 + sliver 原点（窗口大部分
+    /// 透明/出屏，仅细条可见），锚点钳制口径与 expanded 完全一致。
+    private func dockTargetFrame(for screen: NSScreen) -> NSRect {
         let visible = screen.visibleFrame
         let cardW = IslandMetrics.cardWidth
         let cardH = displayState == .expanded
@@ -899,8 +886,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 targetOrigin = NSPoint(x: x, y: visible.maxY - IslandMetrics.topSliverHeight)
             }
         }
+        return NSRect(origin: targetOrigin, size: targetSize)
+    }
 
-        let targetRect = NSRect(origin: targetOrigin, size: targetSize)
+    private func placeWindow(animated: Bool) {
+        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+        let targetRect = dockTargetFrame(for: screen)
+        let targetOrigin = targetRect.origin
         let dx = targetOrigin.x - panel.frame.origin.x
         let dy = targetOrigin.y - panel.frame.origin.y
         let dist = hypot(dx, dy)
@@ -911,7 +903,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         if animated, dist > 1.0, !displayAsleep {
             let isExpanding = (displayState == .expanded)
             let baseDuration: TimeInterval = isExpanding ? 0.32 : 0.26
-            let duration: TimeInterval = min(0.36, max(0.18, Double(sqrt(dist / (isExpanding ? cardW : 300.0))) * baseDuration))
+            let duration: TimeInterval = min(0.36, max(0.18, Double(sqrt(dist / (isExpanding ? targetRect.width : 300.0))) * baseDuration))
             let timing = isExpanding
                 ? CAMediaTimingFunction(controlPoints: 0.22, 1.0, 0.36, 1.0)
                 : CAMediaTimingFunction(controlPoints: 0.25, 1.0, 0.35, 1.0)
@@ -941,20 +933,5 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     func windowDidResize(_ notification: Notification) {
         hostingView?.frame = panel.contentView?.bounds ?? hostingView.frame
-    }
-}
-
-// MARK: - 阴影宿主视图
-
-/// 面板阴影宿主。当前**不投射阴影**：
-/// 面板窗口与玻璃卡尺寸完全相同（cardWidth × expandedHeight），CALayer 阴影没有
-/// 卡片之外的落地空间，只会沿轮廓边缘向内渗入约一个模糊半径，在贴屏幕那一侧的
-/// 上下直角区域形成暗块（用户反馈的「两侧直角矩形的上下阴影」），并使卡片边缘发灰。
-/// 一体化贴边的观感依靠玻璃卡自身的 1px 高光边缘与反向倒角，无需阴影。
-final class ShadowHostView: NSView {
-    func setShadow(enabled: Bool, cornerRadius: CGFloat, dockEdge: DockEdge) {
-        // 见类型注释：当前恒不投射阴影，保留签名以兼容调用点。
-        layer?.shadowOpacity = 0
-        layer?.shadowPath = nil
     }
 }
