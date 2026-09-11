@@ -2,9 +2,17 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.34；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.35；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.35] - 2026-09-12
+
+### 📡 统一日志通道与调试指南落地（20 轮优化 · R18）
+
+- **新增统一日志出口 `AppLog`**：发布构建里数据源异常此前散落在 print/debugPrint（全部不可见）——SafeNumber 钳制告警、SQLite prepare/step/open 失败、自启动注册失败现在统一走 os.Logger（`log show --predicate 'subsystem == "com.agentisland.app"'` 可查）；Probe/Selftest 的表格输出是 CLI 交互目的本身，不经过此通道
+- **调试指南真实可用**：README 承诺的 `AGENTISLAND_DEBUG=1` + `/tmp/agentisland.log` 此前指向不存在的功能（代码无任何读取/写入）——现在开启开关即镜像全部诊断日志到该文件，并补充系统日志替代命令
+- 镜像落盘有守护测试（环境开关 + 文件内容断言）；测试 179 → **180**
 
 ## [0.0.34] - 2026-09-12
 
