@@ -2,9 +2,19 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.22；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.23；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.23] - 2026-09-12
+
+### 🗄️ SQLite 只读访问层统一：连接缓存与样板收敛（20 轮优化 · R06）
+
+- **新增 `ReadonlyDB` 共享层**：此前 5 个探测器 + 5 个 DB 流水源各自手写 open/prepare/finalize/close 样板，且每拍对大库（数百 MB）现开现关——重复支付 open 成本（~50–150µs/次）并抖动文件缓存。现在统一收口：连接按路径缓存长驻复用（页缓存温热），(设备号, inode) 校验外部替换，open 失败关句柄（0.0.17 泄漏契约延续），缺失文件走 stat 快路径
+- **样板收敛**：10 处 open/defer-close 收口后全仓净减 ~400 行重复；标题截断 4 连抄收敛 `clipTitle`；`inspectAction` 的 9 分支 if-else 链改 switch 分发；`AgentLogStreamer.openReadonly` 删除
+- **并行执行**：本轮由两个独立执行者分别完成 Inspector 与 Streamer 文件（文件独占无写冲突），主会话建共享层并统一构建；独立验收做了 dim SQL 字面量逐字节核对、真实库行为对照（探测器结果与 sqlite3 CLI 直查一致）
+- 泄漏回归测试改测 ReadonlyDB：chmod 000 文件命中 open 失败分支（实测 rc=14、handle 非 NULL），2 万次失败开库内存零增长
+- 测试 174/0 连跑 3 次；`--selftest`、`--probe` 全过
 
 ## [0.0.22] - 2026-09-12
 
