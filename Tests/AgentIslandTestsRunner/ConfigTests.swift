@@ -222,5 +222,38 @@ enum ConfigTests {
             try expectEqual(sorted, [.offline, .idle, .working], "排序结果")
             try expectEqual([ActivityLevel.working, .idle, .offline].max(), ActivityLevel.working, "max")
         }
+
+        TestKit.test("哨兵: CHANGELOG/build-app.sh/README 三处版本一致") {
+            // 文档数字哨兵：三处版本漂移曾导致关于页/Info.plist/README 各说各话。
+            // 文件缺失（非常规 cwd 运行）时显式跳过，不作断言
+            guard FileManager.default.fileExists(atPath: "CHANGELOG.md"),
+                  FileManager.default.fileExists(atPath: "scripts/build-app.sh"),
+                  FileManager.default.fileExists(atPath: "README.md") else {
+                print("   [skip] 非仓库根目录，跳过版本哨兵")
+                return
+            }
+            let changelog = try String(contentsOfFile: "CHANGELOG.md", encoding: .utf8)
+            let script = try String(contentsOfFile: "scripts/build-app.sh", encoding: .utf8)
+            let readme = try String(contentsOfFile: "README.md", encoding: .utf8)
+            let semver = "[0-9]+\\.[0-9]+\\.[0-9]+"
+            guard let m1 = changelog.range(of: "## \\[" + semver + "]", options: .regularExpression),
+                  let m2 = readme.range(of: "## 功能（v" + semver + "）", options: .regularExpression),
+                  let m3 = script.range(of: "<string>" + semver + "</string>", options: .regularExpression) else {
+                throw TestError(message: "版本标题格式异常，哨兵无法解析")
+            }
+            func extractVersion(_ text: String, _ range: Range<String.Index>) -> String {
+                let seg = String(text[range])
+                guard let r = seg.range(of: semver, options: .regularExpression) else { return "" }
+                return String(seg[r])
+            }
+            let changelogVersion = extractVersion(changelog, m1)
+            let readmeVersion = extractVersion(readme, m2)
+            let scriptVersion = extractVersion(script, m3)
+                .replacingOccurrences(of: "<string>", with: "")
+                .replacingOccurrences(of: "</string>", with: "")
+            try expectFalse(changelogVersion.isEmpty, "CHANGELOG 首条版本可解析")
+            try expectEqual(readmeVersion, changelogVersion, "README 功能版本 = CHANGELOG 最新条目")
+            try expectEqual(scriptVersion, changelogVersion, "build-app.sh Info.plist 版本 = CHANGELOG 最新条目")
+        }
     }
 }

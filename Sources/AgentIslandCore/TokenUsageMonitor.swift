@@ -259,6 +259,11 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     private let dimAgentDB: String
     private let openCodeDB: String
+    /// 数据源主库连续缺失计数（R9：达到阈值视为「源已消失」并置空该源）
+    private var dimMissingStreak = 0
+    private var openCodeMissingStreak = 0
+    /// 连续缺失阈值：60s 轮询下约 3 分钟——瞬时空窗（原子替换/迁移）不触发
+    static let sourceMissingLimit = 3
 
     /// SQLite 只读连接缓存（复用避免每查询 open/close）；查询统一走串行队列保证连接线程安全
     private var dbConnections: [String: OpaquePointer] = [:]
@@ -338,6 +343,31 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
         var updated = usage
         var succeeded = false
+        // 数据源活性终态（R9）：主库文件连续多次缺失时该源置空。「查询失败保留上次
+        // 成功值」契约只覆盖瞬时失败；「源已消失」若不清空，面板会永久显示陈旧数字。
+        // 连续计数区分瞬时缺失（原子替换的短暂空窗 / 迁移中）与永久删除——单拍缺失
+        // 只累积不清空（数据库暂时缺失保留旧统计的契约不变）。注意判定必须用主库
+        // 文件存在性而非 fileStamp 字符串——组合戳里的 "-wal:missing" 子串是合法形态
+        func noteMissing(_ exists: Bool, counter: inout Int) -> Bool {
+            if exists {
+                counter = 0
+                return false
+            }
+            counter += 1
+            return counter >= Self.sourceMissingLimit
+        }
+        let dimGone = noteMissing(FileManager.default.fileExists(atPath: dimAgentDB),
+                                  counter: &dimMissingStreak)
+        let openCodeGone = noteMissing(FileManager.default.fileExists(atPath: openCodeDB),
+                                       counter: &openCodeMissingStreak)
+        if dimGone {
+            updated["dim"] = nil
+            succeeded = true
+        }
+        if openCodeGone {
+            updated["opencode"] = nil
+            succeeded = true
+        }
         if refreshDim, let value = queryDimAgent(cutoffISO: Self.iso24hAgo(now: now)) {
             updated["dim"] = value
             lastDimStamp = dimStamp

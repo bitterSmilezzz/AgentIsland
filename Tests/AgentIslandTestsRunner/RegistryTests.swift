@@ -140,5 +140,13 @@ enum RegistryTests {
             try expectTrue(dim?.processRunning == true, "bundle 运行即 processRunning=true")
             try expectEqual(dim?.cpuPercent ?? -1, 0, "无进程名匹配时 CPU 合计为 0")
         }
+
+        TestKit.test("注册表: 自定义档案解码容错（坏 JSON/空数据回落空集）") {
+            let suite = TestDefaults.suite("registry-decode")
+            suite.set(Data("not json".utf8), forKey: SettingKey.customAgents)
+            try expectEqual(AgentRegistry.loadCustomProfiles(defaults: suite).count, 0, "坏 JSON 回落空集")
+            suite.set(Data(), forKey: SettingKey.customAgents)
+            try expectEqual(AgentRegistry.loadCustomProfiles(defaults: suite).count, 0, "空数据回落空集")
+        }
     }
 }

@@ -223,6 +223,24 @@ enum TokenUsageTests {
             try expectEqual(m.grandTotal, before, "缺失不能表现为消耗下降")
         }
 
+        TestKit.test("数据源永久删除后连续缺失置空（源已消失终态）") {
+            // R9：「查询失败保留旧值」不覆盖「源已消失」——永久删除后面板不应
+            // 永久显示陈旧数字。连续 3 拍缺失（sourceMissingLimit）才置空，
+            // 瞬时缺失（原子替换空窗）仍保留
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            m.refresh()
+            try expectTrue(m.usage["dim"] != nil, "前置：dim 源有数据")
+            try FileManager.default.removeItem(atPath: dbs.dimDB)
+            m.refresh()
+            try expectTrue(m.usage["dim"] != nil, "第 1 拍缺失保留旧值")
+            m.refresh()
+            try expectTrue(m.usage["dim"] != nil, "第 2 拍缺失保留旧值")
+            m.refresh()
+            try expectNil(m.usage["dim"], "第 3 拍缺失（达阈值）置空该源")
+        }
+
         TestKit.test("成功查询空库会清除旧统计") {
             let dbs = try TokenFixture.make()
             defer { TokenFixture.cleanup(dbs) }
