@@ -524,7 +524,8 @@ public final class ActivityEngine: ObservableObject {
     ///   实际进程仍在烧 token（GUI bundle 命中但进程名未匹配时 pid 为 nil）。
     @discardableResult
     public func terminateAgent(pid: Int32?, agentId: String) -> Bool {
-        let name = profiles.first(where: { $0.id == agentId })?.name ?? agentId
+        let profile = profiles.first { $0.id == agentId }
+        let name = profile?.name ?? agentId
         guard let pid, pid > 1 else {
             publish(AgentTaskEvent(
                 agentId: agentId,
@@ -540,7 +541,49 @@ public final class ActivityEngine: ObservableObject {
         }
         // 消费 terminate 的真实结果：无权限 / 进程已消失时 kill 返回非 0，
         // 不能一律宣告成功（否则「假成功」只修了 pid 缺失那一半）
-        guard ProcessTerminator.terminate(pid: pid) else {
+        // 身份复核：pid 必须仍属于该 Agent 的当前进程。熔断横幅携带的 pid 来自事件产生
+        // 时刻，用户可能数分钟后才点击；期间进程退出后 PID 被系统回收复用给无关程序时，
+        // 直接 kill 会把别人的进程连同其子进程树整体终止。用最新快照重新匹配，匹配不到
+        // 即「已退出或已变更」，拒绝发送信号。
+        var verifiedPath: String?
+        if let profile {
+            let matcher = ProcessMatcher(
+                snapshot: processMonitor.snapshot(),
+                runningBundleIDs: processMonitor.runningBundleIDs(),
+                profiles: profiles
+            )
+            verifiedPath = matcher.matchingEntries(for: profile).first { $0.pid == pid }?.path
+        }
+        guard let verifiedPath else {
+            publish(AgentTaskEvent(
+                agentId: agentId,
+                agentName: name,
+                eventType: .attention,
+                duration: 0,
+                timestamp: Date(),
+                pid: pid,
+                message: "无法终止 \(name)：进程已退出或已变更",
+                detail: "记录的 PID \(pid) 已不属于当前运行的 \(name) 进程（可能已自行退出，或 PID 已被系统回收复用）。为避免误杀无关进程，本次未发送终止信号。请重新确认进程状态后再操作。"
+            ))
+            return false
+        }
+        switch ProcessTerminator.terminate(pid: pid, expectedPath: verifiedPath) {
+        case .signalSent:
+            break
+        case .identityMismatch:
+            // 快照匹配通过但 kill 前一瞬身份再变（极小竞态窗口），同样拒绝
+            publish(AgentTaskEvent(
+                agentId: agentId,
+                agentName: name,
+                eventType: .attention,
+                duration: 0,
+                timestamp: Date(),
+                pid: pid,
+                message: "无法终止 \(name)：进程已退出或已变更",
+                detail: "PID \(pid) 的可执行文件在终止前发生了变化（疑似 PID 已被系统回收复用）。为避免误杀无关进程，本次未发送终止信号。"
+            ))
+            return false
+        case .failed:
             publish(AgentTaskEvent(
                 agentId: agentId,
                 agentName: name,

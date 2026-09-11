@@ -327,15 +327,20 @@ public struct FakeProcessProvider: ProcessProviding {
     public var processNames: Set<String>   // 小写 basename
     public var bundleIDs: Set<String>      // 小写
     public var cpuByProcess: [String: Double]  // 进程名 → CPU%
+    /// 完全自定义条目（测试身份复核等需要指定 pid/path 的场景）；nil 时按 processNames 生成
+    public var entries: [ProcessSnapshot.Entry]?
 
-    public init(processNames: Set<String>, bundleIDs: Set<String>, cpu: Double = 0) {
+    public init(processNames: Set<String>, bundleIDs: Set<String>, cpu: Double = 0,
+                entries: [ProcessSnapshot.Entry]? = nil) {
         self.processNames = processNames
         self.bundleIDs = bundleIDs
         self.cpuByProcess = Dictionary(uniqueKeysWithValues: processNames.map { ($0, cpu) })
+        self.entries = entries
     }
 
     public func snapshot() -> ProcessSnapshot {
-        let entries = processNames.map { name -> ProcessSnapshot.Entry in
+        if let entries { return ProcessSnapshot(entries: entries) }
+        let generated = processNames.map { name -> ProcessSnapshot.Entry in
             let path = "/Applications/FakeApp.app/Contents/MacOS/\(name)"
             return ProcessSnapshot.Entry(
                 pid: 1,
@@ -345,7 +350,7 @@ public struct FakeProcessProvider: ProcessProviding {
                 rssBytes: 104_857_600 // 默认 100MB 假数据
             )
         }
-        return ProcessSnapshot(entries: entries)
+        return ProcessSnapshot(entries: generated)
     }
 
     public func runningBundleIDs() -> Set<String> { bundleIDs }
@@ -431,20 +436,44 @@ public enum AppActivator {
 
 // MARK: - 智能体进程安全熔断与终止
 
+/// 终止结果。比 Bool 多区分「身份复核未通过」：PID 被系统回收复用后，
+/// 旧 pid 可能已属于无关进程，必须拒绝发送信号而不是笼统的「失败」。
+public enum TerminationOutcome: Equatable {
+    case signalSent        // 身份复核通过，已向目标进程树发出信号
+    case identityMismatch  // PID 当前可执行文件与预期不符（疑似被回收复用），未发送任何信号
+    case failed            // 进程已消失 / 无权限等，未成功发送信号
+}
+
 public enum ProcessTerminator {
     /// 终止指定 PID 进程（包括其派生的子进程树），先尝试 GUI terminate / SIGTERM，超时未退出则强制 SIGKILL
-    /// - Returns: 是否至少成功向目标进程发出了信号（用 `kill(pid, 0)` 复核存活）。
-    ///   此前恒返回 true，导致上层把「进程已退出/无权限」也计为清理成功并谎报回收内存。
+    /// - Parameters:
+    ///   - expectedPath: 扫描/事件时刻记录的目标可执行路径。提供时先用 `proc_pidpath`
+    ///     复核当前路径的 basename 是否一致（brew 升级等路径整体变化但同名视为同一程序）；
+    ///     不一致说明 PID 已被系统回收复用给其他程序，立即放弃——杀错整棵进程树的后果
+    ///     远比「漏杀一个真异常」严重。nil 表示跳过复核（仅限调用方刚从最新快照取得 pid 的场景）。
+    /// - Returns: 终止结果。此前恒返回 true，导致上层把「进程已退出/无权限」也计为清理成功并谎报回收内存。
     @discardableResult
-    public static func terminate(pid: Int32, force: Bool = false) -> Bool {
-        guard pid > 1 else { return false }
+    public static func terminate(pid: Int32, expectedPath: String? = nil, force: Bool = false) -> TerminationOutcome {
+        guard pid > 1 else { return .failed }
+
+        // 0. 身份复核（在任何信号/GUI terminate 之前）
+        if let expectedPath, !expectedPath.isEmpty {
+            guard let current = currentExecutablePath(of: pid) else { return .failed }
+            let expectedName = (expectedPath as NSString).lastPathComponent.lowercased()
+            let currentName = (current as NSString).lastPathComponent.lowercased()
+            guard expectedName == currentName else { return .identityMismatch }
+        }
 
         // 1. 如果是 GUI App，先尝试标准 terminate
         if let app = NSRunningApplication(processIdentifier: pid) {
             app.terminate()
         }
 
-        // 2. 收集整棵进程树（包括所有子进程）
+        // 2. 收集整棵进程树（包括所有子进程）。
+        // 子进程不逐个复核 basename：helper/renderer 的可执行路径本就与根不同，
+        // 逐个比对会把合法子进程漏掉或误拒；正确策略是「根进程强复核后杀整棵树」。
+        // 残余 TOCTOU：树采集后某子进程退出、其 pid 在 300ms 补发窗口内被内核复用——
+        // macOS 顺序分配机制下概率可忽略，接受该风险。
         let pidsToKill = getProcessTree(rootPid: pid)
         let sig = force ? SIGKILL : SIGTERM
 
@@ -463,7 +492,17 @@ public enum ProcessTerminator {
                 }
             }
         }
-        return signalSent
+        return signalSent ? .signalSent : .failed
+    }
+
+    /// 读取进程当前可执行路径（不可读 = 已退出或无权限，一律视为无法确认身份）
+    private static func currentExecutablePath(of pid: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4096)   // PROC_PIDPATHINFO_MAXSIZE ≈ 4KB
+        let len = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard len > 0, Int(len) < buffer.count else { return nil }
+        return buffer.withUnsafeBytes { raw in
+            String(decoding: raw[..<Int(len)], as: UTF8.self)
+        }
     }
 
     /// 获取进程及其所有子进程 PID 列表。

@@ -306,7 +306,7 @@ struct ToolboxView: View {
                         .background(Capsule().fill(Theme.dangerRed))
                 }
                 .buttonStyle(.plain)
-                .help("再次点击确认终止全部 \(anomalies.count) 个异常进程（不可撤销）")
+                .help("再次点击确认终止全部 \(batchCleanableAnomalies.count) 个可批量清理的异常进程（不可撤销；孤儿进程需逐条确认）")
                 .accessibilityLabel("确认清理全部异常进程")
                 .onAppear {
                     // 与单条清理一致：3 秒内不确认就自动复位，
@@ -334,6 +334,11 @@ struct ToolboxView: View {
                     .background(Capsule().fill(Theme.actionBlue))
                 }
                 .buttonStyle(.plain)
+                .disabled(batchCleanableAnomalies.isEmpty)
+                .opacity(batchCleanableAnomalies.isEmpty ? 0.4 : 1)
+                .help(batchCleanableAnomalies.isEmpty
+                      ? "孤儿进程为防误杀不参与批量清理，请逐条确认"
+                      : "批量终止 \(batchCleanableAnomalies.count) 个死锁/超限进程（孤儿进程需逐条确认）")
             }
         }
         .padding(.horizontal, Theme.pageMargin)
@@ -353,6 +358,13 @@ struct ToolboxView: View {
     private func scan(showSpinner: Bool, completion: (([AgentAnomaly]) -> Void)? = nil) {
         if showSpinner { isScanning = true }
         let hungIDs = Set(engine.snapshots.filter { $0.isHung }.map { $0.profile.id })
+        // 孤儿佐证集：近期仍有会话写入的 Agent 是活进程在干活（LaunchAgent 托管的
+        // 常驻服务与「终端关闭的遗孤」从 ppid 无法区分，但前者必有活动）。
+        // 窗口放宽到 10 分钟——孤儿判定宁可漏报，不可误杀。
+        let activeIDs = Set(engine.snapshots.compactMap { snap -> String? in
+            guard let ago = snap.lastActivityAgo, ago < 600 else { return nil }
+            return snap.profile.id
+        })
         let profiles = engine.allProfiles
         let cleaner = engine.cleaner
         // NSWorkspace 必须主线程访问（ProcessProviding 契约）：先在主线程抓 bundle 集合，
@@ -360,7 +372,8 @@ struct ToolboxView: View {
         let bundleIDs = ProcessProvider().runningBundleIDs()
         DispatchQueue.global(qos: .userInitiated).async {
             let found = cleaner?.scanAnomalies(profiles: profiles, hungAgentIDs: hungIDs,
-                                               runningBundleIDs: bundleIDs) ?? []
+                                               runningBundleIDs: bundleIDs,
+                                               recentlyActiveProfileIDs: activeIDs) ?? []
             DispatchQueue.main.async {
                 self.anomalies = found
                 self.isScanning = false
@@ -385,18 +398,31 @@ struct ToolboxView: View {
         }
     }
 
+    /// 可进入批量清理的条目（孤儿进程被排除，见 AgentAnomaly.batchCleanable）
+    private var batchCleanableAnomalies: [AgentAnomaly] {
+        anomalies.filter(\.batchCleanable)
+    }
+
     private func cleanAll() {
         cleanFeedback = nil
-        let toClean = anomalies
+        let toClean = batchCleanableAnomalies
+        guard !toClean.isEmpty else { return }
+        let orphanCount = anomalies.count - toClean.count
         engine.cleanAnomalies(toClean)
         // 与单条清理同一口径：不再直接清空列表并返回（那等于替引擎宣告成功）。
-        // 复核后确认全部消失才回主卡；有残留就留在工作台并提示。
+        // 复核后确认批量目标全部消失才算成功；孤儿进程本来就留在列表里（逐条清理），
+        // 不得计入「未能终止」。
         verifyCleanup { remaining in
-            if remaining.isEmpty {
-                self.controller.route = .list
+            self.anomalies = remaining
+            let failed = remaining.filter(\.batchCleanable)
+            if failed.isEmpty {
+                if orphanCount > 0 {
+                    self.cleanFeedback = "批量清理完成；列表中的孤儿进程为防误杀不参与批量清理，请逐条确认"
+                } else {
+                    self.controller.route = .list
+                }
             } else {
-                self.anomalies = remaining
-                self.cleanFeedback = "有 \(remaining.count) 个进程未能终止，已保留在列表中"
+                self.cleanFeedback = "有 \(failed.count) 个进程未能终止，已保留在列表中"
             }
         }
     }

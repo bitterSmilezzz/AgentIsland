@@ -128,9 +128,12 @@ enum EngineTests {
             let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
             _ = engine.sample(now: Date())
             // 用不存在的 pid 验证「失败不谎报」；成功路径由下面的 Fake 终止器验证
-            // （不能传自身 pid：terminate 会真的把测试进程杀掉）
+            // （不能传自身 pid：terminate 会真的把测试进程杀掉）。
+            // pid 不在当前快照的匹配结果里 → 身份复核拒绝（防 PID 复用误杀）
             let ok = engine.terminateAgent(pid: 999999, agentId: "dim")
             try expectTrue(!ok, "无法发送信号时必须返回 false")
+            try expectTrue(engine.latestEvent?.message?.contains("已退出或已变更") == true,
+                           "应按身份复核拒绝而非笼统失败，实际: \(engine.latestEvent?.message ?? "nil")")
             try expectTrue(engine.latestEvent?.message?.contains("已终止") != true,
                            "不得谎报已终止，实际: \(engine.latestEvent?.message ?? "nil")")
         }
@@ -138,17 +141,30 @@ enum EngineTests {
         TestKit.test("引擎: terminateAgent 成功路径写入 completed 事件") {
             // 直接验证成功分支的事件语义：completed 而非 attention
             // （attention 会让收起态细条误报红色告警）
-            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
-            _ = engine.sample(now: Date())
             // 借道 cleanAnomalies 之外的方式不可行，故用可终止的空进程验证：
-            // 启动一个 /bin/sleep 作为无害目标
+            // 启动一个 /bin/sleep 作为无害目标。身份复核要求快照里存在匹配该 Agent、
+            // 且 pid 一致的条目——Fake 快照注入与真实进程同 pid/同路径的条目。
             let sleeper = Process()
             sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
             sleeper.arguments = ["30"]
-            try? sleeper.run()
+            try sleeper.run()
             defer { if sleeper.isRunning { sleeper.terminate() } }
+            let provider = FakeProcessProvider(
+                processNames: [], bundleIDs: [],
+                entries: [ProcessSnapshot.Entry(
+                    pid: sleeper.processIdentifier,
+                    // path 的 basename 须与真实进程一致（终止器侧复核），
+                    // 且不能是 /bin 等系统路径（isSystemPath 过滤）；basename 字段
+                    // 须匹配 dim 的 processNames（引擎侧复核）——夹具独立验证两层防线
+                    path: "/opt/fake/bin/sleep",
+                    basename: "dimagent",
+                    cpuPercent: 0, rssBytes: 0
+                )]
+            )
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], processMonitor: provider)
+            _ = engine.sample(now: Date())
             let ok = engine.terminateAgent(pid: sleeper.processIdentifier, agentId: "dim")
-            try expectTrue(ok, "可发送信号的 pid 应返回 true")
+            try expectTrue(ok, "身份复核通过的 pid 应成功终止")
             try expectEqual(engine.latestEvent?.eventType, .completed,
                             "终止成功应为 completed（非 attention）")
             try expectTrue(engine.latestEvent?.message?.contains("进程已终止") == true, "应提示已终止")
@@ -525,6 +541,43 @@ enum EngineTests {
             try expectTrue(!tree.contains(400), "不应包含无关进程")
             // 无子进程时只返回自身
             try expectEqual(ProcessTerminator.processTree(rootPid: 400, in: snapshot), [400])
+        }
+
+        TestKit.test("终止器: 身份复核不匹配时拒绝发信号（防 PID 复用误杀）") {
+            // 真实起一个 /bin/sleep，但声称它应是别的程序 → 必须拒绝且进程存活
+            let sleeper = Process()
+            sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            sleeper.arguments = ["30"]
+            try sleeper.run()
+            defer { if sleeper.isRunning { sleeper.terminate() } }
+            let outcome = ProcessTerminator.terminate(pid: sleeper.processIdentifier,
+                                                      expectedPath: "/usr/bin/yes")
+            try expectEqual(outcome, .identityMismatch, "basename 不一致必须判为身份不符")
+            try expectTrue(sleeper.isRunning, "拒绝后目标进程必须仍然存活")
+        }
+
+        TestKit.test("终止器: 身份复核匹配（basename 一致）才终止") {
+            let sleeper = Process()
+            sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            sleeper.arguments = ["30"]
+            try sleeper.run()
+            defer { if sleeper.isRunning { sleeper.terminate() } }
+            let outcome = ProcessTerminator.terminate(pid: sleeper.processIdentifier,
+                                                      expectedPath: "/opt/homebrew/bin/sleep")
+            try expectEqual(outcome, .signalSent, "basename 相同（路径整体不同）应放行")
+            // SIGTERM 对 sleep 立即生效；给一点调度余量
+            for _ in 0..<20 where sleeper.isRunning {
+                usleep(50_000)
+            }
+            try expectTrue(!sleeper.isRunning, "身份匹配时应真正终止目标")
+        }
+
+        TestKit.test("终止器: 进程已消失时返回 failed 且不崩溃") {
+            let outcome = ProcessTerminator.terminate(pid: 999_999, expectedPath: "/bin/sleep")
+            try expectTrue(outcome == .failed, "不存在的 pid 应返回 failed，实际 \(outcome)")
+            // 无 expectedPath 的旧语义兼容：同样失败
+            let legacy = ProcessTerminator.terminate(pid: 999_999)
+            try expectTrue(legacy == .failed, "无复核的消失 pid 也应 failed")
         }
 
         TestKit.test("动作探测: 长驻服务不作为「正在执行」信号") {
@@ -921,11 +974,12 @@ enum EngineTests {
     static func makeEngine(processNames: Set<String>, writes: [String: Date], cpu: Double = 0,
                            tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor(),
                            installedApps: InstalledAppsCache? = nil,
-                           enabledIDs: Set<String>? = nil) -> ActivityEngine {
+                           enabledIDs: Set<String>? = nil,
+                           processMonitor: ProcessProviding? = nil) -> ActivityEngine {
         ActivityEngine(
             profiles: AgentRegistry.builtin,
             config: EngineConfig(workingWindow: 20),
-            processMonitor: FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu),
+            processMonitor: processMonitor ?? FakeProcessProvider(processNames: processNames, bundleIDs: [], cpu: cpu),
             fileMonitor: FakeFileActivityProvider(writes: writes),
             tokenMonitor: tokenMonitor,
             installedApps: installedApps ?? InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }),

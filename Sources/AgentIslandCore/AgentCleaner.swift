@@ -15,6 +15,12 @@ public struct AgentAnomaly: Identifiable, Equatable {
     public let memoryBytes: UInt64
     public let anomalyType: AnomalyType
     public let reason: String
+    /// 是否可进入「一键批量清理」。
+    /// 死锁/内存超限有充分证据（引擎聚合判定 / 超过硬上限），可批量；
+    /// 孤儿 (ppid==1) 无法与 launchd/LaunchAgent 托管的常驻服务区分——
+    /// 用户刻意后台化的智能体也是 ppid==1，批量误杀等于静默丢任务，
+    /// 因此孤儿只允许逐条手动清理（宁可漏杀，符合本模块定位）。
+    public let batchCleanable: Bool
 
     /// 列表身份：同一 pid 可能被两个 profile 同时匹配（如 GUI 主程序与其 CLI 子工具同名），
     /// 只用「类型-pid」会在 ForEach 中产生重复 id（SwiftUI 未定义行为、条目互相顶替），
@@ -31,6 +37,22 @@ public struct AgentAnomaly: Identifiable, Equatable {
 
     public var memoryText: String {
         MemoryFormat.text(memoryBytes)
+    }
+
+    public init(id: String, pid: Int32, ppid: Int32, agentName: String, profileId: String,
+                commandPath: String, cpuPercent: Double, memoryBytes: UInt64,
+                anomalyType: AnomalyType, reason: String, batchCleanable: Bool = true) {
+        self.id = id
+        self.pid = pid
+        self.ppid = ppid
+        self.agentName = agentName
+        self.profileId = profileId
+        self.commandPath = commandPath
+        self.cpuPercent = cpuPercent
+        self.memoryBytes = memoryBytes
+        self.anomalyType = anomalyType
+        self.reason = reason
+        self.batchCleanable = batchCleanable
     }
 }
 
@@ -51,10 +73,15 @@ public final class AgentCleaner {
     }
 
     /// 扫描当前系统运行的所有 Agent 相关异常进程
-    /// - Parameter runningBundleIDs: 已由主线程抓取的 bundle 集合（NSWorkspace 不可跨线程）；
-    ///   为 nil 时现场抓取（仅供主线程调用方）。
+    /// - Parameters:
+    ///   - runningBundleIDs: 已由主线程抓取的 bundle 集合（NSWorkspace 不可跨线程）；
+    ///     为 nil 时现场抓取（仅供主线程调用方）。
+    ///   - recentlyActiveProfileIDs: 会话目录近期有写入的 profile 集合（由调用方从
+    ///     引擎快照的 lastActivityAgo 汇总）。孤儿判定需要它做佐证：ppid==1 但仍在
+    ///     产出会话写入的 Agent 是活着的（很可能由 LaunchAgent 刻意托管），绝不能报成孤儿。
     public func scanAnomalies(profiles: [AgentProfile], hungAgentIDs: Set<String> = [],
-                              runningBundleIDs: Set<String>? = nil) -> [AgentAnomaly] {
+                              runningBundleIDs: Set<String>? = nil,
+                              recentlyActiveProfileIDs: Set<String> = []) -> [AgentAnomaly] {
         let snapshot = processMonitor.snapshot()
         let bundleIDs = runningBundleIDs ?? processMonitor.runningBundleIDs()
         let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: bundleIDs, profiles: profiles)
@@ -91,8 +118,12 @@ public final class AgentCleaner {
                 }
 
                 // 2. 检查孤儿进程 (PPID == 1)
-                // 仅针对 CLI / 派生命令行工具（非 /Applications/ 下的标准 App 主进程）
+                // 仅针对 CLI / 派生命令行工具（非 /Applications/ 下的标准 App 主进程）。
+                // 佐证门槛：近期仍有会话写入的 profile 是活进程在干活（launchd 托管的
+                // 常驻服务与「终端关闭的遗孤」无法从 ppid 区分，但前者必有活动佐证），直接跳过；
+                // 其余孤儿仍列出（原因文案如实说明），但只允许逐条手动清理。
                 if entry.ppid == 1 && !isStandardAppBundle && !profile.processNames.isEmpty {
+                    guard !recentlyActiveProfileIDs.contains(profile.id) else { continue }
                     anomalies.append(AgentAnomaly(
                         id: AgentAnomaly.identifier(profileId: profile.id, type: .orphan, pid: entry.pid),
                         pid: entry.pid,
@@ -103,7 +134,8 @@ public final class AgentCleaner {
                         cpuPercent: entry.cpuPercent,
                         memoryBytes: entry.rssBytes,
                         anomalyType: .orphan,
-                        reason: "主控终端已关闭，已脱离原会话成为孤儿进程 (PPID=1)"
+                        reason: "主控终端已关闭，已脱离原会话成为孤儿进程 (PPID=1)；为防误杀常驻服务，仅支持逐条确认清理",
+                        batchCleanable: false
                     ))
                     continue
                 }
@@ -131,14 +163,16 @@ public final class AgentCleaner {
         return anomalies
     }
 
-    /// 安全终止指定异常进程并返回清理结果
+    /// 安全终止指定异常进程并返回清理结果。
+    /// 终止前带 `commandPath` 做身份复核：工具箱列表可能已陈旧（扫描后进程退出、
+    /// PID 被系统复用给无关程序），不带复核的 kill 会误杀。
     @discardableResult
     public func clean(anomalies: [AgentAnomaly]) -> CleanResult {
         var terminated = 0
         var reclaimed: UInt64 = 0
 
         for a in anomalies {
-            if ProcessTerminator.terminate(pid: a.pid) {
+            if ProcessTerminator.terminate(pid: a.pid, expectedPath: a.commandPath) == .signalSent {
                 terminated += 1
                 reclaimed += a.memoryBytes
             }

@@ -40,10 +40,12 @@ enum CleanerTests {
 
     private static func scan(_ entries: [ProcessSnapshot.Entry], hung: Set<String> = [],
                              bundles: Set<String> = [],
-                             profiles: [AgentProfile]? = nil) -> [AgentAnomaly] {
+                             profiles: [AgentProfile]? = nil,
+                             recentlyActive: Set<String> = []) -> [AgentAnomaly] {
         let provider = FixtureProcessProvider(entries: entries, bundles: bundles)
         return AgentCleaner(processMonitor: provider)
-            .scanAnomalies(profiles: profiles ?? [profile], hungAgentIDs: hung, runningBundleIDs: bundles)
+            .scanAnomalies(profiles: profiles ?? [profile], hungAgentIDs: hung, runningBundleIDs: bundles,
+                           recentlyActiveProfileIDs: recentlyActive)
     }
 
     static func register() {
@@ -61,6 +63,7 @@ enum CleanerTests {
             try expectEqual(a.agentName, "Fixture Agent", "agentName 透传")
             try expectEqual(a.commandPath, "/opt/fake/bin/fakecli", "路径透传")
             try expectEqual(a.memoryBytes, 2048, "内存透传")
+            try expectTrue(!a.batchCleanable, "孤儿不得进入批量清理（防误杀 launchd 托管服务）")
 
             // GUI 主进程（用户正在使用的应用本体）永不作为清理对象
             let gui = scan([entry(pid: 5001, ppid: 1, path: guiPath())])
@@ -69,6 +72,24 @@ enum CleanerTests {
             // 父进程仍在：不是孤儿
             let alive = scan([entry(pid: 5002, ppid: 900)])
             try expectTrue(alive.isEmpty, "ppid != 1 不得报孤儿")
+        }
+
+        TestKit.test("工作台: 孤儿佐证——近期仍有会话写入的 Agent 不报孤儿（launchd 托管）") {
+            // ppid==1 但 profile 正在产出会话写入：是活进程（LaunchAgent 常驻托管），
+            // 报成孤儿会诱导用户杀掉刻意后台化的智能体（任务静默丢失）
+            let active = scan([entry(pid: 4301, ppid: 1)], recentlyActive: [profileId])
+            try expectTrue(active.isEmpty, "有近期会话写入的 profile 不得报孤儿")
+
+            // 同样条目，无近期写入 → 仍报孤儿（但只允许逐条清理）
+            let idle = scan([entry(pid: 4302, ppid: 1)], recentlyActive: [])
+            try expectEqual(idle.count, 1, "无活动佐证仍应报告孤儿")
+            try expectTrue(!idle[0].batchCleanable, "无佐证孤儿同样不进批量清理")
+
+            // 佐证只豁免孤儿：死锁与内存超限不受影响（证据充分）
+            let hungNotExempt = scan([entry(pid: 4303, cpu: 95)], hung: [profileId],
+                                     recentlyActive: [profileId])
+            try expectEqual(hungNotExempt.count, 1, "有活动的死锁进程仍应报告")
+            try expectTrue(hungNotExempt[0].batchCleanable, "死锁条目可批量清理")
         }
 
         TestKit.test("工作台: 死锁判定严格大于 10% CPU（临界值不报）") {
