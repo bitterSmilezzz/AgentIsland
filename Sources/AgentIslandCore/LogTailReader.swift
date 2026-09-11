@@ -42,7 +42,7 @@ enum LogTailReader {
     static func newestFile(in dir: URL, maxAge: TimeInterval, maxEntries: Int = 20_000) -> URL? {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey,
-                                      .isSymbolicLinkKey]
+                                      .isSymbolicLinkKey, .isDirectoryKey]
         guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: keys,
                                      options: [.skipsHiddenFiles]) else { return nil }
         var newestURL: URL?
@@ -53,10 +53,11 @@ enum LogTailReader {
             visited += 1
             if visited > maxEntries { break }
             guard let v = try? item.resourceValues(forKeys: Set(keys)) else { continue }
-            if v.isSymbolicLink == true {
-                // 符号链接一律跳过：防循环 + 防枚举会话树之外的目标。
-                // 当前运行时枚举器原生不下降进链接目录，此守卫是显式保险丝；
-                // 文件符号链接经 lstat 语义 isRegularFile=false，本就被排除
+            if v.isSymbolicLink == true, v.isDirectory == true {
+                // 符号链接目录跳过整个子树，防循环（对齐 FileMonitor.scanTree）。
+                // 注意 skipDescendants 只能对目录调用：对文件符号链接调用会破坏
+                // 枚举器状态、丢弃后续所有条目（实测复现），故必须带 isDirectory 条件；
+                // 文件符号链接经 lstat 语义 isRegularFile=false，自然排除
                 en.skipDescendants()
                 continue
             }
