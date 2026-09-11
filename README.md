@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.17）
+## 功能（v0.0.18）
 
 ### 设计美学与 CodeNotch 灵动交互
 - **反向倒角一体化贴边（Inverse Rounded Corner / Bezel Flares）**：
@@ -35,7 +35,7 @@
 - **成本与异常熔断保护（逃生舱）**：
   - **Token 暴涨检测**：滑动差分监测单分钟 Token 增量，超阈值时弹出双行自适应告警卡片并播放警示音；
   - **异常长耗时死循环告警**：基于基准采样的防误报算法，持续异常高负荷工作未释放时自动预警；
-  - **一键 Kill 逃生舱**：红色熔断横幅直达终止，带两段式确认（首击进入确认态、3 秒自动复位）避免误触杀错进程树；列表行悬浮红色「终止」按钮同样带确认态；
+  - **一键 Kill 逃生舱**：红色熔断横幅直达终止，带两段式确认（首击进入确认态、3 秒自动复位）避免误触杀错进程树；列表行悬浮红色「终止」按钮同样带确认态；终止前强制**身份复核**——PID 已被系统回收复用给其他程序时拒绝执行，绝不误杀无关进程；
   - **告警保护**：严重告警在 30 秒内不会被其他 Agent 的完成事件顶掉，留出处置时间；
 
 ### 灵动岛交互与外观
@@ -78,7 +78,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-0.0.17.zip`，解压后拖入「应用程序」或直接运行。
+从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases) 下载 `AgentIsland-0.0.18.zip`，解压后拖入「应用程序」或直接运行。
 
 > 未公证（ad-hoc 签名），首次打开需右键 → 打开。
 
@@ -87,7 +87,7 @@
 无需 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
-# 开发构建 + 自建测试套件（57 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）
+# 开发构建 + 自建测试套件（163 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）
 swift build
 .build/debug/AgentIslandTestsRunner     # 测试
 .build/debug/AgentIsland --selftest     # 进程内自检
