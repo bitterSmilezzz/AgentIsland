@@ -21,9 +21,16 @@ with tempfile.TemporaryDirectory(prefix="island-layout-") as temp:
     sources = [str(p) for p in (root / "Sources/AgentIsland").glob("*.swift")
                if p.name not in ("AgentIslandApp.swift", "IslandView.swift")]
     binary = temp / "layout-test"
-    subprocess.run(["swiftc", "-module-cache-path", "/private/tmp/agentisland-clang-cache",
-                    "-I", str(root / ".build/debug/Modules"), *sources, str(view),
-                    str(root / "Tests/LayoutRegression/main.swift"),
-                    *glob.glob(str(root / ".build/debug/AgentIslandCore.build/*.swift.o")),
-                    "-o", str(binary)], check=True, capture_output=True)
+    # 构建新鲜度：先确保 debug 产物与源码一致（否则链接到过期对象，验收失真）
+    subprocess.run(["swift", "build"], check=True)
+    compile_cmd = ["swiftc", "-module-cache-path", "/private/tmp/agentisland-clang-cache",
+                   "-I", str(root / ".build/debug/Modules"), *sources, str(view),
+                   str(root / "Tests/LayoutRegression/main.swift"),
+                   *glob.glob(str(root / ".build/debug/AgentIslandCore.build/*.swift.o")),
+                   "-o", str(binary)]
+    result = subprocess.run(compile_cmd, capture_output=True)
+    if result.returncode != 0:
+        # 吞掉 stderr 会让最需要本脚本的改动时刻只剩一个退出码（R19）
+        print(result.stderr.decode(), file=__import__("sys").stderr)
+        raise SystemExit(result.returncode)
     subprocess.run([str(binary)], check=True)

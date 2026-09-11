@@ -20,9 +20,8 @@ DerivedData/
 # 测试/工具临时文件
 artifacts/
 
-# 本地工作区：issue/spec 草稿与验证记录（单人开发，不入库）
+# 本地工作区：issue/spec 草稿（单人开发，不入库）；验证记录自 R19 起入库
 .scratch/
-docs/validation/
 
 # 发布包（Release 附件已上传 GitHub）
 *.zip

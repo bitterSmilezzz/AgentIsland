@@ -32,6 +32,9 @@
    - 拖拽中挂起收起任务，防止拖动中误折叠。
 
 4. **单向圆角动态自适应**：
+   > 状态注记（R19，2026-09-12）：本决策第 4 条的「ShadowHostView 单向投影同步」已被实现
+   > 取代——阴影整体停用（面板窗口与玻璃卡同尺寸，阴影无处落地，见 IslandPanelController
+   > 与 Theme 注释），单向圆角由 GlassCardBackground/SideNotchShape 承担；决策 1-3 仍然有效。
    - `GlassCardBackground` 根据当前 `dockEdge` 动态选择：
      - 顶部贴边：仅下方两角圆角（topRadius = 0, bottomRadius = 16）；
      - 右侧贴边：仅左侧两角圆角（rightRadius = 0, leftRadius = 16）。
