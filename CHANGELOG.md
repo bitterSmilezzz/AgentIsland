@@ -2,9 +2,19 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.24；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.25；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.25] - 2026-09-12
+
+### 🖥️ UI 渲染开销：展开态高度签名去重与设置页缓存（20 轮优化 · R08）
+
+- **展开态不再每拍全卡重绘 + 全量排版**：引擎每拍发布（快照的 CPU/活动时间/动作逐拍变化），面板此前对每拍无条件执行 `needsDisplay` 整卡重绘 + `fittingSize` 全量 SwiftUI 排版（估 1–3ms/拍）。现在按「高度影响签名」（route / 可见数 / 汇总栏 / 环架 / 事件 id / 横幅展开）去重——签名不变时两者都跳过；SwiftUI 由 `@ObservedObject` 自行失效，逐拍数据刷新不受影响。收起态细条的显式失效保留（防回退 0.0.17 前的「细条不刷新」）
+- **订阅去 Task 跳跃**：引擎 @MainActor、发布在主线程，每拍一次 Task 分配 + 调度不再需要
+- **边缘检测兜底 Timer 0.06s → 0.12s**：hover 展开的主路径是 0.05s 节流的鼠标事件通道，Timer 只是兜底；16.7Hz 的永续唤醒阻止主 runloop 深度 idle（能效影响大于 CPU% 影响）
+- **设置页档案列表缓存**：设置页开着时引擎每拍触发 body 重算，内置列表（fullRegistry 的 loadCustomProfiles：UserDefaults 读 + JSONDecoder 解码）与自动发现列表（PATH / Applications 扫描）此前逐拍重跑——按安装扫描版本缓存（引用语义缓存盒）
+- 测试 175/0；独立验收 pass（签名与 expandedHeight 六输入逐一完备对照 + docked 呼吸灯机制论证）；`--selftest` 全过
 
 ## [0.0.24] - 2026-09-12
 
