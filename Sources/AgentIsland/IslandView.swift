@@ -373,13 +373,26 @@ struct IslandView: View {
 
             // Agent 列表
             if engine.visibleSnapshots.isEmpty {
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     Image(systemName: "zzz")
                         .font(.system(size: 22))
                         .foregroundColor(Theme.onDarkFaint)
                     Text("没有活跃的 Agent")
                         .font(Theme.bodyFont(12))
                         .foregroundColor(Theme.onDarkFaint)
+                    Button {
+                        NSApp.activate(ignoringOtherApps: true)
+                        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    } label: {
+                        Text("打开偏好设置")
+                            .font(Theme.bodyFont(10, weight: .medium))
+                            .foregroundColor(Theme.onDark.opacity(0.85))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Theme.chipFill))
+                    }
+                    .buttonStyle(.plain)
+                    .help("启用 Agent 或调整监控范围")
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, IslandMetrics.emptyStatePaddingVertical)
@@ -615,6 +628,7 @@ struct AgentRowView: View {
                         }
                         .buttonStyle(.plain)
                         .help("查看 \(snapshot.profile.name) 实时事件与输出流水")
+                        .accessibilityLabel("查看 \(snapshot.profile.name) 实时流水")
 
                         Button {
                             if !AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs) {
@@ -633,6 +647,7 @@ struct AgentRowView: View {
                         }
                         .buttonStyle(.plain)
                         .help(activateFailed ? "未找到可激活的窗口（CLI 经 ssh/tmux 启动时无窗口可带）" : "置顶并激活该智能体窗口/终端")
+                        .accessibilityLabel("直达 \(snapshot.profile.name) 窗口")
                     }
                 }
             }
@@ -678,7 +693,8 @@ struct AgentRowView: View {
             controller.route = .agentDetail(snapshot.profile.id)
         }
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(snapshot.profile.name)
+        .accessibilityLabel("\(snapshot.profile.name)，\(snapshot.level.label)，点按查看详情")
+        .accessibilityHint(snapshot.processRunning ? "行内含终止 / 流水 / 直达三个快捷按钮" : "点按查看详情")
     }
 }
 

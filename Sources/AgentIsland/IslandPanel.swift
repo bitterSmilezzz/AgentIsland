@@ -331,6 +331,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         if let m = mouseGlobalMonitor { NSEvent.removeMonitor(m) }
         if let m = clickLocalMonitor { NSEvent.removeMonitor(m) }
         if let m = clickGlobalMonitor { NSEvent.removeMonitor(m) }
+        if let m = keyEscapeMonitor { NSEvent.removeMonitor(m) }
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -457,6 +458,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var mouseGlobalMonitor: Any?
     private var clickLocalMonitor: Any?
     private var clickGlobalMonitor: Any?
+    private var keyEscapeMonitor: Any?
     private var edgeZoneTimer: Timer?
 
     /// 鼠标移动节流器。鼠标事件可达数百 Hz，且全局监听回调不在主 actor 上——
@@ -531,6 +533,19 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 self.collapse()
             }
         }
+        // 4. Esc 收起（弱回退路径）：本地监听只在事件派发到本 App 窗口时触发
+        //（面板或其他本 App 窗口为 key 的场合）；点击外部/光标离开仍是主路径
+        keyEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self,
+                      event.keyCode == 53,   // Esc
+                      self.displayState == .expanded,
+                      !self.isDragging else { return }
+                self.collapse()
+            }
+            return event
+        }
+
         clickLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self,

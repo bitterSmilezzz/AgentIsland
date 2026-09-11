@@ -280,6 +280,7 @@ struct MenuBarPopoverView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("外观主题：\(controller.appearanceMode.label)")
+            .accessibilityLabel("外观主题，当前 \(controller.appearanceMode.label)")
 
             // 通知模式切换
             Menu {
@@ -305,6 +306,7 @@ struct MenuBarPopoverView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("通知策略：\(controller.notificationPolicy.label)（\(controller.notificationPolicy.detailDescription)）")
+            .accessibilityLabel("通知策略，当前 \(controller.notificationPolicy.label)")
 
             // 设置
             Button {

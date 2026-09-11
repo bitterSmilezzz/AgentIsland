@@ -216,6 +216,13 @@ struct LiveLogStreamView: View {
                 }
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(event.detail != nil ? .isButton : [])
+        // 不设显式 label：.combine 自然合并徽标/时间/标题；显式 label 会把
+        // 合并内容（含展开后的详情正文）整体覆盖，VO 用户读不到详情
+        .accessibilityHint(event.detail != nil
+            ? (expandedEventId == event.id ? "收起事件详情" : "展开事件详情")
+            : "")
     }
 
     // MARK: - 辅助组件与格式化
