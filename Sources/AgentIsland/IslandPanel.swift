@@ -297,6 +297,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         NotificationCenter.default.addObserver(
             self, selector: #selector(screenConfigChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        // 唤醒后帧重同步：睡眠期 CA 动画挂起可能让窗口 frame 停在动画起点
+        //（与 displayState 脱钩），唤醒后直落终态帧并重判点击穿透。
+        // 熄屏唤醒走 NSWorkspace 的 screensDidWake（default center 不投递、
+        // 纯熄屏场景 didWake 不触发——活体实证），两个通知都挂 workspace center
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(screenConfigChanged),
+            name: NSWorkspace.screensDidWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(screenConfigChanged),
+            name: NSWorkspace.didWakeNotification, object: nil)
 
         displayState = .docked
         engine.setPresentationActive(false)
@@ -587,6 +597,50 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 scheduleCollapse()
             }
         }
+        updateClickThrough()
+    }
+
+    /// 收起态细条热区之外的点击穿透（U3 幽灵命中区修复）。
+    /// 边框透明 NSPanel 的透明区域仍参与命中测试：top 贴边时收起窗口自菜单栏
+    /// 向下延伸整卡高度（挡住菜单栏与顶部内容），right 贴边也有一列竖向盲区
+    ///（lldb 实测：细条外 213pt 处 hitTest 命中 NSHostingView）。
+    /// 不改窗口几何（动画与布局零回归风险），改为动态切换 ignoresMouseEvents：
+    /// 光标在「细条可视矩形 ±8pt」内才接收事件，其余全部穿透。hover 展开主
+    /// 路径由 evaluateEdgeZone 的全局光标判定驱动，不受穿透影响。
+    /// 注意接收区必须按 dockEdge 计算细条矩形——panel.frame 是整卡尺寸，
+    /// 用它判定恒为 no-op（首轮验收实测打回项）
+    private func updateClickThrough() {
+        let shouldIgnore: Bool
+        if displayState == .docked,
+           let screen = panel.screen ?? Self.screenContainingMouse() {
+            let hitRect = sliverRect(for: screen).insetBy(dx: -8, dy: -8)
+            shouldIgnore = !hitRect.contains(NSEvent.mouseLocation)
+        } else {
+            shouldIgnore = false
+        }
+        if panel.ignoresMouseEvents != shouldIgnore {
+            panel.ignoresMouseEvents = shouldIgnore
+        }
+    }
+
+    /// 收起态细条的可视矩形（与 placeWindow docked 分支的锚点/钳制逻辑同源；
+    /// 两处必须同步修改）
+    private func sliverRect(for screen: NSScreen) -> NSRect {
+        let visible = screen.visibleFrame
+        switch dockEdge {
+        case .right:
+            let h = IslandMetrics.rightSliverHeight
+            var y = savedRightY.map { $0 - h / 2 } ?? (visible.midY - h / 2)
+            y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - h - screenVerticalMargin)
+            return NSRect(x: visible.maxX - IslandMetrics.rightSliverWidth, y: y,
+                          width: IslandMetrics.rightSliverWidth, height: h)
+        case .top:
+            let w = IslandMetrics.topSliverWidth
+            var x = savedTopX.map { $0 - w / 2 } ?? (visible.midX - w / 2)
+            x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - w - screenHorizontalMargin)
+            return NSRect(x: x, y: visible.maxY - IslandMetrics.topSliverHeight,
+                          width: w, height: IslandMetrics.topSliverHeight)
+        }
     }
 
     // MARK: - 收回
@@ -685,14 +739,25 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 2. 窗口高度自适应扩展
         syncExpandedHeight()
 
-        // 3. 若当前处于收起态（docked），按分级策略决定是否触发微弹窗 Peek
-        if displayState == .docked && notificationPolicy.shouldPeek(for: event.eventType) {
-            peekForEvent(event)
+        // 3. 若当前处于收起态（docked），或 peek 进行中（expanded 来自上一次 peek），
+        // 按分级策略决定是否触发/重排微弹窗 Peek
+        if notificationPolicy.shouldPeek(for: event.eventType) {
+            if displayState == .docked || peekTask != nil {
+                peekForEvent(event)
+            }
         }
     }
 
     private func peekForEvent(_ event: AgentTaskEvent) {
-        guard displayState == .docked, peekTask == nil, !isDragging else { return }
+        guard !isDragging else { return }
+        let isPeekOngoing = peekTask != nil
+        guard displayState == .docked || isPeekOngoing else { return }
+        // 连发事件重排：peek 进行中来了新事件（如 costSpike 6s 跟在 completed 3.5s 后），
+        // 取消旧 peek 按新事件时长重排——单任务槽会把更严重告警的展示时长吞成前一个
+        // 事件的剩余时间（最严重告警可能只 peek 不到 1s 就缩回）。
+        // peekGeneration 代际机制保证被取消的旧任务安全退出、不清掉新任务引用
+        peekTask?.cancel()
+        peekTask = nil
         // 普通事件 3.5 秒，成本/死循环熔断保持 6 秒供用户查看或操作
         let peekDuration: TimeInterval = event.eventType == .costSpike ? 6.0 : 3.5
         peekGeneration &+= 1
@@ -702,12 +767,18 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 // 同 collapseTask：被取消的旧任务不得清掉新任务的引用
                 if let self, self.peekGeneration == generation { self.peekTask = nil }
             }
-            guard let self, self.displayState == .docked, !self.isDragging else { return }
+            guard let self, !self.isDragging else { return }
+            // 取消竞窗：被重排取消的旧任务可能已越过挂起点，覆写 grace 会把
+            // hover 展开后的自动收起推迟一整个 peek 时长
+            guard !Task.isCancelled else { return }
+            guard self.displayState == .docked || self.displayState == .expanded else { return }
 
             // 走真实状态切换：窗口尺寸与 SwiftUI 内容同源（此前只动窗口 frame、displayState
             // 仍为 docked，导致 6pt 细条被拉到展开位置且卡片内容缺失）
             self.manualOpenGraceUntil = Date().addingTimeInterval(peekDuration)
-            self.displayState = .expanded
+            if self.displayState == .docked {
+                self.displayState = .expanded
+            }
 
             try? await Task.sleep(nanoseconds: UInt64(peekDuration * 1_000_000_000))
             guard !Task.isCancelled, self.displayState == .expanded else { return }
@@ -722,6 +793,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private func onStateChanged(_ state: IslandDisplayState) {
         updateChrome()
+        updateClickThrough()
         switch state {
         case .docked:
             routeResetTask?.cancel()
@@ -819,7 +891,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         let dy = targetOrigin.y - panel.frame.origin.y
         let dist = hypot(dx, dy)
 
-        if animated, dist > 1.0 {
+        // 显示器睡眠时 CA 动画会被挂起：frame 停在动画起点、与 displayState 脱钩
+        //（活体验证中观测到该形态的布局崩溃）——睡眠期一律直落终态帧
+        let displayAsleep = CGDisplayIsAsleep(CGMainDisplayID()) == 1
+        if animated, dist > 1.0, !displayAsleep {
             let isExpanding = (displayState == .expanded)
             let baseDuration: TimeInterval = isExpanding ? 0.32 : 0.26
             let duration: TimeInterval = min(0.36, max(0.18, Double(sqrt(dist / (isExpanding ? cardW : 300.0))) * baseDuration))
@@ -838,7 +913,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     private func syncExpandedHeight() {
-        guard displayState == .expanded else { return }
+        // 拖拽进行中不抢 frame：拖拽由 WindowServer 驱动，这里的高度自适应动画
+        // 会与拖拽争夺窗口 frame（抖动/松手后位置被二次动画改写）。
+        // dragEnded 的 snapToDockEdge 已兜底最终位置，不会丢
+        guard displayState == .expanded, !isDragging else { return }
         let available = (panel.screen ?? Self.screenContainingMouse())?.visibleFrame.height ?? .greatestFiniteMagnitude
         if abs(panel.frame.height - resolvedExpandedHeight(availableHeight: available)) > 1 {
             placeWindow(animated: true)
