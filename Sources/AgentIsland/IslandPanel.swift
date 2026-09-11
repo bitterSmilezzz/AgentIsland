@@ -249,26 +249,42 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     private var lastEventId: UUID?
+    /// 展开态「高度影响签名」去重：引擎每拍发布（lastActivityAgo/CPU 每拍变化），
+    /// 签名不变时跳过 needsDisplay 与 fittingSize 全量排版（后者估 1-3ms/拍）
+    private var lastHeightSignature: String?
 
     private func observe() {
         engine.$updatedAt
             .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let workingChanged = self.lastAnyWorking != self.engine.anyWorking
-                    let eventChanged = self.lastEventId != self.engine.latestEvent?.id
-                    if self.displayState == .docked && !workingChanged && !eventChanged {
-                        return
-                    }
-                    self.lastAnyWorking = self.engine.anyWorking
-                    self.lastEventId = self.engine.latestEvent?.id
+                // 引擎是 @MainActor、发布在主线程：无需 Task 跳跃（每拍一次分配+调度）
+                guard let self else { return }
+                let workingChanged = self.lastAnyWorking != self.engine.anyWorking
+                let eventChanged = self.lastEventId != self.engine.latestEvent?.id
+                if self.displayState == .docked && !workingChanged && !eventChanged {
+                    return
+                }
+                self.lastAnyWorking = self.engine.anyWorking
+                self.lastEventId = self.engine.latestEvent?.id
+                if self.displayState == .expanded {
+                    // 高度影响签名去重：窗口高度只由 route/可见数/汇总栏/环架/事件横幅决定，
+                    // 快照的逐拍字段（CPU、lastActivityAgo、currentAction）不影响高度，
+                    // SwiftUI 已通过 @ObservedObject 自行失效重绘，无需整卡 needsDisplay
+                    let sig = self.expandedHeightSignature()
+                    guard sig != self.lastHeightSignature else { return }
+                    self.lastHeightSignature = sig
+                    self.syncExpandedHeight()
+                } else {
+                    // docked：细条呼吸灯/事件横幅的 AppKit 层显式失效保留
                     self.hostingView?.needsDisplay = true
-                    if self.displayState == .expanded {
-                        self.syncExpandedHeight()
-                    }
                 }
             }
             .store(in: &cancellables)
+    }
+
+    /// 全部影响展开卡窗口高度的信号（与 expandedHeight() 的输入一一对应）。
+    /// 改动 expandedHeight 的输入依赖时必须同步这里，否则高度会漏更新。
+    private func expandedHeightSignature() -> String {
+        "\(route)|\(visibleCount())|\(engine.grandTotal.isEmpty)|\(engine.ringShelfSnapshots.isEmpty)|\(engine.latestEvent?.id.uuidString ?? "-")|\(eventBannerExpanded)"
     }
 
     // MARK: - 对外控制
@@ -459,9 +475,11 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private func startEdgeZoneMonitor() {
         guard edgeZoneTimer == nil else { return }
 
-        // 1. 定时检测光标位置（0.06s 间隔，低开销无辅助功能权限要求）。
+        // 1. 定时检测光标位置（0.12s 间隔，低开销无辅助功能权限要求）。
         // 它同时是节流路径的兜底：鼠标停在热区内而事件被节流丢掉时，由它完成展开判定。
-        let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
+        // 0.06s → 0.12s：hover 展开的主路径是 0.05s 节流的鼠标事件，Timer 只是兜底，
+        // 16.7Hz 的永续唤醒阻止主 runloop 深度 idle（能效影响大于 CPU% 影响）
+        let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.evaluateEdgeZone()
             }

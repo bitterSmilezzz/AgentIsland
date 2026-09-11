@@ -98,11 +98,43 @@ struct SettingsView: View {
     @AppStorage(SettingKey.tokenAlertThreshold) private var tokenAlertThreshold = 200_000
     @AppStorage(SettingKey.runawayCpuAlert) private var runawayCpuAlert = true
 
+    /// 内置 Agent 列表缓存盒（引用语义）：设置页开着时引擎每拍发布使 body 重算，
+    /// fullRegistry 每次都要 loadCustomProfiles（UserDefaults 读 + JSONDecoder 解码）
+    /// 再过滤——按扫描版本缓存，失效信号与自动发现列表一致（installedScanVersion，
+    /// 安装扫描完成时自增；installedCLIs()/installedBundleIDs() 本身是带锁内存读）
+    private final class ProfilesCache {
+        var version = -1
+        var builtin: [AgentProfile] = []
+        var discovered: [AgentProfile]?
+    }
+    @State private var profilesCache = ProfilesCache()
+
     /// 内置 Agent 列表（与 fullRegistry 同口径：排除宿主内嵌且未独立安装的组件）
     private var builtinProfiles: [AgentProfile] {
-        AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
-                                   installedBundles: installedApps.installedBundleIDs())
-            .filter { !$0.isCustom && !$0.id.hasPrefix("cli-") }
+        if profilesCache.version != installedScanVersion {
+            profilesCache.builtin = AgentRegistry.fullRegistry(
+                installedCLIs: installedApps.installedCLIs(),
+                installedBundles: installedApps.installedBundleIDs())
+                .filter { !$0.isCustom && !$0.id.hasPrefix("cli-") }
+            profilesCache.discovered = nil
+            profilesCache.version = installedScanVersion
+        }
+        return profilesCache.builtin
+    }
+
+    /// 自动发现列表（同盒缓存；PATH / Applications 扫描较重，按扫描版本失效）。
+    /// 显式调用方：agentsDetailView；调用前必须先求值 builtinProfiles（或本函数
+    /// 自身对齐 version），两处共用同一失效判定
+    private func discoveredProfiles() -> [AgentProfile] {
+        if installedScanVersion == profilesCache.version, let cached = profilesCache.discovered {
+            return cached
+        }
+        let found = AgentRegistry.discoverCLIProfiles(
+            installedCLIs: installedApps.installedCLIs(),
+            installedBundles: installedApps.installedBundleIDs())
+        profilesCache.discovered = found
+        profilesCache.version = installedScanVersion
+        return found
     }
 
     private var islandAppearance: Binding<IslandAppearance> {        Binding(
@@ -392,9 +424,7 @@ struct SettingsView: View {
                 }
             }
 
-            let discovered = AgentRegistry.discoverCLIProfiles(
-                installedCLIs: installedApps.installedCLIs(),
-                installedBundles: installedApps.installedBundleIDs())
+            let discovered = discoveredProfiles()
             if !discovered.isEmpty {
                 SettingsCard(title: "自动发现 (PATH / Applications)") {
                     VStack(spacing: 8) {
