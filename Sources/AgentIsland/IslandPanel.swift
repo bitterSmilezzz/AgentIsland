@@ -536,7 +536,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 guard let self,
                       self.displayState == .expanded,
                       !self.isDragging,
-                      !Self.isMouseInsidePanel(self.panel) else { return event }
+                      !Self.isMouseInsidePanel(self.panel) else { return }
                 Task { @MainActor [weak self] in
                     guard let self,
                           self.displayState == .expanded,
@@ -545,7 +545,6 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                           !Self.isMouseInsidePanelOrFloatingLayers(self.panel) else { return }
                     self.collapse()
                 }
-                return event
             }
             return event
         }

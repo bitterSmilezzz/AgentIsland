@@ -137,12 +137,6 @@ struct SettingsView: View {
         return found
     }
 
-    private var islandAppearance: Binding<IslandAppearance> {        Binding(
-            get: { IslandAppearance(rawValue: islandAppearanceRaw) ?? .system },
-            set: { islandAppearanceRaw = $0.rawValue }
-        )
-    }
-
     @State private var selectedTab: SettingsTab = .general
     @State private var enabledAgents: Set<String> = []
     /// 自启动设置失败提示（SMAppService 未签名/非 /Applications 时 register 抛错）

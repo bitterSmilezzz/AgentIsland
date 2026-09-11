@@ -67,7 +67,6 @@ enum IslandMetrics {
     static let ringsShelfHeight: CGFloat = 40
 
     /// 事件提醒栏高度（紧凑态与展开态）
-    static let eventBannerHeight: CGFloat = 66
     static let eventBannerCollapsedHeight: CGFloat = 66
     static let eventBannerExpandedHeight: CGFloat = 142
 

@@ -325,11 +325,6 @@ public struct ProcessMatcher: @unchecked Sendable {
         return snapshot.entries.contains { matchesProfile(profile, entry: $0) }
     }
 
-    /// 相关进程 CPU 总和（双信号用）
-    public func cpuPercent(_ profile: AgentProfile) -> Double {
-        matchingEntries(for: profile).reduce(0) { $0 + $1.cpuPercent }
-    }
-
 }
 // MARK: - 测试用假实现
 

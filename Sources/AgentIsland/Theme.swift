@@ -37,21 +37,14 @@ enum Theme {
     // Brand & Accent (Apple Action Blue)
     static let actionBlue = Color(hex: 0x0066cc)
     static let focusBlue = Color(hex: 0x0071e3)
-    static let skyLinkBlue = Color(hex: 0x2997ff)
 
     // 常规界面色板（设置窗口等，动态：深色系统下自动转暗）
     static let canvas = Color(dynamicLight: 0xffffff, dark: 0x151517)
     static let parchment = Color(dynamicLight: 0xf5f5f7, dark: 0x1e1e20)
-    static let pearl = Color(dynamicLight: 0xfafafc, dark: 0x232325)
     static let hairline = Color(dynamicLight: 0xe0e0e0, dark: 0x3a3a3c)
-    static let dividerSoft = Color(dynamicLight: 0xf0f0f0, dark: 0x2c2c2e)
 
     // 灵动岛主体（动态：深色=黑玻璃，浅色=白玻璃）
-    static let islandBody = Color(dynamicLight: 0xfafafa, dark: 0x1c1c1e)      // 岛身
-    static let islandBodyDeep = Color(dynamicLight: 0xf0f0f2, dark: 0x121214)  // 岛底
     static let tile1 = Color(dynamicLight: 0xe9e9ec, dark: 0x272729)
-    static let tile2 = Color(dynamicLight: 0xe2e2e6, dark: 0x2a2a2c)
-    static let tile3 = Color(dynamicLight: 0xe5e5e8, dark: 0x252527)
 
     // Risk accents：浅色下加深，保证在白玻璃上仍可读
     // （原始系统色 #ff3b30 / #ff9500 在白底分别约 3.5:1 / 2.2:1，作为正文色不达标）
@@ -76,7 +69,6 @@ enum Theme {
     static let statusWorking = Color(dynamicLight: 0x157f3c, dark: 0x30d158)
     static let statusIdle = Color(dynamicLight: 0x8f6a00, dark: 0xffd60a)
     static let statusOffline = Color(dynamicLight: 0x5c5c61, dark: 0x8e8e93)
-    static let statusPending = Color(dynamicLight: 0x0a68c4, dark: 0x2997ff)
 
     // 面板视觉（细条/蒙层/阴影；岛专属令牌，改主题一并看三路由视觉）
     /// docked 细条填充：告警深红/琥珀底，忙碌加深（浅色 0.55/深色 0.85），闲置 0.34/0.55
@@ -119,13 +111,8 @@ enum Theme {
     static let radiusSm: CGFloat = 8
     static let radiusMd: CGFloat = 11
     static let radiusLg: CGFloat = 18
-    static let radiusPill: CGFloat = 9999
     /// 页面级水平边距：顶栏/主卡行/详情内容/会话内容/汇总栏统一（防再漂移）
     static let pageMargin: CGFloat = 14
-    static let spaceXs: CGFloat = 8
-    static let spaceSm: CGFloat = 12
-    static let spaceMd: CGFloat = 17
-    static let spaceLg: CGFloat = 24
 }
 
 import AgentIslandCore

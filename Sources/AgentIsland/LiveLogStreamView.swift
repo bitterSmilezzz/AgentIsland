@@ -230,9 +230,11 @@ struct LiveLogStreamView: View {
     private func badgeTextColor(for kind: AgentLogEvent.EventKind) -> Color {
         switch kind {
         case .command: return Theme.statusWorking
-        case .toolCall: return Theme.actionBlue
+        // 双值动态：深色玻璃上 actionBlue（0x0066cc）对比 ≈2.6:1，深色取亮蓝
+        case .toolCall: return Color(dynamicLight: 0x0066cc, dark: 0x409cff)
         case .fileEdit: return Theme.warningOrange
-        case .thinking: return Color(hex: 0xaf52de)
+        // 系统紫浅色白玻璃上 ≈3:1，浅色取加深紫（WCAG ≥4.5:1）
+        case .thinking: return Color(dynamicLight: 0x7a1fa2, dark: 0xaf52de)
         case .message: return Theme.onDark
         case .info: return Theme.onDarkFaint
         }

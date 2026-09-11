@@ -8,14 +8,12 @@ import AgentIslandCore
 struct AgentRingView: View {
     let snapshot: AgentSnapshot
     var size: CGFloat = 34
-    var showNumericBadge: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(snapshot: AgentSnapshot, size: CGFloat = 34, showNumericBadge: Bool = false) {
+    init(snapshot: AgentSnapshot, size: CGFloat = 34) {
         self.snapshot = snapshot
         self.size = size
-        self.showNumericBadge = showNumericBadge
     }
 
     /// 外圈进度（0.0 ~ 1.0）
@@ -41,6 +39,11 @@ struct AgentRingView: View {
     private var ringColor: Color {
         switch snapshot.level {
         case .working:
+            // 熔断语义（isHung = 疑似死锁/死循环）：环呈极光红，与细条/横幅的
+            // 告警红一致——此前 ringRed 从未接线，四级色标实际只有三级
+            if snapshot.isHung {
+                return Palette.ringRed
+            }
             if snapshot.cpuPercent >= 40 {
                 return Palette.ringOrange
             } else {
@@ -110,25 +113,7 @@ struct AgentRingView: View {
             }
             .frame(width: size, height: size)
 
-            // 5. 可选数值标签（用于紧凑看板等场景）
-            if showNumericBadge {
-                Text(badgeText)
-                    .font(Theme.monoFont(9, weight: .medium))
-                    .foregroundColor(Theme.onDarkMuted)
-                    .lineLimit(1)
-                    .contentTransition(.numericText())
-            }
         }
-    }
-
-    private var badgeText: String {
-        if snapshot.level == .working {
-            return "\(Int(snapshot.cpuPercent))%"
-        }
-        if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
-            return TokenUsage.compact(usage.tokens24h)
-        }
-        return snapshot.level.label
     }
 }
 

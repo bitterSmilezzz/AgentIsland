@@ -2,49 +2,8 @@ import SwiftUI
 import AppKit
 import AgentIslandCore
 
-// MARK: - 悬停指向小尾巴（Tooltip Tail）
-// 灵感源自 CodeNotch 的 TooltipTail：精准指向被 Hover 的 Agent 环或列表项
-
-struct TooltipTail: Shape {
-    enum Direction: Sendable {
-        case leading   // 卡片在左侧，尾巴尖朝右
-        case trailing  // 卡片在右侧，尾巴尖朝左
-        case up        // 卡片在上方，尾巴尖朝下
-        case down      // 卡片在下方，尾巴尖朝上
-    }
-
-    let direction: Direction
-
-    init(direction: Direction) {
-        self.direction = direction
-    }
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        switch direction {
-        case .leading:
-            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        case .trailing:
-            path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        case .up:
-            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        case .down:
-            path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-            path.addLine(to: CGPoint(x: rect.midX, y: rect.minY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        }
-        path.closeSubpath()
-        return path
-    }
-}
-
 // MARK: - 悬停透视浮层卡片（Agent Hover Tooltip View）
+// （早期的几何小尾巴 TooltipTail Shape 从未接线，SwiftUI .popover 自带箭头，已删除）
 
 struct AgentHoverTooltipCard: View {
     let snapshot: AgentSnapshot
