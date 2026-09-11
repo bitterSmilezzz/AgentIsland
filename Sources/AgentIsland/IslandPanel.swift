@@ -504,13 +504,20 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             }
         }
 
-        // 3. 点击外部区域即刻收起（全局与应用内失焦收起）
+        // 3. 点击外部区域即刻收起（全局与应用内失焦收起）。
+        // 全局路径（点击其他 App）：立即收起。本地路径（点击本 App 的其他窗口：
+        // 菜单栏 popover / tooltip / 设置）：监听只做预筛，collapse 延迟到 Task
+        // 复核（该 Task 在 mouseDown 处理后、mouseUp 前执行）——真正的防误伤
+        // 是复核守卫：manualOpenGraceUntil（popover 导航 3s 保护期）与浮层判定
+        // （isMouseInsidePanelOrFloatingLayers 覆盖 MenuBarExtraWindow）。
+        // 立即收起会让「菜单栏 popover 的收起侧边栏」翻面成展开、让 popover 里
+        // 点击 Agent 行下钻的详情页一闪而过
         clickGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self,
                       self.displayState == .expanded,
                       !self.isDragging,
-                      !Self.isMouseInsidePanel(self.panel) else { return }
+                      !Self.isMouseInsidePanelOrFloatingLayers(self.panel) else { return }
                 self.collapse()
             }
         }
@@ -519,8 +526,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 guard let self,
                       self.displayState == .expanded,
                       !self.isDragging,
-                      !Self.isMouseInsidePanel(self.panel) else { return }
-                self.collapse()
+                      !Self.isMouseInsidePanel(self.panel) else { return event }
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.displayState == .expanded,
+                          !self.isDragging,
+                          Date() >= self.manualOpenGraceUntil,
+                          !Self.isMouseInsidePanelOrFloatingLayers(self.panel) else { return }
+                    self.collapse()
+                }
+                return event
             }
             return event
         }
@@ -558,8 +573,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 displayState = .expanded
             }
         } else if displayState == .expanded {
-            if Self.isMouseInsidePanel(panel) {
-                // 光标已在面板内，即刻解除手动展开保护期，取消任何收起计划
+            if Self.isMouseInsidePanelOrFloatingLayers(panel) {
+                // 光标在面板或其浮层（tooltip popover / 菜单栏 popover）内：
+                // 即刻解除手动展开保护期，取消任何收起计划
                 manualOpenGraceUntil = .distantPast
                 if collapseTask != nil {
                     collapseTask?.cancel()
@@ -592,7 +608,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                   !self.isDragging,
                   self.displayState == .expanded,
                   Date() >= self.manualOpenGraceUntil,
-                  !Self.isMouseInsidePanel(self.panel) else { return }
+                  !Self.isMouseInsidePanelOrFloatingLayers(self.panel) else { return }
             self.expandCooldownUntil = Date().addingTimeInterval(0.35)
             self.displayState = .docked
         }
@@ -602,6 +618,24 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard let panel, panel.isVisible else { return false }
         let frame = panel.frame.insetBy(dx: -8, dy: -8)
         return frame.contains(NSEvent.mouseLocation)
+    }
+
+    /// 光标是否在面板或其派生浮层内。
+    /// tooltip popover（SwiftUI .popover）与菜单栏 popover 渲染在面板 frame 之外——
+    /// hover 移入浮层若判为「离开面板」会触发自动收起（默认 0.5s），浮层里的
+    /// 两段式终止确认与直达按钮实际只有半秒可用窗口。
+    /// 浮层窗口类名活体枚举（lldb 附着实证）：tooltip = `_NSPopoverWindow`、
+    /// 菜单栏 popover = `MenuBarExtraWindow<AnyView>`、状态项 = `NSStatusBarWindow`；
+    /// 按稳定片段匹配，Apple 改名时行为退化为修复前，无副作用
+    static func isMouseInsidePanelOrFloatingLayers(_ panel: NSPanel?) -> Bool {
+        if isMouseInsidePanel(panel) { return true }
+        let mouse = NSEvent.mouseLocation
+        return NSApp.windows.contains { window in
+            guard window.isVisible else { return false }
+            let cls = String(describing: type(of: window))
+            return (cls.contains("Popover") || cls.contains("StatusBar") || cls.contains("MenuBarExtraWindow"))
+                && window.frame.contains(mouse)
+        }
     }
 
     private func cancelPendingTasks() {
@@ -677,8 +711,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
             try? await Task.sleep(nanoseconds: UInt64(peekDuration * 1_000_000_000))
             guard !Task.isCancelled, self.displayState == .expanded else { return }
-            // 用户光标已移入面板（或主动操作）→ 转为常驻展开，不自动收回
-            guard !Self.isMouseInsidePanel(self.panel) else { return }
+            // 用户光标已移入面板或其浮层（tooltip/菜单栏 popover）→ 转为常驻展开，
+            // 不自动收回（与 evaluateEdgeZone 的展开保持判定同口径）
+            guard !Self.isMouseInsidePanelOrFloatingLayers(self.panel) else { return }
             self.collapse()
         }
     }
