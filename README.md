@@ -97,9 +97,11 @@ swift build
 ./scripts/build-app.sh
 open dist/AgentIsland.app
 
-# 调试日志（状态机跟踪）
+# 调试日志（数据源异常 / SafeNumber 告警 / 终止复核等诊断事件）
 AGENTISLAND_DEBUG=1 open dist/AgentIsland.app
 tail -f /tmp/agentisland.log
+# 或不设开关直接用系统日志：
+# log show --predicate 'subsystem == "com.agentisland.app"' --last 10m
 ```
 
 ## 目录结构

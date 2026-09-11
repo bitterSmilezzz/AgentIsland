@@ -255,5 +255,14 @@ enum ConfigTests {
             try expectEqual(readmeVersion, changelogVersion, "README 功能版本 = CHANGELOG 最新条目")
             try expectEqual(scriptVersion, changelogVersion, "build-app.sh Info.plist 版本 = CHANGELOG 最新条目")
         }
+
+TestKit.test("日志: AGENTISLAND_DEBUG=1 时镜像落 /tmp/agentisland.log") {
+            setenv("AGENTISLAND_DEBUG", "1", 1)
+            defer { unsetenv("AGENTISLAND_DEBUG") }
+            let marker = "applog-mirror-\(UUID().uuidString)"
+            AppLog.warn(marker)
+            let content = (try? String(contentsOfFile: "/tmp/agentisland.log", encoding: .utf8)) ?? ""
+            try expectTrue(content.contains(marker), "镜像文件应包含刚写入的标记行")
+        }
     }
 }

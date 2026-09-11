@@ -691,7 +691,7 @@ struct SettingsView: View {
             }
             launchError = nil
         } catch {
-            print("SMAppService 失败: \(error)")
+            AppLog.error("SMAppService 注册失败: \(error)")
             launchAtLogin = SMAppService.mainApp.status == .enabled
             launchError = "自启动设置失败：\(error.localizedDescription)"
         }

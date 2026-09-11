@@ -187,7 +187,7 @@ enum SafeNumber {
     }
 
     private static func warn(source: String, detail: String) {
-        debugPrint("SafeNumber[\(source)]: \(detail)")
+        AppLog.warn("SafeNumber[\(source)]: \(detail)")
     }
 }
 
@@ -589,7 +589,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
-                debugPrint("TokenUsage: prepare failed: \(String(cString: sqlite3_errmsg(db)))")
+                AppLog.warn("TokenUsage: prepare failed: \(String(cString: sqlite3_errmsg(db)))")
                 return []
             }
             defer { sqlite3_finalize(stmt) }
@@ -609,7 +609,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             }
             // 中途出错（SQLITE_ERROR/BUSY）不应把部分行当完整结果
             if sqlite3_errcode(db) != SQLITE_OK && sqlite3_errcode(db) != SQLITE_DONE && sqlite3_errcode(db) != SQLITE_ROW {
-                debugPrint("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
+                AppLog.warn("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
                 return []
             }
             return rows
@@ -621,7 +621,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         var handle: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
             if let handle { sqlite3_close(handle) }
-            debugPrint("TokenUsage: open failed \(dbPath)")
+            AppLog.warn("TokenUsage: open failed \(dbPath)")
             return nil
         }
         // 降低瞬态 BUSY：只读连接遇到写锁立即返回 BUSY，
