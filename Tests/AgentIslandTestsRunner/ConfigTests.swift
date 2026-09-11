@@ -237,8 +237,7 @@ enum ConfigTests {
             let readme = try String(contentsOfFile: "README.md", encoding: .utf8)
             let semver = "[0-9]+\\.[0-9]+\\.[0-9]+"
             guard let m1 = changelog.range(of: "## \\[" + semver + "]", options: .regularExpression),
-                  let m2 = readme.range(of: "## 功能（v" + semver + "）", options: .regularExpression),
-                  let m3 = script.range(of: "<string>" + semver + "</string>", options: .regularExpression) else {
+                  let m2 = readme.range(of: "## 功能（v" + semver + "）", options: .regularExpression) else {
                 throw TestError(message: "版本标题格式异常，哨兵无法解析")
             }
             func extractVersion(_ text: String, _ range: Range<String.Index>) -> String {
@@ -248,12 +247,14 @@ enum ConfigTests {
             }
             let changelogVersion = extractVersion(changelog, m1)
             let readmeVersion = extractVersion(readme, m2)
-            let scriptVersion = extractVersion(script, m3)
-                .replacingOccurrences(of: "<string>", with: "")
-                .replacingOccurrences(of: "</string>", with: "")
             try expectFalse(changelogVersion.isEmpty, "CHANGELOG 首条版本可解析")
             try expectEqual(readmeVersion, changelogVersion, "README 功能版本 = CHANGELOG 最新条目")
-            try expectEqual(scriptVersion, changelogVersion, "build-app.sh Info.plist 版本 = CHANGELOG 最新条目")
+            // build-app.sh 自 R19 起从 CHANGELOG 抽取版本（无硬编码）——哨兵改为验证
+            // 「抽取逻辑存在 + 无硬编码版本残留」：手工回填硬编码会破坏单一事实源
+            try expectTrue(script.contains("CHANGELOG.md") && script.contains("VERSION="),
+                            "build-app.sh 应包含从 CHANGELOG 抽取版本的逻辑")
+            try expectTrue(script.range(of: "<string>" + semver + "</string>", options: .regularExpression) == nil,
+                            "build-app.sh 不得硬编码版本号（应使用 $VERSION 变量）")
         }
 
 TestKit.test("日志: AGENTISLAND_DEBUG=1 时镜像落 /tmp/agentisland.log") {

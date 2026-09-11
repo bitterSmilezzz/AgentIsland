@@ -35,7 +35,7 @@ func runAllTests() -> Int32 {
     // 3 秒内多次重试：cfprefsd 的退出 flush 与本清扫存在竞态（连跑两轮实测
     // 一次 rm 早于 flush），循环删除直至窗口期完全覆盖
     sweep.arguments = ["-c",
-                       "for i in 1 2 3; do sleep 1; rm -f \"$HOME/Library/Preferences/\"agentisland-test-*.plist; done"]
+                       "for i in 1 2 3; do sleep 1; rm -f \"$HOME/Library/Preferences/\"agentisland-test-*.plist 2>/dev/null; done"]
     try? sweep.run()
     return result
 }
