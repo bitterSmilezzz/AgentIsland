@@ -182,8 +182,39 @@ enum EngineTests {
                 reason: "测试孤儿进程"
             )
             try expectEqual(anomaly.memoryText, "500M")
-            engine.cleanAnomalies([anomaly])
+            // 不存在的 pid：必须如实反馈失败，不得宣告「已安全清理」
+            // （此前无论结果都发 completed + 「已安全清理 N 个…系统资源已就绪」）
+            let res = engine.cleanAnomalies([anomaly])
+            try expectEqual(res.terminatedCount, 0, "不存在的 pid 不应计为清理成功")
             try expectEqual(engine.latestEvent?.agentId, "workbench-cleaner")
+            try expectEqual(engine.latestEvent?.eventType, .attention, "清理失败应为 attention 而非 completed")
+            try expectTrue(engine.latestEvent?.message?.contains("已安全清理") != true,
+                           "失败时不得谎报已清理，实际: \(engine.latestEvent?.message ?? "nil")")
+        }
+
+        TestKit.test("工作台维护: 有真实 pid 时清理成功并报 completed") {
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+            // 起一个无害的空闲进程作为可终止目标（不能用自己的 pid，会杀掉测试进程）
+            let sleeper = Process()
+            sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            sleeper.arguments = ["30"]
+            try? sleeper.run()
+            defer { if sleeper.isRunning { sleeper.terminate() } }
+            let anomaly = AgentAnomaly(
+                id: "test-anomaly-ok",
+                pid: sleeper.processIdentifier,
+                ppid: 1,
+                agentName: "DimAgent",
+                profileId: "dim",
+                commandPath: "/bin/sleep",
+                cpuPercent: 1.0,
+                memoryBytes: 1_048_576,
+                anomalyType: .orphan,
+                reason: "测试可终止进程"
+            )
+            let res = engine.cleanAnomalies([anomaly])
+            try expectTrue(res.terminatedCount == 1, "可终止的进程应计为 1，实际 \(res.terminatedCount)")
             try expectEqual(engine.latestEvent?.eventType, .completed)
             try expectTrue(engine.latestEvent?.message?.contains("已安全清理") == true)
         }
@@ -319,12 +350,51 @@ enum EngineTests {
             try expectNil(lowEngine.latestEvent, "低占用长耗时不应误报死循环")
 
             // 2. 持续高 CPU（80%）：达到 5 分钟阈值触发预警
+            // 注意：必须逐步推进时间（真实采样是连续的），一次性跳跃 305s 会被
+            // 采样断点检测（见 resumeGapThreshold）判定为睡眠/挂起而重置高负载基准。
             let highEngine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 80.0)
             _ = highEngine.sample(now: start)
             try expectNil(highEngine.latestEvent, "首次高 CPU 仅建基准不告警")
+            // 以 60s 为步长推进到 305s（模拟真实连续采样）
+            for step in stride(from: 60.0, through: 300.0, by: 60.0) {
+                _ = highEngine.sample(now: start.addingTimeInterval(step))
+            }
             _ = highEngine.sample(now: start.addingTimeInterval(305))
             try expectEqual(highEngine.latestEvent?.eventType, .costSpike, "持续高 CPU 超 5 分钟应触发告警")
             try expectTrue(highEngine.latestEvent?.message?.contains("持续高负载") == true, "文案应提示高负载")
+
+            // 3. 告警保护：横幅是单槽位，普通事件不得在保护期内挤掉严重告警
+            // （实测中 costSpike 横幅常被其他 Agent 的「任务完成」在几秒内顶掉）
+            let now = Date()
+            highEngine.postEvent(AgentTaskEvent(
+                agentId: "dim", agentName: "DimAgent", eventType: .completed,
+                duration: 5, timestamp: now, message: "普通完成事件"
+            ))
+            try expectEqual(highEngine.latestEvent?.eventType, .costSpike,
+                            "保护期内普通事件不应覆盖告警，实际: \(highEngine.latestEvent?.message ?? "nil")")
+
+            // 4. 用户关闭告警后保护解除，普通事件可正常展示
+            highEngine.clearLatestEvent()
+            highEngine.postEvent(AgentTaskEvent(
+                agentId: "dim", agentName: "DimAgent", eventType: .completed,
+                duration: 5, timestamp: now, message: "普通完成事件"
+            ))
+            try expectEqual(highEngine.latestEvent?.eventType, .completed,
+                            "关闭告警后保护应解除")
+        }
+
+        TestKit.test("引擎: 睡眠/挂起断点不误报任务完成") {
+            // 合盖睡眠 8 小时后唤醒：时间在走但期间没有任何采样，不能补发
+            // 「任务完成 (480分0秒)」——Agent 只是被挂起，不是干完了活。
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 80.0)
+            let start = Date()
+            _ = engine.sample(now: start)
+            _ = engine.sample(now: start.addingTimeInterval(300))   // 形成高负载基准
+            engine.clearLatestEvent()
+            let snap = engine.sample(now: start.addingTimeInterval(8 * 3600)).first { $0.id == "dim" }
+            try expectNil(engine.latestEvent,
+                          "跨睡眠断点不得产生完成事件，实际: \(engine.latestEvent?.message ?? "nil")")
+            try expectTrue(snap != nil, "断点后仍应正常产出快照")
         }
 
         TestKit.test("引擎: 目录缺失时保持离线且不崩溃") {
@@ -789,9 +859,14 @@ enum EngineTests {
             try expectEqual(dimSnap?.level, .idle, "DimAgent 8% 的 Electron 空闲 CPU 抖动应保持 idle")
             try expectNil(dimSnap?.currentAction, "空闲挂起时不应透传任何错误动作")
 
+            // 注意：CPU 判定阈值现已随档案下沉（AgentProfile.cpuWorkingThreshold），
+            // 测试手工构造 profile 时必须带上该字段，否则退化为全局 cpuThreshold，
+            // 与真实注册表（AgentRegistry.builtin 中 workbuddy 设为 35）行为不一致。
             let workbuddyProfile = AgentProfile(
                 id: "workbuddy", name: "WorkBuddy", icon: "briefcase.fill",
-                bundleIDs: [], processNames: ["Electron"], sessionDirs: [home + "/.workbuddy/tasks"]
+                bundleIDs: [], processNames: ["Electron"],
+                cpuWorkingThreshold: 35.0,
+                sessionDirs: [home + "/.workbuddy/tasks"]
             )
             let workbuddyEngine = ActivityEngine(
                 profiles: [workbuddyProfile],

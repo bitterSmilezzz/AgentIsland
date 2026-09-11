@@ -315,7 +315,169 @@ enum TokenUsageTests {
             }
         }
 
+        // MARK: 健壮性：外部脏数据不得令进程 trap（越界 / Inf / NaN / 哨兵时间戳）
+
+        TestKit.test("SafeNumber.parseInt 饱和解析：越界不 trap，Inf/NaN/非数值归零") {
+            try expectEqual(SafeNumber.parseInt("12", source: "t"), 12, "普通整数")
+            try expectEqual(SafeNumber.parseInt("19067783.5", source: "t"), 19_067_783, "REAL 聚合文本取整数部分")
+            try expectEqual(SafeNumber.parseInt("99999999999999999999", source: "t"),
+                            SafeNumber.magnitudeCeiling, "超 Int64 的数字字符串饱和")
+            try expectEqual(SafeNumber.parseInt("1e19", source: "t"),
+                            SafeNumber.magnitudeCeiling, "科学计数法越界饱和")
+            try expectEqual(SafeNumber.parseInt("Inf", source: "t"),
+                            SafeNumber.magnitudeCeiling, "两行超大值求和溢出为 Inf")
+            try expectEqual(SafeNumber.parseInt("NaN", source: "t"), 0, "NaN 归零")
+            try expectEqual(SafeNumber.parseInt("", source: "t"), 0, "空串归零")
+            try expectEqual(SafeNumber.parseInt("abc", source: "t"), 0, "非数值归零")
+            try expectEqual(SafeNumber.parseInt("-1e19", source: "t"),
+                            -SafeNumber.magnitudeCeiling, "负向同样饱和")
+            try expectEqual(SafeNumber.saturatingInt(.greatestFiniteMagnitude, source: "t"),
+                            SafeNumber.magnitudeCeiling, "Double 上限饱和")
+            try expectEqual(SafeNumber.saturatingInt(.infinity, source: "t"),
+                            SafeNumber.magnitudeCeiling, "Inf 饱和")
+        }
+
+        TestKit.test("SafeNumber.parseCost 非有限值归零、越界钳制") {
+            try expectTrue(abs(SafeNumber.parseCost("0.42", source: "t") - 0.42) < 1e-9, "正常值")
+            try expectEqual(SafeNumber.parseCost("Inf", source: "t"), 0, "Inf 归零")
+            try expectEqual(SafeNumber.parseCost("NaN", source: "t"), 0, "NaN 归零")
+            try expectEqual(SafeNumber.parseCost("1e300", source: "t"), SafeNumber.costCeiling, "越界钳制")
+            try expectEqual(SafeNumber.parseCost("abc", source: "t"), 0, "非数值归零")
+        }
+
+        TestKit.test("SafeNumber.date(fromMillisText:) 非法时间戳返回 nil") {
+            try expectNil(SafeNumber.date(fromMillisText: "Inf", source: "t"))
+            try expectNil(SafeNumber.date(fromMillisText: "NaN", source: "t"))
+            try expectNil(SafeNumber.date(fromMillisText: "0", source: "t"), "0 非合法纪元")
+            try expectNil(SafeNumber.date(fromMillisText: "1e20", source: "t"), "超上限")
+            try expectTrue(SafeNumber.date(fromMillisText: "1700000000000", source: "t") != nil, "正常毫秒")
+        }
+
+        TestKit.test("SafeNumber.date(fromEpochMillis:) 拒收哨兵 / 越界毫秒") {
+            try expectNil(SafeNumber.date(fromEpochMillis: Int64.max, source: "t"), "Int64 上限哨兵")
+            try expectNil(SafeNumber.date(fromEpochMillis: 0, source: "t"))
+            try expectNil(SafeNumber.date(fromEpochMillis: -1, source: "t"))
+            try expectTrue(SafeNumber.date(fromEpochMillis: 1_700_000_000_000, source: "t") != nil, "正常毫秒")
+        }
+
+        TestKit.test("Token 汇总：越界 / Inf 数据源不崩溃且按上限钳制") {
+            // 修复前此用例直接 fatalError（exit 133）：Int(Double(1e19)) trap
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("agentisland-dirty-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let dimDB = dir.appendingPathComponent("dim.sqlite").path
+            try TokenFixture.exec(dimDB, [
+                "CREATE TABLE usage_ledger (createdAt TEXT, modelId TEXT, usage TEXT, cost REAL, sessionId TEXT)",
+                "INSERT INTO usage_ledger VALUES ('\(TokenFixture.iso(Date()))', 'm1', '{\"promptTokens\":1e19,\"completionTokens\":0}', 1e300, 's1')",
+            ])
+            let monitor = TokenUsageMonitor(dimAgentDB: dimDB,
+                                            openCodeDB: dir.appendingPathComponent("none.db").path)
+            monitor.refresh()
+            try expectEqual(monitor.grandTotal.tokensTotal, SafeNumber.magnitudeCeiling, "越界 token 饱和")
+            try expectEqual(monitor.grandTotal.costTotal, SafeNumber.costCeiling, "越界 cost 钳制")
+        }
+
+        TestKit.test("AgentLogEvent id：哨兵 / Inf / NaN 时间戳不 trap") {
+            let sentinel = AgentLogEvent(timestamp: Date(timeIntervalSince1970: Double(Int64.max)),
+                                         kind: .info, title: "t", agentId: "a")
+            try expectTrue(sentinel.id.hasPrefix("a-"), "id 前缀应含 agentId")
+            let inf = AgentLogEvent(timestamp: Date(timeIntervalSince1970: .infinity),
+                                    kind: .info, title: "t", agentId: "a")
+            try expectTrue(!inf.id.isEmpty, "Inf 时间戳仍应生成 id")
+            let nan = AgentLogEvent(timestamp: Date(timeIntervalSince1970: .nan),
+                                    kind: .info, title: "t", agentId: "a")
+            try expectTrue(!nan.id.isEmpty, "NaN 时间戳仍应生成 id")
+        }
+
+        TestKit.test("AgentLogStreamer 流水窗口 SQL：仍返回最新 N 条") {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("agentisland-events-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let dbPath = dir.appendingPathComponent("dimcode.sqlite").path
+            var stmts = ["CREATE TABLE messages (createdAt TEXT, role TEXT, parts TEXT, toolMetadata TEXT)"]
+            for i in 0..<600 {
+                stmts.append("INSERT INTO messages VALUES ('\(TokenFixture.iso(Date(timeIntervalSince1970: 1_700_000_000 + Double(i))))', 'user', 'row-\(i)', '')")
+            }
+            try TokenFixture.exec(dbPath, stmts)
+
+            let parts = try Self.queryColumn(dbPath, sql: AgentLogStreamer.dimEventsSQL(limit: 20), column: 2)
+            try expectEqual(parts.count, 20, "窗口查询应返回 20 条")
+            try expectEqual(parts.first, "row-599", "最近插入的排最前")
+            try expectEqual(Set(parts).count, 20, "无重复")
+        }
+
+        TestKit.test("AgentLogStreamer opencode 流水窗口 SQL：仍返回最新 N 条") {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("agentisland-parts-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let dbPath = dir.appendingPathComponent("opencode.db").path
+            var stmts = ["CREATE TABLE part (data TEXT, time_created INTEGER)"]
+            for i in 0..<600 {
+                stmts.append("INSERT INTO part VALUES ('row-\(i)', \(1_700_000_000_000 + i))")
+            }
+            try TokenFixture.exec(dbPath, stmts)
+
+            let data = try Self.queryColumn(dbPath, sql: AgentLogStreamer.openCodeEventsSQL(limit: 20), column: 0)
+            try expectEqual(data.count, 20, "窗口查询应返回 20 条")
+            try expectEqual(data.first, "row-599", "time_created 最大的排最前")
+            try expectEqual(Set(data).count, 20, "无重复")
+        }
+
+        TestKit.test("AgentLogStreamer.recentWindow 边界") {
+            try expectEqual(AgentLogStreamer.recentWindow(limit: 20), 500, "小 limit 保底 500")
+            try expectEqual(AgentLogStreamer.recentWindow(limit: 100), 2500, "大 limit 等比放大")
+            try expectEqual(AgentLogStreamer.recentWindow(limit: 0), 500, "limit 非正时保底")
+        }
+
+        TestKit.test("AgentLogStreamer.openReadonly 失败路径不泄漏 handle") {
+            // sqlite3_open_v2 失败时 handle 仍可能非 NULL；不 close 则每次泄漏约 1.5KB。
+            // 2 万次失败开库：修复前 +28MB，修复后应接近 0。
+            let missing = "/tmp/agentisland-no-such-dir-\(UUID().uuidString)/no-such.db"
+            let before = Self.residentMemoryMB()
+            for _ in 0..<20_000 {
+                try expectNil(AgentLogStreamer.openReadonly(missing), "不存在的库应打开失败")
+            }
+            let delta = Self.residentMemoryMB() - before
+            try expectTrue(delta < 8, "2 万次失败开库不应持续增长（实测 +28MB 为泄漏），实际 +\(String(format: "%.1f", delta))MB")
+        }
+
         // MARK: 等待辅助：主线程轮询 RunLoop（避免信号量死锁 MainActor）
+    }
+
+    /// 在临时库上执行查询并取指定列（流水窗口 SQL 的语义验证）
+    @MainActor
+    private static func queryColumn(_ dbPath: String, sql: String, column: Int32) throws -> [String] {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+            throw TestError(message: "打开 fixture 失败")
+        }
+        defer { sqlite3_close(db) }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            throw TestError(message: "prepare 失败: \(sql)")
+        }
+        defer { sqlite3_finalize(stmt) }
+        var rows: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            rows.append(sqlite3_column_text(stmt, column).map { String(cString: $0) } ?? "")
+        }
+        return rows
+    }
+
+    /// 进程常驻内存（MB）：用于泄漏用例的前后对比
+    @MainActor
+    private static func residentMemoryMB() -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576 : -1
     }
 
     @MainActor

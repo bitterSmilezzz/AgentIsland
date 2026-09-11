@@ -11,6 +11,13 @@ func runAllTests() -> Int32 {
     RegistryTests.register()
     SettingsTests.register()
     InstalledAppsTests.register()
+    IslandMetricsTests.register()
+    CleanerTests.register()
+    VisibilityTests.register()
+    ConfigTests.register()
+    EventTextTests.register()
+    MemoryTextTests.register()
+    FormatTests.register()
     return TestKit.runAll()
 }
 
