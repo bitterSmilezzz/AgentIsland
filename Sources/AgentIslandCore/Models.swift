@@ -303,27 +303,59 @@ public struct EngineConfig: Equatable {
     /// 会让引擎每秒采样 2895 次（timer 立即重排 + 空转），CPU 直接跑满。
     /// 上限 600s：再长就失去「监控」意义。
     public static let sampleIntervalRange: ClosedRange<Double> = 0.5...600.0
+    /// 其余字段的合法区间（与设置页滑杆 range 对齐；滑杆是 UI 输入口径，这里是自愈口径）。
+    /// minWorkingHold / runawayCpuThreshold / runawayDurationThreshold / tokenAlertThreshold
+    /// 当前不暴露在设置页，也一并设防——配置值只能来自滑杆或默认值，其余都是脏数据。
+    public static let workingWindowRange: ClosedRange<Double> = 10.0...300.0
+    public static let activeSessionWindowRange: ClosedRange<Double> = 60.0...3600.0
+    public static let minWorkingHoldRange: ClosedRange<Double> = 1.0...300.0
+    public static let runawayCpuThresholdRange: ClosedRange<Double> = 10.0...100.0
+    public static let runawayDurationThresholdRange: ClosedRange<Double> = 30.0...3600.0
+    public static let tokenAlertThresholdRange: ClosedRange<Int> = 1_000...10_000_000
 
     /// 归一化：脏持久化值自愈的唯一入口。
-    /// - cpuThreshold 钳入合法区间
-    /// - 采样间隔钳入合法区间（防 0/负数造成忙循环，也防异常超大值）
+    /// - 全部 Double 字段：NaN 先归位默认值再钳制（min/max 对 NaN 透传，直接钳会漏）
+    /// - cpuThreshold / 采样间隔 / 工作窗口 / 活跃会话窗口 / 滞回 / 死循环阈值 / 告警阈值：
+    ///   各自钳入合法区间（workingWindow/activeSessionWindow 为负会让对应信号通道整体失效）
     /// - sample ≤ idle 钳平（否则「闲置降频」逻辑反转）
     /// 设置表单、启动读取、配置热更新三处共用，钳制规则只此一处。
     public func normalized() -> EngineConfig {
         var c = self
-        c.cpuThreshold = min(max(c.cpuThreshold, Self.cpuThresholdRange.lowerBound),
-                             Self.cpuThresholdRange.upperBound)
-        c.sampleInterval = min(max(c.sampleInterval, Self.sampleIntervalRange.lowerBound),
-                               Self.sampleIntervalRange.upperBound)
-        c.idleSampleInterval = min(max(c.idleSampleInterval, Self.sampleIntervalRange.lowerBound),
-                                   Self.sampleIntervalRange.upperBound)
+        let base = EngineConfig()
+        if c.sampleInterval.isNaN { c.sampleInterval = base.sampleInterval }
+        if c.idleSampleInterval.isNaN { c.idleSampleInterval = base.idleSampleInterval }
+        if c.workingWindow.isNaN { c.workingWindow = base.workingWindow }
+        if c.cpuThreshold.isNaN { c.cpuThreshold = base.cpuThreshold }
+        if c.activeSessionWindow.isNaN { c.activeSessionWindow = base.activeSessionWindow }
+        if c.minWorkingHold.isNaN { c.minWorkingHold = base.minWorkingHold }
+        if c.runawayCpuThreshold.isNaN { c.runawayCpuThreshold = base.runawayCpuThreshold }
+        if c.runawayDurationThreshold.isNaN { c.runawayDurationThreshold = base.runawayDurationThreshold }
+
+        func clamp(_ v: Double, _ r: ClosedRange<Double>) -> Double {
+            min(max(v, r.lowerBound), r.upperBound)
+        }
+        c.cpuThreshold = clamp(c.cpuThreshold, Self.cpuThresholdRange)
+        c.sampleInterval = clamp(c.sampleInterval, Self.sampleIntervalRange)
+        c.idleSampleInterval = clamp(c.idleSampleInterval, Self.sampleIntervalRange)
+        c.workingWindow = clamp(c.workingWindow, Self.workingWindowRange)
+        c.activeSessionWindow = clamp(c.activeSessionWindow, Self.activeSessionWindowRange)
+        c.minWorkingHold = clamp(c.minWorkingHold, Self.minWorkingHoldRange)
+        c.runawayCpuThreshold = clamp(c.runawayCpuThreshold, Self.runawayCpuThresholdRange)
+        c.runawayDurationThreshold = clamp(c.runawayDurationThreshold, Self.runawayDurationThresholdRange)
+        c.tokenAlertThreshold = min(max(c.tokenAlertThreshold, Self.tokenAlertThresholdRange.lowerBound),
+                                    Self.tokenAlertThresholdRange.upperBound)
         if c.sampleInterval > c.idleSampleInterval {
             c.sampleInterval = c.idleSampleInterval
         }
         return c
     }
 
-    /// 从持久化读取（SettingKey 键，缺项回落默认）并归一化——启动即自愈脏值
+    /// 从持久化读取（SettingKey 键，缺项回落默认）并归一化——启动即自愈脏值。
+    ///
+    /// 注意：minWorkingHold / runawayCpuThreshold / runawayDurationThreshold 三个字段
+    /// **刻意不持久化**（无对应 SettingKey，设置页也不暴露）——它们是行为调优常量，
+    /// 持久化会复现 0.0.17 修过的「设置实效」类缺陷（设置页加了滑块却读不回来）。
+    /// 未来要暴露它们时，必须同步补 SettingKey + 本函数读取分支 + 设置页滑杆三者。
     public static func load(from defaults: UserDefaults) -> EngineConfig {
         let base = EngineConfig()
         return EngineConfig(

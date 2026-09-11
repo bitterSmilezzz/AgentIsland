@@ -77,7 +77,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var collapseDelay: TimeInterval
 
     func applyCollapseDelay(_ delay: TimeInterval) {
-        collapseDelay = max(0.2, delay)
+        // 与 init 读取同口径钳制（脏值自愈唯一通道，避免两处口径漂移）
+        collapseDelay = min(max(delay, SettingLimits.collapseDelayRange.lowerBound),
+                            SettingLimits.collapseDelayRange.upperBound)
     }
 
     func setDockEdge(_ edge: DockEdge) {
@@ -98,7 +100,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     init(engine: ActivityEngine) {
         self.engine = engine
-        self.collapseDelay = UserDefaults.standard.object(forKey: SettingKey.collapseDelay) as? Double ?? 0.5
+        // init 即钳制：脏持久化值（负数/超大）此前直通 scheduleCollapse 的
+        // UInt64(delay * 1e9) 转换，负值/溢出直接运行时 trap——鼠标每次离开展开卡
+        // 都触发收起调度，等于「收起必崩」死循环（设置页路径的钳制覆盖不到这里）
+        let persistedDelay = UserDefaults.standard.object(forKey: SettingKey.collapseDelay) as? Double ?? 0.5
+        self.collapseDelay = min(max(persistedDelay.isFinite ? persistedDelay : 0.5,
+                                     SettingLimits.collapseDelayRange.lowerBound),
+                                 SettingLimits.collapseDelayRange.upperBound)
 
         if let edgeStr = UserDefaults.standard.string(forKey: SettingKey.dockEdge),
            let edge = DockEdge(rawValue: edgeStr) {
@@ -107,10 +115,12 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             self.dockEdge = .right
         }
 
-        if let sx = UserDefaults.standard.object(forKey: SettingKey.dockAnchorX) as? Double {
+        // 锚点坐标防 NaN/Inf：损坏值会让后续 min/max 钳制失效（NaN 比较恒 false），
+        // 窗口可能被放到可见区域外且再也无法拖回
+        if let sx = UserDefaults.standard.object(forKey: SettingKey.dockAnchorX) as? Double, sx.isFinite {
             self.savedTopX = CGFloat(sx)
         }
-        if let sy = UserDefaults.standard.object(forKey: SettingKey.dockAnchorY) as? Double {
+        if let sy = UserDefaults.standard.object(forKey: SettingKey.dockAnchorY) as? Double, sy.isFinite {
             self.savedRightY = CGFloat(sy)
         }
         self.appearanceMode = Self.persistedAppearance()

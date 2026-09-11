@@ -70,10 +70,51 @@ enum ConfigTests {
             try expectEqual(once.cpuThreshold, 1.0, "cpuThreshold 下限")
             try expectEqual(once.sampleInterval, 0.5, "sampleInterval 下限")
             try expectEqual(once.idleSampleInterval, 600.0, "idleSampleInterval 上限")
-            try expectEqual(once.workingWindow, 42.0, "工作窗口不参与钳制")
-            try expectEqual(once.activeSessionWindow, 900.0, "活跃会话窗口不参与钳制")
-            try expectEqual(once.minWorkingHold, 3.0, "滞回时长不参与钳制")
-            try expectEqual(once.tokenAlertThreshold, 12_345, "告警阈值不参与钳制")
+            try expectEqual(once.workingWindow, 42.0, "工作窗口在合法区间内不改动")
+            try expectEqual(once.activeSessionWindow, 900.0, "活跃会话窗口在合法区间内不改动")
+            try expectEqual(once.minWorkingHold, 3.0, "滞回时长在合法区间内不改动")
+            try expectEqual(once.tokenAlertThreshold, 12_345, "告警阈值在合法区间内不改动")
+        }
+
+        TestKit.test("配置: normalized 补齐字段钳制（负窗口不得让信号通道失效）") {
+            var dirty = EngineConfig()
+            dirty.workingWindow = -1
+            dirty.activeSessionWindow = -5
+            dirty.minWorkingHold = 0
+            dirty.runawayCpuThreshold = 500
+            dirty.runawayDurationThreshold = 0.5
+            dirty.tokenAlertThreshold = 0
+            let fixed = dirty.normalized()
+            try expectEqual(fixed.workingWindow, 10.0, "工作窗口下限（脏负值会让文件信号通道整体失效）")
+            try expectEqual(fixed.activeSessionWindow, 60.0, "活跃会话窗口下限（脏负值让计数恒 0）")
+            try expectEqual(fixed.minWorkingHold, 1.0, "滞回下限")
+            try expectEqual(fixed.runawayCpuThreshold, 100.0, "死循环 CPU 阈值上限")
+            try expectEqual(fixed.runawayDurationThreshold, 30.0, "死循环时长下限")
+            try expectEqual(fixed.tokenAlertThreshold, 1_000, "告警阈值下限")
+        }
+
+        TestKit.test("配置: NaN 字段归位默认值再钳制") {
+            var nan = EngineConfig()
+            nan.cpuThreshold = Double.nan
+            nan.sampleInterval = Double.nan
+            nan.workingWindow = Double.nan
+            let healed = nan.normalized()
+            let base = EngineConfig()
+            try expectEqual(healed.cpuThreshold, base.cpuThreshold, "NaN 必须归位默认（min/max 对 NaN 透传）")
+            try expectEqual(healed.sampleInterval, base.sampleInterval, "NaN 必须归位默认")
+            try expectEqual(healed.workingWindow, base.workingWindow, "NaN 必须归位默认")
+        }
+
+        TestKit.test("配置: 收起延迟合法区间（UI 读取钳制口径，防 UInt64 转换 trap）") {
+            // 本用例只守护常量口径；app 侧接线（IslandPanelController init /
+            // applyCollapseDelay）在 app target 内，runner 不可 import，由代码评审守护
+            try expectEqual(SettingLimits.collapseDelayRange, 0.2...5.0)
+            let clamp: (Double) -> Double = {
+                min(max($0, SettingLimits.collapseDelayRange.lowerBound),
+                    SettingLimits.collapseDelayRange.upperBound)
+            }
+            try expectEqual(clamp(-1.0), 0.2, "负值下限钳制（此前直通 UInt64 转换即 trap）")
+            try expectEqual(clamp(1e30), 5.0, "超大值上限钳制（此前 UInt64(Double) 溢出 trap）")
         }
 
         TestKit.test("配置: load 缺项回落默认值、非空项按类型读取") {

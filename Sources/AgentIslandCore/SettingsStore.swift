@@ -25,6 +25,13 @@ public enum SettingKey {
     public static let knownAgents = "knownAgents"
 }
 
+/// UserDefaults 读取的钳制区间（脏持久化值自愈；与设置页滑杆 range 对齐）。
+/// 引擎配置字段的区间在 EngineConfig（normalized 唯一入口），这里只收 UI 侧散点。
+public enum SettingLimits {
+    /// 自动收起延迟：下限 0.2s 防鼠标掠过即收、上限 5s 防脏值让面板久驻
+    public static let collapseDelayRange: ClosedRange<Double> = 0.2...5.0
+}
+
 /// 启停集合持久化：key/编解码/空数组语义单点持有。
 /// 「无记录」与「空数组」是两个状态——空集合是用户主动全关，照常存取；
 /// 提供 resolvedEnabled(registry:defaults:) 实现版本升级与历史配置向前兼容自愈。
