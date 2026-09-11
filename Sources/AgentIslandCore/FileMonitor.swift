@@ -348,9 +348,12 @@ public final class FileActivityMonitor: FileActivityProviding {
             return true
         }
         // 2. 纯 PID 形式的心跳 JSON（如 WorkBuddy 的 33485.json、33162.json）
-        let stem = url.deletingPathExtension().lastPathComponent
-        if url.pathExtension == "json" && Int(stem) != nil {
-            return true
+        // 先判扩展名再算 stem：deletingPathExtension 有分配成本，非 json 文件免付
+        if url.pathExtension == "json" {
+            let stem = url.deletingPathExtension().lastPathComponent
+            if Int(stem) != nil {
+                return true
+            }
         }
         // 3. 显式心跳与遥测文件
         let lower = name.lowercased()
@@ -372,7 +375,11 @@ public final class FileActivityMonitor: FileActivityProviding {
     ]
 
     private static func isIgnoredActivityPath(_ url: URL) -> Bool {
-        url.pathComponents.contains { ignoredActivityPathComponents.contains($0.lowercased()) }
+        // 只比对条目自身的 basename（小写化一次）而非切分整条 pathComponents：
+        // 被忽略子树在其目录条目处已被 skipDescendants 剪枝（见 scanTree），后代条目
+        // 根本不会被枚举到，因此「祖先组件命中」与「自身命中」语义等价——每条目省掉
+        // 一次数组分配与逐组件小写化（数万条目 × 全量扫描的可观占比）
+        ignoredActivityPathComponents.contains(url.lastPathComponent.lowercased())
     }
 }
 

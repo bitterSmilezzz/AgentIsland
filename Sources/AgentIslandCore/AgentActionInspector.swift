@@ -93,6 +93,29 @@ public enum AgentActionInspector {
     /// 读取进程完整命令行（sysctl KERN_PROCARGS2，纯系统调用，无子进程）。
     /// 返回形如 `/path/to/exe arg1 arg2`（与 `ps -o command=` 一致）。
     /// 失败返回 nil，调用方回退到快照里的可执行路径。
+    /// 命令行短 TTL 缓存。dsh 匹配对系统里每个 node 候选每拍各做一次 KERN_PROCARGS2
+    /// sysctl（args+env 整块拷贝解析，2-8KB 分配，node 进程多的开发机一拍十几次），
+    /// 命中后 inspectDSHAction 还会对同一 pid 再调一次；dsh web 模式启动后命令行不变，
+    /// 10s TTL 内复用无损。pid 退出后由容量上限粗粒度清除（512 条 × 短字符串，有界）。
+    private static let commandLineCacheLock = NSLock()
+    private static var commandLineCache: [Int32: (command: String, at: Date)] = [:]
+    static func cachedCommandLine(of pid: Int32, ttl: TimeInterval = 10) -> String? {
+        commandLineCacheLock.lock()
+        defer { commandLineCacheLock.unlock() }
+        if let hit = commandLineCache[pid], Date().timeIntervalSince(hit.at) < ttl {
+            return hit.command
+        }
+        guard let command = commandLine(of: pid) else {
+            commandLineCache[pid] = nil   // pid 已消失：不缓存负结果，同时清残留
+            return nil
+        }
+        if commandLineCache.count > 512 {
+            commandLineCache.removeAll(keepingCapacity: true)
+        }
+        commandLineCache[pid] = (command, Date())
+        return command
+    }
+
     public static func commandLine(of pid: Int32) -> String? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
         var size = 0
@@ -629,43 +652,55 @@ public enum AgentActionInspector {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.local/share/opencode/opencode.db"
         return withDB(dbPath) { db in
-            // 性能关键：原实现 `LEFT JOIN part ... ORDER BY s.time_updated DESC, p.time_updated DESC
-            // LIMIT 1` 会对数十万行的 part 表做全表 join + 排序（实测 90ms，每 2 秒一次）。
-            // 改为两步：先按 session 的 time_updated 取最新会话（有索引），再取该会话最新的 part。
-            let sql = """
-            SELECT s.title, p.data, s.time_updated FROM session s
-            LEFT JOIN part p ON p.id = (
-                SELECT id FROM part WHERE session_id = s.id ORDER BY time_updated DESC LIMIT 1
-            )
-            WHERE s.id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1);
-            """
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-            defer { sqlite3_finalize(stmt) }
+            // 性能关键：原实现 `LEFT JOIN part ... ORDER BY s.time_updated DESC, p.time_updated
+            // DESC LIMIT 1` 的相关子查询对 part 按 time_updated 排序（无索引 → 临时 B 树，
+            // 随活跃会话 part 数线性退化，万级 part 实测量级 2-5ms，每 2s 一次全在主线程）。
+            // 两步化：① session 表百行级，ORDER BY time_updated 取最新会话可接受；
+            // ② part 用 rowid 定位该会话最新行（插入序 O(1)；rowid 与 time_created 的
+            // 毫秒级交错对「最新一条动作」无影响，与 AgentLogStreamer 流水窗口同一取舍）。
+            let sessionSQL = "SELECT id, title, time_updated FROM session ORDER BY time_updated DESC LIMIT 1;"
+            var sessionId: String?
+            var sessionTitle: String?
+            var timeUpdatedMs: Int64 = 0
+            var sessionStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, sessionSQL, -1, &sessionStmt, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(sessionStmt) }
+                if sqlite3_step(sessionStmt) == SQLITE_ROW {
+                    sessionId = sqlite3_column_text(sessionStmt, 0).map { String(cString: $0) }
+                    sessionTitle = sqlite3_column_text(sessionStmt, 1).map { String(cString: $0) }
+                    timeUpdatedMs = sqlite3_column_int64(sessionStmt, 2)
+                }
+            }
+            guard let sessionId else { return nil }
 
-            if sqlite3_step(stmt) == SQLITE_ROW {
-                let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-                let partDataStr = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
-                let timeUpdatedMs = sqlite3_column_int64(stmt, 2)
-                let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            let partSQL = "SELECT data FROM part WHERE session_id = ? ORDER BY rowid DESC LIMIT 1;"
+            var partStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, partSQL, -1, &partStmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(partStmt) }
+            sqlite3_bind_text(partStmt, 1, sessionId, -1, nil)
+            var partDataStr: String?
+            if sqlite3_step(partStmt) == SQLITE_ROW {
+                partDataStr = sqlite3_column_text(partStmt, 0).map { String(cString: $0) }
+            }
 
-                if let dataStr = partDataStr, let data = dataStr.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    if let type = json["type"] as? String {
-                        if type == "reasoning" {
-                            return "思考规划中"
-                        } else if type == "tool-call", let toolName = json["toolName"] as? String {
-                            return "正在调用: \(toolName)"
-                        }
+            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+
+            if let dataStr = partDataStr, let data = dataStr.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let type = json["type"] as? String {
+                    if type == "reasoning" {
+                        return "思考规划中"
+                    } else if type == "tool-call", let toolName = json["toolName"] as? String {
+                        return "正在调用: \(toolName)"
                     }
                 }
+            }
 
-                if !title.isEmpty && !title.hasPrefix("New session -") {
-                    let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                    let display = clipTitle(cleanTitle)
-                    if nowMs - timeUpdatedMs < 60 * 60 * 1000 {
-                        return "会话: \(display)"
-                    }
+            if let title = sessionTitle, !title.isEmpty && !title.hasPrefix("New session -") {
+                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                let display = clipTitle(cleanTitle)
+                if nowMs - timeUpdatedMs < 60 * 60 * 1000 {
+                    return "会话: \(display)"
                 }
             }
             return nil
@@ -676,8 +711,9 @@ public enum AgentActionInspector {
 
     public static func inspectDSHAction(pid: Int32?, snapshot: ProcessSnapshot? = nil) -> String? {
         if let pid = pid, pid > 1 {
-            // 用 libproc 直读命令行，避免 fork /bin/ps（单次 ~67ms 的主线程开销）
-            let raw = commandLine(of: pid)
+            // 用 libproc 直读命令行，避免 fork /bin/ps（单次 ~67ms 的主线程开销）；
+            // 走 TTL 缓存——匹配器命中 dsh 时刚为本 pid 探测过，二次 sysctl 纯浪费
+            let raw = cachedCommandLine(of: pid)
                 ?? snapshot?.entries.first { $0.pid == pid }?.path
             if let raw, !raw.isEmpty {
                 // 用词边界匹配：commandLine 以可执行路径开头（如 "/path/dsh run foo"），

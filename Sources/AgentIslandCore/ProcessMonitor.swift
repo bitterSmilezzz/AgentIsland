@@ -245,9 +245,11 @@ public struct ProcessMatcher: @unchecked Sendable {
     /// 进程名前缀匹配（Q2：覆盖 Electron Helper / Helper (Renderer) 变体）
     /// profile 配 "dimagent"，则 dimagent、dimagent helper、dimagent-helper 命中；
     /// dimagentmalware 之类不会误命中（要求词边界：空格/连字符/精确相等）
+    /// - Parameter basename: 必须已是小写。Entry 构造时统一 lowercased()（见 snapshot），
+    ///   本函数位于「entries × profiles」每拍 ~8.7k 次调用的热路径，不再逐次分配小写副本
     static func matchesProcessNames(_ names: Set<String>, basename: String) -> Bool {
         guard !basename.isEmpty else { return false }
-        let b = basename.lowercased()
+        let b = basename
         return names.contains { name in
             b == name || b.hasPrefix(name + " ") || b.hasPrefix(name + "-")
         }
@@ -267,10 +269,12 @@ public struct ProcessMatcher: @unchecked Sendable {
         var nameHit = Self.matchesProcessNames(s.names, basename: entry.basename)
         // DeepSeek Harness 的 web 模式由外部 Node 启动，进程 basename 只有 node，
         // 可执行路径也不包含仓库名；用已有的无 fork sysctl 命令行探测补齐这一形态。
-        // 仅对 node/dsh 候选调用，避免每个采样周期遍历所有 PID。
+        // 仅对 node/dsh 候选调用（basename 已恒小写，无需再 lowercased），
+        // 且走 10s TTL 缓存——否则 node 进程多的机器每拍要做十几次 KERN_PROCARGS2
+        // sysctl（含环境块整块拷贝解析），命中后 inspectDSHAction 还会重复一次
         if !nameHit, profile.id == "dsh",
-           ["node", "dsh"].contains(entry.basename.lowercased()), entry.pid > 1,
-           let command = AgentActionInspector.commandLine(of: entry.pid)?.lowercased(),
+           ["node", "dsh"].contains(entry.basename), entry.pid > 1,
+           let command = AgentActionInspector.cachedCommandLine(of: entry.pid)?.lowercased(),
            command.contains("deepseek-harness") || command.contains("/dsh ") {
             nameHit = true
         }

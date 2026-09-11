@@ -101,6 +101,29 @@ enum FileIOTests {
                            "file-history/blobs 的新写入不应被计入最近活动")
             try expectEqual(result.activeSessions, 0, "缓存子树不应计为活跃会话")
         }
+
+        TestKit.test("忽略集: 深层嵌套忽略目录（node_modules/deep/pkg）仍被剪枝（basename 判定等价性）") {
+            // isIgnoredActivityPath 从 pathComponents 全组件匹配改为 basename 匹配：
+            // 依赖「忽略目录自身条目处已被 skipDescendants 剪枝」——本用例锁死该等价性。
+            // 注意必须用非隐藏目录（.git 会被 .skipsHiddenFiles 直接跳过，判别力不足）
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let deep = root.appendingPathComponent("session/proj/node_modules/deep/pkg")
+            try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+            try Data("packdata".utf8).write(to: deep.appendingPathComponent("index.js"))
+            // index.js mtime 置于「未来」：若剪枝失效，它将成为 newest（未来时间戳），
+            // 断言即可判别；剪枝生效时 newest 只能是 real.jsonl（现在时间）
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(300)],
+                                                  ofItemAtPath: deep.appendingPathComponent("index.js").path)
+
+            let fresh = root.appendingPathComponent("session/real.jsonl")
+            try Data("{}".utf8).write(to: fresh)
+
+            let result = FileActivityMonitor.scanTree(in: root.path, maxDepth: 6, window: 60, now: Date())
+            try expectTrue(result.newest != nil, "有 fresh 写入必须产出 newest")
+            try expectTrue(result.newest! <= Date().addingTimeInterval(5),
+                            "剪枝生效时 newest 只能是 real.jsonl（未来 mtime 的 index.js 若被计入即等价性破坏）")
+        }
     }
 
     private static let readers: [(Int, (URL, Int) -> [String])] = [

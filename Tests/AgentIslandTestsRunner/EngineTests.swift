@@ -650,7 +650,7 @@ enum EngineTests {
                     basename: "codex", cpuPercent: 5),
                 ProcessSnapshot.Entry(pid: 85211,
                     path: "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/152.0/Helpers/Codex (Service).app/Contents/MacOS/Codex (Service)",
-                    basename: "Codex (Service)", cpuPercent: 1),
+                    basename: "codex (service)", cpuPercent: 1),
                 // 独立安装的 codex CLI
                 ProcessSnapshot.Entry(pid: 90001,
                     path: "/Users/me/.local/bin/codex",

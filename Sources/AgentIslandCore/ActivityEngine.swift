@@ -305,6 +305,9 @@ public final class ActivityEngine: ObservableObject {
         installedApps.refreshIfNeeded(maxAge: 300)
 
         var results: [AgentSnapshot] = []
+        // 本拍取一次 token 用量快照（getter 持锁并整字典拷贝）：每拍 17 profile ×
+        // 2 处 = 34 次「锁+全字典拷贝」收敛为 1 次，告警链路复用同一快照
+        let usageSnapshot = tokenMonitor.usage
         var anyWork = false
         /// 本拍每 profile 的 CPU 与 PID，供告警链路复用
         var sampleInfo: [String: SampleInfo] = [:]
@@ -428,7 +431,7 @@ public final class ActivityEngine: ObservableObject {
                 activeSessions: sessionCount(for: profile, running: running),
                 lastActivityAgo: newestAgo,
                 lastActivityText: Self.formatAgo(newestAgo),
-                tokenUsage: tokenMonitor.usage[profile.id],
+                tokenUsage: usageSnapshot[profile.id],
                 pid: matchedPID,
                 currentAction: action,
                 memoryBytes: memory,
@@ -453,7 +456,7 @@ public final class ActivityEngine: ObservableObject {
         // 成本与异常熔断保护：检测 Token 激增与死循环运行。
         // 传入主循环已算出的每 profile CPU/PID：函数内再算一遍会重复全表匹配
         // （实测 2.5ms/拍，占主线程采样 34%）。
-        checkCostSpikeAndRunaway(samples: sampleInfo, now: now)
+        checkCostSpikeAndRunaway(samples: sampleInfo, now: now, usage: usageSnapshot)
 
         scheduleNext()
         return results
@@ -468,12 +471,13 @@ public final class ActivityEngine: ObservableObject {
     /// 成本与异常熔断保护：只负责**判定与发事件**。
     /// 状态采集（`highCpuSince` / `tokenRateBaseline` 等）分别在主循环与下文中维护——
     /// 采集必须始终进行，否则关闭某个告警开关会连带让 isHung、卡死扫描等消费方静默失效。
-    private func checkCostSpikeAndRunaway(samples: [String: SampleInfo], now: Date) {
+    private func checkCostSpikeAndRunaway(samples: [String: SampleInfo], now: Date,
+                                          usage: [String: TokenUsage]) {
         if config.tokenAlertEnabled {
             for profile in profiles {
-                guard let usage = tokenMonitor.usage[profile.id], usage.tokensTotal > 0 else { continue }
+                guard let usageInfo = usage[profile.id], usageInfo.tokensTotal > 0 else { continue }
                 guard var base = tokenRateBaseline[profile.id] else {
-                    tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
+                    tokenRateBaseline[profile.id] = (timestamp: now, tokens: usageInfo.tokensTotal)
                     continue
                 }
                 // 时钟回拨重锚：基线时间戳晚于本拍（系统时钟被回拨）会让结算窗口为负——
@@ -482,8 +486,8 @@ public final class ActivityEngine: ObservableObject {
                 let timeSpan = now.timeIntervalSince(base.timestamp)
                 // 不足一档不结算：一次采样就把长任务的账本落盘当激增会误报
                 guard timeSpan >= Self.tokenRateWindow else { continue }
-                let deltaTokens = usage.tokensTotal - base.tokens
-                tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
+                let deltaTokens = usageInfo.tokensTotal - base.tokens
+                tokenRateBaseline[profile.id] = (timestamp: now, tokens: usageInfo.tokensTotal)
                 // 折算为每分钟速率：正常绘画/长任务摊到多档后低于阈值，不再触发
                 let tokensPerMinute = Double(deltaTokens) / timeSpan * 60.0
                 if deltaTokens > 0, tokensPerMinute >= Double(config.tokenAlertThreshold) {
