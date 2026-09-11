@@ -695,7 +695,7 @@ public final class ActivityEngine: ObservableObject {
         let duration = now.timeIntervalSince(since)
         // 持续至少 3.5 秒的实质工作才视作完成一次任务（过滤瞬时微抖动）
         guard duration >= 3.5 else { return }
-        let durationText = duration >= 60 ? "\(Int(duration / 60))分\(Int(duration) % 60)秒" : "\(Int(duration))秒"
+        let timeStr = AgentTaskEvent.durationText(duration)
         publish(AgentTaskEvent(
             agentId: profile.id,
             agentName: profile.name,
@@ -703,7 +703,7 @@ public final class ActivityEngine: ObservableObject {
             duration: duration,
             timestamp: now,
             pid: pid,
-            detail: "\(profile.name) 本次工作持续 \(durationText)，所有子步骤已完成，现已转为空闲状态。"
+            detail: "\(profile.name) 本次工作持续 \(timeStr)，所有子步骤已完成，现已转为空闲状态。"
         ))
     }
 

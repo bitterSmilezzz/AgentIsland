@@ -322,7 +322,7 @@ struct SettingsView: View {
                             Text("任务完成提示音")
                                 .font(Theme.bodyFont(13))
                                 .foregroundColor(Theme.ink)
-                            Text("智能体执行完毕从工作切入空闲时，播放轻微提示音（专注免打扰模式下仅告警发声）")
+                            Text("智能体执行完毕从工作切入空闲时，播放轻微提示音（完全静默模式下不发声；专注免打扰模式下仅告警发声）")
                                 .font(Theme.bodyFont(10))
                                 .foregroundColor(Theme.inkMuted48)
                         }

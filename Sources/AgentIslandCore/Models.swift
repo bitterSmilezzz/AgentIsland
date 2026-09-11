@@ -230,15 +230,20 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         self.detail = detail
     }
 
+    /// 「N分M秒」时长文案（唯一实现）：summaryText 兜底、引擎完成事件、系统通知共用。
+    /// 四舍五入到秒——此前三处分别截断/四舍五入，同一事件可能显示 59秒 或 1分0秒
+    public static func durationText(_ duration: TimeInterval) -> String {
+        let seconds = max(0, Int(duration.rounded()))
+        return seconds >= 60 ? "\(seconds / 60)分\(seconds % 60)秒" : "\(seconds)秒"
+    }
+
     public var summaryText: String {
         if let message, !message.isEmpty {
             return message
         }
         switch eventType {
         case .completed:
-            let d = Int(duration)
-            let timeStr = d >= 60 ? "\(d / 60)分\(d % 60)秒" : "\(d)秒"
-            return "\(agentName) 任务完成 (\(timeStr))"
+            return "\(agentName) 任务完成 (\(Self.durationText(duration)))"
         case .attention:
             return "\(agentName) 等待确认操作"
         case .costSpike:

@@ -128,7 +128,8 @@ struct MenuBarPopoverView: View {
 
             Spacer()
 
-            Text("\(engine.visibleSnapshots.count) 在线")
+            Text("\(engine.visibleSnapshots.count) 可见")
+                    .help("在线或 24h 内有活动的智能体数")
                 .font(Theme.monoFont(10))
                 .foregroundColor(Theme.inkMuted48)
                 .padding(.horizontal, 6)

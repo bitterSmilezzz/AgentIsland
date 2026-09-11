@@ -31,7 +31,7 @@ enum CompletionNotification {
         switch event.eventType {
         case .completed:
             content.title = "\(event.agentName) 任务完成"
-            content.body = event.message ?? "任务已完成，用时 \(durationText(event.duration))"
+            content.body = event.message ?? "任务已完成，用时 \(AgentTaskEvent.durationText(event.duration))"
         case .attention:
             content.title = "\(event.agentName) 需要关注"
             content.body = event.message ?? event.detail ?? "有操作等待确认"
@@ -56,10 +56,5 @@ enum CompletionNotification {
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
-    }
-
-    private static func durationText(_ duration: TimeInterval) -> String {
-        let seconds = max(0, Int(duration.rounded()))
-        return seconds >= 60 ? "\(seconds / 60)分\(seconds % 60)秒" : "\(seconds)秒"
     }
 }

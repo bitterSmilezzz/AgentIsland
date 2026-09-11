@@ -74,8 +74,8 @@ struct ToolboxView: View {
                          help: "本次扫描发现的孤儿进程 / 假死死锁 / 内存超限条目数")
             Rectangle().fill(Theme.onDark.opacity(0.10)).frame(width: 1, height: 26)
             let totalMem = anomalies.reduce(UInt64(0)) { $0 + $1.memoryBytes }
-            let mb = Double(totalMem) / (1024 * 1024)
-            let memStr = mb >= 1024 ? String(format: "%.1fG", mb / 1024.0) : "\(Int(mb))M"
+            // 统一走 MemoryFormat（<1M 分支）：私有实现的 Int 截断曾把 <1MB 显示成 0M
+            let memStr = MemoryFormat.text(totalMem)
             overviewCell("可回收", totalMem > 0 ? memStr : "0M",
                          color: totalMem > 0 ? Theme.warningOrange : Theme.onDark,
                          help: "异常进程当前占用的物理内存合计")

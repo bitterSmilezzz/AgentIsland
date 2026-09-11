@@ -30,7 +30,9 @@ struct LiveLogStreamView: View {
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(
                 title: "\(agentName) 实时流水",
-                subtitle: "Live Log Stream · \(events.count) 条事件",
+                subtitle: refreshInFlight && events.isEmpty
+                    ? "实时流水 · 加载中…"
+                    : "实时流水 · \(events.count) 条事件",
                 onBack: { controller.closeLiveStream() },
                 controller: controller
             )

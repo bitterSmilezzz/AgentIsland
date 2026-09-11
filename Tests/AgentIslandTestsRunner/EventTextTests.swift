@@ -26,6 +26,12 @@ enum EventTextTests {
             try expectEqual(makeEvent(.completed, duration: 61).summaryText, "Fixture 任务完成 (1分1秒)", "61 秒")
             try expectEqual(makeEvent(.completed, duration: 3_599).summaryText, "Fixture 任务完成 (59分59秒)", "59分59秒")
             try expectEqual(makeEvent(.completed, duration: 3_600).summaryText, "Fixture 任务完成 (60分0秒)", "整小时不进位到时分")
+            // R13 收敛后的唯一实现（AgentTaskEvent.durationText）：四舍五入口径
+            // 与负值防御——引擎完成事件、summaryText、系统通知三处共用，
+            // 此前分别截断/四舍五入（59.6s 会显示 59秒 或 1分0秒）
+            try expectEqual(AgentTaskEvent.durationText(59.6), "1分0秒", "四舍五入口径")
+            try expectEqual(AgentTaskEvent.durationText(59.4), "59秒", "四舍五入口径")
+            try expectEqual(AgentTaskEvent.durationText(-5), "0秒", "负值钳 0")
         }
 
         TestKit.test("事件文案: attention / costSpike 固定文案") {
