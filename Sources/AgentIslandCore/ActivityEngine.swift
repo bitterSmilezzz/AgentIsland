@@ -106,6 +106,9 @@ public final class ActivityEngine: ObservableObject {
     /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于速率差分。
     /// 非 private：@testable 下断言「offline 清基线」不变量用（模块内勿直接写）
     var tokenRateBaseline: [String: (timestamp: Date, tokens: Int)] = [:]
+    /// 动作探测注入点（测试用）：nil 走 AgentActionInspector.inspectAction 默认实现。
+    /// 「idle 不探测」的门控测试靠计数 hook 断言，无需真实会话目录。
+    var inspectActionHook: ((Int32?, AgentProfile, [String], ProcessSnapshot?) -> String?)?
     /// 连续超过速率阈值的评估档数（agentId → 档数）；达到确认档数才告警
     private var tokenSpikeStreak: [String: Int] = [:]
     /// 同一轮持续超阈值只提醒一次，速率恢复后重新武装。
@@ -336,17 +339,6 @@ public final class ActivityEngine: ObservableObject {
                 return dt < 0 ? 0 : dt
             }()
 
-            // 动作透传：仅用于展示「正在执行 xxx」。
-            // 传入 matcher.snapshot 复用本次采样已枚举的进程表：子进程查找零额外系统调用。
-            //
-            // 注意：动作不参与工作状态判定。它只是「最近 90s 有过活动」的弱信号，
-            // 且各 Agent 的探测源（SQLite 最新行 / 日志尾部）在 Agent 空闲挂起时依然可能
-            // 命中旧记录，一旦当作工作信号会让 Agent 恒显「工作中」并永不产生完成事件。
-            // 工作状态只由「文件写入 + CPU」这两个可观测信号决定。
-            let detectedAction = running ? AgentActionInspector.inspectAction(
-                pid: matchedPID, profile: profile, sessionDirs: profile.sessionDirs,
-                snapshot: matcher.snapshot) : nil
-
             let hasRecentWrite = newestAgo.map { $0 <= config.workingWindow } ?? false
 
             // CPU 判定：阈值 = max(档案下限, 用户设置)。
@@ -395,7 +387,16 @@ public final class ActivityEngine: ObservableObject {
             let action: String?
             if level == .working {
                 anyWork = true
-                action = detectedAction
+                // 动作透传（仅展示「正在执行 xxx」，不参与状态判定）移到等级判定之后：
+                // 只对 working（含滞回）探测——此前 idle 时也全树枚举会话目录/查库，
+                // 结果在这里本来就会被丢弃，等于每 2s 白付一次主线程 I/O（重度会话树
+                // 实测 5-20ms/次）。探测源（SQLite 最新行/日志尾部）在空闲时依然可能
+                // 命中旧记录，工作状态只由「文件写入 + CPU」两个信号决定。
+                // 传入 matcher.snapshot 复用本拍进程表：子进程查找零额外系统调用。
+                let inspector = inspectActionHook ?? { pid, profile, dirs, snap in
+                    AgentActionInspector.inspectAction(pid: pid, profile: profile, sessionDirs: dirs, snapshot: snap)
+                }
+                action = inspector(matchedPID, profile, profile.sessionDirs, matcher.snapshot)
             } else {
                 action = nil
             }

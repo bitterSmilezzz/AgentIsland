@@ -208,6 +208,36 @@ enum EngineTests {
                           "offline 必须清除速率基线，否则重启后首个结算窗口被离线全程摊薄")
         }
 
+        TestKit.test("引擎: 动作探测仅对 working 生效（idle 不做主线程枚举）") {
+            let now = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let fileProvider = FakeFileActivityProvider(writes: [dir: now.addingTimeInterval(-300)])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
+                fileMonitor: fileProvider,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            var calls = 0
+            engine.inspectActionHook = { _, _, _, _ in
+                calls += 1
+                return "正在执行: fake"
+            }
+            var snaps = engine.sample(now: now)
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .idle, "前置：无写入低 CPU 应 idle")
+            try expectEqual(calls, 0, "idle 必须不探测（每 2s 白付全树枚举的主线程 I/O）")
+            try expectNil(snaps.first { $0.id == "dim" }?.currentAction, "idle 无动作透传")
+
+            // 转入 working（窗口内出现新写入）→ 探测执行且结果透传
+            fileProvider.writes = [dir: now.addingTimeInterval(-3)]
+            snaps = engine.sample(now: now.addingTimeInterval(2))
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .working, "前置：新写入应 working")
+            try expectEqual(calls, 1, "working 拍应恰好探测一次")
+            try expectEqual(snaps.first { $0.id == "dim" }?.currentAction, "正在执行: fake",
+                            "探测结果透传到快照")
+        }
+
         TestKit.test("引擎: terminateAgent 终止逃生舱更新事件与状态") {
             let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
             _ = engine.sample(now: Date())

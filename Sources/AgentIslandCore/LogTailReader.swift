@@ -32,4 +32,41 @@ enum LogTailReader {
             return []
         }
     }
+
+    /// 会话树中最近修改的常规文件。
+    /// AgentActionInspector（主线程每拍）与 AgentLogStreamer（流水页）共用——
+    /// 此前两处各持一份逐字相同的实现，且都不防符号链接循环、无条目上限。
+    /// - Parameters:
+    ///   - maxEntries: 条目预算。会话树由工具/用户创建，结构不可全信；到预算即止，
+    ///     防失控枚举长时间占用调用线程（与 FileMonitor.scanTree 的 maxDepth 同思路）。
+    static func newestFile(in dir: URL, maxAge: TimeInterval, maxEntries: Int = 20_000) -> URL? {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey,
+                                      .isSymbolicLinkKey]
+        guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: keys,
+                                     options: [.skipsHiddenFiles]) else { return nil }
+        var newestURL: URL?
+        var newestDate = Date.distantPast
+        let threshold = Date().addingTimeInterval(-maxAge)
+        var visited = 0
+        while let item = en.nextObject() as? URL {
+            visited += 1
+            if visited > maxEntries { break }
+            guard let v = try? item.resourceValues(forKeys: Set(keys)) else { continue }
+            if v.isSymbolicLink == true {
+                // 符号链接一律跳过：防循环 + 防枚举会话树之外的目标。
+                // 当前运行时枚举器原生不下降进链接目录，此守卫是显式保险丝；
+                // 文件符号链接经 lstat 语义 isRegularFile=false，本就被排除
+                en.skipDescendants()
+                continue
+            }
+            guard v.isRegularFile == true,
+                  let mtime = v.contentModificationDate,
+                  mtime >= threshold,
+                  mtime > newestDate else { continue }
+            newestDate = mtime
+            newestURL = item
+        }
+        return newestURL
+    }
 }

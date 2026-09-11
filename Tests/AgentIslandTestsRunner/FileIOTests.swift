@@ -107,4 +107,58 @@ enum FileIOTests {
         (16_384, { AgentActionInspector.readLastLines(from: $0, maxLines: $1) }),
         (65_536, { AgentLogStreamer.readLastLines(from: $0, maxLines: $1) }),
     ]
+
+    // MARK: - 会话树 newestFile（防循环 + 预算，共享实现）
+
+    /// 构造临时会话树并注入符号链接循环：root/link → root（枚举器若无防护将无限递归）
+    private static func makeLoopedTree() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("session"),
+                                                withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: root.appendingPathComponent("session/a.jsonl"))
+        try Data("{}".utf8).write(to: root.appendingPathComponent("session/b.jsonl"))
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("loop"),
+            withDestinationURL: root)
+        return root
+    }
+
+    private static func newestMtime(_ root: URL) throws -> Date {
+        let a = try root.appendingPathComponent("session/a.jsonl").resourceValues(forKeys: [.contentModificationDateKey])
+        return a.contentModificationDate!
+    }
+
+    static func registerTreeTests() {
+        TestKit.test("会话树: newestFile 命中预算内最新文件且不被符号链接循环挂死") {
+            let root = try makeLoopedTree()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let start = Date()
+            let found = LogTailReader.newestFile(in: root, maxAge: 3600)
+            try expectTrue(found != nil, "存在常规文件必须命中")
+            try expectTrue(["a.jsonl", "b.jsonl"].contains(found!.lastPathComponent),
+                            "命中同 mtime 相邻写入的两个文件之一即可（枚举序不定）")
+            try expectTrue(Date().timeIntervalSince(start) < 5.0,
+                            "含循环的树必须在秒级内返回（无防护会无限枚举）")
+        }
+
+        TestKit.test("会话树: newestFile 遵守 maxAge 与条目预算") {
+            let root = try makeLoopedTree()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let newest = try newestMtime(root)
+            // 两个文件全部回拨到 maxAge 之外
+            for name in ["a.jsonl", "b.jsonl"] {
+                try FileManager.default.setAttributes([.modificationDate: newest.addingTimeInterval(-7200)],
+                                                      ofItemAtPath: root.appendingPathComponent("session/\(name)").path)
+            }
+            try expectNil(LogTailReader.newestFile(in: root, maxAge: 3600),
+                          "全部文件早于 maxAge 时返回 nil")
+            try expectTrue(LogTailReader.newestFile(in: root, maxAge: 3600 + 7201) != nil,
+                            "放宽 maxAge 后应命中回拨后的文件")
+            // 预算=2：会话目录下 2 个文件 + 1 个链接条目，预算足够命中；预算=1 可能命中
+            // 任一首条——只断言「正常返回或 nil」，绝不断言挂死或崩溃
+            let budgeted = LogTailReader.newestFile(in: root, maxAge: 3600 + 7201, maxEntries: 1)
+            try expectTrue(budgeted == nil || budgeted!.lastPathComponent == "a.jsonl",
+                            "预算截断应安全返回")
+        }
+    }
 }

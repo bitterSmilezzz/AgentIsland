@@ -373,7 +373,7 @@ public enum AgentActionInspector {
     public static func inspectCodexAction() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let sessionsDir = URL(fileURLWithPath: "\(home)/.codex/sessions")
-        guard let newestFile = findNewestFile(in: sessionsDir, maxAge: 300) else { return nil }
+        guard let newestFile = LogTailReader.newestFile(in: sessionsDir, maxAge: 300) else { return nil }
         guard let lastLine = readLastNonEmptyLine(from: newestFile) else { return nil }
 
         if lastLine.contains("\"exec\"") || lastLine.contains("\"command\"") {
@@ -393,7 +393,7 @@ public enum AgentActionInspector {
     public static func inspectClaudeAction(sessionDirs: [String]) -> String? {
         for dir in sessionDirs {
             let url = URL(fileURLWithPath: dir)
-            guard let newestFile = findNewestFile(in: url, maxAge: 300) else { continue }
+            guard let newestFile = LogTailReader.newestFile(in: url, maxAge: 300) else { continue }
             guard let lastLine = readLastNonEmptyLine(from: newestFile) else { continue }
             if lastLine.contains("\"Bash\"") || lastLine.contains("\"bash\"") {
                 return "正在执行命令"
@@ -416,27 +416,6 @@ public enum AgentActionInspector {
         guard let endQuote = sub.firstIndex(of: "\"") else { return nil }
         let name = String(sub[..<endQuote])
         return name.isEmpty ? nil : name
-    }
-
-    private static func findNewestFile(in dir: URL, maxAge: TimeInterval) -> URL? {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey], options: [.skipsHiddenFiles]) else {
-            return nil
-        }
-        var newestURL: URL?
-        var newestDate: Date = .distantPast
-        let threshold = Date().addingTimeInterval(-maxAge)
-
-        for case let fileURL as URL in enumerator {
-            guard let vals = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
-                  vals.isRegularFile == true,
-                  let mtime = vals.contentModificationDate,
-                  mtime >= threshold,
-                  mtime > newestDate else { continue }
-            newestDate = mtime
-            newestURL = fileURL
-        }
-        return newestURL
     }
 
     static func readLastLines(from file: URL, maxLines: Int = 10) -> [String] {

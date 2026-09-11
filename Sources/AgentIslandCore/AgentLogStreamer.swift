@@ -231,7 +231,7 @@ public enum AgentLogStreamer {
     public static func fetchCodexEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let sessionsDir = URL(fileURLWithPath: "\(home)/.codex/sessions")
-        guard let newestFile = findNewestFile(in: sessionsDir, maxAge: 86400 * 3) else { return [] }
+        guard let newestFile = LogTailReader.newestFile(in: sessionsDir, maxAge: 86400 * 3) else { return [] }
 
         let lines = readLastLines(from: newestFile, maxLines: limit * 2)
         var events: [AgentLogEvent] = []
@@ -372,7 +372,12 @@ public enum AgentLogStreamer {
         let dirs = ["\(home)/.claude/sessions", "\(home)/.claude/projects"]
         for dir in dirs {
             let url = URL(fileURLWithPath: dir)
-            guard let file = findNewestFile(in: url, maxAge: 86400 * 3) else { continue }
+            guard let file = LogTailReader.newestFile(in: url, maxAge: 86400 * 3) else { continue }
+            // 事件时间：优先行内 JSON 的 timestamp 字段，缺失回落文件 mtime。
+            // 此前用 Date()——派生 id 拼接时间戳，导致每次刷新全部 id 都变，
+            // 稳定 id 的目的（展开态保持、增量刷新）对 claude 完全落空
+            let fileMtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? Date()
             let lines = readLastLines(from: file, maxLines: limit)
             var events: [AgentLogEvent] = []
             for line in lines.reversed() {
@@ -381,9 +386,15 @@ public enum AgentLogStreamer {
                 else if line.contains("\"Edit\"") || line.contains("write") { kind = .fileEdit }
                 else if line.contains("tool") { kind = .toolCall }
 
+                let stamp = line.data(using: .utf8)
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                    .flatMap { $0 as? [String: Any] }
+                    .flatMap { $0["timestamp"] as? String }
+                    .flatMap { Self.isoFractional.date(from: $0) } ?? fileMtime
+
                 let clean = line.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
                 events.append(AgentLogEvent(
-                    timestamp: Date(),
+                    timestamp: stamp,
                     kind: kind,
                     title: clean.count > 40 ? String(clean.prefix(37)) + "..." : clean,
                     detail: line,
@@ -578,27 +589,6 @@ public enum AgentLogStreamer {
             return nil
         }
         return db
-    }
-
-    private static func findNewestFile(in dir: URL, maxAge: TimeInterval) -> URL? {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey], options: [.skipsHiddenFiles]) else {
-            return nil
-        }
-        var newestURL: URL?
-        var newestDate: Date = .distantPast
-        let threshold = Date().addingTimeInterval(-maxAge)
-
-        for case let fileURL as URL in enumerator {
-            guard let vals = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
-                  vals.isRegularFile == true,
-                  let mtime = vals.contentModificationDate,
-                  mtime >= threshold,
-                  mtime > newestDate else { continue }
-            newestDate = mtime
-            newestURL = fileURL
-        }
-        return newestURL
     }
 
     static func readLastLines(from file: URL, maxLines: Int = 20) -> [String] {
