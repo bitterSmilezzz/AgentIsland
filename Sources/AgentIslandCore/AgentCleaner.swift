@@ -16,6 +16,13 @@ public struct AgentAnomaly: Identifiable, Equatable {
     public let anomalyType: AnomalyType
     public let reason: String
 
+    /// 列表身份：同一 pid 可能被两个 profile 同时匹配（如 GUI 主程序与其 CLI 子工具同名），
+    /// 只用「类型-pid」会在 ForEach 中产生重复 id（SwiftUI 未定义行为、条目互相顶替），
+    /// 因此身份里必须带上 profileId。
+    public static func identifier(profileId: String, type: AnomalyType, pid: Int32) -> String {
+        "\(profileId)-\(type.rawValue)-\(pid)"
+    }
+
     public enum AnomalyType: String, Equatable {
         case orphan     // 孤儿进程：终端已断开/父进程转为 launchd (ppid=1) 且非 GUI 主程序
         case hung       // 疑似死锁/僵死卡顿：持续异常高 CPU 且无响应
@@ -23,12 +30,7 @@ public struct AgentAnomaly: Identifiable, Equatable {
     }
 
     public var memoryText: String {
-        let mb = Double(memoryBytes) / (1024 * 1024)
-        if mb >= 1024 {
-            return String(format: "%.1fG", mb / 1024.0)
-        } else {
-            return "\(Int(mb))M"
-        }
+        MemoryFormat.text(memoryBytes)
     }
 }
 
@@ -37,12 +39,7 @@ public struct CleanResult: Equatable {
     public let reclaimedMemoryBytes: UInt64
 
     public var reclaimedMemoryText: String {
-        let mb = Double(reclaimedMemoryBytes) / (1024 * 1024)
-        if mb >= 1024 {
-            return String(format: "%.1fG", mb / 1024.0)
-        } else {
-            return "\(Int(mb))M"
-        }
+        MemoryFormat.text(reclaimedMemoryBytes)
     }
 }
 
@@ -79,7 +76,7 @@ public final class AgentCleaner {
                 // 按单条判定会把正常渲染进程也列成「疑似死锁」。
                 if hungAgentIDs.contains(profile.id), entry.cpuPercent > 10.0, !isStandardAppBundle {
                     anomalies.append(AgentAnomaly(
-                        id: "hung-\(entry.pid)",
+                        id: AgentAnomaly.identifier(profileId: profile.id, type: .hung, pid: entry.pid),
                         pid: entry.pid,
                         ppid: entry.ppid,
                         agentName: profile.name,
@@ -97,7 +94,7 @@ public final class AgentCleaner {
                 // 仅针对 CLI / 派生命令行工具（非 /Applications/ 下的标准 App 主进程）
                 if entry.ppid == 1 && !isStandardAppBundle && !profile.processNames.isEmpty {
                     anomalies.append(AgentAnomaly(
-                        id: "orphan-\(entry.pid)",
+                        id: AgentAnomaly.identifier(profileId: profile.id, type: .orphan, pid: entry.pid),
                         pid: entry.pid,
                         ppid: entry.ppid,
                         agentName: profile.name,
@@ -116,7 +113,7 @@ public final class AgentCleaner {
                 // 无条件判为「内存泄露」会诱导用户清理掉正在使用的编辑器。
                 if entry.rssBytes > 2_147_483_648, !isStandardAppBundle {
                     anomalies.append(AgentAnomaly(
-                        id: "overweight-\(entry.pid)",
+                        id: AgentAnomaly.identifier(profileId: profile.id, type: .overweight, pid: entry.pid),
                         pid: entry.pid,
                         ppid: entry.ppid,
                         agentName: profile.name,

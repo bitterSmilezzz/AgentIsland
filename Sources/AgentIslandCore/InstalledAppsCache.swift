@@ -137,25 +137,6 @@ public final class InstalledAppsCache: @unchecked Sendable {
                             "dsh", "ego-browser", "vibe-usage", "openviking", "ov", "vikingbot",
                             "bsk", "cua-driver"]
 
-    /// 已知 GUI bundle id（/Applications 扫描用）
-    private static let knownBundleIDs: [String: String] = [
-        "com.dimcode.app": "dim",
-        "com.anthropic.claudefordesktop": "claude",
-        "com.anthropic.claudecode": "claude",
-        "com.todesktop.230113mital1efw": "cursor",
-        "cn.trae.solo.app": "trae",
-        "com.tencent.imamac": "copilot",
-        "com.tencent.workbuddy.mac": "workbuddy",
-        "dev.zcode.app": "zcode",
-        "com.google.antigravity": "antigravity",
-        "com.yuzhiqiang.antigravity.studio": "antigravity",
-        "com.continue.continue": "continue",
-        "ai.opencode.desktop": "opencode",
-        "com.openai.codex": "chatgpt",
-        "com.citrolabs.ego.lite": "ego-browser",
-        "ai.vibecafe.vibe-usage": "vibe-usage",
-    ]
-
     /// PATH 扫描 + 补扫常见非 PATH 安装目录（~/.local/bin 等未入 PATH 时 CLI 实际可用）
     public static func defaultCLIScanner() -> Set<String> {
         var found = Set<String>()

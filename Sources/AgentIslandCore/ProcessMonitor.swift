@@ -6,14 +6,18 @@ import Darwin
 // libproc 直接读进程表（proc_listpids + proc_pidpath + proc_pid_rusage），
 // 免子进程/管道/超时，主线程耗时微秒级；CPU 用两次采样间差分得到真实窗口利用率。
 
-public struct ProcessSnapshot {
-    public struct Entry: Equatable {
+public struct ProcessSnapshot: Sendable {
+    public struct Entry: Equatable, Sendable {
         public let pid: Int32
         public let path: String       // 完整可执行路径（libproc 无空格截断问题）
         public let basename: String   // 路径最后一段（小写）
         public let cpuPercent: Double // 窗口利用率（差分），首拍为 0
         public let rssBytes: UInt64   // 物理内存占用（RSS），字节数
         public let ppid: Int32        // 父进程 PID
+        /// `path` 的小写形式（构造时预计算）。
+        /// 匹配器要对每个 profile 遍历整张进程表，若每次现算 `lowercased()`，
+        /// 19 个 profile × 全表会白白烧掉约 1.5ms/拍（实测）。构造期算一次即可。
+        public let pathLower: String
 
         public init(pid: Int32, path: String, basename: String, cpuPercent: Double, rssBytes: UInt64 = 0, ppid: Int32 = 0) {
             self.pid = pid
@@ -22,6 +26,7 @@ public struct ProcessSnapshot {
             self.cpuPercent = cpuPercent
             self.rssBytes = rssBytes
             self.ppid = ppid
+            self.pathLower = path.lowercased()
         }
     }
 
@@ -59,8 +64,13 @@ public struct ProcessSnapshot {
 //   snapshot()         —— 任意线程（libproc 无 UI 依赖，可后台执行）
 //   runningBundleIDs() —— 必须主线程（内部 NSWorkspace，无线程安全保证）
 // 消费方（ActivityEngine）据此做「主线程抓 bundle + 后台快照」两段式采样。
+//
+// 协议要求 Sendable：`sampleInBackground` 会把 provider 捕获进 @Sendable 闭包交给
+// 后台队列。此前契约只写在注释里，类型系统无法约束（编译器报 non-Sendable capture）；
+// 现在把契约落到协议上——实现者必须显式声明其线程安全性（真实实现有锁保护的
+// CpuCache，测试替身由单线程驱动，均为 @unchecked Sendable）。
 
-public protocol ProcessProviding {
+public protocol ProcessProviding: Sendable {
     /// 当前全部进程快照（一次采样；CPU 为差分窗口值）
     func snapshot() -> ProcessSnapshot
     /// 当前运行中的 GUI App bundle identifiers（小写）
@@ -245,10 +255,10 @@ public struct ProcessMatcher: @unchecked Sendable {
 
     /// 路径子串匹配（Electron 应用主进程都叫 "Electron"，靠应用路径区分）
     /// profile 配 pathContains "trae"，则 /Applications/TRAE SOLO CN.app/.../Electron 命中
-    static func matchesPathContains(_ pathContains: Set<String>, path: String) -> Bool {
-        guard !path.isEmpty else { return false }
-        let p = path.lowercased()
-        return pathContains.contains { p.contains($0) }
+    /// - Parameter pathLower: 已小写的路径（用 `Entry.pathLower`，避免每 profile 重算）
+    static func matchesPathContains(_ pathContains: Set<String>, pathLower: String) -> Bool {
+        guard !pathLower.isEmpty else { return false }
+        return pathContains.contains { pathLower.contains($0) }
     }
 
     /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串约束 + 路径排除 + 非系统路径 + 非黑名单）
@@ -268,7 +278,7 @@ public struct ProcessMatcher: @unchecked Sendable {
 
         // 路径排除优先于包含：宿主应用内嵌的同名二进制不算本 Agent
         // （ChatGPT.app 内的 codex 属于 ChatGPT，不属于独立 Codex CLI）
-        if !s.excludes.isEmpty, Self.matchesPathContains(s.excludes, path: entry.path) {
+        if !s.excludes.isEmpty, Self.matchesPathContains(s.excludes, pathLower: entry.pathLower) {
             return false
         }
 
@@ -276,7 +286,7 @@ public struct ProcessMatcher: @unchecked Sendable {
         let dshCommandHit = profile.id == "dsh" && nameHit
             && !Self.matchesProcessNames(s.names, basename: entry.basename)
         if !s.paths.isEmpty && !dshCommandHit {
-            guard Self.matchesPathContains(s.paths, path: entry.path) else { return false }
+            guard Self.matchesPathContains(s.paths, pathLower: entry.pathLower) else { return false }
         }
 
         return !ProcessSnapshot.isSystemPath(entry.path)
@@ -310,40 +320,7 @@ public struct ProcessMatcher: @unchecked Sendable {
         matchingEntries(for: profile).reduce(0) { $0 + $1.cpuPercent }
     }
 
-    /// 相关进程物理内存（RSS）总和（字节）
-    public func memoryBytes(_ profile: AgentProfile) -> UInt64 {
-        matchingEntries(for: profile).reduce(0) { $0 + $1.rssBytes }
-    }
-
-    /// 获取所有匹配任一已配置 Agent 的进程条目
-    public func allMatchingEntries() -> [ProcessSnapshot.Entry] {
-        var result: [ProcessSnapshot.Entry] = []
-        var seenPids = Set<Int32>()
-        for entry in snapshot.entries where entry.pid > 0 {
-            for (_, sets) in profileSets {
-                let nameHit = Self.matchesProcessNames(sets.names, basename: entry.basename)
-                if nameHit {
-                    let excluded = !sets.excludes.isEmpty
-                        && Self.matchesPathContains(sets.excludes, path: entry.path)
-                    if !excluded,
-                       sets.paths.isEmpty || Self.matchesPathContains(sets.paths, path: entry.path) {
-                        if !ProcessSnapshot.isSystemPath(entry.path) && !ProcessSnapshot.isBlacklisted(entry.basename) {
-                            if !seenPids.contains(entry.pid) {
-                                seenPids.insert(entry.pid)
-                                result.append(entry)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return result
-    }
-
-    /// 获取底层 ProcessSnapshot
-    public var rawSnapshot: ProcessSnapshot { snapshot }
 }
-
 // MARK: - 测试用假实现
 
 public struct FakeProcessProvider: ProcessProviding {
@@ -376,7 +353,10 @@ public struct FakeProcessProvider: ProcessProviding {
 
 /// 可变进程集 fake（引用语义）：模拟进程在采样之间退出/启动
 /// （struct 的 FakeProcessProvider 无法在引擎持有后改变进程集合）
-public final class MutableProcessProvider: ProcessProviding {
+///
+/// `@unchecked Sendable`：属性可变，但仅由测试在单线程（主线程串行）驱动——
+/// 测试先改属性、再触发采样，不存在并发读写。协议的 Sendable 约束要求显式声明。
+public final class MutableProcessProvider: ProcessProviding, @unchecked Sendable {
     public var names: Set<String>          // 小写 basename
     public var bundleIDs: Set<String>
     public var cpu: Double
