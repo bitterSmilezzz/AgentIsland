@@ -92,6 +92,105 @@ enum DimUsageSQL {
     """
 }
 
+// MARK: - 数值解析防护
+//
+// SQLite 数值列在 Swift 侧统一以字符串取出，而 `Int(Double(...))` 对越界值、
+// Infinity、NaN 会**直接 fatalError**（整个进程 trap，用户表现为面板打开即消失）：
+// 数据源把用量写成 `1e19`、`"99999999999999999999"`，或两行 1e308 相加令 SUM 溢出为
+// `Inf`，都会走到这条路径。所以所有外部数值一律经这里「饱和解析」——
+// 任何输入都返回可安全参与运算的值，绝不 trap；超出真实量级的输入被钳制并留下告警。
+//
+// 告警不做去重：这些数据源本就是异常态（写入端 bug 或哨兵值），
+// 每轮刷新各告警一次，频率上限即轮询节律，足以定位且不会刷屏。
+
+enum SafeNumber {
+    /// 「不可能触及」的量级上限：token 用量、消息条数、毫秒时间戳都远小于该值
+    /// （触及即说明数据源写入异常、聚合溢出或写入哨兵值），超过一律钳制，
+    /// 避免污染汇总与后续运算。
+    static let magnitudeCeiling = 1_000_000_000_000_000   // 1e15
+
+    /// 金额上限（美元）：同为「不可能触及」的量级。
+    static let costCeiling = 1_000_000_000.0
+
+    /// Double → Int 饱和转换：越界 / Inf / NaN 一律钳制在 ±ceiling，绝不 trap。
+    static func saturatingInt(_ value: Double, ceiling: Int = magnitudeCeiling, source: String) -> Int {
+        guard value.isFinite else {
+            // NaN 两个比较都不成立，落到 0
+            let clamped = value > 0 ? ceiling : (value < 0 ? -ceiling : 0)
+            warn(source: source, detail: "非有限值 \(value) 已钳制为 \(clamped)")
+            return clamped
+        }
+        if value >= Double(ceiling) {
+            warn(source: source, detail: "越界值 \(value) 已钳制为 \(ceiling)")
+            return ceiling
+        }
+        if value <= -Double(ceiling) {
+            warn(source: source, detail: "越界值 \(value) 已钳制为 \(-ceiling)")
+            return -ceiling
+        }
+        return Int(value)
+    }
+
+    /// 字符串 → Int 饱和解析：Int 优先（精确、无精度损失），
+    /// 失败再按 Double（SQLite REAL 聚合会输出 "1.9e+07" 这类文本）。
+    /// 两者都失败（空串 / 非数值）按 0 处理，与「字段缺失」语义一致。
+    static func parseInt(_ raw: String, ceiling: Int = magnitudeCeiling, source: String) -> Int {
+        if let exact = Int(raw) {
+            if exact > ceiling {
+                warn(source: source, detail: "越界值 \(exact) 已钳制为 \(ceiling)")
+                return ceiling
+            }
+            if exact < -ceiling {
+                warn(source: source, detail: "越界值 \(exact) 已钳制为 \(-ceiling)")
+                return -ceiling
+            }
+            return exact
+        }
+        guard let value = Double(raw) else { return 0 }
+        return saturatingInt(value, ceiling: ceiling, source: source)
+    }
+
+    /// 字符串 → 金额：非有限值（Inf / NaN）归 0（否则汇总栏会显示 $inf / $nan），
+    /// 超出上限钳制；负值与 0 保持原样（不改变既有口径）。
+    static func parseCost(_ raw: String, ceiling: Double = costCeiling, source: String) -> Double {
+        guard let value = Double(raw) else { return 0 }
+        guard value.isFinite else {
+            warn(source: source, detail: "非有限值 \(value) 已归零")
+            return 0
+        }
+        if value > ceiling {
+            warn(source: source, detail: "越界值 \(value) 已钳制为 \(ceiling)")
+            return ceiling
+        }
+        return value
+    }
+
+    /// 毫秒时间戳文本 → Date。非法值（0 / 负数 / Inf / NaN / 超出合理纪元范围）
+    /// 返回 nil，而不是构造出一个会让视图错乱的非法 Date。
+    static func date(fromMillisText raw: String, source: String) -> Date? {
+        guard let ms = Double(raw) else { return nil }
+        guard ms.isFinite, ms > 0, ms < 1e14 else {
+            warn(source: source, detail: "异常毫秒时间戳 \(raw) 已忽略")
+            return nil
+        }
+        return Date(timeIntervalSince1970: ms / 1000)
+    }
+
+    /// SQLite INTEGER 列取出的毫秒纪元 → Date。同样拒收哨兵值 / 越界值
+    /// （例如 Int64 上限），避免事件时间显示成公元数亿年。
+    static func date(fromEpochMillis ms: Int64, source: String) -> Date? {
+        guard ms > 0, ms < 100_000_000_000_000 else {
+            warn(source: source, detail: "异常毫秒时间戳 \(ms) 已忽略")
+            return nil
+        }
+        return Date(timeIntervalSince1970: Double(ms) / 1000)
+    }
+
+    private static func warn(source: String, detail: String) {
+        debugPrint("SafeNumber[\(source)]: \(detail)")
+    }
+}
+
 // MARK: - Token 子系统 seam（轮询面 / 查询面）
 // 引擎与测试只依赖这两个小 interface；TokenUsageMonitor 是现网 adapter，
 // 测试替身为本文件末尾的 FakeTokenUsageMonitor。
@@ -138,8 +237,14 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private var lastDimStamp = ""
     private var lastOpenCodeStamp = ""
     private var timer: Timer?
-    /// 刷新完成后的主线程回调（引擎用它触发重采样，让卡片高度/徽标及时跟上）
-    public var onRefresh: (@MainActor () -> Void)?
+    /// 刷新完成后的主线程回调（引擎用它触发重采样，让卡片高度/徽标及时跟上）。
+    /// 后台刷新线程读、主线程写，故与其余可变状态一样纳入 lock（读写都在锁内取值，
+    /// 回调本身在锁外调用，避免持锁执行引擎代码造成死锁）。
+    private var _onRefresh: (@MainActor () -> Void)?
+    public var onRefresh: (@MainActor () -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return _onRefresh }
+        set { lock.lock(); defer { lock.unlock() }; _onRefresh = newValue }
+    }
 
     /// 各 agent 的用量快照（引擎采样时取走）
     public var usage: [String: TokenUsage] {
@@ -239,8 +344,11 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             lastDimRefresh = now
             succeeded = true
         }
+        // 时间戳同样可能是脏值（now 由调用方注入，测试可传任意 Date）：饱和后再转 Int64
+        let cutoffSeconds = now.addingTimeInterval(-86_400).timeIntervalSince1970
+        let cutoffMs = Int64(SafeNumber.saturatingInt(cutoffSeconds * 1000, source: "opencode.cutoff"))
         if refreshOpenCode,
-           let value = queryOpenCode(cutoffMs: Int64(now.addingTimeInterval(-86_400).timeIntervalSince1970 * 1000)) {
+           let value = queryOpenCode(cutoffMs: cutoffMs) {
             updated["opencode"] = value
             lastOpenCodeStamp = openCodeStamp
             lastOpenCodeRefresh = now
@@ -294,8 +402,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 FROM usage_ledger GROUP BY modelId ORDER BY 3 DESC
                 """
                 rows = rawRows(sql, dbPath: dimAgentDB, cols: 4).map {
-                    ModelUsage(modelId: $0[0], messages: Self.parseInt($0[1]),
-                               tokens: Self.parseInt($0[2]), cost: Double($0[3]) ?? 0)
+                    ModelUsage(modelId: $0[0],
+                               messages: SafeNumber.parseInt($0[1], source: "dim.model.messages"),
+                               tokens: SafeNumber.parseInt($0[2], source: "dim.model.tokens"),
+                               cost: SafeNumber.parseCost($0[3], source: "dim.model.cost"))
                 }
             case "opencode":
                 let sql = """
@@ -306,8 +416,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 GROUP BY 1 ORDER BY 3 DESC
                 """
                 rows = rawRows(sql, dbPath: openCodeDB, cols: 4).map {
-                    ModelUsage(modelId: $0[0], messages: Self.parseInt($0[1]),
-                               tokens: Self.parseInt($0[2]), cost: Double($0[3]) ?? 0)
+                    ModelUsage(modelId: $0[0],
+                               messages: SafeNumber.parseInt($0[1], source: "opencode.model.messages"),
+                               tokens: SafeNumber.parseInt($0[2], source: "opencode.model.tokens"),
+                               cost: SafeNumber.parseCost($0[3], source: "opencode.model.cost"))
                 }
             default:
                 rows = []
@@ -334,8 +446,9 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                     let dir = dirPrefix + "/" + r[0]
                     return SessionUsage(sessionId: r[0],
                                         directory: FileManager.default.fileExists(atPath: dir) ? dir : nil,
-                                        messages: Self.parseInt(r[1]), tokens: Self.parseInt(r[2]),
-                                        cost: Double(r[3]) ?? 0,
+                                        messages: SafeNumber.parseInt(r[1], source: "dim.session.messages"),
+                                        tokens: SafeNumber.parseInt(r[2], source: "dim.session.tokens"),
+                                        cost: SafeNumber.parseCost(r[3], source: "dim.session.cost"),
                                         lastTime: Self.parseISO(r[4]))
                 }
             case "opencode":
@@ -354,9 +467,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                     let dir = (!rawDir.isEmpty && FileManager.default.fileExists(atPath: rawDir)) ? rawDir : nil
                     return SessionUsage(sessionId: r[0],
                                         directory: dir,
-                                        messages: Self.parseInt(r[1]), tokens: Self.parseInt(r[2]),
-                                        cost: Double(r[3]) ?? 0,
-                                        lastTime: Double(r[4]).map { Date(timeIntervalSince1970: $0 / 1000) })
+                                        messages: SafeNumber.parseInt(r[1], source: "opencode.session.messages"),
+                                        tokens: SafeNumber.parseInt(r[2], source: "opencode.session.tokens"),
+                                        cost: SafeNumber.parseCost(r[3], source: "opencode.session.cost"),
+                                        lastTime: SafeNumber.date(fromMillisText: r[4], source: "opencode.session.lastTime"))
                 }
             default:
                 rows = []
@@ -380,8 +494,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         FROM usage_ledger
         """
         var u: TokenUsage?
-        if let (t24, c24) = scalarSum(sql24h, dbPath: dimAgentDB),
-           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: dimAgentDB) {
+        if let (t24, c24) = scalarSum(sql24h, dbPath: dimAgentDB, source: "dim"),
+           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: dimAgentDB, source: "dim") {
             u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
         }
         return u
@@ -397,8 +511,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         let sql24h = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter) AND time_created >= \(cutoffMs)"
         let sqlTotal = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter)"
         var u: TokenUsage?
-        if let (t24, c24) = scalarSum(sql24h, dbPath: openCodeDB),
-           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: openCodeDB) {
+        if let (t24, c24) = scalarSum(sql24h, dbPath: openCodeDB, source: "opencode"),
+           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: openCodeDB, source: "opencode") {
             u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
         }
         return u
@@ -407,12 +521,13 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     // MARK: - SQLite 底层
 
     /// 两列标量查询：(token, cost)；查询失败返回 nil
-    private func scalarSum(_ sql: String, dbPath: String) -> (Int, Double)? {
+    private func scalarSum(_ sql: String, dbPath: String, source: String) -> (Int, Double)? {
         guard let row = rawRows(sql, dbPath: dbPath, cols: 2).first else { return nil }
         // 经 Double 中转：SQLite 对 REAL 列求和会输出 "19067783.5" 这类带小数文本，
         // 直接 Int("...") 会返回 nil 并被 ?? 0 静默归零（统计整体消失且无任何报错）。
-        let tokens = Int(row[0]) ?? Double(row[0]).map { Int($0) } ?? 0
-        return (tokens, Double(row[1]) ?? 0)
+        // 兜底转换必须走 SafeNumber：脏数据（1e19 / Inf / NaN）在该路径上会直接 trap。
+        let tokens = SafeNumber.parseInt(row[0], source: "\(source).total.tokens")
+        return (tokens, SafeNumber.parseCost(row[1], source: "\(source).total.cost"))
     }
 
     /// 通用查询：全部列转字符串返回（数值/文本统一处理，空结果返回 []）
@@ -511,11 +626,6 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     static func parseISO(_ s: String) -> Date? {
         isoFormatter.date(from: s)
-    }
-
-    /// SQLite REAL 聚合可能返回 "301.0"；统一按数值解析，避免静默归零。
-    private static func parseInt(_ value: String) -> Int {
-        Int(value) ?? (Double(value).map { Int($0) } ?? 0)
     }
 }
 

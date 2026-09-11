@@ -221,6 +221,8 @@ public enum AgentActionInspector {
 
         var db: OpaquePointer?
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            // 失败路径同样会分配 handle，必须关闭（见 inspectZCodeAction 处的说明）
+            if let db { sqlite3_close(db) }
             return nil
         }
         defer { sqlite3_close(db) }
@@ -452,6 +454,9 @@ public enum AgentActionInspector {
         let dbPath = "\(home)/.zcode/v2/tasks-index.sqlite"
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
+            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
+            if let db { sqlite3_close(db) }
             return nil
         }
         defer { sqlite3_close(db) }
@@ -580,6 +585,9 @@ public enum AgentActionInspector {
         let dbPath = "\(home)/.workbuddy/workbuddy.db"
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
+            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
+            if let db { sqlite3_close(db) }
             return nil
         }
         defer { sqlite3_close(db) }
@@ -666,6 +674,9 @@ public enum AgentActionInspector {
         let dbPath = "\(home)/.local/share/opencode/opencode.db"
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
+            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
+            if let db { sqlite3_close(db) }
             return nil
         }
         defer { sqlite3_close(db) }
@@ -740,6 +751,9 @@ public enum AgentActionInspector {
         let dbPath = "\(home)/.hermes/state.db"
         var db: OpaquePointer?
         guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
+            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
+            if let db { sqlite3_close(db) }
             return nil
         }
         defer { sqlite3_close(db) }

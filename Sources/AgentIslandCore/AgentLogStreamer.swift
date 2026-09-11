@@ -40,7 +40,9 @@ public struct AgentLogEvent: Identifiable, Equatable, Sendable {
                 title: String,
                 detail: String? = nil,
                 agentId: String) {
-        self.id = id ?? "\(agentId)-\(Int(timestamp.timeIntervalSince1970 * 1000))-\(title)"
+        // 毫秒时间戳参与 id 拼接，来源是库字段（可能含 Int64 上限哨兵值）：
+        // 直接 Int(Double) 会 trap，走饱和解析保证「打开流水页即崩」不再发生
+        self.id = id ?? "\(agentId)-\(SafeNumber.saturatingInt(timestamp.timeIntervalSince1970 * 1000, source: "event.id"))-\(title)"
         self.timestamp = timestamp
         self.kind = kind
         self.title = title
@@ -239,17 +241,12 @@ public enum AgentLogStreamer {
     public static func fetchDimEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.dimcode/v2/dimcode.sqlite"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            return []
-        }
+        guard let db = openReadonly(dbPath) else { return [] }
         defer { sqlite3_close(db) }
 
-        let sql = """
-        SELECT createdAt, role, parts, toolMetadata 
-        FROM messages 
-        ORDER BY createdAt DESC LIMIT \(limit);
-        """
+        // 原查询对全表排序（EXPLAIN: SCAN + USE TEMP B-TREE FOR ORDER BY）：中型库上
+        // 实测 160ms/次，而该页每 2s 刷新一次，等于持续空转读整库。
+        let sql = dimEventsSQL(limit: limit)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
@@ -356,17 +353,11 @@ public enum AgentLogStreamer {
     public static func fetchOpenCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.local/share/opencode/opencode.db"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            return []
-        }
+        guard let db = openReadonly(dbPath) else { return [] }
         defer { sqlite3_close(db) }
 
-        let sql = """
-        SELECT p.data, p.time_created 
-        FROM part p 
-        ORDER BY p.time_created DESC LIMIT \(limit);
-        """
+        // 同 dim：rowid 窗口限流 + 时间排序（原全表排序实测 25ms/次，每 2s 一次）
+        let sql = openCodeEventsSQL(limit: limit)
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(stmt) }
@@ -375,7 +366,7 @@ public enum AgentLogStreamer {
         while sqlite3_step(stmt) == SQLITE_ROW {
             let dataStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
             let timeCreatedMs = sqlite3_column_int64(stmt, 1)
-            let date = Date(timeIntervalSince1970: Double(timeCreatedMs) / 1000.0)
+            let date = SafeNumber.date(fromEpochMillis: timeCreatedMs, source: "opencode.part.time") ?? Date()
 
             if let data = dataStr.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -411,10 +402,7 @@ public enum AgentLogStreamer {
     public static func fetchZCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.zcode/v2/tasks-index.sqlite"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            return []
-        }
+        guard let db = openReadonly(dbPath) else { return [] }
         defer { sqlite3_close(db) }
 
         let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT \(limit);"
@@ -427,7 +415,7 @@ public enum AgentLogStreamer {
             let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
             let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
             let updatedMs = sqlite3_column_int64(stmt, 2)
-            let date = Date(timeIntervalSince1970: Double(updatedMs) / 1000.0)
+            let date = SafeNumber.date(fromEpochMillis: updatedMs, source: "zcode.task.updated") ?? Date()
 
             events.append(AgentLogEvent(
                 timestamp: date,
@@ -445,10 +433,7 @@ public enum AgentLogStreamer {
     public static func fetchWorkBuddyEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.workbuddy/workbuddy.db"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            return []
-        }
+        guard let db = openReadonly(dbPath) else { return [] }
         defer { sqlite3_close(db) }
 
         let sql = "SELECT title, status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT \(limit);"
@@ -462,7 +447,7 @@ public enum AgentLogStreamer {
             let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
             let mode = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "agent"
             let updatedMs = sqlite3_column_int64(stmt, 3)
-            let date = Date(timeIntervalSince1970: Double(updatedMs) / 1000.0)
+            let date = SafeNumber.date(fromEpochMillis: updatedMs, source: "workbuddy.session.updated") ?? Date()
 
             events.append(AgentLogEvent(
                 timestamp: date,
@@ -480,10 +465,7 @@ public enum AgentLogStreamer {
     public static func fetchHermesEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.hermes/state.db"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            return []
-        }
+        guard let db = openReadonly(dbPath) else { return [] }
         defer { sqlite3_close(db) }
 
         let sql = "SELECT title, last_activity_description, started_at FROM sessions ORDER BY started_at DESC LIMIT \(limit);"
@@ -509,6 +491,47 @@ public enum AgentLogStreamer {
     }
 
     // MARK: - 辅助函数
+
+    /// 流水页只关心「最近 N 条」，故先用 rowid 窗口把扫描限制在表尾，再按时间排序。
+    /// 前提假设：rowid 越大插入越晚，「最近的事件」必落在尾部窗口内——该表实测
+    /// rowid 顺序与 createdAt 仅毫秒级交错，而本查询只用于显示最近 N 条，无影响。
+    /// 窗口按 limit 放大 25 倍并保底 500 行：调用方传更大 limit 时也不会截断。
+    static func recentWindow(limit: Int) -> Int { max(limit * 25, 500) }
+
+    /// dim 流水查询语句（独立成函数便于测试在 fixture 库上验证窗口语义）
+    static func dimEventsSQL(limit: Int) -> String {
+        """
+        SELECT createdAt, role, parts, toolMetadata
+        FROM messages
+        WHERE rowid > (SELECT max(rowid) - \(recentWindow(limit: limit)) FROM messages)
+        ORDER BY createdAt DESC LIMIT \(limit);
+        """
+    }
+
+    /// opencode 流水查询语句（与 dim 同策略）
+    static func openCodeEventsSQL(limit: Int) -> String {
+        """
+        SELECT p.data, p.time_created
+        FROM part p
+        WHERE p.rowid > (SELECT max(rowid) - \(recentWindow(limit: limit)) FROM part)
+        ORDER BY p.time_created DESC LIMIT \(limit);
+        """
+    }
+
+    /// 只读打开数据库（统一带 FULLMUTEX，与其他数据源一致）。
+    /// 失败时同样必须 close：`sqlite3_open_v2` 在返回错误码前就已分配 handle
+    /// （rc=14 等场景下 handle 非 NULL），不 close 会每次泄漏约 1.5KB。
+    /// 这些调用位于主线程采样路径（working 2s / idle 5s），泄漏会持续累积。
+    /// internal（非 private）以便测试直接覆盖失败路径的内存契约。
+    static func openReadonly(_ dbPath: String) -> OpaquePointer? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
+              let db else {
+            if let db { sqlite3_close(db) }
+            return nil
+        }
+        return db
+    }
 
     private static func findNewestFile(in dir: URL, maxAge: TimeInterval) -> URL? {
         let fm = FileManager.default
