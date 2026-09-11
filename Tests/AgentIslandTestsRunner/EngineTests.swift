@@ -238,6 +238,35 @@ enum EngineTests {
                             "探测结果透传到快照")
         }
 
+        TestKit.test("进程: 并发快照竞态冒烟（snapshotLock 差分窗口原子性）") {
+            // 引擎采样 / 工作台扫描 / 终止前身份复核可能并发调 snapshot：
+            // 差分窗口（lastWall 读取→update→setWall）非原子时，后到方分母被
+            // 先到方重置，CPU% 单拍失真。snapshotLock 串行化后此冒烟验证
+            // 「并发调用无死锁/无崩溃且全部产出合法快照」；CPU 数值的精确性
+            // 由锁的覆盖范围（读→遍历→setWall→prune 全程）静态保证
+            let provider = ProcessProvider()
+            let group = DispatchGroup()
+            let done = NSLock()
+            var completed = 0
+            for _ in 0..<6 {
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    for _ in 0..<15 {
+                        let snap = provider.snapshot()
+                        done.lock()
+                        if !snap.entries.isEmpty { completed += 1 }
+                        done.unlock()
+                    }
+                    group.leave()
+                }
+            }
+            // 快照在后台队列执行（无需主线程），主线程限时等待即可
+            let result = group.wait(timeout: .now() + 60)
+            try expectEqual(result, .success, "并发快照必须全部完成（卡死即 snapshotLock 重入）")
+            try expectTrue(completed >= 6 * 15 - 3,
+                            "空快照至多允许极少数（进程表瞬时不可读），实际 \(completed)/90")
+        }
+
         TestKit.test("引擎: terminateAgent 终止逃生舱更新事件与状态") {
             let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
             _ = engine.sample(now: Date())

@@ -457,6 +457,8 @@ struct AgentRowView: View {
     @ObservedObject var controller: IslandPanelController
     @State private var confirmingKill = false
     @State private var showingTooltip = false
+    /// 直达失败反馈：activate 返回 false 时短暂切换图标（ssh/tmux 启动的 CLI 无可激活窗口）
+    @State private var activateFailed = false
     /// 关闭 tooltip 的延迟任务（可取消）：鼠标从环移向 popover 的途中会先触发
     /// onHover(false)，若立即关闭则 popover 里的按钮永远点不到。
     @State private var tooltipCloseTask: Task<Void, Never>?
@@ -615,16 +617,22 @@ struct AgentRowView: View {
                         .help("查看 \(snapshot.profile.name) 实时事件与输出流水")
 
                         Button {
-                            AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs)
+                            if !AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs) {
+                                activateFailed = true
+                                Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                                    activateFailed = false
+                                }
+                            }
                         } label: {
-                            Image(systemName: "arrow.up.forward.app")
+                            Image(systemName: activateFailed ? "exclamationmark.triangle" : "arrow.up.forward.app")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(Theme.onDark.opacity(0.75))
+                                .foregroundColor(activateFailed ? Theme.warningOrange : Theme.onDark.opacity(0.75))
                                 .padding(4)
                                 .background(Circle().fill(Theme.chipFill))
                         }
                         .buttonStyle(.plain)
-                        .help("置顶并激活该智能体窗口/终端")
+                        .help(activateFailed ? "未找到可激活的窗口（CLI 经 ssh/tmux 启动时无窗口可带）" : "置顶并激活该智能体窗口/终端")
                     }
                 }
             }
@@ -907,6 +915,8 @@ struct EventBannerView: View {
     @State private var confirmingKill = false
     /// 熔断确认态的自动复位任务（可取消）
     @State private var killConfirmTask: Task<Void, Never>?
+    /// 直达失败反馈：activate 返回 false 时短暂切换文案（ssh/tmux 启动的 CLI 无可激活窗口）
+    @State private var activateFailed = false
 
     private var isExpanded: Bool {
         controller.eventBannerExpanded
@@ -1088,12 +1098,18 @@ struct EventBannerView: View {
                 let target = engine.snapshots.first { $0.id == event.agentId }
                 Button {
                     guard let target else { return }
-                    AppActivator.activate(pid: target.pid, bundleIDs: target.profile.bundleIDs)
+                    if !AppActivator.activate(pid: target.pid, bundleIDs: target.profile.bundleIDs) {
+                        activateFailed = true
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            activateFailed = false
+                        }
+                    }
                 } label: {
                     HStack(spacing: 3) {
-                        Image(systemName: "arrow.up.forward.app")
+                        Image(systemName: activateFailed ? "exclamationmark.triangle" : "arrow.up.forward.app")
                             .font(.system(size: 9))
-                        Text("直达")
+                        Text(activateFailed ? "未找到窗口" : "直达")
                             .font(Theme.bodyFont(10, weight: .semibold))
                     }
                     .foregroundColor(Theme.onDark)
@@ -1104,7 +1120,7 @@ struct EventBannerView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(target == nil)
-                .help(target == nil ? "该提醒没有对应的运行中 Agent" : "拉至前台并激活窗口")
+                .help(activateFailed ? "未找到可激活的窗口（CLI 经 ssh/tmux 启动时无窗口可带）" : (target == nil ? "该提醒没有对应的运行中 Agent" : "拉至前台并激活窗口"))
                 .accessibilityLabel("直达 \(event.agentName) 窗口")
             }
         }

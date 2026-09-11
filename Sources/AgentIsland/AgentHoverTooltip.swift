@@ -51,6 +51,8 @@ struct AgentHoverTooltipCard: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
     @State private var confirmingKill = false
+    /// 直达失败反馈：activate 返回 false 时短暂切换按钮文案（ssh/tmux 启动的 CLI 无可激活窗口）
+    @State private var activateFailed = false
     /// 终止确认态的自动复位任务（可取消）：与 Agent 行「终止?」同一写法，
     /// 视图销毁时不会被一个仍在排队的 DispatchQueue 回调写回已失效的状态
     @State private var confirmResetTask: Task<Void, Never>?
@@ -271,21 +273,28 @@ struct AgentHoverTooltipCard: View {
                 }
 
                 Button {
-                    AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs)
+                    if !AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs) {
+                        activateFailed = true
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            activateFailed = false
+                        }
+                    }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "arrow.up.forward.app")
+                        Image(systemName: activateFailed ? "exclamationmark.triangle" : "arrow.up.forward.app")
                             .font(.system(size: 9))
-                        Text("直达窗口")
+                        Text(activateFailed ? "未找到窗口" : "直达窗口")
                             .font(Theme.bodyFont(10, weight: .semibold))
                     }
-                    .foregroundColor(Theme.onDark)
+                    .foregroundColor(activateFailed ? Theme.warningOrange : Theme.onDark)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
                 }
                 .buttonStyle(.plain)
+                .help(activateFailed ? "未找到可激活的窗口（CLI 经 ssh/tmux 启动时无窗口可带）" : "置顶并激活该智能体窗口/终端")
             }
         }
     }

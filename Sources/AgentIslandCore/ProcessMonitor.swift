@@ -131,10 +131,16 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         }
     }
     private let cache = CpuCache()
+    /// 快照互斥：CPU 差分窗口（lastWall 读取 → 遍历内 update → setWall）必须原子，
+    /// 否则并发快照（引擎采样 vs 工作台扫描 vs 终止前身份复核）互相消费差分窗口，
+    /// 后到方的分母被先到方重置过，CPU% 单拍失真（骤降或钳满）
+    private let snapshotLock = NSLock()
 
     public init() {}
 
     public func snapshot() -> ProcessSnapshot {
+        snapshotLock.lock()
+        defer { snapshotLock.unlock() }
         let now = Date().timeIntervalSince1970
         let wallDelta = now - cache.lastWallTime()   // 首拍可能为 0
 

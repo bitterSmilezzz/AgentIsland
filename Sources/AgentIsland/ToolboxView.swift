@@ -366,14 +366,20 @@ struct ToolboxView: View {
             return snap.profile.id
         })
         let profiles = engine.allProfiles
-        let cleaner = engine.cleaner
+        // 独立扫描源（不共用 engine.cleaner）：工作台扫描与引擎采样若共用同一
+        // ProcessProvider，差分缓存被互相消费——工作台扫描紧跟引擎采样会把引擎
+        // 下一拍的差分窗口吃掉，CPU% 归零/虚高造成状态抖动。静态长驻让差分跨
+        // 扫描保温；首次访问在后台线程预热两拍（冷启动第一拍 CPU 恒 0，会漏报
+        // hung 行——其规则要求 entry CPU > 10%）
+        let cleaner = Self.scanner
         // NSWorkspace 必须主线程访问（ProcessProviding 契约）：先在主线程抓 bundle 集合，
         // 再进后台做快照与匹配。此前整段丢到后台队列，违反线程契约。
         let bundleIDs = ProcessProvider().runningBundleIDs()
         DispatchQueue.global(qos: .userInitiated).async {
-            let found = cleaner?.scanAnomalies(profiles: profiles, hungAgentIDs: hungIDs,
+            _ = Self.scannerWarm   // 首次访问时在后台线程预热（350ms）
+            let found = cleaner.scanAnomalies(profiles: profiles, hungAgentIDs: hungIDs,
                                                runningBundleIDs: bundleIDs,
-                                               recentlyActiveProfileIDs: activeIDs) ?? []
+                                               recentlyActiveProfileIDs: activeIDs)
             DispatchQueue.main.async {
                 self.anomalies = found
                 self.isScanning = false
@@ -381,6 +387,16 @@ struct ToolboxView: View {
             }
         }
     }
+
+    /// 工作台专用快照源（与引擎的 ProcessProvider 完全隔离）
+    private static let scannerProvider = ProcessProvider()
+    private static let scanner = AgentCleaner(processMonitor: scannerProvider)
+    /// 冷启动预热：两拍快照建立差分基线（static let 初始化原子且仅一次）
+    private static let scannerWarm: Void = {
+        _ = scannerProvider.snapshot()
+        Thread.sleep(forTimeInterval: 0.35)
+        _ = scannerProvider.snapshot()
+    }()
 
     /// 单条清理。此前无条件 `anomalies.removeAll { $0.id == item.id }`：
     /// `ProcessTerminator` 在无权限或进程已消失时会失败，条目却照样消失，
@@ -391,10 +407,14 @@ struct ToolboxView: View {
         cleanFeedback = nil
         engine.cleanAnomalies([item])
         verifyCleanup { remaining in
-            guard let stillAlive = remaining.first(where: { $0.pid == item.pid }) else { return }
-            self.cleanFeedback = "未能终止 \(stillAlive.agentName)（PID \(item.pid)）："
-                + "进程仍在运行，可能需要更高权限，可从活动监视器处理"
+            // 复核回调晚 1.2s 到达：用户可能已离开工作台——只旁观，不导航不打扰
+            guard case .toolbox = self.controller.route else { return }
             self.anomalies = remaining
+            // 按 id 区分归因：原目标仍在列表才是「未能终止」；复核窗口内
+            // 新升温的条目从未被清理，不得记到本次清理头上
+            guard remaining.contains(where: { $0.id == item.id }) else { return }
+            self.cleanFeedback = "未能终止 \(item.agentName)（PID \(item.pid)）："
+                + "进程仍在运行，可能需要更高权限，可从活动监视器处理"
         }
     }
 
@@ -408,13 +428,17 @@ struct ToolboxView: View {
         let toClean = batchCleanableAnomalies
         guard !toClean.isEmpty else { return }
         let orphanCount = anomalies.count - toClean.count
+        let originalIDs = Set(toClean.map(\.id))
         engine.cleanAnomalies(toClean)
         // 与单条清理同一口径：不再直接清空列表并返回（那等于替引擎宣告成功）。
         // 复核后确认批量目标全部消失才算成功；孤儿进程本来就留在列表里（逐条清理），
         // 不得计入「未能终止」。
         verifyCleanup { remaining in
+            // 复核期间用户已离开工作台：只旁观，绝不把用户拽回主列表（U4）
+            guard case .toolbox = self.controller.route else { return }
             self.anomalies = remaining
-            let failed = remaining.filter(\.batchCleanable)
+            // id 差集归因：原目标残留 = 失败；复核窗口内新出现的条目从未被清理，不算失败
+            let failed = remaining.filter { originalIDs.contains($0.id) }
             if failed.isEmpty {
                 if orphanCount > 0 {
                     self.cleanFeedback = "批量清理完成；列表中的孤儿进程为防误杀不参与批量清理，请逐条确认"
