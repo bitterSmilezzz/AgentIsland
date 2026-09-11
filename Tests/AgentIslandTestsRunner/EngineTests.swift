@@ -350,6 +350,48 @@ enum EngineTests {
             try expectEqual(returnedRows?.count ?? -1, 0)
         }
 
+        TestKit.test("实时流水: 批次内派生 id 去重（同毫秒同名事件不得撞 id）") {
+            let ts = Date(timeIntervalSince1970: 1_700_000_000.123)
+            let a = AgentLogEvent(timestamp: ts, kind: .toolCall, title: "调用工具: Bash", agentId: "dim")
+            let b = AgentLogEvent(timestamp: ts, kind: .toolCall, title: "调用工具: Bash", agentId: "dim")
+            let c = AgentLogEvent(timestamp: ts, kind: .toolCall, title: "调用工具: Read", agentId: "dim")
+            // 前置：派生 id 确实相同（一条消息内两条同名 tool_use 的真实形态）
+            try expectEqual(a.id, b.id, "前置条件：同毫秒同名事件的派生 id 相同")
+
+            let deduped = AgentLogStreamer.deduplicateIds([a, b, c])
+            try expectEqual(Set(deduped.map(\.id)).count, deduped.count,
+                            "去重后批次内 id 两两不同，否则 ForEach 重复 id 条目互相顶替")
+            try expectEqual(deduped[0].id, a.id, "首次出现保持原 id（已展开的详情态不丢）")
+            try expectTrue(deduped[1].id.hasPrefix(b.id + "#"), "后续出现追加序号后缀")
+            try expectEqual(deduped[2].id, c.id, "不同标题的事件不受影响")
+            // 出现次序由数据行序决定，重复调用（同一查询重复执行）结果稳定
+            let again = AgentLogStreamer.deduplicateIds([a, b, c])
+            try expectEqual(again.map(\.id), deduped.map(\.id), "同一批次重复去重结果稳定")
+
+            // 基础 id 自带「#数字」后缀的再碰撞形态（标题含 #）：仍须两两不同
+            let x = AgentLogEvent(timestamp: ts, kind: .toolCall, title: "T", agentId: "dim")
+            let xHashOne = AgentLogEvent(id: "\(x.id)#1", timestamp: ts, kind: .toolCall, title: "T", agentId: "dim")
+            let dedupedHash = AgentLogStreamer.deduplicateIds([x, xHashOne, x])
+            try expectEqual(Set(dedupedHash.map(\.id)).count, 3,
+                            "基础 id 以 #1 结尾时固定序号会再撞，须取下一个可用序号（实际 \(dedupedHash.map(\.id))）")
+        }
+
+        TestKit.test("实时流水: detail 超长截断（64KB JSONL 行不再整段渲染）") {
+            let huge = String(repeating: "x", count: 70_000)
+            let event = AgentLogEvent(kind: .command, title: "t", detail: huge, agentId: "claude")
+            try expectEqual(event.detail?.count, AgentLogEvent.maxDetailCharacters + "…[已截断]".count,
+                            "detail 必须截断到上界 + 截断标记")
+
+            let normal = AgentLogEvent(kind: .command, title: "t", detail: "short", agentId: "claude")
+            try expectEqual(normal.detail, "short", "短 detail 原样保留")
+            let none = AgentLogEvent(kind: .command, title: "t", detail: nil, agentId: "claude")
+            try expectNil(none.detail, "nil detail 透传")
+            // 显式 id 传入时截断同样生效（构造点唯一，无旁路）
+            let explicit = AgentLogEvent(id: "fixed", kind: .command, title: "t", detail: huge, agentId: "claude")
+            try expectEqual(explicit.id, "fixed")
+            try expectTrue(explicit.detail!.hasSuffix("…[已截断]"), "显式 id 路径同样截断")
+        }
+
         TestKit.test("熔断保护: Token 激增告警触发（速率制 + 连续确认）") {
             let fake = FakeTokenUsageMonitor()
             fake.usage["dim"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)

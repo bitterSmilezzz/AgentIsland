@@ -46,37 +46,92 @@ public struct AgentLogEvent: Identifiable, Equatable, Sendable {
         self.timestamp = timestamp
         self.kind = kind
         self.title = title
-        self.detail = detail
+        // detail 在 330pt 卡片内整段渲染：超长原始内容（Claude 的 64KB JSONL 行、
+        // dim 的整段 parts JSON、完整消息文本）对用户没有诊断价值，全量渲染造成
+        // 可感知的布局卡顿。在唯一构造点截断，覆盖全部 fetch 路径。
+        if let detail, detail.count > Self.maxDetailCharacters {
+            self.detail = String(detail.prefix(Self.maxDetailCharacters)) + "…[已截断]"
+        } else {
+            self.detail = detail
+        }
         self.agentId = agentId
     }
+
+    /// detail 渲染上界（字符）。完整内容本就无法在卡内滚动查看，截断无损
+    public static let maxDetailCharacters = 4096
 }
 
 // MARK: - 实时日志流提取引擎
 
 public enum AgentLogStreamer {
 
+    /// ISO8601DateFormatter 初始化是已知昂贵对象（~0.5ms/个），流水页每 2s 刷新；
+    /// 静态化复用（线程安全），与 TokenUsageMonitor 的 isoFormatter 同模式
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    /// 无毫秒的回退解析器（antigravity 两种时间格式并存）
+    private static let isoPlain = ISO8601DateFormatter()
+
+    /// 批次内 id 去重：同一消息内的多条 part（如连续两次同名 `tool_use`）共享同一
+    /// `createdAt`，派生 id「agentId-毫秒-标题」会完全相同，用作 ForEach 身份与
+    /// 展开态键时触发 SwiftUI 重复 id 未定义行为（行互相顶替）。
+    /// 稳定性边界：同批内稳定（出现次序由数据行序决定）；新事件不改变既有事件的
+    /// 编号；仅当重复组的**首个**出现被挤出列表窗口时，后续出现的编号会前移。
+    /// 首次出现保持原 id（已展开的详情态不丢）。
+    static func deduplicateIds(_ events: [AgentLogEvent]) -> [AgentLogEvent] {
+        var used: Set<String> = []
+        var nextSuffix: [String: Int] = [:]
+        return events.map { event in
+            guard used.contains(event.id) else {
+                used.insert(event.id)
+                return event
+            }
+            // 基础 id 可能本身以「#数字」结尾（标题含 #），固定序号会再撞——
+            // 取「本批内下一个可用序号」，同时守住去重结果与原 id 的确定性
+            var k = nextSuffix[event.id, default: 1]
+            var candidate = "\(event.id)#\(k)"
+            while used.contains(candidate) {
+                k += 1
+                candidate = "\(event.id)#\(k)"
+            }
+            nextSuffix[event.id] = k + 1
+            used.insert(candidate)
+            return AgentLogEvent(id: candidate,
+                                 timestamp: event.timestamp,
+                                 kind: event.kind,
+                                 title: event.title,
+                                 detail: event.detail,
+                                 agentId: event.agentId)
+        }
+    }
+
     /// 提取指定 Agent 最近的结构化事件流水
     public static func fetchRecentEvents(agentId: String, limit: Int = 20) -> [AgentLogEvent] {
+        let events: [AgentLogEvent]
         switch agentId {
         case "antigravity":
-            return fetchAntigravityEvents(limit: limit)
+            events = fetchAntigravityEvents(limit: limit)
         case "codex":
-            return fetchCodexEvents(limit: limit)
+            events = fetchCodexEvents(limit: limit)
         case "dim":
-            return fetchDimEvents(limit: limit)
+            events = fetchDimEvents(limit: limit)
         case "claude":
-            return fetchClaudeEvents(limit: limit)
+            events = fetchClaudeEvents(limit: limit)
         case "opencode":
-            return fetchOpenCodeEvents(limit: limit)
+            events = fetchOpenCodeEvents(limit: limit)
         case "zcode":
-            return fetchZCodeEvents(limit: limit)
+            events = fetchZCodeEvents(limit: limit)
         case "workbuddy":
-            return fetchWorkBuddyEvents(limit: limit)
+            events = fetchWorkBuddyEvents(limit: limit)
         case "hermes":
-            return fetchHermesEvents(limit: limit)
+            events = fetchHermesEvents(limit: limit)
         default:
-            return []
+            events = []
         }
+        return deduplicateIds(events)
     }
 
     // MARK: - 1. Antigravity 日志流 (transcript.jsonl)
@@ -103,10 +158,6 @@ public enum AgentLogStreamer {
         let lines = readLastLines(from: target, maxLines: limit * 2)
         var events: [AgentLogEvent] = []
 
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-
         for line in lines.reversed() {
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -114,7 +165,7 @@ public enum AgentLogStreamer {
             }
 
             let createdAtStr = obj["created_at"] as? String ?? ""
-            let date = isoFormatter.date(from: createdAtStr) ?? fallbackFormatter.date(from: createdAtStr) ?? Date()
+            let date = Self.isoFractional.date(from: createdAtStr) ?? Self.isoPlain.date(from: createdAtStr) ?? Date()
 
             if let toolCalls = obj["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty {
                 for tc in toolCalls {
@@ -184,8 +235,6 @@ public enum AgentLogStreamer {
 
         let lines = readLastLines(from: newestFile, maxLines: limit * 2)
         var events: [AgentLogEvent] = []
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
         for line in lines.reversed() {
             guard let data = line.data(using: .utf8),
@@ -194,7 +243,7 @@ public enum AgentLogStreamer {
             }
 
             let timeStr = obj["timestamp"] as? String ?? ""
-            let date = isoFormatter.date(from: timeStr) ?? Date()
+            let date = Self.isoFractional.date(from: timeStr) ?? Date()
 
             if let payload = obj["payload"] as? [String: Any] {
                 let ptype = payload["type"] as? String ?? ""
@@ -252,8 +301,6 @@ public enum AgentLogStreamer {
         defer { sqlite3_finalize(stmt) }
 
         var events: [AgentLogEvent] = []
-        let isoFormatter = ISO8601DateFormatter()
-        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
         while sqlite3_step(stmt) == SQLITE_ROW {
             let createdAtStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
@@ -261,7 +308,7 @@ public enum AgentLogStreamer {
             let partsStr = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
             let toolMetaStr = sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? ""
 
-            let date = isoFormatter.date(from: createdAtStr) ?? Date()
+            let date = Self.isoFractional.date(from: createdAtStr) ?? Date()
 
             if !toolMetaStr.isEmpty, let metaData = toolMetaStr.data(using: .utf8),
                let meta = try? JSONSerialization.jsonObject(with: metaData) as? [String: Any] {
