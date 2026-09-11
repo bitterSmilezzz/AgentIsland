@@ -203,15 +203,18 @@ private struct PulsingAttentionArc: View {
 
 // MARK: - CodeNotch 灵感色板（Palette）
 
+/// 水位色板。深色值维持原有荧光观感不变；浅色值统一加深，保证白玻璃上
+/// 环线 ≥3:1、被当作文字用时（如环看板副标题、tooltip 花费）≥4.5:1。
+/// 此前四个颜色全部硬编码亮色：ringYellow 白底 ≈1.3:1、ringGreen ≈1.8:1，浅色主题下几乎不可见。
 enum Palette {
     /// 环形底轨灰
     static let ringTrack = Color(dynamicLight: 0xdcdce0, dark: 0x333338)
-    /// 水位 0~49% 荧光鲜绿
-    static let ringGreen = Color(hex: 0x28E07B)
-    /// 水位 50~79% 琥珀黄
-    static let ringYellow = Color(hex: 0xF5E400)
+    /// 水位 0~49% 荧光鲜绿（浅色取 Theme.statusWorking 同款加深绿，白底约 5:1）
+    static let ringGreen = Color(dynamicLight: 0x157f3c, dark: 0x28E07B)
+    /// 水位 50~79% 琥珀黄（浅色取 Theme.statusIdle 同款深琥珀，白底约 5:1）
+    static let ringYellow = Color(dynamicLight: 0x8f6a00, dark: 0xF5E400)
     /// 水位 80~99% 预警亮橙
-    static let ringOrange = Color(hex: 0xFF4500)
+    static let ringOrange = Color(dynamicLight: 0xc23a00, dark: 0xFF4500)
     /// 水位 100% / 熔断 极光赤红
-    static let ringRed = Color(hex: 0xFF3B30)
+    static let ringRed = Color(dynamicLight: 0xc62828, dark: 0xFF3B30)
 }

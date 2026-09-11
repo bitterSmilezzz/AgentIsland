@@ -358,6 +358,9 @@ struct MenuBarIconView: View {
                         .transition(.opacity)
                 }
             }
+            // VoiceOver：菜单栏图标是应用的第一入口，纯图标无文案，需显式播报当前状态
+            .accessibilityLabel(engine.anyWorking ? "AgentIsland：有智能体正在工作" : "AgentIsland：全部空闲")
+            .accessibilityHint("打开监控面板")
     }
 }
 

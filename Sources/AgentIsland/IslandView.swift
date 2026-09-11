@@ -275,11 +275,12 @@ struct IslandView: View {
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(Theme.onDarkFaint)
                         .padding(4)
-                        .background(Circle().fill(Theme.chipFill))
+                        .topBarChip()
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("外观主题：\(controller.appearanceMode.label)（点击切换）")
+                .accessibilityLabel("外观主题，当前 \(controller.appearanceMode.label)")
 
                 // 工作台快捷维护工具箱（v1.7.7）
                 Button {
@@ -289,10 +290,11 @@ struct IslandView: View {
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(Theme.onDarkFaint)
                         .padding(4)
-                        .background(Circle().fill(Theme.chipFill))
+                        .topBarChip()
                 }
                 .buttonStyle(.plain)
                 .help("智能体维护工作台：扫描清理孤儿进程、死锁与内存泄露")
+                .accessibilityLabel("智能体维护工作台")
 
                 // 一键收起按钮
                 Button {
@@ -302,10 +304,11 @@ struct IslandView: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(Theme.onDarkFaint)
                         .padding(4)
-                        .background(Circle().fill(Theme.chipFill))
+                        .topBarChip()
                 }
                 .buttonStyle(.plain)
                 .help("收起灵动岛（或光标移出卡片自动收起）")
+                .accessibilityLabel("收起灵动岛")
             }
             .padding(.horizontal, Theme.pageMargin)
             .padding(.top, IslandMetrics.headerPaddingTop)
@@ -569,7 +572,7 @@ struct AgentRowView: View {
                                     .foregroundColor(.white)
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.red.opacity(0.9)))
+                                    .background(Capsule().fill(Theme.dangerRed.opacity(0.9)))
                             }
                             .buttonStyle(.plain)
                             .help("再次点击立即强制终止该 Agent 进程")
@@ -590,9 +593,9 @@ struct AgentRowView: View {
                             } label: {
                                 Image(systemName: "xmark.circle")
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(Color.red.opacity(0.85))
+                                    .foregroundColor(Theme.dangerRed.opacity(0.85))
                                     .padding(4)
-                                    .background(Circle().fill(Color.red.opacity(0.15)))
+                                    .background(Circle().fill(Theme.dangerRed.opacity(0.15)))
                             }
                             .buttonStyle(.plain)
                             .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
@@ -716,6 +719,28 @@ struct TokenSummaryBar: View {
     }
 }
 
+// MARK: - 顶栏圆形图标按钮底
+
+/// 顶栏图标按钮的圆形底：默认 chipFill，hover 升到 hoverFill。
+/// 顶栏此前只有 .help 文案、没有任何视觉反馈，鼠标扫过时无法确认按钮可点
+/// （详情页返回键早有同款反馈，此处补齐一致性）。
+private struct TopBarChipModifier: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(Circle().fill(hovering ? Theme.hoverFill : Theme.chipFill))
+            .onHover { hovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+extension View {
+    fileprivate func topBarChip() -> some View {
+        modifier(TopBarChipModifier())
+    }
+}
+
 // MARK: - 收起态边缘微胶囊（DockedSliverCapsule，v1.7.5 视觉强化）
 // 设计考量：
 // 1. 低功耗零负担：呼吸动画采用平滑缓和的 2.4s 循环，仅在有明确状态（工作或告警）时运行；
@@ -746,6 +771,13 @@ struct DockedSliverCapsule: View {
 
     private var shouldAnimate: Bool {
         hasAlert || isWorking
+    }
+
+    /// VoiceOver 标签：把状态说清楚，否则细条只是一个无名可点区域
+    private var accessibilityLabelText: String {
+        let state = hasAlert ? "有告警" : (isWorking ? "智能体工作中" : "待机")
+        let edge = dockEdge == .top ? "顶部" : "右侧"
+        return "AgentIsland 灵动岛（\(edge)贴边，\(state)）"
     }
 
     var body: some View {
@@ -786,6 +818,11 @@ struct DockedSliverCapsule: View {
         .onHover { hovering in
             onHover(hovering)
         }
+        // 收起态细条是面板的第一入口，此前对 VoiceOver 完全不可见
+        .accessibilityElement()
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityHint("展开灵动岛卡片")
         .onAppear {
             updateAnimationState()
         }
@@ -866,6 +903,10 @@ struct EventBannerView: View {
     @State private var copiedFeedback = false
     /// 复制反馈的复位任务（可取消）
     @State private var copyFeedbackTask: Task<Void, Never>?
+    /// 熔断二次确认态：杀的是整棵进程树（用户终端/编辑器可能一起退出），不能单击生效
+    @State private var confirmingKill = false
+    /// 熔断确认态的自动复位任务（可取消）
+    @State private var killConfirmTask: Task<Void, Never>?
 
     private var isExpanded: Bool {
         controller.eventBannerExpanded
@@ -984,26 +1025,57 @@ struct EventBannerView: View {
 
                 Spacer()
 
-                // 熔断：costSpike 且能定位到进程时才提供；pid 缺失时给出去向指引而非直接消失
+                // 熔断：costSpike 且能定位到进程时才提供；pid 缺失时给出去向指引而非直接消失。
+                // 与 Agent 行「终止?」、工作台「确认?」保持同一套两段式确认：
+                // 首击只进入确认态，3 秒内不再点击则自动复位（Task 随视图身份变化取消）。
                 if event.eventType == .costSpike {
                     if let pid = event.pid {
-                        Button {
-                            engine.terminateAgent(pid: pid, agentId: event.agentId)
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: "xmark.octagon.fill")
-                                    .font(.system(size: 9))
-                                Text("熔断")
-                                    .font(Theme.bodyFont(10, weight: .bold))
+                        if confirmingKill {
+                            Button {
+                                engine.terminateAgent(pid: pid, agentId: event.agentId)
+                                confirmingKill = false
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "xmark.octagon.fill")
+                                        .font(.system(size: 9))
+                                    Text("确认熔断?")
+                                        .font(Theme.bodyFont(10, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Theme.dangerRed))
                             }
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(Color.red.opacity(0.85)))
+                            .buttonStyle(.plain)
+                            .help("再次点击确认终止 \(event.agentName) 及其子进程（不可撤销）")
+                            .accessibilityLabel("确认熔断 \(event.agentName)")
+                            .onAppear {
+                                killConfirmTask?.cancel()
+                                killConfirmTask = Task { @MainActor in
+                                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                                    guard !Task.isCancelled else { return }
+                                    confirmingKill = false
+                                }
+                            }
+                        } else {
+                            Button {
+                                confirmingKill = true
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "xmark.octagon.fill")
+                                        .font(.system(size: 9))
+                                    Text("熔断")
+                                        .font(Theme.bodyFont(10, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Theme.dangerRed.opacity(0.85)))
+                            }
+                            .buttonStyle(.plain)
+                            .help("终止该 Agent 进程树，阻止持续消耗（需二次确认）")
+                            .accessibilityLabel("熔断 \(event.agentName)")
                         }
-                        .buttonStyle(.plain)
-                        .help("立即终止该 Agent 进程树，阻止持续消耗")
-                        .accessibilityLabel("熔断 \(event.agentName)")
                     } else {
                         Text("未定位到进程，请在活动监视器处理")
                             .font(Theme.bodyFont(9))
@@ -1040,7 +1112,7 @@ struct EventBannerView: View {
         .padding(.vertical, 6)
         // 动态色：硬编码白色在浅色主题下会让整条横幅失去视觉分组
         .background(event.eventType == .costSpike
-                    ? Color.red.opacity(0.18)
+                    ? Theme.dangerRed.opacity(0.18)
                     : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
     }
 
@@ -1055,8 +1127,10 @@ struct EventBannerView: View {
     private func eventColor(for type: AgentTaskEvent.EventType) -> Color {
         switch type {
         case .completed: return Theme.statusWorking
-        case .attention: return .orange
-        case .costSpike: return Color.red
+        // 复用语义色而非系统 .orange / .red：与顶栏状态摘要、Agent 行徽标同一套配色，
+        // 且集中到 Theme 便于后续统一加深浅色对比（系统 .orange 在浅底仅约 2.2:1）
+        case .attention: return Theme.warningOrange
+        case .costSpike: return Theme.dangerRed
         }
     }
 }

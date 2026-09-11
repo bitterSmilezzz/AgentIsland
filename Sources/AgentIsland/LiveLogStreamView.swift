@@ -32,8 +32,7 @@ struct LiveLogStreamView: View {
                 title: "\(agentName) 实时流水",
                 subtitle: "Live Log Stream · \(events.count) 条事件",
                 onBack: { controller.closeLiveStream() },
-                onMoved: { controller.dragMoved(translation: $0) },
-                onEnded: { controller.dragEnded() }
+                controller: controller
             )
 
             DarkDivider()
@@ -138,10 +137,14 @@ struct LiveLogStreamView: View {
             }
             .buttonStyle(.plain)
             .help("立即刷新事件流水")
+            .accessibilityLabel("立即刷新事件流水")
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, 5)
-        .background(Color.black.opacity(0.12))
+        // 动态色：硬编码 black 0.12 在浅色主题下是一条突兀的灰带；
+        // 深色保持原加深 12%，浅色降到 4%（与卡片同族的极淡分层）
+        .background(Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04),
+                          dark: NSColor(hex: 0x000000, alpha: 0.12)))
     }
 
     // MARK: - 单条事件行
@@ -184,7 +187,10 @@ struct LiveLogStreamView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Color.black.opacity(0.35))
+                            // 动态色：硬编码 black 0.35 在浅色主题下是一块深色板，
+                            // 与浅色正文（onDarkMuted）对比过低近乎不可读
+                            .fill(Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05),
+                                        dark: NSColor(hex: 0x000000, alpha: 0.35)))
                     )
             }
         }
@@ -192,7 +198,9 @@ struct LiveLogStreamView: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isExpanded ? Theme.hoverFill : Color.white.opacity(0.03))
+                // 动态色：white 3% 在白玻璃上完全不可见，浅色改用黑色 3% 做行分层
+                .fill(isExpanded ? Theme.hoverFill
+                                 : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.03))
         )
         .contentShape(Rectangle())
         .onTapGesture {
@@ -242,7 +250,7 @@ struct LiveLogStreamView: View {
             Text("暂未捕获到该智能体的实时日志")
                 .font(Theme.bodyFont(11))
                 .foregroundColor(Theme.onDarkFaint)
-            Text("当智能体触发思考、工具调用或命令执行时将在此自动滚动显示")
+            Text("当智能体触发思考、工具调用或命令执行时将在此自动显示（最新事件在最上方）")
                 .font(Theme.bodyFont(9))
                 .foregroundColor(Theme.onDarkFaint.opacity(0.7))
                 .multilineTextAlignment(.center)

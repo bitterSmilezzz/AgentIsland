@@ -53,9 +53,10 @@ enum Theme {
     static let tile2 = Color(dynamicLight: 0xe2e2e6, dark: 0x2a2a2c)
     static let tile3 = Color(dynamicLight: 0xe5e5e8, dark: 0x252527)
 
-    // Risk accents (system red/orange for danger semantics)
-    static let dangerRed = Color(hex: 0xff3b30)
-    static let warningOrange = Color(hex: 0xff9500)
+    // Risk accents：浅色下加深，保证在白玻璃上仍可读
+    // （原始系统色 #ff3b30 / #ff9500 在白底分别约 3.5:1 / 2.2:1，作为正文色不达标）
+    static let dangerRed = Color(dynamicLight: 0xd32f2f, dark: 0xff3b30)
+    static let warningOrange = Color(dynamicLight: 0xb45309, dark: 0xff9500)
 
     // 文本（动态：岛面上深色模式白字、浅色模式深字）
     static let ink = Color(dynamicLight: 0x1d1d1f, dark: 0xf5f5f7)
@@ -96,7 +97,6 @@ enum Theme {
         }
         return Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.22)
     }
-    static let dockedSliverStroke = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.22)
     /// 玻璃卡黑/白蒙层不透明度（GlassCardBackground）
     static let glassOverlayOpacity: Double = 0.38
     /// 玻璃卡 1px 晶莹微反光边缘（深色微白高光，浅色微暗勾边）

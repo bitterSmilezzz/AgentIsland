@@ -119,15 +119,5 @@ extension View {
             )
         )
     }
-
-    /// 兼容闭包调用（映射为原生拖拽）
-    func cardDrag(onMoved: ((CGSize) -> Void)? = nil, onEnded: @escaping () -> Void) -> some View {
-        self.background(
-            WindowDragHandleView(
-                onDragStart: { onMoved?(.zero) },
-                onDragEnded: { onEnded() }
-            )
-        )
-    }
 }
 

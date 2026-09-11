@@ -6,10 +6,27 @@ import AgentIslandCore
 @MainActor
 enum CompletionNotification {
     static func requestAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // 只要 .alert：通知固定静音投递（sound = nil），声音由岛内 NSSound 单独负责，
+        // 不再为一个用不到的能力向用户申请权限。
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
     }
 
-    static func post(for event: AgentTaskEvent) {
+    /// 投递系统通知。
+    /// - Parameter policy: 通知策略裁决投递与否：完全静默不投递、专注免打扰只放行熔断/死循环
+    ///   告警、标准模式全部投递。此前 `post` 在策略判断之前无条件调用，导致「完全静默」下
+    ///   仍弹通知并响铃，直接违反该模式的文案承诺。
+    static func post(for event: AgentTaskEvent, policy: NotificationPolicy) {
+        // 与 NotificationPolicy.shouldPeek 同一套分级口径；之所以不用 shouldPeek 那个名字，
+        // 是因为系统通知与岛内微窥是两个独立通道，共用命名会让调用点误以为二者必须同步。
+        switch policy {
+        case .silent:
+            return
+        case .focus:
+            guard event.eventType == .costSpike else { return }
+        case .standard:
+            break
+        }
+
         let content = UNMutableNotificationContent()
         switch event.eventType {
         case .completed:
@@ -22,8 +39,12 @@ enum CompletionNotification {
             content.title = "\(event.agentName) 资源告警"
             content.body = event.message ?? event.detail ?? "检测到 Token 或 CPU 消耗异常"
         }
-        // 明确指定默认通知音。`.default` 是静音通知的关键区别，不能省略。
-        content.sound = UNNotificationSound.default
+        // 固定不带声音：提示音统一由岛内的 NSSound 承担（见 IslandPanel.handleTaskEvent）。
+        // 反过来让通知带声音会与 NSSound 叠加成双重提示音；而把声音交给通知中心还有个副作用——
+        // 用户若关闭了 AgentIsland 的通知权限（或系统层面静音），熔断告警就会彻底失声。
+        // 岛内 NSSound 不依赖通知权限，且已由通知策略与「任务完成提示音」开关共同裁决，
+        // 因此它是唯一声音来源，通知只负责横幅可见性。
+        content.sound = nil
         if #available(macOS 13.0, *) {
             // 任务完成属于用户应立即知道的主动事件，避免被系统当作被动更新而静音。
             content.interruptionLevel = .active

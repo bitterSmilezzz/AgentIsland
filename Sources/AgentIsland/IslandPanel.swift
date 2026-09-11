@@ -36,6 +36,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var collapseTask: Task<Void, Never>?
     private var peekTask: Task<Void, Never>?
     private var routeResetTask: Task<Void, Never>?
+    /// 代际标记：任务在 `defer` 里清空自己的引用前先比对代际，
+    /// 否则被取消的旧任务恢复执行时会清掉**新**任务的引用，令 `!= nil` 守卫失效。
+    private var collapseGeneration = 0
+    private var peekGeneration = 0
     private var didShowOnce = false
 
     /// 外观模式状态（跟随系统 / 浅色 / 深色）
@@ -54,7 +58,6 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     }
 
     /// 拖动相关状态
-    private var dragStartOrigin: NSPoint?
     private var isDragging = false
     private var dragCooldownUntil: Date = .distantPast
 
@@ -278,7 +281,11 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     @objc private func screenConfigChanged() {
         Task { @MainActor [weak self] in
-            self?.evaluateEdgeZone()
+            guard let self else { return }
+            // 分辨率/显示器数量变化后可见区域随之改变，只做边缘判定会让展开面板留在屏幕外
+            // （例如拔掉面板所在的那台显示器），因此必须重新放置窗口。
+            self.placeWindow(animated: false)
+            self.evaluateEdgeZone()
         }
     }
 
@@ -330,27 +337,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         cancelPendingTasks()
     }
 
-    func dragMoved(translation: CGSize) {
-        guard let panel, displayState == .expanded else { return }
-        if dragStartOrigin == nil {
-            dragStartOrigin = panel.frame.origin
-            isDragging = true
-            cancelPendingTasks()
-        }
-        guard let start = dragStartOrigin,
-              let screen = panel.screen ?? Self.screenContainingMouse() else { return }
-        let visible = screen.visibleFrame
-        var x = start.x + translation.width
-        var y = start.y - translation.height
-        x = min(max(x, visible.minX), visible.maxX - panel.frame.width)
-        y = min(max(y, visible.minY), visible.maxY - panel.frame.height)
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
-    }
+    // 注：早期还有一个 dragMoved(translation:) 做手动坐标钳制，但调用方
+    // （闭包版 cardDrag）恒传 .zero，实际位移一直是 WindowServer 的 performDrag
+    // 在负责，那段钳制从未生效。现已删除该路径，4 个详情页顶栏统一走原生拖拽。
 
     func dragEnded() {
         guard let panel, isDragging else { return }
         isDragging = false
-        dragStartOrigin = nil
         dragCooldownUntil = Date().addingTimeInterval(0.6)
 
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
@@ -429,13 +422,35 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var clickLocalMonitor: Any?
     private var clickGlobalMonitor: Any?
     private var edgeZoneTimer: Timer?
-    private var lastEvalAt = Date.distantPast
-    private let evalMinInterval: TimeInterval = 0.05
+
+    /// 鼠标移动节流器。鼠标事件可达数百 Hz，且全局监听回调不在主 actor 上——
+    /// 此前每个事件都新建一个 Task 跳主线程做全量边缘判定（NSScreen / panel.frame 重算），
+    /// 实测快速移动鼠标 ≈ +0.6% CPU。这里用带锁时间戳做零分配预筛，
+    /// 只有通过节流的事件才进入主线程。0.05s（20Hz）不影响「进入热区立即展开」的体感：
+    /// 光标停在热区内时后续事件仍会通过，最坏延迟 ≈ 一个节流窗口。
+    private final class MouseMoveThrottle: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lastPass = Date.distantPast
+        private let minInterval: TimeInterval
+
+        init(minInterval: TimeInterval) { self.minInterval = minInterval }
+
+        func shouldPass(now: Date = Date()) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard now.timeIntervalSince(lastPass) >= minInterval else { return false }
+            lastPass = now
+            return true
+        }
+    }
+
+    private let mouseMoveThrottle = MouseMoveThrottle(minInterval: 0.05)
 
     private func startEdgeZoneMonitor() {
         guard edgeZoneTimer == nil else { return }
 
-        // 1. 定时检测光标位置（0.06s 间隔，低开销无辅助功能权限要求）
+        // 1. 定时检测光标位置（0.06s 间隔，低开销无辅助功能权限要求）。
+        // 它同时是节流路径的兜底：鼠标停在热区内而事件被节流丢掉时，由它完成展开判定。
         let timer = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.evaluateEdgeZone()
@@ -444,14 +459,18 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         RunLoop.main.add(timer, forMode: .common)
         edgeZoneTimer = timer
 
-        // 2. 本地与全局鼠标移动监听
+        // 2. 本地与全局鼠标移动监听（共用同一个节流器，避免同一物理移动被两条通道各算一次）
+        let throttle = mouseMoveThrottle
         mouseLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            guard throttle.shouldPass() else { return event }
             MainActor.assumeIsolated {
                 self?.evaluateEdgeZone()
             }
             return event
         }
         mouseGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+            // 先做非隔离的节流预筛，再起 Task：逐事件新建 Task 本身就是此前的 CPU 热点
+            guard throttle.shouldPass() else { return }
             Task { @MainActor [weak self] in
                 self?.evaluateEdgeZone()
             }
@@ -477,13 +496,6 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             }
             return event
         }
-    }
-
-    private func onMouseMoved() {
-        let now = Date()
-        guard now.timeIntervalSince(lastEvalAt) >= evalMinInterval else { return }
-        lastEvalAt = now
-        evaluateEdgeZone()
     }
 
     private func evaluateEdgeZone() {
@@ -539,8 +551,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard displayState == .expanded, !isDragging else { return }
         if collapseTask != nil { return }
         let delay = collapseDelay
+        collapseGeneration &+= 1
+        let generation = collapseGeneration
         collapseTask = Task { [weak self] in
-            defer { self?.collapseTask = nil }
+            defer {
+                // 只有仍是本次任务的引用时才清空
+                if let self, self.collapseGeneration == generation { self.collapseTask = nil }
+            }
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self,
                   !Task.isCancelled,
@@ -577,15 +594,19 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             return
         }
 
-        // 任务完成时同步投递 macOS 通知中心通知；事件有唯一 UUID，不会因重复采样重复发送。
-        CompletionNotification.post(for: event)
+        // 任务完成/告警投递到 macOS 通知中心。投递与否由 notificationPolicy 裁决
+        // （静默全不发 / 专注仅 costSpike / 标准全发），不再是「无论如何都发」。
+        // 事件有唯一 UUID，不会因重复采样重复发送。
+        CompletionNotification.post(for: event, policy: notificationPolicy)
 
         // 事件类型决定初始展开态：熔断类严重告警默认展开详情以提供排查指导，
         // 其他事件收起。此前只在 costSpike 时置 true、从不复位，导致一次告警后
         // 后续所有完成事件也保持 142pt 的展开高度。
         eventBannerExpanded = (event.eventType == .costSpike)
 
-        // 1. 播放系统提示音（受 notificationPolicy 与全局开关 playCompletionSound 共同裁决）
+        // 1. 播放系统提示音（受 notificationPolicy 与全局开关 playCompletionSound 共同裁决）。
+        // 声音只在这里发一次：系统通知已固定不带 sound，不会出现双重提示音；
+        // 关闭「任务完成提示音」后两条通道都安静。
         let soundEnabled = UserDefaults.standard.object(forKey: SettingKey.playCompletionSound) as? Bool ?? true
         if notificationPolicy.shouldPlaySound(for: event.eventType, soundEnabled: soundEnabled) {
             if event.eventType == .costSpike {
@@ -612,8 +633,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard displayState == .docked, peekTask == nil, !isDragging else { return }
         // 普通事件 3.5 秒，成本/死循环熔断保持 6 秒供用户查看或操作
         let peekDuration: TimeInterval = event.eventType == .costSpike ? 6.0 : 3.5
+        peekGeneration &+= 1
+        let generation = peekGeneration
         peekTask = Task { [weak self] in
-            defer { self?.peekTask = nil }
+            defer {
+                // 同 collapseTask：被取消的旧任务不得清掉新任务的引用
+                if let self, self.peekGeneration == generation { self.peekTask = nil }
+            }
             guard let self, self.displayState == .docked, !self.isDragging else { return }
 
             // 走真实状态切换：窗口尺寸与 SwiftUI 内容同源（此前只动窗口 frame、displayState

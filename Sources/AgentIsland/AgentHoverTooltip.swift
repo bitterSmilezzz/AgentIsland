@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AgentIslandCore
 
 // MARK: - 悬停指向小尾巴（Tooltip Tail）
@@ -50,6 +51,9 @@ struct AgentHoverTooltipCard: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
     @State private var confirmingKill = false
+    /// 终止确认态的自动复位任务（可取消）：与 Agent 行「终止?」同一写法，
+    /// 视图销毁时不会被一个仍在排队的 DispatchQueue 回调写回已失效的状态
+    @State private var confirmResetTask: Task<Void, Never>?
 
     init(snapshot: AgentSnapshot, engine: ActivityEngine, controller: IslandPanelController) {
         self.snapshot = snapshot
@@ -145,7 +149,10 @@ struct AgentHoverTooltipCard: View {
                         .lineLimit(2)
                         .padding(6)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.35)))
+                        // 动态色：硬编码 black 0.35 在浅色卡片（0xf5f5f7）上是一块深色板
+                        .background(RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05),
+                                        dark: NSColor(hex: 0x000000, alpha: 0.35))))
                 }
             } else {
                 HStack(spacing: 4) {
@@ -230,11 +237,16 @@ struct AgentHoverTooltipCard: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .frame(maxWidth: .infinity)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.9)))
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.dangerRed.opacity(0.9)))
                     }
                     .buttonStyle(.plain)
+                    .help("再次点击确认终止 \(snapshot.profile.name) 及其子进程（不可撤销）")
+                    .accessibilityLabel("确认终止 \(snapshot.profile.name)")
                     .onAppear {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        confirmResetTask?.cancel()
+                        confirmResetTask = Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 3_000_000_000)
+                            guard !Task.isCancelled else { return }
                             confirmingKill = false
                         }
                     }
@@ -248,12 +260,14 @@ struct AgentHoverTooltipCard: View {
                             Text("终止")
                                 .font(Theme.bodyFont(10, weight: .medium))
                         }
-                        .foregroundColor(Color.red.opacity(0.9))
+                        .foregroundColor(Theme.dangerRed.opacity(0.9))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.red.opacity(0.15)))
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.dangerRed.opacity(0.15)))
                     }
                     .buttonStyle(.plain)
+                    .help("终止该 Agent 进程树（需二次确认）")
+                    .accessibilityLabel("终止 \(snapshot.profile.name)")
                 }
 
                 Button {

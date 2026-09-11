@@ -10,8 +10,11 @@ struct DetailHeader: View {
     let title: String
     let subtitle: String?
     let onBack: () -> Void
-    var onMoved: ((CGSize) -> Void)? = nil
-    var onEnded: (() -> Void)? = nil
+    /// 面板控制器：拖拽统一走原生 `performDrag`（与主卡同一实现）。
+    /// 早期这里走的是闭包版 `cardDrag(onMoved:onEnded:)`，而该闭包版把 translation
+    /// 恒传 `.zero`（`onDragStart` 无位移信息），使得控制器里那套坐标钳制逻辑从不生效，
+    /// 真正移动窗口的一直是底层的 performDrag——两套机制并存只会让后来者误判。
+    let controller: IslandPanelController
     @State private var backHovered = false
 
     var body: some View {
@@ -49,10 +52,7 @@ struct DetailHeader: View {
         .padding(.top, IslandMetrics.detailHeaderPaddingTop)
         .padding(.bottom, IslandMetrics.detailHeaderPaddingBottom)
         .contentShape(Rectangle())
-        .cardDrag(
-            onMoved: { onMoved?($0) },
-            onEnded: { onEnded?() }
-        )
+        .cardDrag(controller: controller)
     }
 }
 
@@ -79,8 +79,7 @@ struct AgentDetailView: View {
                              "24h \(TokenUsage.compact($0.tokens24h)) · 累计 \(TokenUsage.compact($0.tokensTotal))"
                          },
                          onBack: { controller.route = .list },
-                         onMoved: { controller.dragMoved(translation: $0) },
-                         onEnded: { controller.dragEnded() })
+                         controller: controller)
 
             DarkDivider()
 
@@ -346,8 +345,7 @@ struct SessionListView: View {
             DetailHeader(title: modelId,
                          subtitle: "\(sessions.count) 个会话",
                          onBack: { controller.route = .agentDetail(agentId) },
-                         onMoved: { controller.dragMoved(translation: $0) },
-                         onEnded: { controller.dragEnded() })
+                         controller: controller)
 
             DarkDivider()
 
