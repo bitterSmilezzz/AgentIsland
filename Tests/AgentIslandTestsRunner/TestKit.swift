@@ -1,4 +1,5 @@
 import Foundation
+ import AgentIslandCore
 
 // MARK: - 极简测试框架（无 Xcode 环境，零依赖）
 
@@ -81,5 +82,25 @@ func expectFalse(_ value: Bool, _ label: String = "") throws {
 func expectNil<T>(_ value: T?, _ label: String = "") throws {
     if value != nil {
         throw TestError(message: "\(label) 期望 nil")
+    }
+}
+
+// MARK: - Token 监控假实现（引擎 token 速率链路测试用）
+
+/// 可变 usage 的假 token 监控（引用语义）：测试先改 usage 再触发采样。
+/// 仅由测试在主线程串行驱动，无并发。
+final class FakeTokenUsageProvider: TokenUsagePolling, TokenUsageQuerying {
+    var usage: [String: TokenUsage] = [:]
+    var grandTotal: TokenUsage = TokenUsage()
+    var onRefresh: (@MainActor () -> Void)?
+
+    func start(interval: TimeInterval) {}
+    func stop() {}
+    func pause() {}
+    func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
+        Task { @MainActor in completion([]) }
+    }
+    func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
+        Task { @MainActor in completion([]) }
     }
 }

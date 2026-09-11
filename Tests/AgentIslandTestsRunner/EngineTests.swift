@@ -124,6 +124,90 @@ enum EngineTests {
             try expectTrue(!engine.anyWorking, "不应再有 working")
         }
 
+        TestKit.test("引擎: 时钟回拨后滞回重锚，Agent 不卡死在 working") {
+            let base = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let provider = MutableProcessProvider(names: ["DimAgent"], bundleIDs: [])
+            let fileProvider = FakeFileActivityProvider(writes: [dir: base.addingTimeInterval(-5)])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 20, minWorkingHold: 10),
+                processMonitor: provider,
+                fileMonitor: fileProvider,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            var snaps = engine.sample(now: base)
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .working, "前置：写入窗口内应 working")
+
+            // 信号消失（写入时刻设在回拨点之前，避免落入「未来 mtime 被钳为刚写入」分支），
+            // 滞回期内保持 working
+            fileProvider.writes = [dir: base.addingTimeInterval(-695)]
+            snaps = engine.sample(now: base.addingTimeInterval(5))
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .working, "滞回期内应保持 working")
+
+            // 系统时钟回拨 10 分钟（now 落在 lastSignal 之前）：重锚后滞回重新计起
+            // （无重锚时 now - lastSignal 恒为负 → 恒 < minWorkingHold，永不回落）
+            let rolledBack = base.addingTimeInterval(5 - 600)
+            snaps = engine.sample(now: rolledBack)
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .working,
+                            "重锚本拍滞归零后仍在滞回窗口内，应保持 working")
+
+            // 重锚后再过滞回时长：正常回落 idle
+            snaps = engine.sample(now: rolledBack.addingTimeInterval(11))
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .idle,
+                            "回拨重锚后滞回应正常过期，Agent 不得卡死在 working")
+        }
+
+        TestKit.test("引擎: 未来 mtime（回拨残留）钳为刚写入，且随真实时间正常过期") {
+            let now = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let fileProvider = FakeFileActivityProvider(writes: [dir: now.addingTimeInterval(120)])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: FakeProcessProvider(processNames: ["DimAgent"], bundleIDs: []),
+                fileMonitor: fileProvider,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            var snaps = engine.sample(now: now)
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .working,
+                            "未来 mtime 应视作刚写入（回拨前的真实写入确实发生在不久前）")
+            // 钳制判别：lastActivityAgo 必须是 0 而非负值
+            // （level 判定对负值等价，但 lastActivityAgo 会流向 UI 文案与下游算术）
+            try expectEqual(snaps.first { $0.id == "dim" }?.lastActivityAgo, 0,
+                            "未来 mtime 的经过时长必须钳为 0，不得把负值透传给消费方")
+
+            // 真实时间越过「未来 mtime」+ 窗口后正常回落
+            // （无钳制时经过时长恒为负 → 永远 working）
+            snaps = engine.sample(now: now.addingTimeInterval(200))
+            try expectEqual(snaps.first { $0.id == "dim" }?.level, .idle,
+                            "未来 mtime 不得让 working 判定永久生效")
+        }
+
+        TestKit.test("引擎: offline 清除 token 速率基线（重启后不摊薄结算窗口）") {
+            let now = Date()
+            let token = FakeTokenUsageProvider()
+            token.usage["dim"] = TokenUsage(tokens24h: 0, tokensTotal: 1_000, cost24h: 0, costTotal: 0)
+            let provider = MutableProcessProvider(names: ["DimAgent"], bundleIDs: [])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: provider,
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                tokenMonitor: token,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            _ = engine.sample(now: now)
+            try expectTrue(engine.tokenRateBaseline["dim"] != nil, "前置：有用量应建立速率基线")
+
+            // 进程退出（usage 源同时消失）：offline 应清基线，与 resumeGap 断点口径一致
+            provider.names = []
+            token.usage["dim"] = nil
+            _ = engine.sample(now: now.addingTimeInterval(5))
+            try expectNil(engine.tokenRateBaseline["dim"],
+                          "offline 必须清除速率基线，否则重启后首个结算窗口被离线全程摊薄")
+        }
+
         TestKit.test("引擎: terminateAgent 终止逃生舱更新事件与状态") {
             let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
             _ = engine.sample(now: Date())

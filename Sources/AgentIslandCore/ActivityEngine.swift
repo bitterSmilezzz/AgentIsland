@@ -103,8 +103,9 @@ public final class ActivityEngine: ObservableObject {
     private var tokenPollingStarted = false
     /// 最近一次启停集合（首刷完成后重放；见 init）
     private var lastEnabledIDs: Set<String>
-    /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于速率差分
-    private var tokenRateBaseline: [String: (timestamp: Date, tokens: Int)] = [:]
+    /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于速率差分。
+    /// 非 private：@testable 下断言「offline 清基线」不变量用（模块内勿直接写）
+    var tokenRateBaseline: [String: (timestamp: Date, tokens: Int)] = [:]
     /// 连续超过速率阈值的评估档数（agentId → 档数）；达到确认档数才告警
     private var tokenSpikeStreak: [String: Int] = [:]
     /// 同一轮持续超阈值只提醒一次，速率恢复后重新武装。
@@ -306,6 +307,15 @@ public final class ActivityEngine: ObservableObject {
         var sampleInfo: [String: SampleInfo] = [:]
 
         for profile in profiles {
+            // 时钟回拨重锚（防御）：系统时钟被回拨（NTP 阶跃 / 手动调整 / 虚拟机恢复快照）
+            // 后墙钟差值不可信——now 落在锚点之前时，滞回区间变负会让 Agent 永远卡在
+            // working（now - lastSignal 恒 < minWorkingHold），任务时长 / 高负载追踪同样失真。
+            // 把仍落在「未来」的锚点重置为本拍时刻，让滞回与计时在当前时钟下重新计起。
+            if let t = workingSince[profile.id], t > now { workingSince[profile.id] = now }
+            if let t = lastSignalAt[profile.id], t > now { lastSignalAt[profile.id] = now }
+            if let t = highCpuSince[profile.id], t > now { highCpuSince[profile.id] = now }
+            if let t = lastRunawayAlertedAt[profile.id], t > now { lastRunawayAlertedAt[profile.id] = now }
+
             // 每 profile 只调一次 matchingEntries（isRunning+cpuPercent 各遍历一遍
             // 全表，合并为单趟；running 由「有匹配条目」推导，与 isRunning 语义等价——
             // bundleHit 无名字匹配时返回 [pid:-1] 占位条目，CPU 合计为 0）
@@ -319,7 +329,11 @@ public final class ActivityEngine: ObservableObject {
             let fresh = fileMonitor.lastWriteDates(for: profile.sessionDirs)
             let newestAgo: TimeInterval? = {
                 guard let newest = fresh.values.max() else { return nil }
-                return now.timeIntervalSince(newest)
+                // 时钟回拨防御：mtime 可能晚于本拍 now（NTP 阶跃 / 手动回拨后旧文件
+                // 落在「未来」），负的经过时长会让 hasRecentWrite 与滞回区间失真——
+                // 钳为 0（视作刚写入）：回拨前的真实写入本就发生在「不久前」
+                let dt = now.timeIntervalSince(newest)
+                return dt < 0 ? 0 : dt
             }()
 
             // 动作透传：仅用于展示「正在执行 xxx」。
@@ -354,6 +368,9 @@ public final class ActivityEngine: ObservableObject {
                 lastRunawayAlertedAt[profile.id] = nil
                 tokenSpikeStreak[profile.id] = nil
                 tokenSpikeAlerted.remove(profile.id)
+                // 速率基线一并清除（与 resumeGap 断点处理口径一致）：否则重启后首个
+                // 结算窗口把离线全程计入分母，速率被摊薄，本应触发的激增告警被推迟
+                tokenRateBaseline[profile.id] = nil
             } else if hasRecentWrite || hasHighCpu {
                 level = .working
                 if workingSince[profile.id] == nil { workingSince[profile.id] = now }
@@ -363,6 +380,7 @@ public final class ActivityEngine: ObservableObject {
                 // 滞回：信号刚消失时保持 working 最短时长，防 CPU 临界抖动导致 peek 高频弹跳。
                 // 锚点必须是「最后一次有信号」的时刻而非首次进入 working 的时刻——
                 // 用 workingSince 会让任何超过 minWorkingHold 的任务滞回完全失效。
+                // （时钟回拨的负区间已由上方重锚防御：lastSignal 不可能晚于本拍 now）
                 level = .working
             } else {
                 level = .idle
@@ -453,10 +471,13 @@ public final class ActivityEngine: ObservableObject {
         if config.tokenAlertEnabled {
             for profile in profiles {
                 guard let usage = tokenMonitor.usage[profile.id], usage.tokensTotal > 0 else { continue }
-                guard let base = tokenRateBaseline[profile.id] else {
+                guard var base = tokenRateBaseline[profile.id] else {
                     tokenRateBaseline[profile.id] = (timestamp: now, tokens: usage.tokensTotal)
                     continue
                 }
+                // 时钟回拨重锚：基线时间戳晚于本拍（系统时钟被回拨）会让结算窗口为负——
+                // 重锚到当前拍，速率追踪在当前时钟下重新计起
+                if base.timestamp > now { base.timestamp = now }
                 let timeSpan = now.timeIntervalSince(base.timestamp)
                 // 不足一档不结算：一次采样就把长任务的账本落盘当激增会误报
                 guard timeSpan >= Self.tokenRateWindow else { continue }
