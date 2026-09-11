@@ -2,9 +2,18 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.32；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.33；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.33] - 2026-09-12
+
+### 🧪 测试卫生：plist 泄漏根治（20 轮优化 · R16）
+
+- **测试套件 plist 泄漏根治**：12 处测试散点创建 UserDefaults 套件并各自清理——`removePersistentDomain` 只解除注册，cfprefs 在进程退出 flush 时把已删域重建为 plist 文件，`~/Library/Preferences` 逐次累积（实测 2400+ 个）。改为 TestDefaults 登记制：统一清理（移除持久域 + 删文件双保险）+ 泄漏自守护断言 + 退出后独立进程兜底清扫（应对 cfprefsd flush 竞态，3 秒重试）——连跑 3 轮零残留，历史残留一次清零
+- **注册表持久化可注入**：`loadCustomProfiles` / `saveCustomProfiles` / `fullRegistry` 增加 `defaults` 参数（默认 standard，向后兼容），自定义档案测试不再经 standard domain 污染后续用例；顺带修复 RegistryTests 中 `suite.description` 笔误（恒 no-op 的清理调用）
+- **环境依赖用例加固**：真实引擎采样在进程表不可读（沙箱/CI）时显式跳过；清理用例的进程启动失败不再被 `try?` 静默吞掉
+- 测试 176/0 连跑多次；独立验收 pass
 
 ## [0.0.32] - 2026-09-12
 
