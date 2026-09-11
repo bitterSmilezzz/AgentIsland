@@ -358,7 +358,7 @@ enum EngineTests {
             let sleeper = Process()
             sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
             sleeper.arguments = ["30"]
-            try? sleeper.run()
+            try sleeper.run()   // 显式断言启动成功（try? 会把启动失败静默成无效 pid 的误报）
             defer { if sleeper.isRunning { sleeper.terminate() } }
             let anomaly = AgentAnomaly(
                 id: "test-anomaly-ok",
@@ -854,6 +854,12 @@ enum EngineTests {
         }
 
         TestKit.test("引擎: 真实环境引擎采样（真实进程+真实文件系统）") {
+            // 环境依赖用例：进程表不可读（沙箱/CI）时显式跳过而非报错
+            let probe = ProcessProvider().snapshot()
+            guard !probe.entries.isEmpty else {
+                print("   [skip] 进程表不可读，跳过真实采样用例")
+                return
+            }
             let monitor = FileActivityMonitor()
             monitor.watch(dirs: [FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".dimcode/v2/data/sessions").path])

@@ -31,8 +31,7 @@ enum SettingsTests {
 
         TestKit.test("设置: load 无键默认、脏值归一化（suiteName 隔离）") {
             let name = "agentisland-settings-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-1")
 
             let fresh = EngineConfig.load(from: suite)
             try expectEqual(fresh.sampleInterval, EngineConfig().sampleInterval, "无键应回落默认")
@@ -48,8 +47,7 @@ enum SettingsTests {
 
         TestKit.test("设置: store 三态 nil/空数组/有值往返") {
             let name = "agentisland-settings-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-2")
 
             try expectNil(EnabledAgentStore.load(from: suite), "无记录 → nil（回退策略归调用方）")
             EnabledAgentStore.save([], to: suite)
@@ -61,8 +59,7 @@ enum SettingsTests {
 
         TestKit.test("设置: resolvedEnabled 首次全新安装默认启用并记录已知") {
             let name = "agentisland-settings-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-3")
 
             let p1 = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
             let p2 = AgentProfile(id: "off", name: "Off", icon: "x", bundleIDs: [], processNames: ["off"], sessionDirs: [], defaultEnabled: false)
@@ -75,8 +72,7 @@ enum SettingsTests {
 
         TestKit.test("设置: resolvedEnabled 用户主动全关保持空数组") {
             let name = "agentisland-settings-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-4")
 
             EnabledAgentStore.save([], to: suite)
             let p1 = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
@@ -86,8 +82,7 @@ enum SettingsTests {
 
         TestKit.test("设置: resolvedEnabled 旧版存量迁移自愈（自动补齐 antigravity 等新增内置项）") {
             let name = "agentisland-settings-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-5")
 
             // 模拟旧版本环境：用户存了 ["workbuddy", "dim"]，但没有 knownAgents 键
             EnabledAgentStore.save(["workbuddy", "dim"], to: suite)
@@ -115,8 +110,7 @@ enum SettingsTests {
 
         TestKit.test("设置: resolvedEnabled 用户显式关闭某项后不被重复开启") {
             let name = "agentisland-settings-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-6")
 
             let pAnti = AgentProfile(id: "antigravity", name: "Antigravity", icon: "atom", bundleIDs: [], processNames: ["Antigravity"], sessionDirs: [], defaultEnabled: true)
             _ = EnabledAgentStore.resolvedEnabled(registry: [pAnti], defaults: suite)
@@ -158,8 +152,7 @@ enum SettingsTests {
             try expectNil(DockEdge(rawValue: "unknown"))
 
             let name = "agentisland-dock-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-7")
 
             suite.set(DockEdge.top.rawValue, forKey: SettingKey.dockEdge)
             suite.set(120.5, forKey: SettingKey.dockAnchorX)
@@ -194,8 +187,7 @@ enum SettingsTests {
 
             // 持久化测试
             let name = "agentisland-appearance-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-8")
 
             suite.set(IslandAppearance.dark.rawValue, forKey: SettingKey.islandAppearance)
             let loaded = suite.string(forKey: SettingKey.islandAppearance).flatMap(IslandAppearance.init)
@@ -250,8 +242,7 @@ enum SettingsTests {
 
             // 3. 持久化测试
             let name = "agentisland-policy-test-\(UUID().uuidString)"
-            let suite = UserDefaults(suiteName: name)!
-            defer { suite.removePersistentDomain(forName: name) }
+            let suite = TestDefaults.suite("settings-9")
 
             suite.set(NotificationPolicy.focus.rawValue, forKey: SettingKey.notificationPolicy)
             let loaded = suite.string(forKey: SettingKey.notificationPolicy).flatMap(NotificationPolicy.init)

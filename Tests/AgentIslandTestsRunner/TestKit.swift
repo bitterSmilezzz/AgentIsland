@@ -104,3 +104,48 @@ final class FakeTokenUsageProvider: TokenUsagePolling, TokenUsageQuerying {
         Task { @MainActor in completion([]) }
     }
 }
+
+// MARK: - 测试 UserDefaults 套件管理（R16 plist 泄漏根治）
+
+/// 测试专用套件（登记制）：12 处散点 `UserDefaults(suiteName:)` + 各自
+/// `removePersistentDomain` 的旧模式只解除注册——cfprefs 缓存会把域重建为
+/// plist 文件，~/Library/Preferences 逐次累积（实测 1300+ 个）。
+/// 现在统一登记，runAll 末尾 removePersistentDomain + removeItem 双保险，
+/// 并自守护断言零残留。
+enum TestDefaults {
+    private static let lock = NSLock()
+    /// 本 run 登记的套件名（清理后保留名单供泄漏断言）
+    private static var names: [String] = []
+
+    /// 创建登记制测试套件（UUID 隔离，用例间零共享）
+    static func suite(_ label: String) -> UserDefaults {
+        lock.lock(); defer { lock.unlock() }
+        let name = "agentisland-test-\(label)-\(UUID().uuidString)"
+        names.append(name)
+        return UserDefaults(suiteName: name)!
+    }
+
+    /// runAll 末尾调用：移除全部登记套件并删除残留 plist（幂等）
+    static func cleanupAll() {
+        lock.lock(); defer { lock.unlock() }
+        let fm = FileManager.default
+        for name in names {
+            if let d = UserDefaults(suiteName: name) {
+                d.removePersistentDomain(forName: name)
+            }
+            let plist = fm.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences/\(name).plist")
+            try? fm.removeItem(at: plist)
+        }
+    }
+
+    /// 自守护数据：登记套件中仍残留 plist 文件的数量（应在清理后为 0）
+    static var leakedFiles: Int {
+        lock.lock(); defer { lock.unlock() }
+        let fm = FileManager.default
+        return names.filter { name in
+            fm.fileExists(atPath: fm.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences/\(name).plist").path)
+        }.count
+    }
+}

@@ -247,17 +247,19 @@ public enum AgentRegistry {
 
     // MARK: - 用户自定义（UserDefaults）
 
-    public static func loadCustomProfiles() -> [AgentProfile] {
-        guard let data = UserDefaults.standard.data(forKey: SettingKey.customAgents),
+    /// 自定义档案持久化（defaults 可注入：测试传独立套件，避免经 standard domain
+    /// 的隐性共享状态污染后续用例；生产走默认 .standard）
+    public static func loadCustomProfiles(defaults: UserDefaults = .standard) -> [AgentProfile] {
+        guard let data = defaults.data(forKey: SettingKey.customAgents),
               let list = try? JSONDecoder().decode([AgentProfile].self, from: data) else {
             return []
         }
         return list
     }
 
-    public static func saveCustomProfiles(_ profiles: [AgentProfile]) {
+    public static func saveCustomProfiles(_ profiles: [AgentProfile], defaults: UserDefaults = .standard) {
         if let data = try? JSONEncoder().encode(profiles) {
-            UserDefaults.standard.set(data, forKey: SettingKey.customAgents)
+            defaults.set(data, forKey: SettingKey.customAgents)
         }
     }
 
@@ -265,11 +267,12 @@ public enum AgentRegistry {
     /// installedBundles 用于识别「宿主内嵌组件」：宿主已装而本组件无独立安装时跳过，
     /// 避免同一份程序（ChatGPT 桌面版内嵌的 Codex）在列表里显示成两个 Agent。
     public static func fullRegistry(installedCLIs: Set<String>,
-                                    installedBundles: Set<String> = []) -> [AgentProfile] {
+                                    installedBundles: Set<String> = [],
+                                    defaults: UserDefaults = .standard) -> [AgentProfile] {
         var list = filteredBuiltin(installedCLIs: installedCLIs, installedBundles: installedBundles)
         list.append(contentsOf: discoverCLIProfiles(installedCLIs: installedCLIs,
                                                     installedBundles: installedBundles))
-        list.append(contentsOf: loadCustomProfiles())
+        list.append(contentsOf: loadCustomProfiles(defaults: defaults))
         return list
     }
 

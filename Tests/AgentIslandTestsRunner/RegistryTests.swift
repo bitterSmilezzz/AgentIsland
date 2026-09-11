@@ -11,8 +11,7 @@ enum RegistryTests {
         TestKit.test("注册表: 用户关闭自定义 Agent 后不被强制重新启用") {
             // 回归：resolvedEnabled 曾把「不在 knownAgents 且 defaultEnabled」的条目
             // 当作版本升级新增项补入启用集，导致用户刚关掉的自定义 Agent 被静默重开
-            let suite = UserDefaults(suiteName: "test-custom-reenable-\(UUID().uuidString)")!
-            defer { suite.removePersistentDomain(forName: suite.description) }
+            let suite = TestDefaults.suite("registry-1")
 
             let custom = AgentProfile(id: "custom-qa", name: "QA", icon: "terminal",
                                       bundleIDs: [], processNames: ["qa-agent"],
@@ -60,9 +59,9 @@ enum RegistryTests {
             let p = AgentProfile(id: "custom-qa", name: "QA Agent", icon: "terminal",
                                  bundleIDs: [], processNames: ["qa-agent"],
                                  sessionDirs: ["/tmp/qa-sessions"], isCustom: true)
-            AgentRegistry.saveCustomProfiles([p])
-            defer { AgentRegistry.saveCustomProfiles([]) }   // 清理，避免污染后续用例
-            let loaded = AgentRegistry.loadCustomProfiles()
+            let suite = TestDefaults.suite("registry-roundtrip")
+            AgentRegistry.saveCustomProfiles([p], defaults: suite)
+            let loaded = AgentRegistry.loadCustomProfiles(defaults: suite)
             try expectEqual(loaded.first?.id, p.id, "往返后 id 一致")
             try expectEqual(loaded.first?.processNames, p.processNames, "进程名一致")
             try expectEqual(loaded.first?.isCustom, true, "isCustom 保留")
@@ -72,9 +71,9 @@ enum RegistryTests {
             let p = AgentProfile(id: "custom-tmp", name: "TMP", icon: "terminal",
                                  bundleIDs: [], processNames: ["tmp-agent"],
                                  sessionDirs: [], isCustom: true)
-            AgentRegistry.saveCustomProfiles([p])
-            defer { AgentRegistry.saveCustomProfiles([]) }
-            let full = AgentRegistry.fullRegistry(installedCLIs: [])
+            let suite = TestDefaults.suite("registry-full")
+            AgentRegistry.saveCustomProfiles([p], defaults: suite)
+            let full = AgentRegistry.fullRegistry(installedCLIs: [], defaults: suite)
             try expectTrue(full.contains { $0.id == "dim" }, "含内置 dim")
             try expectTrue(full.contains { $0.id == "custom-tmp" }, "含自定义")
             // 引擎的 guard 防重复
