@@ -18,45 +18,28 @@ public enum AgentActionInspector {
         }
 
         // 2. 根据各 Agent 的专用会话数据库/日志提取最近动作
-        if profile.id == "dim" {
-            if let dimAction = inspectDimAction() {
-                return dimAction
-            }
-        } else if profile.id == "codex" {
-            if let codexAction = inspectCodexAction() {
-                return codexAction
-            }
-        } else if profile.id == "claude" {
-            if let claudeAction = inspectClaudeAction(sessionDirs: sessionDirs) {
-                return claudeAction
-            }
-        } else if profile.id == "zcode" {
-            if let zcodeAction = inspectZCodeAction() {
-                return zcodeAction
-            }
-        } else if profile.id == "antigravity" {
-            if let agyAction = inspectAntigravityAction() {
-                return agyAction
-            }
-        } else if profile.id == "workbuddy" {
-            if let wbAction = inspectWorkBuddyAction() {
-                return wbAction
-            }
-        } else if profile.id == "opencode" {
-            if let ocAction = inspectOpenCodeAction() {
-                return ocAction
-            }
-        } else if profile.id == "dsh" {
-            if let dshAction = inspectDSHAction(pid: pid, snapshot: snapshot) {
-                return dshAction
-            }
-        } else if profile.id == "hermes" {
-            if let hermesAction = inspectHermesAction() {
-                return hermesAction
-            }
+        switch profile.id {
+        case "dim":
+            return inspectDimAction()
+        case "codex":
+            return inspectCodexAction()
+        case "claude":
+            return inspectClaudeAction(sessionDirs: sessionDirs)
+        case "zcode":
+            return inspectZCodeAction()
+        case "antigravity":
+            return inspectAntigravityAction()
+        case "workbuddy":
+            return inspectWorkBuddyAction()
+        case "opencode":
+            return inspectOpenCodeAction()
+        case "dsh":
+            return inspectDSHAction(pid: pid, snapshot: snapshot)
+        case "hermes":
+            return inspectHermesAction()
+        default:
+            return nil
         }
-
-        return nil
     }
 
     // MARK: - 1. 进程级子命令探测
@@ -217,52 +200,45 @@ public enum AgentActionInspector {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             path = "\(home)/.dimcode/v2/dimcode.sqlite"
         }
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        // 库缺失 / open 失败 → withDB 返回 nil（原 fileExists 快路径由 ReadonlyDB.connection 的 inode 检查覆盖）
+        return withDB(path) { db in
+            // 查询最新的 1 条消息。
+            // 性能关键：不能 `ORDER BY createdAt DESC LIMIT 1`——messages 表没有 createdAt
+            // 索引（现有索引均以 sessionId 打头），实测数万行 / 数百 MB 会退化成
+            // 「全表扫描 + 临时 B 树排序」，单次约 220ms，而本函数每 2 秒在主线程调用一次。
+            // 用 max(rowid) 定位最新行（rowid 是隐含主键，O(1)），再按主键精确取该行。
+            let sql = """
+            SELECT role, toolMetadata, parts, unixepoch(updatedAt), unixepoch(createdAt), updatedAt, createdAt 
+            FROM messages 
+            WHERE rowid = (SELECT max(rowid) FROM messages);
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
 
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            // 失败路径同样会分配 handle，必须关闭（见 inspectZCodeAction 处的说明）
-            if let db { sqlite3_close(db) }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                let role = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let toolMeta = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                let parts = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                let updatedEpoch = sqlite3_column_int64(stmt, 3)
+                let createdEpoch = sqlite3_column_int64(stmt, 4)
+
+                var effectiveEpoch = max(Double(updatedEpoch), Double(createdEpoch))
+                if effectiveEpoch <= 0 {
+                    let updatedStr = sqlite3_column_text(stmt, 5).map { String(cString: $0) } ?? ""
+                    let createdStr = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? ""
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    let d1 = formatter.date(from: updatedStr)?.timeIntervalSince1970 ?? 0
+                    let d2 = formatter.date(from: createdStr)?.timeIntervalSince1970 ?? 0
+                    effectiveEpoch = max(d1, d2)
+                }
+
+                let age = now.timeIntervalSince1970 - effectiveEpoch
+                return parseDimMessage(role: role, toolMeta: toolMeta, parts: parts, age: age)
+            }
             return nil
         }
-        defer { sqlite3_close(db) }
-
-        // 查询最新的 1 条消息。
-        // 性能关键：不能 `ORDER BY createdAt DESC LIMIT 1`——messages 表没有 createdAt
-        // 索引（现有索引均以 sessionId 打头），实测数万行 / 数百 MB 会退化成
-        // 「全表扫描 + 临时 B 树排序」，单次约 220ms，而本函数每 2 秒在主线程调用一次。
-        // 用 max(rowid) 定位最新行（rowid 是隐含主键，O(1)），再按主键精确取该行。
-        let sql = """
-        SELECT role, toolMetadata, parts, unixepoch(updatedAt), unixepoch(createdAt), updatedAt, createdAt 
-        FROM messages 
-        WHERE rowid = (SELECT max(rowid) FROM messages);
-        """
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            let role = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let toolMeta = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            let parts = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
-            let updatedEpoch = sqlite3_column_int64(stmt, 3)
-            let createdEpoch = sqlite3_column_int64(stmt, 4)
-
-            var effectiveEpoch = max(Double(updatedEpoch), Double(createdEpoch))
-            if effectiveEpoch <= 0 {
-                let updatedStr = sqlite3_column_text(stmt, 5).map { String(cString: $0) } ?? ""
-                let createdStr = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? ""
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                let d1 = formatter.date(from: updatedStr)?.timeIntervalSince1970 ?? 0
-                let d2 = formatter.date(from: createdStr)?.timeIntervalSince1970 ?? 0
-                effectiveEpoch = max(d1, d2)
-            }
-
-            let age = now.timeIntervalSince1970 - effectiveEpoch
-            return parseDimMessage(role: role, toolMeta: toolMeta, parts: parts, age: age)
-        }
-        return nil
     }
 
     /// 解析 DimCode 消息并提取实时运行动作（纯函数，隔离测试）
@@ -418,6 +394,21 @@ public enum AgentActionInspector {
         return name.isEmpty ? nil : name
     }
 
+    /// ReadonlyDB.withConnection 的本文件内薄封装：body 收窄为 `-> T?`，5 个探测闭包
+    /// 得以保留原 `return nil / return "..."` 语义。直接调 withConnection 时，外层
+    /// String? 上下文会让求解器把 T 钉成 String（`T? == String?` 取恒等解且不回溯），
+    /// 闭包内 `return nil` 无法通过类型检查（Swift 6.3 实测）；此处统一在边界把
+    /// `T??` 展平回 `T?`（`?? nil` 恒等展平，库缺失/open 失败的 nil 原样透传）。
+    /// open 失败关句柄的契约在 ReadonlyDB.connection 内统一执行。
+    private static func withDB<T>(_ path: String, _ body: (OpaquePointer) -> T?) -> T? {
+        ReadonlyDB.withConnection(path, body) ?? nil
+    }
+
+    /// 标题截断（列表行展示）：超限截断补省略号。4 个探测源共用，避免口径漂移
+    private static func clipTitle(_ title: String, limit: Int = 26) -> String {
+        title.count > limit ? String(title.prefix(limit - 3)) + "..." : title
+    }
+
     static func readLastLines(from file: URL, maxLines: Int = 10) -> [String] {
         LogTailReader.read(from: file, maxLines: maxLines, maxBytes: 16384)
     }
@@ -431,36 +422,29 @@ public enum AgentActionInspector {
     public static func inspectZCodeAction() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.zcode/v2/tasks-index.sqlite"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
-            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
-            if let db { sqlite3_close(db) }
-            return nil
-        }
-        defer { sqlite3_close(db) }
+        return withDB(dbPath) { db in
+            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            let twoHourAgoMs = nowMs - (2 * 60 * 60 * 1000)
+            let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 AND updated_at >= \(twoHourAgoMs) ORDER BY updated_at DESC LIMIT 1;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
 
-        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let twoHourAgoMs = nowMs - (2 * 60 * 60 * 1000)
-        let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 AND updated_at >= \(twoHourAgoMs) ORDER BY updated_at DESC LIMIT 1;"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            if !title.isEmpty {
-                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
-                if status == "completed" {
-                    return "任务已完成: \(display)"
-                } else {
-                    return "正在处理: \(display)"
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                if !title.isEmpty {
+                    let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                    let display = clipTitle(cleanTitle)
+                    if status == "completed" {
+                        return "任务已完成: \(display)"
+                    } else {
+                        return "正在处理: \(display)"
+                    }
                 }
             }
+            return nil
         }
-        return nil
     }
 
     // MARK: - 6. Antigravity 轨迹日志探测
@@ -562,47 +546,40 @@ public enum AgentActionInspector {
     public static func inspectWorkBuddyAction(now: Date = Date()) -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.workbuddy/workbuddy.db"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
-            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
-            if let db { sqlite3_close(db) }
+        return withDB(dbPath) { db in
+            // 查询未软删除的最新活跃/最近会话
+            let sql = "SELECT id, COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                let sessionId = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let title = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                let status = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                let updatedAtMs = sqlite3_column_int64(stmt, 4)
+                let nowMs = Int64(now.timeIntervalSince1970 * 1000)
+
+                if !title.isEmpty {
+                    let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                    let display = clipTitle(cleanTitle)
+                    let timeAgoMs = nowMs - updatedAtMs
+
+                    // 核心修复：会话闲置超过 120 秒（2分钟）或非 active，判定为非在途状态，返回 nil（防止在后台挂起时误报「待机」使引擎误判为 working）
+                    guard timeAgoMs <= 120 * 1000 && status.lowercased() == "active" else {
+                        return nil
+                    }
+
+                    // 尝试细粒度探测会话 jsonl 日志中的最新动作
+                    if let detailedAction = inspectWorkBuddySessionLog(sessionId: sessionId, home: home) {
+                        return detailedAction
+                    }
+
+                    return "正在: \(display)"
+                }
+            }
             return nil
         }
-        defer { sqlite3_close(db) }
-
-        // 查询未软删除的最新活跃/最近会话
-        let sql = "SELECT id, COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            let sessionId = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let title = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            let status = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
-            let updatedAtMs = sqlite3_column_int64(stmt, 4)
-            let nowMs = Int64(now.timeIntervalSince1970 * 1000)
-
-            if !title.isEmpty {
-                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
-                let timeAgoMs = nowMs - updatedAtMs
-
-                // 核心修复：会话闲置超过 120 秒（2分钟）或非 active，判定为非在途状态，返回 nil（防止在后台挂起时误报「待机」使引擎误判为 working）
-                guard timeAgoMs <= 120 * 1000 && status.lowercased() == "active" else {
-                    return nil
-                }
-
-                // 尝试细粒度探测会话 jsonl 日志中的最新动作
-                if let detailedAction = inspectWorkBuddySessionLog(sessionId: sessionId, home: home) {
-                    return detailedAction
-                }
-
-                return "正在: \(display)"
-            }
-        }
-        return nil
     }
 
     /// 探测 WorkBuddy 会话日志获取具体动作
@@ -651,55 +628,48 @@ public enum AgentActionInspector {
     public static func inspectOpenCodeAction() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.local/share/opencode/opencode.db"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
-            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
-            if let db { sqlite3_close(db) }
-            return nil
-        }
-        defer { sqlite3_close(db) }
+        return withDB(dbPath) { db in
+            // 性能关键：原实现 `LEFT JOIN part ... ORDER BY s.time_updated DESC, p.time_updated DESC
+            // LIMIT 1` 会对数十万行的 part 表做全表 join + 排序（实测 90ms，每 2 秒一次）。
+            // 改为两步：先按 session 的 time_updated 取最新会话（有索引），再取该会话最新的 part。
+            let sql = """
+            SELECT s.title, p.data, s.time_updated FROM session s
+            LEFT JOIN part p ON p.id = (
+                SELECT id FROM part WHERE session_id = s.id ORDER BY time_updated DESC LIMIT 1
+            )
+            WHERE s.id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1);
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
 
-        // 性能关键：原实现 `LEFT JOIN part ... ORDER BY s.time_updated DESC, p.time_updated DESC
-        // LIMIT 1` 会对数十万行的 part 表做全表 join + 排序（实测 90ms，每 2 秒一次）。
-        // 改为两步：先按 session 的 time_updated 取最新会话（有索引），再取该会话最新的 part。
-        let sql = """
-        SELECT s.title, p.data, s.time_updated FROM session s
-        LEFT JOIN part p ON p.id = (
-            SELECT id FROM part WHERE session_id = s.id ORDER BY time_updated DESC LIMIT 1
-        )
-        WHERE s.id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1);
-        """
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let partDataStr = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
+                let timeUpdatedMs = sqlite3_column_int64(stmt, 2)
+                let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
 
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let partDataStr = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
-            let timeUpdatedMs = sqlite3_column_int64(stmt, 2)
-            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+                if let dataStr = partDataStr, let data = dataStr.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let type = json["type"] as? String {
+                        if type == "reasoning" {
+                            return "思考规划中"
+                        } else if type == "tool-call", let toolName = json["toolName"] as? String {
+                            return "正在调用: \(toolName)"
+                        }
+                    }
+                }
 
-            if let dataStr = partDataStr, let data = dataStr.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let type = json["type"] as? String {
-                    if type == "reasoning" {
-                        return "思考规划中"
-                    } else if type == "tool-call", let toolName = json["toolName"] as? String {
-                        return "正在调用: \(toolName)"
+                if !title.isEmpty && !title.hasPrefix("New session -") {
+                    let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                    let display = clipTitle(cleanTitle)
+                    if nowMs - timeUpdatedMs < 60 * 60 * 1000 {
+                        return "会话: \(display)"
                     }
                 }
             }
-
-            if !title.isEmpty && !title.hasPrefix("New session -") {
-                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                let display = cleanTitle.count > 26 ? String(cleanTitle.prefix(23)) + "..." : cleanTitle
-                if nowMs - timeUpdatedMs < 60 * 60 * 1000 {
-                    return "会话: \(display)"
-                }
-            }
+            return nil
         }
-        return nil
     }
 
     // MARK: - 9. DSH (DeepSeek Harness) 运行模式探测
@@ -728,28 +698,21 @@ public enum AgentActionInspector {
     public static func inspectHermesAction() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.hermes/state.db"
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
-            // sqlite3_open_v2 失败时仍会分配 handle（实测约 1.5KB/次）。这些探测在
-            // 主线程按采样节律反复执行，库缺失/不可读时若不关就是持续泄漏。
-            if let db { sqlite3_close(db) }
+        return withDB(dbPath) { db in
+            let sql = "SELECT COALESCE(NULLIF(title, ''), NULLIF(last_activity_description, ''), ''), started_at FROM sessions ORDER BY started_at DESC LIMIT 1;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                let desc = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                if !desc.isEmpty {
+                    let clean = desc.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                    let display = clipTitle(clean)
+                    return "任务: \(display)"
+                }
+            }
             return nil
         }
-        defer { sqlite3_close(db) }
-
-        let sql = "SELECT COALESCE(NULLIF(title, ''), NULLIF(last_activity_description, ''), ''), started_at FROM sessions ORDER BY started_at DESC LIMIT 1;"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-        defer { sqlite3_finalize(stmt) }
-
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            let desc = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            if !desc.isEmpty {
-                let clean = desc.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                let display = clean.count > 26 ? String(clean.prefix(23)) + "..." : clean
-                return "任务: \(display)"
-            }
-        }
-        return nil
     }
 }

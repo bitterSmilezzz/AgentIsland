@@ -432,16 +432,33 @@ enum TokenUsageTests {
             try expectEqual(AgentLogStreamer.recentWindow(limit: 0), 500, "limit 非正时保底")
         }
 
-        TestKit.test("AgentLogStreamer.openReadonly 失败路径不泄漏 handle") {
+        TestKit.test("ReadonlyDB 失败路径不泄漏 handle 且缺失库返回 nil") {
             // sqlite3_open_v2 失败时 handle 仍可能非 NULL；不 close 则每次泄漏约 1.5KB。
-            // 2 万次失败开库：修复前 +28MB，修复后应接近 0。
-            let missing = "/tmp/agentisland-no-such-dir-\(UUID().uuidString)/no-such.db"
+            // 2 万次失败开库（权限拒绝 → rc=14，handle 非 NULL 的经典泄漏形态）：
+            // 修复前 +28MB，修复后应接近 0。（原测 AgentLogStreamer.openReadonly；
+            // R06 起 DB 开闭统一收口 ReadonlyDB。缺失库现在走 stat 快路径，需用
+            // 「存在但不可读」文件才能命中 open 失败分支——runner 非 root，chmod 生效）
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let locked = dir.appendingPathComponent("locked.db")
+            try Data("not a db".utf8).write(to: locked)
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: locked.path)
+                try? FileManager.default.removeItem(at: dir)
+            }
             let before = Self.residentMemoryMB()
             for _ in 0..<20_000 {
-                try expectNil(AgentLogStreamer.openReadonly(missing), "不存在的库应打开失败")
+                let got: String? = ReadonlyDB.withConnection(locked.path) { _ in "x" }
+                try expectNil(got, "权限拒绝的库应打开失败")
             }
             let delta = Self.residentMemoryMB() - before
             try expectTrue(delta < 8, "2 万次失败开库不应持续增长（实测 +28MB 为泄漏），实际 +\(String(format: "%.1f", delta))MB")
+
+            // 缺失库走 stat 快路径，同样返回 nil（不发起注定失败的 open）
+            let missing = "/tmp/agentisland-no-such-dir-\(UUID().uuidString)/no-such.db"
+            let got: String? = ReadonlyDB.withConnection(missing) { _ in "x" }
+            try expectNil(got, "不存在的库应打开失败")
         }
 
         // MARK: 等待辅助：主线程轮询 RunLoop（避免信号量死锁 MainActor）

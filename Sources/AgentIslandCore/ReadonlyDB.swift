@@ -1,0 +1,70 @@
+import Foundation
+import SQLite3
+
+// MARK: - SQLite 只读访问层（探测器与实时流水共用）
+
+/// SQLite 只读访问层：AgentActionInspector 的 5 个探测器与 AgentLogStreamer 的
+/// 5 个 DB 流水源共用。此前各处手写 open/prepare/finalize/close 样板，且每拍对
+/// 大库（数百 MB）现开现关——重复支付 open 成本（~50–150µs/次）并抖动文件缓存。
+///
+/// 连接缓存（按路径）：首次 open 后长驻复用；每次调用用 inode 校验外部替换
+/// （库被删除/重建后旧连接对新文件无效，stat 一次即决定复用或重开）。
+/// 连接集合有上界（每个出现过的库路径各一条，当前 ≤6 条）。
+///
+/// 线程契约：NSLock 保护缓存表。当前全部调用点在主线程（采样拍与流水页刷新），
+/// 锁无竞争；显式加锁只为把「连接独占」的约束写进类型而非注释。
+enum ReadonlyDB {
+
+    private static let lock = NSLock()
+    private static var connections: [String: OpaquePointer] = [:]
+    /// 连接打开时文件的 (设备号, inode)：外部替换/重挂载后据此失效缓存连接
+    private static var identities: [String: (dev: UInt64, inode: UInt64)] = [:]
+
+    /// 打开（或复用缓存的）只读连接并执行 `body`，返回 `body` 的结果。
+    /// 库缺失 / 不可读 / open 失败时返回 nil——与调用方既有「查不到数据」语义一致。
+    /// - Warning: body 执行期间持有内部锁，body 内**不得**再进 withConnection（不可重入死锁）。
+    ///   当前全部调用点在主线程，锁无竞争；未来若加后台调用方，注意跨路径也会串行。
+    static func withConnection<T>(_ path: String, _ body: (OpaquePointer) -> T) -> T? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db = connection(for: path) else { return nil }
+        return body(db)
+    }
+
+    /// 取可用连接：文件标识未变则复用；库被删除或替换则关旧开新；失败返回 nil（不留脏缓存）
+    private static func connection(for path: String) -> OpaquePointer? {
+        // stat 一次拿到当前 (设备号, inode)（文件不存在时为 nil）
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let current = attrs.flatMap { id(for: $0) }
+
+        if let cached = connections[path] {
+            if let current, let saved = identities[path], current.dev == saved.dev, current.inode == saved.inode {
+                return cached
+            }
+            // 库被删除或已被替换：旧连接作废
+            sqlite3_close(cached)
+            connections[path] = nil
+            identities[path] = nil
+            guard current != nil else { return nil }   // 已删除，不再重开
+        } else if current == nil {
+            return nil   // 文件不存在，免一次注定失败的 open
+        }
+
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            // open 失败仍会分配 handle（rc=14 等场景 handle 非 NULL，实测约 1.5KB/次），
+            // 必须关闭——0.0.17 修过的泄漏类契约在此继续成立
+            if let db { sqlite3_close(db) }
+            return nil
+        }
+        connections[path] = db
+        identities[path] = current
+        return db
+    }
+
+    private static func id(for attrs: [FileAttributeKey: Any]) -> (dev: UInt64, inode: UInt64)? {
+        guard let inode = attrs[.systemFileNumber] as? UInt64 else { return nil }
+        let dev = attrs[.systemNumber] as? UInt64 ?? 0
+        return (dev, inode)
+    }
+}

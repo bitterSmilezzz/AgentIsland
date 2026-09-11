@@ -290,79 +290,79 @@ public enum AgentLogStreamer {
     public static func fetchDimEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.dimcode/v2/dimcode.sqlite"
-        guard let db = openReadonly(dbPath) else { return [] }
-        defer { sqlite3_close(db) }
+        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
+        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+            // 原查询对全表排序（EXPLAIN: SCAN + USE TEMP B-TREE FOR ORDER BY）：中型库上
+            // 实测 160ms/次，而该页每 2s 刷新一次，等于持续空转读整库。
+            let sql = dimEventsSQL(limit: limit)
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
 
-        // 原查询对全表排序（EXPLAIN: SCAN + USE TEMP B-TREE FOR ORDER BY）：中型库上
-        // 实测 160ms/次，而该页每 2s 刷新一次，等于持续空转读整库。
-        let sql = dimEventsSQL(limit: limit)
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
+            var events: [AgentLogEvent] = []
 
-        var events: [AgentLogEvent] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let createdAtStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let role = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                let partsStr = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                let toolMetaStr = sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? ""
 
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let createdAtStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let role = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            let partsStr = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
-            let toolMetaStr = sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? ""
+                let date = Self.isoFractional.date(from: createdAtStr) ?? Date()
 
-            let date = Self.isoFractional.date(from: createdAtStr) ?? Date()
-
-            if !toolMetaStr.isEmpty, let metaData = toolMetaStr.data(using: .utf8),
-               let meta = try? JSONSerialization.jsonObject(with: metaData) as? [String: Any] {
-                let toolName = meta["toolName"] as? String ?? "tool"
-                var kind: AgentLogEvent.EventKind = .toolCall
-                if toolName.contains("bash") || toolName.contains("run") || toolName.contains("exec") {
-                    kind = .command
-                } else if toolName.contains("write") || toolName.contains("edit") {
-                    kind = .fileEdit
-                }
-                let status = meta["status"] as? String ?? "done"
-                events.append(AgentLogEvent(
-                    timestamp: date,
-                    kind: kind,
-                    title: "\(toolName) (\(status))",
-                    detail: partsStr.isEmpty ? nil : partsStr,
-                    agentId: "dim"
-                ))
-            } else if !partsStr.isEmpty, let partsData = partsStr.data(using: .utf8),
-                      let parts = try? JSONSerialization.jsonObject(with: partsData) as? [[String: Any]] {
-                for part in parts {
-                    let ptype = part["type"] as? String ?? ""
-                    if ptype == "thinking", let think = part["thinking"] as? String {
-                        let first = think.components(separatedBy: .newlines).first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? "思考中"
-                        events.append(AgentLogEvent(
-                            timestamp: date,
-                            kind: .thinking,
-                            title: first.count > 36 ? String(first.prefix(33)) + "..." : first,
-                            detail: think,
-                            agentId: "dim"
-                        ))
-                    } else if ptype == "tool_use", let name = part["name"] as? String {
-                        events.append(AgentLogEvent(
-                            timestamp: date,
-                            kind: .toolCall,
-                            title: "调用工具: \(name)",
-                            detail: "\(part["input"] ?? "")",
-                            agentId: "dim"
-                        ))
-                    } else if ptype == "text", let text = part["text"] as? String {
-                        let first = text.components(separatedBy: .newlines).first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? (role == "user" ? "用户提问" : "回复")
-                        events.append(AgentLogEvent(
-                            timestamp: date,
-                            kind: role == "user" ? .message : .info,
-                            title: (role == "user" ? "提问: " : "回答: ") + (first.count > 32 ? String(first.prefix(29)) + "..." : first),
-                            detail: text,
-                            agentId: "dim"
-                        ))
+                if !toolMetaStr.isEmpty, let metaData = toolMetaStr.data(using: .utf8),
+                   let meta = try? JSONSerialization.jsonObject(with: metaData) as? [String: Any] {
+                    let toolName = meta["toolName"] as? String ?? "tool"
+                    var kind: AgentLogEvent.EventKind = .toolCall
+                    if toolName.contains("bash") || toolName.contains("run") || toolName.contains("exec") {
+                        kind = .command
+                    } else if toolName.contains("write") || toolName.contains("edit") {
+                        kind = .fileEdit
+                    }
+                    let status = meta["status"] as? String ?? "done"
+                    events.append(AgentLogEvent(
+                        timestamp: date,
+                        kind: kind,
+                        title: "\(toolName) (\(status))",
+                        detail: partsStr.isEmpty ? nil : partsStr,
+                        agentId: "dim"
+                    ))
+                } else if !partsStr.isEmpty, let partsData = partsStr.data(using: .utf8),
+                          let parts = try? JSONSerialization.jsonObject(with: partsData) as? [[String: Any]] {
+                    for part in parts {
+                        let ptype = part["type"] as? String ?? ""
+                        if ptype == "thinking", let think = part["thinking"] as? String {
+                            let first = think.components(separatedBy: .newlines).first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? "思考中"
+                            events.append(AgentLogEvent(
+                                timestamp: date,
+                                kind: .thinking,
+                                title: first.count > 36 ? String(first.prefix(33)) + "..." : first,
+                                detail: think,
+                                agentId: "dim"
+                            ))
+                        } else if ptype == "tool_use", let name = part["name"] as? String {
+                            events.append(AgentLogEvent(
+                                timestamp: date,
+                                kind: .toolCall,
+                                title: "调用工具: \(name)",
+                                detail: "\(part["input"] ?? "")",
+                                agentId: "dim"
+                            ))
+                        } else if ptype == "text", let text = part["text"] as? String {
+                            let first = text.components(separatedBy: .newlines).first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? (role == "user" ? "用户提问" : "回复")
+                            events.append(AgentLogEvent(
+                                timestamp: date,
+                                kind: role == "user" ? .message : .info,
+                                title: (role == "user" ? "提问: " : "回答: ") + (first.count > 32 ? String(first.prefix(29)) + "..." : first),
+                                detail: text,
+                                agentId: "dim"
+                            ))
+                        }
                     }
                 }
             }
-        }
 
-        return events
+            return events
+        } ?? []
     }
 
     // MARK: - 4. Claude Code 日志流
@@ -411,48 +411,48 @@ public enum AgentLogStreamer {
     public static func fetchOpenCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.local/share/opencode/opencode.db"
-        guard let db = openReadonly(dbPath) else { return [] }
-        defer { sqlite3_close(db) }
+        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
+        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+            // 同 dim：rowid 窗口限流 + 时间排序（原全表排序实测 25ms/次，每 2s 一次）
+            let sql = openCodeEventsSQL(limit: limit)
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
 
-        // 同 dim：rowid 窗口限流 + 时间排序（原全表排序实测 25ms/次，每 2s 一次）
-        let sql = openCodeEventsSQL(limit: limit)
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
+            var events: [AgentLogEvent] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let dataStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let timeCreatedMs = sqlite3_column_int64(stmt, 1)
+                let date = SafeNumber.date(fromEpochMillis: timeCreatedMs, source: "opencode.part.time") ?? Date()
 
-        var events: [AgentLogEvent] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let dataStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let timeCreatedMs = sqlite3_column_int64(stmt, 1)
-            let date = SafeNumber.date(fromEpochMillis: timeCreatedMs, source: "opencode.part.time") ?? Date()
+                if let data = dataStr.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let type = json["type"] as? String ?? "part"
+                    var kind: AgentLogEvent.EventKind = .info
+                    var title = type
+                    if type == "reasoning" {
+                        kind = .thinking
+                        title = "深度推理规划"
+                    } else if type == "tool-call" {
+                        kind = .toolCall
+                        let name = json["toolName"] as? String ?? "tool"
+                        title = "调用: \(name)"
+                    } else if type == "text" {
+                        kind = .message
+                        title = "文本响应"
+                    }
 
-            if let data = dataStr.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let type = json["type"] as? String ?? "part"
-                var kind: AgentLogEvent.EventKind = .info
-                var title = type
-                if type == "reasoning" {
-                    kind = .thinking
-                    title = "深度推理规划"
-                } else if type == "tool-call" {
-                    kind = .toolCall
-                    let name = json["toolName"] as? String ?? "tool"
-                    title = "调用: \(name)"
-                } else if type == "text" {
-                    kind = .message
-                    title = "文本响应"
+                    events.append(AgentLogEvent(
+                        timestamp: date,
+                        kind: kind,
+                        title: title,
+                        detail: dataStr,
+                        agentId: "opencode"
+                    ))
                 }
-
-                events.append(AgentLogEvent(
-                    timestamp: date,
-                    kind: kind,
-                    title: title,
-                    detail: dataStr,
-                    agentId: "opencode"
-                ))
             }
-        }
-        return events
+            return events
+        } ?? []
     }
 
     // MARK: - 6. ZCode 日志流 (tasks-index.sqlite)
@@ -460,30 +460,30 @@ public enum AgentLogStreamer {
     public static func fetchZCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.zcode/v2/tasks-index.sqlite"
-        guard let db = openReadonly(dbPath) else { return [] }
-        defer { sqlite3_close(db) }
+        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
+        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+            let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT \(limit);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
 
-        let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT \(limit);"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
+            var events: [AgentLogEvent] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                let updatedMs = sqlite3_column_int64(stmt, 2)
+                let date = SafeNumber.date(fromEpochMillis: updatedMs, source: "zcode.task.updated") ?? Date()
 
-        var events: [AgentLogEvent] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-            let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            let updatedMs = sqlite3_column_int64(stmt, 2)
-            let date = SafeNumber.date(fromEpochMillis: updatedMs, source: "zcode.task.updated") ?? Date()
-
-            events.append(AgentLogEvent(
-                timestamp: date,
-                kind: status == "completed" ? .info : .command,
-                title: "任务 [\(status)]: \(title)",
-                detail: title,
-                agentId: "zcode"
-            ))
-        }
-        return events
+                events.append(AgentLogEvent(
+                    timestamp: date,
+                    kind: status == "completed" ? .info : .command,
+                    title: "任务 [\(status)]: \(title)",
+                    detail: title,
+                    agentId: "zcode"
+                ))
+            }
+            return events
+        } ?? []
     }
 
     // MARK: - 7. WorkBuddy 日志流 (workbuddy.db)
@@ -491,31 +491,31 @@ public enum AgentLogStreamer {
     public static func fetchWorkBuddyEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.workbuddy/workbuddy.db"
-        guard let db = openReadonly(dbPath) else { return [] }
-        defer { sqlite3_close(db) }
+        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
+        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+            let sql = "SELECT title, status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT \(limit);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
 
-        let sql = "SELECT title, status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT \(limit);"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
+            var events: [AgentLogEvent] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? "Session"
+                let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                let mode = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "agent"
+                let updatedMs = sqlite3_column_int64(stmt, 3)
+                let date = SafeNumber.date(fromEpochMillis: updatedMs, source: "workbuddy.session.updated") ?? Date()
 
-        var events: [AgentLogEvent] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? "Session"
-            let status = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            let mode = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? "agent"
-            let updatedMs = sqlite3_column_int64(stmt, 3)
-            let date = SafeNumber.date(fromEpochMillis: updatedMs, source: "workbuddy.session.updated") ?? Date()
-
-            events.append(AgentLogEvent(
-                timestamp: date,
-                kind: status.lowercased() == "active" ? .command : .info,
-                title: "[\(mode)] \(title) (\(status))",
-                detail: "状态: \(status), 模式: \(mode)",
-                agentId: "workbuddy"
-            ))
-        }
-        return events
+                events.append(AgentLogEvent(
+                    timestamp: date,
+                    kind: status.lowercased() == "active" ? .command : .info,
+                    title: "[\(mode)] \(title) (\(status))",
+                    detail: "状态: \(status), 模式: \(mode)",
+                    agentId: "workbuddy"
+                ))
+            }
+            return events
+        } ?? []
     }
 
     // MARK: - 8. Hermes 日志流 (state.db)
@@ -523,29 +523,29 @@ public enum AgentLogStreamer {
     public static func fetchHermesEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.hermes/state.db"
-        guard let db = openReadonly(dbPath) else { return [] }
-        defer { sqlite3_close(db) }
+        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
+        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+            let sql = "SELECT title, last_activity_description, started_at FROM sessions ORDER BY started_at DESC LIMIT \(limit);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
 
-        let sql = "SELECT title, last_activity_description, started_at FROM sessions ORDER BY started_at DESC LIMIT \(limit);"
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
-        defer { sqlite3_finalize(stmt) }
+            var events: [AgentLogEvent] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? "Hermes"
+                let desc = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                let startedAtStr = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
 
-        var events: [AgentLogEvent] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let title = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? "Hermes"
-            let desc = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-            let startedAtStr = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
-
-            events.append(AgentLogEvent(
-                timestamp: Date(),
-                kind: .toolCall,
-                title: title,
-                detail: desc.isEmpty ? startedAtStr : desc,
-                agentId: "hermes"
-            ))
-        }
-        return events
+                events.append(AgentLogEvent(
+                    timestamp: Date(),
+                    kind: .toolCall,
+                    title: title,
+                    detail: desc.isEmpty ? startedAtStr : desc,
+                    agentId: "hermes"
+                ))
+            }
+            return events
+        } ?? []
     }
 
     // MARK: - 辅助函数
@@ -574,21 +574,6 @@ public enum AgentLogStreamer {
         WHERE p.rowid > (SELECT max(rowid) - \(recentWindow(limit: limit)) FROM part)
         ORDER BY p.time_created DESC LIMIT \(limit);
         """
-    }
-
-    /// 只读打开数据库（统一带 FULLMUTEX，与其他数据源一致）。
-    /// 失败时同样必须 close：`sqlite3_open_v2` 在返回错误码前就已分配 handle
-    /// （rc=14 等场景下 handle 非 NULL），不 close 会每次泄漏约 1.5KB。
-    /// 这些调用位于主线程采样路径（working 2s / idle 5s），泄漏会持续累积。
-    /// internal（非 private）以便测试直接覆盖失败路径的内存契约。
-    static func openReadonly(_ dbPath: String) -> OpaquePointer? {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let db else {
-            if let db { sqlite3_close(db) }
-            return nil
-        }
-        return db
     }
 
     static func readLastLines(from file: URL, maxLines: Int = 20) -> [String] {
