@@ -54,6 +54,17 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
     /// 说明该 Agent 是宿主的内嵌组件而非独立产品（如 ChatGPT 桌面版内嵌 Codex，
     /// 二者共用 ~/.codex 会话目录），不再单独成行，避免同一份程序数成两个 Agent。
     public let hostBundleIDs: [String]
+    /// 本 Agent 的 CPU 工作判定**下限**（nil 表示无下限）。
+    ///
+    /// 实际阈值 = `max(cpuWorkingThreshold ?? 0, EngineConfig.cpuThreshold)`
+    /// 语义说明：
+    /// - 桌面类（Electron/多进程）Agent 即使空闲，渲染与 IPC 也有 4%~15% 抖动，
+    ///   必须有一个下限把它们和「真在工作」区分开，否则空闲会被误判成 working
+    ///   （此为已修复的回归，见 CHANGELOG「ChatGPT 桌面版空闲误判工作态」）
+    /// - 使用「下限」而非「覆盖」：用户把设置页阈值调**高**时对所有 Agent 生效；
+    ///   调**低**时不会突破该 Agent 的保护下限（避免重新引入上面的误报）
+    /// - 此前这段判断按 id 硬编码在引擎里，导致设置项对 13/17 个内置 Agent 完全无效
+    public let cpuWorkingThreshold: Double?
     public let sessionDirs: [String]      // 会话目录（后台扫描）
     public let defaultEnabled: Bool
     public let category: AgentCategory
@@ -75,6 +86,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
                 bundleIDs: [String], processNames: [String], pathContains: [String] = [],
                 pathExcludes: [String] = [],
                 hostBundleIDs: [String] = [],
+                cpuWorkingThreshold: Double? = nil,
                 sessionDirs: [String],
                 defaultEnabled: Bool = true, category: AgentCategory = .assistant,
                 isCustom: Bool = false) {
@@ -86,6 +98,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         self.pathContains = pathContains
         self.pathExcludes = pathExcludes
         self.hostBundleIDs = hostBundleIDs
+        self.cpuWorkingThreshold = cpuWorkingThreshold
         self.sessionDirs = sessionDirs
         self.defaultEnabled = defaultEnabled
         self.category = category
@@ -99,7 +112,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, icon, bundleIDs, processNames, pathContains, pathExcludes
-        case hostBundleIDs, sessionDirs, defaultEnabled, category, isCustom
+        case hostBundleIDs, cpuWorkingThreshold, sessionDirs, defaultEnabled, category, isCustom
     }
 
     public init(from decoder: Decoder) throws {
@@ -112,10 +125,32 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         pathContains = try c.decodeIfPresent([String].self, forKey: .pathContains) ?? []
         pathExcludes = try c.decodeIfPresent([String].self, forKey: .pathExcludes) ?? []
         hostBundleIDs = try c.decodeIfPresent([String].self, forKey: .hostBundleIDs) ?? []
+        cpuWorkingThreshold = try c.decodeIfPresent(Double.self, forKey: .cpuWorkingThreshold)
         sessionDirs = try c.decodeIfPresent([String].self, forKey: .sessionDirs) ?? []
         defaultEnabled = try c.decodeIfPresent(Bool.self, forKey: .defaultEnabled) ?? true
         category = try c.decodeIfPresent(AgentCategory.self, forKey: .category) ?? .assistant
         isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom) ?? false
+    }
+}
+
+// MARK: - 内存显示文案（唯一实现）
+
+/// 字节数 → 紧凑易读文本（如 "128M"、"1.4G"、"<1M"）。
+///
+/// 此前这段逻辑散落三处（`AgentSnapshot` / `AgentAnomaly` / `CleanResult`），
+/// 其中只有 `AgentSnapshot` 处理了 `<1MB` 的情况，另两处 `Int(mb)` 截断会把
+/// 小额内存显示成「0M」（易被误读为无占用）。收敛到此处后三处口径一致。
+public enum MemoryFormat {
+    public static func text(_ bytes: UInt64) -> String {
+        guard bytes > 0 else { return "—" }
+        let mb = Double(bytes) / (1024 * 1024)
+        if mb >= 1024 {
+            return String(format: "%.1fG", mb / 1024.0)
+        } else if mb < 1 {
+            return "<1M"
+        } else {
+            return "\(Int(mb))M"
+        }
     }
 }
 
@@ -140,15 +175,7 @@ public struct AgentSnapshot: Identifiable, Equatable {
 
     /// 紧凑易读的内存显示文案（如 "128M"、"1.4G"）
     public var memoryText: String {
-        guard memoryBytes > 0 else { return "—" }
-        let mb = Double(memoryBytes) / (1024 * 1024)
-        if mb >= 1024 {
-            return String(format: "%.1fG", mb / 1024.0)
-        } else if mb < 1 {
-            return "<1M"   // 此前 Int(mb) 截断为 0，显示「0M」易被误读为无占用
-        } else {
-            return "\(Int(mb))M"
-        }
+        MemoryFormat.text(memoryBytes)
     }
 
     public init(profile: AgentProfile, level: ActivityLevel, processRunning: Bool,
@@ -272,13 +299,24 @@ public struct EngineConfig: Equatable {
 
     /// cpuThreshold 合法区间（slider range / 钳制 / 归一化唯一来源）
     public static let cpuThresholdRange: ClosedRange<Double> = 1.0...50.0
+    /// 采样间隔合法区间。下限 0.5s：小于此值会退化成忙循环——实测把间隔写成 0
+    /// 会让引擎每秒采样 2895 次（timer 立即重排 + 空转），CPU 直接跑满。
+    /// 上限 600s：再长就失去「监控」意义。
+    public static let sampleIntervalRange: ClosedRange<Double> = 0.5...600.0
 
-    /// 归一化：cpuThreshold 钳入合法区间（旧版持久化半值自愈）+ sample≤idle 钳平
-    /// （否则「闲置降频」逻辑反转）。设置表单与启动读取共用，钳制规则只此一处。
+    /// 归一化：脏持久化值自愈的唯一入口。
+    /// - cpuThreshold 钳入合法区间
+    /// - 采样间隔钳入合法区间（防 0/负数造成忙循环，也防异常超大值）
+    /// - sample ≤ idle 钳平（否则「闲置降频」逻辑反转）
+    /// 设置表单、启动读取、配置热更新三处共用，钳制规则只此一处。
     public func normalized() -> EngineConfig {
         var c = self
         c.cpuThreshold = min(max(c.cpuThreshold, Self.cpuThresholdRange.lowerBound),
                              Self.cpuThresholdRange.upperBound)
+        c.sampleInterval = min(max(c.sampleInterval, Self.sampleIntervalRange.lowerBound),
+                               Self.sampleIntervalRange.upperBound)
+        c.idleSampleInterval = min(max(c.idleSampleInterval, Self.sampleIntervalRange.lowerBound),
+                                   Self.sampleIntervalRange.upperBound)
         if c.sampleInterval > c.idleSampleInterval {
             c.sampleInterval = c.idleSampleInterval
         }

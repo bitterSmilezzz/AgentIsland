@@ -6,6 +6,11 @@ import Foundation
 
 public enum AgentRegistry {
 
+    /// 桌面类 Agent 的 CPU 判定下限（Electron/多进程空闲抖动约 4%~15%）
+    private static let desktopCPUFloor: Double = 20.0
+    /// WorkBuddy 常驻多个 prewarm 进程，CPU 汇总更容易抬高，需要更高下限
+    private static let workbuddyCPUFloor: Double = 35.0
+
     /// 内置定义（覆盖常见 Agent；自动发现负责标记哪些真实安装）
     public static let builtin: [AgentProfile] = [
         AgentProfile(
@@ -14,6 +19,7 @@ public enum AgentRegistry {
             icon: "sparkles.rectangle.stack.fill",
             bundleIDs: ["com.dimcode.app"],
             processNames: ["DimAgent", "DimRemote", "dim"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".dimcode/v2/data/sessions")],
             category: .assistant
         ),
@@ -23,6 +29,7 @@ public enum AgentRegistry {
             icon: "bubble.left.and.bubble.right.fill",
             bundleIDs: ["com.anthropic.claudefordesktop", "com.anthropic.claudecode"],
             processNames: ["claude", "Claude", "claude-code"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".claude/sessions"), home(".claude/projects")],
             category: .assistant
         ),
@@ -50,6 +57,7 @@ public enum AgentRegistry {
             icon: "cursorarrow.click.2",
             bundleIDs: ["com.todesktop.230113mital1efw", "com.cursor.cursor"],
             processNames: ["Cursor", "cursor"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/Cursor/User/workspaceStorage")],
             category: .codeEditor
         ),
@@ -60,6 +68,7 @@ public enum AgentRegistry {
             bundleIDs: ["cn.trae.solo.app", "com.trae.ai"],
             processNames: ["TRAE SOLO CN", "Trae", "trae", "Electron"],
             pathContains: ["trae"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/Trae CN/User/workspaceStorage")],
             category: .codeEditor
         ),
@@ -69,6 +78,7 @@ public enum AgentRegistry {
             icon: "sparkles",
             bundleIDs: ["com.tencent.imamac"],
             processNames: ["ima.copilot", "Copilot"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/com.tencent.imamac")],
             category: .assistant
         ),
@@ -79,6 +89,7 @@ public enum AgentRegistry {
             bundleIDs: ["com.tencent.workbuddy.mac"],
             processNames: ["WorkBuddy", "workbuddy", "Electron"],
             pathContains: ["workbuddy"],
+            cpuWorkingThreshold: workbuddyCPUFloor,
             sessionDirs: [
                 // sessions/*.json 是宿主心跳/连接登记，不代表有任务；
                 // memory 也会被后台同步触碰。任务产物才是工作信号。
@@ -93,6 +104,7 @@ public enum AgentRegistry {
             bundleIDs: ["dev.zcode.app"],
             processNames: ["ZCode", "zcode-host-local-1", "zcode-cli", "Electron"],
             pathContains: ["zcode"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [
                 // v2 根目录包含 bot 状态、轮询日志和 sqlite；这些会在空闲时持续更新。
                 // checkpoints 才对应一次实际 Agent 运行的状态落盘。
@@ -107,6 +119,7 @@ public enum AgentRegistry {
             bundleIDs: ["com.google.antigravity", "com.yuzhiqiang.antigravity.studio"],
             processNames: ["Antigravity", "language_server", "agentapi", "Electron"],
             pathContains: ["antigravity"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [
                 home(".gemini/antigravity/conversations"),
                 home(".gemini/antigravity/brain"),
@@ -120,7 +133,10 @@ public enum AgentRegistry {
             icon: "terminal.fill",
             bundleIDs: ["ai.opencode.desktop"],
             processNames: ["opencode"],
-            sessionDirs: [home(".config/opencode"), home(".local/share/opencode")],
+            cpuWorkingThreshold: desktopCPUFloor,
+            // 只监控会话数据库目录。~/.config/opencode 是配置目录（含 node_modules），
+            // 与任务无关却占全量扫描 22-50ms / 2098 个条目（实测）——依赖安装不是工作信号。
+            sessionDirs: [home(".local/share/opencode")],
             category: .assistant
         ),
         AgentProfile(
@@ -138,6 +154,7 @@ public enum AgentRegistry {
             icon: "arrow.triangle.2.circlepath",
             bundleIDs: ["com.continue.continue"],
             processNames: ["Continue", "continue"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".continue")],
             defaultEnabled: false,
             category: .codeEditor
@@ -148,6 +165,7 @@ public enum AgentRegistry {
             icon: "brain.head.profile",
             bundleIDs: ["com.openai.codex"],
             processNames: ["ChatGPT"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/com.openai.codex")],
             category: .assistant
         ),
@@ -172,6 +190,7 @@ public enum AgentRegistry {
             icon: "globe.americas.fill",
             bundleIDs: ["com.citrolabs.ego.lite"],
             processNames: ["ego-browser", "ego lite", "ego"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".local/share/ego"), home("Library/Application Support/ego lite")],
             category: .assistant
         ),
@@ -181,6 +200,7 @@ public enum AgentRegistry {
             icon: "chart.bar.xaxis",
             bundleIDs: ["ai.vibecafe.vibe-usage"],
             processNames: ["vibe-usage", "Vibe Usage"],
+            cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".vibe-usage"), home("Library/Application Support/Vibe Usage")],
             category: .assistant
         ),
@@ -191,7 +211,9 @@ public enum AgentRegistry {
             bundleIDs: [],
             processNames: ["openviking", "openviking-server", "ov", "vikingbot"],
             pathContains: ["openviking"],
-            sessionDirs: [home(".openviking"), home(".local/share/uv/tools/openviking")],
+            // 只监控数据目录。~/.local/share/uv/tools/openviking 是 uv 装的 Python venv
+            // （lib/bin/pyvenv.cfg，4452 个条目），与任务无关，实测占全量扫描最大的一块。
+            sessionDirs: [home(".openviking")],
             category: .assistant
         ),
     ]

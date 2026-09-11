@@ -3,10 +3,14 @@ import Combine
 
 // MARK: - 活动引擎
 // 采样状态机（Q1 双信号）：
-//   working = 进程在 且（workingWindow 内有文件写入 或 CPU > cpuThreshold）
+//   working = 进程在 且（workingWindow 内有文件写入 或 CPU ≥ 判定阈值）
 //   idle    = 进程在 但两者皆不满足
 //   offline = 进程不在
+// CPU 判定阈值 = max(AgentProfile.cpuWorkingThreshold, EngineConfig.cpuThreshold)：
+// 前者是桌面类 Agent 的防抖下限（空闲渲染抖动 4%~15%），后者是用户在设置页可调的值，
+// 取 max 保证用户调高时对所有 Agent 生效、调低时不会突破防抖下限。
 // 节电（Q11）：有 working 用 sampleInterval 采样；全闲置降频 idleSampleInterval。
+// 断点（G4）：采样间隔超过 resumeGapThreshold 视为睡眠/挂起，跳过完成事件并重置工作区间。
 
 @MainActor
 public final class ActivityEngine: ObservableObject {
@@ -41,6 +45,15 @@ public final class ActivityEngine: ObservableObject {
     /// 与 workingSince 的区别：workingSince 是本次工作区间的起点（仅用于计算任务时长），
     /// lastSignalAt 每拍有信号就刷新（用于滞回判断，否则长任务滞回永不生效）。
     private var lastSignalAt: [String: Date] = [:]
+    /// 上一次采样的时刻，用于识别睡眠/挂起造成的采样断点（见 sampleCore）
+    private var lastSampleAt: Date?
+    /// 采样断点判定阈值：超过则视为发生睡眠/挂起。
+    /// 必须显著大于正常调度间隔——最慢节律是全离线态的 60s（且用户可把闲置间隔
+    /// 调到 60s），叠加调度延迟后仍不应误判。取「2 分钟」与「3 倍闲置间隔」的较大者：
+    /// 合盖/挂起通常是分钟到小时级，2 分钟下限足以区分；而节律放宽时自动适配。
+    private var resumeGapThreshold: TimeInterval {
+        max(120, config.idleSampleInterval * 3)
+    }
 
     /// - Parameters:
     ///   - profiles: 初始启用档案（组合根/测试显式给定；无默认值——安装判定依赖注入的缓存，
@@ -260,6 +273,27 @@ public final class ActivityEngine: ObservableObject {
     /// 采样主体（主线程）：双信号判定 + 快照组装 + 发布
     @discardableResult
     private func sampleCore(matcher: ProcessMatcher, now: Date) -> [AgentSnapshot] {
+        // 采样断点检测（睡眠/唤醒、App Nap、长时间挂起）：
+        // 合盖或挂起期间时间在走但没有任何采样，唤醒后的第一拍会看到
+        // 「信号早已消失 + 距上次工作很久」——按常规逻辑会补发一条
+        // 「任务完成 (480分0秒)」并弹系统通知，而 Agent 其实只是被挂起了。
+        // 检测到断点就跳过完成事件，并把工作区间起点顺延到本拍（视为重新开始）。
+        let isResumeGap: Bool = {
+            guard let last = lastSampleAt else { return false }
+            return now.timeIntervalSince(last) > resumeGapThreshold
+        }()
+        if isResumeGap {
+            workingSince.removeAll()
+            lastSignalAt.removeAll()
+            highCpuSince.removeAll()
+            lastRunawayAlertedAt.removeAll()
+            // token 速率基准同步重置：跨越睡眠的窗口会把「睡眠期间的账本变化」
+            // 折算成极高速率，重置后从本拍重新起算
+            tokenRateBaseline.removeAll()
+            tokenSpikeStreak.removeAll()
+        }
+        lastSampleAt = now
+
         fileMonitor.scanAsync()
         // 低频重扫安装缓存（运行中装新 CLI/App 不必重启；调度即标记，后台执行）。
         // 时间戳阈值 300s：计数在工作态 2s/离线 60s 间隔下粒度漂移 30 倍
@@ -268,6 +302,8 @@ public final class ActivityEngine: ObservableObject {
 
         var results: [AgentSnapshot] = []
         var anyWork = false
+        /// 本拍每 profile 的 CPU 与 PID，供告警链路复用
+        var sampleInfo: [String: SampleInfo] = [:]
 
         for profile in profiles {
             // 每 profile 只调一次 matchingEntries（isRunning+cpuPercent 各遍历一遍
@@ -299,20 +335,13 @@ public final class ActivityEngine: ObservableObject {
 
             let hasRecentWrite = newestAgo.map { $0 <= config.workingWindow } ?? false
 
-            // 智能 CPU 判定：
-            // 对于桌面/GUI 智能体（如 DimAgent、WorkBuddy、ChatGPT，或声明了 bundleIDs 的桌面应用）：
-            // 过滤 Electron / Chromium / WebKit 辅助进程渲染与 IPC 空闲微抖动（4%~15%）。
-            // WorkBuddy 还会常驻多个 prewarm codebuddy 进程，CPU 汇总更容易抬高，
-            // 因此只有明显高负载（>= 35%）才允许 CPU 单独触发工作态；任务目录写入仍可立即触发。
-            // 纯 CLI 智能体维持通用 cpuThreshold（默认 6.0%）。
-            let hasHighCpu: Bool
-            if profile.id == "workbuddy" {
-                hasHighCpu = cpu >= 35.0
-            } else if profile.id == "dim" || profile.id == "chatgpt" || !profile.bundleIDs.isEmpty {
-                hasHighCpu = cpu >= 20.0
-            } else {
-                hasHighCpu = cpu > config.cpuThreshold
-            }
+            // CPU 判定：阈值 = max(档案下限, 用户设置)。
+            // 下限来自 AgentProfile.cpuWorkingThreshold —— 桌面类（Electron/多进程）Agent
+            // 即使空闲也有 4%~15% 的渲染与 IPC 抖动，必须有下限才能与「真在工作」区分；
+            // 用 max 而非覆盖，保证用户在设置页把阈值调高时对所有 Agent 都生效
+            // （此前按 id 硬编码，设置项对 13/17 个内置 Agent 完全无效）。
+            let cpuFloor = profile.cpuWorkingThreshold ?? 0
+            let hasHighCpu = cpu >= max(cpuFloor, config.cpuThreshold)
 
             let level: ActivityLevel
             if !running {
@@ -354,6 +383,21 @@ public final class ActivityEngine: ObservableObject {
             }
 
             let memory = entries.reduce(UInt64(0)) { $0 + $1.rssBytes }
+
+            // 持续高负载追踪：采集与告警解耦。
+            // isHung 驱动行内「疑似卡死」徽标、详情页状态与工作台死锁扫描，必须始终采集；
+            // 此前该状态只在 runawayCpuAlert 开启时维护，用户关掉「死循环告警」会连带
+            // 让卡死检测静默失效（设置文案只承诺关闭告警，未说会丢监控）。
+            if running {
+                if cpu >= config.runawayCpuThreshold {
+                    if highCpuSince[profile.id] == nil { highCpuSince[profile.id] = now }
+                } else {
+                    highCpuSince[profile.id] = nil
+                    lastRunawayAlertedAt[profile.id] = nil
+                }
+            }
+
+            // 用当拍采集后的值判定，比此前「读上一拍残留」更及时
             let isHung = (highCpuSince[profile.id].map { now.timeIntervalSince($0) >= config.runawayDurationThreshold } ?? false)
 
             results.append(AgentSnapshot(
@@ -371,23 +415,41 @@ public final class ActivityEngine: ObservableObject {
                 memoryBytes: memory,
                 isHung: isHung
             ))
+            // 本拍 CPU/PID 供告警链路复用（避免二次全表匹配）
+            sampleInfo[profile.id] = SampleInfo(cpu: cpu, pid: matchedPID)
         }
 
         // 内容实质变化才发布（@Published 触发所有观察者重算）
         if results != snapshots || anyWork != anyWorking {
             snapshots = results
+            // 扫描紧迫度跟随工作态：全闲置时放宽兜底重扫周期（省 CPU），
+            // 有 working 时恢复灵敏（文件信号消失要尽快回落 idle）
+            if anyWork != anyWorking {
+                fileMonitor.setScanUrgency(highFrequency: anyWork)
+            }
             anyWorking = anyWork
             updatedAt = now
         }
 
-        // 成本与异常熔断保护：检测 Token 激增与死循环运行
-        checkCostSpikeAndRunaway(matcher: matcher, now: now)
+        // 成本与异常熔断保护：检测 Token 激增与死循环运行。
+        // 传入主循环已算出的每 profile CPU/PID：函数内再算一遍会重复全表匹配
+        // （实测 2.5ms/拍，占主线程采样 34%）。
+        checkCostSpikeAndRunaway(samples: sampleInfo, now: now)
 
         scheduleNext()
         return results
     }
 
-    private func checkCostSpikeAndRunaway(matcher: ProcessMatcher, now: Date) {
+    /// 每 profile 本拍已算出的采样值（供告警链路复用，避免重复全表匹配）
+    private struct SampleInfo {
+        let cpu: Double
+        let pid: Int32?
+    }
+
+    /// 成本与异常熔断保护：只负责**判定与发事件**。
+    /// 状态采集（`highCpuSince` / `tokenRateBaseline` 等）分别在主循环与下文中维护——
+    /// 采集必须始终进行，否则关闭某个告警开关会连带让 isHung、卡死扫描等消费方静默失效。
+    private func checkCostSpikeAndRunaway(samples: [String: SampleInfo], now: Date) {
         if config.tokenAlertEnabled {
             for profile in profiles {
                 guard let usage = tokenMonitor.usage[profile.id], usage.tokensTotal > 0 else { continue }
@@ -408,7 +470,7 @@ public final class ActivityEngine: ObservableObject {
                     // 需连续多档超阈值才告警：滤掉单次账本补写（如长任务结束时一次性落盘）
                     guard streak >= Self.tokenSpikeConfirmations,
                           !tokenSpikeAlerted.contains(profile.id) else { continue }
-                    let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
+                    let matchedPID = samples[profile.id]?.pid
                     postEvent(AgentTaskEvent(
                         agentId: profile.id,
                         agentName: profile.name,
@@ -427,42 +489,32 @@ public final class ActivityEngine: ObservableObject {
             }
         }
 
+        // 死循环告警：只读主循环已维护的 highCpuSince 状态并决定是否发事件。
+        // 状态采集在主循环里无条件进行（见 sampleCore），此处只管发不发告警——
+        // 关闭该开关不应影响 isHung 与工作台死锁扫描。
         if config.runawayCpuAlert {
             for profile in profiles {
-                let cpu = matcher.cpuPercent(profile)
-                if cpu >= config.runawayCpuThreshold {
-                    let start = highCpuSince[profile.id] ?? now
-                    if highCpuSince[profile.id] == nil {
-                        highCpuSince[profile.id] = now
-                    }
-                    let highDuration = now.timeIntervalSince(start)
-                    if highDuration >= config.runawayDurationThreshold {
-                        let lastAlert = lastRunawayAlertedAt[profile.id]
-                        if lastAlert == nil {
-                            lastRunawayAlertedAt[profile.id] = now
-                            let matchedPID = matcher.matchingEntries(for: profile).first(where: { $0.pid > 0 })?.pid
-                            let minutes = max(1, Int(highDuration / 60))
-                            postEvent(AgentTaskEvent(
-                                agentId: profile.id,
-                                agentName: profile.name,
-                                eventType: .costSpike,
-                                duration: highDuration,
-                                timestamp: now,
-                                pid: matchedPID,
-                                message: "⚠️ \(profile.name) 持续高负载超 \(minutes) 分钟 (CPU \(Int(cpu))%)",
-                                detail: "进程持续高负载占用 CPU \(Int(cpu))% 已达 \(minutes) 分钟（报警阈值: ≥\(Int(config.runawayCpuThreshold))% 持续超 \(Int(config.runawayDurationThreshold / 60)) 分钟）。若任务卡死或非预期，可点击【熔断】安全结束。"
-                            ))
-                        }
-                    }
-                } else {
-                    highCpuSince[profile.id] = nil
-                    lastRunawayAlertedAt[profile.id] = nil
-                }
+                guard let info = samples[profile.id], let since = highCpuSince[profile.id] else { continue }
+                let highDuration = now.timeIntervalSince(since)
+                guard highDuration >= config.runawayDurationThreshold else { continue }
+                guard lastRunawayAlertedAt[profile.id] == nil else { continue }
+                lastRunawayAlertedAt[profile.id] = now
+                let minutes = max(1, Int(highDuration / 60))
+                postEvent(AgentTaskEvent(
+                    agentId: profile.id,
+                    agentName: profile.name,
+                    eventType: .costSpike,
+                    duration: highDuration,
+                    timestamp: now,
+                    pid: info.pid,
+                    message: "⚠️ \(profile.name) 持续高负载超 \(minutes) 分钟 (CPU \(Int(info.cpu))%)",
+                    detail: "进程持续高负载占用 CPU \(Int(info.cpu))% 已达 \(minutes) 分钟（报警阈值: ≥\(Int(config.runawayCpuThreshold))% 持续超 \(Int(config.runawayDurationThreshold / 60)) 分钟）。若任务卡死或非预期，可点击【熔断】安全结束。"
+                ))
             }
         } else {
-            highCpuSince.removeAll()
+            // 仅重置「本次会话是否已告警」的去重标记，让重新开启开关后能立即告警；
+            // highCpuSince 是 isHung 的数据源，不受开关影响、不在此清除
             lastRunawayAlertedAt.removeAll()
-            tokenSpikeAlerted.removeAll()
         }
     }
 
@@ -474,7 +526,7 @@ public final class ActivityEngine: ObservableObject {
     public func terminateAgent(pid: Int32?, agentId: String) -> Bool {
         let name = profiles.first(where: { $0.id == agentId })?.name ?? agentId
         guard let pid, pid > 1 else {
-            latestEvent = AgentTaskEvent(
+            publish(AgentTaskEvent(
                 agentId: agentId,
                 agentName: name,
                 eventType: .attention,
@@ -483,13 +535,13 @@ public final class ActivityEngine: ObservableObject {
                 pid: nil,
                 message: "无法终止 \(name)：未定位到进程",
                 detail: "检测到 \(name) 处于活动状态，但未能匹配到可终止的进程 PID（可能是 Electron 辅助进程或权限受限）。请从菜单栏图标或活动监视器手动处理。"
-            )
+            ))
             return false
         }
         // 消费 terminate 的真实结果：无权限 / 进程已消失时 kill 返回非 0，
         // 不能一律宣告成功（否则「假成功」只修了 pid 缺失那一半）
         guard ProcessTerminator.terminate(pid: pid) else {
-            latestEvent = AgentTaskEvent(
+            publish(AgentTaskEvent(
                 agentId: agentId,
                 agentName: name,
                 eventType: .attention,
@@ -498,7 +550,7 @@ public final class ActivityEngine: ObservableObject {
                 pid: pid,
                 message: "无法终止 \(name)：信号发送失败",
                 detail: "已尝试终止 PID \(pid)，但未能向其发送信号（进程可能已退出，或需要更高权限）。请确认进程状态或在活动监视器中处理。"
-            )
+            ))
             return false
         }
         workingSince[agentId] = nil
@@ -507,7 +559,7 @@ public final class ActivityEngine: ObservableObject {
         lastRunawayAlertedAt[agentId] = nil
         tokenSpikeStreak[agentId] = nil
         tokenSpikeAlerted.remove(agentId)
-        latestEvent = AgentTaskEvent(
+        publish(AgentTaskEvent(
             agentId: agentId,
             agentName: name,
             // 终止成功是「已完成」而非「需关注」：用 attention 会让收起态细条误报红色告警
@@ -517,7 +569,7 @@ public final class ActivityEngine: ObservableObject {
             pid: pid,
             message: "\(name) 进程已终止",
             detail: "已向 PID \(pid) 及其关联子进程发送 SIGTERM/SIGKILL 终止信号，系统资源已释放。"
-        )
+        ))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.sample()
         }
@@ -525,8 +577,10 @@ public final class ActivityEngine: ObservableObject {
     }
 
     /// 智能体工作台一键清理：安全清理指定的异常/孤儿进程并展示清理横幅
-    public func cleanAnomalies(_ anomalies: [AgentAnomaly]) {
-        guard !anomalies.isEmpty else { return }
+    /// - Returns: 清理结果（终止数与回收内存），供 UI 判断成败。
+    @discardableResult
+    public func cleanAnomalies(_ anomalies: [AgentAnomaly]) -> CleanResult {
+        guard !anomalies.isEmpty else { return CleanResult(terminatedCount: 0, reclaimedMemoryBytes: 0) }
         let res = cleaner.clean(anomalies: anomalies)
         for a in anomalies {
             workingSince[a.profileId] = nil
@@ -536,19 +590,36 @@ public final class ActivityEngine: ObservableObject {
             tokenSpikeStreak[a.profileId] = nil
             tokenSpikeAlerted.remove(a.profileId)
         }
-        latestEvent = AgentTaskEvent(
-            agentId: "workbench-cleaner",
-            agentName: "工作台维护",
-            eventType: .completed,
-            duration: 0,
-            timestamp: Date(),
-            pid: nil,
-            message: "已安全清理 \(res.terminatedCount) 个异常进程",
-            detail: "工作台已成功释放 \(res.terminatedCount) 个孤儿/假死智能体进程，预估回收 \(res.reclaimedMemoryText) 物理内存，系统资源已就绪。"
-        )
+        // 一个都没杀掉 ≠ 清理成功：进程可能已退出、可能无权限、PID 可能已被复用。
+        // 此前无论结果如何都宣告「已安全清理 N 个…系统资源已就绪」，用户看到条目消失
+        // 便以为已处置，而目标进程其实还在。失败时改用 attention 如实反馈。
+        if res.terminatedCount == 0 {
+            publish(AgentTaskEvent(
+                agentId: "workbench-cleaner",
+                agentName: "工作台维护",
+                eventType: .attention,
+                duration: 0,
+                timestamp: Date(),
+                pid: nil,
+                message: "未能终止任何进程",
+                detail: "扫描到 \(anomalies.count) 个异常进程，但未能向其中任何一个发送终止信号。可能原因：进程已自行退出、当前权限不足，或 PID 已被系统回收复用。请重新扫描确认当前状态。"
+            ))
+        } else {
+            publish(AgentTaskEvent(
+                agentId: "workbench-cleaner",
+                agentName: "工作台维护",
+                eventType: .completed,
+                duration: 0,
+                timestamp: Date(),
+                pid: nil,
+                message: "已安全清理 \(res.terminatedCount) 个异常进程",
+                detail: "工作台已成功释放 \(res.terminatedCount) 个孤儿/假死智能体进程，预估回收 \(res.reclaimedMemoryText) 物理内存，系统资源已就绪。"
+            ))
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.sample()
         }
+        return res
     }
 
     private func recordTaskCompleted(profile: AgentProfile, since: Date, now: Date, pid: Int32?) {
@@ -556,7 +627,7 @@ public final class ActivityEngine: ObservableObject {
         // 持续至少 3.5 秒的实质工作才视作完成一次任务（过滤瞬时微抖动）
         guard duration >= 3.5 else { return }
         let durationText = duration >= 60 ? "\(Int(duration / 60))分\(Int(duration) % 60)秒" : "\(Int(duration))秒"
-        latestEvent = AgentTaskEvent(
+        publish(AgentTaskEvent(
             agentId: profile.id,
             agentName: profile.name,
             eventType: .completed,
@@ -564,16 +635,38 @@ public final class ActivityEngine: ObservableObject {
             timestamp: now,
             pid: pid,
             detail: "\(profile.name) 本次工作持续 \(durationText)，所有子步骤已完成，现已转为空闲状态。"
-        )
+        ))
     }
 
     public func clearLatestEvent() {
         latestEvent = nil
+        // 用户已确认过告警，解除保护期，后续事件正常展示
+        alertProtectedUntil = nil
     }
 
     public func postEvent(_ event: AgentTaskEvent) {
+        publish(event)
+    }
+
+    /// 统一事件发布入口：保证严重告警不被普通事件挤掉。
+    ///
+    /// `latestEvent` 是单槽位，任何新事件都会覆盖旧事件。实测中 costSpike（Token 激增 /
+    /// 死循环）横幅在几秒内就被其他 Agent 的「任务完成」顶掉——用户还没来得及看清处置入口，
+    /// 告警就消失了。这里给告警一个保护窗口：窗口内的普通事件不覆盖它。
+    /// 不排队：横幅只展示一条，把被抑制的普通事件补发出来只会让过期信息再次弹出。
+    private func publish(_ event: AgentTaskEvent) {
+        if event.eventType == .costSpike {
+            alertProtectedUntil = Date().addingTimeInterval(Self.alertProtectionWindow)
+        } else if let until = alertProtectedUntil, Date() < until {
+            return   // 告警保护期内，普通事件让位
+        }
         latestEvent = event
     }
+
+    /// 告警保护窗口：足够用户看到横幅并决定是否处置，又不至于长期占位
+    static let alertProtectionWindow: TimeInterval = 30
+    /// 告警保护截止时间（见 publish）
+    private var alertProtectedUntil: Date?
 
     /// 活跃会话数（离线 agent 直接 0；在线读 FileMonitor 后台扫描缓存，主线程零扫描）
     private func sessionCount(for profile: AgentProfile, running: Bool) -> Int {

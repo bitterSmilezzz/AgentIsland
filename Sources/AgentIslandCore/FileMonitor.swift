@@ -18,6 +18,9 @@ public protocol FileActivityProviding {
     /// 保证文件信号时效性与用户设定的窗口一致
     func setWorkingWindow(_ window: TimeInterval)
 
+    /// 扫描紧迫度（引擎按 anyWorking 同步）：全闲置时放宽兜底重扫周期以省电
+    func setScanUrgency(highFrequency: Bool)
+
     /// 注册监控目录（假实现为空操作）
     func watch(dirs: [String])
 
@@ -35,6 +38,7 @@ public extension FileActivityProviding {
     func activeSessionCounts(for dirs: [String]) -> [String: Int] { [:] }
     func setActiveSessionWindow(_ window: TimeInterval) {}
     func setWorkingWindow(_ window: TimeInterval) {}
+    func setScanUrgency(highFrequency: Bool) {}
 }
 
 /// 后台扫描 + 缓存实现：
@@ -67,6 +71,10 @@ public final class FileActivityMonitor: FileActivityProviding {
     /// 由引擎按 config.workingWindow 注入（见 setWorkingWindow）：写死 60s 会与
     /// 用户可调窗口脱钩——窗口调小则漏判 working，调大则把旧时间戳当新写入。
     private var forceRescanInterval: TimeInterval = 5
+    /// 全闲置时的快跳过兜底周期（更省电；有 working 时用 forceRescanInterval）
+    private let idleRescanInterval: TimeInterval = 30
+    /// 当前是否处于高频扫描模式（引擎按 anyWorking 同步）
+    private var isHighFrequencyScan = true
 
     public init(maxDepth: Int = 4, scanMinInterval: TimeInterval = 3.0) {
         self.maxDepth = maxDepth
@@ -137,6 +145,23 @@ public final class FileActivityMonitor: FileActivityProviding {
         lock.unlock()
     }
 
+    /// 扫描紧迫度（引擎在 `anyWorking` 变化时同步）。
+    ///
+    /// 为什么需要：快跳过兜底周期与采样节律存在拍频——实测采样 2s + 节流 3s 会让扫描
+    /// 实际每 4s 一次，而 5s 兜底导致**每隔一次就强制全量**，快跳过形同虚设，
+    /// 全量扫描占了 1.7% 平均 CPU 与每 6–8s 一次的 11–14% 尖峰。
+    /// 有 Agent 在 working 时必须保持灵敏（文件信号消失要尽快回落 idle）；
+    /// 全部闲置/离线时把兜底周期放宽，省掉绝大部分无谓枚举。
+    ///
+    /// 刻意**不**调用 `invalidateScan()`：紧迫度只影响后续扫描的兜底判断，
+    /// 不需要立即重扫。若在此清空 `lastFullScans`，Agent 状态每次翻转都会强制
+    /// 全量重扫一轮（实测使平均 CPU 由 2.5% 升到 6.7%），得不偿失。
+    public func setScanUrgency(highFrequency: Bool) {
+        lock.lock()
+        isHighFrequencyScan = highFrequency
+        lock.unlock()
+    }
+
     public func scanAsync() {
         scanQueue.async { [weak self] in
             self?.runScan()
@@ -173,14 +198,15 @@ public final class FileActivityMonitor: FileActivityProviding {
         let dirs = Array(watchedDirs)
         let generation = scanGeneration
         let window = activeSessionWindow
+        // 兜底周期按紧迫度取值：有 working 时保持灵敏，全闲置时放宽
+        let rescanInterval = isHighFrequencyScan ? forceRescanInterval : idleRescanInterval
         lock.unlock()
 
-        // 单趟扫描：每目录一次遍历，同时产出最近写入时间 + 活跃会话数（M1 修复）
-        // 快跳过：根目录 mtime 未变（无新顶层子项）且距上次全量扫描 < forceRescanInterval（5s）
-        // → 复用缓存，零枚举。深层写入不改变根 mtime，故 5s 兜底强制重扫保证信号时效
-        //   （工作态信号最长延迟 5s 被发现）；空闲超 5s 后同样强制重扫，确认 idle 期间
-        //   无新会话/写入（不再要求 newest 活跃——否则长空闲时「newest 活跃」恒不满足，
-        //   每次扫描都全量枚举）。
+        // 单趟扫描：每目录一次遍历，同时产出最近写入时间 + 活跃会话数
+        // 快跳过：根目录 mtime 未变（无新顶层子项）且距上次全量扫描 < 兜底周期
+        // → 复用缓存，零枚举。深层写入不改变根 mtime，故兜底强制重扫保证信号时效；
+        //   空闲超周期后同样强制重扫，确认 idle 期间无新会话/写入
+        //   （不再要求 newest 活跃——否则长空闲时「newest 活跃」恒不满足，每次扫描都全量枚举）。
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
         var freshRoots: [String: Date] = [:]
@@ -194,14 +220,11 @@ public final class FileActivityMonitor: FileActivityProviding {
             let cachedNewest = cache[dir]
             let cachedCount = sessionCounts[dir]
             let lastFull = lastFullScans[dir]
-            // 同一临界区内读取：forceRescanInterval 可被 setWorkingWindow 改写，
-            // 锁外读取虽不撕裂但会读到跨周期的旧值
-            let rescanInterval = forceRescanInterval
             lock.unlock()
             if let rootDate, let cachedRoot, rootDate == cachedRoot,
                let cachedNewest, let cachedCount,
                now.timeIntervalSince(lastFull ?? .distantPast) < rescanInterval {
-                // 根 mtime 未变（无新顶层子项）+ 5s 内刚全量扫过：复用缓存，不枚举目录树
+                // 根 mtime 未变（无新顶层子项）+ 兜底周期内刚全量扫过：复用缓存，不枚举目录树
                 fresh[dir] = cachedNewest
                 freshCounts[dir] = cachedCount
                 continue
@@ -338,9 +361,18 @@ public final class FileActivityMonitor: FileActivityProviding {
     }
 
     /// 不代表任务执行的会话子树。路径组件匹配而不是字符串 contains，避免误伤项目名。
+    ///
+    /// 依赖安装树也在此列：`node_modules` / `site-packages` / `.venv` 等是包管理器产物，
+    /// 数量可达数万且会被安装动作刷新，但「装依赖」不是 Agent 的任务写入。
+    /// 实测忽略后全量扫描枚举量减少约 50%（9762 → 3419 项，294ms → 147ms）。
+    private static let ignoredActivityPathComponents: Set<String> = [
+        "file-history", "blobs",                                        // DimAgent 编辑历史/附件缓存
+        "node_modules", "site-packages", ".venv", "venv", "__pycache__", // 依赖树
+        ".git", "deriveddata", "caches",                                 // 仓库与构建缓存
+    ]
+
     private static func isIgnoredActivityPath(_ url: URL) -> Bool {
-        let ignored = Set(["file-history", "blobs"])
-        return url.pathComponents.contains { ignored.contains($0.lowercased()) }
+        url.pathComponents.contains { ignoredActivityPathComponents.contains($0.lowercased()) }
     }
 }
 
