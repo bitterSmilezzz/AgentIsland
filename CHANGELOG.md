@@ -2,9 +2,18 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.31；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.32；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.32] - 2026-09-12
+
+### 🏗️ 结构拆分：IslandView 按类型归位与吸附计算单实现（20 轮优化 · R15）
+
+- **IslandView.swift 1168 → 513 行**：AgentRowView / TokenSummaryBar / DockedSliver（含脉冲动画）/ EventBannerView 纯搬移拆出（字节级一致、零逻辑改动）；卡内导航枚举留在原位（测试漂移哨兵按文件路径解析）
+- **吸附计算双份收敛**：placeWindow 与拖拽吸附各自维护的「clamp 锚点 + 目标 origin」几乎逐行相同——收敛为 `dockTargetFrame` 单实现（行为逐行等价核对），改贴边行为不再需要同步两处
+- **阴影宿主清理**：停用的 ShadowHostView no-op 类删除，注释与文档去引用（ADR-0003 的过时表述在 R19 统一补注记）
+- 布局回归哨兵（test-token-layout.py）PASS；测试 176/0；独立验收含字节级纯搬移证明
 
 ## [0.0.31] - 2026-09-12
 
