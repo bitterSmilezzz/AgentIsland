@@ -208,6 +208,9 @@ struct MenuBarPopoverView: View {
                             controller.toggle()
                         }
                     }
+                    // a11y：与主卡 Agent 行同口径（R27）
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("\(s.profile.name)，\(s.level.label)，点按查看详情")
                 }
             }
         }
@@ -321,6 +324,7 @@ struct MenuBarPopoverView: View {
             }
             .buttonStyle(.plain)
             .help("设置…")
+            .accessibilityLabel("打开偏好设置")
 
             // 退出
             Button {
@@ -334,6 +338,7 @@ struct MenuBarPopoverView: View {
             }
             .buttonStyle(.plain)
             .help("退出 AgentIsland")
+            .accessibilityLabel("退出 AgentIsland")
         }
     }
 }
