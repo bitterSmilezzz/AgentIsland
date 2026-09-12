@@ -50,7 +50,7 @@ struct EventBannerView: View {
                             Text(isExpanded ? "收起" : "原因")
                                 .font(Theme.bodyFont(9, weight: .medium))
                             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 7, weight: .bold))
+                                .font(.system(size: 8, weight: .bold))
                         }
                         .foregroundColor(Theme.onDarkMuted)
                         .padding(.horizontal, 5)
@@ -118,7 +118,7 @@ struct EventBannerView: View {
                     } label: {
                         HStack(spacing: 3) {
                             Image(systemName: copiedFeedback ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 8))
+                                .font(.system(size: 9))
                             Text(copiedFeedback ? "已复制" : "复制诊断")
                                 .font(Theme.bodyFont(9, weight: .medium))
                         }

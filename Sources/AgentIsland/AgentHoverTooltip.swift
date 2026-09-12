@@ -74,7 +74,7 @@ struct AgentHoverTooltipCard: View {
 
             if snapshot.isHung {
                 Text("卡死告警")
-                    .font(Theme.bodyFont(8, weight: .bold))
+                    .font(Theme.bodyFont(9, weight: .bold))
                     .foregroundColor(Theme.dangerRed)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
@@ -97,7 +97,7 @@ struct AgentHoverTooltipCard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 4) {
                         Image(systemName: "terminal.fill")
-                            .font(.system(size: 8))
+                            .font(.system(size: 9))
                             .foregroundColor(Theme.statusWorking)
                         Text("当前实时执行")
                             .font(Theme.bodyFont(9, weight: .medium))

@@ -106,6 +106,11 @@ enum Theme {
     static func monoFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
+    /// 徽标/标签统一字号（R24）：此前同一「Token 徽标」语义存在 8/9/10pt 三种，
+    /// 且 <9pt 低于 HIG 最小可读字号。新入口强制 9pt，加权重载给徽标标题
+    static func badgeFont(_ weight: Font.Weight = .medium) -> Font {
+        .system(size: 9, weight: weight, design: .monospaced)
+    }
 
     // Radii & spacing (8px base)
     static let radiusSm: CGFloat = 8

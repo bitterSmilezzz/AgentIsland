@@ -334,7 +334,7 @@ struct IslandView: View {
                                             .foregroundColor(Theme.onDark)
                                             .lineLimit(1)
                                         Text(shelfSubtitle(snap))
-                                            .font(Theme.monoFont(8))
+                                            .font(Theme.badgeFont())
                                             .foregroundColor(snap.level == .working ? Palette.ringGreen : Theme.onDarkFaint)
                                             .lineLimit(1)
                                     }

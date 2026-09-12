@@ -219,7 +219,7 @@ struct AgentDetailView: View {
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
+                        .font(Theme.badgeFont(.semibold))
                         .foregroundColor(Theme.onDarkFaint)
                 }
                 .padding(.horizontal, 10)
@@ -276,7 +276,7 @@ struct AgentDetailView: View {
                         .foregroundColor(Theme.onDark)
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
+                        .font(Theme.badgeFont(.semibold))
                         .foregroundColor(Theme.onDarkFaint)
                 }
                 .padding(.horizontal, 10)

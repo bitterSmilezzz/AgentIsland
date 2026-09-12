@@ -96,7 +96,7 @@ struct AgentRowView: View {
                 if snapshot.isHung {
                     HStack(spacing: 2) {
                         Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 8))
+                            .font(Theme.badgeFont())
                         Text("疑似卡死")
                             .font(Theme.bodyFont(9, weight: .bold))
                     }
@@ -197,7 +197,7 @@ struct AgentRowView: View {
             if hasActionBar, let action = snapshot.currentAction {
                 HStack(spacing: 5) {
                     Image(systemName: "terminal.fill")
-                        .font(.system(size: 8))
+                        .font(Theme.badgeFont())
                         .foregroundColor(Theme.statusWorking)
                     Text(action)
                         .font(Theme.monoFont(9.5))
@@ -209,7 +209,7 @@ struct AgentRowView: View {
                     // 此前它只在非工作态显示，工作中反而看不到用量
                     if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
                         Text(Self.tokenBadge(usage))
-                            .font(Theme.monoFont(8))
+                            .font(Theme.badgeFont())
                             .foregroundColor(Theme.statusWorking.opacity(0.85))
                             .lineLimit(1)
                             .help("24h \(TokenUsage.compact(usage.tokens24h)) token")

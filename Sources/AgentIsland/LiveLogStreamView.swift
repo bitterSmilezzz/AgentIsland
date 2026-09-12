@@ -174,7 +174,7 @@ struct LiveLogStreamView: View {
 
                 if event.detail != nil {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(Theme.badgeFont(.bold))
                         .foregroundColor(Theme.onDarkFaint)
                 }
             }
@@ -229,7 +229,7 @@ struct LiveLogStreamView: View {
 
     private func badgeView(for kind: AgentLogEvent.EventKind) -> some View {
         Text(kind.label)
-            .font(Theme.monoFont(8, weight: .bold))
+            .font(Theme.badgeFont(.bold))
             .foregroundColor(badgeTextColor(for: kind))
             .padding(.horizontal, 4)
             .padding(.vertical, 1.5)

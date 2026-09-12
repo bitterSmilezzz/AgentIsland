@@ -205,16 +205,16 @@ struct ToolboxView: View {
                         HStack(spacing: 6) {
                             if item.cpuPercent > 0.1 {
                                 Text(String(format: "CPU %.1f%%", item.cpuPercent))
-                                    .font(Theme.monoFont(8))
+                                    .font(Theme.badgeFont())
                                     .foregroundColor(Theme.warningOrange)
                             }
                             if item.memoryBytes > 0 {
                                 Text("内存 \(item.memoryText)")
-                                    .font(Theme.monoFont(8))
+                                    .font(Theme.badgeFont())
                                     .foregroundColor(Theme.onDarkFaint)
                             }
                             Text("PPID: \(item.ppid)")
-                                .font(Theme.monoFont(8))
+                                .font(Theme.badgeFont())
                                 .foregroundColor(Theme.onDarkFaint)
                         }
                     }
@@ -277,7 +277,7 @@ struct ToolboxView: View {
             color = Theme.statusIdle
         }
         return Text(text)
-            .font(Theme.bodyFont(8, weight: .bold))
+            .font(Theme.bodyFont(9, weight: .bold))
             .foregroundColor(color)
             .padding(.horizontal, 4)
             .padding(.vertical, 1)
