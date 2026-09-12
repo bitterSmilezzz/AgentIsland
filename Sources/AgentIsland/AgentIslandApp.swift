@@ -108,6 +108,11 @@ struct MenuBarPopoverView: View {
         .frame(width: 300)
         .background(Theme.canvas)
         .preferredColorScheme(controller.appearanceMode.colorScheme)
+        .onAppear {
+            // popover 打开时按需单次刷新 token（R34/F6）：popover 不参与「呈现活跃」
+            // 生命周期（docked 常态轮询已暂停），不刷新会显示冻结值、首次打开甚至空白
+            engine.refreshTokenUsageOnce()
+        }
     }
 
     // MARK: 顶部状态条

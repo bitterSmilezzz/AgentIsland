@@ -207,6 +207,8 @@ public protocol TokenUsagePolling: AnyObject {
     func stop()
     /// 暂停轮询（连接保留；「呈现活跃」失活时由引擎调用）
     func pause()
+    /// 按需单次刷新（R34/F6）：菜单栏 popover 等第三消费方打开时调用
+    func refreshAsync()
 }
 
 /// 默认轮询节律（唯一来源：类签名默认参数与无参便利方法共用）
@@ -271,6 +273,12 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private var dbConnections: [String: OpaquePointer] = [:]
     /// 连接打开时的文件 inode（外部替换主文件后据此失效缓存连接）
     private var dbInodes: [String: UInt64] = [:]
+    /// 一次性连接（stop 后迟到的重建；rawRows 收尾统一关闭，不写回缓存）
+    private var transientHandles: [OpaquePointer] = []
+    private var currentDBGeneration: Int {
+        lock.lock(); defer { lock.unlock() }
+        return dbGeneration
+    }
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
     /// 数据库路径构造注入（接受依赖，不自行定位；默认现网双源路径，测试传 fixture 临时库）
@@ -290,7 +298,11 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         timer = t
     }
 
+    /// 连接代际（R34/F9）：stop() 递增后，在飞 refresh 的 rawRows 不再把重建的
+    /// 连接写回缓存（stop 后无人再关，违背「彻底清理」契约）
+    private var dbGeneration = 0
     public func stop() {
+        lock.lock(); dbGeneration += 1; lock.unlock()
         timer?.invalidate()
         timer = nil
         closeConnectionsAsync()
@@ -318,9 +330,22 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         }
     }
 
+    /// 在飞/排队中的 refreshAsync 合并（R34/G4）：start() 首刷与 60s Timer 相邻触发
+    /// 两次会让第二个线程在 refreshLock 上白等（纯排队）。入队前置位、refresh 收尾清位
+    private var refreshQueued = false
     public func refreshAsync() {
+        lock.lock()
+        if refreshQueued {
+            lock.unlock()
+            return
+        }
+        refreshQueued = true
+        lock.unlock()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             self?.refresh()
+            self?.lock.lock()
+            self?.refreshQueued = false
+            self?.lock.unlock()
         }
     }
 
@@ -617,6 +642,12 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 AppLog.warn("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
                 return []
             }
+            // 一次性连接（stop 后迟到重建）用毕即关（R34/F9）
+            lock.lock()
+            let pending = transientHandles
+            transientHandles.removeAll()
+            lock.unlock()
+            for handle in pending { sqlite3_close(handle) }
             return rows
         }
     }
@@ -632,8 +663,18 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         // 降低瞬态 BUSY：只读连接遇到写锁立即返回 BUSY，
         // 等待最多 1s 再失败，避免偶发把整次查询打成失败
         sqlite3_busy_timeout(handle, 1000)
-        dbConnections[dbPath] = handle
-        dbInodes[dbPath] = currentInode(dbPath)
+        // 代际校验（R34/F9）：stop() 之后（含在飞查询的迟到重建）不得写回缓存——
+        // 写回后无人再关，违背 stop 的「彻底清理」契约；一次性连接用完即关
+        lock.lock()
+        let generationAtOpen = dbGeneration
+        lock.unlock()
+        if generationAtOpen == currentDBGeneration {
+            dbConnections[dbPath] = handle
+            dbInodes[dbPath] = currentInode(dbPath)
+            return handle
+        }
+        // 已停止：返回一次性连接（调用方用完后由 rawRows 关闭）——用代际标记另行处理
+        transientHandles.append(handle)
         return handle
     }
 
@@ -680,6 +721,8 @@ public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying 
     public func stop() { calls.append("stop") }
 
     public func pause() { calls.append("pause") }
+
+    public func refreshAsync() { calls.append("refreshAsync") }
 
     public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
         calls.append("modelBreakdown")   // 同步记录：调用即刻可断言；回调异步送达

@@ -97,6 +97,7 @@ final class FakeTokenUsageProvider: TokenUsagePolling, TokenUsageQuerying {
     func start(interval: TimeInterval) {}
     func stop() {}
     func pause() {}
+    func refreshAsync() {}
     func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
         Task { @MainActor in completion([]) }
     }

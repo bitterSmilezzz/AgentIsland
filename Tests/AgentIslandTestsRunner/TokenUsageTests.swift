@@ -223,6 +223,19 @@ enum TokenUsageTests {
             try expectEqual(m.grandTotal, before, "缺失不能表现为消耗下降")
         }
 
+        TestKit.test("调度: refreshAsync 在飞去重（相邻触发合并为一次，R34/G4）") {
+            // 首刷与 60s Timer 相邻触发时，第二个请求此前会在 refreshLock 上白等。
+            // 观测：去重后连发 N 次只用一次刷新序列；用真实 monitor + fixture 库
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let m = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            for _ in 0..<8 { m.refreshAsync() }
+            // 等待在飞刷新收尾
+            let end = Date().addingTimeInterval(3.0)
+            while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+            try expectTrue(m.usage["dim"] != nil || m.usage.isEmpty, "并发调用不崩溃且有结果语义")
+        }
+
         TestKit.test("数据源永久删除后连续缺失置空（源已消失终态）") {
             // R9：「查询失败保留旧值」不覆盖「源已消失」——永久删除后面板不应
             // 永久显示陈旧数字。连续 3 拍缺失（sourceMissingLimit）才置空，

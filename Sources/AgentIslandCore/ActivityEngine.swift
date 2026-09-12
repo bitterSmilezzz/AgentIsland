@@ -186,7 +186,10 @@ public final class ActivityEngine: ObservableObject {
                                              installedBundles: installedApps.installedBundleIDs())
         profiles = all.filter { enabledIDs.contains($0.id) }
         refreshWatchedDirs()
-        sample()
+        // 后台采样（R34/G1）：snapshot 全表 + 17 profile 匹配 + 动作探测此前全在
+        // 主线程同步执行（设置页每次开关可感知卡顿）；后台路径具备同等的
+        // running/samplingInFlight 防护
+        sampleInBackground()
     }
 
     /// 增加自定义 profile（设置界面新增）
@@ -194,17 +197,25 @@ public final class ActivityEngine: ObservableObject {
         guard !profiles.contains(where: { $0.id == profile.id }) else { return }
         profiles.append(profile)
         fileMonitor.watch(dirs: profile.sessionDirs)
-        sample()
+        sampleInBackground()
     }
 
     /// 移除自定义 profile
     public func removeCustomProfile(_ id: String) {
         profiles.removeAll { $0.id == id && $0.isCustom }
         refreshWatchedDirs()
-        sample()
+        sampleInBackground()
     }
 
     public var allProfiles: [AgentProfile] { profiles }
+
+    /// 按需单次刷新 token 用量（R34/F6）：菜单栏 popover 打开时调用——
+    /// popover 是 token 数据的第三消费方但不参与「呈现活跃」生命周期
+    /// （docked 常态下轮询已暂停，此前 popover 显示自上次收起以来冻结的值；
+    /// 从未展开过面板时甚至永远为空）。一次按需查询即可，不引入常驻轮询
+    public func refreshTokenUsageOnce() {
+        tokenMonitor.refreshAsync()
+    }
 
     private func applyConfig() {
         // 活跃会话判定窗口同步给后台扫描器
@@ -646,7 +657,7 @@ public final class ActivityEngine: ObservableObject {
             detail: "已向 PID \(pid) 及其关联子进程发送 SIGTERM/SIGKILL 终止信号，系统资源已释放。"
         ))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.sample()
+            self?.sampleInBackground()
         }
         return true
     }
@@ -692,7 +703,7 @@ public final class ActivityEngine: ObservableObject {
             ))
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.sample()
+            self?.sampleInBackground()
         }
         return res
     }

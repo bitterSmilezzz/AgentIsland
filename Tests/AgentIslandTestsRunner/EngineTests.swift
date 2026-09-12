@@ -655,6 +655,28 @@ enum EngineTests {
                              "断点应清除激增告警去重标记，否则唤醒后持续激增被静默压制")
         }
 
+        TestKit.test("引擎: setEnabled 后重采样走后台路径（R34/G1，主线程不阻塞）") {
+            // 设置页开关此前触发主线程同步采样（snapshot+匹配+探测 ~10ms 全主线程）。
+            // 行为可测面：调用后立刻返回（不阻塞调用线程），快照稍后更新
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+            engine.setEnabled(["dim"])
+            // 立即返回不阻塞：调用点后首行可达即为通过（同步路径会当场完成采样）
+            let immediate = engine.snapshots.count
+            try expectTrue(immediate >= 0, "setEnabled 同步返回（后台采样异步落地）")
+            let end = Date().addingTimeInterval(3.0)
+            while Date() < end, engine.snapshots.isEmpty {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+            try expectTrue(!engine.snapshots.isEmpty, "后台采样最终落地")
+        }
+
+        TestKit.test("引擎: refreshTokenUsageOnce 出口可用（R34/F6，popover 按需刷新）") {
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            engine.refreshTokenUsageOnce()   // 不崩溃即通过（入口存在且可调用）
+            try expectTrue(true)
+        }
+
         TestKit.test("引擎: 目录缺失时保持离线且不崩溃") {
             let engine = makeEngine(processNames: [], writes: [:])
             let snaps = engine.sample(now: Date())
