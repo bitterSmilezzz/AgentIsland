@@ -238,14 +238,14 @@ struct MenuBarPopoverView: View {
     // MARK: 底部操作栏
     private var actionBar: some View {
         HStack(spacing: 8) {
-            // 展开/收起侧边栏
+            // 展开/收起灵动岛（文案按实体：岛可贴顶，不叫侧边栏）
             Button {
                 controller.toggle()
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "sidebar.right")
                         .font(.system(size: 11))
-                    Text(controller.displayState == .expanded ? "收起侧边栏" : "展开侧边栏")
+                    Text(controller.displayState == .expanded ? "收起灵动岛" : "展开灵动岛")
                         .font(Theme.bodyFont(11, weight: .medium))
                 }
                 .foregroundColor(Theme.ink)

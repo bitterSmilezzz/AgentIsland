@@ -34,6 +34,8 @@ struct TokenSummaryBar: View {
                     .font(Theme.monoFont(10))
                     .foregroundColor(Theme.onDarkFaint)
                     .lineLimit(1)
+                    .help("累计花费")   // 与 24h 侧对称；双 cost 时防截断失察
+                    .layoutPriority(1)
             }
         }
         .padding(.horizontal, Theme.pageMargin)

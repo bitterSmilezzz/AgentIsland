@@ -92,7 +92,6 @@ struct SettingsView: View {
     @AppStorage(SettingKey.activeSessionWindow) private var activeSessionWindow: Double = SettingsView.defaultConfig.activeSessionWindow
     @AppStorage(SettingKey.collapseDelay) private var collapseDelay: Double = 0.5   // 面板行为参数（非引擎采样配置）
     @AppStorage(SettingKey.launchAtLogin) private var launchAtLogin = false
-    @AppStorage(SettingKey.islandAppearance) private var islandAppearanceRaw = IslandAppearance.system.rawValue
     @AppStorage(SettingKey.playCompletionSound) private var playCompletionSound = true
     @AppStorage(SettingKey.tokenAlertEnabled) private var tokenAlertEnabled = true
     @AppStorage(SettingKey.tokenAlertThreshold) private var tokenAlertThreshold = 200_000
@@ -520,7 +519,7 @@ struct SettingsView: View {
                     sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
                     sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
 
-                    Text("当有 Agent 处于活跃工作中时，引擎以活动采样间隔高频探测（默认 2s）；当全部待机或离线时，自动降频至闲置间隔以节省 CPU 与电量。")
+                    Text("当有 Agent 处于活跃工作中时，引擎以活动采样间隔高频探测（默认 2s）；当全部待机或离线时，自动降频至闲置间隔以节省 CPU 与电量。注意：活动间隔不可大于闲置间隔，超出时会被自动压平到闲置值。")
                         .font(Theme.bodyFont(10))
                         .foregroundColor(Theme.inkMuted48)
                 }

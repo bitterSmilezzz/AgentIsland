@@ -45,10 +45,9 @@ enum CompletionNotification {
         // 岛内 NSSound 不依赖通知权限，且已由通知策略与「任务完成提示音」开关共同裁决，
         // 因此它是唯一声音来源，通知只负责横幅可见性。
         content.sound = nil
-        if #available(macOS 13.0, *) {
-            // 任务完成属于用户应立即知道的主动事件，避免被系统当作被动更新而静音。
-            content.interruptionLevel = .active
-        }
+        // 任务完成属于用户应立即知道的主动事件，避免被系统当作被动更新而静音
+        //（interruptionLevel macOS 11+；部署目标 13，#available 恒真死代码已删）
+        content.interruptionLevel = .active
 
         let request = UNNotificationRequest(
             identifier: "agentisland.event.\(event.id.uuidString)",

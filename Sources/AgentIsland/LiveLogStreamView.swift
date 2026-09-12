@@ -335,6 +335,7 @@ struct LiveLogStreamView: View {
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")   // 固定数字口径，防 12 小时制 locale 改写
         return f
     }()
 }

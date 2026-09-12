@@ -119,6 +119,13 @@ struct AgentDetailView: View {
                                         }
                                         if !models.isEmpty {
                                             modelList
+                                        } else if usage.tokensTotal > 0 {
+                                            // dim/opencode 以外的数据源（claude/codex 等）无按模型
+                                            // 拆分数据——此前无声缺席，用户分不清「无数据」与「不支持」
+                                            Text("该数据源暂不支持按模型拆分")
+                                                .font(Theme.bodyFont(10))
+                                                .foregroundColor(Theme.onDarkFaint)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
                                         }
                                     }
                                 } else {
@@ -337,6 +344,7 @@ struct SessionListView: View {
     fileprivate static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MM-dd HH:mm"
+        f.locale = Locale(identifier: "en_US_POSIX")   // 固定数字口径，防 12 小时制 locale 改写
         return f
     }()
 
@@ -401,6 +409,8 @@ struct SessionListView: View {
 // MARK: - 会话行（hover 态在行内自持，避免整列表重绘）
 private struct SessionRowView: View {
     let session: SessionUsage
+    /// 打开目录失败反馈：目录失效（删除/改名/卸载）时点击静默无效此前无任何提示
+    @State private var openFailureFeedback = false
 
     var body: some View {
         let timeText: String = {
@@ -438,12 +448,28 @@ private struct SessionRowView: View {
         .padding(.vertical, 7)
         .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: Theme.chipFill, hoverEnabled: hasDir)
         .onTapGesture {
-            if let dir = session.directory {
-                NSWorkspace.shared.open(URL(fileURLWithPath: dir))
+            guard let dir = session.directory, hasDir else { return }
+            if !NSWorkspace.shared.open(URL(fileURLWithPath: dir)) {
+                openFailureFeedback = true
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    openFailureFeedback = false
+                }
             }
         }
         // a11y：有目录的行是按钮（打开目录）；无目录行隐藏交互语义
         .accessibilityAddTraits(hasDir ? .isButton : [])
+        .overlay(alignment: .trailing) {
+            if openFailureFeedback {
+                Text("目录未找到")
+                    .font(Theme.bodyFont(9, weight: .medium))
+                    .foregroundColor(Theme.warningOrange)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.warningOrange.opacity(0.14)))
+                    .padding(.trailing, Theme.pageMargin)
+            }
+        }
         .accessibilityLabel(hasDir ? "打开 \(session.directory ?? "")" : "会话，无目录")
         .opacity(hasDir ? 1.0 : 0.75)
     }
