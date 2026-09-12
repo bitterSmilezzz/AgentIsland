@@ -10,12 +10,12 @@
 
 ### 🧳 WorkBuddy 国内版 / 国外版区分（用户实测驱动）
 
-本机同时装有 `WorkBuddy.app`（com.tencent.workbuddy.mac，腾讯系=国内版）与 `WorkBuddy AI.app`（com.workbuddy.workbuddy=国外版）。旧档案混合误配：bundle 只认国内版、数据只读国内版已停更的 `~/.workbuddy`，但宽口径 pathContains "workbuddy" 又会命中国外版的 Electron 进程——状态口径完全错位（显示的监控数据是已弃用的国内版）。
+本机同时装有 `WorkBuddy.app`（com.tencent.workbuddy.mac，腾讯系=国内版）与 `WorkBuddy AI.app`（com.workbuddy.workbuddy=国外版）。旧档案混合误配：bundle 只认国内版、数据只读国内版目录 `~/.workbuddy`，而宽口径 pathContains "workbuddy" 又会同时命中两个变体的 Electron 进程——两个版本并存使用时无法区分（用户实测两变体昨天到今天均在活跃使用）。
 
 - **拆分为两条独立档案**：`workbuddy`（国内，~/.workbuddy）与新增 `workbuddy-ai`（国外，~/.workbuddy-ai，图标 globe）
 - **pathContains 精确隔离**：两变体进程 basename 同为 Electron 且路径都含 "workbuddy"，宽口径会双份计数——国内版钳到 `/Applications/WorkBuddy.app` 与 `.workbuddy/`，国外版精确到 `WorkBuddy AI.app` 与 `.workbuddy-ai`
 - 动作探测与实时流水按变体分发数据目录（inspectWorkBuddyAction/fetchWorkBuddyEvents 增加变体参数）
-- 新增双向隔离测试（国内版不得吸走国外版路径、反之亦然）；probe 实证双行：国内版如实 OFFLINE、国外版正确 WORKING；测试 185/0
+- 新增双向隔离测试（国内版不得吸走国外版路径、反之亦然）；probe 实证双行各自独立显示状态与最近活动（用户实测：国内版昨晚 23:41 仍有写入、国外版今天持续活跃）；测试 185/0
 
 
 ## [0.0.46] - 2026-09-12
