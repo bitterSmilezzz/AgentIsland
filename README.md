@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.46）
+## 功能（v0.0.47）
 
 ### 设计美学与 CodeNotch 灵动交互
 - **反向倒角一体化贴边（Inverse Rounded Corner / Bezel Flares）**：
@@ -87,7 +87,7 @@
 无需 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
-# 开发构建 + 自建测试套件（179 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）
+# 开发构建 + 自建测试套件（185 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）
 swift build
 .build/debug/AgentIslandTestsRunner     # 测试
 .build/debug/AgentIsland --selftest     # 进程内自检

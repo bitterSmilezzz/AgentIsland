@@ -2,9 +2,21 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.46；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.47；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.47] - 2026-09-12
+
+### 🧳 WorkBuddy 国内版 / 国外版区分（用户实测驱动）
+
+本机同时装有 `WorkBuddy.app`（com.tencent.workbuddy.mac，腾讯系=国内版）与 `WorkBuddy AI.app`（com.workbuddy.workbuddy=国外版）。旧档案混合误配：bundle 只认国内版、数据只读国内版已停更的 `~/.workbuddy`，但宽口径 pathContains "workbuddy" 又会命中国外版的 Electron 进程——状态口径完全错位（显示的监控数据是已弃用的国内版）。
+
+- **拆分为两条独立档案**：`workbuddy`（国内，~/.workbuddy）与新增 `workbuddy-ai`（国外，~/.workbuddy-ai，图标 globe）
+- **pathContains 精确隔离**：两变体进程 basename 同为 Electron 且路径都含 "workbuddy"，宽口径会双份计数——国内版钳到 `/Applications/WorkBuddy.app` 与 `.workbuddy/`，国外版精确到 `WorkBuddy AI.app` 与 `.workbuddy-ai`
+- 动作探测与实时流水按变体分发数据目录（inspectWorkBuddyAction/fetchWorkBuddyEvents 增加变体参数）
+- 新增双向隔离测试（国内版不得吸走国外版路径、反之亦然）；probe 实证双行：国内版如实 OFFLINE、国外版正确 WORKING；测试 185/0
+
 
 ## [0.0.46] - 2026-09-12
 
