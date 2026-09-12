@@ -31,7 +31,7 @@ if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
     .build/debug/AgentIslandTestsRunner
 fi
 
-echo "==> Release 构建 v$VERSION（仅主产品）"
+echo "==> Release 构建 v${VERSION}（仅主产品）"
 swift build -c release --product AgentIsland
 
 echo "==> 生成图标"
