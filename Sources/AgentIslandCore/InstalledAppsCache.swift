@@ -154,18 +154,23 @@ public final class InstalledAppsCache: @unchecked Sendable {
         return found
     }
 
-    /// /Applications 枚举 + Info.plist 解析（app 多时可达 30-100ms，须后台执行）
+    /// /Applications 与 ~/Applications 枚举 + Info.plist 解析（app 多时可达 30-100ms，须后台执行）。
+    /// 并入 ~/Applications（R22）：宿主 GUI 按用户装在用户目录时，内嵌组件过滤
+    ///（hostInstalled 依赖这份 bundle 集）与「已安装」标记会双双失效
     public static func defaultBundleScanner() -> Set<String> {
         var found = Set<String>()
         let fm = FileManager.default
-        let appsDir = URL(fileURLWithPath: "/Applications")
-        if let apps = try? fm.contentsOfDirectory(at: appsDir, includingPropertiesForKeys: [.isDirectoryKey]) {
-            for app in apps where app.pathExtension == "app" {
-                let plistPath = app.appendingPathComponent("Contents/Info.plist").path
-                if let data = fm.contents(atPath: plistPath),
-                   let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-                   let bid = plist["CFBundleIdentifier"] as? String {
-                    found.insert(bid.lowercased())
+        let homeApps = fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
+        let appDirs = [URL(fileURLWithPath: "/Applications"), homeApps]
+        for appsDir in appDirs {
+            if let apps = try? fm.contentsOfDirectory(at: appsDir, includingPropertiesForKeys: [.isDirectoryKey]) {
+                for app in apps where app.pathExtension == "app" {
+                    let plistPath = app.appendingPathComponent("Contents/Info.plist").path
+                    if let data = fm.contents(atPath: plistPath),
+                       let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                       let bid = plist["CFBundleIdentifier"] as? String {
+                        found.insert(bid.lowercased())
+                    }
                 }
             }
         }

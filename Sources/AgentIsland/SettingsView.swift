@@ -552,6 +552,16 @@ struct SettingsView: View {
                         }
                         .font(Theme.bodyFont(12))
                         .onChange(of: tokenAlertThreshold) { _ in applyConfig() }
+                        .onAppear {
+                            // 非档位持久值（外部 defaults write / 旧版遗留）会让 Picker
+                            // selection 空白而引擎仍按该未知阈值告警——吸附到最近档位
+                            let tiers = [30_000, 50_000, 100_000, 200_000, 500_000]
+                            if !tiers.contains(tokenAlertThreshold) {
+                                tokenAlertThreshold = tiers.min(by: {
+                                    abs($0 - tokenAlertThreshold) < abs($1 - tokenAlertThreshold)
+                                }) ?? 200_000
+                            }
+                        }
                     }
 
                     Divider()
@@ -805,7 +815,13 @@ struct AddCustomAgentSheet: View {
     }
     private var nameConflict: Bool {
         let trimmed = processName.trimmingCharacters(in: .whitespaces).lowercased()
-        return !trimmed.isEmpty && knownProcessNames.contains(trimmed)
+        guard !trimmed.isEmpty else { return false }
+        // 与匹配器同口径（R22）：匹配是「相等或 name 分隔符前缀族」，校验必须双向拦——
+        // 自定义名命中已知名前缀族（codex-helper vs codex）与已知名命中自定义名
+        // 前缀族（codex vs 自定义 codex）都会让同一进程被两个 profile 计数
+        return knownProcessNames.contains {
+            ProcessMatcher.hasPrefixFamilyConflict(trimmed, $0)
+        }
     }
     private var canAdd: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty

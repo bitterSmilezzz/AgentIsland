@@ -238,6 +238,23 @@ enum EngineTests {
                             "探测结果透传到快照")
         }
 
+        TestKit.test("进程: 前缀族冲突双向判定（新增自定义校验与匹配器同口径）") {
+            // R22：SettingsView 新增校验与 ProcessMatcher 匹配共用同一判定——
+            // codex + codex-helper 双向都拦（匹配器会把 codex-helper 同时算给两个 profile）
+            try expectTrue(ProcessMatcher.hasPrefixFamilyConflict("codex", "codex"), "相等即冲突")
+            try expectTrue(ProcessMatcher.hasPrefixFamilyConflict("codex-helper", "codex"),
+                            "自定义名命中已知名前缀族（连字符分隔）")
+            try expectTrue(ProcessMatcher.hasPrefixFamilyConflict("codex helper", "codex"),
+                            "空格分隔同样冲突")
+            try expectTrue(ProcessMatcher.hasPrefixFamilyConflict("codex", "codex-helper"),
+                            "反向：已知名命中自定义名前缀族也拦")
+            try expectFalse(ProcessMatcher.hasPrefixFamilyConflict("codexmalware", "codex"),
+                            "无词边界不冲突（与匹配器词边界口径一致）")
+            try expectFalse(ProcessMatcher.hasPrefixFamilyConflict("cursor", "codex"), "无关名不冲突")
+            try expectTrue(ProcessMatcher.hasPrefixFamilyConflict("CODEX-HELPER", "codex"),
+                            "大小写归一化")
+        }
+
         TestKit.test("进程: 并发快照竞态冒烟（snapshotLock 差分窗口原子性）") {
             // 引擎采样 / 工作台扫描 / 终止前身份复核可能并发调 snapshot：
             // 差分窗口（lastWall 读取→update→setWall）非原子时，后到方分母被

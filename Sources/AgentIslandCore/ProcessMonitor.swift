@@ -261,6 +261,18 @@ public struct ProcessMatcher: @unchecked Sendable {
         }
     }
 
+    /// 两个进程名是否「前缀族冲突」（R22）：相等或互为「name + 分隔符」前缀。
+    /// 校验与匹配必须同口径——自定义名命中已知名前缀族（codex-helper vs codex）
+    /// 与已知名命中自定义名前缀族（codex vs 自定义 codex）都会双份计数。
+    /// 供 UI 的新增校验与匹配器共用（单一事实源）
+    public static func hasPrefixFamilyConflict(_ a: String, _ b: String) -> Bool {
+        let x = a.lowercased(), y = b.lowercased()
+        guard !x.isEmpty, !y.isEmpty else { return false }
+        if x == y { return true }
+        return x.hasPrefix(y + " ") || x.hasPrefix(y + "-")
+            || y.hasPrefix(x + " ") || y.hasPrefix(x + "-")
+    }
+
     /// 路径子串匹配（Electron 应用主进程都叫 "Electron"，靠应用路径区分）
     /// profile 配 pathContains "trae"，则 /Applications/TRAE SOLO CN.app/.../Electron 命中
     /// - Parameter pathLower: 已小写的路径（用 `Entry.pathLower`，避免每 profile 重算）
