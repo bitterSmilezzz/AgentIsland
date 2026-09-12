@@ -125,7 +125,9 @@ public enum AgentLogStreamer {
         case "zcode":
             events = fetchZCodeEvents(limit: limit)
         case "workbuddy":
-            events = fetchWorkBuddyEvents(limit: limit)
+            events = fetchWorkBuddyEvents(agentId: "workbuddy", limit: limit)
+        case "workbuddy-ai":
+            events = fetchWorkBuddyEvents(agentId: "workbuddy-ai", limit: limit)
         case "hermes":
             events = fetchHermesEvents(limit: limit)
         default:
@@ -488,9 +490,8 @@ public enum AgentLogStreamer {
 
     // MARK: - 7. WorkBuddy 日志流 (workbuddy.db)
 
-    public static func fetchWorkBuddyEvents(limit: Int = 20) -> [AgentLogEvent] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.workbuddy/workbuddy.db"
+    public static func fetchWorkBuddyEvents(agentId: String, limit: Int = 20) -> [AgentLogEvent] {
+        let dbPath = "\(AgentActionInspector.workbuddyDataDir(for: agentId))/workbuddy.db"
         // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
         return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
             let sql = "SELECT title, status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT \(limit);"
@@ -511,7 +512,7 @@ public enum AgentLogStreamer {
                     kind: status.lowercased() == "active" ? .command : .info,
                     title: "[\(mode)] \(title) (\(status))",
                     detail: "状态: \(status), 模式: \(mode)",
-                    agentId: "workbuddy"
+                    agentId: agentId
                 ))
             }
             return events

@@ -83,17 +83,38 @@ public enum AgentRegistry {
             category: .assistant
         ),
         AgentProfile(
+            // 国内版（腾讯系，WorkBuddy.app）。数据目录与国外版（workbuddy-ai）完全独立。
+            // 注意 pathContains 不能用宽口径 "workbuddy"——两个变体的进程路径都含它，
+            // 会互相误命中造成双份计数；必须精确到各自的 .app 目录 / 数据目录
             id: "workbuddy",
             name: "WorkBuddy",
             icon: "briefcase.fill",
             bundleIDs: ["com.tencent.workbuddy.mac"],
             processNames: ["WorkBuddy", "workbuddy", "Electron"],
-            pathContains: ["workbuddy"],
+            pathContains: ["/applications/workbuddy.app", ".workbuddy/"],
+
             cpuWorkingThreshold: workbuddyCPUFloor,
             sessionDirs: [
                 // sessions/*.json 是宿主心跳/连接登记，不代表有任务；
                 // memory 也会被后台同步触碰。任务产物才是工作信号。
                 home(".workbuddy/tasks")
+            ],
+            category: .assistant
+        ),
+        // 国外版（WorkBuddy AI.app，com.workbuddy.workbuddy）：数据目录 ~/.workbuddy-ai，
+        // 进程 basename 同为 Electron，只能靠路径区分（app 内路径含 "WorkBuddy AI"）
+        AgentProfile(
+            id: "workbuddy-ai",
+            name: "WorkBuddy AI",
+            icon: "globe",
+            // 真实 bundle id 以 WorkBuddy AI.app/Contents/Info.plist 为准（plutil 实测
+            // com.workbuddy.workbuddy-ai）——此前照抄 Application Support 目录名漏了 -ai
+            bundleIDs: ["com.workbuddy.workbuddy-ai"],
+            processNames: ["Electron", "workbuddy"],
+            pathContains: ["workbuddy ai.app", ".workbuddy-ai"],
+            cpuWorkingThreshold: workbuddyCPUFloor,
+            sessionDirs: [
+                home(".workbuddy-ai/tasks")
             ],
             category: .assistant
         ),

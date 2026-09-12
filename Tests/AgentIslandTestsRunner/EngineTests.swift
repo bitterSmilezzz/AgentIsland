@@ -686,6 +686,53 @@ enum EngineTests {
             try expectTrue(matcher.isRunning(workbuddy), "WorkBuddy 应正确命中自身 Electron 进程")
         }
 
+        TestKit.test("进程: WorkBuddy 双变体 bundle id 与真实 Info.plist 对齐（防安装标记假阴性）") {
+            // R31 复核：国外版真实 bundle id 是 com.workbuddy.workbuddy-ai（plutil 实测
+            // Info.plist）——照抄 Application Support 目录名（com.workbuddy.workbuddy）
+            // 会让「已安装」标记永远假阴性。哨兵：档案 id 与真实 Info.plist 必须对上
+            for pair in [("workbuddy", "/Applications/WorkBuddy.app"),
+                         ("workbuddy-ai", "/Applications/WorkBuddy AI.app")] {
+                guard let profile = AgentRegistry.builtin.first(where: { $0.id == pair.0 }) else {
+                    throw TestError(message: "档案缺失: \(pair.0)")
+                }
+                guard let plistPath = ProcessInfo.processInfo.environment["AGENTISLAND_SKIP_PLIST"] == nil
+                    ? "\(pair.1)/Contents/Info.plist" : nil else { continue }
+                guard FileManager.default.fileExists(atPath: plistPath) else {
+                    continue   // 本机未装该变体则跳过（不硬绑环境）
+                }
+                let data = FileManager.default.contents(atPath: plistPath)
+                let plist = (try? PropertyListSerialization.propertyList(from: data!, options: [], format: nil)) as? [String: Any]
+                let realID = plist?["CFBundleIdentifier"] as? String ?? ""
+                try expectTrue(profile.bundleIDs.contains(realID.lowercased()),
+                                "\(pair.0) bundleIDs 必须含真实 id \(realID)（实际 \(profile.bundleIDs)）")
+            }
+        }
+
+        TestKit.test("进程: WorkBuddy 双变体路径隔离（国内版与国外版 WorkBuddy AI 互不误报）") {
+            // R：国内版 WorkBuddy.app 与国外版 WorkBuddy AI.app 的主进程 basename 都是
+            // Electron，且路径都含 "workbuddy"——宽口径 pathContains 会双份计数。
+            // 档案 pathContains 必须精确到各自 .app 目录 / 数据目录
+            let domestic = AgentRegistry.builtin.first { $0.id == "workbuddy" }!
+            let intl = AgentRegistry.builtin.first { $0.id == "workbuddy-ai" }!
+            let snapshot = ProcessSnapshot(entries: [
+                ProcessSnapshot.Entry(pid: 2001,
+                    path: "/Applications/WorkBuddy AI.app/Contents/Frameworks/WorkBuddy AI Helper.app/Contents/MacOS/WorkBuddy AI Helper",
+                    basename: "workbuddy ai helper", cpuPercent: 8),
+                ProcessSnapshot.Entry(pid: 1001,
+                    path: "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+                    basename: "electron", cpuPercent: 8),
+            ])
+            let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: [], profiles: [domestic, intl])
+            try expectTrue(matcher.isRunning(domestic), "国内版命中自身 Electron 进程")
+            try expectTrue(matcher.isRunning(intl), "国外版命中自身 Helper 进程")
+            let domesticEntries = matcher.matchingEntries(for: domestic)
+            let intlEntries = matcher.matchingEntries(for: intl)
+            try expectTrue(domesticEntries.allSatisfy { $0.path.contains("WorkBuddy.app/") },
+                            "国内版不得吸走国外版路径（实际 \(domesticEntries.map(\.path))）")
+            try expectTrue(intlEntries.allSatisfy { $0.path.contains("WorkBuddy AI.app") },
+                            "国外版不得吸到国内版条目（实际 \(intlEntries.map(\.path))）")
+        }
+
         TestKit.test("进程: ChatGPT 内嵌 codex 不计入 Codex（同一份程序不数两次）") {
             let codex = AgentRegistry.builtin.first { $0.id == "codex" }!
             let chatgpt = AgentRegistry.builtin.first { $0.id == "chatgpt" }!

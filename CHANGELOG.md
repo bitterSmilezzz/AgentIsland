@@ -2,9 +2,17 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.47；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.48；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.48] - 2026-09-12
+
+### 🔖 WorkBuddy AI 安装标记修复（follow-up）
+
+- **真实 bundle id 对齐**：`WorkBuddy AI.app` 的 Info.plist 实测 `com.workbuddy.workbuddy-ai`——档案此前照抄 Application Support 数据目录名（`com.workbuddy.workbuddy`）漏了 `-ai`，「已安装」标记永久假阴性（面板 INST 列显示 no）。已修正并新增哨兵测试：档案 bundleIDs 与真实 Info.plist 必须对齐（本机未装该变体时跳过）
+- 测试 185 → **186**
+
 
 ## [0.0.47] - 2026-09-12
 

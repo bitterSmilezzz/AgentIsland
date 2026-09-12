@@ -17,4 +17,4 @@ bundleIDs 只认国内版 + sessionDirs 只读国内版停更数据 + pathContai
 
 ## 运行证据
 - 测试 185/0 连跑；selftest 全过；0.0.47 打包成功；应用重启
-- INST 列 WorkBuddy AI 显示 "no" 是 bundle 扫描缓存 300s 未刷新所致（defaultBundleScanner 已并入 ~/Applications，缓存刷新后自愈）——已复核为展示层时序非缺陷
+- ~~INST 列 WorkBuddy AI 显示 "no" 归因扫描缓存~~ **更正（0.0.48）**：真实 bundle id 是 com.workbuddy.workbuddy-ai（plutil 实测 Info.plist），档案此前照抄 Application Support 目录名漏了 `-ai` → 安装标记永久假阴性。已修（bundleIDs 更正 + 与真实 Info.plist 对齐的哨兵测试），probe 复核 INST=yes

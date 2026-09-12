@@ -30,7 +30,9 @@ public enum AgentActionInspector {
         case "antigravity":
             return inspectAntigravityAction()
         case "workbuddy":
-            return inspectWorkBuddyAction()
+            return inspectWorkBuddyAction(agentId: "workbuddy")
+        case "workbuddy-ai":
+            return inspectWorkBuddyAction(agentId: "workbuddy-ai")
         case "opencode":
             return inspectOpenCodeAction()
         case "dsh":
@@ -566,9 +568,16 @@ public enum AgentActionInspector {
 
     // MARK: - 7. WorkBuddy 会话数据库探测
 
-    public static func inspectWorkBuddyAction(now: Date = Date()) -> String? {
+    /// WorkBuddy 变体数据根（R：国内 ~/.workbuddy / 国外 ~/.workbuddy-ai）
+    public static func workbuddyDataDir(for agentId: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.workbuddy/workbuddy.db"
+        return agentId == "workbuddy-ai" ? "\(home)/.workbuddy-ai" : "\(home)/.workbuddy"
+    }
+
+    public static func inspectWorkBuddyAction(agentId: String = "workbuddy", now: Date = Date()) -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dataDir = workbuddyDataDir(for: agentId)
+        let dbPath = "\(dataDir)/workbuddy.db"
         return withDB(dbPath) { db in
             // 查询未软删除的最新活跃/最近会话
             let sql = "SELECT id, COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
@@ -594,7 +603,7 @@ public enum AgentActionInspector {
                     }
 
                     // 尝试细粒度探测会话 jsonl 日志中的最新动作
-                    if let detailedAction = inspectWorkBuddySessionLog(sessionId: sessionId, home: home) {
+                    if let detailedAction = inspectWorkBuddySessionLog(sessionId: sessionId, home: home, dataDir: dataDir) {
                         return detailedAction
                     }
 
@@ -606,9 +615,9 @@ public enum AgentActionInspector {
     }
 
     /// 探测 WorkBuddy 会话日志获取具体动作
-    private static func inspectWorkBuddySessionLog(sessionId: String, home: String) -> String? {
+    private static func inspectWorkBuddySessionLog(sessionId: String, home: String, dataDir: String) -> String? {
         guard !sessionId.isEmpty else { return nil }
-        let projectsDir = URL(fileURLWithPath: "\(home)/.workbuddy/projects")
+        let projectsDir = URL(fileURLWithPath: "\(dataDir)/projects")
         let fm = FileManager.default
         guard let subdirs = try? fm.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil) else {
             return nil
