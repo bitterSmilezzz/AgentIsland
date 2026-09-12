@@ -259,6 +259,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     private let dimAgentDB: String
     private let openCodeDB: String
+    /// isFresh 宽限（R25）：略大于轮询间隔，吸收定时器抖动
+    static let stampGrace: TimeInterval = 5
     /// 数据源主库连续缺失计数（R9：达到阈值视为「源已消失」并置空该源）
     private var dimMissingStreak = 0
     private var openCodeMissingStreak = 0
@@ -335,7 +337,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         func isFresh(_ date: Date?) -> Bool {
             guard let date else { return false }
             let age = now.timeIntervalSince(date)
-            return age >= 0 && age < TokenUsagePollingDefaults.interval
+            // 宽限 5s（R25/S9）：阈值恰等于轮询间隔时，下一拍 age 恒 ≥ interval，
+            // isFresh 永不成立 → 戳比对被 OR 短路成永久无效功（每次 4 次 stat）。
+            // 稳态（戳未变）跳过重查是本条件的意图；24h 窗口在有写入（戳变化）时即重算
+            return age >= 0 && age < TokenUsagePollingDefaults.interval + Self.stampGrace
         }
         let refreshDim = lastDimStamp != dimStamp || !isFresh(lastDimRefresh)
         let refreshOpenCode = lastOpenCodeStamp != openCodeStamp || !isFresh(lastOpenCodeRefresh)

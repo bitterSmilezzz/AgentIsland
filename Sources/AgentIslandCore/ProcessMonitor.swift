@@ -145,20 +145,35 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         let wallDelta = now - cache.lastWallTime()   // 首拍可能为 0
 
         // 1) 全部 pid
-        let count = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard count > 0 else { return ProcessSnapshot(entries: []) }
-        var pids = [pid_t](repeating: 0, count: Int(count))
-        let got = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(MemoryLayout<pid_t>.size * pids.count))
-        guard got > 0 else { return ProcessSnapshot(entries: []) }
+        // 1) 单次 sysctl(KERN_PROC_ALL) 同时取全部 pid 与 ppid（R25）：
+        // 此前 proc_listpids + 每条目一次 proc_pidinfo(PROC_PIDTBSDINFO) 取 PPID——
+        // 一次 syscall 拿全 kinfo_proc 数组，省 ~N 次 syscall/拍（N≈进程数 500+）。
+        // 缓冲区按 size 预测分配；进程在两次调用间增加时重试一次（官方惯用法）
+        var size = 0
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL]
+        var attempt = 0
+        var procs: [kinfo_proc] = []
+        while attempt < 3 {
+            guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return ProcessSnapshot(entries: []) }
+            let count = size / MemoryLayout<kinfo_proc>.stride
+            procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
+            var outSize = size
+            guard sysctl(&mib, 3, &procs, &outSize, nil, 0) == 0 else {
+                if errno == ENOMEM { attempt += 1; continue }   // 表在增长，重试更大缓冲
+                return ProcessSnapshot(entries: [])
+            }
+            size = outSize
+            break
+        }
 
         var entries: [ProcessSnapshot.Entry] = []
-        let pidCount = min(pids.count, Int(got) / MemoryLayout<pid_t>.size)
+        let pidCount = size / MemoryLayout<kinfo_proc>.stride
         var alivePids = Set<Int32>()
         alivePids.reserveCapacity(pidCount)
         let pathBufSize = 4096   // 足够容纳最长可执行路径（PROC_PIDPATHINFO_MAXSIZE ≈ 4KB）
 
         for i in 0..<pidCount {
-            let pid = pids[i]
+            let pid = procs[i].kp_proc.p_pid
             guard pid > 0 else { continue }
             alivePids.insert(pid)
 
@@ -189,10 +204,8 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
             // 4) 差分 CPU%（锁内更新缓存，线程安全）
             let cpuPercent = cpuTime >= 0 ? cache.update(pid: pid, cpuTime: cpuTime, wallDelta: wallDelta) : 0
 
-            // 5) 父进程 PPID（用于孤儿进程检测）
-            var bsd = proc_bsdinfo()
-            let bsdRc = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bsd, Int32(MemoryLayout<proc_bsdinfo>.size))
-            let ppid: Int32 = bsdRc > 0 ? Int32(bsd.pbi_ppid) : 0
+            // 5) 父进程 PPID（kinfo_proc 已随单次 sysctl 一并给出，零额外 syscall）
+            let ppid: Int32 = procs[i].kp_eproc.e_ppid
 
             let base = (path as NSString).lastPathComponent.lowercased()
             entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent, rssBytes: rss, ppid: ppid))
