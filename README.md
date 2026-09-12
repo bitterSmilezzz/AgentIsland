@@ -2,13 +2,13 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（顶部灵动岛 / 右侧边栏）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.36）
+## 功能（v0.0.37）
 
 ### 设计美学与 CodeNotch 灵动交互
 - **反向倒角一体化贴边（Inverse Rounded Corner / Bezel Flares）**：
   - 基于数学级三次 Bézier 曲线实现 `SideNotchShape`，支持右侧（`.right`）与顶部（`.top`）贴边；
   - 边缘向屏幕物理边框平滑过渡，如同从屏幕外壳硬件级一体化生长出来，彻底告别悬空矩形与割裂感；
-  - 玻璃拟态卡片背景与 AppKit 投射阴影（`ShadowHostView`）共用精准几何路径。
+  - 玻璃拟态卡片背景与反向倒角边缘共用精准几何路径（AppKit 投射阴影已停用）。
 - **环形微仪表盘与双层动态活动弧（Micro-Dashboards & Activity Arcs）**：
   - **4 级状态水位环**：荧光绿（工作）、琥珀黄（等待/降频）、预警橙（高负载）、极光红（熔断告警/离线）；
   - **内圈高精度动态弧**：工作状态下呈现 `0.25` 弧长、1.2s 无级平滑旋转的渐变微弧（`SpinningActivityArc`）；
@@ -39,7 +39,7 @@
   - **告警保护**：严重告警在 30 秒内不会被其他 Agent 的完成事件顶掉，留出处置时间；
 
 ### 灵动岛交互与外观
-- **浅色 / 深色 / 跟随系统模式**：灵动岛顶栏快捷图标、菜单栏 Popover、分栏设置面板与右键上下文菜单全入口支持一键热切换，玻璃拟态与阴影投影自适应
+- **浅色 / 深色 / 跟随系统模式**：灵动岛顶栏快捷图标、菜单栏 Popover、分栏设置面板与右键上下文菜单全入口支持一键热切换，玻璃拟态自适应
 - **折叠与收起极致顺滑**：
   - **光标离开自动折叠**：无缝计算防抖延时，移出卡片稳定贴边，绝不回弹；
   - **全局失焦点击收起（Click-outside）**：点击外部桌面或其他窗口任意位置即刻平滑折叠；
@@ -57,13 +57,13 @@
 - 60s 后台轮询，SQLite 只读打开，不锁库、不碰凭证
 
 ### 检测层
-- **内置注册表 + 自动发现 + 自定义**：内置 12 条（新增 Antigravity、ZCode），启动扫描 /Applications + PATH 自动补充 CLI，设置里可添加自定义 Agent（进程名 + 会话目录）
-- **双信号判定**：`working` = 进程在 且（60s 内有文件写入 **或** CPU > 1%）；`idle` = 进程在但两者皆不满足；`offline` = 进程不在
+- **内置注册表 + 自动发现 + 自定义**：内置 17 条（含 Antigravity、ZCode、WorkBuddy、OpenCode 等），启动扫描 /Applications + PATH 自动补充 CLI，设置里可添加自定义 Agent（进程名 + 会话目录）
+- **双信号判定**：`working` = 进程在 且（60s 内有文件写入 **或** CPU ≥ 6%（桌面类档案有 20%/35% 下限））；`idle` = 进程在但两者皆不满足；`offline` = 进程不在
 - **误报防护**：按完整路径匹配（非 basename），排除系统目录前缀（`/System/`、`/usr/libexec` 等）+ 黑名单（`CursorUIViewService`、`ssh-agent` 等）
-- **高性能**：进程快照一次 libproc 遍历（proc_listpids/proc_pidpath）复用全部 profile，CPU 用两次采样差分；文件扫描后台递归 + 15s 节流 + 快跳过缓存，工作态开销约 1%
+- **高性能**：进程快照一次 libproc 遍历（proc_listpids/proc_pidpath）复用全部 profile，CPU 用两次采样差分；文件扫描后台递归 + 3s 节流 + 快跳过缓存，工作态开销约 1%
 
 ### 生命周期
-- **节电平衡模式**：有活动 2s 采样，全闲置降频 15s
+- **节电平衡模式**：有活动 2s 采样，全闲置降频 5s
 - **多屏跟随**：灵动岛跟随鼠标所在屏幕自适应停靠
 - **全屏 Space 跟随**（fullScreenAuxiliary）
 - **开机自启**：设置里开关（SMAppService），默认关
@@ -87,7 +87,7 @@
 无需 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
-# 开发构建 + 自建测试套件（163 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）
+# 开发构建 + 自建测试套件（179 用例，含状态机/双信号/事件唤醒/进程树熔断/外观主题/通知策略/命令清洗/token 统计）
 swift build
 .build/debug/AgentIslandTestsRunner     # 测试
 .build/debug/AgentIsland --selftest     # 进程内自检
@@ -108,7 +108,7 @@ tail -f /tmp/agentisland.log
 
 ```
 AgentIsland/
-├── Package.swift                     # 3 target：Core 库 + App + 测试 runner
+├── Package.swift                     # 4 target：Core 库 + App + IslandMetricsKit + 测试 runner
 ├── scripts/
 │   ├── build-app.sh                  # .app 打包（无 Xcode 环境）
 │   └── make-icon.swift               # 灵动岛风格图标生成
@@ -144,25 +144,25 @@ AgentIsland/
 ```
 ┌──────────────┐   ┌────────────────────┐   ┌──────────────────┐
 │ ProcessMatcher│   │ FileActivityMonitor │   │ TokenUsageMonitor │
-│ · ps 快照一次 │   │ · 后台批量枚举+缓存  │   │ · SQLite 只读     │
-│ · 路径白名单  │   │ · 15s 节流          │   │ · 60s 轮询        │
+│ · 进程表快照    │   │ · 后台批量枚举+缓存  │   │ · SQLite 只读     │
+│ · 路径白名单  │   │ · 3s 节流           │   │ · 60s 轮询        │
 │ · 黑名单排除  │   └─────────┬──────────┘   └────────┬─────────┘
 └──────┬───────┘             │                        │
        └──────────┬──────────┴────────────────────────┘
                   ▼
-        ActivityEngine（活动 2s / 闲置 15s 采样）
-        · 进程在 + 写入 60s 内 或 CPU>1% → working
+        ActivityEngine（活动 2s / 闲置 5s 采样）
+        · 进程在 + 写入 60s 内 或 CPU≥6% → working
         · 进程在但静默                    → idle
         · 进程不在                        → offline
                   ▼
         IslandPanel（NSPanel，非激活置顶，多屏跟随）
         · docked：顶部或右侧贴边留存 6pt 晶莹微细条（触碰即弹性弹出）
-        · expanded：280 宽玻璃卡片（自由长按拖动、智能吸附、列表/详情/会话三级导航）
+        · expanded：330 宽玻璃卡片（自由长按拖动、智能吸附、列表/详情/会话三级导航）
 ```
 
 ## 已知限制
 
 - 「会话进行中」以进程 + 文件写入/CPU 为信号，无法区分「思考中/已暂停」（不读内容，隐私优先）
 - Token 统计仅覆盖有本地数据源的 agent（DimAgent / OpenCode）；其他 agent 无本地 usage 记录则不显示
-- 闲置降频 15s 时，Agent 开始工作的检测最多延迟一个采样周期（可调「闲置降频间隔」）
+- 闲置降频 5s 时，Agent 开始工作的检测最多延迟一个采样周期（可调「闲置降频间隔」）
 - 多显示器跟随鼠标所在屏的右缘（NSScreen.screens）
