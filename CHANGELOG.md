@@ -2,9 +2,18 @@
 
 所有关于 AgentIsland 的重要版本演进与功能更新均记录在此。
 
-历史发布按时间统一编号为 0.0.1–0.0.43；对应关系见 [版本映射](docs/version-mapping.md)。
+历史发布按时间统一编号为 0.0.1–0.0.44；对应关系见 [版本映射](docs/version-mapping.md)。
 
 ---
+
+## [0.0.44] - 2026-09-12
+
+### ♿ 无障碍第二批（v3 战役 · R27）
+
+- **菜单栏 popover Agent 快捷行补交互语义**：`isButton` trait + 「名称，状态，点按查看详情」label（与主卡 Agent 行同口径；此前 `onTapGesture` 行对 VoiceOver 无交互语义）
+- **设置/退出 icon-only 按钮补 label**：此前只有 `.help`，VoiceOver 播成「…帮助」而非按钮名
+- axdump 实证（System Events entire contents）：AX 树可达、面板节点存在；完整 VoiceOver 流程仍待真实辅助技术客户端人工确认；测试 184/0
+
 
 ## [0.0.43] - 2026-09-12
 
