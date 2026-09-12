@@ -248,5 +248,28 @@ enum SettingsTests {
             let loaded = suite.string(forKey: SettingKey.notificationPolicy).flatMap(NotificationPolicy.init)
             try expectEqual(loaded, .focus, "NotificationPolicy 应正确持久化并读取")
         }
+
+        TestKit.test("存档损坏只读降级：不覆写、不丢原数据（LoadState.corrupt）") {
+            let suite = TestDefaults.suite("settings-corrupt")
+            suite.set(Data("not json".utf8), forKey: SettingKey.enabledAgents)
+            let resolved = EnabledAgentStore.resolvedEnabled(
+                registry: AgentRegistry.builtin.filter { $0.id == "dim" }, defaults: suite)
+            try expectEqual(resolved, ["dim"], "corrupt 时按默认启用集只读运行")
+            // 关键断言：原损坏数据必须原样保留（写回 = 用户数据永久丢失）
+            try expectEqual(suite.object(forKey: SettingKey.enabledAgents) as? Data,
+                            Data("not json".utf8), "损坏存档不得被覆写")
+        }
+
+        TestKit.test("全关分支 knownAgents 统一 union 口径（保留 registry 外历史项）") {
+            let suite = TestDefaults.suite("settings-knownunion")
+            EnabledAgentStore.saveKnownAgents(["dim", "custom-historical"], to: suite)
+            EnabledAgentStore.save([], to: suite)   // 用户主动全关
+            let resolved = EnabledAgentStore.resolvedEnabled(
+                registry: AgentRegistry.builtin.filter { $0.id == "dim" }, defaults: suite)
+            try expectEqual(resolved, [], "全关意图保留")
+            let known = EnabledAgentStore.loadKnownAgents(from: suite)
+            try expectTrue(known?.contains("custom-historical") == true,
+                            "registry 外历史 known 项不得被空集分支丢弃")
+        }
     }
 }

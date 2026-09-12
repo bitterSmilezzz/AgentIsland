@@ -248,11 +248,33 @@ public enum AgentRegistry {
     // MARK: - 用户自定义（UserDefaults）
 
     /// 自定义档案持久化（defaults 可注入：测试传独立套件，避免经 standard domain
-    /// 的隐性共享状态污染后续用例；生产走默认 .standard）
+    /// 的隐性共享状态污染后续用例；生产走默认 .standard）。
+    /// 逐元素容错（R21）：整条数组解码是全有或全无——单个坏元素（缺键/类型漂移）
+    /// 会让全部自定义档案「凭空消失」，且后续添加/删除会以空基线覆写造成永久丢失。
+    /// 现在逐条抢救：坏元素丢弃并打日志，其余原样返回
     public static func loadCustomProfiles(defaults: UserDefaults = .standard) -> [AgentProfile] {
-        guard let data = defaults.data(forKey: SettingKey.customAgents),
-              let list = try? JSONDecoder().decode([AgentProfile].self, from: data) else {
+        guard let data = defaults.data(forKey: SettingKey.customAgents) else { return [] }
+        let object = try? JSONSerialization.jsonObject(with: data)
+        guard let rawList = object as? [[String: Any]] else {
+            // 合法空数组 "[]" 走此分支但不是异常；仅真损坏（解析失败/非对象数组）才打日志
+            let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty, text != "[]" {
+                AppLog.error("customAgents 存档顶层结构异常（非对象数组），已按空集处理")
+            }
             return []
+        }
+        var list: [AgentProfile] = []
+        var badCount = 0
+        for element in rawList {
+            guard let elementData = try? JSONSerialization.data(withJSONObject: element),
+                  let profile = try? JSONDecoder().decode(AgentProfile.self, from: elementData) else {
+                badCount += 1
+                continue
+            }
+            list.append(profile)
+        }
+        if badCount > 0 {
+            AppLog.error("customAgents 存档含 \(badCount)/\(rawList.count) 个损坏元素（已丢弃并保留其余）")
         }
         return list
     }

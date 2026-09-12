@@ -42,13 +42,29 @@ public enum EnabledAgentStore {
         "dim", "claude", "codex", "cursor", "trae", "copilot", "workbuddy", "opencode", "hermes", "continue"
     ]
 
-    /// nil = 无记录（键不存在或解码失败）
-    public static func load(from defaults: UserDefaults = .standard) -> Set<String>? {
+    /// 存档读取三态（R21）：键不存在 ≠ 解码失败——损坏存档若当「无记录」处理，
+    /// 会被首次安装分支覆写，用户全部启停选择静默丢失
+    public enum LoadState {
+        case none      // 键不存在（全新安装/首次运行）
+        case ok        // 解码成功
+        case corrupt   // 键存在但解码失败（损坏，不得覆写）
+    }
+
+    public static func loadDetailed(from defaults: UserDefaults = .standard) -> (state: LoadState, ids: Set<String>?) {
+        guard defaults.object(forKey: SettingKey.enabledAgents) != nil else {
+            return (.none, nil)
+        }
         guard let data = defaults.data(forKey: SettingKey.enabledAgents),
               let saved = try? JSONDecoder().decode([String].self, from: data) else {
-            return nil
+            AppLog.error("enabledAgents 存档解码失败（只读降级，不覆写原数据）")
+            return (.corrupt, nil)
         }
-        return Set(saved)
+        return (.ok, Set(saved))
+    }
+
+    /// 兼容旧签名：无记录/损坏均返回 nil
+    public static func load(from defaults: UserDefaults = .standard) -> Set<String>? {
+        loadDetailed(from: defaults).ids
     }
 
     /// 空集合是有意全关，照常写入（不得当作「清除记录」）
@@ -60,8 +76,10 @@ public enum EnabledAgentStore {
 
     /// 读取已记录的已知 Agent ID 集合（nil = 无记录，表示需要从 legacy 迁移或全新安装）
     public static func loadKnownAgents(from defaults: UserDefaults = .standard) -> Set<String>? {
+        guard defaults.object(forKey: SettingKey.knownAgents) != nil else { return nil }
         guard let data = defaults.data(forKey: SettingKey.knownAgents),
               let saved = try? JSONDecoder().decode([String].self, from: data) else {
+            AppLog.error("knownAgents 存档解码失败（回退 legacy 基线）")
             return nil
         }
         return Set(saved)
@@ -92,7 +110,14 @@ public enum EnabledAgentStore {
         defaults: UserDefaults = .standard
     ) -> Set<String> {
         let allRegistryIDs = Set(registry.map(\.id))
-        guard var currentEnabled = load(from: defaults) else {
+        let loaded = loadDetailed(from: defaults)
+        guard var currentEnabled = loaded.ids else {
+            if loaded.state == .corrupt {
+                // 只读降级：按默认启用集运行但绝不写回——损坏存档保留可恢复原状
+                //（写回 = 用户启停选择永久丢失）。恢复数据后重启即自愈
+                AppLog.error("启停集存档损坏，本次按默认启用集只读运行（未写回）")
+                return Set(registry.filter(\.defaultEnabled).map(\.id))
+            }
             // 首次安装：初始化为默认开启集
             let defaultsEnabled = Set(registry.filter(\.defaultEnabled).map(\.id))
             save(defaultsEnabled, to: defaults)
@@ -100,9 +125,11 @@ public enum EnabledAgentStore {
             return defaultsEnabled
         }
 
-        // 空集合表示用户主动全关，尊重用户选择，只更新 knownAgents 避免后续重入触发
+        // 空集合表示用户主动全关，尊重用户选择。knownAgents 统一 union 口径：
+        // 保留 registry 外的历史 known 项（与下方非空分支一致），避免口径漂移
         if currentEnabled.isEmpty {
-            saveKnownAgents(allRegistryIDs, to: defaults)
+            let known = loadKnownAgents(from: defaults) ?? legacyKnownAgentIDs
+            saveKnownAgents(known.union(allRegistryIDs), to: defaults)
             return []
         }
 

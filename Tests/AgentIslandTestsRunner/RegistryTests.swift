@@ -148,5 +148,21 @@ enum RegistryTests {
             suite.set(Data(), forKey: SettingKey.customAgents)
             try expectEqual(AgentRegistry.loadCustomProfiles(defaults: suite).count, 0, "空数据回落空集")
         }
+
+        TestKit.test("注册表: 坏元素只丢自身，其余抢救回来（防永久丢失覆写）") {
+            let suite = TestDefaults.suite("registry-tolerant")
+            let good = AgentProfile(id: "custom-ok", name: "OK", icon: "terminal",
+                                    bundleIDs: [], processNames: ["ok-agent"],
+                                    sessionDirs: [], isCustom: true)
+            // 构造混合存档：好元素 + name 类型漂移的坏元素（旧版 Schema 演进形态）
+            let goodJSON = String(data: try JSONEncoder().encode([good]), encoding: .utf8)!
+            let bad = "{\"id\":\"broken-bad\",\"name\":123,\"icon\":\"x\"}"
+            // 构造混合存档：好元素 + name 类型漂移的坏元素（旧版 Schema 演进形态）
+            let mixed = "[\(goodJSON.dropFirst().dropLast()),\(bad)]"
+            suite.set(Data(mixed.utf8), forKey: SettingKey.customAgents)
+            let loaded = AgentRegistry.loadCustomProfiles(defaults: suite)
+            try expectEqual(loaded.count, 1, "坏元素丢弃，好元素必须救回（实际 \(loaded.count)）")
+            try expectEqual(loaded.first?.id, "custom-ok", "抢救回的应是好元素")
+        }
     }
 }
