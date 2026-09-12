@@ -312,7 +312,10 @@ public enum AgentRegistry {
         }
     }
 
-    /// 单条查找（内置 + 自定义；自动发现条目不在本查找范围，须走 fullRegistry）
+    /// 单条查找（内置 + 自定义）。
+    /// ⚠️ 防呆（加固1）：installedCLIs 恒为 []，永远查不到 cli-* 自动发现条目；
+    /// host 内嵌过滤口径也与真实注册表不同。需要真实注册表时必须注入
+    /// InstalledAppsCache 后走 fullRegistry，勿把本函数当「按 id 取档案」的通用入口
     public static func profile(id: String) -> AgentProfile? {
         fullRegistry(installedCLIs: []).first { $0.id == id }
     }

@@ -97,9 +97,16 @@ public enum Selftest {
                 bundleIDs: ["com.dimcode.app"]
             )
             let matcher = ProcessMatcher(snapshot: provider.snapshot(), runningBundleIDs: provider.runningBundleIDs(), profiles: [])
-            check(matcher.isRunning(AgentRegistry.builtin.first { $0.id == "dim" }!), "bundle/CLI 匹配 dim", failures: &failures)
-            check(matcher.isRunning(AgentRegistry.builtin.first { $0.id == "claude" }!), "CLI 匹配 claude", failures: &failures)
-            check(!matcher.isRunning(AgentRegistry.builtin.first { $0.id == "codex" }!), "codex 不应误报", failures: &failures)
+            // builtinOr 失败已记 failure，此处仅在有档案时做行为断言
+            if let dimP = Selftest.builtinOr("dim", failures: &failures) {
+                check(matcher.isRunning(dimP), "bundle/CLI 匹配 dim", failures: &failures)
+            }
+            if let claudeP = Selftest.builtinOr("claude", failures: &failures) {
+                check(matcher.isRunning(claudeP), "CLI 匹配 claude", failures: &failures)
+            }
+            if let codexP = Selftest.builtinOr("codex", failures: &failures) {
+                check(!matcher.isRunning(codexP), "codex 不应误报", failures: &failures)
+            }
         }
 
         // 7b. 系统路径 + 黑名单排除
@@ -110,8 +117,12 @@ public enum Selftest {
                 ProcessSnapshot.Entry(pid: 3, path: "/Applications/DimAgent.app/Contents/MacOS/DimAgent", basename: "dimagent", cpuPercent: 8),
             ])
             let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: [])
-            check(!matcher.isRunning(AgentRegistry.builtin.first { $0.id == "cursor" }!), "CursorUIViewService 不应匹配 Cursor", failures: &failures)
-            check(matcher.isRunning(AgentRegistry.builtin.first { $0.id == "dim" }!), "用户路径 DimAgent 应匹配", failures: &failures)
+            if let cursorP = Selftest.builtinOr("cursor", failures: &failures) {
+                check(!matcher.isRunning(cursorP), "CursorUIViewService 不应匹配 Cursor", failures: &failures)
+            }
+            if let dimP = Selftest.builtinOr("dim", failures: &failures) {
+                check(matcher.isRunning(dimP), "用户路径 DimAgent 应匹配", failures: &failures)
+            }
         }
 
         // 8. 文件活动：目录 mtime（真实临时目录）
@@ -125,11 +136,25 @@ public enum Selftest {
             let file = dir.appendingPathComponent("probe.txt")
             try? Data("x".utf8).write(to: file)
             let after = FileActivityMonitor.newestWrite(in: dir.path)
-            check(after != nil && after! >= before!, "写入后 mtime 应更新", failures: &failures)
+            check(after != nil, "第二拍可读", failures: &failures)
+            if let before, let after {
+                check(after >= before, "写入后 mtime 应更新", failures: &failures)
+            }
         }
 
         print(failures == 0 ? "✅ 全部通过" : "❌ \(failures) 项失败")
         return failures == 0 ? 0 : 1
+    }
+
+
+    /// 安全查找内置档案（内置表 id 变更时记 failure 而非强解包崩溃，R28）
+    private static func builtinOr(_ id: String, failures: inout Int) -> AgentProfile? {
+        guard let p = AgentRegistry.builtin.first(where: { $0.id == id }) else {
+            failures += 1
+            print("  ❌ 内置档案 \\(id) 不存在（注册表 id 变更，selftest 夹具需更新）")
+            return nil
+        }
+        return p
     }
 
     // MARK: - 工具

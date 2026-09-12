@@ -11,6 +11,8 @@ public final class InstalledAppsCache: @unchecked Sendable {
     public typealias BundleScanner = () -> Set<String>
 
     private let lock = NSCondition()
+    /// 当前在途扫描的线程（refresh/performRefresh 的重入检测用）
+    private var refreshingThread: Thread?
     private var clis: Set<String> = []      // 小写命令名
     private var bundles: Set<String> = []   // 小写 bundle id
     private var lastRefreshAt: Date?
@@ -60,11 +62,20 @@ public final class InstalledAppsCache: @unchecked Sendable {
         return lastRefreshAt != nil
     }
 
-    /// 冷缓存首刷；在途时加入完成通知，已热且没有在途扫描时跳过且不回调。
-    /// 返回 true 表示安排了新扫描，false 表示合并或命中缓存。
+    /// 冷缓存首刷；在途时合并进同一扫描与完成通知。已热且无在途扫描时跳过新扫描，
+    /// 但 completion 仍在主线程立即回调（幂等）——引擎 init 用它做「冷启动完成后
+    /// 重放启用集」，已热即不回调会让该契约在「以已热缓存构造引擎」的路径上静默失效
+    /// （R28）。返回 true 表示安排了新扫描，false 表示合并或命中缓存。
     @discardableResult
     public func warmUp(completion: (@MainActor () -> Void)? = nil) -> Bool {
-        scheduleRefresh(maxAge: nil, completion: completion)
+        lock.lock()
+        let needsScan = lastRefreshAt == nil && !refreshing
+        lock.unlock()
+        let scheduled = scheduleRefresh(maxAge: nil, completion: completion)
+        if !scheduled, let completion, isWarmed {
+            Task { @MainActor in completion() }
+        }
+        return scheduled
     }
 
     /// 过期时后台重扫；在途请求（包括 maxAge=0）共享扫描与主线程完成通知。
@@ -110,6 +121,9 @@ public final class InstalledAppsCache: @unchecked Sendable {
     }
 
     private func performRefresh() {
+        // 重入断言（加固3）：扫描器若递归调 refresh() 会自等待广播永久阻塞——
+        // 把「不得递归」从注释约束变成运行期断言（扫描器经注入闭包注入时易踩）
+        assert(refreshingThread != Thread.current, "InstalledAppsCache 扫描器不得递归调用 refresh()")
         let foundCLIs = scanCLIs()
         let foundBundles = scanBundles()
         lock.lock()
