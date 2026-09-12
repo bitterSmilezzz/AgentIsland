@@ -247,6 +247,41 @@ enum IslandMetricsTests {
         }
     }
 
+    static func registerSignatureSentinel() {
+        TestKit.test("岛几何: 展开态高度签名的输入项与 expandedHeight 对齐（漂移哨兵）") {
+            // R08 的签名去重依赖「签名组成 == expandedHeight 的输入依赖」。
+            // 布局改动新增输入但漏改签名 → 高度冻结不更新（静默缺陷）——源级清单断言
+            let root = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()   // Tests/AgentIslandTestsRunner
+                .deletingLastPathComponent()   // Tests
+                .deletingLastPathComponent()   // 仓库根
+            let panelFile = root.appendingPathComponent("Sources/AgentIsland/IslandPanel.swift")
+            guard let text = try? String(contentsOf: panelFile, encoding: .utf8),
+                  let sigStart = text.range(of: "private func expandedHeightSignature() -> String {") else {
+                return   // 源码不可达时跳过（非仓库布局）
+            }
+            guard let sigEnd = text.range(of: "\n    }", range: sigStart.upperBound..<text.endIndex) else {
+                throw TestError(message: "签名函数结构异常")
+            }
+            let sigBody = String(text[sigStart.upperBound..<sigEnd.lowerBound])
+            // 六项输入逐一核对（与 expandedHeight 的调用语义一一对应）
+            for needle in ["route", "visibleCount()", "engine.grandTotal.isEmpty",
+                           "engine.ringShelfSnapshots.isEmpty", "engine.latestEvent?.id", "eventBannerExpanded"] {
+                try expectTrue(sigBody.contains(needle),
+                                "高度签名缺输入项 \(needle)——expandedHeight 新增依赖必须同步签名（否则高度冻结）")
+            }
+            // expandedHeight() 的实参必须仍是同一组（防签名对而渲染参数漂移）
+            guard let callStart = text.range(of: "private func expandedHeight() -> CGFloat {"),
+                  let callEnd = text.range(of: "\n    }", range: callStart.upperBound..<text.endIndex) else {
+                throw TestError(message: "expandedHeight 函数结构异常")
+            }
+            let callBody = String(text[callStart.upperBound..<callEnd.lowerBound])
+            for needle in ["route:", "visibleCount:", "hasSummary:", "hasRings:", "hasEvent:", "eventExpanded:"] {
+                try expectTrue(callBody.contains(needle), "expandedHeight 实参缺 \(needle)")
+            }
+        }
+    }
+
     /// 读取真实 UI 源码里的 CardRoute case 集合（编译期 #filePath，不依赖工作目录）
     private static func realCardRouteCases() -> Set<String>? {
         let root = URL(fileURLWithPath: #filePath)          // Tests/AgentIslandTestsRunner/IslandMetricsTests.swift

@@ -13,6 +13,7 @@ func runAllTests() -> Int32 {
     SettingsTests.register()
     InstalledAppsTests.register()
     IslandMetricsTests.register()
+    IslandMetricsTests.registerSignatureSentinel()
     CleanerTests.register()
     VisibilityTests.register()
     ConfigTests.register()

@@ -323,6 +323,45 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
     }
 
+    /// 边缘检测 Timer 节律（R35/G2）：活跃 0.12s，静止 3 秒后降档 0.5s。
+    /// hover 展开的主路径是 0.05s 节流的鼠标事件（不受降档影响）；Timer 只是
+    /// 「光标停在热区内、事件被节流丢掉」的兜底——静止（远离热区且未展开）时
+    /// 高频唤醒纯属浪费（能效影响大于 CPU%）。光标进入热区/展开态立即恢复快档
+    private static let edgeZoneFastInterval: TimeInterval = 0.12
+    private static let edgeZoneSlowInterval: TimeInterval = 0.5
+    private static let edgeZoneQuietTicksToSlow = 25   // 25 × 0.12s ≈ 3s
+    private var edgeZoneSlowMode = false
+    private var edgeZoneQuietTicks = 0
+
+    private func installEdgeZoneTimer(interval: TimeInterval) {
+        edgeZoneTimer?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let active = self.evaluateEdgeZone()
+                self.updateEdgeZoneTimerMode(active: active)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        edgeZoneTimer = timer
+    }
+
+    private func updateEdgeZoneTimerMode(active: Bool) {
+        if active || displayState == .expanded {
+            edgeZoneQuietTicks = 0
+            if edgeZoneSlowMode {
+                edgeZoneSlowMode = false
+                installEdgeZoneTimer(interval: Self.edgeZoneFastInterval)
+            }
+            return
+        }
+        edgeZoneQuietTicks += 1
+        if !edgeZoneSlowMode, edgeZoneQuietTicks >= Self.edgeZoneQuietTicksToSlow {
+            edgeZoneSlowMode = true
+            installEdgeZoneTimer(interval: Self.edgeZoneSlowInterval)
+        }
+    }
+
     deinit {
         edgeZoneTimer?.invalidate()
         if let m = mouseLocalMonitor { NSEvent.removeMonitor(m) }
@@ -470,18 +509,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private func startEdgeZoneMonitor() {
         guard edgeZoneTimer == nil else { return }
-
-        // 1. 定时检测光标位置（0.12s 间隔，低开销无辅助功能权限要求）。
-        // 它同时是节流路径的兜底：鼠标停在热区内而事件被节流丢掉时，由它完成展开判定。
-        // 0.06s → 0.12s：hover 展开的主路径是 0.05s 节流的鼠标事件，Timer 只是兜底，
-        // 16.7Hz 的永续唤醒阻止主 runloop 深度 idle（能效影响大于 CPU% 影响）
-        let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.evaluateEdgeZone()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        edgeZoneTimer = timer
+        installEdgeZoneTimer(interval: Self.edgeZoneFastInterval)
 
         // 2. 本地与全局鼠标移动监听（共用同一个节流器，避免同一物理移动被两条通道各算一次）
         let throttle = mouseMoveThrottle
@@ -549,17 +577,22 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
     }
 
-    private func evaluateEdgeZone() {
-        guard didShowOnce, !isDragging else { return }
+    /// 返回本次判定是否「活跃」（光标在热区/面板内或展开态）——R35/G2 的 Timer
+    /// 降档依据；鼠标事件调用方不关心返回值
+    @discardableResult
+    private func evaluateEdgeZone() -> Bool {
+        guard didShowOnce else { return false }
+        guard !isDragging else { return true }   // 拖拽视为活跃（保持快档）
         let mousePressed = NSEvent.pressedMouseButtons != 0
-        guard !mousePressed else { return }
+        guard !mousePressed else { return true }   // 按压视为活跃
 
         let loc = NSEvent.mouseLocation
-        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return false }
         let visible = screen.visibleFrame
+        var active = false
 
         if displayState == .docked {
-            guard Date() >= expandCooldownUntil, Date() >= dragCooldownUntil else { return }
+            guard Date() >= expandCooldownUntil, Date() >= dragCooldownUntil else { return true }
             var inZone = false
             switch dockEdge {
             case .right:
@@ -579,6 +612,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                     inZone = abs(loc.x - cx) <= (IslandMetrics.topSliverWidth / 2 + 12)
                 }
             }
+            active = inZone
             if inZone {
                 cancelPendingTasks()
                 manualOpenGraceUntil = .distantPast
@@ -588,6 +622,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             if Self.isMouseInsidePanelOrFloatingLayers(panel) {
                 // 光标在面板或其浮层（tooltip popover / 菜单栏 popover）内：
                 // 即刻解除手动展开保护期，取消任何收起计划
+                active = true
                 manualOpenGraceUntil = .distantPast
                 if collapseTask != nil {
                     collapseTask?.cancel()
@@ -595,11 +630,12 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 }
             } else {
                 // 光标离开面板，且超过了保护期，安排收起
-                guard Date() >= manualOpenGraceUntil else { return }
+                guard Date() >= manualOpenGraceUntil else { return true }
                 scheduleCollapse()
             }
         }
         updateClickThrough()
+        return active
     }
 
     /// 收起态细条热区之外的点击穿透（U3 幽灵命中区修复）。
