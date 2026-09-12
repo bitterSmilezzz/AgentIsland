@@ -164,5 +164,27 @@ enum RegistryTests {
             try expectEqual(loaded.count, 1, "坏元素丢弃，好元素必须救回（实际 \(loaded.count)）")
             try expectEqual(loaded.first?.id, "custom-ok", "抢救回的应是好元素")
         }
+
+        TestKit.test("注册表: Antigravity 只监控会话数据，不含浏览器内核用户数据目录（R37）") {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let antigravity = AgentRegistry.builtin.first { $0.id == "antigravity" }!
+            try expectTrue(antigravity.sessionDirs.contains(home + "/.gemini/antigravity/conversations"),
+                            "会话库目录必须保留")
+            try expectTrue(antigravity.sessionDirs.contains(home + "/.gemini/antigravity/brain"),
+                            "brain 目录必须保留")
+            try expectFalse(antigravity.sessionDirs.contains { $0.lowercased().contains("application support/antigravity") },
+                            "内核用户数据目录不得进监控：空闲缓存/账号写入会把应用顶成 working")
+
+            // 通用哨兵：任何档案都不得把浏览器内核内部目录直接当会话目录
+            let noiseDirNames: Set<String> = ["cache", "code cache", "gpucache", "local storage",
+                                              "session storage", "crashpad", "blob_storage"]
+            for profile in AgentRegistry.builtin {
+                for dir in profile.sessionDirs {
+                    let last = (dir as NSString).lastPathComponent.lowercased()
+                    try expectFalse(noiseDirNames.contains(last),
+                                    "\(profile.id) 把内核目录当会话目录：\(dir)")
+                }
+            }
+        }
     }
 }

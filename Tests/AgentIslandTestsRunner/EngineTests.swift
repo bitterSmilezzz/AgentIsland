@@ -100,8 +100,81 @@ enum EngineTests {
             try expectTrue((engine.latestEvent?.duration ?? 0) >= 7.5, "任务持续时长应记录")
         }
 
-        TestKit.test("引擎: 进程消失（被关闭）→ 静默转 offline，不误报任务完成") {
+        TestKit.test("引擎: 纯 CPU 区间收尾不报完成（R37：完成事件需写入证据）") {
             let start = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let provider = MutableProcessProvider(names: ["DimAgent"], cpu: 90)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 5, minWorkingHold: 2),
+                processMonitor: provider,
+                fileMonitor: FakeFileActivityProvider(writes: [dir: start.addingTimeInterval(-600)]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            // 第一拍：CPU 90% 但无任何写入 → 仍判 working（双信号判定不变）
+            let first = engine.sample(now: start)
+            try expectEqual(first.first { $0.id == "dim" }?.level, .working, "CPU 信号应判 working")
+
+            // 第二拍：CPU 落回 0（桌面应用空闲抖动结束）→ 静默转 idle，不得补发完成事件
+            provider.cpu = 0
+            let second = engine.sample(now: start.addingTimeInterval(8))
+            try expectEqual(second.first { $0.id == "dim" }?.level, .idle, "信号消失应转 idle")
+            try expectNil(engine.latestEvent,
+                          "纯 CPU 区间收尾不得报「任务完成」——否则打开应用什么都不做也会响铃")
+        }
+
+        TestKit.test("引擎: 区间内出现过写入则照常报完成（R37 反向守卫）") {
+            let start = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let provider = MutableProcessProvider(names: ["DimAgent"], cpu: 90)
+            let fileProvider = FakeFileActivityProvider(writes: [dir: start.addingTimeInterval(-600)])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 5, minWorkingHold: 2),
+                processMonitor: provider,
+                fileMonitor: fileProvider,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            _ = engine.sample(now: start)                                  // CPU 起步，暂无写入证据
+            fileProvider.writes = [dir: start.addingTimeInterval(1)]       // 区间内出现真实写入
+            _ = engine.sample(now: start.addingTimeInterval(2))
+            provider.cpu = 0
+            fileProvider.writes = [dir: start.addingTimeInterval(-600)]    // 写入滑出窗口
+            _ = engine.sample(now: start.addingTimeInterval(6))
+            _ = engine.sample(now: start.addingTimeInterval(10))           // 超滞回 → idle
+            try expectEqual(engine.latestEvent?.agentId, "dim")
+            try expectEqual(engine.latestEvent?.eventType, .completed,
+                            "区间内有写入证据 → 完成事件必须照常发（不得被新规则误吞）")
+        }
+
+        TestKit.test("引擎: 写入证据不跨工作区间泄漏（R37）") {
+            let start = Date()
+            let dir = home + "/.dimcode/v2/data/sessions"
+            let provider = MutableProcessProvider(names: ["DimAgent"], cpu: 0)
+            let fileProvider = FakeFileActivityProvider(writes: [dir: start])
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: EngineConfig(workingWindow: 5, minWorkingHold: 2),
+                processMonitor: provider,
+                fileMonitor: fileProvider,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            // 第一段：写入驱动 → 正常报完成
+            _ = engine.sample(now: start)
+            fileProvider.writes = [dir: start.addingTimeInterval(-600)]
+            _ = engine.sample(now: start.addingTimeInterval(8))
+            try expectEqual(engine.latestEvent?.eventType, .completed, "前置：写入区间应报完成")
+            engine.clearLatestEvent()
+
+            // 第二段：纯 CPU 区间 —— 上一段的写入证据不得残留复用
+            provider.cpu = 90
+            _ = engine.sample(now: start.addingTimeInterval(20))
+            provider.cpu = 0
+            _ = engine.sample(now: start.addingTimeInterval(30))
+            try expectNil(engine.latestEvent, "上一段区间的写入证据必须随区间结束清除")
+        }
+
+        TestKit.test("引擎: 进程消失（被关闭）→ 静默转 offline，不误报任务完成") {            let start = Date()
             let dir = home + "/.dimcode/v2/data/sessions"
             let provider = MutableProcessProvider(names: ["DimAgent"])
             let engine = ActivityEngine(

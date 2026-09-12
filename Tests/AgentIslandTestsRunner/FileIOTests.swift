@@ -254,5 +254,75 @@ enum FileIOTests {
             try expectTrue(budgeted == nil || budgeted!.lastPathComponent == "a.jsonl",
                             "预算截断应安全返回")
         }
+
+        // R37：实测噪声清单——每个名字都对应「应用仅被打开」时真实发生的写入
+        // （Antigravity 20 分钟 36 次、ChatGPT 的 Sparkle appcast、SQLite -shm 周期触碰）。
+        // 清单与实现同一口径：这里断言必须为「噪声文件」，防实现侧被误删/改写。
+        TestKit.test("文件监控: 浏览器内核状态文件与应用账号文件都算噪声（R37）") {
+            let noiseNames = [
+                "Network Persistent State", "DevToolsActivePort", "DIPS", "DIPS-wal",
+                "SharedStorage", "SharedStorage-wal", "Trust Tokens", "Trust Tokens-journal",
+                "SingletonLock", "SingletonCookie", "SingletonSocket",
+                "Preferences", "Secure Preferences", "Local State",
+                "Cookies", "Cookies-journal", "History", "Web Data", "Login Data",
+                "TransportSecurity", "NetworkActionPredictor", "Quota Manager",
+                "First Run", "Last Version", "Variations", "BrowserMetrics-spare.pma",
+                "oauth_credentials.json", "app_storage.json",
+                "production-appcast-bootstrap.json",
+                "ed845c00-a13c-47a8-9929-f32ec0e06745.db-shm",
+            ]
+            for name in noiseNames {
+                let url = URL(fileURLWithPath: "/tmp/\(name)")
+                try expectTrue(FileActivityMonitor.isHeartbeatOrNoiseFile(url),
+                                "\(name) 必须判为噪声文件")
+            }
+            // 反例：任务产物绝不能被噪声规则误吞
+            for name in ["transcript.jsonl", "state.json", "session.sqlite", "history.jsonl",
+                         "ed845c00-a13c-47a8-9929-f32ec0e06745.db-wal", "messages.json"] {
+                let url = URL(fileURLWithPath: "/tmp/\(name)")
+                try expectTrue(!FileActivityMonitor.isHeartbeatOrNoiseFile(url),
+                                "\(name) 是任务产物，不得判为噪声")
+            }
+        }
+
+        TestKit.test("文件监控: -shm 触碰与浏览器缓存子树不得顶起 newest（R37）") {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let fm = FileManager.default
+            let old = Date().addingTimeInterval(-7200)
+
+            // 会话库 + 真实任务产物（旧 mtime，代表最后一次真实工作）
+            let conversations = root.appendingPathComponent("conversations")
+            try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
+            for name in ["c1.db", "c1.db-wal", "transcript.jsonl"] {
+                let f = conversations.appendingPathComponent(name)
+                try Data("{}".utf8).write(to: f)
+                try fm.setAttributes([.modificationDate: old], ofItemAtPath: f.path)
+            }
+
+            // 空闲触碰：-shm 被周期性刷新（刚刚）。
+            // 目录 mtime 回拨到旧值：真实场景是「触碰已存在文件」，不会改动父目录
+            // mtime（只有新建/删除条目才会），这里还原该时序以免把创建动作算进断言
+            try Data(String(repeating: "\0", count: 32).utf8)
+                .write(to: conversations.appendingPathComponent("c1.db-shm"))
+            try fm.setAttributes([.modificationDate: old], ofItemAtPath: conversations.path)
+
+            // 浏览器内核用户数据子树：Cache / Code Cache / Session Storage 全新鲜
+            for rel in ["Cache/Cache_Data/data_1", "Code Cache/js/1", "Session Storage/000003.log",
+                        "GPUCache/data_1", "Local Storage/leveldb/CURRENT", "blob_storage/1"] {
+                let f = root.appendingPathComponent(rel)
+                try fm.createDirectory(at: f.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("x".utf8).write(to: f)
+            }
+
+            let result = FileActivityMonitor.scanTree(in: root.path, maxDepth: 4, window: 60, now: Date())
+            try expectTrue(result.newest != nil, "旧会话产物存在必须有 newest")
+            let newest = result.newest!
+            try expectTrue(Date().timeIntervalSince(newest) > 3600,
+                            "newest 必须停在真实产物的旧 mtime：-shm 与缓存子树写入不得算活动"
+                            + "（实际距今 \(Int(Date().timeIntervalSince(newest)))s）")
+            try expectEqual(result.activeSessions, 0,
+                            "缓存子目录不得被计成活跃会话（此前 Antigravity 空闲时虚报 8 个）")
+        }
     }
 }

@@ -45,6 +45,13 @@ public final class ActivityEngine: ObservableObject {
     /// 与 workingSince 的区别：workingSince 是本次工作区间的起点（仅用于计算任务时长），
     /// lastSignalAt 每拍有信号就刷新（用于滞回判断，否则长任务滞回永不生效）。
     private var lastSignalAt: [String: Date] = [:]
+    /// 本次工作区间内是否出现过写入信号（R37 完成事件的准入条件）。
+    /// CPU 高只证明「进程在烧 CPU」：桌面应用空闲时也会周期性冲到 20%~90%
+    /// （实测 ChatGPT 静置时反复出现 20.6%/43.4% 尖峰），若以 CPU 为准补发完成事件，
+    /// 用户就会在「只是打开了应用、什么都没做」时听到完成提示音。
+    /// 文件写入是任务产物，只有写入驱动的区间才算做完一件事；纯 CPU 区间仍照常显示
+    /// working（双信号判定不变），但不产生完成事件。
+    private var workingPeriodHadWrite: Set<String> = []
     /// 上一次采样的时刻，用于识别睡眠/挂起造成的采样断点（见 sampleCore）
     private var lastSampleAt: Date?
     /// 采样断点判定阈值：超过则视为发生睡眠/挂起。
@@ -237,6 +244,7 @@ public final class ActivityEngine: ObservableObject {
         // M5：清理已移除 profile 的滞回状态，防止长期累积
         let activeIDs = Set(profiles.map(\.id))
         workingSince = workingSince.filter { activeIDs.contains($0.key) }
+        workingPeriodHadWrite = workingPeriodHadWrite.filter { activeIDs.contains($0) }
         lastSignalAt = lastSignalAt.filter { activeIDs.contains($0.key) }
         highCpuSince = highCpuSince.filter { activeIDs.contains($0.key) }
         lastRunawayAlertedAt = lastRunawayAlertedAt.filter { activeIDs.contains($0.key) }
@@ -302,6 +310,7 @@ public final class ActivityEngine: ObservableObject {
         }()
         if isResumeGap {
             workingSince.removeAll()
+            workingPeriodHadWrite.removeAll()
             lastSignalAt.removeAll()
             highCpuSince.removeAll()
             lastRunawayAlertedAt.removeAll()
@@ -375,6 +384,7 @@ public final class ActivityEngine: ObservableObject {
                 // （此前会误报「任务已完成」——完成事件只应由「进程仍在但工作信号消失」产生）
                 level = .offline
                 workingSince[profile.id] = nil
+                workingPeriodHadWrite.remove(profile.id)
                 lastSignalAt[profile.id] = nil
                 highCpuSince[profile.id] = nil
                 lastRunawayAlertedAt[profile.id] = nil
@@ -385,7 +395,18 @@ public final class ActivityEngine: ObservableObject {
                 tokenRateBaseline[profile.id] = nil
             } else if hasRecentWrite || hasHighCpu {
                 level = .working
-                if workingSince[profile.id] == nil { workingSince[profile.id] = now }
+                if workingSince[profile.id] == nil {
+                    workingSince[profile.id] = now
+                    // 区间起点确定写入证据：起点就是写入驱动的，或区间内稍后出现写入
+                    // （下面每拍 OR 进去），才允许这条区间在结束时发完成事件
+                    if hasRecentWrite {
+                        workingPeriodHadWrite.insert(profile.id)
+                    } else {
+                        workingPeriodHadWrite.remove(profile.id)
+                    }
+                } else if hasRecentWrite {
+                    workingPeriodHadWrite.insert(profile.id)
+                }
                 lastSignalAt[profile.id] = now
             } else if let lastSignal = lastSignalAt[profile.id],
                       now.timeIntervalSince(lastSignal) < config.minWorkingHold {
@@ -396,10 +417,13 @@ public final class ActivityEngine: ObservableObject {
                 level = .working
             } else {
                 level = .idle
-                if let since = workingSince[profile.id] {
+                // 完成事件只在有写入证据时发（见 workingPeriodHadWrite 注释）：
+                // 纯 CPU 高负载的区间到此静默收尾，不响铃、不弹横幅
+                if let since = workingSince[profile.id], workingPeriodHadWrite.contains(profile.id) {
                     recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
                 }
                 workingSince[profile.id] = nil
+                workingPeriodHadWrite.remove(profile.id)
                 lastSignalAt[profile.id] = nil
                 highCpuSince[profile.id] = nil
             }
@@ -640,6 +664,7 @@ public final class ActivityEngine: ObservableObject {
             return false
         }
         workingSince[agentId] = nil
+        workingPeriodHadWrite.remove(agentId)
         lastSignalAt[agentId] = nil
         highCpuSince[agentId] = nil
         lastRunawayAlertedAt[agentId] = nil
@@ -670,6 +695,7 @@ public final class ActivityEngine: ObservableObject {
         let res = cleaner.clean(anomalies: anomalies)
         for a in anomalies {
             workingSince[a.profileId] = nil
+            workingPeriodHadWrite.remove(a.profileId)
             lastSignalAt[a.profileId] = nil
             highCpuSince[a.profileId] = nil
             lastRunawayAlertedAt[a.profileId] = nil

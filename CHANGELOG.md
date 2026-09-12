@@ -6,6 +6,22 @@
 
 ---
 
+## [0.0.54] - 2026-09-12
+
+### 🎯 状态真实性：打开应用没动不再误报「任务完成」与响铃（v4 战役 · R37）
+
+用户报告「有些软件打开了没动也算一次完成，会响铃通知」。真机取证确认两条独立成因，均已修复：
+
+- **完成事件需要写入证据**：CPU 高只说明进程在烧 CPU——实测 ChatGPT 静置时反复冲到 20.6%/43.4%，每次尖峰都会走完「working → idle」并补发完成事件（复现日志：`ChatGPT 任务完成 (10秒)` + 提示音）。**纯 CPU 区间收尾改为静默**：仍照常显示工作中（双信号判定不变），但不再产生完成事件、不响铃、不弹 Peek。有写入证据的区间一切照旧
+- **文件噪声剥离（全部来自实测）**：
+  - SQLite `-shm` 空转触碰：Antigravity 空闲时 10 个会话库的 `-shm` 每 200s 被同步刷一次、size 恒为 32768 字节，而**主库 mtime 停在 22 小时前**——「刚刚写入」的假活动足以把空闲应用顶成 working。`-shm` 是连接共享的 mmap 索引页，任务数据落在主库或 `-wal`（保留 `-wal` 判定，实测 600s 窗口零变化），过滤后不丢信号
+  - 浏览器内核（Chromium/Electron）用户数据子树：Cache / Code Cache / GPUCache / Dawn 系列 / Session Storage / Local Storage / IndexedDB / Crashpad / blob_storage / DIPS / Trust Tokens / Singleton* 等 45 项整棵剪枝，同时消除虚报的「活跃会话」计数
+  - 内核状态文件与应用账号文件：Network Persistent State、DevToolsActivePort、Preferences、Cookies、First Run、`BrowserMetrics-*.pma`、`oauth_credentials.json`、`app_storage.json`、Sparkle `*appcast*` 等
+  - Antigravity 档案不再监控 `Library/Application Support/Antigravity`（内核用户数据目录：实测仅打开应用就有 36 次写入/20 分钟全部落在此），只保留 `conversations` + `brain` 两个真正的会话数据目录
+- **判别性验证**：新增 6 个用例（含「CPU 高但无写入 → working」契约保留、有写入证据照常报完成、写入证据不跨区间泄漏）；变异验证 196/6 红（临时还原过滤与准入条件），恢复后 202/0 全绿
+- **活体对照**：假 Agent 进程「CPU 尖峰 22s → 静置」形态零事件（修复前同形态补发完成事件）；触碰 `*.db-shm` 无任何状态变化、触碰 `*.db-wal` 立刻判 working；真实写入（vibe-usage）仍正常报完成并响铃
+
+
 ## [0.0.53] - 2026-09-12
 
 ### 🏁 v4 战役收官（R32–R36）

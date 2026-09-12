@@ -141,10 +141,12 @@ public enum AgentRegistry {
             processNames: ["Antigravity", "language_server", "agentapi", "Electron"],
             pathContains: ["antigravity"],
             cpuWorkingThreshold: desktopCPUFloor,
+            // 只监控 Agent 自身的会话数据；`Library/Application Support/Antigravity`
+            // 是内核用户数据目录（Chromium 缓存/存储 + 更新器 + 账号状态），
+            // 实测仅打开应用就有 36 次写入/20 分钟且全在此列，会把空闲判成工作（R37）
             sessionDirs: [
                 home(".gemini/antigravity/conversations"),
-                home(".gemini/antigravity/brain"),
-                home("Library/Application Support/Antigravity")
+                home(".gemini/antigravity/brain")
             ],
             category: .codeEditor
         ),

@@ -402,18 +402,77 @@ public final class FileActivityMonitor: FileActivityProviding {
         if lower.contains("heartbeat") || lower.contains("crashpad") || lower.contains("telemetry") {
             return true
         }
-        return false
+        // 3b. Sparkle 更新器（appcast 清单）与应用账号/状态文件：随应用启动与定时检查刷新
+        if lower.contains("appcast") || lower == "oauth_credentials.json" || lower == "app_storage.json" {
+            return true
+        }
+        // 4. SQLite 共享内存侧车（-shm）不算写入。
+        // -shm 是连接共享的 mmap 索引页，任何进程「打开」数据库（即使只读）都会刷新
+        // 它的 mtime：实测 Antigravity 空闲时 10 个会话库的 -shm 每 200s 被同步刷一次、
+        // size 恒为 32768 字节，而主库 mtime 停在 22 小时前。引擎看到「刚刚
+        // 写入」就把空闲应用判成 working，随后补发完成事件并响铃。
+        // 任务数据落在主库或 -wal（写事务追加），过滤 -shm 不丢任务信号。
+        if lower.hasSuffix(".db-shm") {
+            return true
+        }
+        // 5. 浏览器内核（Chromium/Electron）用户数据根目录里的状态文件：
+        // 空闲时也会被后台刷新（账号、偏好、缓存索引、崩溃与指标残留），
+        // 与 Agent 任务无关。实测 Antigravity 仅被打开，20 分钟内有 36 次写入
+        // 全部落在这类路径上。
+        if Self.chromiumNoiseFiles.contains(lower) {
+            return true
+        }
+        return Self.chromiumNoiseFilePrefixes.contains { lower.hasPrefix($0) }
     }
+
+    /// Chromium/Electron 用户数据根目录内的状态文件名（小写精确匹配）。
+    /// 均为浏览器内核自用状态：随应用启动、定时任务或崩溃上报刷新，不代表 Agent 任务。
+    private static let chromiumNoiseFiles: Set<String> = [
+        "network persistent state", "devtoolsactiveport", "transportsecurity",
+        "dips", "dips-wal", "sharedstorage", "sharedstorage-wal",
+        "trust tokens", "trust tokens-journal",
+        "singletonlock", "singletoncookie", "singletonsocket",
+        "preferences", "secure preferences", "local state",
+        "cookies", "cookies-journal", "history", "visited links",
+        "web data", "web data-journal", "login data", "login data-journal",
+        "top sites", "favicons", "shortcuts", "networkactionpredictor",
+        "first run", "last version", "variations",
+        "quota manager", "quota manager-journal", "preloaded data",
+    ]
+
+    /// 带序号/后缀变体的状态文件族（`BrowserMetrics-spare.pma` 一类）
+    private static let chromiumNoiseFilePrefixes: [String] = [
+        "browsermetrics",
+    ]
 
     /// 不代表任务执行的会话子树。路径组件匹配而不是字符串 contains，避免误伤项目名。
     ///
     /// 依赖安装树也在此列：`node_modules` / `site-packages` / `.venv` 等是包管理器产物，
     /// 数量可达数万且会被安装动作刷新，但「装依赖」不是 Agent 的任务写入。
     /// 实测忽略后全量扫描枚举量减少约 50%（9762 → 3419 项，294ms → 147ms）。
+    ///
+    /// 浏览器内核（Chromium/Electron）内部目录同样在此列（R37）：缓存、会话存储、
+    /// 崩溃上报、指标等子树在应用空闲时持续被后台刷新——实测 Antigravity 仅被打开
+    /// （无任何任务）时，20 分钟内 36 次写入全部落在 `Cache` / `Code Cache` /
+    /// `Local Storage` / `Session Storage` / `GPUCache` / `DIPS` 一类路径上，
+    /// 会把空闲应用顶成 working 并补发完成事件（响铃）。这些目录只装内核自用数据，
+    /// 不含任务产物，剪掉后既消噪又省扫描量。
     private static let ignoredActivityPathComponents: Set<String> = [
         "file-history", "blobs",                                        // DimAgent 编辑历史/附件缓存
         "node_modules", "site-packages", ".venv", "venv", "__pycache__", // 依赖树
-        ".git", "deriveddata", "caches",                                 // 仓库与构建缓存
+        ".git", "deriveddata", "caches", "cache",                        // 仓库与构建缓存
+        // —— 浏览器内核用户数据（大小写不敏感，here 全部小写）——
+        "code cache", "gpucache", "gpupersistentcache", "shadercache", "grshadercache",
+        "dawncache", "dawngraphitecache", "dawnwebgpucache", "graphitedawncache",
+        "session storage", "local storage", "indexeddb", "service worker", "cachestorage",
+        "file system", "blob_storage", "shared dictionary", "crashpad",
+        "component_crx_cache", "extensions_crx_cache", "browsermetrics",
+        "optimizationhints", "sslerrorassistant", "safetytips", "subresource filter",
+        "zxcvbndata", "meipreload", "widevinecdm", "nativemessaginghosts",
+        "segmentation_platform", "clientcertificates", "crowd deny", "filetypepolicies",
+        "firstpartysetspreloaded", "hyphen-data", "origin_trials", "pki metadata",
+        "smartcardmanager", "speech recognition", "probabilisticrevealtokenregistry",
+        "autofillstrikedatabase", "recoveryimproved",
     ]
 
     private static func isIgnoredActivityPath(_ url: URL) -> Bool {
