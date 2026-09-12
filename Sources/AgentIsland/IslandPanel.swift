@@ -566,9 +566,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                     inZone = abs(loc.y - cy) <= (IslandMetrics.rightSliverHeight / 2 + 12)
                 }
             case .top:
-                // 顶边缘细条检测：光标位于屏幕顶部边缘微区域且在细条水平范围内
+                // 顶边缘细条检测：光标位于屏幕顶部边缘微区域且在细条水平范围内。
+                // 上界必须钳到 visible.maxY（R23）：无上界时菜单栏内整条 x 跨度都是
+                // 展开热区——光标停在菜单栏（面板外）触发展开，随即「不在面板内」
+                // 触发 0.5s 收起，再触发展开……无限振荡
                 let cx = savedTopX.map { min(max($0, visible.minX + 70), visible.maxX - 70) } ?? visible.midX
-                if loc.y >= visible.maxY - (IslandMetrics.topSliverHeight + 12) {
+                if loc.y >= visible.maxY - (IslandMetrics.topSliverHeight + 12),
+                   loc.y <= visible.maxY {
                     inZone = abs(loc.x - cx) <= (IslandMetrics.topSliverWidth / 2 + 12)
                 }
             }

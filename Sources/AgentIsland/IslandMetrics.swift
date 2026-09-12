@@ -48,7 +48,11 @@ enum IslandMetrics {
 
     /// 空态：zzz 图标 22 + spacing 6 + 文案 + padding(.vertical)×2 ≈ 87
     static let emptyStatePaddingVertical: CGFloat = 22
-    static let emptyStateHeight: CGFloat = 87
+    /// 空态区高（图 + 文案 + CTA 按钮 + 上下 padding）。
+    /// 121 = 实测校准（R23）：真实 SwiftUI 空态理想高 185pt - chrome 64pt。
+    /// 此前 87 低估 34pt（R14 加「打开偏好设置」按钮后未回校），靠 fittingSize 兜底
+    /// 不裁切但常量失真——布局改动必须连本常量一起回校
+    static let emptyStateHeight: CGFloat = 121
 
     /// 汇总栏：Divider(1) + TokenSummaryBar（实测校准 ~28，含文本行高；有数据才显示）
     static let summaryBarHeight: CGFloat = 28

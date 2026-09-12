@@ -22,7 +22,7 @@ enum IslandMetricsTests {
     private static let bannerCollapsed: CGFloat = 66
     private static let bannerExpanded: CGFloat = 142
     private static let summaryBar: CGFloat = 28
-    private static let emptyState: CGFloat = 87
+    private static let emptyState: CGFloat = 121
     private static let detailPage: CGFloat = 378            // 20 + 47 + 1 + 310
     private static let rowHeight: CGFloat = 52
     private static let listExtra: CGFloat = 10
@@ -175,9 +175,9 @@ enum IslandMetricsTests {
 
         TestKit.test("岛几何: expandedHeight 列表页空态取空态高度") {
             let cases: [(Bool, Bool, Bool, Bool, CGFloat)] = [
-                (false, false, false, false, 151),   // 64 + 87
-                (true,  true,  true,  false, 288),   // 201 + 87
-                (true,  true,  true,  true,  364),   // 277 + 87（空态也不得超 460）
+                (false, false, false, false, 185),   // 64 + 121（R23 实测校准）
+                (true,  true,  true,  false, 322),   // 201 + 121
+                (true,  true,  true,  true,  398),   // 277 + 121（空态也不得超 460）
             ]
             for c in cases {
                 let actual = IslandMetrics.expandedHeight(route: .list, visibleCount: 0, hasSummary: c.0,
