@@ -615,6 +615,46 @@ enum EngineTests {
             try expectTrue(snap != nil, "断点后仍应正常产出快照")
         }
 
+        TestKit.test("引擎: 断点阈值钳 180s 上界（有判别力构造：idle=100，R32/F1）") {
+            // 判别力构造（验收官指出 150s/idle=5 与 idle=60 均无判别力）：
+            // idle=100 → 旧阈值 max(120, 300)=300，新阈值 min(300,180)=180。
+            // 序列：t0/t+100 高 CPU working → 挂起 200s（gap 介于新旧阈值之间）→
+            // t+300 信号消失转 idle。旧代码（无钳制）不判断点 → 补发
+            // 「任务完成（时长含 200s 挂起）」；新代码判断点 → 无完成事件。
+            let provider = MutableProcessProvider(names: ["DimAgent"], bundleIDs: [], cpu: 80.0)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin.filter { $0.id == "dim" },
+                config: EngineConfig(idleSampleInterval: 100, workingWindow: 20),
+                processMonitor: provider,
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let start = Date()
+            _ = engine.sample(now: start)
+            _ = engine.sample(now: start.addingTimeInterval(100))
+            engine.clearLatestEvent()
+            provider.cpu = 0   // 唤醒后信号消失
+            let snap = engine.sample(now: start.addingTimeInterval(300)).first { $0.id == "dim" }
+            try expectNil(engine.latestEvent,
+                          "gap 200s 应判断点（新阈值钳 180），不得补发含挂起时长的完成事件，实际: \(engine.latestEvent?.message ?? "nil")")
+            try expectEqual(snap?.level, .idle, "信号消失应转 idle")
+        }
+
+        TestKit.test("引擎: 断点重置 tokenSpikeAlerted（R32/F7，唤醒后告警不被残留标记压制）") {
+            let token = FakeTokenUsageProvider()
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:],
+                                    tokenMonitor: token)
+            let start = Date()
+            token.usage["dim"] = TokenUsage(tokens24h: 0, tokensTotal: 500_000, cost24h: 0, costTotal: 0)
+            _ = engine.sample(now: start)
+            // 直接置位去重标记（模拟睡前已告警）
+            engine.tokenSpikeAlerted.insert("dim")
+            // 断点唤醒
+            _ = engine.sample(now: start.addingTimeInterval(8 * 3600))
+            try expectFalse(engine.tokenSpikeAlerted.contains("dim"),
+                             "断点应清除激增告警去重标记，否则唤醒后持续激增被静默压制")
+        }
+
         TestKit.test("引擎: 目录缺失时保持离线且不崩溃") {
             let engine = makeEngine(processNames: [], writes: [:])
             let snaps = engine.sample(now: Date())
@@ -896,22 +936,35 @@ enum EngineTests {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: dir) }
 
-            let before = FileActivityMonitor.newestWrite(in: dir.path)
-            try expectTrue(before != nil, "目录 mtime 可读")
+            // F2 语义：newest 仅由信号文件聚合——空目录返回 nil 是正确行为
+            try expectNil(FileActivityMonitor.newestWrite(in: dir.path), "空目录无信号文件 → nil")
 
             let file = dir.appendingPathComponent("probe.txt")
             try? Data("x".utf8).write(to: file)
             let after = FileActivityMonitor.newestWrite(in: dir.path)
-            try expectTrue(after != nil && after! >= before!, "写入后 mtime 应更新")
+            try expectTrue(after != nil, "写入产物后 newest 可读")
         }
 
-        TestKit.test("文件: 真实会话目录递归检测（深度>1 的写入）") {
+        TestKit.test("文件: 深度>1 的写入可被递归检测（确定性夹具）") {
+            // F2 语义下 newest 由信号文件聚合；原「真实 sessions 目录可读」断言
+            // 依赖目录内有任意文件（信号文件缺失即 nil），改为确定性夹具：
+            // 临时目录内 depth-2 写入，验证递归检测真的下潜
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("session-a/inner"),
+                                                    withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            try Data("{}".utf8).write(to: dir.appendingPathComponent("session-a/inner/deep.jsonl"))
+            let newest = FileActivityMonitor.newestWrite(in: dir.path, maxDepth: 4)
+            try expectTrue(newest != nil, "depth-2 信号文件应被递归检测到")
+        }
+
+        TestKit.test("文件: 真实 sessions 目录信息（无信号文件时如实 nil，不硬断言）") {
             let dir = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".dimcode/v2/data/sessions").path
             if FileManager.default.fileExists(atPath: dir) {
                 let newest = FileActivityMonitor.newestWrite(in: dir, maxDepth: 4)
-                try expectTrue(newest != nil, "sessions 目录应可读")
                 print("   [info] sessions newest write: \(newest?.description ?? "nil"), ago \(newest.map { Int(Date().timeIntervalSince($0)) } ?? -1)s")
+                // 只验证可枚举不崩溃，不硬断言（真实目录内容随环境变化）
             } else {
                 print("   [skip] 本机无 sessions 目录")
             }

@@ -74,6 +74,7 @@ enum FileIOTests {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: root) }
+            try Data("{}".utf8).write(to: root.appendingPathComponent("s1.json"))
             let monitor = FileActivityMonitor(scanMinInterval: 3600)
             monitor.scanSync()
             monitor.replaceWatchedDirs([root.path])
@@ -95,11 +96,23 @@ enum FileIOTests {
             try? FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: root.appendingPathComponent("session").path)
             try Data("history".utf8).write(to: history.appendingPathComponent("edit@v1"))
             try Data("blob".utf8).write(to: blobs.appendingPathComponent("attachment"))
+            // 非忽略的信号文件（旧 mtime）：F2 语义下 newest 仅由信号文件聚合，
+            // 断言「新写入的 file-history/blobs 未被计入」因此仍可判定
+            try Data("{}".utf8).write(to: root.appendingPathComponent("session").appendingPathComponent("a.jsonl"))
+            try? FileManager.default.setAttributes([.modificationDate: old],
+                                                   ofItemAtPath: root.appendingPathComponent("session").appendingPathComponent("a.jsonl").path)
+            // 写入 a.jsonl 会刷新 session 目录 mtime——夹具语义是「最后真实工作在 5
+            // 分钟前，其后只有噪声写入」，故目录 mtime 也要回拨旧值
+            try? FileManager.default.setAttributes([.modificationDate: old],
+                                                   ofItemAtPath: root.appendingPathComponent("session").path)
 
             let result = FileActivityMonitor.scanTree(in: root.path, maxDepth: 6, window: 60, now: Date())
             try expectTrue(result.newest != nil && Date().timeIntervalSince(result.newest!) > 120,
                            "file-history/blobs 的新写入不应被计入最近活动")
-            try expectEqual(result.activeSessions, 0, "缓存子树不应计为活跃会话")
+            // session-a.jsonl（旧 mtime）超出 window → 不计活跃；新写入的 file-history/blobs
+            // 在忽略子树内不计。此前该夹具无信号文件、目录 mtime 是唯一信号（F2 后改由文件聚合）
+            try expectEqual(result.activeSessions, 0,
+                            "仅缓包子树时不得计活跃会话（实际 \(result.activeSessions)）")
         }
 
         TestKit.test("忽略集: 深层嵌套忽略目录（node_modules/deep/pkg）仍被剪枝（basename 判定等价性）") {
@@ -152,6 +165,64 @@ enum FileIOTests {
     }
 
     static func registerTreeTests() {
+        TestKit.test("文件监控: 噪声文件写入不得经父目录 mtime 传播进 newest（R33/F2）") {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let session = root.appendingPathComponent("session-a")
+            try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+            // 产物文件：旧 mtime（真实的最近工作信号）
+            let artifact = session.appendingPathComponent("artifact.jsonl")
+            try Data("{}".utf8).write(to: artifact)
+            let old = Date().addingTimeInterval(-1800)
+            try FileManager.default.setAttributes([.modificationDate: old],
+                                                  ofItemAtPath: artifact.path)
+            // 噪声文件：刚刚写入（会刷新 session-a 目录 mtime）
+            try Data("lock".utf8).write(to: session.appendingPathComponent(".task.lock"))
+
+            let result = FileActivityMonitor.scanTree(in: root.path, maxDepth: 4, window: 60, now: Date())
+            try expectTrue(result.newest != nil, "产物文件存在必须有 newest")
+            let newest = result.newest!
+            try expectTrue(abs(Date().timeIntervalSince(newest) - 1800) < 30,
+                            "newest 必须是产物文件的旧 mtime，不得被噪声文件的父目录 mtime 抬到 now（实际 \(newest)）")
+        }
+
+        TestKit.test("文件监控: 监控目录永久删除后幽灵活动终态清零（R33/F3）") {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("tasks"), withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: root.appendingPathComponent("tasks/s1.json"))
+            let watchDir = root.appendingPathComponent("tasks").path
+            let monitor = FileActivityMonitor(scanMinInterval: 0)
+            monitor.watch(dirs: [watchDir])
+            monitor.scanSync()
+            try expectTrue(monitor.lastWriteDates(for: [watchDir])[watchDir] != nil, "前置：活动已缓存")
+
+            // 永久删除目录
+            try FileManager.default.removeItem(at: root.appendingPathComponent("tasks"))
+            for _ in 0..<3 { monitor.scanSync() }
+            try expectNil(monitor.lastWriteDates(for: [watchDir])[watchDir],
+                          "连续 3 趟缺失必须终态清零（幽灵活动不得残留）")
+        }
+
+        TestKit.test("文件监控: 配置变更后的首扫绕过节流（R33/F4）") {
+            let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let oldDir = base.appendingPathComponent("old"); let newDir = base.appendingPathComponent("new")
+            try FileManager.default.createDirectory(at: oldDir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: newDir, withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: oldDir.appendingPathComponent("a.json"))
+            defer { try? FileManager.default.removeItem(at: base) }
+            let monitor = FileActivityMonitor(scanMinInterval: 3600)   // 节流拉满，专测豁免路径
+            monitor.watch(dirs: [oldDir.path])
+            monitor.scanSync()
+            try expectTrue(monitor.lastWriteDates(for: [oldDir.path])[oldDir.path] != nil, "前置：旧目录已扫")
+
+            // 配置变更：切到新目录（invalidateScan → 代际前进）并写入新产物
+            monitor.replaceWatchedDirs([newDir.path])
+            try Data("{}".utf8).write(to: newDir.appendingPathComponent("b.json"))
+            monitor.scanSync()
+            try expectTrue(monitor.lastWriteDates(for: [newDir.path])[newDir.path] != nil,
+                            "配置变更后的首扫必须绕过节流立即落地（此前空白到引擎下一拍）")
+        }
+
         TestKit.test("会话树: newestFile 命中预算内最新文件且不被符号链接循环挂死") {
             let root = try makeLoopedTree()
             defer { try? FileManager.default.removeItem(at: root) }

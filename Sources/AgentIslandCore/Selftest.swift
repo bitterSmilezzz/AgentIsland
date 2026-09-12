@@ -131,15 +131,11 @@ public enum Selftest {
                 .appendingPathComponent("agentisland-selftest-\(UUID().uuidString)")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: dir) }
-            let before = FileActivityMonitor.newestWrite(in: dir.path)
-            check(before != nil, "临时目录应可读 mtime", failures: &failures)
+            // F2 语义：newest 仅由信号文件聚合——空目录返回 nil 是正确行为
             let file = dir.appendingPathComponent("probe.txt")
             try? Data("x".utf8).write(to: file)
             let after = FileActivityMonitor.newestWrite(in: dir.path)
-            check(after != nil, "第二拍可读", failures: &failures)
-            if let before, let after {
-                check(after >= before, "写入后 mtime 应更新", failures: &failures)
-            }
+            check(after != nil, "写入后 newest 可读", failures: &failures)
         }
 
         print(failures == 0 ? "✅ 全部通过" : "❌ \(failures) 项失败")

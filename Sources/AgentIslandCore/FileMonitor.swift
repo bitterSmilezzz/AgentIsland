@@ -59,6 +59,12 @@ public final class FileActivityMonitor: FileActivityProviding {
     private var scanGeneration: UInt64 = 0
     private var isScanning = false
     private var lastScanAt = Date.distantPast
+    /// 目录缺失连续计数（R33/F3 终态判定；跨扫描持久，runScan 单飞互斥下读写）
+    private var missingStreaks: [String: Int] = [:]
+    /// 完成扫描所属代际（R33/F4）：invalidateScan（配置变更）后，
+    /// 完成代际落后于当前代际 → 队列上的下一趟扫描绕过 3s 节流立即落地，
+    /// 否则新目录的文件信号会空白到引擎下一拍（idle 节律最长 60s）
+    private var lastScanGeneration: UInt64 = 0
     /// 扫描最小间隔（引擎 working 时 2s 采样，扫描节流避免每拍全量扫）。
     /// 深层会话文件不会改变根目录 mtime，因此这里不能过大，否则 UI 会长时间滞后。
     private let scanMinInterval: TimeInterval
@@ -189,8 +195,11 @@ public final class FileActivityMonitor: FileActivityProviding {
             return
         }
         // 节流：距上次扫描完成不足最小间隔则跳过。
-        // 用「完成时间」而非开始时间（若单趟耗时 ≥ 间隔，按开始计时会连续重扫）
-        guard Date().timeIntervalSince(lastScanAt) >= scanMinInterval else {
+        // 用「完成时间」而非开始时间（若单趟耗时 ≥ 间隔，按开始计时会连续重扫）。
+        // 例外（R33/F4）：完成扫描的代际落后于当前代际 = 配置已变更（新目录首扫），
+        // 节流不得吃掉这次扫描——此前两头都不补扫，新目录信号空白到引擎下一拍
+        guard Date().timeIntervalSince(lastScanAt) >= scanMinInterval
+              || lastScanGeneration == scanGeneration else {
             lock.unlock()
             return
         }
@@ -211,6 +220,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         var freshCounts: [String: Int] = [:]
         var freshRoots: [String: Date] = [:]
         var freshFullScans: [String: Date] = [:]
+        var clearedDirs: Set<String> = []   // 扫描成功但已无信号文件 → 活动清零（R33/F2）
         let now = Date()
         for dir in dirs {
             let rootURL = URL(fileURLWithPath: dir)
@@ -230,7 +240,20 @@ public final class FileActivityMonitor: FileActivityProviding {
                 continue
             }
             let r = Self.scanTree(in: dir, maxDepth: maxDepth, window: window, now: now)
-            fresh[dir] = r.newest
+            // 信号面终态语义（R33/F3）：
+            // - 扫描成功且有信号文件 → 记入 fresh（写回替换，允许自然变旧）
+            // - 扫描成功但无信号文件（产物清理/全被过滤）→ 活动清零
+            // - 目录缺失/不可枚举（root stat 失败）→ 保留旧值 + 连续缺失计数
+            //   （连续 ≥3 趟仍缺失 → 终态清零；阈值吸收原子替换/迁移的瞬时空窗）
+            if let d = r.newest {
+                fresh[dir] = d
+                missingStreaks[dir] = 0
+            } else if rootDate == nil {
+                missingStreaks[dir, default: 0] += 1
+            } else {
+                clearedDirs.insert(dir)
+                missingStreaks[dir] = 0
+            }
             freshCounts[dir] = r.activeSessions
             freshRoots[dir] = rootDate ?? Date.distantPast
             freshFullScans[dir] = now
@@ -253,9 +276,24 @@ public final class FileActivityMonitor: FileActivityProviding {
         for (dir, date) in fresh where current.contains(dir) {
             cache[dir] = date
         }
+        // 活动清零（R33/F2/F3）：扫描成功但已无信号文件（产物清理）——
+        // 此前走「保留旧值」分支，删除产物/目录永久删除后幽灵活动时间残留
+        for dir in clearedDirs where current.contains(dir) {
+            cache[dir] = nil
+        }
+        // 目录缺失终态（R33/F3）：连续 ≥3 趟仍缺失 → 清零缓存与快跳过键
+        // （阈值吸收原子替换/迁移的瞬时空窗；目录重建后下一扫自动恢复）
+        for (dir, streak) in missingStreaks where current.contains(dir) && streak >= 3 {
+            cache[dir] = nil
+            lastRootDates[dir] = nil
+            lastFullScans[dir] = nil
+            missingStreaks[dir] = 0
+        }
+        missingStreaks = missingStreaks.filter { current.contains($0.key) }
         sessionCounts = freshCounts.filter { current.contains($0.key) }
         isScanning = false
         lastScanAt = Date()   // 记录完成时间（节流基准）
+        lastScanGeneration = generation   // 完成代际（R33/F4 节流豁免的判定基准）
         lock.unlock()
     }
 
@@ -273,7 +311,11 @@ public final class FileActivityMonitor: FileActivityProviding {
               let dirDate = values.contentModificationDate else {
             return DirScanResult(newest: nil, activeSessions: 0)
         }
-        var newest = dirDate
+        // newest 仅由「非忽略、非噪声的常规文件」聚合（R33/F2）：
+        // 噪声文件（.lock/.pid/心跳）写入会刷新父目录 mtime——目录计入 newest 会把
+        // 已过滤的噪声反向传播回工作信号（working 误报），且每次噪声写入都改变根
+        // mtime 使快跳过永久失效。任务产物是文件；目录条目只参与 activeTops 判定
+        var newest: Date? = nil
         var activeTops = Set<String>()
         var topLevel: Int? = nil        // 首个目录条目的层级 = 顶层会话目录层级
         var currentTop: String? = nil   // 当前所属顶层目录路径
@@ -309,7 +351,7 @@ public final class FileActivityMonitor: FileActivityProviding {
             if !isDir && isHeartbeatOrNoiseFile(item) {
                 continue
             }
-            if let date = v.contentModificationDate, date > newest {
+            if !isDir, let date = v.contentModificationDate, newest == nil || date > newest! {
                 newest = date
             }
             if topLevel == nil, isDir {

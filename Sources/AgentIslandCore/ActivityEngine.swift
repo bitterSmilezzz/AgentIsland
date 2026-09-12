@@ -49,10 +49,12 @@ public final class ActivityEngine: ObservableObject {
     private var lastSampleAt: Date?
     /// 采样断点判定阈值：超过则视为发生睡眠/挂起。
     /// 必须显著大于正常调度间隔——最慢节律是全离线态的 60s（且用户可把闲置间隔
-    /// 调到 60s），叠加调度延迟后仍不应误判。取「2 分钟」与「3 倍闲置间隔」的较大者：
-    /// 合盖/挂起通常是分钟到小时级，2 分钟下限足以区分；而节律放宽时自动适配。
+    /// 调到 60s），叠加调度延迟后仍不应误判。取「2 分钟」与「3 倍闲置间隔」的较大者，
+    /// 并钳 180s 上界（R32/F1）：idle 滑杆上限 60s 时 3 倍 = 180s，而 2–3 分钟的
+    /// App Nap/挂起若逃过断点检测会补发「任务完成（时长含整段睡眠）」假事件。
+    /// 上界 180 仍留有余量：全离线 60s 节律 + 调度延迟不会误判。
     private var resumeGapThreshold: TimeInterval {
-        max(120, config.idleSampleInterval * 3)
+        min(max(120, config.idleSampleInterval * 3), 180)
     }
 
     /// - Parameters:
@@ -112,7 +114,8 @@ public final class ActivityEngine: ObservableObject {
     /// 连续超过速率阈值的评估档数（agentId → 档数）；达到确认档数才告警
     private var tokenSpikeStreak: [String: Int] = [:]
     /// 同一轮持续超阈值只提醒一次，速率恢复后重新武装。
-    private var tokenSpikeAlerted: Set<String> = []
+    /// 非 private：@testable 下断言「断点清除去重标记」用（模块内勿直接写）
+    var tokenSpikeAlerted: Set<String> = []
     /// 激增评估档长：满一档才结算一次速率，一次性落盘会被摊平
     static let tokenRateWindow: TimeInterval = 60
     /// 需连续多少档超阈值才告警（滤掉长任务结束时的一次性账本落盘）
@@ -295,6 +298,9 @@ public final class ActivityEngine: ObservableObject {
             // 折算成极高速率，重置后从本拍重新起算
             tokenRateBaseline.removeAll()
             tokenSpikeStreak.removeAll()
+            // 激增告警去重标记一并清（R32/F7）：睡前已告警、醒后持续高速率的
+            // Agent 会被残留标记静默压制到出现低于阈值的一档才重新武装
+            tokenSpikeAlerted.removeAll()
         }
         lastSampleAt = now
 

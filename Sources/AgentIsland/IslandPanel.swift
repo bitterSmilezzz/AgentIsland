@@ -370,6 +370,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         guard panel != nil, displayState == .expanded else { return }
         isDragging = true
         cancelPendingTasks()
+        // 残留 grace 复位（R32/F8）：peek 任务体已把 grace 设为 now+peekDuration，
+        // 取消 peek 后不清会让拖拽结束后的自动收起被压制最长 6s
+        manualOpenGraceUntil = .distantPast
     }
 
     // 注：早期还有一个 dragMoved(translation:) 做手动坐标钳制，但调用方
@@ -647,6 +650,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private func scheduleCollapse() {
         guard displayState == .expanded, !isDragging else { return }
         if collapseTask != nil { return }
+        // 任务体内实时读 collapseDelay（R32/F10）：sleep 用创建时刻值无妨，
+        // 执行判定读新值——设置页拖动滑杆后 ≤5s 窗口内的收起不再按旧延迟执行
         let delay = collapseDelay
         collapseGeneration &+= 1
         let generation = collapseGeneration
@@ -655,6 +660,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 // 只有仍是本次任务的引用时才清空
                 if let self, self.collapseGeneration == generation { self.collapseTask = nil }
             }
+            let now0 = Date()
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self,
                   !Task.isCancelled,
@@ -662,6 +668,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                   self.displayState == .expanded,
                   Date() >= self.manualOpenGraceUntil,
                   !Self.isMouseInsidePanelOrFloatingLayers(self.panel) else { return }
+            // 设置页在挂起期间改过延迟：执行时点以新值为准重新校验是否已到期
+            let effectiveDelay = self.collapseDelay
+            if Date().timeIntervalSince(now0) < effectiveDelay { return }
             self.expandCooldownUntil = Date().addingTimeInterval(0.35)
             self.displayState = .docked
         }
@@ -703,6 +712,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     // MARK: - Peek
 
     private func handleTaskEvent(_ event: AgentTaskEvent?) {
+        // 代际守卫（R32/F5）：乱序时旧事件处理（音效/横幅展开/peek 时长）会覆盖
+        // 新事件已建立的语义。nil 侧对称：清空处理仅当当前确实无事件
+        if let event, engine.latestEvent?.id != event.id { return }
+        if event == nil, engine.latestEvent != nil { return }
         guard let event else {
             eventBannerExpanded = false
             syncExpandedHeight()
@@ -791,6 +804,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     // MARK: - 状态切换
 
     private func onStateChanged(_ state: IslandDisplayState) {
+        // 代际守卫（R32/F5）：sink 经 Task @MainActor 跳跃，MainActor 上无 FIFO
+        // 保证——乱序执行时旧态处理会覆盖新态（setPresentationActive 空转开启、
+        // placeWindow 按 docked 几何算动画错帧）。捕获值 != 当前值即过期
+        guard state == displayState else { return }
         updateChrome()
         updateClickThrough()
         switch state {
