@@ -11,11 +11,21 @@ struct AgentRowView: View {
     @ObservedObject var controller: IslandPanelController
     @State private var confirmingKill = false
     @State private var showingTooltip = false
+    @State private var isHoveringRow = false
     /// 直达失败反馈：activate 返回 false 时短暂切换图标（ssh/tmux 启动的 CLI 无可激活窗口）
     @State private var activateFailed = false
     /// 关闭 tooltip 的延迟任务（可取消）：鼠标从环移向 popover 的途中会先触发
     /// onHover(false)，若立即关闭则 popover 里的按钮永远点不到。
     @State private var tooltipCloseTask: Task<Void, Never>?
+
+    private var tooltipArrowEdge: Edge {
+        switch controller.dockEdge {
+        case .top: return .bottom
+        case .right: return .leading
+        case .bottom: return .top
+        case .left: return .trailing
+        }
+    }
     /// 终止确认态的自动复位任务（可取消）
     @State private var confirmResetTask: Task<Void, Never>?
 
@@ -28,7 +38,16 @@ struct AgentRowView: View {
 
     /// 是否显示实时动作横条（与内边距共用同一判定，避免 2pt 行高漂移）
     private var hasActionBar: Bool {
-        snapshot.level == .working && !(snapshot.currentAction ?? "").isEmpty
+        (snapshot.level == .working || snapshot.level == .attention)
+            && !(snapshot.currentAction ?? "").isEmpty
+    }
+
+    private var actionColor: Color {
+        snapshot.level == .attention ? Theme.warningOrange : Theme.statusWorking
+    }
+
+    private var actionIcon: String {
+        snapshot.level == .attention ? "hand.tap.fill" : "terminal.fill"
     }
 
     var body: some View {
@@ -49,7 +68,7 @@ struct AgentRowView: View {
                             }
                         }
                     }
-                    .popover(isPresented: $showingTooltip, arrowEdge: controller.dockEdge == .top ? .bottom : .leading) {
+                    .popover(isPresented: $showingTooltip, arrowEdge: tooltipArrowEdge) {
                         AgentHoverTooltipCard(snapshot: snapshot, engine: engine, controller: controller)
                             // 鼠标进入 popover 时取消关闭任务，让按钮可点
                             .onHover { inside in
@@ -61,61 +80,58 @@ struct AgentRowView: View {
                     Text(snapshot.profile.name)
                         .font(Theme.bodyFont(12.5, weight: .semibold))
                         .foregroundColor(Theme.onDark)
-                        .lineLimit(1)
-                        .help(snapshot.profile.name)
+                        .readableSingleLine(
+                            fullText: snapshot.profile.name,
+                            minWidth: 72,
+                            priority: 2
+                        )
 
-                    if snapshot.level != .working || snapshot.currentAction == nil {
-                        if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
-                            Text(Self.tokenBadge(usage))
-                                .font(Theme.monoFont(9))
-                                .foregroundColor(Theme.onDark.opacity(0.75))
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(Theme.chipFill))
-                        } else {
-                            Text(snapshot.lastActivityText)
-                                .font(Theme.bodyFont(9.5))
-                                .foregroundColor(Theme.onDarkFaint)
+                    if !hasActionBar {
+                        HStack(spacing: 5) {
+                            if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 7))
+                                        .foregroundColor(Theme.sydedockCyan)
+                                    Text(Self.tokenBadge(usage))
+                                        .font(Theme.monoDigitFont(9, weight: .semibold))
+                                        .foregroundColor(Theme.onDark)
+                                }
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1.5)
+                                .background(
+                                    Capsule()
+                                        .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.08))
+                                        .overlay(
+                                            Capsule()
+                                                .strokeBorder(
+                                                    LinearGradient(
+                                                        colors: [
+                                                            Color.white.opacity(0.24),
+                                                            Color.white.opacity(0.06)
+                                                        ],
+                                                        startPoint: .top,
+                                                        endPoint: .bottom
+                                                    ),
+                                                    lineWidth: 0.5
+                                                )
+                                        )
+                                )
+                            } else {
+                                Text(snapshot.lastActivityText)
+                                    .font(Theme.bodyFont(9.5))
+                                    .foregroundColor(Theme.onDarkFaint)
+                            }
+                            ActivityMatrixDots(snapshot: snapshot, count: 5)
                         }
                     }
                 }
 
                 Spacer(minLength: 4)
 
-                // 内存占用与健康状态指示（v1.7.6）
-                if snapshot.processRunning && snapshot.memoryBytes > 0 {
-                    Text(snapshot.memoryText)
-                        .font(Theme.monoFont(9))
-                        .foregroundColor(Theme.onDarkFaint)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Theme.chipFill))
-                        .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
-                }
-
-                if snapshot.isHung {
-                    HStack(spacing: 2) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(Theme.badgeFont())
-                        Text("疑似卡死")
-                            .font(Theme.bodyFont(9, weight: .bold))
-                    }
-                    .foregroundColor(Theme.dangerRed)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2.5)
-                    .background(Capsule().fill(Theme.dangerRed.opacity(0.18)))
-                    .help("检测到进程持续异常高负荷且缺乏会话响应，疑似处于死循环或线程死锁状态")
-                } else {
-                    Text(snapshot.level.label)
-                        .font(Theme.bodyFont(10, weight: .semibold))
-                        .foregroundColor(snapshot.level.color)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2.5)
-                        .background(Capsule().fill(snapshot.level.color.opacity(0.16)))
-                }
-
-                if snapshot.processRunning {
-                    HStack(spacing: 3) {
+                // 右侧展示区：支持渐进披露（悬停渐入快捷按钮，闲置态显示优雅状态）
+                if (isHoveringRow || confirmingKill) && snapshot.processRunning {
+                    HStack(spacing: 4) {
                         // 确认态仅在仍处于工作时有效：若 3 秒内 Agent 已转 idle，
                         // 继续显示红色「终止?」会诱导用户终止一个已空闲的进程
                         if confirmingKill && snapshot.level == .working {
@@ -126,16 +142,14 @@ struct AgentRowView: View {
                                 Text("终止?")
                                     .font(Theme.bodyFont(9, weight: .bold))
                                     .foregroundColor(.white)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Theme.dangerRed.opacity(0.9)))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2.5)
+                                    .background(Capsule().fill(Theme.dangerRed.opacity(0.92)))
                             }
                             .buttonStyle(.plain)
                             .help("再次点击立即强制终止该 Agent 进程")
                             .accessibilityLabel("确认终止 \(snapshot.profile.name)")
                             .onAppear {
-                                // Task 可随视图销毁取消；DispatchQueue 版本会在行消失后
-                                // 继续向失效的 @State 写值
                                 confirmResetTask?.cancel()
                                 confirmResetTask = Task { @MainActor in
                                     try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -151,7 +165,11 @@ struct AgentRowView: View {
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundColor(Theme.dangerRed.opacity(0.85))
                                     .padding(4)
-                                    .background(Circle().fill(Theme.dangerRed.opacity(0.15)))
+                                    .background(
+                                        Circle()
+                                            .fill(Theme.dangerRed.opacity(0.15))
+                                            .overlay(Circle().strokeBorder(Theme.dangerRed.opacity(0.35), lineWidth: 0.5))
+                                    )
                             }
                             .buttonStyle(.plain)
                             .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
@@ -163,9 +181,13 @@ struct AgentRowView: View {
                         } label: {
                             Image(systemName: "terminal")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(Theme.onDark.opacity(0.75))
+                                .foregroundColor(Theme.onDark.opacity(0.85))
                                 .padding(4)
-                                .background(Circle().fill(Theme.chipFill))
+                                .background(
+                                    Circle()
+                                        .fill(Theme.chipFill)
+                                        .overlay(Circle().strokeBorder(Theme.obsidianHairline, lineWidth: 0.5))
+                                )
                         }
                         .buttonStyle(.plain)
                         .help("查看 \(snapshot.profile.name) 实时事件与输出流水")
@@ -182,59 +204,131 @@ struct AgentRowView: View {
                         } label: {
                             Image(systemName: activateFailed ? "exclamationmark.triangle" : "arrow.up.forward.app")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(activateFailed ? Theme.warningOrange : Theme.onDark.opacity(0.75))
+                                .foregroundColor(activateFailed ? Theme.warningOrange : Theme.onDark.opacity(0.85))
                                 .padding(4)
-                                .background(Circle().fill(Theme.chipFill))
+                                .background(
+                                    Circle()
+                                        .fill(Theme.chipFill)
+                                        .overlay(Circle().strokeBorder(Theme.obsidianHairline, lineWidth: 0.5))
+                                )
                         }
                         .buttonStyle(.plain)
                         .help(activateFailed ? "未找到可激活的窗口（CLI 经 ssh/tmux 启动时无窗口可带）" : "置顶并激活该智能体窗口/终端")
                         .accessibilityLabel("直达 \(snapshot.profile.name) 窗口")
                     }
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                } else {
+                    HStack(spacing: 5) {
+                        // 内存占用与健康状态指示（v1.7.6）
+                        if snapshot.processRunning && snapshot.memoryBytes > 0 {
+                            Text(snapshot.memoryText)
+                                .font(Theme.monoDigitFont(9))
+                                .foregroundColor(Theme.onDarkFaint)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .fill(Theme.obsidianPill)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                                        )
+                                )
+                                .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
+                        }
+
+                        if snapshot.isHung {
+                            HStack(spacing: 2) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(Theme.badgeFont())
+                                Text("疑似卡死")
+                                    .font(Theme.bodyFont(9, weight: .bold))
+                            }
+                            .foregroundColor(Theme.dangerRed)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2.5)
+                            .background(
+                                Capsule()
+                                    .fill(Theme.dangerRed.opacity(0.18))
+                                    .overlay(Capsule().strokeBorder(Theme.dangerRed.opacity(0.40), lineWidth: 0.5))
+                            )
+                            .help("检测到进程持续异常高负荷且缺乏会话响应，疑似处于死循环或线程死锁状态")
+                        } else {
+                            Text(snapshot.level.label)
+                                .font(Theme.bodyFont(9.5, weight: .semibold))
+                                .foregroundColor(snapshot.level.color)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(snapshot.level.color.opacity(0.12))
+                                        .overlay(Capsule().strokeBorder(snapshot.level.color.opacity(0.32), lineWidth: 0.5))
+                                )
+                        }
+                    }
+                    .transition(.opacity)
                 }
             }
 
             // 第二行：工作状态下的专属实时动作横条（全宽展示，彻底根治截断问题）
             if hasActionBar, let action = snapshot.currentAction {
                 HStack(spacing: 5) {
-                    Image(systemName: "terminal.fill")
+                    Image(systemName: actionIcon)
                         .font(Theme.badgeFont())
-                        .foregroundColor(Theme.statusWorking)
+                        .foregroundColor(actionColor)
                     Text(action)
                         .font(Theme.monoFont(9.5))
-                        .foregroundColor(Theme.statusWorking)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        .foregroundColor(actionColor)
+                        .readableSingleLine(fullText: action, minWidth: 80, priority: 2)
                     Spacer(minLength: 0)
                     // 工作态也保留 token 徽标：正在消耗的 Agent 恰是最需要关注的，
                     // 此前它只在非工作态显示，工作中反而看不到用量
                     if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
                         Text(Self.tokenBadge(usage))
-                            .font(Theme.badgeFont())
-                            .foregroundColor(Theme.statusWorking.opacity(0.85))
+                            .font(Theme.monoDigitFont(9, weight: .bold))
+                            .foregroundColor(Theme.onDark)
                             .lineLimit(1)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(
+                                Capsule()
+                                    .fill(actionColor.opacity(0.20))
+                                    .overlay(Capsule().strokeBorder(actionColor.opacity(0.40), lineWidth: 0.5))
+                            )
                             .help("24h \(TokenUsage.compact(usage.tokens24h)) token")
                     }
                 }
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
                 .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Theme.statusWorking.opacity(0.10))
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(actionColor.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .strokeBorder(actionColor.opacity(0.22), lineWidth: 0.5)
+                        )
                 )
                 .padding(.leading, 34) // 与 Agent 名称对齐
                 .help(action)
             }
         }
-        .padding(.horizontal, Theme.pageMargin)
+        .padding(.horizontal, 8)
         // 与横条显示条件严格一致：空字符串动作不显示横条，也不应多出 2pt 内边距
         .padding(.vertical, hasActionBar ? 5 : 4)
-        .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: .clear)
+        .hoverRowBackground(cornerRadius: 10, idleFill: Theme.obsidianCardFill)
+        .padding(.horizontal, 6)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) {
+                isHoveringRow = hovering
+            }
+        }
         .onTapGesture {
             // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表）
             controller.route = .agentDetail(snapshot.profile.id)
         }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(snapshot.profile.name)，\(snapshot.level.label)，点按查看详情")
-        .accessibilityHint(snapshot.processRunning ? "行内含终止 / 流水 / 直达三个快捷按钮" : "点按查看详情")
+        .accessibilityHint(snapshot.processRunning ? "悬停可执行终止 / 流水 / 直达操作，点按查看详情" : "点按查看详情")
     }
 }

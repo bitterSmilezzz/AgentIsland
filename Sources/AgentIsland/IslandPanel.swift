@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 import Combine
 
-// MARK: - 灵动岛窗口控制器（支持自由拖拽与顶部/右侧智能吸附贴边）
+// MARK: - 灵动岛窗口控制器（支持自由拖拽与四边智能吸附贴边）
 
 @MainActor
 final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject {
@@ -24,7 +24,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     func closeLiveStream() {
         route = liveStreamOrigin
     }
-    /// 停靠贴边方位（顶部 / 右侧）
+    /// 停靠贴边方位（上、右、下、左）
     @Published var dockEdge: DockEdge = .right
 
     private var panel: NSPanel!
@@ -61,7 +61,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     private var isDragging = false
     private var dragCooldownUntil: Date = .distantPast
 
-    /// 记忆锚点坐标（顶部存 X，右侧存 Y）
+    /// 记忆锚点坐标（水平边缘存 X，垂直边缘存 Y）
     private var savedTopX: CGFloat?
     private var savedRightY: CGFloat?
 
@@ -201,12 +201,24 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 }
             }
             .store(in: &cancellables)
+
+        // 独立事件流保证多个 Agent 在同一采样批次里同时等待确认时，系统通知与声音
+        // 逐条送达；latestEvent 仍只负责岛内单槽横幅，不再承担投递队列职责。
+        engine.taskEvents
+            .sink { [weak self] event in
+                Task { @MainActor [weak self] in
+                    self?.deliverTaskEventAlert(event)
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func updateChrome() {
         guard let clip = clipContainer?.layer else { return }
         if displayState == .docked {
-            let radius = (dockEdge == .top ? IslandMetrics.topSliverHeight : IslandMetrics.rightSliverWidth) / 2
+            let radius = (dockEdge.isHorizontal
+                ? IslandMetrics.topSliverHeight
+                : IslandMetrics.rightSliverWidth) / 2
             clip.masksToBounds = true
             clip.cornerRadius = radius
             clip.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
@@ -306,8 +318,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             self, selector: #selector(screenConfigChanged),
             name: NSWorkspace.didWakeNotification, object: nil)
 
-        displayState = .docked
-        engine.setPresentationActive(false)
+        if CommandLine.arguments.contains("--expanded") || CommandLine.arguments.contains("--analytics") {
+            displayState = .expanded
+            if CommandLine.arguments.contains("--analytics") {
+                route = .tokenAnalytics
+            }
+            engine.setPresentationActive(true)
+        } else {
+            displayState = .docked
+            engine.setPresentationActive(false)
+        }
         updateChrome()
         placeWindow(animated: false)
         panel.orderFrontRegardless()
@@ -374,14 +394,20 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     private var manualOpenGraceUntil: Date = .distantPast
 
+    func expand(graceDuration: TimeInterval = 0) {
+        cancelPendingTasks()
+        expandCooldownUntil = .distantPast
+        dragCooldownUntil = .distantPast
+        if graceDuration > 0 {
+            manualOpenGraceUntil = Date().addingTimeInterval(graceDuration)
+        }
+        displayState = .expanded
+    }
+
     func toggle() {
         switch displayState {
         case .docked:
-            cancelPendingTasks()
-            expandCooldownUntil = .distantPast
-            dragCooldownUntil = .distantPast
-            manualOpenGraceUntil = Date().addingTimeInterval(3.0)
-            displayState = .expanded
+            expand(graceDuration: 3.0)
         case .expanded:
             collapse()
         }
@@ -390,6 +416,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// 显式收起灵动岛（带防抖冷却并即刻重置保护期）
     func collapse() {
         guard displayState == .expanded else { return }
+        if CommandLine.arguments.contains("--keep-expanded") { return }
         cancelPendingTasks()
         manualOpenGraceUntil = .distantPast
         expandCooldownUntil = Date().addingTimeInterval(0.4)
@@ -425,23 +452,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
         guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
         let visible = screen.visibleFrame
-        let cx = panel.frame.midX
-        let cy = panel.frame.midY
+        dockEdge = IslandPanelInteraction.nearestDockEdge(panelFrame: panel.frame, visibleFrame: visible)
 
-        let distToTop = abs(visible.maxY - panel.frame.maxY)
-        let distToRight = abs(visible.maxX - panel.frame.maxX)
-
-        if distToRight < distToTop {
-            dockEdge = .right
-            savedRightY = min(max(cy, visible.minY + 60), visible.maxY - 60)
-            UserDefaults.standard.set(dockEdge.rawValue, forKey: SettingKey.dockEdge)
-            UserDefaults.standard.set(Double(savedRightY!), forKey: SettingKey.dockAnchorY)
-        } else {
-            dockEdge = .top
-            savedTopX = min(max(cx, visible.minX + 70), visible.maxX - 70)
-            UserDefaults.standard.set(dockEdge.rawValue, forKey: SettingKey.dockEdge)
+        if dockEdge.isHorizontal {
+            savedTopX = min(max(panel.frame.midX, visible.minX + 70), visible.maxX - 70)
             UserDefaults.standard.set(Double(savedTopX!), forKey: SettingKey.dockAnchorX)
+        } else {
+            savedRightY = min(max(panel.frame.midY, visible.minY + 60), visible.maxY - 60)
+            UserDefaults.standard.set(Double(savedRightY!), forKey: SettingKey.dockAnchorY)
         }
+        UserDefaults.standard.set(dockEdge.rawValue, forKey: SettingKey.dockEdge)
 
         updateChrome()
         if displayState == .expanded {
@@ -601,6 +621,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 if loc.x >= visible.maxX - (IslandMetrics.rightSliverWidth + 12) {
                     inZone = abs(loc.y - cy) <= (IslandMetrics.rightSliverHeight / 2 + 12)
                 }
+            case .left:
+                // 左边与右边保持对称：仅在可见区域最左侧的细条邻域内响应。
+                let cy = savedRightY.map { min(max($0, visible.minY + 60), visible.maxY - 60) } ?? visible.midY
+                if loc.x >= visible.minX,
+                   loc.x <= visible.minX + IslandMetrics.rightSliverWidth + 12 {
+                    inZone = abs(loc.y - cy) <= (IslandMetrics.rightSliverHeight / 2 + 12)
+                }
             case .top:
                 // 顶边缘细条检测：光标位于屏幕顶部边缘微区域且在细条水平范围内。
                 // 上界必须钳到 visible.maxY（R23）：无上界时菜单栏内整条 x 跨度都是
@@ -611,6 +638,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                    loc.y <= visible.maxY {
                     inZone = abs(loc.x - cx) <= (IslandMetrics.topSliverWidth / 2 + 12)
                 }
+            case .bottom:
+                // 底边不延伸进 Dock 外的不可见区域，避免鼠标停在 Dock 时反复展开/收起。
+                let cx = savedTopX.map { min(max($0, visible.minX + 70), visible.maxX - 70) } ?? visible.midX
+                if loc.y >= visible.minY,
+                   loc.y <= visible.minY + IslandMetrics.topSliverHeight + 12 {
+                    inZone = abs(loc.x - cx) <= (IslandMetrics.topSliverWidth / 2 + 12)
+                }
             }
             active = inZone
             if inZone {
@@ -619,6 +653,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 displayState = .expanded
             }
         } else if displayState == .expanded {
+            if CommandLine.arguments.contains("--keep-expanded") {
+                return true
+            }
             if Self.isMouseInsidePanelOrFloatingLayers(panel) {
                 // 光标在面板或其浮层（tooltip popover / 菜单栏 popover）内：
                 // 即刻解除手动展开保护期，取消任何收起计划
@@ -672,11 +709,23 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - h - screenVerticalMargin)
             return NSRect(x: visible.maxX - IslandMetrics.rightSliverWidth, y: y,
                           width: IslandMetrics.rightSliverWidth, height: h)
+        case .left:
+            let h = IslandMetrics.rightSliverHeight
+            var y = savedRightY.map { $0 - h / 2 } ?? (visible.midY - h / 2)
+            y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - h - screenVerticalMargin)
+            return NSRect(x: visible.minX, y: y,
+                          width: IslandMetrics.rightSliverWidth, height: h)
         case .top:
             let w = IslandMetrics.topSliverWidth
             var x = savedTopX.map { $0 - w / 2 } ?? (visible.midX - w / 2)
             x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - w - screenHorizontalMargin)
             return NSRect(x: x, y: visible.maxY - IslandMetrics.topSliverHeight,
+                          width: w, height: IslandMetrics.topSliverHeight)
+        case .bottom:
+            let w = IslandMetrics.topSliverWidth
+            var x = savedTopX.map { $0 - w / 2 } ?? (visible.midX - w / 2)
+            x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - w - screenHorizontalMargin)
+            return NSRect(x: x, y: visible.minY,
                           width: w, height: IslandMetrics.topSliverHeight)
         }
     }
@@ -705,6 +754,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                   Date() >= self.manualOpenGraceUntil,
                   !Self.isMouseInsidePanelOrFloatingLayers(self.panel) else { return }
             // 设置页在挂起期间改过延迟：执行时点以新值为准重新校验是否已到期
+            if CommandLine.arguments.contains("--keep-expanded") { return }
             let effectiveDelay = self.collapseDelay
             if Date().timeIntervalSince(now0) < effectiveDelay { return }
             self.expandCooldownUntil = Date().addingTimeInterval(0.35)
@@ -723,16 +773,19 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// hover 移入浮层若判为「离开面板」会触发自动收起（默认 0.5s），浮层里的
     /// 两段式终止确认与直达按钮实际只有半秒可用窗口。
     /// 浮层窗口类名活体枚举（lldb 附着实证）：tooltip = `_NSPopoverWindow`、
-    /// 菜单栏 popover = `MenuBarExtraWindow<AnyView>`、状态项 = `NSStatusBarWindow`；
-    /// 按稳定片段匹配，Apple 改名时行为退化为修复前，无副作用
+    /// 菜单栏 popover = `MenuBarExtraWindow<AnyView>`。状态项 `NSStatusBarWindow`
+    /// 只是宿主，不属于交互浮层——其 frame 可能覆盖远大于图标的区域，纳入会让
+    /// 面板持续误判为悬停、永远不收起。
     static func isMouseInsidePanelOrFloatingLayers(_ panel: NSPanel?) -> Bool {
         if isMouseInsidePanel(panel) { return true }
         let mouse = NSEvent.mouseLocation
         return NSApp.windows.contains { window in
-            guard window.isVisible else { return false }
             let cls = String(describing: type(of: window))
-            return (cls.contains("Popover") || cls.contains("StatusBar") || cls.contains("MenuBarExtraWindow"))
-                && window.frame.contains(mouse)
+            return IslandPanelInteraction.isMouseInsideFloatingLayer(
+                className: cls,
+                isVisible: window.isVisible,
+                containsMouse: window.frame.contains(mouse)
+            )
         }
     }
 
@@ -758,19 +811,29 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             return
         }
 
-        // 任务完成/告警投递到 macOS 通知中心。投递与否由 notificationPolicy 裁决
-        // （静默全不发 / 专注仅 costSpike / 标准全发），不再是「无论如何都发」。
-        // 事件有唯一 UUID，不会因重复采样重复发送。
-        CompletionNotification.post(for: event, policy: notificationPolicy)
-
         // 事件类型决定初始展开态：熔断类严重告警默认展开详情以提供排查指导，
         // 其他事件收起。此前只在 costSpike 时置 true、从不复位，导致一次告警后
         // 后续所有完成事件也保持 142pt 的展开高度。
         eventBannerExpanded = (event.eventType == .costSpike)
 
-        // 1. 播放系统提示音（受 notificationPolicy 与全局开关 playCompletionSound 共同裁决）。
-        // 声音只在这里发一次：系统通知已固定不带 sound，不会出现双重提示音；
-        // 关闭「任务完成提示音」后两条通道都安静。
+        // 1. 通知与声音由 taskEvents 独立投递；这里仅维护岛内横幅/Peek。
+
+        // 2. 窗口高度自适应扩展
+        syncExpandedHeight()
+
+        // 3. 若当前处于收起态（docked），或 peek 进行中（expanded 来自上一次 peek），
+        // 按分级策略决定是否触发/重排微弹窗 Peek
+        if notificationPolicy.shouldPeek(for: event.eventType) {
+            if displayState == .docked || peekTask != nil {
+                peekForEvent(event)
+            }
+        }
+    }
+
+    /// 系统通知与唯一提示音出口。与 latestEvent 横幅解耦后，同拍多 Agent attention
+    /// 不会因单槽位覆盖和代际守卫而只送达最后一个。
+    private func deliverTaskEventAlert(_ event: AgentTaskEvent) {
+        CompletionNotification.post(for: event, policy: notificationPolicy)
         let soundEnabled = UserDefaults.standard.object(forKey: SettingKey.playCompletionSound) as? Bool ?? true
         if notificationPolicy.shouldPlaySound(for: event.eventType, soundEnabled: soundEnabled) {
             if event.eventType == .costSpike {
@@ -781,17 +844,6 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 }
             } else {
                 NSSound(named: "Glass")?.play()
-            }
-        }
-
-        // 2. 窗口高度自适应扩展
-        syncExpandedHeight()
-
-        // 3. 若当前处于收起态（docked），或 peek 进行中（expanded 来自上一次 peek），
-        // 按分级策略决定是否触发/重排微弹窗 Peek
-        if notificationPolicy.shouldPeek(for: event.eventType) {
-            if displayState == .docked || peekTask != nil {
-                peekForEvent(event)
             }
         }
     }
@@ -926,10 +978,18 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
                 y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
                 targetOrigin = NSPoint(x: visible.maxX - cardW, y: y)
+            case .left:
+                var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
+                y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
+                targetOrigin = NSPoint(x: visible.minX, y: y)
             case .top:
                 var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
                 x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
                 targetOrigin = NSPoint(x: x, y: visible.maxY - cardH)
+            case .bottom:
+                var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
+                x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
+                targetOrigin = NSPoint(x: x, y: visible.minY)
             }
         case .docked:
             switch dockEdge {
@@ -937,10 +997,18 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
                 y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
                 targetOrigin = NSPoint(x: visible.maxX - IslandMetrics.rightSliverWidth, y: y)
+            case .left:
+                var y = savedRightY.map { $0 - cardH / 2 } ?? (visible.midY - cardH / 2)
+                y = min(max(y, visible.minY + screenVerticalMargin), visible.maxY - cardH - screenVerticalMargin)
+                targetOrigin = NSPoint(x: visible.minX - cardW + IslandMetrics.rightSliverWidth, y: y)
             case .top:
                 var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
                 x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
                 targetOrigin = NSPoint(x: x, y: visible.maxY - IslandMetrics.topSliverHeight)
+            case .bottom:
+                var x = savedTopX.map { $0 - cardW / 2 } ?? (visible.midX - cardW / 2)
+                x = min(max(x, visible.minX + screenHorizontalMargin), visible.maxX - cardW - screenHorizontalMargin)
+                targetOrigin = NSPoint(x: x, y: visible.minY - cardH + IslandMetrics.topSliverHeight)
             }
         }
         return NSRect(origin: targetOrigin, size: targetSize)

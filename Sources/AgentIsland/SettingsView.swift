@@ -611,7 +611,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("只读监控：绝不读取会话内容、私钥凭据与隐私数据", systemImage: "lock.shield")
                     Label("高性能低能耗：空闲自动降频，工作态 CPU 开销约 1%", systemImage: "bolt.badge.clock")
-                    Label("自由拖拽与智能贴边：顶部/右侧自由拖动吸附，6pt 微细条触碰自动弹出", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                    Label("自由拖拽与智能贴边：上、右、下、左四边自动吸附，6pt 微细条触碰自动弹出", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
                 }
                 .font(Theme.bodyFont(11))
                 .foregroundColor(Theme.inkMuted80)

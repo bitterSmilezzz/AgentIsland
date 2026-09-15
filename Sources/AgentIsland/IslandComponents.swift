@@ -11,10 +11,10 @@ extension View {
     /// IslandView 展开卡 / DetailViews 两页统一入口。
     func cardShell(dockEdge: DockEdge = .right, controller: IslandPanelController? = nil) -> some View {
         self
-            // 右侧造型上下各内缩 notchInset；顶部造型左右各内缩同样距离。
+            // 垂直贴边上下各内缩 notchInset；水平贴边左右各内缩同样距离。
             // 内容与窗口度量共用留白，防止消息移除后 Token 文字落入透明倒角区。
             .padding(.vertical, IslandMetrics.notchInset)
-            .padding(.horizontal, dockEdge == .top ? IslandMetrics.notchInset : 0)
+            .padding(.horizontal, dockEdge.isHorizontal ? IslandMetrics.notchInset : 0)
             .frame(width: IslandMetrics.cardWidth)
             // 背景铺满整个窗口（窗口高度可能略大于内容，消除底部透明带）
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -45,7 +45,22 @@ private struct HoverRowBackground: ViewModifier {
         content
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill((hovering && hoverEnabled) ? Theme.hoverFill : idleFill))
+                    .fill((hovering && hoverEnabled) ? Theme.obsidianCardHoverFill : idleFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [
+                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(hovering ? 0.22 : 0.08),
+                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(hovering ? 0.06 : 0.02)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: 0.75
+                            )
+                    )
+            )
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
@@ -74,6 +89,88 @@ struct DarkDivider: View {
 struct CenteredSpinner: View {
     var body: some View {
         HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+    }
+}
+
+// MARK: 长文本可读性
+
+private struct ReadableSingleLineModifier: ViewModifier {
+    let fullText: String
+    let minWidth: CGFloat
+    let priority: Double
+
+    func body(content: Content) -> some View {
+        content
+            .lineLimit(1)
+            // 动作、文件名和模型名的辨识信息常在末尾；中间省略能同时保留语义前缀与后缀。
+            .truncationMode(.middle)
+            .layoutPriority(priority)
+            .frame(minWidth: minWidth, alignment: .leading)
+            .contentShape(Rectangle())
+            .help(fullText)
+            .accessibilityLabel(fullText)
+    }
+}
+
+extension View {
+    /// 单行长文本统一契约：永不静默消失、保留首尾、悬停与 VoiceOver 均可读取全文。
+    func readableSingleLine(fullText: String, minWidth: CGFloat = 0, priority: Double = 1) -> some View {
+        modifier(ReadableSingleLineModifier(
+            fullText: fullText,
+            minWidth: minWidth,
+            priority: priority
+        ))
+    }
+}
+
+/// 主卡顶部的稳定信息层级：Agent/状态是主标题，实时动作是副标题。
+/// 右侧固定按钮再多也至少保留 96pt 给主标题，不会把文字压成空白。
+struct AdaptiveHeaderText: View {
+    let title: String
+    let subtitle: String?
+    let badge: String?
+    let tint: Color
+    let subtitleIcon: String?
+    let fullText: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(Theme.bodyFont(12.5, weight: .bold))
+                    .foregroundColor(Theme.onDark)
+                    .readableSingleLine(fullText: title, minWidth: 96, priority: 3)
+
+                if let badge, !badge.isEmpty {
+                    Text(badge)
+                        .font(Theme.badgeFont(.semibold))
+                        .foregroundColor(tint)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(tint.opacity(0.12)))
+                        .fixedSize()
+                }
+            }
+
+            if let subtitle, !subtitle.isEmpty {
+                HStack(spacing: 4) {
+                    if let subtitleIcon {
+                        Image(systemName: subtitleIcon)
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundColor(tint)
+                            .frame(width: 10)
+                    }
+                    Text(subtitle)
+                        .font(Theme.monoFont(9.5, weight: .medium))
+                        .foregroundColor(tint)
+                        .readableSingleLine(fullText: subtitle, priority: 2)
+                }
+            }
+        }
+        .frame(minWidth: 96, maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        .help(fullText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(fullText)
     }
 }
 
@@ -120,4 +217,3 @@ extension View {
         )
     }
 }
-

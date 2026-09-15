@@ -22,7 +22,8 @@ enum CompletionNotification {
         case .silent:
             return
         case .focus:
-            guard event.eventType == .costSpike else { return }
+            // 专注模式只静默普通完成；等待用户确认是阻塞态，必须送达。
+            guard event.eventType != .completed else { return }
         case .standard:
             break
         }
@@ -33,7 +34,7 @@ enum CompletionNotification {
             content.title = "\(event.agentName) 任务完成"
             content.body = event.message ?? "任务已完成，用时 \(AgentTaskEvent.durationText(event.duration))"
         case .attention:
-            content.title = "\(event.agentName) 需要关注"
+            content.title = "\(event.agentName) 等待你确认"
             content.body = event.message ?? event.detail ?? "有操作等待确认"
         case .costSpike:
             content.title = "\(event.agentName) 资源告警"
@@ -45,6 +46,7 @@ enum CompletionNotification {
         // 岛内 NSSound 不依赖通知权限，且已由通知策略与「任务完成提示音」开关共同裁决，
         // 因此它是唯一声音来源，通知只负责横幅可见性。
         content.sound = nil
+        content.userInfo = AgentNotificationRoute.userInfo(agentId: event.agentId)
         // 任务完成属于用户应立即知道的主动事件，避免被系统当作被动更新而静音
         //（interruptionLevel macOS 11+；部署目标 13，#available 恒真死代码已删）
         content.interruptionLevel = .active

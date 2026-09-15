@@ -30,12 +30,23 @@ struct EventBannerView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(eventColor(for: event.eventType))
 
-                Text(event.summaryText)
-                    .font(Theme.bodyFont(11, weight: .semibold))
-                    .foregroundColor(Theme.onDark)
-                    .lineLimit(isExpanded ? nil : 1)
-                    .fixedSize(horizontal: false, vertical: isExpanded)
-                    .help(event.summaryText)
+                Group {
+                    if isExpanded {
+                        Text(event.summaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(event.summaryText)
+                            .accessibilityLabel(event.summaryText)
+                    } else {
+                        Text(event.summaryText)
+                            .readableSingleLine(
+                                fullText: event.summaryText,
+                                minWidth: 72,
+                                priority: 2
+                            )
+                    }
+                }
+                .font(Theme.bodyFont(11, weight: .semibold))
+                .foregroundColor(Theme.onDark)
 
                 Spacer(minLength: 4)
 
@@ -226,10 +237,9 @@ struct EventBannerView: View {
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, 6)
-        // 动态色：硬编码白色在浅色主题下会让整条横幅失去视觉分组
         .background(event.eventType == .costSpike
                     ? Theme.dangerRed.opacity(0.18)
-                    : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
+                    : Color.white.opacity(0.06))
     }
 
     private func eventIcon(for type: AgentTaskEvent.EventType) -> String {

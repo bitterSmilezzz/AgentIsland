@@ -19,6 +19,9 @@ public final class ActivityEngine: ObservableObject {
     @Published public private(set) var anyWorking = false
     @Published public private(set) var updatedAt = Date()
     @Published public private(set) var latestEvent: AgentTaskEvent? = nil
+    /// 每一条需要对外投递的事件流。latestEvent 是 UI 单槽位，多个 Agent 同拍进入
+    /// 等待确认时会互相覆盖；独立事件流保证系统通知逐条收到，不丢任一 Agent。
+    public let taskEvents = PassthroughSubject<AgentTaskEvent, Never>()
     public private(set) var cleaner: AgentCleaner!
 
     public var config: EngineConfig {
@@ -52,6 +55,10 @@ public final class ActivityEngine: ObservableObject {
     /// 文件写入是任务产物，只有写入驱动的区间才算做完一件事；纯 CPU 区间仍照常显示
     /// working（双信号判定不变），但不产生完成事件。
     private var workingPeriodHadWrite: Set<String> = []
+    /// 当前仍未解除的确认请求（agentId → request fingerprint），用于逐拍去重。
+    private var activeAttentionFingerprints: [String: String] = [:]
+    /// 最近识别过的显式完成标记，防同一 task_complete 在 15 分钟展示期内重复响铃。
+    private var handledCompletionFingerprints: [String: String] = [:]
     /// 上一次采样的时刻，用于识别睡眠/挂起造成的采样断点（见 sampleCore）
     private var lastSampleAt: Date?
     /// 采样断点判定阈值：超过则视为发生睡眠/挂起。
@@ -118,6 +125,8 @@ public final class ActivityEngine: ObservableObject {
     /// 动作探测注入点（测试用）：nil 走 AgentActionInspector.inspectAction 默认实现。
     /// 「idle 不探测」的门控测试靠计数 hook 断言，无需真实会话目录。
     var inspectActionHook: ((Int32?, AgentProfile, [String], ProcessSnapshot?) -> String?)?
+    /// 会话强语义探测注入点（测试用）：生产只尾读 FileMonitor 缓存的最新文件。
+    var inspectSessionHook: ((AgentProfile, [URL], Date) -> AgentSessionSignal?)?
     /// 连续超过速率阈值的评估档数（agentId → 档数）；达到确认档数才告警
     private var tokenSpikeStreak: [String: Int] = [:]
     /// 同一轮持续超阈值只提醒一次，速率恢复后重新武装。
@@ -245,6 +254,8 @@ public final class ActivityEngine: ObservableObject {
         let activeIDs = Set(profiles.map(\.id))
         workingSince = workingSince.filter { activeIDs.contains($0.key) }
         workingPeriodHadWrite = workingPeriodHadWrite.filter { activeIDs.contains($0) }
+        activeAttentionFingerprints = activeAttentionFingerprints.filter { activeIDs.contains($0.key) }
+        handledCompletionFingerprints = handledCompletionFingerprints.filter { activeIDs.contains($0.key) }
         lastSignalAt = lastSignalAt.filter { activeIDs.contains($0.key) }
         highCpuSince = highCpuSince.filter { activeIDs.contains($0.key) }
         lastRunawayAlertedAt = lastRunawayAlertedAt.filter { activeIDs.contains($0.key) }
@@ -378,6 +389,21 @@ public final class ActivityEngine: ObservableObject {
             let cpuFloor = profile.cpuWorkingThreshold ?? 0
             let hasHighCpu = cpu >= max(cpuFloor, config.cpuThreshold)
 
+            // 结构化会话终态优先于 CPU/mtime 近似值：等待用户时 CPU 通常为 0，旧逻辑会
+            // 谎报“待机”；task_complete 刚写入文件时旧逻辑反而会被 workingWindow 拖住。
+            // FileMonitor 已在后台给出最新文件，主线程这里只做有界尾读，不重新遍历目录。
+            let sessionSignal: AgentSessionSignal? = {
+                guard running else { return nil }
+                let files = Array(fileMonitor.latestActivityFiles(for: profile.sessionDirs).values)
+                if let inspectSessionHook {
+                    return inspectSessionHook(profile, files, now)
+                }
+                // 没有本轮扫描命中的活动文件时不得凭 profile 的约定路径旁路读取：
+                // 一方面避免把旧数据库中的终态套到当前进程，另一方面保持采样输入可复现。
+                guard !files.isEmpty else { return nil }
+                return AgentSessionInspector.inspect(profile: profile, activityFiles: files, now: now)
+            }()
+
             let level: ActivityLevel
             if !running {
                 // 进程消失 = Agent 被关闭/退出，不是任务完成：静默转 offline，不发完成事件。
@@ -385,6 +411,8 @@ public final class ActivityEngine: ObservableObject {
                 level = .offline
                 workingSince[profile.id] = nil
                 workingPeriodHadWrite.remove(profile.id)
+                activeAttentionFingerprints[profile.id] = nil
+                handledCompletionFingerprints[profile.id] = nil
                 lastSignalAt[profile.id] = nil
                 highCpuSince[profile.id] = nil
                 lastRunawayAlertedAt[profile.id] = nil
@@ -393,7 +421,41 @@ public final class ActivityEngine: ObservableObject {
                 // 速率基线一并清除（与 resumeGap 断点处理口径一致）：否则重启后首个
                 // 结算窗口把离线全程计入分母，速率被摊薄，本应触发的激增告警被推迟
                 tokenRateBaseline[profile.id] = nil
+            } else if case let .attention(request)? = sessionSignal {
+                level = .attention
+                // 等待用户不是任务完成：切断旧工作区间且绝不补完成事件。
+                workingSince[profile.id] = nil
+                workingPeriodHadWrite.remove(profile.id)
+                lastSignalAt[profile.id] = nil
+                if activeAttentionFingerprints[profile.id] != request.fingerprint {
+                    activeAttentionFingerprints[profile.id] = request.fingerprint
+                    publish(AgentTaskEvent(
+                        agentId: profile.id,
+                        agentName: profile.name,
+                        eventType: .attention,
+                        duration: 0,
+                        timestamp: now,
+                        pid: matchedPID,
+                        message: "\(profile.name)：\(request.message)",
+                        detail: "(profile.name) 已暂停执行，正在等待你的选择、权限批准或确认。点击通知可返回对应 Agent 窗口继续处理。"
+                    ))
+                }
+            } else if case let .completed(fingerprint)? = sessionSignal {
+                level = .completed
+                activeAttentionFingerprints[profile.id] = nil
+                // 只有本进程生命周期内确实观察过 working 区间才发完成通知；冷启动读到
+                // 旧 task_complete 只展示“已完成”，不补一条陈年通知。
+                if handledCompletionFingerprints[profile.id] != fingerprint {
+                    if let since = workingSince[profile.id], workingPeriodHadWrite.contains(profile.id) {
+                        recordTaskCompleted(profile: profile, since: since, now: now, pid: matchedPID)
+                    }
+                    handledCompletionFingerprints[profile.id] = fingerprint
+                }
+                workingSince[profile.id] = nil
+                workingPeriodHadWrite.remove(profile.id)
+                lastSignalAt[profile.id] = nil
             } else if hasRecentWrite || hasHighCpu {
+                activeAttentionFingerprints[profile.id] = nil
                 level = .working
                 if workingSince[profile.id] == nil {
                     workingSince[profile.id] = now
@@ -410,12 +472,14 @@ public final class ActivityEngine: ObservableObject {
                 lastSignalAt[profile.id] = now
             } else if let lastSignal = lastSignalAt[profile.id],
                       now.timeIntervalSince(lastSignal) < config.minWorkingHold {
+                activeAttentionFingerprints[profile.id] = nil
                 // 滞回：信号刚消失时保持 working 最短时长，防 CPU 临界抖动导致 peek 高频弹跳。
                 // 锚点必须是「最后一次有信号」的时刻而非首次进入 working 的时刻——
                 // 用 workingSince 会让任何超过 minWorkingHold 的任务滞回完全失效。
                 // （时钟回拨的负区间已由上方重锚防御：lastSignal 不可能晚于本拍 now）
                 level = .working
             } else {
+                activeAttentionFingerprints[profile.id] = nil
                 level = .idle
                 // 完成事件只在有写入证据时发（见 workingPeriodHadWrite 注释）：
                 // 纯 CPU 高负载的区间到此静默收尾，不响铃、不弹横幅
@@ -441,6 +505,8 @@ public final class ActivityEngine: ObservableObject {
                     AgentActionInspector.inspectAction(pid: pid, profile: profile, sessionDirs: dirs, snapshot: snap)
                 }
                 action = inspector(matchedPID, profile, profile.sessionDirs, matcher.snapshot)
+            } else if case let .attention(request)? = sessionSignal {
+                action = request.message
             } else {
                 action = nil
             }
@@ -665,6 +731,8 @@ public final class ActivityEngine: ObservableObject {
         }
         workingSince[agentId] = nil
         workingPeriodHadWrite.remove(agentId)
+        activeAttentionFingerprints[agentId] = nil
+        handledCompletionFingerprints[agentId] = nil
         lastSignalAt[agentId] = nil
         highCpuSince[agentId] = nil
         lastRunawayAlertedAt[agentId] = nil
@@ -696,6 +764,8 @@ public final class ActivityEngine: ObservableObject {
         for a in anomalies {
             workingSince[a.profileId] = nil
             workingPeriodHadWrite.remove(a.profileId)
+            activeAttentionFingerprints[a.profileId] = nil
+            handledCompletionFingerprints[a.profileId] = nil
             lastSignalAt[a.profileId] = nil
             highCpuSince[a.profileId] = nil
             lastRunawayAlertedAt[a.profileId] = nil
@@ -746,7 +816,7 @@ public final class ActivityEngine: ObservableObject {
             duration: duration,
             timestamp: now,
             pid: pid,
-            detail: "\(profile.name) 本次工作持续 \(timeStr)，所有子步骤已完成，现已转为空闲状态。"
+            detail: "\(profile.name) 本次工作持续 \(timeStr)，所有子步骤已结束，当前任务已完成。"
         ))
     }
 
@@ -767,12 +837,20 @@ public final class ActivityEngine: ObservableObject {
     /// 告警就消失了。这里给告警一个保护窗口：窗口内的普通事件不覆盖它。
     /// 不排队：横幅只展示一条，把被抑制的普通事件补发出来只会让过期信息再次弹出。
     private func publish(_ event: AgentTaskEvent) {
+        var acceptedForBanner = true
         if event.eventType == .costSpike {
             alertProtectedUntil = Date().addingTimeInterval(Self.alertProtectionWindow)
         } else if let until = alertProtectedUntil, Date() < until {
-            return   // 告警保护期内，普通事件让位
+            acceptedForBanner = false   // 告警保护期内，普通横幅让位
         }
-        latestEvent = event
+        if acceptedForBanner {
+            latestEvent = event
+        }
+        // attention 即便恰逢熔断横幅保护期也必须逐条发系统通知；其余事件维持历史语义，
+        // 只有真正进入 latestEvent 的才对外投递。
+        if acceptedForBanner || event.eventType == .attention {
+            taskEvents.send(event)
+        }
     }
 
     /// 告警保护窗口：足够用户看到横幅并决定是否处置，又不至于长期占位
@@ -818,6 +896,11 @@ public final class ActivityEngine: ObservableObject {
     /// 所有数据源总和（语义见 TokenUsagePolling.grandTotal；汇总栏显示 / 展开高度判断）
     public var grandTotal: TokenUsage { tokenMonitor.grandTotal }
 
+    /// 某工具的聚合 Token 用量。来源可读并不要求该工具此刻作为独立进程被监控。
+    public func tokenUsage(for agentId: String) -> TokenUsage? {
+        tokenMonitor.usage[agentId]
+    }
+
     /// 按模型拆分下钻（详情页）
     public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
         tokenMonitor.modelBreakdown(agentId: agentId, completion: completion)
@@ -826,6 +909,12 @@ public final class ActivityEngine: ObservableObject {
     /// 某模型下的会话列表下钻（会话页）
     public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
         tokenMonitor.sessions(agentId: agentId, modelId: modelId, completion: completion)
+    }
+
+    /// 全局 Token 时间分析（当前范围 + 上一等长周期 + 数据源构成）。
+    public func tokenTimeline(range: TokenTimeRange, now: Date = Date(),
+                              completion: @escaping @MainActor (TokenUsageTimeline) -> Void) {
+        tokenMonitor.timeline(range: range, now: now, completion: completion)
     }
 
     /// 获取智能体实时事件流水（后台异步解析，主线程回调）
@@ -838,18 +927,19 @@ public final class ActivityEngine: ObservableObject {
         }
     }
 
-    /// 可见口径（唯一实现）：在线 + 24h 内活跃。
+    /// 可见口径（唯一实现）：仅当前在线（进程仍在）的 Agent。
+    /// 历史活动与 token 只用于在线条目的内容展示，不得让已退出 Agent 形成幽灵列表项。
     /// 展开卡片列表、菜单摘要、高度计算统一消费此属性，改口径只改这一处。
     public var visibleSnapshots: [AgentSnapshot] {
-        snapshots.filter {
-            $0.processRunning || ($0.lastActivityAgo ?? .infinity) < 24 * 3600
-        }
+        snapshots.filter(\.processRunning)
     }
 
     /// 顶部活动环微看板的数据源（工作态或 24h 有用量）。
     /// 视图渲染与窗口高度计算共用此口径，避免「视图显示了但高度没算」导致底部汇总栏被裁切。
     public var ringShelfSnapshots: [AgentSnapshot] {
-        visibleSnapshots.filter { $0.level == .working || ($0.tokenUsage?.tokens24h ?? 0) > 0 }
+        visibleSnapshots.filter {
+            $0.level == .working || $0.level == .attention || ($0.tokenUsage?.tokens24h ?? 0) > 0
+        }
     }
 
     public static func formatAgo(_ interval: TimeInterval?) -> String {

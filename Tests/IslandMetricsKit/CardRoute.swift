@@ -12,6 +12,7 @@ import Foundation
 // 同步镜像并补路由覆盖。
 enum CardRoute: Equatable {
     case list
+    case tokenAnalytics
     case agentDetail(String)
     case sessions(String, String)
     case toolbox

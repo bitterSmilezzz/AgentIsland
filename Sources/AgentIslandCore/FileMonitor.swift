@@ -11,6 +11,10 @@ public protocol FileActivityProviding {
     /// 返回 [目录: 活跃会话数]（后台扫描时算好，主线程只读缓存）
     func activeSessionCounts(for dirs: [String]) -> [String: Int]
 
+    /// 返回 [目录: 最近活动文件]（后台扫描时定位，主线程只读缓存）。会话语义检查器
+    /// 直接尾读这些文件，避免每个采样周期再次递归枚举整棵会话树。
+    func latestActivityFiles(for dirs: [String]) -> [String: URL]
+
     /// 设置活跃会话判定窗口（引擎 config 同步）
     func setActiveSessionWindow(_ window: TimeInterval)
 
@@ -36,6 +40,7 @@ public extension FileActivityProviding {
     func replaceWatchedDirs(_ dirs: [String]) {}
     func scanAsync() {}
     func activeSessionCounts(for dirs: [String]) -> [String: Int] { [:] }
+    func latestActivityFiles(for dirs: [String]) -> [String: URL] { [:] }
     func setActiveSessionWindow(_ window: TimeInterval) {}
     func setWorkingWindow(_ window: TimeInterval) {}
     func setScanUrgency(highFrequency: Bool) {}
@@ -52,6 +57,7 @@ public final class FileActivityMonitor: FileActivityProviding {
     private var cache: [String: Date] = [:]
     /// 活跃会话数缓存（后台扫描一并算好，主线程只读）
     private var sessionCounts: [String: Int] = [:]
+    private var latestFiles: [String: URL] = [:]
     /// 活跃会话判定窗口（引擎 config 同步，经 setActiveSessionWindow 加锁写入）
     private var activeSessionWindow: TimeInterval = 600
     private let lock = NSLock()
@@ -105,6 +111,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         // L6：清理不在新集合中的残留缓存（防止过期数据在集合变化后残留）
         cache = cache.filter { newSet.contains($0.key) }
         sessionCounts = sessionCounts.filter { newSet.contains($0.key) }
+        latestFiles = latestFiles.filter { newSet.contains($0.key) }
         lastRootDates = lastRootDates.filter { newSet.contains($0.key) }
         lastFullScans = lastFullScans.filter { newSet.contains($0.key) }
         lock.unlock()
@@ -126,6 +133,16 @@ public final class FileActivityMonitor: FileActivityProviding {
         var result: [String: Int] = [:]
         for dir in dirs {
             if let count = sessionCounts[dir] { result[dir] = count }
+        }
+        return result
+    }
+
+    public func latestActivityFiles(for dirs: [String]) -> [String: URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        var result: [String: URL] = [:]
+        for dir in dirs {
+            if let file = latestFiles[dir] { result[dir] = file }
         }
         return result
     }
@@ -218,6 +235,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         //   （不再要求 newest 活跃——否则长空闲时「newest 活跃」恒不满足，每次扫描都全量枚举）。
         var fresh: [String: Date] = [:]
         var freshCounts: [String: Int] = [:]
+        var freshFiles: [String: URL] = [:]
         var freshRoots: [String: Date] = [:]
         var freshFullScans: [String: Date] = [:]
         var clearedDirs: Set<String> = []   // 扫描成功但已无信号文件 → 活动清零（R33/F2）
@@ -229,6 +247,7 @@ public final class FileActivityMonitor: FileActivityProviding {
             let cachedRoot = lastRootDates[dir]
             let cachedNewest = cache[dir]
             let cachedCount = sessionCounts[dir]
+            let cachedFile = latestFiles[dir]
             let lastFull = lastFullScans[dir]
             lock.unlock()
             if let rootDate, let cachedRoot, rootDate == cachedRoot,
@@ -237,6 +256,7 @@ public final class FileActivityMonitor: FileActivityProviding {
                 // 根 mtime 未变（无新顶层子项）+ 兜底周期内刚全量扫过：复用缓存，不枚举目录树
                 fresh[dir] = cachedNewest
                 freshCounts[dir] = cachedCount
+                if let cachedFile { freshFiles[dir] = cachedFile }
                 continue
             }
             let r = Self.scanTree(in: dir, maxDepth: maxDepth, window: window, now: now)
@@ -247,6 +267,7 @@ public final class FileActivityMonitor: FileActivityProviding {
             //   （连续 ≥3 趟仍缺失 → 终态清零；阈值吸收原子替换/迁移的瞬时空窗）
             if let d = r.newest {
                 fresh[dir] = d
+                if let file = r.newestFile { freshFiles[dir] = file }
                 missingStreaks[dir] = 0
             } else if rootDate == nil {
                 missingStreaks[dir, default: 0] += 1
@@ -276,15 +297,20 @@ public final class FileActivityMonitor: FileActivityProviding {
         for (dir, date) in fresh where current.contains(dir) {
             cache[dir] = date
         }
+        for (dir, file) in freshFiles where current.contains(dir) {
+            latestFiles[dir] = file
+        }
         // 活动清零（R33/F2/F3）：扫描成功但已无信号文件（产物清理）——
         // 此前走「保留旧值」分支，删除产物/目录永久删除后幽灵活动时间残留
         for dir in clearedDirs where current.contains(dir) {
             cache[dir] = nil
+            latestFiles[dir] = nil
         }
         // 目录缺失终态（R33/F3）：连续 ≥3 趟仍缺失 → 清零缓存与快跳过键
         // （阈值吸收原子替换/迁移的瞬时空窗；目录重建后下一扫自动恢复）
         for (dir, streak) in missingStreaks where current.contains(dir) && streak >= 3 {
             cache[dir] = nil
+            latestFiles[dir] = nil
             lastRootDates[dir] = nil
             lastFullScans[dir] = nil
             missingStreaks[dir] = 0
@@ -300,6 +326,13 @@ public final class FileActivityMonitor: FileActivityProviding {
     public struct DirScanResult {
         public let newest: Date?
         public let activeSessions: Int
+        public let newestFile: URL?
+
+        public init(newest: Date?, activeSessions: Int, newestFile: URL? = nil) {
+            self.newest = newest
+            self.activeSessions = activeSessions
+            self.newestFile = newestFile
+        }
     }
 
     /// 单趟全树扫描：最近写入时间 + window 内活跃的顶层子目录数（一次枚举完成）
@@ -308,7 +341,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         let fm = FileManager.default
         let url = URL(fileURLWithPath: dir)
         guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-              let dirDate = values.contentModificationDate else {
+              values.contentModificationDate != nil else {
             return DirScanResult(newest: nil, activeSessions: 0)
         }
         // newest 仅由「非忽略、非噪声的常规文件」聚合（R33/F2）：
@@ -316,6 +349,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         // 已过滤的噪声反向传播回工作信号（working 误报），且每次噪声写入都改变根
         // mtime 使快跳过永久失效。任务产物是文件；目录条目只参与 activeTops 判定
         var newest: Date? = nil
+        var newestFile: URL? = nil
         var activeTops = Set<String>()
         var topLevel: Int? = nil        // 首个目录条目的层级 = 顶层会话目录层级
         var currentTop: String? = nil   // 当前所属顶层目录路径
@@ -324,7 +358,7 @@ public final class FileActivityMonitor: FileActivityProviding {
         guard let en = fm.enumerator(at: url,
                                      includingPropertiesForKeys: keys,
                                      options: [.skipsHiddenFiles]) else {
-            return DirScanResult(newest: newest, activeSessions: 0)
+            return DirScanResult(newest: newest, activeSessions: 0, newestFile: newestFile)
         }
         while let item = en.nextObject() as? URL {
             guard en.level <= maxDepth else {
@@ -353,6 +387,7 @@ public final class FileActivityMonitor: FileActivityProviding {
             }
             if !isDir, let date = v.contentModificationDate, newest == nil || date > newest! {
                 newest = date
+                newestFile = item
             }
             if topLevel == nil, isDir {
                 topLevel = en.level
@@ -374,7 +409,7 @@ public final class FileActivityMonitor: FileActivityProviding {
                 }
             }
         }
-        return DirScanResult(newest: newest, activeSessions: activeTops.count)
+        return DirScanResult(newest: newest, activeSessions: activeTops.count, newestFile: newestFile)
     }
 
     /// 目录树内最近写入时间（测试/Selftest 兼容入口，基于单趟 scanTree）
@@ -488,14 +523,22 @@ public final class FileActivityMonitor: FileActivityProviding {
 
 public final class FakeFileActivityProvider: FileActivityProviding {
     public var writes: [String: Date]
+    public var files: [String: URL]
 
-    public init(writes: [String: Date]) {
+    public init(writes: [String: Date], files: [String: URL] = [:]) {
         self.writes = writes
+        self.files = files
     }
 
     public func lastWriteDates(for dirs: [String]) -> [String: Date] {
         dirs.reduce(into: [String: Date]()) { partial, dir in
             if let date = writes[dir] { partial[dir] = date }
+        }
+    }
+
+    public func latestActivityFiles(for dirs: [String]) -> [String: URL] {
+        dirs.reduce(into: [String: URL]()) { partial, dir in
+            if let file = files[dir] { partial[dir] = file }
         }
     }
 }

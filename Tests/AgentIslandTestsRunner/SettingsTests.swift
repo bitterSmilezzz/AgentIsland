@@ -144,12 +144,20 @@ enum SettingsTests {
             try expectEqual(names.count, 3, "无关进程不得误拦")
         }
 
-        TestKit.test("设置: DockEdge 枚举与持久化键值") {
+        TestKit.test("设置: DockEdge 四边枚举、方向语义与持久化键值") {
             try expectEqual(DockEdge.top.rawValue, "top")
             try expectEqual(DockEdge.right.rawValue, "right")
+            try expectEqual(DockEdge.bottom.rawValue, "bottom")
+            try expectEqual(DockEdge.left.rawValue, "left")
             try expectEqual(DockEdge(rawValue: "top"), .top)
             try expectEqual(DockEdge(rawValue: "right"), .right)
+            try expectEqual(DockEdge(rawValue: "bottom"), .bottom)
+            try expectEqual(DockEdge(rawValue: "left"), .left)
             try expectNil(DockEdge(rawValue: "unknown"))
+            try expectTrue(DockEdge.top.isHorizontal, "顶部沿 X 轴保存锚点")
+            try expectTrue(DockEdge.bottom.isHorizontal, "底部沿 X 轴保存锚点")
+            try expectFalse(DockEdge.left.isHorizontal, "左侧沿 Y 轴保存锚点")
+            try expectFalse(DockEdge.right.isHorizontal, "右侧沿 Y 轴保存锚点")
 
             let name = "agentisland-dock-test-\(UUID().uuidString)"
             let suite = TestDefaults.suite("settings-7")
@@ -165,6 +173,43 @@ enum SettingsTests {
             try expectEqual(savedEdge, .top, "DockEdge 应正确持久化与读取")
             try expectEqual(savedX, 120.5, "dockAnchorX 应正确持久化")
             try expectEqual(savedY, 450.0, "dockAnchorY 应正确持久化")
+        }
+
+        TestKit.test("面板交互: 状态栏宿主窗口不得阻止自动收起") {
+            try expectFalse(
+                IslandPanelInteraction.isMouseInsideFloatingLayer(
+                    className: "NSStatusBarWindow", isVisible: true, containsMouse: false),
+                "状态栏窗口仅可见而鼠标在面板外时，应允许自动收起"
+            )
+            try expectFalse(
+                IslandPanelInteraction.isMouseInsideFloatingLayer(
+                    className: "NSStatusBarWindow", isVisible: true, containsMouse: true),
+                "状态栏宿主的宽泛 frame 不能被当作岛的交互浮层"
+            )
+            try expectTrue(
+                IslandPanelInteraction.isMouseInsideFloatingLayer(
+                    className: "_NSPopoverWindow", isVisible: true, containsMouse: true),
+                "鼠标实际位于 popover 时应保持展开"
+            )
+            try expectFalse(
+                IslandPanelInteraction.isMouseInsideFloatingLayer(
+                    className: "NSWindow", isVisible: true, containsMouse: true),
+                "无关窗口不得被当作岛的浮层"
+            )
+        }
+
+        TestKit.test("面板交互: 松手按最近距离吸附到四条屏幕边") {
+            let visible = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+            let cases: [(CGRect, DockEdge)] = [
+                (CGRect(x: 430, y: 620, width: 330, height: 160), .top),
+                (CGRect(x: 850, y: 300, width: 330, height: 160), .right),
+                (CGRect(x: 430, y: 20, width: 330, height: 160), .bottom),
+                (CGRect(x: 20, y: 300, width: 330, height: 160), .left),
+            ]
+            for (panel, expected) in cases {
+                try expectEqual(IslandPanelInteraction.nearestDockEdge(panelFrame: panel, visibleFrame: visible),
+                                expected, "面板 \(panel) 应吸附到 \(expected)")
+            }
         }
 
         TestKit.test("设置: IslandAppearance 枚举、轮换与持久化") {
@@ -209,9 +254,9 @@ enum SettingsTests {
             try expectTrue(NotificationPolicy.standard.shouldPeek(for: .attention), "标准模式: attention 触发微窥")
             try expectTrue(NotificationPolicy.standard.shouldPeek(for: .costSpike), "标准模式: costSpike 触发微窥")
 
-            // 专注模式：普通完成静默，仅 costSpike 触发 Peek
+            // 专注模式：普通完成静默；需要用户确认与严重告警仍需提醒
             try expectFalse(NotificationPolicy.focus.shouldPeek(for: .completed), "专注模式: completed 不触发微窥")
-            try expectFalse(NotificationPolicy.focus.shouldPeek(for: .attention), "专注模式: attention 不触发微窥")
+            try expectTrue(NotificationPolicy.focus.shouldPeek(for: .attention), "专注模式: attention 仍触发微窥")
             try expectTrue(NotificationPolicy.focus.shouldPeek(for: .costSpike), "专注模式: costSpike 触发微窥")
 
             // 静默模式：全部事件均不 Peek
@@ -231,9 +276,9 @@ enum SettingsTests {
             try expectTrue(NotificationPolicy.standard.shouldPlaySound(for: .attention, soundEnabled: true), "主开关开: 标准模式 attention 发声")
             try expectTrue(NotificationPolicy.standard.shouldPlaySound(for: .costSpike, soundEnabled: true), "主开关开: 标准模式 costSpike 发声")
 
-            // 专注模式：仅 costSpike 报警发声
+            // 专注模式：完成静默；确认请求与 costSpike 发声
             try expectFalse(NotificationPolicy.focus.shouldPlaySound(for: .completed, soundEnabled: true), "主开关开: 专注模式 completed 不发声")
-            try expectFalse(NotificationPolicy.focus.shouldPlaySound(for: .attention, soundEnabled: true), "主开关开: 专注模式 attention 不发声")
+            try expectTrue(NotificationPolicy.focus.shouldPlaySound(for: .attention, soundEnabled: true), "主开关开: 专注模式 attention 发声")
             try expectTrue(NotificationPolicy.focus.shouldPlaySound(for: .costSpike, soundEnabled: true), "主开关开: 专注模式 costSpike 发声报警")
 
             // 静默模式：全部事件均不发声

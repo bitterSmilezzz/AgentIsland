@@ -2,11 +2,12 @@ import AgentIslandCore
 import SwiftUI
 import AppKit
 
-// MARK: - 玻璃拟态背景（Q4：NSVisualEffectView + 黑蒙层 + 顶部高光）
+// MARK: - 玻璃拟态背景（Sydedock 半透明黑曜石玻璃 + 晶莹高光边）
 
 struct GlassCardBackground: View {
     var cornerRadius: CGFloat = Theme.radiusLg
     var dockEdge: DockEdge = .right
+    @Environment(\.colorScheme) private var colorScheme
 
     /// 贴边造型：采用 SideNotchShape 赋予反向倒角一体化贴边质感
     private var notchShape: SideNotchShape {
@@ -15,33 +16,68 @@ struct GlassCardBackground: View {
 
     var body: some View {
         ZStack {
-            VisualEffectView(material: .popover, blendingMode: .behindWindow)
-                .clipShape(notchShape)
-            // 蒙层：深色下黑蒙，浅色下白蒙（动态）
+            // Apple 原生 UltraThinMaterial 真实硬件毛玻璃，穿透底层桌面壁纸与窗口
             notchShape
-                .fill(Color(dynamicLight: 0xffffff, dark: 0x000000).opacity(Theme.glassOverlayOpacity))
-            // 1px 晶莹微反光描边（深色微白高光，浅色微暗勾边）
+                .fill(.ultraThinMaterial)
+
+            // 细腻透光光罩：
+            // 浅色模式：白冰高透微光（10%~22% 柔和白微光，彻底告别死白色块，保留通透质感）
+            // 深色模式：深邃冷炭暗夜光罩（32%~38% 沉稳黑曜石）
             notchShape
-                .stroke(Theme.glassSpecularBorder, lineWidth: 1)
+                .fill(
+                    LinearGradient(
+                        colors: colorScheme == .light ? [
+                            Color.white.opacity(0.22),
+                            Color.white.opacity(0.10)
+                        ] : [
+                            Color(red: 0.05, green: 0.05, blue: 0.08).opacity(0.32),
+                            Color(red: 0.02, green: 0.02, blue: 0.04).opacity(0.38)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            // 0.75pt 晶莹高反光微描边（浅色顶白微光+底微暗勾边；深色钻石渐变微反光）
+            notchShape
+                .stroke(
+                    LinearGradient(
+                        colors: colorScheme == .light ? [
+                            Color.white.opacity(0.65),
+                            Color.black.opacity(0.12)
+                        ] : [
+                            Color.white.opacity(0.40),
+                            Color.white.opacity(0.10)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
         }
     }
 }
 
 struct VisualEffectView: NSViewRepresentable {
-    var material: NSVisualEffectView.Material
-    var blendingMode: NSVisualEffectView.BlendingMode
+    var material: NSVisualEffectView.Material = .popover
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
 
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = material
         view.blendingMode = blendingMode
         view.state = .active
+        view.isEmphasized = true
+        view.wantsLayer = true
         return view
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+        nsView.state = .active
+        nsView.isEmphasized = true
+        nsView.wantsLayer = true
     }
 }
 
@@ -56,10 +92,20 @@ enum IslandDisplayState: Equatable {
 
 enum CardRoute: Equatable {
     case list                     // 主卡：agent 列表 + 汇总栏
+    case tokenAnalytics           // Token 时间趋势、环比与来源构成
     case agentDetail(String)      // agent 详情：总览 + 模型拆分
     case sessions(String, String) // agentId + modelId：该模型会话列表
     case toolbox                  // 快捷工具箱：孤儿进程/假死死锁扫描与清理
     case liveStream(String)       // 实时事件与日志抽屉：agentId
+}
+
+private struct HeaderPresentation {
+    let title: String
+    let subtitle: String?
+    let badge: String?
+    let tint: Color
+    let subtitleIcon: String?
+    let fullText: String
 }
 
 // MARK: - 灵动岛视图
@@ -68,8 +114,27 @@ struct IslandView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
 
+    /// 收起窗口大部分会移出屏幕；把微细条对齐到仍在屏幕中的那一侧。
+    private var dockedAlignment: Alignment {
+        switch controller.dockEdge {
+        case .top: return .bottom
+        case .right: return .leading
+        case .bottom: return .top
+        case .left: return .trailing
+        }
+    }
+
+    private var collapseIcon: String {
+        switch controller.dockEdge {
+        case .top: return "chevron.up"
+        case .right: return "chevron.right"
+        case .bottom: return "chevron.down"
+        case .left: return "chevron.left"
+        }
+    }
+
     var body: some View {
-        ZStack(alignment: controller.dockEdge == .top ? .bottom : .leading) {
+        ZStack(alignment: dockedAlignment) {
             if controller.displayState == .expanded {
                 expandedContent
                     .transition(.opacity)
@@ -78,7 +143,7 @@ struct IslandView: View {
                     .transition(.opacity)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.dockEdge == .top ? .bottom : .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: dockedAlignment)
         .preferredColorScheme(controller.appearanceMode.colorScheme)
         .contextMenu {
             if controller.displayState == .expanded {
@@ -130,6 +195,8 @@ struct IslandView: View {
             switch controller.route {
             case .list:
                 expandedCard
+            case .tokenAnalytics:
+                TokenAnalyticsView(engine: engine, controller: controller)
             case .agentDetail(let agentId):
                 AgentDetailView(engine: engine, controller: controller, agentId: agentId)
             case .sessions(let agentId, let modelId):
@@ -146,7 +213,7 @@ struct IslandView: View {
     // MARK: 贴边微细条（露 6pt，晶莹质感 + 多状态状态呼吸光晕）
 
     private var hasActiveAlert: Bool {
-        activeAlertEvent != nil
+        activeAlertEvent != nil || engine.snapshots.contains { $0.level == .attention }
     }
 
     /// 当前仍需用户注意的事件。完成事件不占用顶部状态摘要，避免把正常完成误显示成告警。
@@ -158,6 +225,62 @@ struct IslandView: View {
 
     private func alertColor(for eventType: AgentTaskEvent.EventType) -> Color {
         eventType == .costSpike ? Theme.dangerRed : Theme.warningOrange
+    }
+
+    /// 稳定身份/状态放第一行，长度不可控的实时动作放第二行。
+    private var headerPresentation: HeaderPresentation {
+        if let alert = activeAlertEvent {
+            let tint = alertColor(for: alert.eventType)
+            let fullText = alert.detail.map { "\(alert.summaryText)。\($0)" } ?? alert.summaryText
+            return HeaderPresentation(
+                title: alert.agentName,
+                subtitle: alert.summaryText,
+                badge: alert.eventType == .costSpike ? "告警" : "待确认",
+                tint: tint,
+                subtitleIcon: alert.eventType == .costSpike
+                    ? "exclamationmark.octagon.fill" : "hand.tap.fill",
+                fullText: fullText
+            )
+        }
+
+        if let waiting = engine.visibleSnapshots.first(where: { $0.level == .attention }) {
+            let action = waiting.currentAction ?? "等待你确认"
+            return HeaderPresentation(
+                title: waiting.profile.name,
+                subtitle: action,
+                badge: "待确认",
+                tint: Theme.warningOrange,
+                subtitleIcon: "hand.tap.fill",
+                fullText: "\(waiting.profile.name)：\(action)"
+            )
+        }
+
+        if let active = engine.visibleSnapshots.first(where: {
+            $0.level == .working && !(($0.currentAction ?? "").isEmpty)
+        }), let action = active.currentAction {
+            let others = max(engine.workingAgents().count - 1, 0)
+            return HeaderPresentation(
+                title: active.profile.name,
+                subtitle: action,
+                badge: others > 0 ? "+\(others)" : "工作中",
+                tint: Theme.statusWorking,
+                subtitleIcon: "terminal.fill",
+                fullText: "\(active.profile.name)：\(action)"
+            )
+        }
+
+        let completedCount = engine.visibleSnapshots.filter { $0.level == .completed }.count
+        let statusText = engine.anyWorking
+            ? "\(engine.workingAgents().count) 个 Agent 正在工作"
+            : (completedCount > 0 ? "\(completedCount) 个任务已完成" : "全部 Agent 待机")
+        return HeaderPresentation(
+            title: statusText,
+            subtitle: nil,
+            badge: nil,
+            tint: engine.anyWorking ? Theme.statusWorking : Theme.onDarkMuted,
+            subtitleIcon: nil,
+            fullText: statusText
+        )
     }
 
     private var dockedSliver: some View {
@@ -186,75 +309,30 @@ struct IslandView: View {
             HStack(spacing: 6) {
                 statusDot
                     .frame(width: 9, height: 9)
-                // 优先展示「有动作」的 working agent：若第一个 working 恰好无动作，
-                // 此前会整段退化，明明有 Agent 带动作也不显示
-                if let alert = activeAlertEvent {
-                    Text(alert.summaryText)
-                        .font(Theme.bodyFont(12, weight: .semibold))
-                        .foregroundColor(alertColor(for: alert.eventType))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .layoutPriority(1)
-                        .contentShape(Rectangle())
-                        .help(alert.detail.map { "\(alert.summaryText)\n\($0)" } ?? alert.summaryText)
-                        .accessibilityLabel(alert.detail.map { "\(alert.summaryText)。\($0)" } ?? alert.summaryText)
-                } else if let active = engine.visibleSnapshots.first(where: {
-                    $0.level == .working && !($0.currentAction ?? "").isEmpty
-                }), let action = active.currentAction {
-                    HStack(spacing: 4) {
-                        Text(active.profile.name)
-                            .font(Theme.bodyFont(13, weight: .bold))
-                            .foregroundColor(Theme.onDark)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Text("·")
-                            .foregroundColor(Theme.onDarkFaint)
-                        Text(action)
-                            .font(Theme.bodyFont(12, weight: .medium))
-                            .foregroundColor(Theme.statusWorking)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        // 多 Agent 并行时提示还有几个在工作，避免只看到第一个造成误解
-                        let others = engine.workingAgents().count - 1
-                        if others > 0 {
-                            Text("+\(others)")
-                                .font(Theme.monoFont(10, weight: .semibold))
-                                .foregroundColor(Theme.onDarkFaint)
-                        }
-                    }
-                    // 顶栏必须恒为单行：IslandMetrics.headerContentHeight 按单行文本行高
-                    // 校准，一旦名称/动作折行，顶栏实际高度会多出约 17pt，使总内容超过
-                    // 窗口高度上限，底部 Token 汇总栏被裁（拖动后动作文字变长时必现）。
-                    .lineLimit(1)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(1)
-                    .contentShape(Rectangle())
-                    // 正文保持单行省略；悬停时展示未截断的 Agent 名和动作。
-                    .help("\(active.profile.name): \(action)")
-                    .accessibilityLabel("\(active.profile.name)：\(action)")
-                } else {
-                    let statusText = engine.anyWorking
-                        ? "\(engine.workingAgents().count) 个 Agent 正在工作"
-                        : "当前没有 Agent 在工作"
-                    Text(statusText)
-                        .font(Theme.bodyFont(13, weight: .semibold))
-                        .foregroundColor(Theme.onDark)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .layoutPriority(1)
-                        .contentShape(Rectangle())
-                        .help(statusText)
-                        .accessibilityLabel(statusText)
-                }
+                let header = headerPresentation
+                AdaptiveHeaderText(
+                    title: header.title,
+                    subtitle: header.subtitle,
+                    badge: header.badge,
+                    tint: header.tint,
+                    subtitleIcon: header.subtitleIcon,
+                    fullText: header.fullText
+                )
                 Spacer(minLength: 4)
-                // 可见计数是次要信息：去掉 fixedSize 让它可被压缩，
-                // 避免挤占左侧「Agent 名 + 实时动作」这一最需要看的信息
-                Text("\(engine.visibleSnapshots.count)/\(engine.snapshots.count) 可见")
+                // 在线计数宽度不足时主动退化为单个数字，不抢标题的最低可读区。
+                ViewThatFits(in: .horizontal) {
+                    Text("\(engine.visibleSnapshots.count)/\(engine.snapshots.count) 在线")
+                        .fixedSize()
+                    Text("\(engine.visibleSnapshots.count)")
+                        .fixedSize()
+                }
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.onDarkFaint)
                     .lineLimit(1)
                     .layoutPriority(-1)
-                    .help("当前可见 \(engine.visibleSnapshots.count) 个，共监控 \(engine.snapshots.count) 个")
+                    .help("当前在线 \(engine.visibleSnapshots.count) 个，共监控 \(engine.snapshots.count) 个；离线项不显示")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("当前在线 \(engine.visibleSnapshots.count) 个，共监控 \(engine.snapshots.count) 个")
 
                 // 外观模式切换
                 Menu {
@@ -300,7 +378,7 @@ struct IslandView: View {
                 Button {
                     controller.collapse()
                 } label: {
-                    Image(systemName: controller.dockEdge == .top ? "chevron.up" : "chevron.right")
+                    Image(systemName: collapseIcon)
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(Theme.onDarkFaint)
                         .padding(4)
@@ -332,18 +410,25 @@ struct IslandView: View {
                                         Text(snap.profile.name)
                                             .font(Theme.bodyFont(10, weight: .semibold))
                                             .foregroundColor(Theme.onDark)
-                                            .lineLimit(1)
+                                            .readableSingleLine(fullText: snap.profile.name, priority: 2)
                                         Text(shelfSubtitle(snap))
                                             .font(Theme.badgeFont())
-                                            .foregroundColor(snap.level == .working ? Palette.ringGreen : Theme.onDarkFaint)
-                                            .lineLimit(1)
+                                            .foregroundColor(snap.level == .attention ? Theme.warningOrange : (snap.level == .working || snap.level == .completed ? Palette.ringGreen : Theme.onDarkFaint))
+                                            .readableSingleLine(
+                                                fullText: shelfSubtitle(snap),
+                                                priority: 1
+                                            )
                                     }
                                 }
                                 .padding(.vertical, 3)
                                 .padding(.horizontal, 6)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(snap.level == .working ? Theme.hoverFill : Theme.chipFill)
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(snap.level == .working || snap.level == .attention ? Theme.hoverFill : Theme.obsidianCardFill)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                                .strokeBorder(snap.level == .attention ? Theme.warningOrange.opacity(0.45) : (snap.level == .working ? Theme.sydedockEmerald.opacity(0.3) : Theme.obsidianHairline), lineWidth: 0.5)
+                                        )
                                 )
                             }
                             .buttonStyle(.plain)
@@ -420,7 +505,9 @@ struct IslandView: View {
             // Token 汇总栏
             if !engine.grandTotal.isEmpty {
                 DarkDivider()
-                TokenSummaryBar(total: engine.grandTotal)
+                TokenSummaryBar(total: engine.grandTotal) {
+                    controller.route = .tokenAnalytics
+                }
                     .fixedSize(horizontal: false, vertical: true)
                     // 高优先级：VStack 分配空间时优先满足汇总栏的完整高度
                     .layoutPriority(1)
@@ -436,6 +523,8 @@ struct IslandView: View {
     /// 活动环微看板副标题（正文与 help 共用，避免两处口径漂移）
     private func shelfSubtitle(_ snap: AgentSnapshot) -> String {
         if snap.level == .working { return "工作中" }
+        if snap.level == .attention { return "等待你确认" }
+        if snap.level == .completed { return "任务已完成" }
         if let usage = snap.tokenUsage, usage.tokens24h > 0 {
             return AgentRowView.tokenBadge(usage)
         }
@@ -458,7 +547,9 @@ struct IslandView: View {
     }
 
     private var statusColor: Color {
-        engine.anyWorking ? Theme.statusWorking : Theme.statusIdle
+        engine.snapshots.contains { $0.level == .attention }
+            ? Theme.warningOrange
+            : (engine.anyWorking ? Theme.statusWorking : Theme.statusIdle)
     }
 }
 
@@ -476,7 +567,14 @@ private struct TopBarChipModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(Circle().fill(hovering ? Theme.hoverFill : Theme.chipFill))
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovering ? Theme.hoverFill : Theme.chipFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                    )
+            )
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
     }
@@ -496,6 +594,8 @@ extension ActivityLevel {
     var label: String {
         switch self {
         case .working: return "工作中"
+        case .attention: return "待确认"
+        case .completed: return "已完成"
         case .idle: return "待机"
         case .offline: return "离线"
         }
@@ -504,6 +604,8 @@ extension ActivityLevel {
     var color: Color {
         switch self {
         case .working: return Theme.statusWorking
+        case .attention: return Theme.warningOrange
+        case .completed: return Theme.statusWorking
         case .idle: return Theme.statusIdle
         case .offline: return Theme.statusOffline
         }

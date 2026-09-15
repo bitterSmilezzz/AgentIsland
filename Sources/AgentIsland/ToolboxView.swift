@@ -186,10 +186,11 @@ struct ToolboxView: View {
                             Text(item.agentName)
                                 .font(Theme.bodyFont(11, weight: .bold))
                                 .foregroundColor(Theme.onDark)
-                                // 名称过长会把 PID/类型徽标挤出可见区
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .help("\(item.agentName) · \(item.commandPath)")
+                                .readableSingleLine(
+                                    fullText: "\(item.agentName) · \(item.commandPath)",
+                                    minWidth: 60,
+                                    priority: 2
+                                )
                             Text("PID: \(item.pid)")
                                 .font(Theme.monoFont(9))
                                 .foregroundColor(Theme.onDarkFaint)

@@ -28,10 +28,9 @@ enum IslandMetrics {
     /// 顶栏：padding(.top) + 内容 + padding(.bottom)
     static let headerPaddingTop: CGFloat = 12
     static let headerPaddingBottom: CGFloat = 8
-    /// 顶栏内容行高：由右侧圆形图标按钮决定（10pt 图标 + 上下各 4pt padding ≈ 18，
-    /// 加 SF Symbol 行高余量取 23）。实测校准：取值偏小会让窗口比 SwiftUI 内容矮
-    /// （NSHostingView.fittingSize 比本组常量高约 5.5pt），底部 Token 汇总栏被裁。
-    static let headerContentHeight: CGFloat = 23
+    /// 顶栏内容高：稳定主标题 + 动态动作副标题的双层结构，组件最小高 34pt。
+    /// 不能再按旧单行 23pt 计算，否则长动作出现时窗口高度会少 11pt、底部汇总被裁。
+    static let headerContentHeight: CGFloat = 34
     static var headerHeight: CGFloat { headerPaddingTop + headerContentHeight + headerPaddingBottom }
 
     static let dividerHeight: CGFloat = 1
@@ -49,7 +48,7 @@ enum IslandMetrics {
     /// 空态：zzz 图标 22 + spacing 6 + 文案 + padding(.vertical)×2 ≈ 87
     static let emptyStatePaddingVertical: CGFloat = 22
     /// 空态区高（图 + 文案 + CTA 按钮 + 上下 padding）。
-    /// 121 = 实测校准（R23）：真实 SwiftUI 空态理想高 185pt - chrome 64pt。
+    /// 121 = 实测校准（R23）：正文自身高度不随 R40 顶栏双层化改变。
     /// 此前 87 低估 34pt（R14 加「打开偏好设置」按钮后未回校），靠 fittingSize 兜底
     /// 不裁切但常量失真——布局改动必须连本常量一起回校
     static let emptyStateHeight: CGFloat = 121
@@ -116,7 +115,7 @@ enum IslandMetrics {
                                   hasRings: hasRings, hasEvent: hasEvent,
                                   eventExpanded: eventExpanded)
             return min(chrome + list, expandedMaxHeight)
-        case .agentDetail, .sessions:
+        case .tokenAnalytics, .agentDetail, .sessions:
             return min(2 * notchInset + detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)
         case .toolbox, .liveStream:
             return min(2 * notchInset + detailHeaderHeight + dividerHeight + detailContentHeight, expandedMaxHeight)

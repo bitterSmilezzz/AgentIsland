@@ -80,8 +80,12 @@ enum FileIOTests {
             monitor.replaceWatchedDirs([root.path])
             monitor.scanSync()
             try expectTrue(monitor.lastWriteDates(for: [root.path])[root.path] != nil)
+            try expectEqual(monitor.latestActivityFiles(for: [root.path])[root.path]?.lastPathComponent,
+                            "s1.json", "状态语义检查应复用扫描器定位的最新文件")
             monitor.replaceWatchedDirs([])
             try expectTrue(monitor.lastWriteDates(for: [root.path]).isEmpty)
+            try expectTrue(monitor.latestActivityFiles(for: [root.path]).isEmpty,
+                           "移除监控目录时不得残留旧会话文件路由")
         }
         TestKit.test("文件活动：编辑历史与附件缓存不触发工作态") {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

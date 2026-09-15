@@ -43,56 +43,94 @@ enum Theme {
     static let parchment = Color(dynamicLight: 0xf5f5f7, dark: 0x1e1e20)
     static let hairline = Color(dynamicLight: 0xe0e0e0, dark: 0x3a3a3c)
 
-    // 灵动岛主体（动态：深色=黑玻璃，浅色=白玻璃）
-    static let tile1 = Color(dynamicLight: 0xe9e9ec, dark: 0x272729)
+    // 灵动岛主体（动态：深色=黑曜石质感，浅色=白瓷工控）
+    static let tile1 = Color(dynamicLight: 0xe9e9ec, dark: 0x141418)
 
-    // Risk accents：浅色下加深，保证在白玻璃上仍可读
-    // （原始系统色 #ff3b30 / #ff9500 在白底分别约 3.5:1 / 2.2:1，作为正文色不达标）
+    // Sydedock 专属工业触觉设计令牌（动态透光毛玻璃与原生 macOS HUD 质感）
+    static let obsidianBase = Color(dynamicLight: 0xf5f5f7, dark: 0x0c0d14)
+    static let obsidianCard = Color(dynamicLight: 0xffffff, dark: 0x161722)
+    static let obsidianPill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0xffffff, alpha: 0.09))
+    static let obsidianHairline = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.14))
+    static let obsidianCardFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04), dark: NSColor(hex: 0xffffff, alpha: 0.07))
+    static let obsidianCardHoverFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.13))
+    static let obsidianCardBorder = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.14))
+    static let obsidianCardBorderHover = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.16), dark: NSColor(hex: 0xffffff, alpha: 0.28))
+
+    // Sydedock 荧光强调色（深色模式绚丽高亮，浅色模式加深保障可读对比度）
+    static let sydedockCyan = Color(dynamicLight: 0x0284c7, dark: 0x00e1ff)
+    static let sydedockBlue = Color(dynamicLight: 0x1d4ed8, dark: 0x38bdf8)
+    static let sydedockAmber = Color(dynamicLight: 0xb45309, dark: 0xffd60a)
+    static let sydedockEmerald = Color(dynamicLight: 0x15803d, dark: 0x30d158)
+
+    /// 立体黑曜石药丸背景渐变（Sydedock Pill）
+    static var pillGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(dynamicLight: 0xf0f0f3, dark: 0x202028),
+                Color(dynamicLight: 0xe4e4e8, dark: 0x131318)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    /// 高级工控状态轨底色渐变
+    static var trackGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                sydedockCyan,
+                sydedockBlue
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    // Risk accents：浅色模式加深保证对比度
     static let dangerRed = Color(dynamicLight: 0xd32f2f, dark: 0xff3b30)
     static let warningOrange = Color(dynamicLight: 0xb45309, dark: 0xff9500)
 
-    // 文本（动态：岛面上深色模式白字、浅色模式深字）
-    static let ink = Color(dynamicLight: 0x1d1d1f, dark: 0xf5f5f7)
-    static let inkMuted80 = Color(dynamicLight: 0x333333, dark: 0xbbbbbf)
-    static let inkMuted48 = Color(dynamicLight: 0x7a7a7a, dark: 0x9a9aa0)
-    static let onDark = Color(dynamicLight: 0x1d1d1f, dark: 0xffffff)          // 主文字
-    static let onDarkMuted = Color(dynamicLight: 0x3f3f45, dark: 0xcccccc)     // 次要（浅色加深保对比）
-    static let onDarkFaint = Color(dynamicLight: 0x6e6e73, dark: 0x8e8e93)     // 弱化（浅色≥4.5:1）
+    // 文本（动态：深色模式纯净象牙白与清透柔银，浅色模式墨水黑与工控灰，HIG 对比度 ≥4.5:1 / 7:1）
+    static let ink = Color(dynamicLight: 0x0f172a, dark: 0xf8fafc)
+    static let inkMuted80 = Color(dynamicLight: 0x334155, dark: 0xcfd4dc)
+    static let inkMuted48 = Color(dynamicLight: 0x64748b, dark: 0x94a3b8)
+    static let onDark = Color(dynamicLight: 0x0f172a, dark: 0xffffff)          // 主文字：深色纯白 100%，浅色黑蓝
+    static let onDarkMuted = Color(dynamicLight: 0x334155, dark: 0xe2e8f0)     // 次要文字：清透软银色
+    static let onDarkFaint = Color(dynamicLight: 0x64748b, dark: 0x94a3b8)     // 弱化信息：清晰可辨浅石板灰
 
-    // 悬停/按压蒙层（浅色下用黑低透明，深色下用白低透明）
-    // hoverFill 需要明显强于 chipFill（≥2x），否则 hover 反馈肉眼不可辨
-    static let hoverFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16)
-    static let chipFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.07)
-    static let cardFill = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.05)
+    // 悬停/按压蒙层（浅色黑低透，深色白低透）
+    static let hoverFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.12))
+    static let chipFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0xffffff, alpha: 0.08))
+    static let cardFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04), dark: NSColor(hex: 0xffffff, alpha: 0.07))
 
-    // Status（Apple system colors；浅色下加深保证对比 ≥4.5:1）
+    // Status（浅色模式加深保证对比度）
     static let statusWorking = Color(dynamicLight: 0x157f3c, dark: 0x30d158)
     static let statusIdle = Color(dynamicLight: 0x8f6a00, dark: 0xffd60a)
     static let statusOffline = Color(dynamicLight: 0x5c5c61, dark: 0x8e8e93)
 
-    // 面板视觉（细条/蒙层/阴影；岛专属令牌，改主题一并看三路由视觉）
-    /// docked 细条填充：告警深红/琥珀底，忙碌加深（浅色 0.55/深色 0.85），闲置 0.34/0.55
+    // 面板视觉（细条/蒙层/阴影；岛专属令牌）
+    /// docked 细条填充：浅色微透白冰底，深色暗黑冷炭毛玻璃底
     static func dockedSliverFill(working: Bool, alert: Bool = false) -> Color {
         if alert {
-            return Color(dynamic: NSColor(hex: 0x3d0a0a, alpha: 0.85),
-                         dark: NSColor(hex: 0x2e0606, alpha: 0.92))
+            return Color(dynamic: NSColor(hex: 0xd32f2f, alpha: 0.85),
+                         dark: NSColor(hex: 0x3d0a0a, alpha: 0.85))
         }
-        return Color(dynamic: NSColor(hex: 0x000000, alpha: working ? 0.55 : 0.34),
-                     dark: NSColor(hex: 0x000000, alpha: working ? 0.85 : 0.55))
+        return Color(dynamic: NSColor(hex: 0xffffff, alpha: working ? 0.70 : 0.45),
+                     dark: NSColor(hex: 0x08080c, alpha: working ? 0.82 : 0.70))
     }
-    /// docked 细条描边（正常态/工作态微绿/告警微红）
+    /// docked 细条描边（浅色黑微透/深色白微透）
     static func dockedSliverStroke(working: Bool, alert: Bool = false) -> Color {
         if alert {
-            return dangerRed.opacity(0.65)
+            return dangerRed.opacity(0.85)
         } else if working {
-            return statusWorking.opacity(0.55)
+            return sydedockEmerald.opacity(0.85)
         }
-        return Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.22)
+        return Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.25)
     }
-    /// 玻璃卡黑/白蒙层不透明度（GlassCardBackground）
-    static let glassOverlayOpacity: Double = 0.38
-    /// 玻璃卡 1px 晶莹微反光边缘（深色微白高光，浅色微暗勾边）
-    static let glassSpecularBorder = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.12)
+    /// 玻璃卡蒙层不透明度（GlassCardBackground）
+    static let glassOverlayOpacity: Double = 0.35
+    /// 玻璃卡 1px 晶莹微反光边缘
+    static let glassSpecularBorder = Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.15)
     // 面板 AppKit 阴影已停用（见 IslandPanelController.updateChrome）：窗口与玻璃卡同尺寸，阴影无处落地，
     // 只会向卡内渗入形成暗带。贴边观感由玻璃卡高光边缘与反向倒角承担。
 
@@ -104,6 +142,9 @@ enum Theme {
         .system(size: size, weight: weight, design: .default)
     }
     static func monoFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
+    static func monoDigitFont(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
     /// 徽标/标签统一字号（R24）：此前同一「Token 徽标」语义存在 8/9/10pt 三种，

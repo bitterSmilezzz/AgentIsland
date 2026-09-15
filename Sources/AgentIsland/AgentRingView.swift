@@ -23,6 +23,10 @@ struct AgentRingView: View {
             // 工作中根据 CPU 与近期活动计算活跃度（保底 0.35 弧长，随 CPU 增高）
             let cpuFrac = min(CGFloat(snapshot.cpuPercent) / 100.0, 1.0)
             return max(0.35, min(0.35 + cpuFrac * 0.65, 1.0))
+        case .attention:
+            return 0.78
+        case .completed:
+            return 0.45
         case .idle:
             if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
                 // 闲置但有 24h token 消耗时，按水位绘制环
@@ -49,6 +53,10 @@ struct AgentRingView: View {
             } else {
                 return Palette.ringGreen
             }
+        case .attention:
+            return Palette.ringYellow
+        case .completed:
+            return Palette.ringGreen
         case .idle:
             if let usage = snapshot.tokenUsage {
                 if usage.tokens24h >= 200_000 {
@@ -69,6 +77,10 @@ struct AgentRingView: View {
         Palette.ringTrack
     }
 
+    private var cornerRadius: CGFloat {
+        size * 0.28
+    }
+
     private var strokeWidth: CGFloat {
         size >= 34 ? 2.5 : 2.0
     }
@@ -80,13 +92,17 @@ struct AgentRingView: View {
     var body: some View {
         VStack(spacing: 3) {
             ZStack {
-                // 1. 底轨环（暗灰色极细圆环）
-                Circle()
+                // 1. 底轨环（Sydedock 风格圆角超椭圆跑道微底）
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(trackColor, lineWidth: strokeWidth)
+                    .background(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04))
+                    )
 
                 // 2. 外圈分级彩色进度环
                 if progress > 0 {
-                    Circle()
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .inset(by: strokeWidth / 2)
                         .trim(from: 0, to: progress)
                         .stroke(
@@ -100,7 +116,7 @@ struct AgentRingView: View {
                 // 3. 内圈活动动效（Activity Arc）
                 if snapshot.level == .working {
                     SpinningActivityArc(color: ringColor, size: size, stroke: strokeWidth)
-                } else if snapshot.currentAction != nil {
+                } else if snapshot.level == .attention {
                     // 等待或有未完成指令时，呈现呼吸琥珀环
                     PulsingAttentionArc(color: Palette.ringYellow, size: size, stroke: strokeWidth)
                 }
@@ -192,14 +208,14 @@ private struct PulsingAttentionArc: View {
 /// 环线 ≥3:1、被当作文字用时（如环看板副标题、tooltip 花费）≥4.5:1。
 /// 此前四个颜色全部硬编码亮色：ringYellow 白底 ≈1.3:1、ringGreen ≈1.8:1，浅色主题下几乎不可见。
 enum Palette {
-    /// 环形底轨灰
-    static let ringTrack = Color(dynamicLight: 0xdcdce0, dark: 0x333338)
-    /// 水位 0~49% 荧光鲜绿（浅色取 Theme.statusWorking 同款加深绿，白底约 5:1）
+    /// 环形底轨灰（黑曜石微轨）
+    static let ringTrack = Color(dynamicLight: 0xdcdce0, dark: 0x22222a)
+    /// 水位 0~49% Sydedock 翡翠绿
     static let ringGreen = Color(dynamicLight: 0x157f3c, dark: 0x28E07B)
-    /// 水位 50~79% 琥珀黄（浅色取 Theme.statusIdle 同款深琥珀，白底约 5:1）
-    static let ringYellow = Color(dynamicLight: 0x8f6a00, dark: 0xF5E400)
-    /// 水位 80~99% 预警亮橙
-    static let ringOrange = Color(dynamicLight: 0xc23a00, dark: 0xFF4500)
+    /// 水位 50~79% Sydedock 金琥珀
+    static let ringYellow = Color(dynamicLight: 0x8f6a00, dark: 0xE3C567)
+    /// 水位 80~99% 预警橙
+    static let ringOrange = Color(dynamicLight: 0xc23a00, dark: 0xFF6B35)
     /// 水位 100% / 熔断 极光赤红
     static let ringRed = Color(dynamicLight: 0xc62828, dark: 0xFF3B30)
 }

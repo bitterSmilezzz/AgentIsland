@@ -30,6 +30,20 @@ struct SideNotchShape: Shape {
         guard rect.width > 0, rect.height > 0 else { return path }
 
         switch dockEdge {
+        case .left:
+            // 左侧是右侧造型的水平镜像，保持倒角曲率与圆角半径完全同源。
+            var mirror = CGAffineTransform(translationX: rect.minX + rect.maxX, y: 0)
+                .scaledBy(x: -1, y: 1)
+            return cgPath(bounds: rect, dockEdge: .right, cornerRadius: cornerRadius, curlRadius: curlRadius)
+                .copy(using: &mirror) ?? path
+
+        case .bottom:
+            // 底部是顶部造型的垂直镜像，避免维护两套近似 Bézier 几何。
+            var mirror = CGAffineTransform(translationX: 0, y: rect.minY + rect.maxY)
+                .scaledBy(x: 1, y: -1)
+            return cgPath(bounds: rect, dockEdge: .top, cornerRadius: cornerRadius, curlRadius: curlRadius)
+                .copy(using: &mirror) ?? path
+
         case .right:
             // 右侧贴边：右侧为屏幕边框（maxX），左侧为悬浮端（minX）
             let wantedCorner = max(0, min(cornerRadius, rect.width / 2))

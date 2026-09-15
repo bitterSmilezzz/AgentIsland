@@ -216,7 +216,7 @@ public enum IslandAppearance: String, CaseIterable, Identifiable, Sendable {
 
 public enum NotificationPolicy: String, CaseIterable, Identifiable, Sendable {
     case standard   // 标准模式：全部事件均弹窗 Peek + 提示音
-    case focus      // 专注免打扰（推荐）：普通完成静默；仅 costSpike（熔断/死循环告警）弹窗微窥并报警
+    case focus      // 专注免打扰（推荐）：普通完成静默；确认请求与 costSpike 告警仍提醒
     case silent     // 完全静默：全部事件绝不弹窗微窥，不播放声音
 
     public var id: String { rawValue }
@@ -248,7 +248,7 @@ public enum NotificationPolicy: String, CaseIterable, Identifiable, Sendable {
     public var detailDescription: String {
         switch self {
         case .standard: return "任务完成与告警均触发弹窗预览与声音提示"
-        case .focus: return "普通完成静默更新；仅熔断/死循环告警弹窗并报警"
+        case .focus: return "普通完成静默更新；确认请求与熔断/死循环告警仍提醒"
         case .silent: return "不弹窗微窥、不响提示音，仅静默记录与展示"
         }
     }
@@ -259,7 +259,7 @@ public enum NotificationPolicy: String, CaseIterable, Identifiable, Sendable {
         case .standard:
             return true
         case .focus:
-            return eventType == .costSpike
+            return eventType != .completed
         case .silent:
             return false
         }
@@ -272,10 +272,9 @@ public enum NotificationPolicy: String, CaseIterable, Identifiable, Sendable {
         case .standard:
             return true
         case .focus:
-            return eventType == .costSpike
+            return eventType != .completed
         case .silent:
             return false
         }
     }
 }
-

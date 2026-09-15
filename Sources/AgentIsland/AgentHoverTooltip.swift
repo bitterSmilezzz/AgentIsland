@@ -36,12 +36,26 @@ struct AgentHoverTooltipCard: View {
         .padding(12)
         .frame(width: 230)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(dynamicLight: 0xf5f5f7, dark: 0x18181b).opacity(0.96))
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(dynamicLight: 0xfafafa, dark: 0x13131a).opacity(0.85))
+            }
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Theme.glassSpecularBorder, lineWidth: 1)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.18),
+                            Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
         )
         .shadow(color: Color.black.opacity(0.35), radius: 12, x: -2, y: 4)
     }
@@ -55,7 +69,11 @@ struct AgentHoverTooltipCard: View {
                 Text(snapshot.profile.name)
                     .font(Theme.bodyFont(12, weight: .bold))
                     .foregroundColor(Theme.onDark)
-                    .lineLimit(1)
+                    .readableSingleLine(
+                        fullText: snapshot.profile.name,
+                        minWidth: 64,
+                        priority: 2
+                    )
 
                 if let pid = snapshot.pid, snapshot.processRunning {
                     let cpuStr = snapshot.cpuPercent > 0 ? String(format: "%.1f%%", snapshot.cpuPercent) : "0%"
@@ -69,6 +87,7 @@ struct AgentHoverTooltipCard: View {
                         .foregroundColor(Theme.onDarkFaint)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer(minLength: 4)
 
@@ -108,6 +127,8 @@ struct AgentHoverTooltipCard: View {
                         .font(Theme.monoFont(10))
                         .foregroundColor(Theme.statusWorking)
                         .lineLimit(2)
+                        .help(action)
+                        .accessibilityLabel(action)
                         .padding(6)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         // 动态色：硬编码 black 0.35 在浅色卡片（0xf5f5f7）上是一块深色板

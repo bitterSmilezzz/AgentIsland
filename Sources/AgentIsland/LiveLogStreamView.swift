@@ -168,7 +168,10 @@ struct LiveLogStreamView: View {
                     .font(Theme.monoFont(10, weight: .semibold))
                     .foregroundColor(Theme.onDark)
                     .lineLimit(isExpanded ? nil : 1)
-                    .truncationMode(.tail)
+                    .truncationMode(.middle)
+                    .layoutPriority(2)
+                    .help(event.title)
+                    .accessibilityLabel(event.title)
 
                 Spacer(minLength: 2)
 
@@ -200,9 +203,7 @@ struct LiveLogStreamView: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                // 动态色：white 3% 在白玻璃上完全不可见，浅色改用黑色 3% 做行分层
-                .fill(isExpanded ? Theme.hoverFill
-                                 : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.03))
+                .fill(isExpanded ? Theme.hoverFill : Color.white.opacity(0.04))
         )
         .contentShape(Rectangle())
         .onTapGesture {

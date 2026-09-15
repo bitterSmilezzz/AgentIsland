@@ -8,6 +8,8 @@ func runAllTests() -> Int32 {
     FileIOTests.register()
     FileIOTests.registerTreeTests()
     EngineTests.register()
+    AttentionTests.register()
+    TypographyTests.register()
     TokenUsageTests.register()
     RegistryTests.register()
     SettingsTests.register()

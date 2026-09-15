@@ -30,10 +30,16 @@ _Avoid_: 轮询（专指 token 数据的定时查询）
 某时刻某 Agent 的状态装配：活动等级、进程在否、CPU、是否已安装、活跃会话数、最近活动时间、token 用量。
 
 **活动等级（ActivityLevel）**:
-`offline`（进程不在）/ `idle`（进程在但无活动信号）/ `working`（有活动信号）。
+`offline`（进程不在）/ `idle`（进程在但无活动信号）/ `completed`（本轮有明确完成标记）/ `working`（有活动信号）/ `attention`（存在未处理的用户确认或授权请求）。
+
+**会话强语义（session signal）**:
+从本轮文件扫描已定位的最新会话文件中，有界尾读结构化事件字段，提取 `attention` / `completed`。强语义优先于双信号；无命中或未知格式时降级到双信号。确认请求解除后不补完成事件，完成标记过期后自然回到 idle。
+
+**通知路由（notification route）**:
+系统通知携带 Agent id；点击后按快照 PID / 档案 bundle id 激活对应 GUI 或 CLI 宿主终端，无法激活时回退到 AgentIsland 对应 Agent 详情。
 
 **双信号**:
-working 的两个判定依据：工作窗口内有会话文件写入、或进程 CPU 超过阈值；满足其一即 working。
+没有会话强语义时，working 的两个判定依据：工作窗口内有会话文件写入、或进程 CPU 超过阈值；满足其一即 working。
 
 **滞回（hysteresis）**:
 working 信号消失后保持 working 的最短时长，防止临界抖动导致面板高频弹跳。
@@ -42,12 +48,18 @@ working 信号消失后保持 working 的最短时长，防止临界抖动导致
 会话目录下、判定窗口内有文件写入的顶层子目录数。
 
 **可见口径（visibleSnapshots）**:
-「在线、或 24h 内有活动」才算可见的统一口径；卡片列表、菜单摘要、高度计算都消费它。
+仅进程仍在的 Agent 可见；待机、工作中、待确认、已完成均显示，离线一律隐藏。卡片列表、菜单摘要、高度计算都消费这一统一口径；历史活动与 token 不得让离线 Agent 形成幽灵条目。
 
 ### Token 用量
 
 **Token 用量（TokenUsage）**:
-24h 与累计两组 token 数与成本；口径为净消耗（prompt+completion / input+output+reasoning），不含 cache.read，避免多轮会话重复计费虚高。
+24h 与累计两组 token 数与成本；总体跨 DimAgent、OpenCode、Codex、Claude、WorkBuddy 与 WorkBuddy AI 合并。口径为净消耗（prompt+completion / input+output），不含 cache.read，避免多轮会话重复计费虚高。
+
+**Token 数据覆盖（Token source availability）**:
+工具本地明细源是否被发现，与“当前范围用量为 0”是两个不同状态。分析页必须逐工具表达该差异，不得把未接入或缺失数据伪装成零用量。
+
+**Token 用量下钻（Token source detail navigation）**:
+本地明细可读且工具具备详情能力时，分析页允许进入用量详情；这条导航不依赖实时快照。实时 Agent 列表仍遵守宿主/内嵌组件去重，避免 ChatGPT 与内嵌 Codex 重复显示。
 
 **呈现活跃（presentation active）**:
 面板处于需要展示 token 数据的状态（展开态）。token 轮询仅在呈现活跃时运行；收起即暂停。
@@ -59,13 +71,13 @@ _Avoid_: 前台、可见（屏幕层面概念）
 收起态（在贴靠边缘保留 6pt 晶莹微细条）/ 展开态（完整卡片）。
 
 **DockEdge（停靠边缘）**:
-`top`（顶部灵动岛）与 `right`（右侧边栏），由自由拖拽释放时智能吸附或设置面板指定。
+`top`（顶部灵动岛）、`right`（右侧边栏）、`bottom`（底部停靠条）与 `left`（左侧边栏）。自由拖拽释放时按距可用屏幕四边的最近距离吸附，水平边保存 X 锚点、垂直边保存 Y 锚点；设置面板也可直接指定。
 
 **微细条（sliver）**:
 收起态下在屏幕边缘留存的 6pt 极细晶莹胶囊，带工作呼吸绿灯，光标触碰或悬停即可自动弹出展开为卡片。
 
 **自由拖拽与智能吸附（drag & snap）**:
-长按展开卡片顶栏可自由移动，松手时根据与屏幕顶缘/右缘的距离自动吸附到对应边缘并持久化锚点坐标。
+长按展开卡片顶栏可自由移动，松手时根据与屏幕上、右、下、左四边的距离自动吸附到最近边缘并持久化轴向锚点坐标。
 
 **peek**:
 Agent 转为 working 时面板自动短暂展开示警，随后收回；有冷却间隔。

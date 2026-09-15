@@ -1226,8 +1226,10 @@ enum EngineTests {
             try expectEqual(engine.grandTotal, fake.grandTotal, "grandTotal 经引擎透出")
             engine.modelBreakdown(agentId: "dim") { _ in }
             engine.sessions(agentId: "dim", modelId: "m") { _ in }
+            engine.tokenTimeline(range: .week) { _ in }
             try expectTrue(fake.calls.contains("modelBreakdown"), "下钻查询经引擎转发")
             try expectTrue(fake.calls.contains("sessions"), "会话查询经引擎转发")
+            try expectTrue(fake.calls.contains("timeline"), "时间线查询经引擎转发")
         }
 
         TestKit.test("引擎: 安装缓存首刷完成后重放启用集，自动发现项恢复监控") {

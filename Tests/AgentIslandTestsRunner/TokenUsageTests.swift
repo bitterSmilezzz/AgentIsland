@@ -31,6 +31,69 @@ enum TokenUsageTests {
             try expectTrue(abs(s.costTotal - 3.0) < 0.0001, "costTotal")
         }
 
+        TestKit.test("Token 时间线按范围分桶并计算上一周期") {
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let records = [
+                TokenUsageRecord(agentId: "dim", time: now.addingTimeInterval(-24 * 3_600),
+                                 tokens: 10, cost: 0.10),
+                TokenUsageRecord(agentId: "opencode", time: now.addingTimeInterval(-30 * 60),
+                                 tokens: 90, cost: 0.90),
+                TokenUsageRecord(agentId: "dim", time: now.addingTimeInterval(-25 * 3_600),
+                                 tokens: 40, cost: 0.40),
+                TokenUsageRecord(agentId: "dim", time: now.addingTimeInterval(-49 * 3_600),
+                                 tokens: 999, cost: 9.99),
+                TokenUsageRecord(agentId: "dim", time: now.addingTimeInterval(60),
+                                 tokens: 999, cost: 9.99),
+            ]
+            let result = TokenTimelineBuilder.build(records: records, range: .day, now: now)
+            try expectEqual(result.points.count, 24, "24h 应固定 24 个小时桶")
+            try expectEqual(result.tokens, 100, "当前周期只含边界及范围内记录")
+            try expectEqual(result.previousTokens, 40, "上一等长周期独立统计")
+            try expectTrue(abs(result.cost - 1.0) < 0.0001, "当前成本")
+            try expectEqual(result.points.first?.tokens, 10, "当前周期左边界进入首桶")
+            try expectEqual(result.points.last?.tokens, 90, "最近记录进入末桶")
+            try expectEqual(result.sources.map(\.agentId), ["opencode", "dim"], "来源按用量降序")
+        }
+
+        TestKit.test("Token 时间线完整列出可统计工具与缺失状态") {
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let result = TokenTimelineBuilder.build(
+                records: [TokenUsageRecord(agentId: "dim", time: now.addingTimeInterval(-60), tokens: 42, cost: 0)],
+                range: .day,
+                now: now,
+                supportedSourceIds: ["dim", "codex", "claude"],
+                availableSourceIds: ["dim", "codex"]
+            )
+            try expectEqual(result.sources.map(\.agentId), ["dim", "codex", "claude"])
+            try expectEqual(result.sources.first { $0.agentId == "codex" }?.tokens, 0,
+                            "已发现但当前范围无记录应明确显示 0")
+            try expectTrue(result.sources.first { $0.agentId == "codex" }?.isAvailable == true)
+            try expectTrue(result.sources.first { $0.agentId == "claude" }?.isAvailable == false,
+                          "未发现数据源不能伪装成零用量")
+        }
+
+        TestKit.test("可读 Codex 用量在未独立监控时仍可进入详情") {
+            let codex = TokenSourceUsage(agentId: "codex", tokens: 120, cost: 0, isAvailable: true)
+            let target = TokenSourceDetailRoute.target(
+                for: codex,
+                detailCapableAgentIDs: ["chatgpt", "codex"]
+            )
+            try expectEqual(target, "codex",
+                            "内嵌 Codex 不在实时快照时，历史用量行仍必须可下钻")
+        }
+
+        TestKit.test("Token 时间范围保持适合窄卡片的固定密度") {
+            try expectEqual(TokenTimeRange.day.bucketCount, 24)
+            try expectEqual(TokenTimeRange.week.bucketCount, 28)
+            try expectEqual(TokenTimeRange.month.bucketCount, 30)
+            for range in TokenTimeRange.allCases {
+                let empty = TokenUsageTimeline.empty(for: range,
+                                                     now: Date(timeIntervalSince1970: 1_700_000_000))
+                try expectEqual(empty.points.count, range.bucketCount)
+                try expectTrue(empty.sources.isEmpty)
+            }
+        }
+
         TestKit.test("TokenUsageMonitor 双源汇总（fixture 库）") {
             let dbs = try TokenFixture.make()
             defer { TokenFixture.cleanup(dbs) }
@@ -50,6 +113,80 @@ enum TokenUsageTests {
             let oc = try XCTUnwrap(m.usage["opencode"], "opencode 源缺席")
             try expectEqual(oc.tokens24h, 45, "opencode 24h：35+10，cache.read 999 必须不计")
             try expectEqual(oc.tokensTotal, 245, "opencode 累计")
+        }
+
+        TestKit.test("TokenUsageMonitor 合并 Codex 与 WorkBuddy 结构化日志并去重") {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("agentisland-token-jsonl-\(UUID().uuidString)")
+            let codexRoot = root.appendingPathComponent("codex")
+            let workbuddyRoot = root.appendingPathComponent("workbuddy")
+            try FileManager.default.createDirectory(at: codexRoot, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: workbuddyRoot, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let iso = "2023-11-14T22:12:20.000Z"
+            let codexLine = """
+            {"timestamp":"\(iso)","type":"token_usage_record","payload":{"response_id":"response-1","usage":{"input_tokens":100,"cached_input_tokens":60,"output_tokens":10,"reasoning_output_tokens":3}}}
+            """
+            // 同一 response_id 出现两次，只能计一次：(100-60)+10 = 50。
+            try (codexLine + "\n" + codexLine + "\n").write(
+                to: codexRoot.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8
+            )
+            let workbuddyLine = """
+            {"timestamp":1699999940000,"type":"function_call","id":"call-1","message":{"usage":{"input_tokens":80,"cache_read_input_tokens":20,"output_tokens":5,"total_tokens":85}}}
+            """
+            try (workbuddyLine + "\n").write(
+                to: workbuddyRoot.appendingPathComponent("session.jsonl"), atomically: true, encoding: .utf8
+            )
+
+            let missing = root.appendingPathComponent("missing.sqlite").path
+            let monitor = TokenUsageMonitor(
+                dimAgentDB: missing,
+                openCodeDB: missing + ".open",
+                structuredSources: [
+                    StructuredTokenSource(agentId: "codex", roots: [codexRoot.path], format: .codex),
+                    StructuredTokenSource(agentId: "workbuddy", roots: [workbuddyRoot.path], format: .anthropic),
+                    StructuredTokenSource(agentId: "claude", roots: [root.appendingPathComponent("claude").path],
+                                          format: .anthropic),
+                ]
+            )
+            monitor.refresh(now: now)
+            try expectEqual(monitor.usage["codex"]?.tokensTotal, 50, "Codex reasoning 已含在 output，不重复相加")
+            try expectEqual(monitor.usage["workbuddy"]?.tokensTotal, 65, "WorkBuddy 扣除 cache read")
+            try expectEqual(monitor.grandTotal.tokensTotal, 115, "总体应跨工具求和")
+
+            var timeline: TokenUsageTimeline?
+            let done = Self.makeExpectation()
+            monitor.timeline(range: .day, now: now) { value in
+                timeline = value
+                done.fulfill()
+            }
+            Self.waitMainActor(done, timeout: 10)
+            let result = try XCTUnwrap(timeline, "结构化时间线查询超时")
+            try expectEqual(result.tokens, 115)
+            try expectEqual(result.sources.first { $0.agentId == "codex" }?.tokens, 50)
+            try expectEqual(result.sources.first { $0.agentId == "workbuddy" }?.tokens, 65)
+            try expectTrue(result.sources.first { $0.agentId == "claude" }?.isAvailable == false)
+        }
+
+        TestKit.test("Token 时间线查询合并双源并保留来源构成") {
+            let dbs = try TokenFixture.make()
+            defer { TokenFixture.cleanup(dbs) }
+            let monitor = TokenUsageMonitor(dimAgentDB: dbs.dimDB, openCodeDB: dbs.openCodeDB)
+            var timeline: TokenUsageTimeline?
+            let done = Self.makeExpectation()
+            monitor.timeline(range: .week, now: Date()) { result in
+                timeline = result
+                done.fulfill()
+            }
+            Self.waitMainActor(done, timeout: 10)
+            let result = try XCTUnwrap(timeline, "时间线查询超时")
+            try expectEqual(result.tokens, 1545, "7 天覆盖 fixture 全部 assistant 净消耗")
+            try expectEqual(result.points.reduce(0) { $0 + $1.tokens }, result.tokens, "桶合计必须等于范围合计")
+            try expectEqual(result.sources.map(\.agentId), ["dim", "opencode"])
+            try expectEqual(result.sources.first { $0.agentId == "dim" }?.tokens, 1300)
+            try expectEqual(result.sources.first { $0.agentId == "opencode" }?.tokens, 245)
         }
 
         TestKit.test("dim 净消耗口径：promptTokens 中的 cacheRead 必须扣除") {

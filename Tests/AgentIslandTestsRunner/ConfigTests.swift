@@ -213,10 +213,11 @@ enum ConfigTests {
             try expectEqual(decoded, original, "往返必须全等（含新增可选字段）")
         }
 
-        TestKit.test("配置: ActivityLevel 次序 offline < idle < working") {
+        TestKit.test("配置: ActivityLevel 次序包含已完成与待确认") {
             try expectTrue(ActivityLevel.offline < ActivityLevel.idle, "offline < idle")
-            try expectTrue(ActivityLevel.idle < ActivityLevel.working, "idle < working")
-            try expectTrue(ActivityLevel.offline < ActivityLevel.working, "offline < working")
+            try expectTrue(ActivityLevel.idle < ActivityLevel.completed, "idle < completed")
+            try expectTrue(ActivityLevel.completed < ActivityLevel.working, "completed < working")
+            try expectTrue(ActivityLevel.working < ActivityLevel.attention, "working < attention")
             try expectFalse(ActivityLevel.working < ActivityLevel.working, "同值不严格小于")
             let sorted = [ActivityLevel.working, .offline, .idle].sorted()
             try expectEqual(sorted, [.offline, .idle, .working], "排序结果")

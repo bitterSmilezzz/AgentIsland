@@ -1,11 +1,13 @@
 import Foundation
 import SQLite3
 
-// MARK: - Token 用量统计（只读双 SQLite 数据源）
+// MARK: - Token 用量统计（只读 SQLite + 结构化 JSONL 数据源）
 //
 // 数据源参考 vibe-usage 的采集思路（本机只读、不碰凭证）：
 // 1. DimAgent: ~/.dimcode/v2/dimcode.sqlite → usage_ledger（token 全，cost 全 NULL）
 // 2. OpenCode: ~/.local/share/opencode/opencode.db → message（token + cost）
+// 3. Codex: ~/.codex/sessions → token_usage_record
+// 4. Claude / WorkBuddy: 各自 projects/sessions JSONL → message.usage
 // 24h 口径 = 时间窗口内的记录之和；累计 = 全表之和。
 // 60s 后台轮询足够（token 用量无需秒级实时）。
 // OpenCode 不用 tokens.total（它含 cache.read，多轮会话重复计费虚高），
@@ -70,6 +72,174 @@ public struct SessionUsage: Identifiable, Equatable {
     public let cost: Double
     public let lastTime: Date?
     public var id: String { sessionId }
+}
+
+// MARK: - 时间分析数据
+
+/// 时间分析范围。每个范围控制固定桶数，保证 330pt 图表不会因数据量增长而变密。
+public enum TokenTimeRange: String, CaseIterable, Identifiable, Equatable {
+    case day
+    case week
+    case month
+
+    public var id: String { rawValue }
+
+    public var duration: TimeInterval {
+        switch self {
+        case .day: return 24 * 3_600
+        case .week: return 7 * 24 * 3_600
+        case .month: return 30 * 24 * 3_600
+        }
+    }
+
+    public var bucketCount: Int {
+        switch self {
+        case .day: return 24       // 每小时
+        case .week: return 28      // 每 6 小时
+        case .month: return 30     // 每天
+        }
+    }
+}
+
+public struct TokenUsagePoint: Identifiable, Equatable {
+    public let start: Date
+    public let tokens: Int
+    public let cost: Double
+    public var id: Date { start }
+}
+
+public struct TokenSourceUsage: Identifiable, Equatable {
+    public let agentId: String
+    public let tokens: Int
+    public let cost: Double
+    /// 已发现该工具的本地统计源；false 表示当前机器没有可读取的明细，而不是用量为 0。
+    public let isAvailable: Bool
+    public var id: String { agentId }
+}
+
+/// Token 来源行是否可进入详情的导航决策。
+///
+/// 用量来源与实时监控是两条独立链路：例如 Codex 被 ChatGPT 桌面端承载时，
+/// 不应在实时 Agent 列表中重复出现，却仍能从 `~/.codex/sessions` 读取历史用量。
+public enum TokenSourceDetailRoute {
+    public static func target(for source: TokenSourceUsage,
+                              detailCapableAgentIDs: Set<String>) -> String? {
+        // 实时快照只描述进程监控，不能决定历史用量是否可查看。内嵌 Codex 会被
+        // 有意排除出独立快照以免与 ChatGPT 重复计数，但仍保留可读的 JSONL 用量。
+        guard source.isAvailable, detailCapableAgentIDs.contains(source.agentId) else { return nil }
+        return source.agentId
+    }
+}
+
+public struct TokenUsageTimeline: Equatable {
+    public let range: TokenTimeRange
+    public let points: [TokenUsagePoint]
+    public let sources: [TokenSourceUsage]
+    public let tokens: Int
+    public let cost: Double
+    public let previousTokens: Int
+    public let previousCost: Double
+
+    public static func empty(for range: TokenTimeRange, now: Date = Date()) -> TokenUsageTimeline {
+        let step = range.duration / Double(range.bucketCount)
+        let start = now.addingTimeInterval(-range.duration)
+        return TokenUsageTimeline(
+            range: range,
+            points: (0..<range.bucketCount).map {
+                TokenUsagePoint(start: start.addingTimeInterval(Double($0) * step), tokens: 0, cost: 0)
+            },
+            sources: [], tokens: 0, cost: 0, previousTokens: 0, previousCost: 0
+        )
+    }
+}
+
+/// 数据源查询后统一进入纯聚合器；时间边界和分桶规则因此可以脱离 SQLite 精确测试。
+struct TokenUsageRecord: Equatable {
+    let agentId: String
+    let time: Date
+    let tokens: Int
+    let cost: Double
+}
+
+enum TokenTimelineBuilder {
+    static func build(records: [TokenUsageRecord], range: TokenTimeRange,
+                      now: Date,
+                      supportedSourceIds: [String] = [],
+                      availableSourceIds: Set<String> = []) -> TokenUsageTimeline {
+        let duration = range.duration
+        let currentStart = now.addingTimeInterval(-duration)
+        let previousStart = now.addingTimeInterval(-2 * duration)
+        let step = duration / Double(range.bucketCount)
+        var tokenBuckets = Array(repeating: 0, count: range.bucketCount)
+        var costBuckets = Array(repeating: 0.0, count: range.bucketCount)
+        var sources: [String: (tokens: Int, cost: Double)] = [:]
+        var previousTokens = 0
+        var previousCost = 0.0
+
+        for record in records where record.time >= previousStart && record.time <= now {
+            let tokens = max(record.tokens, 0)
+            let cost = max(record.cost.isFinite ? record.cost : 0, 0)
+            if record.time < currentStart {
+                previousTokens = safeTokenSum(previousTokens, tokens)
+                previousCost = safeCostSum(previousCost, cost)
+                continue
+            }
+
+            let rawIndex = Int(record.time.timeIntervalSince(currentStart) / step)
+            let index = min(max(rawIndex, 0), range.bucketCount - 1)
+            tokenBuckets[index] = safeTokenSum(tokenBuckets[index], tokens)
+            costBuckets[index] = safeCostSum(costBuckets[index], cost)
+            let old = sources[record.agentId] ?? (0, 0)
+            sources[record.agentId] = (safeTokenSum(old.tokens, tokens), safeCostSum(old.cost, cost))
+        }
+
+        let points = (0..<range.bucketCount).map { index in
+            TokenUsagePoint(
+                start: currentStart.addingTimeInterval(Double(index) * step),
+                tokens: tokenBuckets[index],
+                cost: costBuckets[index]
+            )
+        }
+        let sourceIds = supportedSourceIds.isEmpty
+            ? Set(sources.keys)
+            : Set(supportedSourceIds).union(sources.keys)
+        let sourceRows = sourceIds.map { agentId in
+            let value = sources[agentId] ?? (0, 0)
+            return TokenSourceUsage(
+                agentId: agentId,
+                tokens: value.tokens,
+                cost: value.cost,
+                isAvailable: availableSourceIds.isEmpty
+                    ? sources[agentId] != nil
+                    : availableSourceIds.contains(agentId)
+            )
+        }.sorted {
+            if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
+            if $0.isAvailable != $1.isAvailable { return $0.isAvailable }
+            return $0.agentId < $1.agentId
+        }
+        return TokenUsageTimeline(
+            range: range,
+            points: points,
+            sources: sourceRows,
+            tokens: tokenBuckets.reduce(0, safeTokenSum),
+            cost: costBuckets.reduce(0, safeCostSum),
+            previousTokens: previousTokens,
+            previousCost: previousCost
+        )
+    }
+
+    private static func safeTokenSum(_ lhs: Int, _ rhs: Int) -> Int {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        if overflow || sum > SafeNumber.magnitudeCeiling { return SafeNumber.magnitudeCeiling }
+        return max(sum, 0)
+    }
+
+    private static func safeCostSum(_ lhs: Double, _ rhs: Double) -> Double {
+        let sum = lhs + rhs
+        guard sum.isFinite else { return SafeNumber.costCeiling }
+        return min(max(sum, 0), SafeNumber.costCeiling)
+    }
 }
 
 // MARK: - SQL 字符串转义（单引号翻倍，防会话/模型名带引号炸查询）
@@ -225,6 +395,16 @@ public extension TokenUsagePolling {
 public protocol TokenUsageQuerying: AnyObject {
     func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void)
     func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void)
+    func timeline(range: TokenTimeRange, now: Date,
+                  completion: @escaping @MainActor (TokenUsageTimeline) -> Void)
+}
+
+public extension TokenUsageQuerying {
+    /// 旧测试替身和不提供历史数据的 adapter 仍可使用空时间线，不需要伪造历史。
+    func timeline(range: TokenTimeRange, now: Date = Date(),
+                  completion: @escaping @MainActor (TokenUsageTimeline) -> Void) {
+        Task { @MainActor in completion(.empty(for: range, now: now)) }
+    }
 }
 
 /// @unchecked Sendable：全部可变状态由 NSLock + dbQueue 串行队列保护，可跨线程调用
@@ -261,6 +441,15 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     private let dimAgentDB: String
     private let openCodeDB: String
+    private let structuredIndex: StructuredTokenUsageIndex
+    /// 当前能提供稳定本地 Token 明细的工具；时间页始终列出，缺源时明确标注。
+    static let supportedToolIds = ["dim", "codex", "claude", "workbuddy", "workbuddy-ai", "opencode"]
+    private var configuredToolIds: [String] {
+        let structuredIds = structuredIndex.configuredToolIds
+        return Self.supportedToolIds.filter {
+            $0 == "dim" || $0 == "opencode" || structuredIds.contains($0)
+        }
+    }
     /// isFresh 宽限（R25）：略大于轮询间隔，吸收定时器抖动
     static let stampGrace: TimeInterval = 5
     /// 数据源主库连续缺失计数（R9：达到阈值视为「源已消失」并置空该源）
@@ -281,11 +470,42 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     }
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
-    /// 数据库路径构造注入（接受依赖，不自行定位；默认现网双源路径，测试传 fixture 临时库）
-    public init(dimAgentDB: String = NSString(string: "~/.dimcode/v2/dimcode.sqlite").expandingTildeInPath,
-                openCodeDB: String = NSString(string: "~/.local/share/opencode/opencode.db").expandingTildeInPath) {
+    /// 现网构造：SQLite + 可审计 JSONL，全部只读且不触碰凭证/正文。
+    public convenience init() {
+        let expand: (String) -> String = { NSString(string: $0).expandingTildeInPath }
+        self.init(
+            dimAgentDB: expand("~/.dimcode/v2/dimcode.sqlite"),
+            openCodeDB: expand("~/.local/share/opencode/opencode.db"),
+            structuredSources: [
+                StructuredTokenSource(agentId: "codex", roots: [expand("~/.codex/sessions")], format: .codex),
+                StructuredTokenSource(
+                    agentId: "claude",
+                    roots: [expand("~/.claude/projects"), expand("~/.claude/sessions")],
+                    format: .anthropic
+                ),
+                StructuredTokenSource(
+                    agentId: "workbuddy",
+                    roots: [expand("~/.workbuddy/projects")],
+                    format: .anthropic
+                ),
+                StructuredTokenSource(
+                    agentId: "workbuddy-ai",
+                    roots: [expand("~/.workbuddy-ai/projects")],
+                    format: .anthropic
+                ),
+            ]
+        )
+    }
+
+    /// Fixture 构造默认关闭用户目录采集，保证测试不被开发机真实日志污染。
+    public convenience init(dimAgentDB: String, openCodeDB: String) {
+        self.init(dimAgentDB: dimAgentDB, openCodeDB: openCodeDB, structuredSources: [])
+    }
+
+    init(dimAgentDB: String, openCodeDB: String, structuredSources: [StructuredTokenSource]) {
         self.dimAgentDB = dimAgentDB
         self.openCodeDB = openCodeDB
+        self.structuredIndex = StructuredTokenUsageIndex(sources: structuredSources)
     }
 
     public func start(interval: TimeInterval = TokenUsagePollingDefaults.interval) {
@@ -369,7 +589,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         }
         let refreshDim = lastDimStamp != dimStamp || !isFresh(lastDimRefresh)
         let refreshOpenCode = lastOpenCodeStamp != openCodeStamp || !isFresh(lastOpenCodeRefresh)
-        guard refreshDim || refreshOpenCode else { return }
+        guard refreshDim || refreshOpenCode || structuredIndex.isEnabled else { return }
 
         var updated = usage
         var succeeded = false
@@ -412,6 +632,15 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             updated["opencode"] = value
             lastOpenCodeStamp = openCodeStamp
             lastOpenCodeRefresh = now
+            succeeded = true
+        }
+        if structuredIndex.isEnabled {
+            let structured = structuredIndex.snapshot()
+            let structuredUsage = structured.usage(now: now)
+            for agentId in structuredIndex.configuredToolIds {
+                updated[agentId] = structuredUsage[agentId]
+            }
+            // 扫描成功即允许发布：即使全部为零，也要能清除已删除日志留下的旧值。
             succeeded = true
         }
         // 打开成功不等于查询成功：失败源保留旧值与旧戳，下次刷新重试。
@@ -536,6 +765,78 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 rows = []
             }
             Task { @MainActor in completion(rows) }
+        }
+    }
+
+    /// 全局 Token 时间线（净消耗口径）。SQLite 与结构化日志合并后统一分桶，
+    /// UI 切换范围时在后台读取最近两个等长周期，用于当前趋势、环比与分工具统计。
+    public func timeline(range: TokenTimeRange, now: Date = Date(),
+                         completion: @escaping @MainActor (TokenUsageTimeline) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let previousStart = now.addingTimeInterval(-2 * range.duration)
+            let lowerISO = Self.isoFormatter.string(from: previousStart)
+            let upperISO = Self.isoFormatter.string(from: now)
+            let dimRowTokens = """
+            MAX(COALESCE(json_extract(usage,'$.promptTokens'),0)
+                - COALESCE(json_extract(usage,'$.cacheReadTokens'),0), 0)
+                + COALESCE(json_extract(usage,'$.completionTokens'),0)
+            """
+            let dimSQL = """
+            SELECT createdAt, \(dimRowTokens), COALESCE(cost,0)
+            FROM usage_ledger
+            WHERE createdAt >= '\(lowerISO)' AND createdAt <= '\(upperISO)'
+            ORDER BY createdAt
+            """
+            let dimRecords = rawRows(dimSQL, dbPath: dimAgentDB, cols: 3).compactMap { row -> TokenUsageRecord? in
+                guard let time = Self.parseISO(row[0]) else { return nil }
+                return TokenUsageRecord(
+                    agentId: "dim", time: time,
+                    tokens: SafeNumber.parseInt(row[1], source: "dim.timeline.tokens"),
+                    cost: SafeNumber.parseCost(row[2], source: "dim.timeline.cost")
+                )
+            }
+
+            let lowerMs = Int64(SafeNumber.saturatingInt(
+                previousStart.timeIntervalSince1970 * 1_000, source: "opencode.timeline.lower"
+            ))
+            let upperMs = Int64(SafeNumber.saturatingInt(
+                now.timeIntervalSince1970 * 1_000, source: "opencode.timeline.upper"
+            ))
+            let openCodeSQL = """
+            SELECT time_created,
+                   COALESCE(json_extract(data,'$.tokens.input'),0)
+                     + COALESCE(json_extract(data,'$.tokens.output'),0)
+                     + COALESCE(json_extract(data,'$.tokens.reasoning'),0),
+                   COALESCE(json_extract(data,'$.cost'),0)
+            FROM message
+            WHERE json_extract(data,'$.role')='assistant'
+              AND time_created >= \(lowerMs) AND time_created <= \(upperMs)
+            ORDER BY time_created
+            """
+            let openCodeRecords = rawRows(openCodeSQL, dbPath: openCodeDB, cols: 3).compactMap { row -> TokenUsageRecord? in
+                guard let time = SafeNumber.date(fromMillisText: row[0], source: "opencode.timeline.time") else {
+                    return nil
+                }
+                return TokenUsageRecord(
+                    agentId: "opencode", time: time,
+                    tokens: SafeNumber.parseInt(row[1], source: "opencode.timeline.tokens"),
+                    cost: SafeNumber.parseCost(row[2], source: "opencode.timeline.cost")
+                )
+            }
+
+            let structured = structuredIndex.snapshot()
+            var availableSourceIds = structured.availableToolIds
+            if FileManager.default.fileExists(atPath: dimAgentDB) { availableSourceIds.insert("dim") }
+            if FileManager.default.fileExists(atPath: openCodeDB) { availableSourceIds.insert("opencode") }
+
+            let result = TokenTimelineBuilder.build(
+                records: dimRecords + openCodeRecords + structured.records,
+                range: range,
+                now: now,
+                supportedSourceIds: configuredToolIds,
+                availableSourceIds: availableSourceIds
+            )
+            Task { @MainActor in completion(result) }
         }
     }
 
@@ -695,13 +996,18 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
+    private static let isoFormatterWithoutFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 
     static func iso24hAgo(now: Date = Date()) -> String {
         isoFormatter.string(from: now.addingTimeInterval(-86_400))
     }
 
     static func parseISO(_ s: String) -> Date? {
-        isoFormatter.date(from: s)
+        isoFormatter.date(from: s) ?? isoFormatterWithoutFraction.date(from: s)
     }
 }
 
@@ -732,5 +1038,11 @@ public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying 
     public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
         calls.append("sessions")   // 同步记录：调用即刻可断言；回调异步送达
         Task { @MainActor in completion([]) }
+    }
+
+    public func timeline(range: TokenTimeRange, now: Date,
+                         completion: @escaping @MainActor (TokenUsageTimeline) -> Void) {
+        calls.append("timeline")
+        Task { @MainActor in completion(.empty(for: range, now: now)) }
     }
 }

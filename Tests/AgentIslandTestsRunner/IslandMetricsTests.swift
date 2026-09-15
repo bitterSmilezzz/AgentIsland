@@ -16,7 +16,7 @@ enum IslandMetricsTests {
 
     // 常量字面量（标定值）：改动即是行为变更，需可视化验收
     private static let notchInset: CGFloat = 10
-    private static let headerHeight: CGFloat = 43          // 12 + 23 + 8
+    private static let headerHeight: CGFloat = 54          // 12 + 34 + 8（双层标题）
     private static let dividerHeight: CGFloat = 1
     private static let ringsShelf: CGFloat = 40
     private static let bannerCollapsed: CGFloat = 66
@@ -42,7 +42,7 @@ enum IslandMetricsTests {
     /// 增量 29 = 汇总栏 28 + 分割线 1，41 = 看板 40 + 1，67 / 143 = 事件栏 66 / 142 + 1。
     /// 事件栏展开与收起互斥——两者同时相加是曾经的错算来源，故这里写成三元式。
     private static func chromeLiteral(summary: Bool, rings: Bool, event: Bool, expanded: Bool) -> CGFloat {
-        var h: CGFloat = 64                       // 2×10 倒角 + 43 顶栏 + 1 分割线
+        var h: CGFloat = 75                       // 2×10 倒角 + 54 双层顶栏 + 1 分割线
         if summary { h += 29 }
         if rings { h += 41 }
         if event { h += (expanded ? 143 : 67) }
@@ -67,15 +67,15 @@ enum IslandMetricsTests {
 
     /// 关键组合的字面量钉子（防止上面穷举表被顺手改成从实现推导）
     private static let chromePins: [(Bool, Bool, Bool, Bool, CGFloat)] = [
-        (false, false, false, false, 64),      // 裸列表
-        (true,  false, false, false, 93),      // + 汇总栏
-        (false, true,  false, false, 105),     // + 活动环看板
-        (false, false, true,  false, 131),     // + 收起事件栏
-        (false, false, true,  true,  207),     // + 展开事件栏
-        (true,  true,  false, false, 134),     // + 汇总栏 + 看板
-        (true,  true,  true,  false, 201),     // + 汇总栏 + 看板 + 事件栏
-        (false, true,  true,  true,  248),
-        (true,  true,  true,  true,  277),     // 全开（当前最高 chrome）
+        (false, false, false, false, 75),      // 裸列表
+        (true,  false, false, false, 104),     // + 汇总栏
+        (false, true,  false, false, 116),     // + 活动环看板
+        (false, false, true,  false, 142),     // + 收起事件栏
+        (false, false, true,  true,  218),     // + 展开事件栏
+        (true,  true,  false, false, 145),     // + 汇总栏 + 看板
+        (true,  true,  true,  false, 212),     // + 汇总栏 + 看板 + 事件栏
+        (false, true,  true,  true,  259),
+        (true,  true,  true,  true,  288),     // 全开（当前最高 chrome）
     ]
 
     static func register() {
@@ -135,15 +135,15 @@ enum IslandMetricsTests {
                 (7,   false, false, false, false, 340),   // 内容 374 触到 listMaxHeight
                 (100, false, false, false, false, 340),
                 (0,   true,  true,  true,  false, 62),    // chrome 201 → 剩余 259，内容 62 更小
-                (7,   true,  true,  true,  false, 259),   // chrome 201 → 剩余 259 封顶
-                (7,   false, false, true,  false, 329),   // chrome 131 → 剩余 329（低于 listMaxHeight）
+                (7,   true,  true,  true,  false, 248),   // chrome 212 → 剩余 248 封顶
+                (7,   false, false, true,  false, 318),   // chrome 142 → 剩余 318（低于 listMaxHeight）
                 (2,   false, false, true,  false, 114),
-                (7,   true,  true,  false, true,  326),   // 事件栏未开时 expanded 无影响 → chrome 134
-                (100, true,  true,  false, true,  326),
+                (7,   true,  true,  false, true,  315),   // 事件栏未开时 expanded 无影响 → chrome 145
+                (100, true,  true,  false, true,  315),
                 (2,   true,  true,  false, true,  114),
                 (1,   true,  true,  false, true,  62),
                 (0,   true,  true,  false, true,  62),
-                (100, true,  true,  true,  true,  183),   // chrome 277 → 剩余 183（最挤）
+                (100, true,  true,  true,  true,  172),   // chrome 288 → 剩余 172（最挤）
             ]
             for c in cases {
                 let actual = IslandMetrics.listHeight(visibleCount: c.0, hasSummary: c.1,
@@ -175,9 +175,9 @@ enum IslandMetricsTests {
 
         TestKit.test("岛几何: expandedHeight 列表页空态取空态高度") {
             let cases: [(Bool, Bool, Bool, Bool, CGFloat)] = [
-                (false, false, false, false, 185),   // 64 + 121（R23 实测校准）
-                (true,  true,  true,  false, 322),   // 201 + 121
-                (true,  true,  true,  true,  398),   // 277 + 121（空态也不得超 460）
+                (false, false, false, false, 196),   // 75 + 121
+                (true,  true,  true,  false, 333),   // 212 + 121
+                (true,  true,  true,  true,  409),   // 288 + 121（空态也不得超 460）
             ]
             for c in cases {
                 let actual = IslandMetrics.expandedHeight(route: .list, visibleCount: 0, hasSummary: c.0,
@@ -189,14 +189,14 @@ enum IslandMetricsTests {
 
         TestKit.test("岛几何: expandedHeight 列表页 = chrome + 列表，触顶即顶格") {
             let cases: [(Int, Bool, Bool, Bool, Bool, CGFloat)] = [
-                (1,   false, false, false, false, 126),   // 64 + 62
-                (2,   false, false, false, false, 178),   // 64 + 114
-                (7,   false, false, false, false, 404),   // 64 + 340
-                (100, false, false, false, false, 404),
-                (7,   false, false, true,  false, 460),   // 131 + 329 恰好顶格
-                (7,   true,  true,  true,  false, 460),   // 201 + 259 恰好顶格
-                (7,   true,  true,  false, true,  460),   // 134 + 326 恰好顶格（事件栏未开）
-                (7,   true,  true,  true,  true,  460),   // 277 + 183 恰好顶格
+                (1,   false, false, false, false, 137),   // 75 + 62
+                (2,   false, false, false, false, 189),   // 75 + 114
+                (7,   false, false, false, false, 415),   // 75 + 340
+                (100, false, false, false, false, 415),
+                (7,   false, false, true,  false, 460),   // 142 + 318 恰好顶格
+                (7,   true,  true,  true,  false, 460),   // 212 + 248 恰好顶格
+                (7,   true,  true,  false, true,  460),   // 145 + 315 恰好顶格（事件栏未开）
+                (7,   true,  true,  true,  true,  460),   // 288 + 172 恰好顶格
                 (100, true,  true,  true,  true,  460),   // 最挤组合顶格
             ]
             for c in cases {
@@ -208,8 +208,8 @@ enum IslandMetricsTests {
         }
 
         TestKit.test("岛几何: expandedHeight 详情/工具/流水页固定高度且不超上限") {
-            // 四类非列表路由同源（两侧倒角 + detailHeader + divider + detailContent）
-            let routes: [CardRoute] = [.toolbox, .liveStream("agent-x"),
+            // 五类非列表路由同源（两侧倒角 + detailHeader + divider + detailContent）
+            let routes: [CardRoute] = [.tokenAnalytics, .toolbox, .liveStream("agent-x"),
                                        .agentDetail("agent-x"), .sessions("agent-x", "model-y")]
             for route in routes {
                 let actual = IslandMetrics.expandedHeight(route: route, visibleCount: 0, hasSummary: false)
@@ -241,7 +241,7 @@ enum IslandMetricsTests {
             guard let real = realCardRouteCases() else {
                 return   // 非仓库布局运行（源码不可达）时跳过，不误报
             }
-            let mirror: Set<String> = ["list", "agentDetail", "sessions", "toolbox", "liveStream"]
+            let mirror: Set<String> = ["list", "tokenAnalytics", "agentDetail", "sessions", "toolbox", "liveStream"]
             try expectEqual(real, mirror,
                             "Sources/AgentIsland/IslandView.swift 的 CardRoute 已变化，需同步 Tests/IslandMetricsKit/CardRoute.swift 并补路由高度覆盖")
         }

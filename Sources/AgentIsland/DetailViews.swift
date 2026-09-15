@@ -36,16 +36,15 @@ struct DetailHeader: View {
                 Text(title)
                     .font(Theme.bodyFont(12, weight: .semibold))
                     .foregroundColor(Theme.onDark)
-                    .lineLimit(1)
-                    .help(title)
+                    .readableSingleLine(fullText: title, minWidth: 96, priority: 2)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(Theme.monoFont(9))
                         .foregroundColor(Theme.onDarkFaint)
-                        .lineLimit(1)
-                        .help(subtitle)
+                        .readableSingleLine(fullText: subtitle, minWidth: 96, priority: 1)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Spacer()
         }
         .padding(.horizontal, Theme.pageMargin)
@@ -70,11 +69,20 @@ struct AgentDetailView: View {
     private var snapshot: AgentSnapshot? {
         engine.snapshots.first { $0.id == agentId }
     }
-    private var usage: TokenUsage? { snapshot?.tokenUsage }
+    /// 详情也可由 Token 时间页进入。内嵌工具没有独立实时快照时，仍要保留其
+    /// 可读用量，而非把它误判成一个失效的 Agent。
+    private var profile: AgentProfile? {
+        snapshot?.profile
+            ?? engine.allProfiles.first { $0.id == agentId }
+            ?? AgentRegistry.profile(id: agentId)
+    }
+    private var usage: TokenUsage? {
+        snapshot?.tokenUsage ?? engine.tokenUsage(for: agentId)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            DetailHeader(title: snapshot?.profile.name ?? agentId,
+            DetailHeader(title: profile?.name ?? agentId,
                          subtitle: usage.map {
                              "24h \(TokenUsage.compact($0.tokens24h)) · 累计 \(TokenUsage.compact($0.tokensTotal))"
                          },
@@ -96,7 +104,7 @@ struct AgentDetailView: View {
                             // 内容超过视口时 Spacer(minLength:0) 归零、贴顶正常滚动
                             Spacer(minLength: 0)
                             Group {
-                                if snapshot == nil {
+                                if snapshot == nil, usage == nil {
                                     // agent 被禁用/移除后仍停留在详情页时，此前内容区一片空白
                                     VStack(spacing: 6) {
                                         Image(systemName: "questionmark.circle")
@@ -123,6 +131,12 @@ struct AgentDetailView: View {
                                             // dim/opencode 以外的数据源（claude/codex 等）无按模型
                                             // 拆分数据——此前无声缺席，用户分不清「无数据」与「不支持」
                                             Text("该数据源暂不支持按模型拆分")
+                                                .font(Theme.bodyFont(10))
+                                                .foregroundColor(Theme.onDarkFaint)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        if snapshot == nil {
+                                            Text("用量来自本地会话记录；该工具当前未作为独立运行项显示。")
                                                 .font(Theme.bodyFont(10))
                                                 .foregroundColor(Theme.onDarkFaint)
                                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -164,28 +178,57 @@ struct AgentDetailView: View {
         HStack(spacing: 0) {
             overviewCell("24h", TokenUsage.compact(u.tokens24h),
                          cost: TokenUsage.cost(u.cost24h).isEmpty ? nil : TokenUsage.cost(u.cost24h))
-            Rectangle().fill(Theme.onDark.opacity(0.10)).frame(width: 1, height: 30)
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Theme.onDark.opacity(0.03),
+                            Theme.onDark.opacity(0.18),
+                            Theme.onDark.opacity(0.03)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: 1, height: 30)
             overviewCell("累计", TokenUsage.compact(u.tokensTotal),
                          cost: TokenUsage.cost(u.costTotal).isEmpty ? nil : TokenUsage.cost(u.costTotal))
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.cardFill))
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                .fill(Theme.obsidianCardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
+                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 0.75
+                        )
+                )
+        )
     }
 
     private func overviewCell(_ label: String, _ value: String, cost: String?) -> some View {
         VStack(spacing: 3) {
             Text(value)
-                .font(Theme.monoFont(15, weight: .bold))
+                .font(Theme.monoDigitFont(16, weight: .bold))
                 .foregroundColor(Theme.onDark)
             HStack(spacing: 4) {
                 Text(label)
-                    .font(Theme.bodyFont(9))
-                    .foregroundColor(Theme.onDarkFaint)
+                    .font(Theme.bodyFont(9.5, weight: .medium))
+                    .foregroundColor(Theme.onDarkMuted)
                 if let cost {
                     Text(cost)
-                        .font(Theme.monoFont(9))
-                        .foregroundColor(Theme.onDarkFaint)
+                        .font(Theme.monoDigitFont(9.5, weight: .semibold))
+                        .foregroundColor(Theme.sydedockAmber)
                 }
             }
         }
@@ -193,34 +236,38 @@ struct AgentDetailView: View {
     }
 
     private var modelList: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("按模型")
-                .font(Theme.bodyFont(10, weight: .semibold))
-                .foregroundColor(Theme.onDarkFaint)
+                .font(Theme.bodyFont(10.5, weight: .bold))
+                .foregroundColor(Theme.onDark)
             ForEach(models) { m in
                 HStack(spacing: 8) {
-                    Image(systemName: "cube.transparent")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.onDarkFaint)
-                        .frame(width: 14)
-                    VStack(alignment: .leading, spacing: 1) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                            .fill(Theme.sydedockCyan.opacity(0.14))
+                        Image(systemName: "cube.transparent")
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundColor(Theme.sydedockCyan)
+                    }
+                    .frame(width: 18, height: 18)
+
+                    VStack(alignment: .leading, spacing: 1.5) {
                         Text(m.modelId)
-                            .font(Theme.monoFont(10, weight: .semibold))
+                            .font(Theme.monoFont(10.5, weight: .semibold))
                             .foregroundColor(Theme.onDark)
-                            .lineLimit(1)
-                            .help(m.modelId)   // 长模型名截断时可看全名
+                            .readableSingleLine(fullText: m.modelId, minWidth: 96, priority: 2)
                         HStack(spacing: 5) {
                             Text("\(TokenUsage.compact(m.tokens)) tok")
-                                .font(Theme.monoFont(9))
-                                .foregroundColor(Theme.onDarkFaint)
+                                .font(Theme.monoDigitFont(9.5, weight: .medium))
+                                .foregroundColor(Theme.onDarkMuted)
                             let c = TokenUsage.cost(m.cost)
                             if !c.isEmpty {
                                 Text(c)
-                                    .font(Theme.monoFont(9))
-                                    .foregroundColor(Theme.onDarkFaint)
+                                    .font(Theme.monoDigitFont(9.5, weight: .semibold))
+                                    .foregroundColor(Theme.sydedockAmber)
                             }
                             Text("\(m.messages) 次")
-                                .font(Theme.monoFont(9))
+                                .font(Theme.monoDigitFont(9))
                                 .foregroundColor(Theme.onDarkFaint)
                         }
                     }
@@ -231,7 +278,7 @@ struct AgentDetailView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: Theme.chipFill)
+                .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: Theme.obsidianCardFill)
                 .onTapGesture {
                     controller.route = .sessions(agentId, m.modelId)
                 }
@@ -425,12 +472,15 @@ private struct SessionRowView: View {
                 Text(timeText)
                     .font(Theme.monoFont(10, weight: .semibold))
                     .foregroundColor(hasDir ? Theme.onDark : Theme.onDark.opacity(0.55))
-                    .lineLimit(1)
-                    .help(session.directory ?? session.sessionId)
+                    .readableSingleLine(
+                        fullText: session.directory ?? session.sessionId,
+                        minWidth: 72,
+                        priority: 2
+                    )
                 Text(detail)
                     .font(Theme.monoFont(9))
                     .foregroundColor(Theme.onDarkFaint)
-                    .lineLimit(1)
+                    .readableSingleLine(fullText: detail, minWidth: 72, priority: 1)
             }
             Spacer()
             if hasDir {

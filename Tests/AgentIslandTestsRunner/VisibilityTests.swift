@@ -41,26 +41,32 @@ enum VisibilityTests {
 
     static func register() {
 
-        TestKit.test("可见口径: 离线但 24h 内活跃（23:59:59）可见，超 24h 不可见") {
+        TestKit.test("可见口径: 离线 Agent 无论近期活动或 Token 均不显示") {
             let inside = makeEngine(processRunning: false, writeAgo: 86_399)
             sample(inside)
-            try expectEqual(inside.engine.visibleSnapshots.map(\.id), [agentId],
-                            "23:59:59 仍在 24h 窗口内，应可见")
+            try expectTrue(inside.engine.visibleSnapshots.isEmpty,
+                           "离线但 24h 内有活动也必须隐藏")
 
-            let outside = makeEngine(processRunning: false, writeAgo: 86_401)
-            sample(outside)
-            try expectTrue(outside.engine.visibleSnapshots.isEmpty,
-                           "超过 24h 应不可见（严格 < 86400，实际 \(outside.engine.visibleSnapshots.map(\.id))）")
+            let withTokens = makeEngine(
+                processRunning: false,
+                writeAgo: 5,
+                usage: TokenUsage(tokens24h: 9_999, tokensTotal: 9_999, cost24h: 1, costTotal: 1)
+            )
+            sample(withTokens)
+            try expectTrue(withTokens.engine.visibleSnapshots.isEmpty,
+                           "近期活动与 Token 不能让离线 Agent 重新进入主列表")
         }
 
-        TestKit.test("可见口径: 进程在则无视活跃时间始终可见（含从未活跃）") {
-            let stale = makeEngine(processRunning: true, writeAgo: 40 * 86_400)
-            sample(stale)
-            try expectEqual(stale.engine.visibleSnapshots.map(\.id), [agentId], "进程在 + 40 天前活跃 → 仍可见")
+        TestKit.test("可见口径: 待机与运行中的在线 Agent 均显示") {
+            let idle = makeEngine(processRunning: true, writeAgo: nil)
+            sample(idle)
+            try expectEqual(idle.engine.snapshots.first?.level, .idle)
+            try expectEqual(idle.engine.visibleSnapshots.map(\.id), [agentId], "在线待机应显示")
 
-            let never = makeEngine(processRunning: true, writeAgo: nil)
-            sample(never)
-            try expectEqual(never.engine.visibleSnapshots.map(\.id), [agentId], "进程在 + 从未活跃 → 仍可见")
+            let working = makeEngine(processRunning: true, writeAgo: 1)
+            sample(working)
+            try expectEqual(working.engine.snapshots.first?.level, .working)
+            try expectEqual(working.engine.visibleSnapshots.map(\.id), [agentId], "在线运行中应显示")
         }
 
         TestKit.test("可见口径: 离线且从未有活动记录（lastActivityAgo=nil）不可见") {
@@ -94,17 +100,18 @@ enum VisibilityTests {
                            "看板口径是 24h 用量而非累计用量：tokens24h=0 即便累计 12345 也不进看板")
         }
 
-        TestKit.test("活动环看板口径: 离线且超 24h 不可见也不进看板；离线但 24h 内有量才进") {
+        TestKit.test("活动环看板口径: 离线 Agent 即使有近期活动与用量也不进看板") {
             let offlineStale = makeEngine(processRunning: false, writeAgo: 86_401,
                                           usage: TokenUsage(tokens24h: 5_000, tokensTotal: 5_000, cost24h: 0, costTotal: 0))
             sample(offlineStale)
-            try expectTrue(offlineStale.engine.visibleSnapshots.isEmpty, "离线超 24h 不可见")
+            try expectTrue(offlineStale.engine.visibleSnapshots.isEmpty, "离线不可见")
             try expectTrue(offlineStale.engine.ringShelfSnapshots.isEmpty, "不可见者不进看板（看板是可见集子集）")
 
             let offlineFresh = makeEngine(processRunning: false, writeAgo: 86_399,
                                           usage: TokenUsage(tokens24h: 5_000, tokensTotal: 5_000, cost24h: 0, costTotal: 0))
             sample(offlineFresh)
-            try expectEqual(offlineFresh.engine.ringShelfSnapshots.map(\.id), [agentId], "离线但 24h 内有量进看板")
+            try expectTrue(offlineFresh.engine.ringShelfSnapshots.isEmpty,
+                           "离线但 24h 内有量也不得进看板")
         }
 
         TestKit.test("可见口径: 始终是快照总集的子集（口径不外溢）") {

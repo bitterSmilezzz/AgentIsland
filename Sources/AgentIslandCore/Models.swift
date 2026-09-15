@@ -5,7 +5,9 @@ import Foundation
 public enum ActivityLevel: String, Codable, Equatable, Comparable {
     case offline
     case idle
+    case completed
     case working
+    case attention
 
     public static func < (lhs: ActivityLevel, rhs: ActivityLevel) -> Bool {
         order(lhs) < order(rhs)
@@ -15,7 +17,9 @@ public enum ActivityLevel: String, Codable, Equatable, Comparable {
         switch level {
         case .offline: return 0
         case .idle: return 1
-        case .working: return 2
+        case .completed: return 2
+        case .working: return 3
+        case .attention: return 4
         }
     }
 }
@@ -25,6 +29,8 @@ public enum ActivityLevel: String, Codable, Equatable, Comparable {
 public enum DockEdge: String, Codable, CaseIterable, Identifiable, Sendable {
     case right
     case top
+    case bottom
+    case left
 
     public var id: String { rawValue }
 
@@ -32,7 +38,14 @@ public enum DockEdge: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .right: return "右侧边栏"
         case .top: return "顶部灵动岛"
+        case .bottom: return "底部停靠条"
+        case .left: return "左侧边栏"
         }
+    }
+
+    /// 水平边缘（顶部/底部）沿 X 轴保存位置；垂直边缘沿 Y 轴保存位置。
+    public var isHorizontal: Bool {
+        self == .top || self == .bottom
     }
 }
 
@@ -260,6 +273,52 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         if let pid { lines.append("PID: \(pid)") }
         if let detail, !detail.isEmpty { lines.append("详情: \(detail)") }
         return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - 会话语义信号
+
+/// Agent 已停下来等待用户操作。fingerprint 是日志中的 request/call id（缺失时由
+/// 检查器稳定生成），供采样引擎保证同一个请求只提醒一次。
+public struct AgentAttentionRequest: Equatable {
+    public let fingerprint: String
+    public let message: String
+
+    public init(fingerprint: String, message: String) {
+        self.fingerprint = fingerprint
+        self.message = message
+    }
+}
+
+/// 会话日志给出的强语义信号。它优先于 CPU/mtime 这类活动近似值：
+/// 明确等待用户时不是「工作中」，明确 task_complete 后也不应继续被写入窗口拖住。
+public enum AgentSessionSignal: Equatable {
+    case attention(AgentAttentionRequest)
+    case completed(fingerprint: String)
+
+    public var attentionRequest: AgentAttentionRequest? {
+        guard case let .attention(request) = self else { return nil }
+        return request
+    }
+}
+
+/// 系统通知与点击回调之间的稳定路由载荷。只保存 Agent ID，不把提示正文或会话内容
+/// 写进 userInfo，避免通知数据库持久化敏感任务文本。
+public enum AgentNotificationRoute {
+    public static let agentIdKey = "agentisland.agent-id"
+
+    public static func userInfo(agentId: String) -> [String: String] {
+        [agentIdKey: agentId]
+    }
+
+    public static func agentId(from userInfo: [AnyHashable: Any]) -> String? {
+        guard let value = userInfo[agentIdKey] as? String, !value.isEmpty else { return nil }
+        return value
+    }
+
+    public static func agentId(from userInfo: [String: String]) -> String? {
+        guard let value = userInfo[agentIdKey], !value.isEmpty else { return nil }
+        return value
     }
 }
 

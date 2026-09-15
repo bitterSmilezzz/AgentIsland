@@ -10,7 +10,7 @@ import SwiftUI
 //    - 告警态 (Alert)：微红/琥珀金光晕与微红呼吸点，第一眼感知死循环或突增事件；
 //    - 工作态 (Working)：翠绿微光呼吸流动，多任务时亦能清晰感知运作；
 //    - 待机态 (Idle)：优雅深色半透晶莹胶囊，静默无扰；
-// 3. 几何适配：顶部边缘 (Top) 横向 140x6pt，右侧边缘 (Right) 纵向 6x120pt。
+// 3. 几何适配：顶部/底部横向 140x6pt，左侧/右侧纵向 6x120pt。
 
 struct DockedSliverCapsule: View {
     let dockEdge: DockEdge
@@ -26,7 +26,7 @@ struct DockedSliverCapsule: View {
         if hasAlert {
             return Theme.dangerRed
         } else if isWorking {
-            return Theme.statusWorking
+            return Theme.sydedockEmerald
         }
         return Theme.statusIdle
     }
@@ -38,13 +38,21 @@ struct DockedSliverCapsule: View {
     /// VoiceOver 标签：把状态说清楚，否则细条只是一个无名可点区域
     private var accessibilityLabelText: String {
         let state = hasAlert ? "有告警" : (isWorking ? "智能体工作中" : "待机")
-        let edge = dockEdge == .top ? "顶部" : "右侧"
+        let edge: String
+        switch dockEdge {
+        case .top: edge = "顶部"
+        case .right: edge = "右侧"
+        case .bottom: edge = "底部"
+        case .left: edge = "左侧"
+        }
         return "AgentIsland 灵动岛（\(edge)贴边，\(state)）"
     }
 
     var body: some View {
         ZStack {
-            // 底层胶囊：带微光与反光边
+            // 原生超薄毛玻璃底层 + 半透黑曜石胶囊底 + 反光边
+            Capsule()
+                .fill(.ultraThinMaterial)
             Capsule()
                 .fill(Theme.dockedSliverFill(working: isWorking, alert: hasAlert))
                 .overlay(
@@ -70,8 +78,8 @@ struct DockedSliverCapsule: View {
             }
         }
         .frame(
-            width: dockEdge == .top ? IslandMetrics.topSliverWidth : IslandMetrics.rightSliverWidth,
-            height: dockEdge == .top ? IslandMetrics.topSliverHeight : IslandMetrics.rightSliverHeight
+            width: dockEdge.isHorizontal ? IslandMetrics.topSliverWidth : IslandMetrics.rightSliverWidth,
+            height: dockEdge.isHorizontal ? IslandMetrics.topSliverHeight : IslandMetrics.rightSliverHeight
         )
         .contentShape(Rectangle())
         .onTapGesture {

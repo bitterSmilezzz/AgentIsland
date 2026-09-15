@@ -133,8 +133,8 @@ struct MenuBarPopoverView: View {
 
             Spacer()
 
-            Text("\(engine.visibleSnapshots.count) 可见")
-                    .help("在线或 24h 内有活动的智能体数")
+            Text("\(engine.visibleSnapshots.count) 在线")
+                    .help("当前进程仍在的智能体数；离线项不显示")
                 .font(Theme.monoFont(10))
                 .foregroundColor(Theme.inkMuted48)
                 .padding(.horizontal, 6)
@@ -144,9 +144,14 @@ struct MenuBarPopoverView: View {
     }
 
     private var statusTitle: String {
-        if engine.anyWorking {
+        let waiting = engine.visibleSnapshots.filter { $0.level == .attention }
+        if !waiting.isEmpty {
+            return "\(waiting.count) 个 Agent 等待确认"
+        } else if engine.anyWorking {
             let count = engine.workingAgents().count
             return "\(count) 个 Agent 工作中"
+        } else if engine.visibleSnapshots.contains(where: { $0.level == .completed }) {
+            return "任务已完成"
         } else if engine.visibleSnapshots.isEmpty {
             return "暂无活跃 Agent"
         } else {
@@ -155,14 +160,17 @@ struct MenuBarPopoverView: View {
     }
 
     private var statusColor: Color {
-        engine.anyWorking ? Theme.statusWorking : (engine.visibleSnapshots.isEmpty ? Theme.statusOffline : Theme.statusIdle)
+        engine.visibleSnapshots.contains { $0.level == .attention }
+            ? Theme.warningOrange
+            : (engine.anyWorking ? Theme.statusWorking : (engine.visibleSnapshots.isEmpty ? Theme.statusOffline : Theme.statusIdle))
     }
 
     // MARK: 活跃 Agent 概览列表
     private var agentQuickSection: some View {
         VStack(spacing: 4) {
+            let urgent = engine.visibleSnapshots.filter { $0.level == .attention }
             let working = engine.workingAgents()
-            let displayList = working.isEmpty ? Array(engine.visibleSnapshots.prefix(3)) : working
+            let displayList = !urgent.isEmpty ? urgent : (working.isEmpty ? Array(engine.visibleSnapshots.prefix(3)) : working)
             if displayList.isEmpty {
                 HStack {
                     Spacer()
@@ -184,7 +192,11 @@ struct MenuBarPopoverView: View {
                         Text(s.profile.name)
                             .font(Theme.bodyFont(12, weight: .medium))
                             .foregroundColor(Theme.ink)
-                            .lineLimit(1)
+                            .readableSingleLine(
+                                fullText: s.profile.name,
+                                minWidth: 72,
+                                priority: 2
+                            )
 
                         Spacer()
 
@@ -223,24 +235,36 @@ struct MenuBarPopoverView: View {
 
     // MARK: Token 概览
     private var tokenMiniSummary: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "chart.bar.fill")
-                .font(.system(size: 9))
-                .foregroundColor(Theme.inkMuted48)
-            Text("24h \(TokenUsage.compact(engine.grandTotal.tokens24h))")
-                .font(Theme.monoFont(10, weight: .medium))
-                .foregroundColor(Theme.inkMuted80)
-            if !TokenUsage.cost(engine.grandTotal.cost24h).isEmpty {
-                Text(TokenUsage.cost(engine.grandTotal.cost24h))
-                    .font(Theme.monoFont(9))
+        Button {
+            controller.route = .tokenAnalytics
+            if controller.displayState == .docked { controller.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chart.bar.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(Theme.inkMuted48)
+                Text("24h \(TokenUsage.compact(engine.grandTotal.tokens24h))")
+                    .font(Theme.monoFont(10, weight: .medium))
+                    .foregroundColor(Theme.inkMuted80)
+                if !TokenUsage.cost(engine.grandTotal.cost24h).isEmpty {
+                    Text(TokenUsage.cost(engine.grandTotal.cost24h))
+                        .font(Theme.monoFont(9))
+                        .foregroundColor(Theme.inkMuted48)
+                }
+                Spacer()
+                Text("累计 \(TokenUsage.compact(engine.grandTotal.tokensTotal))")
+                    .font(Theme.monoFont(10))
+                    .foregroundColor(Theme.inkMuted48)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
                     .foregroundColor(Theme.inkMuted48)
             }
-            Spacer()
-            Text("累计 \(TokenUsage.compact(engine.grandTotal.tokensTotal))")
-                .font(Theme.monoFont(10))
-                .foregroundColor(Theme.inkMuted48)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .padding(.horizontal, 4)
+        .help("打开 Token 时间分析")
+        .accessibilityLabel("打开 Token 时间分析")
     }
 
     // MARK: 底部操作栏
@@ -353,26 +377,30 @@ struct MenuBarPopoverView: View {
 struct MenuBarIconView: View {
     @ObservedObject var engine: ActivityEngine
 
+    private var needsAttention: Bool {
+        engine.visibleSnapshots.contains { $0.level == .attention }
+    }
+
     var body: some View {
-        Image(systemName: engine.anyWorking ? "dot.radiowaves.left.and.right" : "sparkles")
+        Image(systemName: needsAttention ? "bell.badge.fill" : (engine.anyWorking ? "dot.radiowaves.left.and.right" : "sparkles"))
             .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(engine.anyWorking ? Theme.statusWorking : Theme.inkMuted48)
+            .foregroundStyle(needsAttention ? Theme.warningOrange : (engine.anyWorking ? Theme.statusWorking : Theme.inkMuted48))
             // H2：状态切换淡入过渡（macOS 13 无 symbolEffect，用内容过渡替代）
             .contentTransition(.opacity)
             .animation(.easeInOut(duration: 0.25), value: engine.anyWorking)
             .overlay(alignment: .topTrailing) {
-                if engine.anyWorking {
+                if engine.anyWorking || needsAttention {
                     // H1：角标用 alignment+padding 完全收进图标内圈（不用 offset，避免越出被裁）
                     // 随图标同节奏淡入淡出
                     Circle()
-                        .fill(Theme.statusWorking)
+                        .fill(needsAttention ? Theme.warningOrange : Theme.statusWorking)
                         .frame(width: 4, height: 4)
                         .padding(1)
                         .transition(.opacity)
                 }
             }
             // VoiceOver：菜单栏图标是应用的第一入口，纯图标无文案，需显式播报当前状态
-            .accessibilityLabel(engine.anyWorking ? "AgentIsland：有智能体正在工作" : "AgentIsland：全部空闲")
+            .accessibilityLabel(needsAttention ? "AgentIsland：有智能体等待你确认" : (engine.anyWorking ? "AgentIsland：有智能体正在工作" : "AgentIsland：全部空闲"))
             .accessibilityHint("打开监控面板")
     }
 }
@@ -380,19 +408,59 @@ struct MenuBarIconView: View {
 // MARK: - AppDelegate（创建灵动岛面板）
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // 无 Dock 图标
+        UNUserNotificationCenter.current().delegate = self
         CompletionNotification.requestAuthorization()
 
         let context = AppContext.shared
         let controller = context.controller // 触发延迟创建
+        if CommandLine.arguments.contains("--expanded") {
+            controller.expand(graceDuration: 30.0)
+        }
         context.engine.start()
         controller.show()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         AppContext.shared.engine.stop()
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let agentId = AgentNotificationRoute.agentId(from: response.notification.request.content.userInfo) else {
+            completionHandler()
+            return
+        }
+        Task { @MainActor in
+            defer { completionHandler() }
+            let context = AppContext.shared
+            let snapshot = context.engine.snapshots.first { $0.id == agentId }
+            let profile = snapshot?.profile ?? context.engine.allProfiles.first { $0.id == agentId }
+            if AppActivator.activate(pid: snapshot?.pid, bundleIDs: profile?.bundleIDs ?? []) {
+                return
+            }
+
+            // CLI 经 ssh/tmux 启动或目标刚退出时可能没有可激活宿主；至少展开对应详情，
+            // 明确告诉用户是哪一个 Agent 在等待，避免点击通知后毫无反馈。
+            context.controller.route = .agentDetail(agentId)
+            context.controller.expand(graceDuration: 30)
+            context.controller.show()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list])
     }
 }
