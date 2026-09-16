@@ -10,9 +10,40 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
 
     @Published var displayState: IslandDisplayState = .docked
     /// 卡内导航路由（仅 expanded 时有意义）
-    @Published var route: CardRoute = .list
+    @Published var route: CardRoute = .list {
+        didSet {
+            guard oldValue != route else { return }
+            if case .agentDetail = route {
+                switch oldValue {
+                case .agentDetail, .sessions, .liveStream:
+                    // 处于详情子树内部跳转（如从 sessions 或 liveStream 返回），保持原进入来源不变
+                    break
+                default:
+                    agentDetailOrigin = oldValue
+                }
+            } else if route == .list {
+                agentDetailOrigin = .list
+                liveStreamOrigin = .list
+            }
+        }
+    }
     /// 进入实时流水页前的路由（用于返回时回到正确层级：主列表 or Agent 详情页）
     private var liveStreamOrigin: CardRoute = .list
+    /// 进入 Agent 详情页前的路由（用于返回时回到正确层级：主列表 or Token 统计图等）
+    private(set) var agentDetailOrigin: CardRoute = .list
+
+    /// 打开 Agent 详情页并记录来源（返回时据此还原）
+    func openAgentDetail(_ agentId: String, from origin: CardRoute? = nil) {
+        if case .agentDetail = route {} else {
+            agentDetailOrigin = origin ?? route
+        }
+        route = .agentDetail(agentId)
+    }
+
+    /// 从 Agent 详情页返回：回到进入前的页面（主列表 or Token 统计图等）
+    func closeAgentDetail() {
+        route = agentDetailOrigin
+    }
 
     /// 打开实时流水页并记录来源（返回时据此还原）
     func openLiveStream(agentId: String) {
@@ -348,7 +379,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// 「光标停在热区内、事件被节流丢掉」的兜底——静止（远离热区且未展开）时
     /// 高频唤醒纯属浪费（能效影响大于 CPU%）。光标进入热区/展开态立即恢复快档
     private static let edgeZoneFastInterval: TimeInterval = 0.12
-    private static let edgeZoneSlowInterval: TimeInterval = 0.5
+    private static let edgeZoneSlowInterval: TimeInterval = 1.0
     private static let edgeZoneQuietTicksToSlow = 25   // 25 × 0.12s ≈ 3s
     private var edgeZoneSlowMode = false
     private var edgeZoneQuietTicks = 0
@@ -513,10 +544,31 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         private let lock = NSLock()
         private var lastPass = Date.distantPast
         private let minInterval: TimeInterval
+        private var proximityRect: NSRect = .zero
+        private var isExpanded: Bool = false
 
         init(minInterval: TimeInterval) { self.minInterval = minInterval }
 
-        func shouldPass(now: Date = Date()) -> Bool {
+        func updateTarget(proximityRect: NSRect, isExpanded: Bool) {
+            lock.lock()
+            self.proximityRect = proximityRect
+            self.isExpanded = isExpanded
+            lock.unlock()
+        }
+
+        func shouldPass(mouseLocation: NSPoint, now: Date = Date()) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard now.timeIntervalSince(lastPass) >= minInterval else { return false }
+            // 处于收起态（docked）时，若光标不在边缘感知区（细条邻域 40pt），零开销丢弃，防全屏鼠标 Task 轰炸
+            if !isExpanded && !proximityRect.isEmpty && !proximityRect.contains(mouseLocation) {
+                return false
+            }
+            lastPass = now
+            return true
+        }
+
+        func shouldPassLocal(now: Date = Date()) -> Bool {
             lock.lock()
             defer { lock.unlock() }
             guard now.timeIntervalSince(lastPass) >= minInterval else { return false }
@@ -534,15 +586,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 2. 本地与全局鼠标移动监听（共用同一个节流器，避免同一物理移动被两条通道各算一次）
         let throttle = mouseMoveThrottle
         mouseLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            guard throttle.shouldPass() else { return event }
+            guard throttle.shouldPassLocal() else { return event }
             MainActor.assumeIsolated {
                 self?.evaluateEdgeZone()
             }
             return event
         }
         mouseGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
-            // 先做非隔离的节流预筛，再起 Task：逐事件新建 Task 本身就是此前的 CPU 热点
-            guard throttle.shouldPass() else { return }
+            let loc = NSEvent.mouseLocation
+            // 边缘感知区零开销预筛：屏幕中央 99.9% 的鼠标移动直接跳过，零 Task 分配、零主线程派发
+            guard throttle.shouldPass(mouseLocation: loc) else { return }
             Task { @MainActor [weak self] in
                 self?.evaluateEdgeZone()
             }
@@ -1041,6 +1094,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         } else {
             panel.setFrame(targetRect, display: false)
         }
+        updateMouseThrottleProximity()
+    }
+
+    private func updateMouseThrottleProximity() {
+        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+        let hit = sliverRect(for: screen).insetBy(dx: -40, dy: -40)
+        mouseMoveThrottle.updateTarget(proximityRect: hit, isExpanded: displayState == .expanded)
     }
 
     private func syncExpandedHeight() {

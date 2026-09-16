@@ -475,65 +475,41 @@ public enum AgentActionInspector {
     // MARK: - 6. Antigravity 轨迹日志探测
 
     public static func inspectAntigravityAction() -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
-        guard let subdirs = try? FileManager.default.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
-            return nil
+        // 优先从 Antigravity 原生会话探测中读取当前正在活跃执行的动作；
+        // 处于已完成、待审批或待机状态时返回 nil，绝不残留回溯上一轮旧命令。
+        if let signal = AgentSessionInspector.inspectAntigravitySession(),
+           case let .active(_, actionText) = signal,
+           let actionText, !actionText.isEmpty {
+            return actionText
         }
-        var newestFile: URL?
-        var newestTime: Date = .distantPast
-        for sub in subdirs {
-            let logFile = sub.appendingPathComponent(".system_generated/logs/transcript.jsonl")
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: logFile.path),
-               let mtime = attrs[.modificationDate] as? Date, mtime > newestTime {
-                newestTime = mtime
-                newestFile = logFile
-            }
-        }
-        guard let target = newestFile, Date().timeIntervalSince(newestTime) < 300 else {
-            return nil
-        }
-
-        let lines = readLastLines(from: target, maxLines: 10)
-        guard !lines.isEmpty else { return nil }
-
-        for line in lines.reversed() {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                continue
-            }
-
-            if let toolCalls = obj["tool_calls"] as? [[String: Any]], let firstTool = toolCalls.first {
-                var actionText: String?
-                if let args = firstTool["args"] as? [String: Any] {
-                    if let rawAction = args["toolAction"] as? String {
-                        actionText = rawAction
-                    } else if let rawSummary = args["toolSummary"] as? String {
-                        actionText = rawSummary
-                    }
-                }
-                if actionText == nil, let name = firstTool["name"] as? String {
-                    actionText = name
-                }
-
-                if let text = actionText, !text.isEmpty {
-                    return cleanAntigravityAction(text)
-                }
-            }
-
-            if let type = obj["type"] as? String {
-                if type == "PLANNER_RESPONSE", let thinking = obj["thinking"] as? String, !thinking.isEmpty {
-                    return "思考规划中"
-                }
-            }
-        }
-
         return nil
     }
 
     /// 清洗与汉化 Antigravity 动作文案（移除冗余前缀、动词本土化、长度归一）
     public static func cleanAntigravityAction(_ raw: String) -> String {
         var text = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\" \t\n\r"))
+        let directToolMap: [String: String] = [
+            "run_command": "执行终端命令",
+            "view_file": "查看文件",
+            "replace_file_content": "编辑文件代码",
+            "write_to_file": "写入文件",
+            "grep_search": "搜索代码正则",
+            "find_by_name": "查找文件",
+            "list_dir": "浏览目录",
+            "search_web": "联网搜索",
+            "read_url_content": "读取网页内容",
+            "ask_question": "等待用户确认",
+            "manage_task": "管理后台任务",
+            "schedule": "调度定时任务",
+            "invoke_subagent": "调用子智能体",
+            "manage_subagents": "管理子智能体",
+            "define_subagent": "定义子智能体",
+            "generate_image": "生成图像素材"
+        ]
+        if let direct = directToolMap[text] {
+            return direct
+        }
+
         let prefixMap: [(String, String)] = [
             ("Viewing ", "查看: "),
             ("Reading ", "读取: "),
@@ -719,6 +695,14 @@ public enum AgentActionInspector {
     // MARK: - 9. DSH (DeepSeek Harness) 运行模式探测
 
     public static func inspectDSHAction(pid: Int32?, snapshot: ProcessSnapshot? = nil) -> String? {
+        // 1. 优先从 DSH 官方投影缓存中提取正在运行的活跃任务与步骤
+        if let signal = AgentSessionInspector.inspectDSHSession(),
+           case let .active(_, actionText) = signal,
+           let actionText, !actionText.isEmpty {
+            return actionText
+        }
+
+        // 2. 进程命令行辅助回退
         if let pid = pid, pid > 1 {
             // 用 libproc 直读命令行，避免 fork /bin/ps（单次 ~67ms 的主线程开销）；
             // 走 TTL 缓存——匹配器命中 dsh 时刚为本 pid 探测过，二次 sysctl 纯浪费

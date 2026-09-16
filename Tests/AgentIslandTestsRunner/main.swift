@@ -9,6 +9,8 @@ func runAllTests() -> Int32 {
     FileIOTests.registerTreeTests()
     EngineTests.register()
     AttentionTests.register()
+    DSHTrackingTests.register()
+    AntigravityTrackingTests.register()
     TypographyTests.register()
     TokenUsageTests.register()
     RegistryTests.register()
@@ -22,6 +24,7 @@ func runAllTests() -> Int32 {
     EventTextTests.register()
     MemoryTextTests.register()
     FormatTests.register()
+    PerformanceOptimizationTests.register()
     let result = TestKit.runAll()
     // R16 测试卫生：登记套件统一清理 + 自守护（零 plist 残留）
     TestDefaults.cleanupAll()

@@ -143,8 +143,9 @@ public enum AgentRegistry {
             name: "Antigravity",
             icon: "atom",
             bundleIDs: ["com.google.antigravity", "com.yuzhiqiang.antigravity.studio"],
-            processNames: ["Antigravity", "language_server", "agentapi", "Electron"],
+            processNames: ["Antigravity", "Electron"],
             pathContains: ["antigravity"],
+            pathExcludes: ["frameworks", "helper", "language_server"],
             cpuWorkingThreshold: desktopCPUFloor,
             // 只监控 Agent 自身的会话数据；`Library/Application Support/Antigravity`
             // 是内核用户数据目录（Chromium 缓存/存储 + 更新器 + 账号状态），
@@ -208,8 +209,8 @@ public enum AgentRegistry {
             pathContains: ["deepseek-harness"],
             pathExcludes: [".codegraph"],
             // storages/workspace.json 是网页宿主的工作区状态，会在空闲时被后台刷新；
-            // 只有真实会话目录才代表 DSH 正在执行任务。
-            sessionDirs: [home(".dsh/sessions")],
+            // 真实会话目录与投影检查点目录 (session_projcache/sessions) 联动代表 DSH 真实任务生命周期。
+            sessionDirs: [home(".dsh/sessions"), home(".dsh/storages/session_projcache/sessions")],
             category: .assistant
         ),
         AgentProfile(

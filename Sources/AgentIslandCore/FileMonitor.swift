@@ -25,6 +25,9 @@ public protocol FileActivityProviding {
     /// 扫描紧迫度（引擎按 anyWorking 同步）：全闲置时放宽兜底重扫周期以省电
     func setScanUrgency(highFrequency: Bool)
 
+    /// 当前有进程运行中的活动会话目录集合（离线 Agent 目录若根 mtime 未变，跳过深层递归枚举）
+    func setRunningDirs(_ dirs: Set<String>)
+
     /// 注册监控目录（假实现为空操作）
     func watch(dirs: [String])
 
@@ -44,6 +47,7 @@ public extension FileActivityProviding {
     func setActiveSessionWindow(_ window: TimeInterval) {}
     func setWorkingWindow(_ window: TimeInterval) {}
     func setScanUrgency(highFrequency: Bool) {}
+    func setRunningDirs(_ dirs: Set<String>) {}
 }
 
 /// 后台扫描 + 缓存实现：
@@ -87,6 +91,8 @@ public final class FileActivityMonitor: FileActivityProviding {
     private let idleRescanInterval: TimeInterval = 30
     /// 当前是否处于高频扫描模式（引擎按 anyWorking 同步）
     private var isHighFrequencyScan = true
+    /// 当前有进程运行中的会话目录集合（引擎同步）：用于离线 Agent 目录智能跳过深度递归
+    private var runningDirs: Set<String> = []
 
     public init(maxDepth: Int = 4, scanMinInterval: TimeInterval = 3.0) {
         self.maxDepth = maxDepth
@@ -94,6 +100,16 @@ public final class FileActivityMonitor: FileActivityProviding {
     }
 
     // MARK: 协议实现
+
+    public func setRunningDirs(_ dirs: Set<String>) {
+        lock.lock()
+        let newlyOnline = dirs.subtracting(runningDirs)
+        for dir in newlyOnline {
+            lastFullScans[dir] = nil
+        }
+        runningDirs = dirs
+        lock.unlock()
+    }
 
     public func watch(dirs: [String]) {
         lock.lock()
@@ -249,15 +265,19 @@ public final class FileActivityMonitor: FileActivityProviding {
             let cachedCount = sessionCounts[dir]
             let cachedFile = latestFiles[dir]
             let lastFull = lastFullScans[dir]
+            let isOnline = runningDirs.contains(dir)
             lock.unlock()
-            if let rootDate, let cachedRoot, rootDate == cachedRoot,
-               let cachedNewest, let cachedCount,
-               now.timeIntervalSince(lastFull ?? .distantPast) < rescanInterval {
-                // 根 mtime 未变（无新顶层子项）+ 兜底周期内刚全量扫过：复用缓存，不枚举目录树
-                fresh[dir] = cachedNewest
-                freshCounts[dir] = cachedCount
-                if let cachedFile { freshFiles[dir] = cachedFile }
-                continue
+            if let rootDate, let cachedRoot, abs(rootDate.timeIntervalSince(cachedRoot)) < 0.001,
+               let cachedNewest, let cachedCount {
+                // 快跳过：
+                // 1. 若该智能体离线且根目录 mtime 未变：不会产生深层写入，直接复用缓存（活跃数随时间窗口衰减）
+                // 2. 若在兜底周期内刚全量扫过：复用缓存，不枚举目录树
+                if !isOnline || now.timeIntervalSince(lastFull ?? .distantPast) < rescanInterval {
+                    fresh[dir] = cachedNewest
+                    freshCounts[dir] = (now.timeIntervalSince(cachedNewest) <= window) ? cachedCount : 0
+                    if let cachedFile { freshFiles[dir] = cachedFile }
+                    continue
+                }
             }
             let r = Self.scanTree(in: dir, maxDepth: maxDepth, window: window, now: now)
             // 信号面终态语义（R33/F3）：
@@ -357,11 +377,17 @@ public final class FileActivityMonitor: FileActivityProviding {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
         guard let en = fm.enumerator(at: url,
                                      includingPropertiesForKeys: keys,
-                                     options: [.skipsHiddenFiles]) else {
+                                     options: []) else {
             return DirScanResult(newest: newest, activeSessions: 0, newestFile: newestFile)
         }
         while let item = en.nextObject() as? URL {
             guard en.level <= maxDepth else {
+                en.skipDescendants()
+                continue
+            }
+            let name = item.lastPathComponent
+            // 允许以 .system_generated 命名的 Antigravity 核心会话日志子树；其余隐藏条目全部跳过
+            if name.hasPrefix(".") && name != ".system_generated" {
                 en.skipDescendants()
                 continue
             }
@@ -425,10 +451,10 @@ public final class FileActivityMonitor: FileActivityProviding {
             return true
         }
         // 2. 纯 PID 形式的心跳 JSON（如 WorkBuddy 的 33485.json、33162.json）
-        // 先判扩展名再算 stem：deletingPathExtension 有分配成本，非 json 文件免付
-        if url.pathExtension == "json" {
-            let stem = url.deletingPathExtension().lastPathComponent
-            if Int(stem) != nil {
+        // 直接按文件名后缀与纯数字判断，零 URL 分配与路径解析开销
+        if name.hasSuffix(".json") {
+            let stem = name.dropLast(5)
+            if !stem.isEmpty && stem.allSatisfy({ $0.isNumber }) {
                 return true
             }
         }

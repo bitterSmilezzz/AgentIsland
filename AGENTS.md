@@ -16,6 +16,10 @@ pkill -x AgentIsland; sleep 0.6; open dist/AgentIsland.app
 - 旧实例不存在时 `pkill` 返回非零，忽略即可，继续 `open`
 - 重启后简短汇报，不要写成长篇操作说明
 
+### 自动化提交与发版
+
+- 改造完成后，只要测试通过，就自动提交到远端，然后执行发版并更新文档
+
 ## Agent skills
 
 ### Issue tracker

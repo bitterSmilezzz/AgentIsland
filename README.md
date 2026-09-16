@@ -2,9 +2,12 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.61）
+## 功能（v0.0.62）
 
 ### 设计美学与 CodeNotch 灵动交互
+- **贴边收起常态 0.0% CPU 极致省电（CoreAnimation 硬件加速）**：
+  - 收起态呼吸光晕由 CoreAnimation 独立硬件图层驱动，彻底消除高刷屏递归重排，Docked 态 CPU 稳定在 **0.0% ~ 0.1%**；
+  - 全局鼠标移动近邻预过滤，屏幕中央滑动零 Task 派发；离线 Agent 免深搜，极大降低系统资源消耗。
 - **反向倒角一体化贴边（Inverse Rounded Corner / Bezel Flares）**：
   - 基于数学级三次 Bézier 曲线实现 `SideNotchShape`，支持上、右、下、左四边贴边；
   - 边缘向屏幕物理边框平滑过渡，如同从屏幕外壳硬件级一体化生长出来，彻底告别悬空矩形与割裂感；

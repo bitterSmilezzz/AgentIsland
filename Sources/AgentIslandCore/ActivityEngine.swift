@@ -335,6 +335,14 @@ public final class ActivityEngine: ObservableObject {
         }
         lastSampleAt = now
 
+        // 提取当前有运行中进程/应用的 sessionDirs，告知 FileMonitor 优化扫描（离线目录免深搜）
+        var runningSessionDirs: Set<String> = []
+        for profile in profiles {
+            if matcher.isRunning(profile) {
+                runningSessionDirs.formUnion(profile.sessionDirs)
+            }
+        }
+        fileMonitor.setRunningDirs(runningSessionDirs)
         fileMonitor.scanAsync()
         // 低频重扫安装缓存（运行中装新 CLI/App 不必重启；调度即标记，后台执行）。
         // 时间戳阈值 300s：计数在工作态 2s/离线 60s 间隔下粒度漂移 30 倍
@@ -454,6 +462,16 @@ public final class ActivityEngine: ObservableObject {
                 workingSince[profile.id] = nil
                 workingPeriodHadWrite.remove(profile.id)
                 lastSignalAt[profile.id] = nil
+            } else if case let .active(_, actionText)? = sessionSignal {
+                activeAttentionFingerprints[profile.id] = nil
+                level = .working
+                if workingSince[profile.id] == nil {
+                    workingSince[profile.id] = now
+                    workingPeriodHadWrite.insert(profile.id)
+                } else {
+                    workingPeriodHadWrite.insert(profile.id)
+                }
+                lastSignalAt[profile.id] = now
             } else if hasRecentWrite || hasHighCpu {
                 activeAttentionFingerprints[profile.id] = nil
                 level = .working
@@ -492,6 +510,16 @@ public final class ActivityEngine: ObservableObject {
                 highCpuSince[profile.id] = nil
             }
 
+            // 状态消除与横幅联动：
+            // 1. 若当前 Agent 不再处于 attention 态，自动消除该 Agent 的等待确认提醒横幅（用户已选择确认或已恢复执行）
+            if level != .attention, latestEvent?.agentId == profile.id, latestEvent?.eventType == .attention {
+                clearLatestEvent()
+            }
+            // 2. 若当前 Agent 重新进入 working 态，且当前展示的是该 Agent 上一次的已完成横幅，予以清理
+            if level == .working, latestEvent?.agentId == profile.id, latestEvent?.eventType == .completed {
+                clearLatestEvent()
+            }
+
             let action: String?
             if level == .working {
                 anyWork = true
@@ -504,7 +532,14 @@ public final class ActivityEngine: ObservableObject {
                 let inspector = inspectActionHook ?? { pid, profile, dirs, snap in
                     AgentActionInspector.inspectAction(pid: pid, profile: profile, sessionDirs: dirs, snapshot: snap)
                 }
-                action = inspector(matchedPID, profile, profile.sessionDirs, matcher.snapshot)
+                let detected = inspector(matchedPID, profile, profile.sessionDirs, matcher.snapshot)
+                if let detected, !detected.isEmpty {
+                    action = detected
+                } else if case let .active(_, actionText)? = sessionSignal {
+                    action = actionText
+                } else {
+                    action = nil
+                }
             } else if case let .attention(request)? = sessionSignal {
                 action = request.message
             } else {

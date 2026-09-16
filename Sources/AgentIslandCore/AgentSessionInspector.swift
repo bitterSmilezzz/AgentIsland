@@ -9,29 +9,32 @@ import SQLite3
 /// 自动兼容；未知格式仍保留 CPU + 文件写入的原有降级路径。
 public enum AgentSessionInspector {
     private static let requestNames: Set<String> = [
-        "requestuserinput", "askuserquestion", "askfollowupquestion", "askuser",
-        "requestpermission", "requestapproval", "requestconfirmation", "confirmwithuser"
+        "requestuserinput", "askuserquestion", "askfollowupquestion", "askuser", "askquestion",
+        "requestpermission", "requestapproval", "requestconfirmation", "confirmwithuser",
+        "approvalasked"
     ]
     private static let requestStates: Set<String> = [
         "approvalrequest", "approvalrequested", "permissionrequest", "permissionrequested",
         "confirmationrequest", "requiresconfirmation", "needsconfirmation", "pendingapproval",
         "awaitingapproval", "awaitinguserinput", "waitingforuser", "waitingforuserinput",
-        "userinputrequest", "elicitation"
+        "userinputrequest", "elicitation", "approvalasked"
     ]
     private static let completionTypes: Set<String> = [
         "taskcomplete", "taskcompleted", "turncomplete", "turncompleted",
-        "sessioncomplete", "sessioncompleted", "runcomplete", "runcompleted"
+        "sessioncomplete", "sessioncompleted", "runcomplete", "runcompleted",
+        "turnend", "sessionend", "sessionendseed", "runend"
     ]
     private static let resolutionTypes: Set<String> = [
         "customtoolcalloutput", "toolresult", "userinputresponse", "approvalresponse",
-        "permissionresponse", "confirmationresponse", "elicitationresponse"
+        "permissionresponse", "confirmationresponse", "elicitationresponse", "approvaldecided"
     ]
     private static let resolutionStates: Set<String> = [
         "approved", "denied", "rejected", "cancelled", "canceled", "answered", "resolved"
     ]
     private static let activeTypes: Set<String> = [
         "reasoning", "thinking", "functioncall", "customtoolcall", "tooluse",
-        "taskstarted", "turnstarted", "runstarted", "user_message", "usermessage"
+        "taskstarted", "turnstarted", "runstarted", "user_message", "usermessage",
+        "stepstart", "turnstart", "toolcall", "assistantmessage"
     ]
 
     /// 对 FileMonitor 已在后台定位出的每目录最新文件做有界尾读；不递归枚举目录。
@@ -222,6 +225,12 @@ public enum AgentSessionInspector {
                     "requestId", "id", "turn_id", "session_id", "turnId", "sessionId"] {
             if let id = dict[key] as? String, !id.isEmpty { return id }
         }
+        if let data = dict["data"] as? [String: Any], let id = identifier(in: data) {
+            return id
+        }
+        if let payload = dict["payload"] as? [String: Any], let id = identifier(in: payload) {
+            return id
+        }
         return nil
     }
 
@@ -278,6 +287,10 @@ public enum AgentSessionInspector {
             )
         case "opencode":
             return inspectOpenCodeDatabase(path: "\(home)/.local/share/opencode/opencode.db", now: now)
+        case "dsh":
+            return inspectDSHSession(now: now)
+        case "antigravity":
+            return inspectAntigravitySession(now: now)
         default:
             return nil
         }
@@ -383,6 +396,251 @@ public enum AgentSessionInspector {
             if case .completed = signal, fileAge(path, now: now) > 15 * 60 { return nil }
             return signal
         }
+    }
+
+    /// 解析 DeepSeek Harness (DSH) 官方会话投影缓存 (sessionProjectionCache)，提取活跃执行态与终态。
+    public static func inspectDSHSession(baseDir: String? = nil, now: Date = Date()) -> AgentSessionSignal? {
+        let projcacheDir: String
+        if let baseDir {
+            projcacheDir = baseDir
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            projcacheDir = "\(home)/.dsh/storages/session_projcache/sessions"
+        }
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: projcacheDir) else { return nil }
+
+        var newestPath: String?
+        var newestDate: Date = .distantPast
+        for file in files where file.hasSuffix(".json") {
+            let fullPath = "\(projcacheDir)/\(file)"
+            if let attrs = try? fm.attributesOfItem(atPath: fullPath),
+               let mdate = attrs[.modificationDate] as? Date {
+                if mdate > newestDate {
+                    newestDate = mdate
+                    newestPath = fullPath
+                }
+            }
+        }
+        guard let path = newestPath else { return nil }
+        let age = max(0, now.timeIntervalSince(newestDate))
+        guard age <= 24 * 3600 else { return nil }
+
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let record = root["record"] as? [String: Any],
+              let rows = record["rows"] as? [String: Any] else {
+            return nil
+        }
+
+        let sessionId = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+
+        // 提取任务标题
+        let titleDict = rows["title"] as? [String: Any]
+        let rawTitle = (titleDict?["val"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanTitle = clipDSHString(rawTitle.replacingOccurrences(of: "\n", with: " "), limit: 26)
+
+        // 检查审批/确认请求
+        if let approvalRow = rows["approval"] as? [String: Any],
+           let approvalVal = approvalRow["val"] as? [String: Any],
+           let pendingId = approvalVal["id"] as? String, !pendingId.isEmpty {
+            let toolName = approvalVal["toolName"] as? String ?? "操作"
+            return .attention(AgentAttentionRequest(
+                fingerprint: pendingId,
+                message: "等待你批准执行: \(toolName)"
+            ))
+        }
+
+        // 检查轮次与步骤
+        let turnBoundary = rows["turnBoundary"] as? [String: Any]
+        let tbVal = turnBoundary?["val"] as? [String: Any]
+        let openTurnStartSeq = tbVal?["openTurnStartSeq"] as? Int
+
+        let sessionStats = rows["sessionStats"] as? [String: Any]
+        let statsVal = sessionStats?["val"] as? [String: Any]
+        let openStep = statsVal?["openStep"] as? [String: Any]
+        let currentStep = openStep?["step"] as? Int ?? statsVal?["steps"] as? Int
+        let currentTurn = openStep?["turn"] as? Int ?? statsVal?["lastTurn"] as? Int ?? 1
+
+        let isOpen = (openTurnStartSeq != nil) || (openStep != nil)
+
+        if isOpen {
+            // 处于活跃保护期内（30分钟内有更新），返回 active
+            guard age <= 30 * 60 else { return nil }
+            let actionDesc: String
+            if !cleanTitle.isEmpty {
+                if let step = currentStep, step > 0 {
+                    actionDesc = "执行中: \(cleanTitle) (第 \(step) 步)"
+                } else {
+                    actionDesc = "执行中: \(cleanTitle)"
+                }
+            } else if let step = currentStep, step > 0 {
+                actionDesc = "执行任务中 (第 \(step) 步)"
+            } else {
+                actionDesc = "执行任务中"
+            }
+            let fingerprint = "dsh-\(sessionId)-turn\(currentTurn)"
+            return .active(fingerprint: fingerprint, action: actionDesc)
+        } else {
+            // 轮次已结束：若在完成后的 15 分钟内，返回 completed
+            guard age <= 15 * 60 else { return nil }
+            let totalSteps = statsVal?["steps"] as? Int ?? 0
+            let fingerprint = "dsh-\(sessionId)-t\(currentTurn)-s\(totalSteps)"
+            return .completed(fingerprint: fingerprint)
+        }
+    }
+
+    /// 解析 Google Antigravity 轨迹日志 (.system_generated/logs/transcript.jsonl)，提取活跃执行态、提问确认与终态。
+    public static func inspectAntigravitySession(baseDir: String? = nil, now: Date = Date()) -> AgentSessionSignal? {
+        let brainDir: URL
+        if let baseDir {
+            brainDir = URL(fileURLWithPath: baseDir)
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
+        }
+        guard let subdirs = try? FileManager.default.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
+            return nil
+        }
+        var newestFile: URL?
+        var newestTime: Date = .distantPast
+        for sub in subdirs {
+            let logFile = sub.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: logFile.path),
+               let mtime = attrs[.modificationDate] as? Date {
+                if mtime > newestTime {
+                    newestTime = mtime
+                    newestFile = logFile
+                }
+            }
+        }
+        guard let target = newestFile else { return nil }
+        let age = max(0, now.timeIntervalSince(newestTime))
+        guard age <= 24 * 3600 else { return nil }
+
+        let lines = LogTailReader.read(from: target, maxLines: 48, maxBytes: 131_072)
+        guard !lines.isEmpty else { return nil }
+
+        return detectAntigravitySession(lines: lines, fileAge: age, now: now)
+    }
+
+    /// 解析 Antigravity transcript.jsonl 末尾若干行，推导当前状态信号
+    public static func detectAntigravitySession(lines: [String], fileAge: TimeInterval, now: Date = Date()) -> AgentSessionSignal? {
+        for rawLine in lines.reversed() {
+            guard let data = rawLine.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+
+            let stepIndex = obj["step_index"] as? Int ?? 0
+            let stepType = obj["type"] as? String ?? ""
+            let fingerprint = "antigravity-step-\(stepIndex)"
+
+            // 1. 等待用户选择或确认（如 ask_question）
+            if let toolCalls = obj["tool_calls"] as? [[String: Any]], !toolCalls.isEmpty {
+                if let askTool = toolCalls.first(where: {
+                    let name = normalized($0["name"] as? String)
+                    return requestNames.contains(name) || name.contains("askquestion") || name.contains("askuser")
+                }) {
+                    var questionMsg = "等待你选择或确认"
+                    if let args = askTool["args"] as? [String: Any] {
+                        if let questionsStr = args["questions"] as? String,
+                           let qData = questionsStr.data(using: .utf8),
+                           let qArray = try? JSONSerialization.jsonObject(with: qData) as? [[String: Any]],
+                           let firstQ = qArray.first,
+                           let qText = firstQ["question"] as? String, !qText.isEmpty {
+                            questionMsg = clipDSHString(qText.replacingOccurrences(of: "\n", with: " "), limit: 30)
+                        }
+                    }
+                    return .attention(AgentAttentionRequest(
+                        fingerprint: fingerprint,
+                        message: questionMsg
+                    ))
+                }
+
+                // 正在执行工具调用
+                // 只有在最近 300 秒内发生文件变动才视为实时活跃执行；超时则视为挂起或已中断
+                guard fileAge <= 300 else { return nil }
+
+                var actionText: String? = nil
+                if let firstTool = toolCalls.first {
+                    if let args = firstTool["args"] as? [String: Any] {
+                        if let rawAction = args["toolAction"] as? String {
+                            actionText = rawAction
+                        } else if let rawSummary = args["toolSummary"] as? String {
+                            actionText = rawSummary
+                        }
+                    }
+                    if actionText == nil, let name = firstTool["name"] as? String {
+                        actionText = name
+                    }
+                }
+                let display = actionText.map { AgentActionInspector.cleanAntigravityAction($0) } ?? "执行工具中"
+                return .active(fingerprint: fingerprint, action: display)
+            }
+
+            // 2. 规划响应与最终回答
+            if stepType == "PLANNER_RESPONSE" {
+                let content = obj["content"] as? String
+                let status = obj["status"] as? String
+                let hasActiveThinking = (obj["thinking"] as? String)?.isEmpty == false
+
+                // 如果有内容输出给用户，或者无思考的明确 DONE 状态：判定为轮次结束
+                if (content != nil && !content!.isEmpty) || (status == "DONE" && !hasActiveThinking) {
+                    if fileAge <= 15 * 60 {
+                        return .completed(fingerprint: fingerprint)
+                    } else {
+                        return nil // 15 分钟后自然转入待机
+                    }
+                }
+
+                // 只有思考而无工具调用也无最终内容：正在思考规划中
+                if hasActiveThinking {
+                    guard fileAge <= 300 else { return nil }
+                    return .active(fingerprint: fingerprint, action: "思考规划中")
+                }
+            }
+
+            // 3. 用户刚发送输入，模型正在启动准备
+            if stepType == "USER_INPUT" {
+                guard fileAge <= 300 else { return nil }
+                return .active(fingerprint: fingerprint, action: "思考规划中")
+            }
+
+            // 4. 工具输出返回 (GENERIC)，正在等待下一拍模型调度
+            if stepType == "GENERIC" {
+                guard fileAge <= 300 else { return nil }
+                var toolActionDesc: String? = nil
+                for prevRaw in lines.reversed() {
+                    if let pData = prevRaw.data(using: .utf8),
+                       let pObj = try? JSONSerialization.jsonObject(with: pData) as? [String: Any],
+                       let tCalls = pObj["tool_calls"] as? [[String: Any]],
+                       let firstT = tCalls.first {
+                        if let args = firstT["args"] as? [String: Any] {
+                            toolActionDesc = (args["toolAction"] as? String) ?? (args["toolSummary"] as? String)
+                        }
+                        if toolActionDesc == nil, let tName = firstT["name"] as? String {
+                            toolActionDesc = tName
+                        }
+                        break
+                    }
+                }
+                if let toolActionDesc {
+                    let cleaned = AgentActionInspector.cleanAntigravityAction(toolActionDesc)
+                    return .active(fingerprint: fingerprint, action: "\(cleaned) (处理中)")
+                }
+                return .active(fingerprint: fingerprint, action: "处理中")
+            }
+        }
+
+        return nil
+    }
+
+    private static func clipDSHString(_ text: String, limit: Int = 26) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        let index = trimmed.index(trimmed.startIndex, offsetBy: max(0, limit - 1))
+        return String(trimmed[..<index]) + "…"
     }
 
     private static func fileAge(_ path: String, now: Date) -> TimeInterval {

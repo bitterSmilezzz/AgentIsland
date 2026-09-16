@@ -532,14 +532,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-              let agentId = AgentNotificationRoute.agentId(from: response.notification.request.content.userInfo) else {
+        guard let agentId = AgentNotificationRoute.agentId(from: response.notification.request.content.userInfo) else {
             completionHandler()
             return
         }
         Task { @MainActor in
             defer { completionHandler() }
             let context = AppContext.shared
+            // 用户点击或划掉/点掉通知：同步消除灵动岛上对应的事件横幅
+            if context.engine.latestEvent?.agentId == agentId {
+                context.engine.clearLatestEvent()
+            }
+
+            // 仅在默认点击通知时激活目标窗口；若用户是关闭/划掉通知则不抢焦点
+            guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else {
+                return
+            }
+
             let snapshot = context.engine.snapshots.first { $0.id == agentId }
             let profile = snapshot?.profile ?? context.engine.allProfiles.first { $0.id == agentId }
             if AppActivator.activate(pid: snapshot?.pid, bundleIDs: profile?.bundleIDs ?? []) {

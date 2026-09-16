@@ -19,14 +19,14 @@ public struct ProcessSnapshot: Sendable {
         /// 19 个 profile × 全表会白白烧掉约 1.5ms/拍（实测）。构造期算一次即可。
         public let pathLower: String
 
-        public init(pid: Int32, path: String, basename: String, cpuPercent: Double, rssBytes: UInt64 = 0, ppid: Int32 = 0) {
+        public init(pid: Int32, path: String, basename: String, cpuPercent: Double, rssBytes: UInt64 = 0, ppid: Int32 = 0, pathLower: String? = nil) {
             self.pid = pid
             self.path = path
             self.basename = basename
             self.cpuPercent = cpuPercent
             self.rssBytes = rssBytes
             self.ppid = ppid
-            self.pathLower = path.lowercased()
+            self.pathLower = pathLower ?? path.lowercased()
         }
     }
 
@@ -130,6 +130,21 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
             last = last.filter { alivePids.contains($0.key) }
         }
     }
+    /// 进程路径与元数据多级缓存（Unix 进程存活期路径与可执行元数据恒定）
+    /// 仅对首次出现的 PID 调 proc_pidpath，避免每 2s 对 600+ 进程重复系统调用与堆分配
+    private final class PathCache: @unchecked Sendable {
+        struct Info {
+            let path: String
+            let basename: String
+            let pathLower: String
+        }
+        var entries: [Int32: Info] = [:]
+
+        func prune(keeping alivePids: Set<Int32>) {
+            entries = entries.filter { alivePids.contains($0.key) }
+        }
+    }
+    private let pathCache = PathCache()
     private let cache = CpuCache()
     /// 快照互斥：CPU 差分窗口（lastWall 读取 → 遍历内 update → setWall）必须原子，
     /// 否则并发快照（引擎采样 vs 工作台扫描 vs 终止前身份复核）互相消费差分窗口，
@@ -145,8 +160,7 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         let wallDelta = now - cache.lastWallTime()   // 首拍可能为 0
 
         // 1) 全部 pid
-        // 1) 单次 sysctl(KERN_PROC_ALL) 同时取全部 pid 与 ppid（R25）：
-        // 此前 proc_listpids + 每条目一次 proc_pidinfo(PROC_PIDTBSDINFO) 取 PPID——
+        // 单次 sysctl(KERN_PROC_ALL) 同时取全部 pid 与 ppid（R25）：
         // 一次 syscall 拿全 kinfo_proc 数组，省 ~N 次 syscall/拍（N≈进程数 500+）。
         // 缓冲区按 size 预测分配；进程在两次调用间增加时重试一次（官方惯用法）
         var size = 0
@@ -170,27 +184,38 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         let pidCount = size / MemoryLayout<kinfo_proc>.stride
         var alivePids = Set<Int32>()
         alivePids.reserveCapacity(pidCount)
+        entries.reserveCapacity(pidCount)
         let pathBufSize = 4096   // 足够容纳最长可执行路径（PROC_PIDPATHINFO_MAXSIZE ≈ 4KB）
+        // 复用单次分配的 4KB 缓冲，彻底消除每拍循环内部 600+ 次 4KB 堆数组分配
+        var pathBuf = [CChar](repeating: 0, count: pathBufSize)
 
         for i in 0..<pidCount {
             let pid = procs[i].kp_proc.p_pid
             guard pid > 0 else { continue }
             alivePids.insert(pid)
 
-            // 2) 完整可执行路径
-            var pathBuf = [CChar](repeating: 0, count: pathBufSize)
-            let len = proc_pidpath(pid, &pathBuf, UInt32(pathBufSize))
-            guard len > 0, Int(len) < pathBufSize else { continue }
-            // 用 withUnsafeBytes 闭包保持缓冲区作用域（数组隐式指针转换会悬垂）
-            let path = pathBuf.withUnsafeBytes { raw -> String in
-                String(decoding: raw[..<Int(len)], as: UTF8.self)
+            // 2) 完整可执行路径（优先命中缓存，新 PID 才执行系统调用）
+            let path: String
+            let base: String
+            let pathLower: String
+            if let cached = pathCache.entries[pid] {
+                path = cached.path
+                base = cached.basename
+                pathLower = cached.pathLower
+            } else {
+                let len = proc_pidpath(pid, &pathBuf, UInt32(pathBufSize))
+                guard len > 0, Int(len) < pathBufSize else { continue }
+                // 用 withUnsafeBytes 闭包保持缓冲区作用域（数组隐式指针转换会悬垂）
+                path = pathBuf.withUnsafeBytes { raw -> String in
+                    String(decoding: raw[..<Int(len)], as: UTF8.self)
+                }
+                guard !path.isEmpty else { continue }
+                base = (path as NSString).lastPathComponent.lowercased()
+                pathLower = path.lowercased()
+                pathCache.entries[pid] = PathCache.Info(path: path, basename: base, pathLower: pathLower)
             }
-            guard !path.isEmpty else { continue }
 
             // 3) CPU 累计时间（rusage_info_v2）
-            // 注意：proc_pid_rusage 把数据写入调用者缓冲区（rusage_info_t 只是类型伪装）；
-            // ri_user_time/ri_system_time 是 Mach tick（Apple Silicon 125/3 ns/tick，
-            // Intel 通常 1ns/tick），必须先经 mach_timebase_info 换算再使用。
             var rusage = rusage_info_v2()
             let rc = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
                 let rebound = UnsafeMutableRawPointer(ptr).assumingMemoryBound(to: rusage_info_t?.self)
@@ -207,12 +232,12 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
             // 5) 父进程 PPID（kinfo_proc 已随单次 sysctl 一并给出，零额外 syscall）
             let ppid: Int32 = procs[i].kp_eproc.e_ppid
 
-            let base = (path as NSString).lastPathComponent.lowercased()
-            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent, rssBytes: rss, ppid: ppid))
+            entries.append(ProcessSnapshot.Entry(pid: pid, path: path, basename: base, cpuPercent: cpuPercent, rssBytes: rss, ppid: ppid, pathLower: pathLower))
         }
 
         cache.setWall(now)
         cache.prune(keeping: alivePids)
+        pathCache.prune(keeping: alivePids)
         return ProcessSnapshot(entries: entries)
     }
 

@@ -307,6 +307,7 @@ public struct AgentAttentionRequest: Equatable {
 public enum AgentSessionSignal: Equatable {
     case attention(AgentAttentionRequest)
     case completed(fingerprint: String)
+    case active(fingerprint: String, action: String?)
 
     public var attentionRequest: AgentAttentionRequest? {
         guard case let .attention(request) = self else { return nil }

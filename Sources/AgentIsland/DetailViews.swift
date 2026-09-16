@@ -96,7 +96,7 @@ struct AgentDetailView: View {
                          subtitle: usage.map {
                              "24h \(TokenUsage.compact($0.tokens24h)) · 累计 \(TokenUsage.compact($0.tokensTotal))"
                          },
-                         onBack: { controller.route = .list },
+                         onBack: { controller.closeAgentDetail() },
                          controller: controller)
 
             DarkDivider()
@@ -123,7 +123,7 @@ struct AgentDetailView: View {
                                         Text("该智能体已不在监控列表")
                                             .font(Theme.bodyFont(11))
                                             .foregroundColor(Theme.onDarkFaint)
-                                        Button("返回列表") { controller.route = .list }
+                                        Button("返回") { controller.closeAgentDetail() }
                                             .buttonStyle(.plain)
                                             .font(Theme.bodyFont(11, weight: .semibold))
                                             .foregroundColor(Theme.actionBlue)

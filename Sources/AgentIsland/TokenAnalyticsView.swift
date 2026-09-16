@@ -9,7 +9,8 @@ struct TokenAnalyticsView: View {
 
     @State private var range: TokenTimeRange = .day
     @State private var timeline = TokenUsageTimeline.empty(for: .day)
-    @State private var loading = true
+    @State private var hasLoadedOnce = false
+    @State private var cachedTimelines: [TokenTimeRange: TokenUsageTimeline] = [:]
     @State private var queryToken = UUID()
     @Environment(\.colorScheme) private var colorScheme
 
@@ -28,8 +29,9 @@ struct TokenAnalyticsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     TokenRangePicker(selection: $range)
 
-                    if loading {
+                    if !hasLoadedOnce {
                         TokenAnalyticsSkeleton()
+                            .transition(.opacity)
                     } else {
                         metricsCard
                         trendCard
@@ -62,7 +64,7 @@ struct TokenAnalyticsView: View {
                                 value: TokenUsage.compact(timeline.tokens),
                                 fullValue: timeline.tokens.formatted())
                 metricDivider
-                TokenMetricCell(label: "费用", value: costText(timeline.cost))
+                TokenMetricCell(label: "费用", value: costText(timeline.cost), isCost: true)
                 metricDivider
                 TokenMetricCell(label: "累计", value: TokenUsage.compact(engine.grandTotal.tokensTotal),
                                 fullValue: engine.grandTotal.tokensTotal.formatted())
@@ -77,10 +79,12 @@ struct TokenAnalyticsView: View {
                     .font(.system(size: 9.5, weight: .bold))
                 Text(comparison.text)
                     .font(Theme.bodyFont(9.5, weight: .semibold))
+                    .contentTransition(.opacity)
                 Spacer()
                 Text("上一周期 \(TokenUsage.compact(timeline.previousTokens))")
                     .font(Theme.monoDigitFont(9, weight: .medium))
                     .foregroundColor(Theme.onDarkFaint)
+                    .contentTransition(.numericText())
             }
             .foregroundColor(comparison.tint)
             .accessibilityElement(children: .combine)
@@ -142,6 +146,7 @@ struct TokenAnalyticsView: View {
                         Text("峰值 \(TokenUsage.compact(peak.tokens))")
                             .font(Theme.badgeFont(.bold))
                             .foregroundColor(Theme.sydedockCyan)
+                            .contentTransition(.numericText())
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -166,6 +171,8 @@ struct TokenAnalyticsView: View {
             } else {
                 TokenTrendChart(points: timeline.points, range: range)
                     .frame(height: 96)
+                    .id(range)
+                    .transition(.opacity)
 
                 HStack {
                     Text(axisText(for: timeline.points.first?.start))
@@ -176,6 +183,7 @@ struct TokenAnalyticsView: View {
                 }
                 .font(Theme.monoDigitFont(9, weight: .medium))
                 .foregroundColor(Theme.onDarkMuted)
+                .contentTransition(.opacity)
             }
         }
         .padding(10)
@@ -294,13 +302,33 @@ struct TokenAnalyticsView: View {
     }
 
     private func loadTimeline() {
-        loading = true
+        let targetRange = range
+        if let cached = cachedTimelines[targetRange] {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                timeline = cached
+                hasLoadedOnce = true
+            }
+        }
+
         let token = UUID()
         queryToken = token
-        engine.tokenTimeline(range: range) { result in
-            guard queryToken == token, result.range == range else { return }
-            timeline = result
-            loading = false
+        engine.tokenTimeline(range: targetRange) { result in
+            guard queryToken == token, result.range == targetRange else { return }
+            cachedTimelines[targetRange] = result
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                timeline = result
+                hasLoadedOnce = true
+            }
+            preloadOtherRanges()
+        }
+    }
+
+    private func preloadOtherRanges() {
+        for otherRange in TokenTimeRange.allCases where otherRange != range && cachedTimelines[otherRange] == nil {
+            engine.tokenTimeline(range: otherRange) { result in
+                guard result.range == otherRange else { return }
+                cachedTimelines[otherRange] = result
+            }
         }
     }
 
@@ -319,7 +347,7 @@ struct TokenAnalyticsView: View {
             showsDetailChevron: canOpenDetail
         )
         if let detailTarget {
-            Button { controller.route = .agentDetail(detailTarget) } label: { row }
+            Button { controller.openAgentDetail(detailTarget) } label: { row }
                 .buttonStyle(.plain)
                 .help("查看 \(sourceName(source.agentId)) 的用量明细")
         } else {
@@ -372,10 +400,9 @@ struct TokenAnalyticsView: View {
     }()
 }
 
-// MARK: - 范围选择
-
 private struct TokenRangePicker: View {
     @Binding var selection: TokenTimeRange
+    @Namespace private var pickerNamespace
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -383,7 +410,7 @@ private struct TokenRangePicker: View {
             ForEach(TokenTimeRange.allCases) { range in
                 let isSelected = selection == range
                 Button {
-                    withAnimation(.easeInOut(duration: 0.16)) {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.76)) {
                         selection = range
                     }
                 } label: {
@@ -392,35 +419,32 @@ private struct TokenRangePicker: View {
                         .foregroundColor(isSelected ? Theme.onDark : Theme.onDarkMuted)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 5)
-                        .background(
-                            Group {
-                                if isSelected {
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(
-                                            colorScheme == .light
-                                                ? Color.white.opacity(0.90)
-                                                : Color.white.opacity(0.16)
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                .strokeBorder(
-                                                    LinearGradient(
-                                                        colors: [
-                                                            Color.white.opacity(colorScheme == .light ? 0.8 : 0.30),
-                                                            Color.white.opacity(colorScheme == .light ? 0.2 : 0.08)
-                                                        ],
-                                                        startPoint: .top,
-                                                        endPoint: .bottom
-                                                    ),
-                                                    lineWidth: 0.5
-                                                )
-                                        )
-                                        .shadow(color: Color.black.opacity(colorScheme == .light ? 0.08 : 0.25), radius: 2, y: 1)
-                                } else {
-                                    Color.clear
-                                }
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(
+                                        colorScheme == .light
+                                            ? Color.white.opacity(0.90)
+                                            : Color.white.opacity(0.16)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .strokeBorder(
+                                                LinearGradient(
+                                                    colors: [
+                                                        Color.white.opacity(colorScheme == .light ? 0.8 : 0.30),
+                                                        Color.white.opacity(colorScheme == .light ? 0.2 : 0.08)
+                                                    ],
+                                                    startPoint: .top,
+                                                    endPoint: .bottom
+                                                ),
+                                                lineWidth: 0.5
+                                            )
+                                    )
+                                    .shadow(color: Color.black.opacity(colorScheme == .light ? 0.08 : 0.25), radius: 2, y: 1)
+                                    .matchedGeometryEffect(id: "range_picker_active_pill", in: pickerNamespace)
                             }
-                        )
+                        }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("查看 \(range.accessibilityLabel) Token 用量")
@@ -544,6 +568,7 @@ private struct TokenMetricCell: View {
                 .foregroundColor(isCost ? Theme.sydedockAmber : Theme.onDark)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+                .contentTransition(.numericText())
             Text(label)
                 .font(Theme.bodyFont(9.5, weight: .medium))
                 .foregroundColor(Theme.onDarkMuted)
@@ -591,6 +616,7 @@ private struct TokenSourceRow: View {
                         Text(TokenUsage.compact(usage.tokens))
                             .font(Theme.monoDigitFont(10, weight: .bold))
                             .foregroundColor(Theme.onDark)
+                            .contentTransition(.numericText())
                         if !TokenUsage.cost(usage.cost).isEmpty {
                             Text(TokenUsage.cost(usage.cost))
                                 .font(Theme.monoDigitFont(9, weight: .medium))
@@ -601,6 +627,7 @@ private struct TokenSourceRow: View {
                         .font(Theme.monoDigitFont(9.5, weight: .semibold))
                         .foregroundColor(Theme.onDarkMuted)
                         .frame(width: 30, alignment: .trailing)
+                        .contentTransition(.numericText())
                     if showsDetailChevron {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .bold))
@@ -622,6 +649,7 @@ private struct TokenSourceRow: View {
                         Capsule()
                             .fill(Theme.trackGradient)
                             .frame(width: max(geo.size.width * ratio, ratio > 0 ? 4 : 0))
+                            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: ratio)
                     }
                 }
                 .frame(height: 3.5)
