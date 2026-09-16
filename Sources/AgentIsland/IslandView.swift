@@ -16,19 +16,19 @@ struct GlassCardBackground: View {
 
     var body: some View {
         ZStack {
-            // Apple 原生 UltraThinMaterial 真实硬件毛玻璃，穿透底层桌面壁纸与窗口
+            // Apple 原生毛玻璃：浅色模式使用 regularMaterial 消除暗色背景文字透射，深色模式维持 ultraThinMaterial 黑曜石通透
             notchShape
-                .fill(.ultraThinMaterial)
+                .fill(colorScheme == .light ? .regularMaterial : .ultraThinMaterial)
 
             // 细腻透光光罩：
-            // 浅色模式：白冰高透微光（10%~22% 柔和白微光，彻底告别死白色块，保留通透质感）
+            // 浅色模式：高定白瓷琉璃（88%~82% 纯净白瓷微光，彻底告别透底发脏，兼具通透感与实体感）
             // 深色模式：深邃冷炭暗夜光罩（32%~38% 沉稳黑曜石）
             notchShape
                 .fill(
                     LinearGradient(
                         colors: colorScheme == .light ? [
-                            Color.white.opacity(0.22),
-                            Color.white.opacity(0.10)
+                            Color.white.opacity(0.88),
+                            Color.white.opacity(0.82)
                         ] : [
                             Color(red: 0.05, green: 0.05, blue: 0.08).opacity(0.32),
                             Color(red: 0.02, green: 0.02, blue: 0.04).opacity(0.38)
@@ -43,8 +43,8 @@ struct GlassCardBackground: View {
                 .stroke(
                     LinearGradient(
                         colors: colorScheme == .light ? [
-                            Color.white.opacity(0.65),
-                            Color.black.opacity(0.12)
+                            Color.white.opacity(0.96),
+                            Color(hex: 0x000000).opacity(0.08)
                         ] : [
                             Color.white.opacity(0.40),
                             Color.white.opacity(0.10)
@@ -113,6 +113,7 @@ private struct HeaderPresentation {
 struct IslandView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
+    @Environment(\.colorScheme) private var colorScheme
 
     /// 收起窗口大部分会移出屏幕；把微细条对齐到仍在屏幕中的那一侧。
     private var dockedAlignment: Alignment {
@@ -351,7 +352,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: controller.appearanceMode.icon)
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(Theme.onDarkFaint)
+                        .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint)
                         .padding(4)
                         .topBarChip()
                 }
@@ -366,7 +367,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(Theme.onDarkFaint)
+                        .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint)
                         .padding(4)
                         .topBarChip()
                 }
@@ -380,7 +381,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: collapseIcon)
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(Theme.onDarkFaint)
+                        .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint)
                         .padding(4)
                         .topBarChip()
                 }
@@ -427,8 +428,14 @@ struct IslandView: View {
                                         .fill(snap.level == .working || snap.level == .attention ? Theme.hoverFill : Theme.obsidianCardFill)
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                                .strokeBorder(snap.level == .attention ? Theme.warningOrange.opacity(0.45) : (snap.level == .working ? Theme.sydedockEmerald.opacity(0.3) : Theme.obsidianHairline), lineWidth: 0.5)
+                                                .strokeBorder(
+                                                    colorScheme == .light
+                                                    ? (snap.level == .attention ? Color(hex: 0xfde68a).opacity(0.8) : (snap.level == .working ? Color(hex: 0xa7f3d0).opacity(0.8) : Color(hex: 0xe2e8f0)))
+                                                    : (snap.level == .attention ? Theme.warningOrange.opacity(0.45) : (snap.level == .working ? Theme.sydedockEmerald.opacity(0.3) : Theme.obsidianHairline)),
+                                                    lineWidth: 0.5
+                                                )
                                         )
+                                        .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1, y: 0.5)
                                 )
                             }
                             .buttonStyle(.plain)
@@ -482,7 +489,7 @@ struct IslandView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, IslandMetrics.emptyStatePaddingVertical)
             } else {
-                ScrollView(.vertical, showsIndicators: true) {
+                ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 2) {
                         ForEach(engine.visibleSnapshots) { snapshot in
                             AgentRowView(snapshot: snapshot, engine: engine, controller: controller)
@@ -564,16 +571,25 @@ struct IslandView: View {
 /// （详情页返回键早有同款反馈，此处补齐一致性）。
 private struct TopBarChipModifier: ViewModifier {
     @State private var hovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         content
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(hovering ? Theme.hoverFill : Theme.chipFill)
+                    .fill(colorScheme == .light
+                          ? (hovering ? Color.white : Color(hex: 0xf1f5f9))
+                          : (hovering ? Theme.hoverFill : Theme.chipFill))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                            .strokeBorder(
+                                colorScheme == .light
+                                ? (hovering ? Color(hex: 0xcbd5e1) : Color(hex: 0xe2e8f0))
+                                : (hovering ? Color.white.opacity(0.22) : Color.white.opacity(0.08)),
+                                lineWidth: 0.5
+                            )
                     )
+                    .shadow(color: Color.black.opacity(colorScheme == .light ? (hovering ? 0.06 : 0.02) : 0), radius: 1, y: 0.5)
             )
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)

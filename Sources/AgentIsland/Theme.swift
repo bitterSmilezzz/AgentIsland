@@ -39,22 +39,22 @@ enum Theme {
     static let focusBlue = Color(hex: 0x0071e3)
 
     // 常规界面色板（设置窗口等，动态：深色系统下自动转暗）
-    static let canvas = Color(dynamicLight: 0xffffff, dark: 0x151517)
-    static let parchment = Color(dynamicLight: 0xf5f5f7, dark: 0x1e1e20)
-    static let hairline = Color(dynamicLight: 0xe0e0e0, dark: 0x3a3a3c)
+    static let canvas = Color(dynamicLight: 0xf5f5f7, dark: 0x151517)
+    static let parchment = Color(dynamicLight: 0xffffff, dark: 0x1e1e20)
+    static let hairline = Color(dynamicLight: 0xe2e8f0, dark: 0x3a3a3c)
 
     // 灵动岛主体（动态：深色=黑曜石质感，浅色=白瓷工控）
-    static let tile1 = Color(dynamicLight: 0xe9e9ec, dark: 0x141418)
+    static let tile1 = Color(dynamicLight: 0xf1f5f9, dark: 0x141418)
 
     // Sydedock 专属工业触觉设计令牌（动态透光毛玻璃与原生 macOS HUD 质感）
-    static let obsidianBase = Color(dynamicLight: 0xf5f5f7, dark: 0x0c0d14)
+    static let obsidianBase = Color(dynamicLight: 0xf8fafc, dark: 0x0c0d14)
     static let obsidianCard = Color(dynamicLight: 0xffffff, dark: 0x161722)
-    static let obsidianPill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0xffffff, alpha: 0.09))
-    static let obsidianHairline = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.14))
-    static let obsidianCardFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04), dark: NSColor(hex: 0xffffff, alpha: 0.07))
-    static let obsidianCardHoverFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.13))
-    static let obsidianCardBorder = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.14))
-    static let obsidianCardBorderHover = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.16), dark: NSColor(hex: 0xffffff, alpha: 0.28))
+    static let obsidianPill = Color(dynamic: NSColor(hex: 0xf1f5f9, alpha: 0.95), dark: NSColor(hex: 0xffffff, alpha: 0.09))
+    static let obsidianHairline = Color(dynamic: NSColor(hex: 0xe2e8f0, alpha: 0.90), dark: NSColor(hex: 0xffffff, alpha: 0.14))
+    static let obsidianCardFill = Color(dynamic: NSColor(hex: 0xffffff, alpha: 0.94), dark: NSColor(hex: 0xffffff, alpha: 0.07))
+    static let obsidianCardHoverFill = Color(dynamic: NSColor(hex: 0xffffff, alpha: 1.0), dark: NSColor(hex: 0xffffff, alpha: 0.13))
+    static let obsidianCardBorder = Color(dynamic: NSColor(hex: 0xe2e8f0, alpha: 0.85), dark: NSColor(hex: 0xffffff, alpha: 0.14))
+    static let obsidianCardBorderHover = Color(dynamic: NSColor(hex: 0xcbd5e1, alpha: 0.95), dark: NSColor(hex: 0xffffff, alpha: 0.28))
 
     // Sydedock 荧光强调色（深色模式绚丽高亮，浅色模式加深保障可读对比度）
     static let sydedockCyan = Color(dynamicLight: 0x0284c7, dark: 0x00e1ff)
@@ -98,10 +98,10 @@ enum Theme {
     static let onDarkMuted = Color(dynamicLight: 0x334155, dark: 0xe2e8f0)     // 次要文字：清透软银色
     static let onDarkFaint = Color(dynamicLight: 0x64748b, dark: 0x94a3b8)     // 弱化信息：清晰可辨浅石板灰
 
-    // 悬停/按压蒙层（浅色黑低透，深色白低透）
-    static let hoverFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.08), dark: NSColor(hex: 0xffffff, alpha: 0.12))
-    static let chipFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0xffffff, alpha: 0.08))
-    static let cardFill = Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04), dark: NSColor(hex: 0xffffff, alpha: 0.07))
+    // 悬停/按压蒙层（浅色模式纯白磨砂浮层，深色模式纯白透光浮层）
+    static let hoverFill = Color(dynamic: NSColor(hex: 0xffffff, alpha: 0.96), dark: NSColor(hex: 0xffffff, alpha: 0.12))
+    static let chipFill = Color(dynamic: NSColor(hex: 0xf1f5f9, alpha: 0.90), dark: NSColor(hex: 0xffffff, alpha: 0.08))
+    static let cardFill = Color(dynamic: NSColor(hex: 0xffffff, alpha: 0.94), dark: NSColor(hex: 0xffffff, alpha: 0.07))
 
     // Status（浅色模式加深保证对比度）
     static let statusWorking = Color(dynamicLight: 0x157f3c, dark: 0x30d158)
@@ -115,17 +115,17 @@ enum Theme {
             return Color(dynamic: NSColor(hex: 0xd32f2f, alpha: 0.85),
                          dark: NSColor(hex: 0x3d0a0a, alpha: 0.85))
         }
-        return Color(dynamic: NSColor(hex: 0xffffff, alpha: working ? 0.70 : 0.45),
+        return Color(dynamic: NSColor(hex: 0xffffff, alpha: working ? 0.95 : 0.90),
                      dark: NSColor(hex: 0x08080c, alpha: working ? 0.82 : 0.70))
     }
-    /// docked 细条描边（浅色黑微透/深色白微透）
+    /// docked 细条描边（浅色精致石板微透/深色白微透）
     static func dockedSliverStroke(working: Bool, alert: Bool = false) -> Color {
         if alert {
             return dangerRed.opacity(0.85)
         } else if working {
             return sydedockEmerald.opacity(0.85)
         }
-        return Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.25)
+        return Color(dynamic: NSColor(hex: 0xcbd5e1, alpha: 0.80), dark: NSColor(hex: 0xffffff, alpha: 0.25))
     }
     /// 玻璃卡蒙层不透明度（GlassCardBackground）
     static let glassOverlayOpacity: Double = 0.35

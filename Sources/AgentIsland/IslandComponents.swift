@@ -40,6 +40,7 @@ private struct HoverRowBackground: ViewModifier {
     let idleFill: Color
     var hoverEnabled: Bool = true
     @State private var hovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         content
@@ -50,15 +51,23 @@ private struct HoverRowBackground: ViewModifier {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .strokeBorder(
                                 LinearGradient(
-                                    colors: [
-                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(hovering ? 0.22 : 0.08),
-                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(hovering ? 0.06 : 0.02)
+                                    colors: colorScheme == .light ? [
+                                        Color.white.opacity(hovering ? 1.0 : 0.90),
+                                        Color(hex: 0x000000).opacity(hovering ? 0.08 : 0.05)
+                                    ] : [
+                                        Color.white.opacity(hovering ? 0.22 : 0.08),
+                                        Color.white.opacity(hovering ? 0.06 : 0.02)
                                     ],
                                     startPoint: .top,
                                     endPoint: .bottom
                                 ),
                                 lineWidth: 0.75
                             )
+                    )
+                    .shadow(
+                        color: Color.black.opacity(colorScheme == .light ? (hovering ? 0.05 : 0.025) : 0),
+                        radius: hovering ? 3 : 1.5,
+                        y: 1
                     )
             )
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -74,12 +83,16 @@ extension View {
     }
 }
 
-// MARK: 深色卡内分割线
+// MARK: 卡内分割线
 
-/// Divider + 12% onDark 覆盖（主列表/汇总栏/详情/会话四处分隔统一）
+/// 精致 0.75pt 细线（主列表/汇总栏/详情/会话四处分隔统一，浅色柔和冷石板灰，深色清亮白微透）
 struct DarkDivider: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
-        Divider().overlay(Theme.onDark.opacity(0.12))
+        Rectangle()
+            .fill(colorScheme == .light ? Color(hex: 0xe2e8f0).opacity(0.85) : Color.white.opacity(0.10))
+            .frame(height: 0.75)
     }
 }
 

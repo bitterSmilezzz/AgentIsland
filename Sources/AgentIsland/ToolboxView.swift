@@ -17,6 +17,7 @@ struct ToolboxView: View {
     @State private var cleanAllConfirmTask: Task<Void, Never>?
     /// 清理失败提示（terminate 无权限/进程已消失时不能说「已清理」）
     @State private var cleanFeedback: String?
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,7 +31,7 @@ struct ToolboxView: View {
             DarkDivider()
 
             GeometryReader { geo in
-                ScrollView(.vertical, showsIndicators: true) {
+                ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 10) {
                         // 顶部状态指标卡
                         metricsCard
@@ -88,7 +89,18 @@ struct ToolboxView: View {
                          help: "当前纳入监控的智能体数量（异常项占比的实际分母）")
         }
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.cardFill))
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                .fill(Theme.cardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                        .strokeBorder(
+                            colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                            lineWidth: 0.75
+                        )
+                )
+                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 2, y: 1)
+        )
     }
 
     private func overviewCell(_ label: String, _ value: String, color: Color, help: String) -> some View {
@@ -150,7 +162,14 @@ struct ToolboxView: View {
                 .foregroundColor(Theme.onDark)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
-                .background(Capsule().fill(Theme.chipFill))
+                .background(
+                    Capsule()
+                        .fill(Theme.chipFill)
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                        )
+                )
             }
             .buttonStyle(.plain)
             .padding(.top, 4)
@@ -258,31 +277,54 @@ struct ToolboxView: View {
                     }
                 }
                 .padding(8)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.cardFill))
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                        .fill(Theme.cardFill)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                                .strokeBorder(
+                                    colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                                    lineWidth: 0.5
+                                )
+                        )
+                        .shadow(color: Color.black.opacity(colorScheme == .light ? 0.02 : 0), radius: 1.5, y: 0.5)
+                )
             }
         }
     }
 
     private func anomalyTag(_ type: AgentAnomaly.AnomalyType) -> some View {
         let text: String
-        let color: Color
+        let fgColor: Color
+        let bgColor: Color
+        let borderColor: Color
         switch type {
         case .orphan:
             text = "孤儿进程"
-            color = Theme.warningOrange
+            fgColor = colorScheme == .light ? Color(hex: 0xb45309) : Theme.warningOrange
+            bgColor = colorScheme == .light ? Color(hex: 0xfffbeb) : Theme.warningOrange.opacity(0.18)
+            borderColor = colorScheme == .light ? Color(hex: 0xfde68a) : Theme.warningOrange.opacity(0.35)
         case .hung:
             text = "疑似死锁"
-            color = Theme.dangerRed
+            fgColor = colorScheme == .light ? Color(hex: 0xb91c1c) : Theme.dangerRed
+            bgColor = colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.18)
+            borderColor = colorScheme == .light ? Color(hex: 0xfecaca) : Theme.dangerRed.opacity(0.35)
         case .overweight:
             text = "内存超限"
-            color = Theme.statusIdle
+            fgColor = colorScheme == .light ? Color(hex: 0x92400e) : Theme.statusIdle
+            bgColor = colorScheme == .light ? Color(hex: 0xfef3c7) : Theme.statusIdle.opacity(0.18)
+            borderColor = colorScheme == .light ? Color(hex: 0xfde68a) : Theme.statusIdle.opacity(0.35)
         }
         return Text(text)
             .font(Theme.bodyFont(9, weight: .bold))
-            .foregroundColor(color)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(color.opacity(0.18)))
+            .foregroundColor(fgColor)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(
+                Capsule()
+                    .fill(bgColor)
+                    .overlay(Capsule().strokeBorder(borderColor, lineWidth: 0.5))
+            )
     }
 
     // MARK: 底部操作栏

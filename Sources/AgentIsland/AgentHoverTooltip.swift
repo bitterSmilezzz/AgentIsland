@@ -15,6 +15,7 @@ struct AgentHoverTooltipCard: View {
     /// 终止确认态的自动复位任务（可取消）：与 Agent 行「终止?」同一写法，
     /// 视图销毁时不会被一个仍在排队的 DispatchQueue 回调写回已失效的状态
     @State private var confirmResetTask: Task<Void, Never>?
+    @Environment(\.colorScheme) private var colorScheme
 
     init(snapshot: AgentSnapshot, engine: ActivityEngine, controller: IslandPanelController) {
         self.snapshot = snapshot
@@ -38,16 +39,31 @@ struct AgentHoverTooltipCard: View {
         .background(
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                    .fill(colorScheme == .light ? .regularMaterial : .ultraThinMaterial)
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(dynamicLight: 0xfafafa, dark: 0x13131a).opacity(0.85))
+                    .fill(
+                        colorScheme == .light
+                            ? LinearGradient(
+                                colors: [Color.white.opacity(0.96), Color.white.opacity(0.92)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                colors: [Color(hex: 0x13131a).opacity(0.92), Color(hex: 0x0c0c10).opacity(0.88)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                    )
             }
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(
                     LinearGradient(
-                        colors: [
+                        colors: colorScheme == .light ? [
+                            Color.white,
+                            Color(hex: 0xe2e8f0)
+                        ] : [
                             Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.18),
                             Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06)
                         ],
@@ -57,7 +73,7 @@ struct AgentHoverTooltipCard: View {
                     lineWidth: 0.75
                 )
         )
-        .shadow(color: Color.black.opacity(0.35), radius: 12, x: -2, y: 4)
+        .shadow(color: Color.black.opacity(colorScheme == .light ? 0.10 : 0.35), radius: colorScheme == .light ? 10 : 12, x: 0, y: 4)
     }
 
     // MARK: 头部
@@ -94,17 +110,25 @@ struct AgentHoverTooltipCard: View {
             if snapshot.isHung {
                 Text("卡死告警")
                     .font(Theme.bodyFont(9, weight: .bold))
-                    .foregroundColor(Theme.dangerRed)
+                    .foregroundColor(colorScheme == .light ? Color(hex: 0xb91c1c) : Theme.dangerRed)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(Theme.dangerRed.opacity(0.2)))
+                    .background(
+                        Capsule()
+                            .fill(colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.2))
+                            .overlay(Capsule().strokeBorder(colorScheme == .light ? Color(hex: 0xfecaca) : Color.clear, lineWidth: 0.5))
+                    )
             } else {
                 Text(snapshot.level.label)
                     .font(Theme.bodyFont(9, weight: .semibold))
-                    .foregroundColor(snapshot.level.color)
+                    .foregroundColor(levelForegroundColor(snapshot.level))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(snapshot.level.color.opacity(0.18)))
+                    .background(
+                        Capsule()
+                            .fill(levelBackgroundColor(snapshot.level))
+                            .overlay(Capsule().strokeBorder(levelBorderColor(snapshot.level), lineWidth: 0.5))
+                    )
             }
         }
     }
@@ -131,10 +155,14 @@ struct AgentHoverTooltipCard: View {
                         .accessibilityLabel(action)
                         .padding(6)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        // 动态色：硬编码 black 0.35 在浅色卡片（0xf5f5f7）上是一块深色板
-                        .background(RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05),
-                                        dark: NSColor(hex: 0x000000, alpha: 0.35))))
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                )
+                        )
                 }
             } else {
                 HStack(spacing: 4) {
@@ -242,10 +270,17 @@ struct AgentHoverTooltipCard: View {
                             Text("终止")
                                 .font(Theme.bodyFont(10, weight: .medium))
                         }
-                        .foregroundColor(Theme.dangerRed.opacity(0.9))
+                        .foregroundColor(colorScheme == .light ? Color(hex: 0xb91c1c) : Theme.dangerRed.opacity(0.9))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Theme.dangerRed.opacity(0.15)))
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.15))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(colorScheme == .light ? Color(hex: 0xfecaca) : Color.clear, lineWidth: 0.5)
+                                )
+                        )
                     }
                     .buttonStyle(.plain)
                     .help("终止该 Agent 进程树（需二次确认）")
@@ -271,11 +306,51 @@ struct AgentHoverTooltipCard: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .frame(maxWidth: .infinity)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Theme.chipFill)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                            )
+                    )
                 }
                 .buttonStyle(.plain)
                 .help(activateFailed ? "未找到可激活的窗口（CLI 经 ssh/tmux 启动时无窗口可带）" : "置顶并激活该智能体窗口/终端")
             }
+        }
+    }
+
+    private func levelForegroundColor(_ level: ActivityLevel) -> Color {
+        guard colorScheme == .light else { return level.color }
+        switch level {
+        case .working: return Color(hex: 0x047857)
+        case .idle: return Color(hex: 0x64748b)
+        case .attention: return Color(hex: 0xb45309)
+        case .completed: return Color(hex: 0x047857)
+        case .offline: return Color(hex: 0x94a3b8)
+        }
+    }
+
+    private func levelBackgroundColor(_ level: ActivityLevel) -> Color {
+        guard colorScheme == .light else { return level.color.opacity(0.18) }
+        switch level {
+        case .working: return Color(hex: 0xecfdf5)
+        case .idle: return Color(hex: 0xf1f5f9)
+        case .attention: return Color(hex: 0xfffbeb)
+        case .completed: return Color(hex: 0xecfdf5)
+        case .offline: return Color(hex: 0xf1f5f9)
+        }
+    }
+
+    private func levelBorderColor(_ level: ActivityLevel) -> Color {
+        guard colorScheme == .light else { return Color.clear }
+        switch level {
+        case .working: return Color(hex: 0xa7f3d0)
+        case .idle: return Color(hex: 0xe2e8f0)
+        case .attention: return Color(hex: 0xfde68a)
+        case .completed: return Color(hex: 0xa7f3d0)
+        case .offline: return Color(hex: 0xe2e8f0)
         }
     }
 }

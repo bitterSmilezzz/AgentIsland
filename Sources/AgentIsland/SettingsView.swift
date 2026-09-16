@@ -37,6 +37,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 struct SettingsCard<Content: View>: View {
     let title: String?
     let content: Content
+    @Environment(\.colorScheme) private var colorScheme
 
     init(title: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
@@ -62,8 +63,12 @@ struct SettingsCard<Content: View>: View {
                     .fill(Theme.parchment)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Theme.hairline.opacity(0.5), lineWidth: 0.5)
+                            .stroke(
+                                colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.hairline.opacity(0.5),
+                                lineWidth: 0.5
+                            )
                     )
+                    .shadow(color: Color.black.opacity(colorScheme == .light ? 0.03 : 0), radius: 2, y: 1)
             )
         }
     }

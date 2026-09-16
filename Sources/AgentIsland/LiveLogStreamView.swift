@@ -17,6 +17,7 @@ struct LiveLogStreamView: View {
     @State private var timer: Timer?
     /// 日志解析可能超过 2 秒；合并在途请求，避免旧结果覆盖新结果和并发扫盘。
     @State private var refreshInFlight = false
+    @Environment(\.colorScheme) private var colorScheme
 
     private var snapshot: AgentSnapshot? {
         engine.snapshots.first { $0.id == agentId }
@@ -45,7 +46,7 @@ struct LiveLogStreamView: View {
             DarkDivider()
 
             GeometryReader { geo in
-                ScrollView(.vertical, showsIndicators: true) {
+                ScrollView(.vertical, showsIndicators: false) {
                     ScrollViewReader { proxy in
                         VStack(alignment: .leading, spacing: 6) {
                             if loading && events.isEmpty {
@@ -143,10 +144,11 @@ struct LiveLogStreamView: View {
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, 5)
-        // 动态色：硬编码 black 0.12 在浅色主题下是一条突兀的灰带；
-        // 深色保持原加深 12%，浅色降到 4%（与卡片同族的极淡分层）
-        .background(Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04),
-                          dark: NSColor(hex: 0x000000, alpha: 0.12)))
+        .background(
+            colorScheme == .light
+                ? Color(hex: 0xf8fafc).opacity(0.85)
+                : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04), dark: NSColor(hex: 0x000000, alpha: 0.12))
+        )
     }
 
     // MARK: - 单条事件行
@@ -192,10 +194,11 @@ struct LiveLogStreamView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            // 动态色：硬编码 black 0.35 在浅色主题下是一块深色板，
-                            // 与浅色正文（onDarkMuted）对比过低近乎不可读
-                            .fill(Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05),
-                                        dark: NSColor(hex: 0x000000, alpha: 0.35)))
+                            .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                            )
                     )
             }
         }
@@ -203,7 +206,12 @@ struct LiveLogStreamView: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isExpanded ? Theme.hoverFill : Color.white.opacity(0.04))
+                .fill(isExpanded ? Theme.hoverFill : (colorScheme == .light ? Color.white.opacity(0.92) : Color.white.opacity(0.04)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0).opacity(0.8) : Color.clear, lineWidth: 0.5)
+                )
+                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.02 : 0), radius: 1, y: 0.5)
         )
         .contentShape(Rectangle())
         .onTapGesture {
@@ -232,12 +240,29 @@ struct LiveLogStreamView: View {
         Text(kind.label)
             .font(Theme.badgeFont(.bold))
             .foregroundColor(badgeTextColor(for: kind))
-            .padding(.horizontal, 4)
+            .padding(.horizontal, 5)
             .padding(.vertical, 1.5)
-            .background(Capsule().fill(badgeBgColor(for: kind)))
+            .background(
+                Capsule()
+                    .fill(badgeBgColor(for: kind))
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(badgeBorderColor(for: kind), lineWidth: 0.5)
+                    )
+            )
     }
 
     private func badgeTextColor(for kind: AgentLogEvent.EventKind) -> Color {
+        if colorScheme == .light {
+            switch kind {
+            case .command: return Color(hex: 0x047857)
+            case .toolCall: return Color(hex: 0x1d4ed8)
+            case .fileEdit: return Color(hex: 0xb45309)
+            case .thinking: return Color(hex: 0x7e22ce)
+            case .message: return Color(hex: 0x334155)
+            case .info: return Color(hex: 0x64748b)
+            }
+        }
         switch kind {
         case .command: return Theme.statusWorking
         // 双值动态：深色玻璃上 actionBlue（0x0066cc）对比 ≈2.6:1，深色取亮蓝
@@ -251,7 +276,31 @@ struct LiveLogStreamView: View {
     }
 
     private func badgeBgColor(for kind: AgentLogEvent.EventKind) -> Color {
-        badgeTextColor(for: kind).opacity(0.18)
+        if colorScheme == .light {
+            switch kind {
+            case .command: return Color(hex: 0xecfdf5)
+            case .toolCall: return Color(hex: 0xeff6ff)
+            case .fileEdit: return Color(hex: 0xfffbeb)
+            case .thinking: return Color(hex: 0xfaf5ff)
+            case .message: return Color(hex: 0xf8fafc)
+            case .info: return Color(hex: 0xf1f5f9)
+            }
+        }
+        return badgeTextColor(for: kind).opacity(0.18)
+    }
+
+    private func badgeBorderColor(for kind: AgentLogEvent.EventKind) -> Color {
+        if colorScheme == .light {
+            switch kind {
+            case .command: return Color(hex: 0xa7f3d0)
+            case .toolCall: return Color(hex: 0xbfdbfe)
+            case .fileEdit: return Color(hex: 0xfde68a)
+            case .thinking: return Color(hex: 0xe9d5ff)
+            case .message: return Color(hex: 0xe2e8f0)
+            case .info: return Color(hex: 0xe2e8f0)
+            }
+        }
+        return badgeTextColor(for: kind).opacity(0.35)
     }
 
     private var emptyStreamView: some View {

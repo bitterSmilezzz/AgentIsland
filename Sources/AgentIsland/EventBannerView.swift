@@ -17,6 +17,7 @@ struct EventBannerView: View {
     @State private var killConfirmTask: Task<Void, Never>?
     /// 直达失败反馈：activate 返回 false 时短暂切换文案（ssh/tmux 启动的 CLI 无可激活窗口）
     @State private var activateFailed = false
+    @Environment(\.colorScheme) private var colorScheme
 
     private var isExpanded: Bool {
         controller.eventBannerExpanded
@@ -105,8 +106,11 @@ struct EventBannerView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        // 动态色：浅色主题下深色块过重且与白玻璃割裂
-                        .fill(Color(dynamicLight: 0x000000, dark: 0x000000).opacity(0.06))
+                        .fill(colorScheme == .light ? Color.white.opacity(0.92) : Color.black.opacity(0.20))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.08), lineWidth: 0.5)
+                        )
                 )
             }
 
@@ -226,7 +230,15 @@ struct EventBannerView: View {
                     .foregroundColor(Theme.onDark)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(Capsule().fill(Theme.chipFill))
+                    .background(
+                        Capsule()
+                            .fill(colorScheme == .light ? Color.white : Theme.chipFill)
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xcbd5e1) : Color.clear, lineWidth: 0.5)
+                            )
+                            .shadow(color: Color.black.opacity(colorScheme == .light ? 0.03 : 0), radius: 1, y: 0.5)
+                    )
                     .opacity(target == nil ? 0.45 : 1)
                 }
                 .buttonStyle(.plain)
@@ -237,9 +249,13 @@ struct EventBannerView: View {
         }
         .padding(.horizontal, Theme.pageMargin)
         .padding(.vertical, 6)
-        .background(event.eventType == .costSpike
-                    ? Theme.dangerRed.opacity(0.18)
-                    : Color.white.opacity(0.06))
+        .background(
+            event.eventType == .costSpike
+                ? (colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.18))
+                : (event.eventType == .attention
+                   ? (colorScheme == .light ? Color(hex: 0xfffbeb) : Theme.warningOrange.opacity(0.15))
+                   : (colorScheme == .light ? Color(hex: 0xf0fdf4) : Color.white.opacity(0.06)))
+        )
     }
 
     private func eventIcon(for type: AgentTaskEvent.EventType) -> String {

@@ -9,6 +9,7 @@ struct TokenSummaryBar: View {
     let onOpen: () -> Void
 
     @State private var isHovered = false
+    @Environment(\.colorScheme) private var colorScheme
 
     init(total: TokenUsage, onOpen: @escaping () -> Void = {}) {
         self.total = total
@@ -22,15 +23,15 @@ struct TokenSummaryBar: View {
                 HStack(spacing: 5) {
                     Text("24H")
                         .font(Theme.badgeFont(.bold))
-                        .foregroundColor(Theme.sydedockCyan)
+                        .foregroundColor(colorScheme == .light ? Color(hex: 0x0284c7) : Theme.sydedockCyan)
                         .padding(.horizontal, 4.5)
                         .padding(.vertical, 1.5)
                         .background(
                             RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                                .fill(Theme.sydedockCyan.opacity(0.16))
+                                .fill(colorScheme == .light ? Color(hex: 0xe0f2fe) : Theme.sydedockCyan.opacity(0.16))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                                        .strokeBorder(Theme.sydedockCyan.opacity(0.35), lineWidth: 0.5)
+                                        .strokeBorder(colorScheme == .light ? Color(hex: 0xbae6fd) : Theme.sydedockCyan.opacity(0.35), lineWidth: 0.5)
                                 )
                         )
                     Text(TokenUsage.compact(total.tokens24h))
@@ -50,10 +51,10 @@ struct TokenSummaryBar: View {
                 .padding(.vertical, 2.5)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
+                        .fill(colorScheme == .light ? Color(hex: 0xf8fafc) : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
                         )
                 )
 
@@ -63,15 +64,15 @@ struct TokenSummaryBar: View {
                 HStack(spacing: 4.5) {
                     Text("TOTAL")
                         .font(Theme.badgeFont(.semibold))
-                        .foregroundColor(Theme.onDarkMuted)
+                        .foregroundColor(colorScheme == .light ? Color(hex: 0x475569) : Theme.onDarkMuted)
                         .padding(.horizontal, 3.5)
                         .padding(.vertical, 1)
                         .background(
                             RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
+                                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                        .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
                                 )
                         )
                     Text(TokenUsage.compact(total.tokensTotal))
@@ -92,10 +93,10 @@ struct TokenSummaryBar: View {
                 .padding(.vertical, 2.5)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.045))
+                        .fill(colorScheme == .light ? Color(hex: 0xf8fafc) : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.045))
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
                         )
                 )
 
@@ -114,7 +115,10 @@ struct TokenSummaryBar: View {
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
                             .strokeBorder(
                                 LinearGradient(
-                                    colors: [
+                                    colors: colorScheme == .light ? [
+                                        Color.white.opacity(isHovered ? 1.0 : 0.90),
+                                        Color(hex: 0x000000).opacity(isHovered ? 0.08 : 0.05)
+                                    ] : [
                                         Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(isHovered ? 0.26 : 0.16),
                                         Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(isHovered ? 0.08 : 0.03)
                                     ],
@@ -123,6 +127,11 @@ struct TokenSummaryBar: View {
                                 ),
                                 lineWidth: 0.75
                             )
+                    )
+                    .shadow(
+                        color: Color.black.opacity(colorScheme == .light ? (isHovered ? 0.05 : 0.025) : 0),
+                        radius: isHovered ? 3 : 1.5,
+                        y: 1
                     )
             )
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))

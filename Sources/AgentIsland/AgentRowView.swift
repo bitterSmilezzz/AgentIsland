@@ -9,6 +9,7 @@ struct AgentRowView: View {
     let snapshot: AgentSnapshot
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
+    @Environment(\.colorScheme) private var colorScheme
     @State private var confirmingKill = false
     @State private var showingTooltip = false
     @State private var isHoveringRow = false
@@ -101,12 +102,15 @@ struct AgentRowView: View {
                                 .padding(.vertical, 1.5)
                                 .background(
                                     Capsule()
-                                        .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.08))
+                                        .fill(Color(dynamic: NSColor(hex: 0xffffff, alpha: 0.85), dark: NSColor(hex: 0xffffff, alpha: 0.08)))
                                         .overlay(
                                             Capsule()
                                                 .strokeBorder(
                                                     LinearGradient(
-                                                        colors: [
+                                                        colors: colorScheme == .light ? [
+                                                            Color.white.opacity(0.95),
+                                                            Color.black.opacity(0.08)
+                                                        ] : [
                                                             Color.white.opacity(0.24),
                                                             Color.white.opacity(0.06)
                                                         ],
@@ -116,6 +120,7 @@ struct AgentRowView: View {
                                                     lineWidth: 0.5
                                                 )
                                         )
+                                        .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1, y: 0.5)
                                 )
                             } else {
                                 Text(snapshot.lastActivityText)
@@ -222,16 +227,16 @@ struct AgentRowView: View {
                         // 内存占用与健康状态指示（v1.7.6）
                         if snapshot.processRunning && snapshot.memoryBytes > 0 {
                             Text(snapshot.memoryText)
-                                .font(Theme.monoDigitFont(9))
-                                .foregroundColor(Theme.onDarkFaint)
+                                .font(Theme.monoDigitFont(9, weight: .medium))
+                                .foregroundColor(colorScheme == .light ? Color(hex: 0x475569) : Theme.onDarkFaint)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
                                 .background(
                                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                        .fill(Theme.obsidianPill)
+                                        .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Theme.obsidianPill)
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                                .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
                                         )
                                 )
                                 .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
@@ -256,13 +261,13 @@ struct AgentRowView: View {
                         } else {
                             Text(snapshot.level.label)
                                 .font(Theme.bodyFont(9.5, weight: .semibold))
-                                .foregroundColor(snapshot.level.color)
+                                .foregroundColor(levelForegroundColor(snapshot.level))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(
                                     Capsule()
-                                        .fill(snapshot.level.color.opacity(0.12))
-                                        .overlay(Capsule().strokeBorder(snapshot.level.color.opacity(0.32), lineWidth: 0.5))
+                                        .fill(levelBackgroundColor(snapshot.level))
+                                        .overlay(Capsule().strokeBorder(levelBorderColor(snapshot.level), lineWidth: 0.5))
                                 )
                         }
                     }
@@ -275,10 +280,10 @@ struct AgentRowView: View {
                 HStack(spacing: 5) {
                     Image(systemName: actionIcon)
                         .font(Theme.badgeFont())
-                        .foregroundColor(actionColor)
+                        .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xb45309) : Color(hex: 0x047857)) : actionColor)
                     Text(action)
                         .font(Theme.monoFont(9.5))
-                        .foregroundColor(actionColor)
+                        .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xb45309) : Color(hex: 0x065f46)) : actionColor)
                         .readableSingleLine(fullText: action, minWidth: 80, priority: 2)
                     Spacer(minLength: 0)
                     // 工作态也保留 token 徽标：正在消耗的 Agent 恰是最需要关注的，
@@ -286,14 +291,14 @@ struct AgentRowView: View {
                     if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
                         Text(Self.tokenBadge(usage))
                             .font(Theme.monoDigitFont(9, weight: .bold))
-                            .foregroundColor(Theme.onDark)
+                            .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xb45309) : Color(hex: 0x047857)) : Theme.onDark)
                             .lineLimit(1)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(
                                 Capsule()
-                                    .fill(actionColor.opacity(0.20))
-                                    .overlay(Capsule().strokeBorder(actionColor.opacity(0.40), lineWidth: 0.5))
+                                    .fill(colorScheme == .light ? Color.white.opacity(0.95) : actionColor.opacity(0.20))
+                                    .overlay(Capsule().strokeBorder(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xfde68a) : Color(hex: 0xa7f3d0)) : actionColor.opacity(0.40), lineWidth: 0.5))
                             )
                             .help("24h \(TokenUsage.compact(usage.tokens24h)) token")
                     }
@@ -302,10 +307,10 @@ struct AgentRowView: View {
                 .padding(.vertical, 3)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(actionColor.opacity(0.08))
+                        .fill(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xfffbeb) : Color(hex: 0xf0fdf4)) : actionColor.opacity(0.08))
                         .overlay(
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .strokeBorder(actionColor.opacity(0.22), lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xfde68a).opacity(0.8) : Color(hex: 0xbbf7d0).opacity(0.8)) : actionColor.opacity(0.22), lineWidth: 0.5)
                         )
                 )
                 .padding(.leading, 34) // 与 Agent 名称对齐
@@ -330,5 +335,44 @@ struct AgentRowView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(snapshot.profile.name)，\(snapshot.level.label)，点按查看详情")
         .accessibilityHint(snapshot.processRunning ? "悬停可执行终止 / 流水 / 直达操作，点按查看详情" : "点按查看详情")
+    }
+
+    private func levelForegroundColor(_ level: ActivityLevel) -> Color {
+        if colorScheme == .light {
+            switch level {
+            case .working: return Color(hex: 0x047857) // emerald-700
+            case .attention: return Color(hex: 0xb45309) // amber-700
+            case .completed: return Color(hex: 0x047857) // emerald-700
+            case .idle: return Color(hex: 0x64748b) // slate-500
+            case .offline: return Color(hex: 0x94a3b8)
+            }
+        }
+        return level.color
+    }
+
+    private func levelBackgroundColor(_ level: ActivityLevel) -> Color {
+        if colorScheme == .light {
+            switch level {
+            case .working: return Color(hex: 0xecfdf5) // emerald-50
+            case .attention: return Color(hex: 0xfffbeb) // amber-50
+            case .completed: return Color(hex: 0xecfdf5) // emerald-50
+            case .idle: return Color(hex: 0xf1f5f9) // slate-100
+            case .offline: return Color(hex: 0xf1f5f9).opacity(0.6)
+            }
+        }
+        return level.color.opacity(0.12)
+    }
+
+    private func levelBorderColor(_ level: ActivityLevel) -> Color {
+        if colorScheme == .light {
+            switch level {
+            case .working: return Color(hex: 0xa7f3d0).opacity(0.8) // emerald-200
+            case .attention: return Color(hex: 0xfde68a).opacity(0.8) // amber-200
+            case .completed: return Color(hex: 0xa7f3d0).opacity(0.8)
+            case .idle: return Color(hex: 0xe2e8f0) // slate-200
+            case .offline: return Color(hex: 0xe2e8f0).opacity(0.6)
+            }
+        }
+        return level.color.opacity(0.32)
     }
 }

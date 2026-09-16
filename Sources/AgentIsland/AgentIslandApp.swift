@@ -82,31 +82,58 @@ struct AgentIslandApp: App {
 struct MenuBarPopoverView: View {
     @ObservedObject var controller: IslandPanelController
     @ObservedObject var engine: ActivityEngine
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // 顶部状态条
             headerBar
 
-            Divider()
+            DarkDivider()
 
             // 活跃 Agent 微缩列表
             agentQuickSection
 
             // Token 概览
             if !engine.grandTotal.isEmpty {
-                Divider()
+                DarkDivider()
                 tokenMiniSummary
             }
 
-            Divider()
+            DarkDivider()
 
             // 底部操作栏
             actionBar
         }
         .padding(14)
         .frame(width: 300)
-        .background(Theme.canvas)
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(colorScheme == .light ? .regularMaterial : .ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        colorScheme == .light
+                            ? LinearGradient(
+                                colors: [Color.white.opacity(0.96), Color.white.opacity(0.92)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                colors: [Color(hex: 0x141416).opacity(0.95), Color(hex: 0x0e0e10).opacity(0.92)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                    )
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.12),
+                    lineWidth: 0.75
+                )
+        )
         .preferredColorScheme(controller.appearanceMode.colorScheme)
         .onAppear {
             // popover 打开时按需单次刷新 token（R34/F6）：popover 不参与「呈现活跃」
@@ -211,10 +238,14 @@ struct MenuBarPopoverView: View {
 
                         Text(s.level.label)
                             .font(Theme.bodyFont(10, weight: .semibold))
-                            .foregroundColor(s.level.color)
+                            .foregroundColor(levelForegroundColor(s.level))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Capsule().fill(s.level.color.opacity(0.14)))
+                            .background(
+                                Capsule()
+                                    .fill(levelBackgroundColor(s.level))
+                                    .overlay(Capsule().strokeBorder(levelBorderColor(s.level), lineWidth: 0.5))
+                            )
                     }
                     .padding(.horizontal, 6)
                     .padding(.vertical, 4)
@@ -284,7 +315,14 @@ struct MenuBarPopoverView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 .frame(maxWidth: .infinity)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Theme.chipFill)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                        )
+                )
             }
             .buttonStyle(.plain)
 
@@ -307,7 +345,14 @@ struct MenuBarPopoverView: View {
                     .font(.system(size: 11))
                     .foregroundColor(Theme.inkMuted80)
                     .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Theme.chipFill)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                            )
+                    )
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -333,7 +378,14 @@ struct MenuBarPopoverView: View {
                     .font(.system(size: 11))
                     .foregroundColor(controller.notificationPolicy == .focus ? Theme.focusBlue : Theme.inkMuted80)
                     .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Theme.chipFill)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                            )
+                    )
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -349,7 +401,14 @@ struct MenuBarPopoverView: View {
                     .font(.system(size: 11))
                     .foregroundColor(Theme.inkMuted80)
                     .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Theme.chipFill)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                            )
+                    )
             }
             .buttonStyle(.plain)
             .help("设置…")
@@ -363,11 +422,51 @@ struct MenuBarPopoverView: View {
                     .font(.system(size: 11))
                     .foregroundColor(Theme.dangerRed)
                     .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Theme.chipFill))
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Theme.chipFill)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                            )
+                    )
             }
             .buttonStyle(.plain)
             .help("退出 AgentIsland")
             .accessibilityLabel("退出 AgentIsland")
+        }
+    }
+
+    private func levelForegroundColor(_ level: ActivityLevel) -> Color {
+        guard colorScheme == .light else { return level.color }
+        switch level {
+        case .working: return Color(hex: 0x047857)
+        case .idle: return Color(hex: 0x64748b)
+        case .attention: return Color(hex: 0xb45309)
+        case .completed: return Color(hex: 0x047857)
+        case .offline: return Color(hex: 0x94a3b8)
+        }
+    }
+
+    private func levelBackgroundColor(_ level: ActivityLevel) -> Color {
+        guard colorScheme == .light else { return level.color.opacity(0.14) }
+        switch level {
+        case .working: return Color(hex: 0xecfdf5)
+        case .idle: return Color(hex: 0xf1f5f9)
+        case .attention: return Color(hex: 0xfffbeb)
+        case .completed: return Color(hex: 0xecfdf5)
+        case .offline: return Color(hex: 0xf1f5f9)
+        }
+    }
+
+    private func levelBorderColor(_ level: ActivityLevel) -> Color {
+        guard colorScheme == .light else { return Color.clear }
+        switch level {
+        case .working: return Color(hex: 0xa7f3d0)
+        case .idle: return Color(hex: 0xe2e8f0)
+        case .attention: return Color(hex: 0xfde68a)
+        case .completed: return Color(hex: 0xa7f3d0)
+        case .offline: return Color(hex: 0xe2e8f0)
         }
     }
 }

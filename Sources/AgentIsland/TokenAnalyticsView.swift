@@ -11,6 +11,7 @@ struct TokenAnalyticsView: View {
     @State private var timeline = TokenUsageTimeline.empty(for: .day)
     @State private var loading = true
     @State private var queryToken = UUID()
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -23,7 +24,7 @@ struct TokenAnalyticsView: View {
 
             DarkDivider()
 
-            ScrollView(.vertical, showsIndicators: true) {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 10) {
                     TokenRangePicker(selection: $range)
 
@@ -93,7 +94,10 @@ struct TokenAnalyticsView: View {
                     RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
                         .strokeBorder(
                             LinearGradient(
-                                colors: [
+                                colors: colorScheme == .light ? [
+                                    Color.white.opacity(0.95),
+                                    Color(hex: 0x000000).opacity(0.06)
+                                ] : [
                                     Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
                                     Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
                                 ],
@@ -103,6 +107,7 @@ struct TokenAnalyticsView: View {
                             lineWidth: 0.75
                         )
                 )
+                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
         )
     }
 
@@ -181,7 +186,10 @@ struct TokenAnalyticsView: View {
                     RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
                         .strokeBorder(
                             LinearGradient(
-                                colors: [
+                                colors: colorScheme == .light ? [
+                                    Color.white.opacity(0.95),
+                                    Color(hex: 0x000000).opacity(0.06)
+                                ] : [
                                     Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
                                     Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
                                 ],
@@ -191,6 +199,7 @@ struct TokenAnalyticsView: View {
                             lineWidth: 0.75
                         )
                 )
+                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
         )
     }
 
@@ -220,7 +229,10 @@ struct TokenAnalyticsView: View {
                         RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
                             .strokeBorder(
                                 LinearGradient(
-                                    colors: [
+                                    colors: colorScheme == .light ? [
+                                        Color.white.opacity(0.95),
+                                        Color(hex: 0x000000).opacity(0.06)
+                                    ] : [
                                         Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
                                         Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
                                     ],
@@ -230,6 +242,7 @@ struct TokenAnalyticsView: View {
                                 lineWidth: 0.75
                             )
                     )
+                    .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
             )
         }
     }
@@ -417,10 +430,10 @@ private struct TokenRangePicker: View {
         .padding(2.5)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
+                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color.white.opacity(0.06))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
                 )
         )
     }
@@ -549,6 +562,7 @@ private struct TokenSourceRow: View {
     let total: Int
     let showsDetailChevron: Bool
     @State private var isHovered = false
+    @Environment(\.colorScheme) private var colorScheme
 
     private var ratio: Double {
         guard total > 0 else { return 0 }
@@ -604,7 +618,7 @@ private struct TokenSourceRow: View {
             if usage.isAvailable {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.08))
+                        Capsule().fill(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.08))
                         Capsule()
                             .fill(Theme.trackGradient)
                             .frame(width: max(geo.size.width * ratio, ratio > 0 ? 4 : 0))
@@ -618,6 +632,10 @@ private struct TokenSourceRow: View {
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill((isHovered && showsDetailChevron) ? Theme.obsidianCardHoverFill : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(colorScheme == .light && isHovered && showsDetailChevron ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                )
         )
         .contentShape(Rectangle())
         .onHover { hovering in

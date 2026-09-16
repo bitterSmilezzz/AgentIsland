@@ -11,6 +11,7 @@ struct ActivityMatrixDots: View {
     var count: Int = 5
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @State private var pulse = false
 
     /// 点阵各点亮度级别计算（0: 空心, 1: 50%, 2: 75%, 3: 100% 亮）
@@ -42,13 +43,17 @@ struct ActivityMatrixDots: View {
     private func dotColor(level: Int, isLast: Bool) -> Color {
         switch level {
         case 3:
-            return snapshot.level == .attention ? Theme.warningOrange : Theme.sydedockEmerald
+            return snapshot.level == .attention
+                ? (colorScheme == .light ? Color(hex: 0xb45309) : Theme.warningOrange)
+                : (colorScheme == .light ? Color(hex: 0x047857) : Theme.sydedockEmerald)
         case 2:
-            return snapshot.level == .attention ? Theme.warningOrange.opacity(0.78) : Theme.onDark.opacity(0.75)
+            return snapshot.level == .attention
+                ? (colorScheme == .light ? Color(hex: 0xd97706) : Theme.warningOrange.opacity(0.78))
+                : (colorScheme == .light ? Color(hex: 0x059669) : Theme.onDark.opacity(0.75))
         case 1:
-            return Theme.onDark.opacity(0.40)
+            return colorScheme == .light ? Color(hex: 0x94a3b8) : Theme.onDark.opacity(0.40)
         default:
-            return Color.white.opacity(0.08)
+            return colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.08)
         }
     }
 
@@ -64,7 +69,9 @@ struct ActivityMatrixDots: View {
                     .overlay(
                         Circle()
                             .strokeBorder(
-                                Theme.onDark.opacity(lvl == 0 ? 0.22 : 0.0),
+                                colorScheme == .light
+                                    ? (lvl == 0 ? Color(hex: 0xcbd5e1).opacity(0.8) : Color.clear)
+                                    : Theme.onDark.opacity(lvl == 0 ? 0.22 : 0.0),
                                 lineWidth: 0.5
                             )
                     )

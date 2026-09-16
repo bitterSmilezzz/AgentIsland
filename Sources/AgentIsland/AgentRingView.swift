@@ -48,7 +48,7 @@ struct AgentRingView: View {
             if snapshot.isHung {
                 return Palette.ringRed
             }
-            if snapshot.cpuPercent >= 40 {
+            if snapshot.cpuPercent >= 80 {
                 return Palette.ringOrange
             } else {
                 return Palette.ringGreen
@@ -97,7 +97,7 @@ struct AgentRingView: View {
                     .strokeBorder(trackColor, lineWidth: strokeWidth)
                     .background(
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04))
+                            .fill(Color(dynamic: NSColor(hex: 0xffffff, alpha: 0.9), dark: NSColor(hex: 0xffffff, alpha: 0.04)))
                     )
 
                 // 2. 外圈分级彩色进度环
@@ -209,7 +209,7 @@ private struct PulsingAttentionArc: View {
 /// 此前四个颜色全部硬编码亮色：ringYellow 白底 ≈1.3:1、ringGreen ≈1.8:1，浅色主题下几乎不可见。
 enum Palette {
     /// 环形底轨灰（黑曜石微轨）
-    static let ringTrack = Color(dynamicLight: 0xdcdce0, dark: 0x22222a)
+    static let ringTrack = Color(dynamicLight: 0xe2e8f0, dark: 0x22222a)
     /// 水位 0~49% Sydedock 翡翠绿
     static let ringGreen = Color(dynamicLight: 0x157f3c, dark: 0x28E07B)
     /// 水位 50~79% Sydedock 金琥珀

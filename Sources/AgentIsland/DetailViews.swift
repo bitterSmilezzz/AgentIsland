@@ -16,15 +16,24 @@ struct DetailHeader: View {
     /// 真正移动窗口的一直是底层的 performDrag——两套机制并存只会让后来者误判。
     let controller: IslandPanelController
     @State private var backHovered = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 8) {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Theme.onDark.opacity(0.9))
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDark.opacity(0.9))
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(backHovered ? Theme.hoverFill : Theme.chipFill))
+                    .background(
+                        Circle()
+                            .fill(colorScheme == .light ? (backHovered ? Color.white : Color(hex: 0xf1f5f9)) : (backHovered ? Theme.hoverFill : Theme.chipFill))
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(colorScheme == .light ? (backHovered ? Color(hex: 0xcbd5e1) : Color(hex: 0xe2e8f0)) : Color.clear, lineWidth: 0.5)
+                            )
+                            .shadow(color: Color.black.opacity(colorScheme == .light ? (backHovered ? 0.06 : 0.02) : 0), radius: 1, y: 0.5)
+                    )
                     .contentShape(Circle())
                     .help("返回")
             }
@@ -65,6 +74,7 @@ struct AgentDetailView: View {
     @State private var models: [ModelUsage] = []
     @State private var loading = true
     @State private var queryToken = UUID()
+    @Environment(\.colorScheme) private var colorScheme
 
     private var snapshot: AgentSnapshot? {
         engine.snapshots.first { $0.id == agentId }
@@ -203,7 +213,10 @@ struct AgentDetailView: View {
                     RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
                         .strokeBorder(
                             LinearGradient(
-                                colors: [
+                                colors: colorScheme == .light ? [
+                                    Color.white.opacity(0.95),
+                                    Color(hex: 0x000000).opacity(0.06)
+                                ] : [
                                     Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
                                     Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
                                 ],
@@ -213,6 +226,7 @@ struct AgentDetailView: View {
                             lineWidth: 0.75
                         )
                 )
+                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
         )
     }
 
@@ -315,7 +329,18 @@ struct AgentDetailView: View {
                 overviewCell("PID", s.pid.map { "\($0)" } ?? "—", cost: nil)
             }
             .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous).fill(Theme.cardFill))
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                    .fill(Theme.cardFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .strokeBorder(
+                                colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                                lineWidth: 0.75
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
+            )
 
             // 实时流水抽屉入口
             Button {
@@ -335,7 +360,14 @@ struct AgentDetailView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.chipFill))
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radiusSm)
+                        .fill(Theme.chipFill)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusSm)
+                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                        )
+                )
             }
             .buttonStyle(.plain)
             .help("展开该智能体的实时工具调用与输出时序抽屉")
@@ -358,7 +390,18 @@ struct AgentDetailView: View {
         .padding(.horizontal, 10)   // 与模型行内边距对齐（之前 12 造成文字基线差 2pt）
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.cardFill))
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                .fill(Theme.cardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                        .strokeBorder(
+                            colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                            lineWidth: 0.75
+                        )
+                )
+                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 2, y: 1)
+        )
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {
@@ -418,7 +461,7 @@ struct SessionListView: View {
                 // 注意：GeometryReader 必须在 ScrollView 外层——放内层会令 ScrollView
                 // 内容尺寸 = 视口，长内容不可滚动（documentH=视口）
                 GeometryReader { geo in
-                    ScrollView(.vertical, showsIndicators: true) {
+                    ScrollView(.vertical, showsIndicators: false) {
                         // LazyVStack：会话可能成百上千条，懒加载避免一次性构建全部行。
                         // minHeight = 视口 - padding(10×2)：短内容不产生多余滚动，
                         // 行间留白而不是整片底部玻璃；会话多时内容超过视口，正常滚动
