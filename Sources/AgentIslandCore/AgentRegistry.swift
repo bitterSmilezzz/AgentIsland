@@ -10,6 +10,9 @@ public enum AgentRegistry {
     private static let desktopCPUFloor: Double = 20.0
     /// WorkBuddy 常驻多个 prewarm 进程，CPU 汇总更容易抬高，需要更高下限
     private static let workbuddyCPUFloor: Double = 35.0
+    /// WorkBuddy 多专家团（Multi-Agent）并发交互 Token 净消耗极高，设定 100 万 tokens/分钟专属保护下限，
+    /// 避免日常多专家协同被误判为异常突增/死循环，同时保留超限 runaway 的熔断能力。
+    private static let workbuddyTokenFloor: Int = 1_000_000
 
     /// 内置定义（覆盖常见 Agent；自动发现负责标记哪些真实安装）
     public static let builtin: [AgentProfile] = [
@@ -94,6 +97,7 @@ public enum AgentRegistry {
             pathContains: ["/applications/workbuddy.app", ".workbuddy/"],
 
             cpuWorkingThreshold: workbuddyCPUFloor,
+            tokenAlertFloor: workbuddyTokenFloor,
             sessionDirs: [
                 // sessions/*.json 是宿主心跳/连接登记，不代表有任务；
                 // memory 也会被后台同步触碰。任务产物才是工作信号。
@@ -113,6 +117,7 @@ public enum AgentRegistry {
             processNames: ["Electron", "workbuddy"],
             pathContains: ["workbuddy ai.app", ".workbuddy-ai"],
             cpuWorkingThreshold: workbuddyCPUFloor,
+            tokenAlertFloor: workbuddyTokenFloor,
             sessionDirs: [
                 home(".workbuddy-ai/tasks")
             ],

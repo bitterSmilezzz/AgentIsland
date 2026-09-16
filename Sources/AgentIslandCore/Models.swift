@@ -78,6 +78,15 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
     ///   调**低**时不会突破该 Agent 的保护下限（避免重新引入上面的误报）
     /// - 此前这段判断按 id 硬编码在引擎里，导致设置项对 13/17 个内置 Agent 完全无效
     public let cpuWorkingThreshold: Double?
+    /// 本 Agent 的 Token 激增告警下限（nil 表示无下限，完全遵循全局设置）。
+    ///
+    /// 实际阈值 = `max(tokenAlertFloor ?? 0, EngineConfig.tokenAlertThreshold)`
+    /// 语义说明：
+    /// - 针对 WorkBuddy 等多专家团/多 Agent 协同体系，单轮任务并发消耗较大，
+    ///   专属下限可避免日常多专家协同被误判为 Token 异常激增或死循环。
+    /// - 使用「下限」而非「覆盖」：用户把设置页阈值调高时对所有 Agent 生效；
+    ///   调低时不会突破该 Agent 的保护下限。
+    public let tokenAlertFloor: Int?
     public let sessionDirs: [String]      // 会话目录（后台扫描）
     public let defaultEnabled: Bool
     public let category: AgentCategory
@@ -100,6 +109,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
                 pathExcludes: [String] = [],
                 hostBundleIDs: [String] = [],
                 cpuWorkingThreshold: Double? = nil,
+                tokenAlertFloor: Int? = nil,
                 sessionDirs: [String],
                 defaultEnabled: Bool = true, category: AgentCategory = .assistant,
                 isCustom: Bool = false) {
@@ -112,6 +122,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         self.pathExcludes = pathExcludes
         self.hostBundleIDs = hostBundleIDs
         self.cpuWorkingThreshold = cpuWorkingThreshold
+        self.tokenAlertFloor = tokenAlertFloor
         self.sessionDirs = sessionDirs
         self.defaultEnabled = defaultEnabled
         self.category = category
@@ -125,7 +136,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, icon, bundleIDs, processNames, pathContains, pathExcludes
-        case hostBundleIDs, cpuWorkingThreshold, sessionDirs, defaultEnabled, category, isCustom
+        case hostBundleIDs, cpuWorkingThreshold, tokenAlertFloor, sessionDirs, defaultEnabled, category, isCustom
     }
 
     public init(from decoder: Decoder) throws {
@@ -139,6 +150,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         pathExcludes = try c.decodeIfPresent([String].self, forKey: .pathExcludes) ?? []
         hostBundleIDs = try c.decodeIfPresent([String].self, forKey: .hostBundleIDs) ?? []
         cpuWorkingThreshold = try c.decodeIfPresent(Double.self, forKey: .cpuWorkingThreshold)
+        tokenAlertFloor = try c.decodeIfPresent(Int.self, forKey: .tokenAlertFloor)
         sessionDirs = try c.decodeIfPresent([String].self, forKey: .sessionDirs) ?? []
         defaultEnabled = try c.decodeIfPresent(Bool.self, forKey: .defaultEnabled) ?? true
         category = try c.decodeIfPresent(AgentCategory.self, forKey: .category) ?? .assistant

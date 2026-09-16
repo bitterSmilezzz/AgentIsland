@@ -174,19 +174,22 @@ enum ConfigTests {
             try expectEqual(p.hostBundleIDs, [], "缺失 → 默认空")
             try expectEqual(p.sessionDirs, [], "缺失 → 默认空")
             try expectNil(p.cpuWorkingThreshold, "缺失 → 无下限")
+            try expectNil(p.tokenAlertFloor, "缺失 → 无 Token 下限")
             try expectEqual(p.defaultEnabled, true, "缺失 → 默认启用")
             try expectEqual(p.category, .assistant, "缺失 → 默认分类")
             try expectFalse(p.isCustom, "缺失 → 非自定义")
 
             // 显式 null 与显式值都要能读
-            let withNull = #"{"id":"a","name":"A","icon":"i","cpuWorkingThreshold":null,"category":"codeEditor"}"#
+            let withNull = #"{"id":"a","name":"A","icon":"i","cpuWorkingThreshold":null,"tokenAlertFloor":null,"category":"codeEditor"}"#
             let p2 = try JSONDecoder().decode(AgentProfile.self, from: Data(withNull.utf8))
             try expectNil(p2.cpuWorkingThreshold, "显式 null → nil")
+            try expectNil(p2.tokenAlertFloor, "显式 null → nil")
             try expectEqual(p2.category, .codeEditor, "显式分类生效")
 
-            let withValue = #"{"id":"a","name":"A","icon":"i","cpuWorkingThreshold":12.5,"isCustom":true,"defaultEnabled":false}"#
+            let withValue = #"{"id":"a","name":"A","icon":"i","cpuWorkingThreshold":12.5,"tokenAlertFloor":1000000,"isCustom":true,"defaultEnabled":false}"#
             let p3 = try JSONDecoder().decode(AgentProfile.self, from: Data(withValue.utf8))
             try expectEqual(p3.cpuWorkingThreshold, 12.5, "显式下限生效")
+            try expectEqual(p3.tokenAlertFloor, 1_000_000, "显式 Token 下限生效")
             try expectTrue(p3.isCustom, "显式自定义标记生效")
             try expectFalse(p3.defaultEnabled, "显式默认关闭生效")
         }

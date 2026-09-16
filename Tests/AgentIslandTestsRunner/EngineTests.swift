@@ -632,6 +632,106 @@ enum EngineTests {
             try expectEqual(engine.latestEvent?.eventType, .costSpike, "恢复后新一轮异常仍应告警")
         }
 
+        TestKit.test("熔断保护: WorkBuddy 专家团高 Token 消耗自动应用专属下限（100万/分），常规并发不误报") {
+            let fake = FakeTokenUsageMonitor()
+            fake.usage["workbuddy"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)
+            let workbuddyEntry = ProcessSnapshot.Entry(
+                pid: 12345,
+                path: "/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy",
+                basename: "workbuddy",
+                cpuPercent: 10.0
+            )
+            // 全局设置 200k/分钟（默认），但 WorkBuddy 拥有 100万 专属下限
+            let config = EngineConfig(tokenAlertEnabled: true, tokenAlertThreshold: 200_000)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: config,
+                processMonitor: FakeProcessProvider(processNames: ["workbuddy"], bundleIDs: ["com.tencent.workbuddy.mac"], entries: [workbuddyEntry]),
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                tokenMonitor: fake,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            _ = engine.sample(now: now)
+            try expectNil(engine.latestEvent, "首拍记录基准")
+
+            // 模拟多专家团常规并发交互：每分钟消耗 500k tokens（高于全局 200k，但低于专家团 100万 下限）
+            var tokens = 10_000
+            for beat in 1...4 {
+                tokens += 500_000
+                fake.usage["workbuddy"] = TokenUsage(tokens24h: tokens, tokensTotal: tokens, cost24h: 0, costTotal: 0)
+                _ = engine.sample(now: now.addingTimeInterval(Double(beat) * 60))
+                try expectNil(engine.latestEvent, "500k/分钟处于专家团正常交互区间，不应误报激增")
+            }
+        }
+
+        TestKit.test("熔断保护: WorkBuddy 超过 100万专属下限连续 3 档仍触发熔断告警") {
+            let fake = FakeTokenUsageMonitor()
+            fake.usage["workbuddy"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)
+            let workbuddyEntry = ProcessSnapshot.Entry(
+                pid: 12345,
+                path: "/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy",
+                basename: "workbuddy",
+                cpuPercent: 10.0
+            )
+            let config = EngineConfig(tokenAlertEnabled: true, tokenAlertThreshold: 200_000)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: config,
+                processMonitor: FakeProcessProvider(processNames: ["workbuddy"], bundleIDs: ["com.tencent.workbuddy.mac"], entries: [workbuddyEntry]),
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                tokenMonitor: fake,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            _ = engine.sample(now: now)
+
+            // 模拟极端死循环/狂暴生成：每分钟消耗 120万 tokens（超 100万 下限）
+            var tokens = 10_000
+            for beat in 1...3 {
+                tokens += 1_200_000
+                fake.usage["workbuddy"] = TokenUsage(tokens24h: tokens, tokensTotal: tokens, cost24h: 0, costTotal: 0)
+                _ = engine.sample(now: now.addingTimeInterval(Double(beat) * 60))
+                if beat < 3 {
+                    try expectNil(engine.latestEvent, "前 \(beat) 档需持续确认")
+                }
+            }
+            try expectEqual(engine.latestEvent?.eventType, .costSpike, "超过 100万 且连续 3 档应触发熔断告警")
+            try expectTrue(engine.latestEvent?.detail?.contains("专家团保护下限") == true, "详情应指出包含专家团保护下限")
+        }
+
+        TestKit.test("熔断保护: 全局阈值高于专家团下限时（如 200万），有效阈值向上吸附") {
+            let fake = FakeTokenUsageMonitor()
+            fake.usage["workbuddy"] = TokenUsage(tokens24h: 10_000, tokensTotal: 10_000, cost24h: 0, costTotal: 0)
+            let workbuddyEntry = ProcessSnapshot.Entry(
+                pid: 12345,
+                path: "/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy",
+                basename: "workbuddy",
+                cpuPercent: 10.0
+            )
+            // 用户显式调高到 200 万 / 分钟
+            let config = EngineConfig(tokenAlertEnabled: true, tokenAlertThreshold: 2_000_000)
+            let engine = ActivityEngine(
+                profiles: AgentRegistry.builtin,
+                config: config,
+                processMonitor: FakeProcessProvider(processNames: ["workbuddy"], bundleIDs: ["com.tencent.workbuddy.mac"], entries: [workbuddyEntry]),
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                tokenMonitor: fake,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            _ = engine.sample(now: now)
+
+            // 消耗 150 万 / 分钟（超过 100万 下限，但低于用户设置的 200万）
+            var tokens = 10_000
+            for beat in 1...3 {
+                tokens += 1_500_000
+                fake.usage["workbuddy"] = TokenUsage(tokens24h: tokens, tokensTotal: tokens, cost24h: 0, costTotal: 0)
+                _ = engine.sample(now: now.addingTimeInterval(Double(beat) * 60))
+                try expectNil(engine.latestEvent, "低于用户设置的 200万 阈值不应告警")
+            }
+        }
+
         TestKit.test("熔断保护: 持续死循环/高负载告警（低占用不误报，持续高 CPU 触发）") {
             // 1. 低 CPU（2%）：即使运行 6 分钟也不应触发死循环告警
             let lowEngine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 2.0)

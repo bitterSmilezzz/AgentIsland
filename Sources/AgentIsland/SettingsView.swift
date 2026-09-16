@@ -553,19 +553,26 @@ struct SettingsView: View {
                             Text("100k tokens / 分钟").tag(100_000)
                             Text("200k tokens / 分钟").tag(200_000)
                             Text("500k tokens / 分钟").tag(500_000)
+                            Text("1.0M tokens / 分钟").tag(1_000_000)
+                            Text("2.0M tokens / 分钟").tag(2_000_000)
+                            Text("5.0M tokens / 分钟").tag(5_000_000)
                         }
                         .font(Theme.bodyFont(12))
                         .onChange(of: tokenAlertThreshold) { _ in applyConfig() }
                         .onAppear {
                             // 非档位持久值（外部 defaults write / 旧版遗留）会让 Picker
                             // selection 空白而引擎仍按该未知阈值告警——吸附到最近档位
-                            let tiers = [30_000, 50_000, 100_000, 200_000, 500_000]
+                            let tiers = [30_000, 50_000, 100_000, 200_000, 500_000, 1_000_000, 2_000_000, 5_000_000]
                             if !tiers.contains(tokenAlertThreshold) {
                                 tokenAlertThreshold = tiers.min(by: {
                                     abs($0 - tokenAlertThreshold) < abs($1 - tokenAlertThreshold)
                                 }) ?? 200_000
                             }
                         }
+
+                        Text("注：WorkBuddy 等多专家团 Agent 自动应用 100万/分钟 专属保护下限，避免常规专家协同误报。")
+                            .font(Theme.bodyFont(10))
+                            .foregroundColor(Theme.inkMuted48)
                     }
 
                     Divider()

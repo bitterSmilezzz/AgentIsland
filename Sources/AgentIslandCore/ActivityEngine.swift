@@ -597,13 +597,21 @@ public final class ActivityEngine: ObservableObject {
                 tokenRateBaseline[profile.id] = (timestamp: now, tokens: usageInfo.tokensTotal)
                 // 折算为每分钟速率：正常绘画/长任务摊到多档后低于阈值，不再触发
                 let tokensPerMinute = Double(deltaTokens) / timeSpan * 60.0
-                if deltaTokens > 0, tokensPerMinute >= Double(config.tokenAlertThreshold) {
+
+                // 实际阈值 = max(档案专属下限, 用户设置全局阈值)
+                // 专为 WorkBuddy 等多专家团架构设计：日常 3-5 专家并行产生的高消耗不误报，
+                // 但超大规模死循环或超过用户设置的更高档位依然能精准熔断告警。
+                let alertFloor = profile.tokenAlertFloor ?? 0
+                let effectiveThreshold = max(alertFloor, config.tokenAlertThreshold)
+
+                if deltaTokens > 0, tokensPerMinute >= Double(effectiveThreshold) {
                     let streak = (tokenSpikeStreak[profile.id] ?? 0) + 1
                     tokenSpikeStreak[profile.id] = streak
                     // 需连续多档超阈值才告警：滤掉单次账本补写（如长任务结束时一次性落盘）
                     guard streak >= Self.tokenSpikeConfirmations,
                           !tokenSpikeAlerted.contains(profile.id) else { continue }
                     let matchedPID = samples[profile.id]?.pid
+                    let floorNote = alertFloor > config.tokenAlertThreshold ? "，含 \(profile.name) 专家团保护下限 \(TokenUsage.compact(alertFloor))" : ""
                     postEvent(AgentTaskEvent(
                         agentId: profile.id,
                         agentName: profile.name,
@@ -612,7 +620,7 @@ public final class ActivityEngine: ObservableObject {
                         timestamp: now,
                         pid: matchedPID,
                         message: "⚠️ \(profile.name) Token 激增 (+\(TokenUsage.compact(deltaTokens)))",
-                        detail: "近 \(Int(timeSpan)) 秒 Token 净消耗 +\(TokenUsage.compact(deltaTokens))，约 \(TokenUsage.compact(Int(tokensPerMinute)))/分钟，已连续 \(streak) 个周期超过阈值（设置报警阈值: \(TokenUsage.compact(config.tokenAlertThreshold))/分钟）。常见原因：长上下文灌入、复杂循环或多 Agent 并发。建议点击直达检查会话状态。"
+                        detail: "近 \(Int(timeSpan)) 秒 Token 净消耗 +\(TokenUsage.compact(deltaTokens))，约 \(TokenUsage.compact(Int(tokensPerMinute)))/分钟，已连续 \(streak) 个周期超过阈值（生效报警阈值: \(TokenUsage.compact(effectiveThreshold))/分钟\(floorNote)）。常见原因：长上下文灌入、复杂循环或多 Agent 并发。建议点击直达检查会话状态。"
                     ))
                     tokenSpikeAlerted.insert(profile.id)
                 } else {
