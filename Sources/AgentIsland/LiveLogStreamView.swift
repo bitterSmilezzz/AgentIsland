@@ -9,7 +9,28 @@ struct LiveLogStreamView: View {
     @ObservedObject var controller: IslandPanelController
     let agentId: String
 
+    enum LogFilter: String, CaseIterable, Identifiable {
+        case all = "全部"
+        case tools = "工具/执行"
+        case edits = "文件编辑"
+        case reasoning = "思考/消息"
+        case info = "系统"
+
+        var id: String { rawValue }
+
+        func matches(_ kind: AgentLogEvent.EventKind) -> Bool {
+            switch self {
+            case .all: return true
+            case .tools: return kind == .toolCall || kind == .command
+            case .edits: return kind == .fileEdit
+            case .reasoning: return kind == .thinking || kind == .message
+            case .info: return kind == .info
+            }
+        }
+    }
+
     @State private var events: [AgentLogEvent] = []
+    @State private var selectedFilter: LogFilter = .all
     @State private var loading = true
     @State private var autoRefresh = true
     @State private var copiedFeedback = false
@@ -27,13 +48,17 @@ struct LiveLogStreamView: View {
         snapshot?.profile.name ?? agentId
     }
 
+    private var filteredEvents: [AgentLogEvent] {
+        events.filter { selectedFilter.matches($0.kind) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(
                 title: "\(agentName) 实时流水",
                 subtitle: refreshInFlight && events.isEmpty
                     ? "实时流水 · 加载中…"
-                    : "实时流水 · \(events.count) 条事件",
+                    : "实时流水 · \(filteredEvents.count)/\(events.count) 条事件",
                 onBack: { controller.closeLiveStream() },
                 controller: controller
             )
@@ -45,6 +70,11 @@ struct LiveLogStreamView: View {
 
             DarkDivider()
 
+            // 分类筛选条
+            filterBar
+
+            DarkDivider()
+
             GeometryReader { geo in
                 ScrollView(.vertical, showsIndicators: false) {
                     ScrollViewReader { proxy in
@@ -52,11 +82,11 @@ struct LiveLogStreamView: View {
                             if loading && events.isEmpty {
                                 CenteredSpinner()
                                     .frame(maxWidth: .infinity, minHeight: 120)
-                            } else if events.isEmpty {
+                            } else if filteredEvents.isEmpty {
                                 emptyStreamView
                             } else {
                                 LazyVStack(alignment: .leading, spacing: 5) {
-                                    ForEach(events) { event in
+                                    ForEach(filteredEvents) { event in
                                         eventRow(event)
                                             .id(event.id)
                                     }
@@ -66,6 +96,13 @@ struct LiveLogStreamView: View {
                         .padding(.horizontal, Theme.pageMargin)
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 16, 0))
+                        .onChange(of: filteredEvents.first?.id) { firstId in
+                            if let firstId, autoRefresh {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    proxy.scrollTo(firstId, anchor: .top)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -149,6 +186,49 @@ struct LiveLogStreamView: View {
                 ? Color(hex: 0xf8fafc).opacity(0.85)
                 : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04), dark: NSColor(hex: 0x000000, alpha: 0.12))
         )
+    }
+
+    // MARK: - 分类筛选条
+
+    private var filterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                ForEach(LogFilter.allCases) { filter in
+                    let isSelected = (selectedFilter == filter)
+                    let count = (filter == .all) ? events.count : events.filter { filter.matches($0.kind) }.count
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            selectedFilter = filter
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(filter.rawValue)
+                                .font(Theme.bodyFont(9.5, weight: isSelected ? .semibold : .regular))
+                            if count > 0 {
+                                Text("\(count)")
+                                    .font(Theme.monoDigitFont(8.5, weight: .bold))
+                                    .opacity(isSelected ? 0.9 : 0.6)
+                            }
+                        }
+                        .foregroundColor(isSelected ? Theme.onDark : Theme.onDarkMuted)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? Theme.cardFill : Color.clear)
+                                .overlay(
+                                    Capsule()
+                                        .strokeBorder(isSelected ? (colorScheme == .light ? Color(hex: 0xcbd5e1) : Theme.obsidianHairline) : Color.clear, lineWidth: 0.5)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, Theme.pageMargin)
+            .padding(.vertical, 4)
+        }
+        .background(colorScheme == .light ? Color(hex: 0xf1f5f9).opacity(0.6) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.02), dark: NSColor(hex: 0x000000, alpha: 0.08)))
     }
 
     // MARK: - 单条事件行

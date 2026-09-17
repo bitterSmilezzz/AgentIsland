@@ -190,6 +190,31 @@ public final class ActivityEngine: ObservableObject {
         }
     }
 
+    /// 系统休眠标志：为 true 时彻底停止定时器和监控，极致节能
+    private var isSystemSleeping = false
+
+    /// 系统休眠联动（Mac 盒盖或进入睡眠）：冻结轮询定时器与令牌拉取
+    public func handleSystemSleep() {
+        guard running, !isSystemSleeping else { return }
+        isSystemSleeping = true
+        timer?.invalidate()
+        timer = nil
+        if tokenPollingStarted {
+            tokenMonitor.pause()
+        }
+    }
+
+    /// 系统唤醒联动（Mac 开盖或从睡眠唤醒）：恢复定时器并立即派发毫秒级热同步
+    public func handleSystemWake() {
+        guard running, isSystemSleeping else { return }
+        isSystemSleeping = false
+        if presentationActive {
+            startTokenPollingIfNeeded()
+        }
+        scheduleNext()
+        sampleInBackground()
+    }
+
     // MARK: - 动态配置（设置界面接线）
 
     /// 更新启停集合（enabledAgents）
@@ -910,7 +935,7 @@ public final class ActivityEngine: ObservableObject {
 
     /// 节电调度：有 working 快采样，闲置降频，全离线进一步拉大间隔（无 UI 需求）
     private func scheduleNext() {
-        guard running else { return }   // stop() 后在飞回调不再重建定时器
+        guard running, !isSystemSleeping else { return }   // stop() 或休眠期间不再重建定时器
         timer?.invalidate()
         let interval: TimeInterval
         if anyWorking {

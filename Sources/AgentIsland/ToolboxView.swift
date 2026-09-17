@@ -7,7 +7,26 @@ struct ToolboxView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
 
+    enum AnomalyFilter: String, CaseIterable, Identifiable {
+        case all = "全部"
+        case hung = "死锁"
+        case orphan = "孤儿"
+        case overweight = "内存超限"
+
+        var id: String { rawValue }
+
+        func matches(_ type: AgentAnomaly.AnomalyType) -> Bool {
+            switch self {
+            case .all: return true
+            case .hung: return type == .hung
+            case .orphan: return type == .orphan
+            case .overweight: return type == .overweight
+            }
+        }
+    }
+
     @State private var anomalies: [AgentAnomaly] = []
+    @State private var selectedFilter: AnomalyFilter = .all
     @State private var isScanning = false
     @State private var confirmingCleanAll = false
     @State private var cleaningPid: Int32? = nil
@@ -18,6 +37,10 @@ struct ToolboxView: View {
     /// 清理失败提示（terminate 无权限/进程已消失时不能说「已清理」）
     @State private var cleanFeedback: String?
     @Environment(\.colorScheme) private var colorScheme
+
+    private var filteredAnomalies: [AgentAnomaly] {
+        anomalies.filter { selectedFilter.matches($0.anomalyType) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -35,6 +58,10 @@ struct ToolboxView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         // 顶部状态指标卡
                         metricsCard
+
+                        if !anomalies.isEmpty {
+                            anomalyFilterBar
+                        }
 
                         if let cleanFeedback {
                             failureBanner(cleanFeedback)
@@ -118,6 +145,47 @@ struct ToolboxView: View {
         .accessibilityLabel("\(label) \(value)")
     }
 
+    // MARK: 分类筛选条
+    private var anomalyFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                ForEach(AnomalyFilter.allCases) { filter in
+                    let isSelected = (selectedFilter == filter)
+                    let count = (filter == .all) ? anomalies.count : anomalies.filter { filter.matches($0.anomalyType) }.count
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            selectedFilter = filter
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(filter.rawValue)
+                                .font(Theme.bodyFont(9.5, weight: isSelected ? .semibold : .regular))
+                            if count > 0 {
+                                Text("\(count)")
+                                    .font(Theme.monoDigitFont(8.5, weight: .bold))
+                                    .opacity(isSelected ? 0.9 : 0.6)
+                            }
+                        }
+                        .foregroundColor(isSelected ? Theme.onDark : Theme.onDarkMuted)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? Theme.cardFill : Color.clear)
+                                .overlay(
+                                    Capsule()
+                                        .strokeBorder(isSelected ? (colorScheme == .light ? Color(hex: 0xcbd5e1) : Theme.obsidianHairline) : Color.clear, lineWidth: 0.5)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
+        }
+    }
+
     /// 清理失败提示条：清理动作不再「无条件成功」，失败要看得见
     private func failureBanner(_ text: String) -> some View {
         HStack(spacing: 4) {
@@ -182,7 +250,7 @@ struct ToolboxView: View {
     private var anomaliesListView: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("待维护进程 (\(anomalies.count))")
+                Text("待维护进程 (\(filteredAnomalies.count)/\(anomalies.count))")
                     .font(Theme.bodyFont(10, weight: .semibold))
                     .foregroundColor(Theme.onDarkFaint)
                 Spacer()
@@ -198,7 +266,7 @@ struct ToolboxView: View {
                 .accessibilityLabel("重新扫描异常进程")
             }
 
-            ForEach(anomalies) { item in
+            ForEach(filteredAnomalies) { item in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 4) {
@@ -467,7 +535,7 @@ struct ToolboxView: View {
 
     /// 可进入批量清理的条目（孤儿进程被排除，见 AgentAnomaly.batchCleanable）
     private var batchCleanableAnomalies: [AgentAnomaly] {
-        anomalies.filter(\.batchCleanable)
+        filteredAnomalies.filter(\.batchCleanable)
     }
 
     private func cleanAll() {

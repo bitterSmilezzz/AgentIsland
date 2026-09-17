@@ -1472,6 +1472,16 @@ enum EngineTests {
             try expectEqual(chatgptSnap?.level, .idle, "ChatGPT 8% 的 GUI 空闲抖动应保持 idle")
             try expectNil(chatgptSnap?.currentAction, "ChatGPT 空闲时不应透传任何错误动作")
         }
+
+        TestKit.test("引擎: 系统休眠与唤醒调度联动（handleSystemSleep 与 handleSystemWake 幂等性）") {
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 0)
+            engine.start()
+            engine.handleSystemSleep()
+            engine.handleSystemSleep()
+            engine.handleSystemWake()
+            engine.handleSystemWake()
+            engine.stop()
+        }
     }
 
     // MARK: - 工具

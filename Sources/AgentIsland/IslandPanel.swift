@@ -343,11 +343,14 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 熄屏唤醒走 NSWorkspace 的 screensDidWake（default center 不投递、
         // 纯熄屏场景 didWake 不触发——活体实证），两个通知都挂 workspace center
         NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(screenConfigChanged),
+            self, selector: #selector(systemDidWake),
             name: NSWorkspace.screensDidWakeNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(screenConfigChanged),
+            self, selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification, object: nil)
 
         if CommandLine.arguments.contains("--expanded") || CommandLine.arguments.contains("--analytics") {
             displayState = .expanded
@@ -371,6 +374,20 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             // （例如拔掉面板所在的那台显示器），因此必须重新放置窗口。
             self.placeWindow(animated: false)
             self.evaluateEdgeZone()
+        }
+    }
+
+    @objc private func systemWillSleep() {
+        Task { @MainActor [weak self] in
+            self?.engine.handleSystemSleep()
+        }
+    }
+
+    @objc private func systemDidWake() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.screenConfigChanged()
+            self.engine.handleSystemWake()
         }
     }
 

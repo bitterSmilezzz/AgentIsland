@@ -236,11 +236,11 @@ struct AgentDetailView: View {
         )
     }
 
-    private func overviewCell(_ label: String, _ value: String, cost: String?) -> some View {
+    private func overviewCell(_ label: String, _ value: String, cost: String?, valueColor: Color? = nil) -> some View {
         VStack(spacing: 3) {
             Text(value)
                 .font(Theme.monoDigitFont(16, weight: .bold))
-                .foregroundColor(Theme.onDark)
+                .foregroundColor(valueColor ?? Theme.onDark)
             HStack(spacing: 4) {
                 Text(label)
                     .font(Theme.bodyFont(9.5, weight: .medium))
@@ -327,12 +327,20 @@ struct AgentDetailView: View {
                 }
             }
 
+            let cpuColor: Color = {
+                if s.cpuPercent >= 80 { return Theme.dangerRed }
+                if s.cpuPercent >= 30 { return Theme.sydedockAmber }
+                return Theme.onDark
+            }()
+
             HStack(spacing: 0) {
-                overviewCell("CPU", s.cpuPercent > 0 ? String(format: "%.1f%%", s.cpuPercent) : "0%", cost: nil)
+                overviewCell("CPU", s.cpuPercent > 0 ? String(format: "%.1f%%", s.cpuPercent) : "0%", cost: nil, valueColor: cpuColor)
                 Rectangle().fill(Theme.onDark.opacity(0.10)).frame(width: 1, height: 26)
                 overviewCell("内存 (RSS)", s.memoryText, cost: nil)
+                    .help(s.memoryBytes > 0 ? "\(s.memoryBytes.formatted()) 字节" : "暂无内存数据")
                 Rectangle().fill(Theme.onDark.opacity(0.10)).frame(width: 1, height: 26)
                 overviewCell("PID", s.pid.map { "\($0)" } ?? "—", cost: nil)
+                    .help(s.pid.map { "进程 PID: \($0)" } ?? "未运行")
             }
             .padding(.vertical, 8)
             .background(
