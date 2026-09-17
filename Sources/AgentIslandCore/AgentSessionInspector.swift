@@ -526,6 +526,19 @@ public enum AgentSessionInspector {
 
     /// 解析 Antigravity transcript.jsonl 末尾若干行，推导当前状态信号
     public static func detectAntigravitySession(lines: [String], fileAge: TimeInterval, now: Date = Date()) -> AgentSessionSignal? {
+        // 预解析：收集所有行的 step_index 与 type，用于判断 ask_question 是否已被答复
+        // 采用轻量元数据扫描，避免重复全量 JSON 解析
+        var parsedMeta: [(stepIndex: Int, stepType: String, hasToolCalls: Bool)] = []
+        for rawLine in lines {
+            if let data = rawLine.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let si = obj["step_index"] as? Int ?? 0
+                let st = obj["type"] as? String ?? ""
+                let hasTC = (obj["tool_calls"] as? [[String: Any]])?.isEmpty == false
+                parsedMeta.append((si, st, hasTC))
+            }
+        }
+
         for rawLine in lines.reversed() {
             guard let data = rawLine.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -542,6 +555,14 @@ public enum AgentSessionInspector {
                     let name = normalized($0["name"] as? String)
                     return requestNames.contains(name) || name.contains("askquestion") || name.contains("askuser")
                 }) {
+                    // 如果该 ask_question step 之后已有 GENERIC 或 USER_INPUT step，
+                    // 说明用户已经回复，不应再触发 attention；继续向前扫描更早的步骤。
+                    let alreadyAnswered = parsedMeta.contains { meta in
+                        meta.stepIndex > stepIndex &&
+                        (meta.stepType == "GENERIC" || meta.stepType == "USER_INPUT")
+                    }
+                    if alreadyAnswered { continue }
+
                     var questionMsg = "等待你选择或确认"
                     if let args = askTool["args"] as? [String: Any] {
                         if let questionsStr = args["questions"] as? String,

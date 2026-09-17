@@ -43,6 +43,31 @@ enum AntigravityTrackingTests {
             try expectEqual(req.message, "请选择重构方案：")
         }
 
+        TestKit.test("Antigravity日志解析: 已答复的 ask_question（后有 GENERIC）不得触发 attention 误报") {
+            // 模拟真实场景：ask_question 后紧跟 GENERIC（用户已答复），再有后续工具调用
+            let lineAsk = "{\"step_index\":105,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"tool_calls\":[{\"name\":\"ask_question\",\"args\":{\"questions\":\"[{\\\"question\\\":\\\"请选择重构方案：\\\"}]\"}}]}"
+            let lineGeneric = "{\"step_index\":106,\"source\":\"TOOL\",\"type\":\"GENERIC\",\"status\":\"DONE\",\"content\":\"user selected option 1\"}"
+            let lineWork = "{\"step_index\":107,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"tool_calls\":[{\"name\":\"run_command\",\"args\":{\"toolAction\":\"Building app\",\"CommandLine\":\"swift build\"}}]}"
+
+            let signal = AgentSessionInspector.detectAntigravitySession(lines: [lineAsk, lineGeneric, lineWork], fileAge: 10)
+            // 最新 step 是 run_command，应为 active，不是 attention
+            guard case .active? = signal else {
+                throw TestError(message: "已答复的 ask_question 不得再触发 attention；应为 active（run_command 进行中）")
+            }
+        }
+
+        TestKit.test("Antigravity日志解析: 历史 ask_question 后仍有后续工作，最终完成后为 completed") {
+            // ask_question → GENERIC → 后续工作 → 最终完成
+            let lineAsk = "{\"step_index\":105,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"tool_calls\":[{\"name\":\"ask_question\",\"args\":{\"questions\":\"[{\\\"question\\\":\\\"选择方案？\\\"}]\"}}]}"
+            let lineGeneric = "{\"step_index\":106,\"source\":\"TOOL\",\"type\":\"GENERIC\",\"status\":\"DONE\",\"content\":\"answered\"}"
+            let lineDone = "{\"step_index\":120,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"content\":\"已完成全部改造。\"}"
+
+            let signal = AgentSessionInspector.detectAntigravitySession(lines: [lineAsk, lineGeneric, lineDone], fileAge: 30)
+            guard case .completed? = signal else {
+                throw TestError(message: "ask_question 已答复且最终有 content 回答，应解析为 completed")
+            }
+        }
+
         TestKit.test("Antigravity日志解析: 轮次完成 15 分钟内为 completed，超时自然转为待机 (nil)") {
             let lineDone = "{\"step_index\":120,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"content\":\"### 修复汇报\\n已全部修复完成。\"}"
 

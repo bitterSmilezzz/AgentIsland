@@ -6,6 +6,18 @@
 
 ---
 
+## [0.0.63] - 2026-09-17
+
+### 🐛 修复 Antigravity 确认通知误报
+
+- **根本原因**：`detectAntigravitySession` 在对 transcript.jsonl 末尾行做 `reversed()` 扫描时，遇到含 `ask_question` 的 PLANNER_RESPONSE 会立即返回 `.attention`，但**未检查该 step 之后是否已存在 GENERIC / USER_INPUT**（即用户早已答复），导致历史上已答复的弹窗被反复误判为"等待确认"。
+- **修复**：在正式扫描前，先对 tail-48 行做一次轻量元数据预解析，收集各行的 `step_index` 与 `type`。扫描到 `ask_question` 时，检查元数据中是否存在 `step_index` 更大的 GENERIC 或 USER_INPUT 行；若存在则视为已答复，继续向前扫描而非触发 attention。
+- **新增回归测试**：
+  - `ask_question → GENERIC → run_command` 序列 → 应为 `.active`，不得触发 `.attention`
+  - `ask_question → GENERIC → 最终完成` 序列 → 应为 `.completed`
+
+---
+
 ## [0.0.62] - 2026-09-16
 
 ### 🚀 性能调优、状态跟踪修复与 Token 动效流畅化
