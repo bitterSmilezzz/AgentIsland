@@ -6,6 +6,29 @@
 
 ---
 
+## [0.0.65] - 2026-09-17
+
+### 🎨 UI 与动效全面升级：流体弹性层级转场与触感反馈
+
+- **灵动岛流体层级推入/返回转场（Route Transitions）**：
+  - 主卡与二级/三级详情页（Agent 详情、Token 统计、会话列表、实时日志抽屉、快捷工具箱）全面接入 `ZStack` + `.transition(.asymmetric(...))` 深度视差动效；
+  - 进入子页带有微妙水平微位移与缩放弹性推入（`offset x: 12, scale: 0.98`），返回主卡平滑淡出，彻底消除原本页面生硬跳切的问题；
+  - `CardRoute` 升级遵循 `Hashable`，配合视图 `.id(controller.route)` 触发高保真原生弹簧物理流体转场。
+- **Agent 列表行交互触感增强（AgentRowView）**：
+  - 列表行增加轻微悬浮微缩放（`scale: 1.004`）与 `.spring(response: 0.22, dampingFraction: 0.75)` 触觉级弹性阻尼；
+  - 点击行进入 Agent 详情页时联动显式弹簧转场动画，大幅强化按压沉浸感。
+- **状态指示与顶栏标题平滑过渡**：
+  - `AdaptiveHeaderText` 的主标题、副标题与徽标接入 `.contentTransition(.numericText())`，多 Agent 状态在“工作中/待确认/已完成/待机”切换时数字与文字平滑滚动过度，杜绝突兀闪烁；
+  - `statusDot` 状态指示灯增加色彩插值平滑过渡动画（`easeInOut 0.3s`）。
+- **极光流光弧与双层心跳呼吸环（AgentRingView）**：
+  - `SpinningActivityArc` 重构为 `AngularGradient` 极光流光拖尾微弧，旋转时呈现平滑渐变流光轨迹；
+  - `PulsingAttentionArc` 升级为外层光晕微扩散与内层核心呼吸双层脉冲环，待确认与警告状态更具灵动生命力。
+- **全链路返回与汇总栏微动效统一**：
+  - `DetailHeader` 返回按键增加悬停微弹性放大（`scale: 1.08`）与显式弹簧返回；
+  - 底部 `TokenSummaryBar` 增加悬停轻浮升与点击弹簧转场。
+
+---
+
 ## [0.0.64] - 2026-09-17
 
 ### 🐛 彻底根治 Antigravity 僵尸“等待确认”误报（专有探测路由优先）

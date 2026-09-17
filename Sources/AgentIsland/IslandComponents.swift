@@ -152,18 +152,23 @@ struct AdaptiveHeaderText: View {
                 Text(title)
                     .font(Theme.bodyFont(12.5, weight: .bold))
                     .foregroundColor(Theme.onDark)
+                    .contentTransition(.numericText())
                     .readableSingleLine(fullText: title, minWidth: 96, priority: 3)
 
                 if let badge, !badge.isEmpty {
                     Text(badge)
                         .font(Theme.badgeFont(.semibold))
                         .foregroundColor(tint)
+                        .contentTransition(.numericText())
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background(Capsule().fill(tint.opacity(0.12)))
                         .fixedSize()
+                        .transition(.scale.combined(with: .opacity))
                 }
             }
+            .animation(.spring(response: 0.32, dampingFraction: 0.8), value: title)
+            .animation(.spring(response: 0.32, dampingFraction: 0.8), value: badge)
 
             if let subtitle, !subtitle.isEmpty {
                 HStack(spacing: 4) {

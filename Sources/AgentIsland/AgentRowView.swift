@@ -324,13 +324,17 @@ struct AgentRowView: View {
         .padding(.horizontal, 6)
         .contentShape(Rectangle())
         .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.15)) {
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.75)) {
                 isHoveringRow = hovering
             }
         }
+        .scaleEffect(isHoveringRow ? 1.004 : 1.0)
+        .animation(.spring(response: 0.22, dampingFraction: 0.75), value: isHoveringRow)
         .onTapGesture {
-            // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表）
-            controller.route = .agentDetail(snapshot.profile.id)
+            // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表），带有丝滑弹簧转场
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                controller.route = .agentDetail(snapshot.profile.id)
+            }
         }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(snapshot.profile.name)，\(snapshot.level.label)，点按查看详情")

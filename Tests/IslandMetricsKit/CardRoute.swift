@@ -10,7 +10,7 @@ import Foundation
 // 漂移防线：IslandMetricsTests 中有一条哨兵用例读取 IslandView.swift 的真实
 // 源码，比对 case 集合与本镜像是否一致；新增/改名路由会让该用例失败，提示
 // 同步镜像并补路由覆盖。
-enum CardRoute: Equatable {
+enum CardRoute: Hashable {
     case list
     case tokenAnalytics
     case agentDetail(String)

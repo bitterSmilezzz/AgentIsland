@@ -133,7 +133,7 @@ struct AgentRingView: View {
     }
 }
 
-// MARK: - 内圈旋转微弧（Activity Arc · Spinning）
+// MARK: - 内圈旋转微弧（Activity Arc · Spinning 流光微弧）
 
 private struct SpinningActivityArc: View {
     let color: Color
@@ -150,15 +150,24 @@ private struct SpinningActivityArc: View {
     var body: some View {
         Circle()
             .inset(by: innerInset)
-            .trim(from: 0, to: 0.25)
+            .trim(from: 0, to: 0.35)
             .stroke(
-                color.opacity(0.85),
-                style: StrokeStyle(lineWidth: max(1.2, stroke * 0.6), lineCap: .round)
+                AngularGradient(
+                    gradient: Gradient(colors: [
+                        color.opacity(0.0),
+                        color.opacity(0.35),
+                        color.opacity(0.95)
+                    ]),
+                    center: .center,
+                    startAngle: .degrees(0),
+                    endAngle: .degrees(126)
+                ),
+                style: StrokeStyle(lineWidth: max(1.4, stroke * 0.65), lineCap: .round)
             )
             .rotationEffect(.degrees(angle))
             .onAppear {
                 guard !reduceMotion else { return }
-                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
                     angle = 360
                 }
             }
@@ -168,7 +177,7 @@ private struct SpinningActivityArc: View {
     }
 }
 
-// MARK: - 内圈呼吸警示环（Attention Arc · Pulsing）
+// MARK: - 内圈呼吸警示环（Attention Arc · 双层光晕脉冲）
 
 private struct PulsingAttentionArc: View {
     let color: Color
@@ -183,22 +192,33 @@ private struct PulsingAttentionArc: View {
     }
 
     var body: some View {
-        Circle()
-            .inset(by: innerInset)
-            .stroke(
-                color,
-                style: StrokeStyle(lineWidth: max(1.2, stroke * 0.6), lineCap: .round)
-            )
-            .opacity(pulsing ? 0.25 : 0.95)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
-                    pulsing = true
-                }
+        ZStack {
+            // 外层柔和微光扩散光晕
+            Circle()
+                .inset(by: innerInset)
+                .stroke(
+                    color.opacity(pulsing ? 0.85 : 0.18),
+                    style: StrokeStyle(lineWidth: max(1.4, stroke * 0.7), lineCap: .round)
+                )
+                .scaleEffect(pulsing ? 1.08 : 0.94)
+
+            // 内层核心常驻呼吸环
+            Circle()
+                .inset(by: innerInset)
+                .stroke(
+                    color.opacity(pulsing ? 0.95 : 0.55),
+                    style: StrokeStyle(lineWidth: max(1.2, stroke * 0.5), lineCap: .round)
+                )
+        }
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                pulsing = true
             }
-            .onDisappear {
-                pulsing = false
-            }
+        }
+        .onDisappear {
+            pulsing = false
+        }
     }
 }
 

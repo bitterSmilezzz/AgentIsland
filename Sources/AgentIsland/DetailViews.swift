@@ -20,7 +20,11 @@ struct DetailHeader: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: onBack) {
+            Button(action: {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                    onBack()
+                }
+            }) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDark.opacity(0.9))
@@ -35,6 +39,8 @@ struct DetailHeader: View {
                             .shadow(color: Color.black.opacity(colorScheme == .light ? (backHovered ? 0.06 : 0.02) : 0), radius: 1, y: 0.5)
                     )
                     .contentShape(Circle())
+                    .scaleEffect(backHovered ? 1.08 : 1.0)
+                    .animation(.spring(response: 0.22, dampingFraction: 0.75), value: backHovered)
                     .help("返回")
             }
             .buttonStyle(.plain)

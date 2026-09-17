@@ -90,7 +90,7 @@ enum IslandDisplayState: Equatable {
 
 // MARK: - 卡内导航（主列表 → agent 详情 → 模型会话列表）
 
-enum CardRoute: Equatable {
+enum CardRoute: Hashable {
     case list                     // 主卡：agent 列表 + 汇总栏
     case tokenAnalytics           // Token 时间趋势、环比与来源构成
     case agentDetail(String)      // agent 详情：总览 + 模型拆分
@@ -192,23 +192,48 @@ struct IslandView: View {
     }
 
     private var expandedContent: some View {
-        Group {
+        ZStack {
             switch controller.route {
             case .list:
                 expandedCard
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .center)),
+                        removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .center))
+                    ))
             case .tokenAnalytics:
                 TokenAnalyticsView(engine: engine, controller: controller)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center)),
+                        removal: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center))
+                    ))
             case .agentDetail(let agentId):
                 AgentDetailView(engine: engine, controller: controller, agentId: agentId)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center)),
+                        removal: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center))
+                    ))
             case .sessions(let agentId, let modelId):
                 SessionListView(engine: engine, controller: controller,
                                 agentId: agentId, modelId: modelId)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center)),
+                        removal: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center))
+                    ))
             case .toolbox:
                 ToolboxView(engine: engine, controller: controller)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center)),
+                        removal: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center))
+                    ))
             case .liveStream(let agentId):
                 LiveLogStreamView(engine: engine, controller: controller, agentId: agentId)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center)),
+                        removal: .opacity.combined(with: .offset(x: 12)).combined(with: .scale(scale: 0.98, anchor: .center))
+                    ))
             }
         }
+        .id(controller.route)
     }
 
     // MARK: 贴边微细条（露 6pt，晶莹质感 + 多状态状态呼吸光晕）
@@ -551,6 +576,7 @@ struct IslandView: View {
                     .modifier(PulseAnimation(isActive: controller.displayState == .expanded))
             }
         }
+        .animation(.easeInOut(duration: 0.3), value: statusColor)
     }
 
     private var statusColor: Color {

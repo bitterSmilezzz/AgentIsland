@@ -17,7 +17,11 @@ struct TokenSummaryBar: View {
     }
 
     var body: some View {
-        Button(action: onOpen) {
+        Button(action: {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                onOpen()
+            }
+        }) {
             HStack(spacing: 8) {
                 // 24h 指标跑道微胶囊（高对比亮色）
                 HStack(spacing: 5) {
@@ -139,8 +143,10 @@ struct TokenSummaryBar: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
         .padding(.vertical, 3.5)
+        .scaleEffect(isHovered ? 1.004 : 1.0)
+        .animation(.spring(response: 0.22, dampingFraction: 0.75), value: isHovered)
         .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.15)) {
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.75)) {
                 isHovered = hovering
             }
         }
