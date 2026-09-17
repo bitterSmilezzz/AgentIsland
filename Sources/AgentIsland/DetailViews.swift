@@ -212,28 +212,7 @@ struct AgentDetailView: View {
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                .fill(Theme.obsidianCardFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: colorScheme == .light ? [
-                                    Color.white.opacity(0.95),
-                                    Color(hex: 0x000000).opacity(0.06)
-                                ] : [
-                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
-                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 0.75
-                        )
-                )
-                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
-        )
+        .obsidianCardStyle()
     }
 
     private func overviewCell(_ label: String, _ value: String, cost: String?, valueColor: Color? = nil) -> some View {
@@ -404,18 +383,7 @@ struct AgentDetailView: View {
         .padding(.horizontal, 10)   // 与模型行内边距对齐（之前 12 造成文字基线差 2pt）
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                .fill(Theme.cardFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                        .strokeBorder(
-                            colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
-                            lineWidth: 0.75
-                        )
-                )
-                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 2, y: 1)
-        )
+        .subtleCardStyle()
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {

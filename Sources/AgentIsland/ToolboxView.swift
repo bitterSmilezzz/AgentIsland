@@ -116,18 +116,7 @@ struct ToolboxView: View {
                          help: "当前纳入监控的智能体数量（异常项占比的实际分母）")
         }
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                .fill(Theme.cardFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                        .strokeBorder(
-                            colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
-                            lineWidth: 0.75
-                        )
-                )
-                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 2, y: 1)
-        )
+        .subtleCardStyle()
     }
 
     private func overviewCell(_ label: String, _ value: String, color: Color, help: String) -> some View {
@@ -147,43 +136,15 @@ struct ToolboxView: View {
 
     // MARK: 分类筛选条
     private var anomalyFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
-                ForEach(AnomalyFilter.allCases) { filter in
-                    let isSelected = (selectedFilter == filter)
-                    let count = (filter == .all) ? anomalies.count : anomalies.filter { filter.matches($0.anomalyType) }.count
-                    Button {
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                            selectedFilter = filter
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(filter.rawValue)
-                                .font(Theme.bodyFont(9.5, weight: isSelected ? .semibold : .regular))
-                            if count > 0 {
-                                Text("\(count)")
-                                    .font(Theme.monoDigitFont(8.5, weight: .bold))
-                                    .opacity(isSelected ? 0.9 : 0.6)
-                            }
-                        }
-                        .foregroundColor(isSelected ? Theme.onDark : Theme.onDarkMuted)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule()
-                                .fill(isSelected ? Theme.cardFill : Color.clear)
-                                .overlay(
-                                    Capsule()
-                                        .strokeBorder(isSelected ? (colorScheme == .light ? Color(hex: 0xcbd5e1) : Theme.obsidianHairline) : Color.clear, lineWidth: 0.5)
-                                )
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 2)
-            .padding(.vertical, 2)
-        }
+        FilterCapsuleBar(
+            items: AnomalyFilter.allCases,
+            selectedItem: $selectedFilter,
+            title: { $0.rawValue },
+            count: { filter in
+                filter == .all ? anomalies.count : anomalies.filter { filter.matches($0.anomalyType) }.count
+            },
+            contentInsets: EdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 2)
+        )
     }
 
     /// 清理失败提示条：清理动作不再「无条件成功」，失败要看得见

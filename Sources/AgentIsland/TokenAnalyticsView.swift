@@ -91,28 +91,7 @@ struct TokenAnalyticsView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                .fill(Theme.obsidianCardFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: colorScheme == .light ? [
-                                    Color.white.opacity(0.95),
-                                    Color(hex: 0x000000).opacity(0.06)
-                                ] : [
-                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
-                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 0.75
-                        )
-                )
-                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
-        )
+        .obsidianCardStyle()
     }
 
     private var metricDivider: some View {
@@ -187,28 +166,7 @@ struct TokenAnalyticsView: View {
             }
         }
         .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                .fill(Theme.obsidianCardFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: colorScheme == .light ? [
-                                    Color.white.opacity(0.95),
-                                    Color(hex: 0x000000).opacity(0.06)
-                                ] : [
-                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
-                                    Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 0.75
-                        )
-                )
-                .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
-        )
+        .obsidianCardStyle()
     }
 
     @ViewBuilder
@@ -230,28 +188,7 @@ struct TokenAnalyticsView: View {
                 }
             }
             .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                    .fill(Theme.obsidianCardFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: colorScheme == .light ? [
-                                        Color.white.opacity(0.95),
-                                        Color(hex: 0x000000).opacity(0.06)
-                                    ] : [
-                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
-                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ),
-                                lineWidth: 0.75
-                            )
-                    )
-                    .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
-            )
+            .obsidianCardStyle()
         }
     }
 

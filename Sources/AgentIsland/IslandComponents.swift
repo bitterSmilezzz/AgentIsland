@@ -243,3 +243,127 @@ enum HapticFeedback {
         NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .default)
     }
 }
+
+// MARK: - 黑曜石与次级卡片修饰符
+
+private struct ObsidianCardModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let fill: Color
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(fill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: colorScheme == .light ? [
+                                        Color.white.opacity(0.95),
+                                        Color(hex: 0x000000).opacity(0.06)
+                                    ] : [
+                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.16),
+                                        Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.04)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: 0.75
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
+            )
+    }
+}
+
+private struct SubtleCardModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let fill: Color
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(fill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(
+                                colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                                lineWidth: 0.75
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 2, y: 1)
+            )
+    }
+}
+
+extension View {
+    /// 统一精致黑曜石卡片底色、高光渐变边框与柔和投影
+    func obsidianCardStyle(cornerRadius: CGFloat = Theme.radiusMd, fill: Color = Theme.obsidianCardFill) -> some View {
+        modifier(ObsidianCardModifier(cornerRadius: cornerRadius, fill: fill))
+    }
+
+    /// 统一清爽次级卡片底色与细线边框
+    func subtleCardStyle(cornerRadius: CGFloat = Theme.radiusMd, fill: Color = Theme.cardFill) -> some View {
+        modifier(SubtleCardModifier(cornerRadius: cornerRadius, fill: fill))
+    }
+}
+
+// MARK: - 通用筛选胶囊栏
+
+/// 通用水平滚动筛选胶囊栏，消除 LiveLogStreamView 与 ToolboxView 间的完全重叠样板
+struct FilterCapsuleBar<Item: Identifiable & Equatable>: View {
+    let items: [Item]
+    @Binding var selectedItem: Item
+    let title: (Item) -> String
+    let count: (Item) -> Int
+    var contentInsets: EdgeInsets = EdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 2)
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                ForEach(items) { item in
+                    let isSelected = (selectedItem == item)
+                    let itemCount = count(item)
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                            selectedItem = item
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(title(item))
+                                .font(Theme.bodyFont(9.5, weight: isSelected ? .semibold : .regular))
+                            if itemCount > 0 {
+                                Text("\(itemCount)")
+                                    .font(Theme.monoDigitFont(8.5, weight: .bold))
+                                    .opacity(isSelected ? 0.9 : 0.6)
+                            }
+                        }
+                        .foregroundColor(isSelected ? Theme.onDark : Theme.onDarkMuted)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(isSelected ? Theme.cardFill : Color.clear)
+                                .overlay(
+                                    Capsule()
+                                        .strokeBorder(isSelected ? (colorScheme == .light ? Color(hex: 0xcbd5e1) : Theme.obsidianHairline) : Color.clear, lineWidth: 0.5)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, contentInsets.top)
+            .padding(.bottom, contentInsets.bottom)
+            .padding(.leading, contentInsets.leading)
+            .padding(.trailing, contentInsets.trailing)
+        }
+    }
+}
+

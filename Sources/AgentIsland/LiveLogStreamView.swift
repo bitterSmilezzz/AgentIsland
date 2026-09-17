@@ -191,43 +191,15 @@ struct LiveLogStreamView: View {
     // MARK: - 分类筛选条
 
     private var filterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
-                ForEach(LogFilter.allCases) { filter in
-                    let isSelected = (selectedFilter == filter)
-                    let count = (filter == .all) ? events.count : events.filter { filter.matches($0.kind) }.count
-                    Button {
-                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                            selectedFilter = filter
-                        }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Text(filter.rawValue)
-                                .font(Theme.bodyFont(9.5, weight: isSelected ? .semibold : .regular))
-                            if count > 0 {
-                                Text("\(count)")
-                                    .font(Theme.monoDigitFont(8.5, weight: .bold))
-                                    .opacity(isSelected ? 0.9 : 0.6)
-                            }
-                        }
-                        .foregroundColor(isSelected ? Theme.onDark : Theme.onDarkMuted)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule()
-                                .fill(isSelected ? Theme.cardFill : Color.clear)
-                                .overlay(
-                                    Capsule()
-                                        .strokeBorder(isSelected ? (colorScheme == .light ? Color(hex: 0xcbd5e1) : Theme.obsidianHairline) : Color.clear, lineWidth: 0.5)
-                                )
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, Theme.pageMargin)
-            .padding(.vertical, 4)
-        }
+        FilterCapsuleBar(
+            items: LogFilter.allCases,
+            selectedItem: $selectedFilter,
+            title: { $0.rawValue },
+            count: { filter in
+                filter == .all ? events.count : events.filter { filter.matches($0.kind) }.count
+            },
+            contentInsets: EdgeInsets(top: 4, leading: Theme.pageMargin, bottom: 4, trailing: Theme.pageMargin)
+        )
         .background(colorScheme == .light ? Color(hex: 0xf1f5f9).opacity(0.6) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.02), dark: NSColor(hex: 0x000000, alpha: 0.08)))
     }
 

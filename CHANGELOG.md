@@ -4,6 +4,21 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.69] - 2026-09-17
+
+### 💎 优雅、高效、精简的架构去重与单一职责重构
+
+- **视图层组件抽象与统一黑曜石卡片修饰符（IslandComponents）**：
+  - 提取统一的 `.obsidianCardStyle(cornerRadius:fill:)` 与 `.subtleCardStyle(cornerRadius:fill:)` 视图修饰符，封装标准高光渐变边框、多阶阴影与深浅色黑曜石底色；
+  - 彻底重构 `DetailViews`、`TokenAnalyticsView`、`ToolboxView` 中 8 处重复手写的 RoundedRectangle/strokeBorder/shadow 样板代码，消除大量样板并保证全应用设计系统 100% 一致。
+- **通用分类筛选胶囊组件（FilterCapsuleBar）**：
+  - 提取通用的 `FilterCapsuleBar<Item: Identifiable & Equatable>`，接管分类筛选横向滚动、弹簧触控动画、高亮选框与计数徽标；
+  - 替换 `LiveLogStreamView` 与 `ToolboxView` 中完全一致的胶囊筛选栏，实现关注点收敛与组件复用。
+- **控制器单一职责拆分与解耦（IslandPanelController Modularization）**：
+  - `IslandPanelRouting.swift`：承载 `CardRoute` 路由导航与页面回溯栈（`openAgentDetail`, `closeAgentDetail`, `openLiveStream`, `closeLiveStream`，以及快捷导航 API）；
+  - `IslandPanelPositioning.swift`：聚焦窗口几何计算、吸附动画、屏幕可用区域约束与边缘热区几何（`placeWindow`, `snapToDockEdge`, `dockTargetFrame`, `sliverRect` 等）；
+  - `IslandPanel.swift` 主控制器大幅瘦身近 250 行，专注保留窗口生命周期管理、代理回调与核心交互状态派发。
+
 ---
 
 ## [0.0.68] - 2026-09-17
