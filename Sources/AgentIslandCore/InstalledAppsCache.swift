@@ -68,9 +68,6 @@ public final class InstalledAppsCache: @unchecked Sendable {
     /// （R28）。返回 true 表示安排了新扫描，false 表示合并或命中缓存。
     @discardableResult
     public func warmUp(completion: (@MainActor () -> Void)? = nil) -> Bool {
-        lock.lock()
-        let needsScan = lastRefreshAt == nil && !refreshing
-        lock.unlock()
         let scheduled = scheduleRefresh(maxAge: nil, completion: completion)
         if !scheduled, let completion, isWarmed {
             Task { @MainActor in completion() }

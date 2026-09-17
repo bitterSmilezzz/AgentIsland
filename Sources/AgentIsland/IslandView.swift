@@ -189,6 +189,17 @@ struct IslandView: View {
         }
         .animation(.easeInOut(duration: 0.22), value: controller.displayState)
         .animation(.spring(response: 0.32, dampingFraction: 0.84), value: controller.route)
+        .onExitCommand {
+            // Esc 键层级退回：在子页时丝滑返回主卡，在主卡展开态时平滑收起
+            if controller.route != .list {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                    controller.route = .list
+                }
+                HapticFeedback.perform(.alignment)
+            } else if controller.displayState == .expanded {
+                controller.collapse()
+            }
+        }
     }
 
     private var expandedContent: some View {

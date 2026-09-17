@@ -205,9 +205,12 @@ struct ToolboxView: View {
                             Text(item.agentName)
                                 .font(Theme.bodyFont(11, weight: .bold))
                                 .foregroundColor(Theme.onDark)
+                            Text("· \(item.commandBasename)")
+                                .font(Theme.monoFont(9.5, weight: .medium))
+                                .foregroundColor(Theme.onDarkFaint)
                                 .readableSingleLine(
                                     fullText: "\(item.agentName) · \(item.commandPath)",
-                                    minWidth: 60,
+                                    minWidth: 50,
                                     priority: 2
                                 )
                             Text("PID: \(item.pid)")
@@ -448,6 +451,7 @@ struct ToolboxView: View {
     /// 仍在运行的条目会原样回到列表并给出失败提示。
     private func cleanSingle(_ item: AgentAnomaly) {
         cleanFeedback = nil
+        HapticFeedback.perform(.levelChange)
         engine.cleanAnomalies([item])
         verifyCleanup { remaining in
             // 复核回调晚 1.2s 到达：用户可能已离开工作台——只旁观，不导航不打扰
@@ -470,6 +474,7 @@ struct ToolboxView: View {
         cleanFeedback = nil
         let toClean = batchCleanableAnomalies
         guard !toClean.isEmpty else { return }
+        HapticFeedback.perform(.levelChange)
         let orphanCount = anomalies.count - toClean.count
         let originalIDs = Set(toClean.map(\.id))
         engine.cleanAnomalies(toClean)

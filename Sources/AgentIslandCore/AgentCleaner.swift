@@ -39,6 +39,11 @@ public struct AgentAnomaly: Identifiable, Equatable {
         MemoryFormat.text(memoryBytes)
     }
 
+    public var commandBasename: String {
+        let name = URL(fileURLWithPath: commandPath).lastPathComponent
+        return name.isEmpty ? commandPath : name
+    }
+
     public init(id: String, pid: Int32, ppid: Int32, agentName: String, profileId: String,
                 commandPath: String, cpuPercent: Double, memoryBytes: UInt64,
                 anomalyType: AnomalyType, reason: String, batchCleanable: Bool = true) {

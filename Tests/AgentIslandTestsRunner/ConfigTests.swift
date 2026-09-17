@@ -118,7 +118,6 @@ enum ConfigTests {
         }
 
         TestKit.test("配置: load 缺项回落默认值、非空项按类型读取") {
-            let name = "agentisland-config-test-\(UUID().uuidString)"
             let suite = TestDefaults.suite("config-1")
             let base = EngineConfig()
 
@@ -149,7 +148,6 @@ enum ConfigTests {
         }
 
         TestKit.test("配置: load 读出的脏值同样被归一化") {
-            let name = "agentisland-config-dirty-\(UUID().uuidString)"
             let suite = TestDefaults.suite("config-2")
 
             suite.set(-5.0, forKey: SettingKey.cpuThreshold)

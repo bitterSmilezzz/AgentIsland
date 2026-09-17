@@ -30,7 +30,6 @@ enum SettingsTests {
         }
 
         TestKit.test("设置: load 无键默认、脏值归一化（suiteName 隔离）") {
-            let name = "agentisland-settings-test-\(UUID().uuidString)"
             let suite = TestDefaults.suite("settings-1")
 
             let fresh = EngineConfig.load(from: suite)
@@ -46,120 +45,114 @@ enum SettingsTests {
         }
 
         TestKit.test("设置: store 三态 nil/空数组/有值往返") {
-            let name = "agentisland-settings-test-\(UUID().uuidString)"
             let suite = TestDefaults.suite("settings-2")
-
-            try expectNil(EnabledAgentStore.load(from: suite), "无记录 → nil（回退策略归调用方）")
-            EnabledAgentStore.save([], to: suite)
-            let empty = EnabledAgentStore.load(from: suite)
-            try expectTrue(empty != nil && empty!.isEmpty, "空数组是有意全关，不得当无记录")
-            EnabledAgentStore.save(["dim", "claude"], to: suite)
-            try expectEqual(EnabledAgentStore.load(from: suite), ["claude", "dim"], "有值往返")
-        }
-
-        TestKit.test("设置: resolvedEnabled 首次全新安装默认启用并记录已知") {
-            let name = "agentisland-settings-test-\(UUID().uuidString)"
+ 
+             try expectNil(EnabledAgentStore.load(from: suite), "无记录 → nil（回退策略归调用方）")
+             EnabledAgentStore.save([], to: suite)
+             let empty = EnabledAgentStore.load(from: suite)
+             try expectTrue(empty != nil && empty!.isEmpty, "空数组是有意全关，不得当无记录")
+             EnabledAgentStore.save(["dim", "claude"], to: suite)
+             try expectEqual(EnabledAgentStore.load(from: suite), ["claude", "dim"], "有值往返")
+         }
+ 
+         TestKit.test("设置: resolvedEnabled 首次全新安装默认启用并记录已知") {
             let suite = TestDefaults.suite("settings-3")
-
-            let p1 = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
-            let p2 = AgentProfile(id: "off", name: "Off", icon: "x", bundleIDs: [], processNames: ["off"], sessionDirs: [], defaultEnabled: false)
-
-            let resolved = EnabledAgentStore.resolvedEnabled(registry: [p1, p2], defaults: suite)
-            try expectEqual(resolved, ["dim"], "首次安装只启用 defaultEnabled: true")
-            try expectEqual(EnabledAgentStore.load(from: suite), ["dim"], "已持久化")
-            try expectEqual(EnabledAgentStore.loadKnownAgents(from: suite), ["dim", "off"], "已知列表记录全量 registry")
-        }
-
-        TestKit.test("设置: resolvedEnabled 用户主动全关保持空数组") {
-            let name = "agentisland-settings-test-\(UUID().uuidString)"
+ 
+             let p1 = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
+             let p2 = AgentProfile(id: "off", name: "Off", icon: "x", bundleIDs: [], processNames: ["off"], sessionDirs: [], defaultEnabled: false)
+ 
+             let resolved = EnabledAgentStore.resolvedEnabled(registry: [p1, p2], defaults: suite)
+             try expectEqual(resolved, ["dim"], "首次安装只启用 defaultEnabled: true")
+             try expectEqual(EnabledAgentStore.load(from: suite), ["dim"], "已持久化")
+             try expectEqual(EnabledAgentStore.loadKnownAgents(from: suite), ["dim", "off"], "已知列表记录全量 registry")
+         }
+ 
+         TestKit.test("设置: resolvedEnabled 用户主动全关保持空数组") {
             let suite = TestDefaults.suite("settings-4")
-
-            EnabledAgentStore.save([], to: suite)
-            let p1 = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
-            let resolved = EnabledAgentStore.resolvedEnabled(registry: [p1], defaults: suite)
-            try expectEqual(resolved, [], "空集合尊重用户意图，不强行覆写")
-        }
-
-        TestKit.test("设置: resolvedEnabled 旧版存量迁移自愈（自动补齐 antigravity 等新增内置项）") {
-            let name = "agentisland-settings-test-\(UUID().uuidString)"
+ 
+             EnabledAgentStore.save([], to: suite)
+             let p1 = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
+             let resolved = EnabledAgentStore.resolvedEnabled(registry: [p1], defaults: suite)
+             try expectEqual(resolved, [], "空集合尊重用户意图，不强行覆写")
+         }
+ 
+         TestKit.test("设置: resolvedEnabled 旧版存量迁移自愈（自动补齐 antigravity 等新增内置项）") {
             let suite = TestDefaults.suite("settings-5")
-
-            // 模拟旧版本环境：用户存了 ["workbuddy", "dim"]，但没有 knownAgents 键
-            EnabledAgentStore.save(["workbuddy", "dim"], to: suite)
-
-            let pDim = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
-            let pClaude = AgentProfile(id: "claude", name: "Claude", icon: "x", bundleIDs: [], processNames: ["claude"], sessionDirs: [], defaultEnabled: true)
-            let pAnti = AgentProfile(id: "antigravity", name: "Antigravity", icon: "atom", bundleIDs: ["com.google.antigravity"], processNames: ["Antigravity"], sessionDirs: [], defaultEnabled: true)
-            let pContinue = AgentProfile(id: "continue", name: "Continue", icon: "x", bundleIDs: [], processNames: ["continue"], sessionDirs: [], defaultEnabled: false)
-
-            let resolved = EnabledAgentStore.resolvedEnabled(registry: [pDim, pClaude, pAnti, pContinue], defaults: suite)
-
-            // antigravity 作为新增 defaultEnabled 项应自动补齐
-            try expectTrue(resolved.contains("antigravity"), "新内置项 antigravity 必须自动自愈补入启用集")
-            try expectTrue(resolved.contains("dim"), "原有启用项保留")
-            try expectTrue(resolved.contains("workbuddy"), "原有启用项保留")
-            // claude 属于 legacyKnownAgentIDs，旧配置里没开就不应强行开启
-            try expectFalse(resolved.contains("claude"), "旧版已知的未勾选项不应被误开启")
-            // continue 默认关闭，不应开启
-            try expectFalse(resolved.contains("continue"), "默认关闭项不应开启")
-
-            // 验证持久化写回
-            let saved = EnabledAgentStore.load(from: suite) ?? []
-            try expectTrue(saved.contains("antigravity"), "写回持久化")
-        }
-
-        TestKit.test("设置: resolvedEnabled 用户显式关闭某项后不被重复开启") {
-            let name = "agentisland-settings-test-\(UUID().uuidString)"
+ 
+             // 模拟旧版本环境：用户存了 ["workbuddy", "dim"]，但没有 knownAgents 键
+             EnabledAgentStore.save(["workbuddy", "dim"], to: suite)
+ 
+             let pDim = AgentProfile(id: "dim", name: "Dim", icon: "x", bundleIDs: [], processNames: ["dim"], sessionDirs: [], defaultEnabled: true)
+             let pClaude = AgentProfile(id: "claude", name: "Claude", icon: "x", bundleIDs: [], processNames: ["claude"], sessionDirs: [], defaultEnabled: true)
+             let pAnti = AgentProfile(id: "antigravity", name: "Antigravity", icon: "atom", bundleIDs: ["com.google.antigravity"], processNames: ["Antigravity"], sessionDirs: [], defaultEnabled: true)
+             let pContinue = AgentProfile(id: "continue", name: "Continue", icon: "x", bundleIDs: [], processNames: ["continue"], sessionDirs: [], defaultEnabled: false)
+ 
+             let resolved = EnabledAgentStore.resolvedEnabled(registry: [pDim, pClaude, pAnti, pContinue], defaults: suite)
+ 
+             // antigravity 作为新增 defaultEnabled 项应自动补齐
+             try expectTrue(resolved.contains("antigravity"), "新内置项 antigravity 必须自动自愈补入启用集")
+             try expectTrue(resolved.contains("dim"), "原有启用项保留")
+             try expectTrue(resolved.contains("workbuddy"), "原有启用项保留")
+             // claude 属于 legacyKnownAgentIDs，旧配置里没开就不应强行开启
+             try expectFalse(resolved.contains("claude"), "旧版已知的未勾选项不应被误开启")
+             // continue 默认关闭，不应开启
+             try expectFalse(resolved.contains("continue"), "默认关闭项不应开启")
+ 
+             // 验证持久化写回
+             let saved = EnabledAgentStore.load(from: suite) ?? []
+             try expectTrue(saved.contains("antigravity"), "写回持久化")
+         }
+ 
+         TestKit.test("设置: resolvedEnabled 用户显式关闭某项后不被重复开启") {
             let suite = TestDefaults.suite("settings-6")
-
-            let pAnti = AgentProfile(id: "antigravity", name: "Antigravity", icon: "atom", bundleIDs: [], processNames: ["Antigravity"], sessionDirs: [], defaultEnabled: true)
-            _ = EnabledAgentStore.resolvedEnabled(registry: [pAnti], defaults: suite)
-
-            // 用户在设置界面关闭 antigravity
-            EnabledAgentStore.save(["other"], to: suite)
-
-            // 下次启动
-            let resolved = EnabledAgentStore.resolvedEnabled(registry: [pAnti], defaults: suite)
-            try expectFalse(resolved.contains("antigravity"), "已在 knownAgents 中的项被用户关闭后，不再被强行开启")
-        }
-
-        TestKit.test("设置: makeCustomID 大小写与空格归一") {
-            try expectEqual(AgentProfile.makeCustomID("QA Agent"), "custom-qa-agent")
-            try expectEqual(AgentProfile.makeCustomID("DimAgent"), "custom-dimagent")
-            try expectEqual(AgentProfile.makeCustomID("dim"), "custom-dim")
-        }
-
-        TestKit.test("设置: conflict 纯核——启用/已安装/未安装三路") {
-            let dim = AgentProfile(id: "dim", name: "DimAgent", icon: "x", bundleIDs: ["com.dimcode.app"],
-                                   processNames: ["DimAgent", "dim"], sessionDirs: [])
-            let off = AgentProfile(id: "off", name: "Off", icon: "x", bundleIDs: [],
-                                   processNames: ["offproc"], sessionDirs: [], defaultEnabled: false)
-            let names = AgentRegistry.conflictingProcessNames(
-                registry: [dim, off],
-                enabledIDs: ["off"],
-                installedCLIs: ["dim"],
-                installedBundles: [])
-            try expectTrue(names.contains("offproc"), "已启用（虽未安装）必须拦")
-            try expectTrue(names.contains("dimagent") && names.contains("dim"), "未启用但已安装（CLI 命中）也要拦")
-            try expectEqual(names.count, 3, "无关进程不得误拦")
-        }
-
-        TestKit.test("设置: DockEdge 四边枚举、方向语义与持久化键值") {
-            try expectEqual(DockEdge.top.rawValue, "top")
-            try expectEqual(DockEdge.right.rawValue, "right")
-            try expectEqual(DockEdge.bottom.rawValue, "bottom")
-            try expectEqual(DockEdge.left.rawValue, "left")
-            try expectEqual(DockEdge(rawValue: "top"), .top)
-            try expectEqual(DockEdge(rawValue: "right"), .right)
-            try expectEqual(DockEdge(rawValue: "bottom"), .bottom)
-            try expectEqual(DockEdge(rawValue: "left"), .left)
-            try expectNil(DockEdge(rawValue: "unknown"))
-            try expectTrue(DockEdge.top.isHorizontal, "顶部沿 X 轴保存锚点")
-            try expectTrue(DockEdge.bottom.isHorizontal, "底部沿 X 轴保存锚点")
-            try expectFalse(DockEdge.left.isHorizontal, "左侧沿 Y 轴保存锚点")
-            try expectFalse(DockEdge.right.isHorizontal, "右侧沿 Y 轴保存锚点")
-
-            let name = "agentisland-dock-test-\(UUID().uuidString)"
+ 
+             let pAnti = AgentProfile(id: "antigravity", name: "Antigravity", icon: "atom", bundleIDs: [], processNames: ["Antigravity"], sessionDirs: [], defaultEnabled: true)
+             _ = EnabledAgentStore.resolvedEnabled(registry: [pAnti], defaults: suite)
+ 
+             // 用户在设置界面关闭 antigravity
+             EnabledAgentStore.save(["other"], to: suite)
+ 
+             // 下次启动
+             let resolved = EnabledAgentStore.resolvedEnabled(registry: [pAnti], defaults: suite)
+             try expectFalse(resolved.contains("antigravity"), "已在 knownAgents 中的项被用户关闭后，不再被强行开启")
+         }
+ 
+         TestKit.test("设置: makeCustomID 大小写与空格归一") {
+             try expectEqual(AgentProfile.makeCustomID("QA Agent"), "custom-qa-agent")
+             try expectEqual(AgentProfile.makeCustomID("DimAgent"), "custom-dimagent")
+             try expectEqual(AgentProfile.makeCustomID("dim"), "custom-dim")
+         }
+ 
+         TestKit.test("设置: conflict 纯核——启用/已安装/未安装三路") {
+             let dim = AgentProfile(id: "dim", name: "DimAgent", icon: "x", bundleIDs: ["com.dimcode.app"],
+                                    processNames: ["DimAgent", "dim"], sessionDirs: [])
+             let off = AgentProfile(id: "off", name: "Off", icon: "x", bundleIDs: [],
+                                    processNames: ["offproc"], sessionDirs: [], defaultEnabled: false)
+             let names = AgentRegistry.conflictingProcessNames(
+                 registry: [dim, off],
+                 enabledIDs: ["off"],
+                 installedCLIs: ["dim"],
+                 installedBundles: [])
+             try expectTrue(names.contains("offproc"), "已启用（虽未安装）必须拦")
+             try expectTrue(names.contains("dimagent") && names.contains("dim"), "未启用但已安装（CLI 命中）也要拦")
+             try expectEqual(names.count, 3, "无关进程不得误拦")
+         }
+ 
+         TestKit.test("设置: DockEdge 四边枚举、方向语义与持久化键值") {
+             try expectEqual(DockEdge.top.rawValue, "top")
+             try expectEqual(DockEdge.right.rawValue, "right")
+             try expectEqual(DockEdge.bottom.rawValue, "bottom")
+             try expectEqual(DockEdge.left.rawValue, "left")
+             try expectEqual(DockEdge(rawValue: "top"), .top)
+             try expectEqual(DockEdge(rawValue: "right"), .right)
+             try expectEqual(DockEdge(rawValue: "bottom"), .bottom)
+             try expectEqual(DockEdge(rawValue: "left"), .left)
+             try expectNil(DockEdge(rawValue: "unknown"))
+             try expectTrue(DockEdge.top.isHorizontal, "顶部沿 X 轴保存锚点")
+             try expectTrue(DockEdge.bottom.isHorizontal, "底部沿 X 轴保存锚点")
+             try expectFalse(DockEdge.left.isHorizontal, "左侧沿 Y 轴保存锚点")
+             try expectFalse(DockEdge.right.isHorizontal, "右侧沿 Y 轴保存锚点")
+ 
             let suite = TestDefaults.suite("settings-7")
 
             suite.set(DockEdge.top.rawValue, forKey: SettingKey.dockEdge)
@@ -231,7 +224,6 @@ enum SettingsTests {
             try expectEqual(IslandAppearance.dark.next(), .system)
 
             // 持久化测试
-            let name = "agentisland-appearance-test-\(UUID().uuidString)"
             let suite = TestDefaults.suite("settings-8")
 
             suite.set(IslandAppearance.dark.rawValue, forKey: SettingKey.islandAppearance)
@@ -286,7 +278,6 @@ enum SettingsTests {
             try expectFalse(NotificationPolicy.silent.shouldPlaySound(for: .costSpike, soundEnabled: true), "主开关开: 静默模式 costSpike 不发声")
 
             // 3. 持久化测试
-            let name = "agentisland-policy-test-\(UUID().uuidString)"
             let suite = TestDefaults.suite("settings-9")
 
             suite.set(NotificationPolicy.focus.rawValue, forKey: SettingKey.notificationPolicy)

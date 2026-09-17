@@ -433,6 +433,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             manualOpenGraceUntil = Date().addingTimeInterval(graceDuration)
         }
         displayState = .expanded
+        HapticFeedback.perform(.levelChange)
+        engine.sampleInBackground()
     }
 
     func toggle() {
@@ -452,6 +454,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         manualOpenGraceUntil = .distantPast
         expandCooldownUntil = Date().addingTimeInterval(0.4)
         displayState = .docked
+        HapticFeedback.perform(.levelChange)
     }
 
     func expandFromHover() {
@@ -459,6 +462,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         cancelPendingTasks()
         manualOpenGraceUntil = .distantPast
         displayState = .expanded
+        HapticFeedback.perform(.alignment)
+        engine.sampleInBackground()
     }
 
     // MARK: - 拖动与智能吸附
@@ -587,7 +592,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         let throttle = mouseMoveThrottle
         mouseLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             guard throttle.shouldPassLocal() else { return event }
-            MainActor.assumeIsolated {
+            _ = MainActor.assumeIsolated {
                 self?.evaluateEdgeZone()
             }
             return event

@@ -235,3 +235,11 @@ extension View {
         )
     }
 }
+
+// MARK: - 原生触觉反馈工具 (Haptic Feedback)
+
+enum HapticFeedback {
+    static func perform(_ pattern: NSHapticFeedbackManager.FeedbackPattern = .alignment) {
+        NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .default)
+    }
+}
