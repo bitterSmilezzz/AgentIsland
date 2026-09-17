@@ -468,6 +468,30 @@ private struct TokenRangePicker: View {
 private struct TokenTrendChart: View {
     let points: [TokenUsagePoint]
     let range: TokenTimeRange
+    @State private var hoveredIndex: Int? = nil
+
+    private static let timeTooltipFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private static let dateTooltipFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "M月d日"
+        return f
+    }()
+
+    private func tooltipTimeText(for point: TokenUsagePoint) -> String {
+        switch range {
+        case .day:
+            let start = Self.timeTooltipFormatter.string(from: point.start)
+            let end = Self.timeTooltipFormatter.string(from: point.start.addingTimeInterval(3600))
+            return "\(start)–\(end)"
+        case .week, .month:
+            return Self.dateTooltipFormatter.string(from: point.start)
+        }
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -539,6 +563,78 @@ private struct TokenTrendChart: View {
                             .frame(width: 2.5, height: 2.5)
                     }
                     .position(coordinates[peakIndex])
+                }
+
+                // 交互式游标垂直标尺与浮动标签
+                if let activeIndex = hoveredIndex,
+                   coordinates.indices.contains(activeIndex) {
+                    let point = points[activeIndex]
+                    let coord = coordinates[activeIndex]
+
+                    // 垂直参考线
+                    Path { path in
+                        path.move(to: CGPoint(x: coord.x, y: 0))
+                        path.addLine(to: CGPoint(x: coord.x, y: geo.size.height))
+                    }
+                    .stroke(Theme.sydedockCyan.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [2.5, 2.5]))
+
+                    // 游标焦点圆点
+                    Circle()
+                        .fill(Theme.sydedockCyan)
+                        .frame(width: 7, height: 7)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
+                        .position(coord)
+
+                    // 浮动提示微徽标
+                    HStack(spacing: 4) {
+                        Text(tooltipTimeText(for: point))
+                            .font(Theme.monoFont(8.5, weight: .medium))
+                            .foregroundColor(Theme.onDarkMuted)
+                        Text(TokenUsage.compact(point.tokens))
+                            .font(Theme.monoDigitFont(9, weight: .bold))
+                            .foregroundColor(Theme.sydedockCyan)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(
+                        Capsule()
+                            .fill(Theme.cardFill.opacity(0.95))
+                            .overlay(Capsule().strokeBorder(Theme.sydedockCyan.opacity(0.4), lineWidth: 0.5))
+                            .shadow(color: Color.black.opacity(0.2), radius: 3, y: 1)
+                    )
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard points.count > 1 else {
+                            hoveredIndex = 0
+                            return
+                        }
+                        let step = geo.size.width / CGFloat(points.count - 1)
+                        let idx = Int(round(value.location.x / step))
+                        hoveredIndex = min(max(idx, 0), points.count - 1)
+                    }
+                    .onEnded { _ in
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_200_000_000)
+                            hoveredIndex = nil
+                        }
+                    }
+            )
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                    guard points.count > 1 else {
+                        hoveredIndex = 0
+                        return
+                    }
+                    let step = geo.size.width / CGFloat(points.count - 1)
+                    let idx = Int(round(location.x / step))
+                    hoveredIndex = min(max(idx, 0), points.count - 1)
+                case .ended:
+                    hoveredIndex = nil
                 }
             }
         }

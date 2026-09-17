@@ -336,6 +336,64 @@ struct AgentRowView: View {
                 controller.route = .agentDetail(snapshot.profile.id)
             }
         }
+        .contextMenu {
+            if snapshot.processRunning {
+                Button {
+                    _ = AppActivator.activate(pid: snapshot.pid, bundleIDs: snapshot.profile.bundleIDs)
+                } label: {
+                    Label("直达窗口 / 终端", systemImage: "arrow.up.forward.app")
+                }
+            }
+
+            Button {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                    controller.route = .agentDetail(snapshot.profile.id)
+                }
+            } label: {
+                Label("查看模型与 Token 详情", systemImage: "chart.bar.doc.horizontal")
+            }
+
+            Button {
+                controller.openLiveStream(agentId: snapshot.profile.id)
+            } label: {
+                Label("查看实时流水抽屉", systemImage: "terminal")
+            }
+
+            if let dir = snapshot.profile.sessionDirs.first, FileManager.default.fileExists(atPath: dir) {
+                Button {
+                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir)
+                } label: {
+                    Label("在访达中显示会话数据", systemImage: "folder")
+                }
+            }
+
+            Divider()
+
+            if let pid = snapshot.pid {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("\(pid)", forType: .string)
+                } label: {
+                    Label("复制进程 PID (\(pid))", systemImage: "doc.on.doc")
+                }
+            }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(snapshot.profile.name, forType: .string)
+            } label: {
+                Label("复制 Agent 名称", systemImage: "doc.on.doc")
+            }
+
+            if snapshot.level == .working || snapshot.isHung {
+                Divider()
+                Button(role: .destructive) {
+                    confirmingKill = true
+                } label: {
+                    Label("强制终止此进程 (逃生舱)", systemImage: "xmark.octagon")
+                }
+            }
+        }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(snapshot.profile.name)，\(snapshot.level.label)，点按查看详情")
         .accessibilityHint(snapshot.processRunning ? "悬停可执行终止 / 流水 / 直达操作，点按查看详情" : "点按查看详情")

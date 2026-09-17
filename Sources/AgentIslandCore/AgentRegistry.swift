@@ -245,6 +245,26 @@ public enum AgentRegistry {
             sessionDirs: [home(".openviking")],
             category: .assistant
         ),
+        AgentProfile(
+            id: "windsurf",
+            name: "Windsurf",
+            icon: "wind",
+            bundleIDs: ["com.exafunction.windsurf"],
+            processNames: ["Windsurf", "windsurf", "Electron"],
+            pathContains: ["windsurf"],
+            cpuWorkingThreshold: desktopCPUFloor,
+            sessionDirs: [home("Library/Application Support/Windsurf/User/workspaceStorage")],
+            category: .codeEditor
+        ),
+        AgentProfile(
+            id: "aider",
+            name: "Aider",
+            icon: "terminal.fill",
+            bundleIDs: [],
+            processNames: ["aider"],
+            sessionDirs: [home(".aider")],
+            category: .assistant
+        ),
     ]
 
     // MARK: - 自动发现

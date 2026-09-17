@@ -42,7 +42,8 @@ enum RegistryTests {
                            "被宿主过滤的 CLI 不应被自动发现重复引入")
         }
 
-        TestKit.test("注册表: discoverCLIProfiles 幂等去重") {            let installed: Set<String> = ["aider", "dim", "gemini"]   // dim 为内置已含，不应重复发现
+        TestKit.test("注册表: discoverCLIProfiles 幂等去重") {
+            let installed: Set<String> = ["foo-cli", "dim", "gemini"]   // dim 为内置已含，不应重复发现
             let a = AgentRegistry.discoverCLIProfiles(installedCLIs: installed)
             let b = AgentRegistry.discoverCLIProfiles(installedCLIs: installed)
             try expectEqual(Set(a.map(\.id)), Set(b.map(\.id)), "两次发现应一致")
@@ -51,7 +52,7 @@ enum RegistryTests {
             let existing = Set(AgentRegistry.builtin.flatMap { $0.processNames.map { $0.lowercased() } })
             try expectTrue(!a.contains { existing.contains($0.processNames.first?.lowercased() ?? "") },
                            "内置 CLI 不应重复发现")
-            try expectTrue(a.contains { $0.id == "cli-aider" } && a.contains { $0.id == "cli-gemini" },
+            try expectTrue(a.contains { $0.id == "cli-foo-cli" } && a.contains { $0.id == "cli-gemini" },
                            "已安装未内置 CLI 应被发现")
         }
 
@@ -185,6 +186,17 @@ enum RegistryTests {
                                     "\(profile.id) 把内核目录当会话目录：\(dir)")
                 }
             }
+        }
+
+        TestKit.test("注册表: Windsurf 与 Aider 内置档案完整性") {
+            let windsurf = AgentRegistry.builtin.first { $0.id == "windsurf" }
+            try expectTrue(windsurf != nil, "Windsurf 必须存在于内置档案中")
+            try expectTrue(windsurf?.bundleIDs.contains("com.exafunction.windsurf") == true, "Windsurf 必须包含 bundle ID")
+            try expectTrue(windsurf?.processNames.contains("Windsurf") == true, "Windsurf 必须包含进程名")
+
+            let aider = AgentRegistry.builtin.first { $0.id == "aider" }
+            try expectTrue(aider != nil, "Aider 必须存在于内置档案中")
+            try expectTrue(aider?.processNames.contains("aider") == true, "Aider 必须包含进程名")
         }
     }
 }
