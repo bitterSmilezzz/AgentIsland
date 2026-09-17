@@ -56,6 +56,39 @@ enum AntigravityTrackingTests {
             }
         }
 
+        TestKit.test("Antigravity会话探测: 统一入口 inspect 优先分派至 Antigravity 专有探测器，防止通用检测器误报") {
+            let antigravity = AgentRegistry.builtin.first { $0.id == "antigravity" }!
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
+            let subdirs = (try? FileManager.default.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])) ?? []
+
+            var files: [URL] = []
+            for sub in subdirs {
+                let logFile = sub.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+                if FileManager.default.fileExists(atPath: logFile.path) {
+                    files.append(logFile)
+                }
+            }
+
+            let now = Date()
+            let signalInspect = AgentSessionInspector.inspect(profile: antigravity, activityFiles: files, now: now)
+            let signalDedicated = AgentSessionInspector.inspectAntigravitySession(now: now)
+            
+            // inspect 必须与专有解析器行为完全一致，且绝不得出现虚假的 attention 误报
+            switch (signalInspect, signalDedicated) {
+            case (.none, .none):
+                break
+            case let (.active(f1, _), .active(f2, _)):
+                try expectEqual(f1, f2, "inspect 与专有探测器的活跃指纹必须一致")
+            case let (.completed(f1), .completed(f2)):
+                try expectEqual(f1, f2, "inspect 与专有探测器的完成指纹必须一致")
+            case let (.attention(r1), .attention(r2)):
+                try expectEqual(r1.fingerprint, r2.fingerprint, "inspect 与专有探测器的提问指纹必须一致")
+            default:
+                throw TestError(message: "inspect 派发结果 (\(String(describing: signalInspect))) 与专有解析器 (\(String(describing: signalDedicated))) 不一致")
+            }
+        }
+
         TestKit.test("Antigravity日志解析: 历史 ask_question 后仍有后续工作，最终完成后为 completed") {
             // ask_question → GENERIC → 后续工作 → 最终完成
             let lineAsk = "{\"step_index\":105,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"tool_calls\":[{\"name\":\"ask_question\",\"args\":{\"questions\":\"[{\\\"question\\\":\\\"选择方案？\\\"}]\"}}]}"

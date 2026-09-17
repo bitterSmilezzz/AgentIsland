@@ -39,6 +39,17 @@ public enum AgentSessionInspector {
 
     /// 对 FileMonitor 已在后台定位出的每目录最新文件做有界尾读；不递归枚举目录。
     public static func inspect(profile: AgentProfile, activityFiles: [URL], now: Date = Date()) -> AgentSessionSignal? {
+        // 专有 Agent 协议优先：拥有高保真结构化日志/专有解析器的 Agent（如 Antigravity、DSH）
+        // 必须使用其专有解析器，避免被通用检测器的关键字深搜造成 attention/active 误判。
+        switch profile.id {
+        case "antigravity":
+            return inspectAntigravitySession(now: now)
+        case "dsh":
+            return inspectDSHSession(now: now)
+        default:
+            break
+        }
+
         let candidates = activityFiles.compactMap { url -> (URL, Date)? in
             guard let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else {
                 return nil
@@ -91,10 +102,11 @@ public enum AgentSessionInspector {
                 continue
             }
 
-            // 新一轮用户消息、推理或工具调用使旧 task_complete 失效。token_count / usage /
-            // item_completed 等收尾记账事件是中性的，不会把刚完成状态立即冲掉。
-            if case .completed = signal, startsOrContinuesWork(object) {
-                signal = nil
+            // 新一轮用户消息、推理或工具调用使旧 task_complete 或旧 attention 失效。token_count / usage /
+            // item_completed 等收尾记账事件是中性的，不会把状态立即冲掉。
+            if startsOrContinuesWork(object) {
+                if case .completed = signal { signal = nil }
+                if case .attention = signal { signal = nil }
             }
         }
         return signal
@@ -132,6 +144,9 @@ public enum AgentSessionInspector {
     private static func resolvesAttention(_ value: Any, fingerprint: String) -> Bool {
         let roles = structuralValues(for: "role", in: value)
         if roles.contains("user") { return true }
+
+        let sources = structuralValues(for: "source", in: value)
+        if sources.contains("user") || sources.contains("userexplicit") { return true }
 
         let types = structuralValues(for: "type", in: value)
         let states = structuralValues(for: "status", in: value)

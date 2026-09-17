@@ -6,6 +6,20 @@
 
 ---
 
+## [0.0.64] - 2026-09-17
+
+### 🐛 彻底根治 Antigravity 僵尸“等待确认”误报（专有探测路由优先）
+
+- **双重根本原因**：
+  1. **路由旁路失效**：`AgentSessionInspector.inspect(...)` 在最外层无条件对 `activityFiles` 遍历执行通用的 `detect(lines:)`，只有未命中时才回退至数据库/专有探测器。导致 Antigravity（以及 DSH）写在 `inspectAntigravitySession` 中的专有高保真逻辑被完全绕过，transcript.jsonl 被当作通用未知日志解析。
+  2. **通用检测器 attention 无法解除**：通用的 `detect(lines:)` 遇到历史命令参数或已回答提问中的 `ask_question` 后，无法识别 Antigravity 的 `source: USER_EXPLICIT` / `type: GENERIC` 答复；且后续即使出现模型工作、新工具调用，也没有清除 attention 状态的机制，导致状态永远钉死在“等待确认”。
+- **系统级修复**：
+  - **专有协议优先分发**：在 `AgentSessionInspector.inspect` 入口置顶专有派发，Antigravity 与 DSH 100% 走其专有高保真会话探测器。
+  - **通用状态机解挂**：通用 `resolvesAttention` 增加对 `source: "user" / "userexplicit"` 识别；并在通用 `detect` 中引入 `startsOrContinuesWork` 时自动解除旧 attention 信号。
+- **验证**：真实环境现场探针验证 `inspect` 与 `inspectAntigravitySession` 输出完全对齐，回归测试 244 项全数通过。
+
+---
+
 ## [0.0.63] - 2026-09-17
 
 ### 🐛 修复 Antigravity 确认通知误报
