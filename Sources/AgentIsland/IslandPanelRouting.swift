@@ -62,7 +62,15 @@ extension IslandPanelController {
 
     /// 键盘上下方向键选择列表中的 Agent
     func moveFocus(step: Int) {
-        let list = engine.visibleSnapshots
+        var list = engine.visibleSnapshots
+        if isSearchActive && !searchText.isEmpty {
+            let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            list = list.filter {
+                $0.profile.name.lowercased().contains(q) ||
+                $0.profile.id.lowercased().contains(q) ||
+                $0.profile.processNames.contains { $0.lowercased().contains(q) }
+            }
+        }
         guard !list.isEmpty else {
             focusedAgentId = nil
             return

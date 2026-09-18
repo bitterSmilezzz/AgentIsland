@@ -99,6 +99,14 @@ public enum TokenTimeRange: String, CaseIterable, Identifiable, Equatable {
         case .month: return 30     // 每天
         }
     }
+
+    public var label: String {
+        switch self {
+        case .day: return "最近 24 小时 (24h)"
+        case .week: return "最近 7 天 (7d)"
+        case .month: return "最近 30 天 (30d)"
+        }
+    }
 }
 
 public struct TokenUsagePoint: Identifiable, Equatable {

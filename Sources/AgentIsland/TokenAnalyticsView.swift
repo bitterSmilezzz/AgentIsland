@@ -12,6 +12,7 @@ struct TokenAnalyticsView: View {
     @State private var hasLoadedOnce = false
     @State private var cachedTimelines: [TokenTimeRange: TokenUsageTimeline] = [:]
     @State private var queryToken = UUID()
+    @State private var showCopiedFeedback = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -49,14 +50,47 @@ struct TokenAnalyticsView: View {
 
     private var metricsCard: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .center) {
                 Text("总体用量")
                     .font(Theme.bodyFont(10.5, weight: .bold))
                     .foregroundColor(Theme.onDark)
                 Spacer()
-                Text("汇总 \(availableToolCount) 个可读工具")
-                    .font(Theme.badgeFont(.medium))
-                    .foregroundColor(Theme.onDarkFaint)
+                Menu {
+                    Button("复制 Markdown 格式报表") {
+                        let text = TokenReportExporter.generateMarkdown(timeline: timeline, range: range, grandTotal: engine.grandTotal)
+                        TokenReportExporter.copyToPasteboard(text)
+                        showCopiedFeedback = true
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            showCopiedFeedback = false
+                        }
+                    }
+                    Button("复制 CSV 账单格式") {
+                        let text = TokenReportExporter.generateCSV(timeline: timeline, range: range)
+                        TokenReportExporter.copyToPasteboard(text)
+                        showCopiedFeedback = true
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            showCopiedFeedback = false
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: showCopiedFeedback ? "checkmark" : "square.and.arrow.up")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(showCopiedFeedback ? "已复制" : "导出报表")
+                            .font(Theme.monoDigitFont(9, weight: .medium))
+                    }
+                    .foregroundColor(showCopiedFeedback ? Theme.sydedockEmerald : Theme.sydedockCyan)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2.5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Theme.sydedockCyan.opacity(0.12))
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("一键导出当前周期报表为 Markdown 表格或 CSV 账单")
             }
 
             HStack(spacing: 0) {

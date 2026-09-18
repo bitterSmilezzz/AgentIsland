@@ -133,6 +133,9 @@ public final class ActivityEngine: ObservableObject {
     @Published public private(set) var isLowPowerModeActive: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
     private var powerStateObserver: NSObjectProtocol?
 
+    /// 任务耗时与效率统计追踪器
+    public let durationTracker = TaskDurationTracker()
+
     private var running = false   // stop() 后阻止在飞回调重建定时器
     // MARK: token 轮询生命周期（单一 owner：引擎）
     // 三状态合法组合（其余组合按不变量不可达）：
@@ -904,6 +907,7 @@ public final class ActivityEngine: ObservableObject {
         let duration = now.timeIntervalSince(since)
         // 持续至少 3.5 秒的实质工作才视作完成一次任务（过滤瞬时微抖动）
         guard duration >= 3.5 else { return }
+        durationTracker.record(agentId: profile.id, duration: duration, timestamp: now)
         let timeStr = AgentTaskEvent.durationText(duration)
         publish(AgentTaskEvent(
             agentId: profile.id,

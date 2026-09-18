@@ -181,12 +181,22 @@ extension IslandPanelController {
     }
 
     func placeWindow(animated: Bool) {
-        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+        let currentScreens = NSScreen.screens
+        let screen: NSScreen
+        if let s = panel.screen, currentScreens.contains(s) {
+            screen = s
+        } else {
+            screen = Self.screenContainingMouse() ?? currentScreens.first ?? NSScreen.main!
+        }
+
         let targetRect = dockTargetFrame(for: screen)
         let targetOrigin = targetRect.origin
         let dx = targetOrigin.x - panel.frame.origin.x
         let dy = targetOrigin.y - panel.frame.origin.y
         let dist = hypot(dx, dy)
+
+        // 极简纯净模式：收起态且开启隐藏时淡出至 0，展开时平滑还原
+        let targetAlpha: CGFloat = (displayState == .docked && hideDockedSliver) ? 0.0 : 1.0
 
         // 显示器睡眠时 CA 动画会被挂起：frame 停在动画起点、与 displayState 脱钩
         //（活体验证中观测到该形态的布局崩溃）——睡眠期一律直落终态帧
@@ -203,9 +213,11 @@ extension IslandPanelController {
                 context.duration = duration
                 context.timingFunction = timing
                 panel.animator().setFrame(targetRect, display: false)
+                panel.animator().alphaValue = targetAlpha
             }
         } else {
             panel.setFrame(targetRect, display: false)
+            panel.alphaValue = targetAlpha
         }
         updateMouseThrottleProximity()
     }

@@ -382,6 +382,24 @@ struct SettingsView: View {
                             Text("将清除已记住的贴边锚点，灵动岛回到默认停靠位置。")
                         }
                     }
+
+                    Divider()
+
+                    Toggle(isOn: Binding(
+                        get: { controller.hideDockedSliver },
+                        set: { controller.hideDockedSliver = $0 }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("极简纯净模式（隐藏边缘微细条）")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("收起时完全隐去屏幕边缘的 6pt 微细条，追求极致清爽；展开或有任务提醒时正常显现")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
                 }
             }
         }

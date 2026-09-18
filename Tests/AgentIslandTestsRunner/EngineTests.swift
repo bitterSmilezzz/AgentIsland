@@ -13,6 +13,36 @@ enum EngineTests {
     static let dim = AgentRegistry.builtin.first { $0.id == "dim" }!
 
     static func register() {
+        TestKit.test("TaskDurationTracker 任务耗时与效率统计") {
+            let tracker = TaskDurationTracker(maxRecordsPerAgent: 10)
+            let now = Date()
+
+            // 初始空态
+            let emptyStats = tracker.stats(for: "dim", now: now)
+            try expectEqual(emptyStats.taskCount, 0)
+            try expectEqual(emptyStats.totalWorkTime, 0)
+            try expectEqual(emptyStats.formattedTotalTime, "0秒")
+            try expectEqual(emptyStats.formattedAverageDuration, "—")
+
+            // 记录任务：10s, 30s, 80s
+            tracker.record(agentId: "dim", duration: 10, timestamp: now.addingTimeInterval(-60))
+            tracker.record(agentId: "dim", duration: 30, timestamp: now.addingTimeInterval(-30))
+            tracker.record(agentId: "dim", duration: 80, timestamp: now)
+
+            let stats = tracker.stats(for: "dim", now: now)
+            try expectEqual(stats.taskCount, 3)
+            try expectEqual(stats.totalWorkTime, 120)
+            try expectEqual(stats.formattedTotalTime, "2分钟")
+            try expectEqual(stats.averageDuration, 40)
+            try expectEqual(stats.formattedAverageDuration, "40秒/次")
+            try expectEqual(stats.maxDuration, 80)
+
+            // 窗口过期过滤（只取过去 45 秒内：应只剩 30s 和 80s 两条）
+            let recentStats = tracker.stats(for: "dim", window: 45, now: now)
+            try expectEqual(recentStats.taskCount, 2)
+            try expectEqual(recentStats.totalWorkTime, 110)
+        }
+
         TestKit.test("进程: provider 原始大小写也能匹配") {
             let names: Set<String> = ["DimAgent"]
             let provider = FakeProcessProvider(processNames: names, bundleIDs: [])

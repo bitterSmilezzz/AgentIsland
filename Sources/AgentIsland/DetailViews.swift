@@ -138,6 +138,7 @@ struct AgentDetailView: View {
                                 } else if let usage, !usage.isEmpty {
                                     VStack(alignment: .leading, spacing: 10) {
                                         overviewCard(usage)
+                                        workEfficiencyCard
                                         if let s = snapshot, s.processRunning {
                                             performanceCard(s)
                                         }
@@ -161,6 +162,7 @@ struct AgentDetailView: View {
                                 } else {
                                     VStack(alignment: .leading, spacing: 10) {
                                         basicInfoCard
+                                        workEfficiencyCard
                                         if let s = snapshot, s.processRunning {
                                             performanceCard(s)
                                         }
@@ -246,6 +248,41 @@ struct AgentDetailView: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var workEfficiencyCard: some View {
+        let stats = engine.durationTracker.stats(for: agentId)
+        if stats.taskCount > 0 {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 5) {
+                    Image(systemName: "timer")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.sydedockCyan)
+                    Text("任务耗时与效率（24h）")
+                        .font(Theme.bodyFont(10.5, weight: .bold))
+                        .foregroundColor(Theme.onDark)
+                    Spacer()
+                    Text("共 \(stats.taskCount) 次完成")
+                        .font(Theme.monoDigitFont(9.5))
+                        .foregroundColor(Theme.onDarkMuted)
+                }
+                HStack(spacing: 0) {
+                    overviewCell("工作总耗时", stats.formattedTotalTime, cost: nil, valueColor: Theme.sydedockCyan)
+                    Rectangle()
+                        .fill(Theme.hairline.opacity(0.3))
+                        .frame(width: 1, height: 26)
+                    overviewCell("平均用时", stats.formattedAverageDuration, cost: nil)
+                    Rectangle()
+                        .fill(Theme.hairline.opacity(0.3))
+                        .frame(width: 1, height: 26)
+                    overviewCell("单次最长", AgentTaskEvent.durationText(stats.maxDuration), cost: nil)
+                }
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .subtleCardStyle()
+            }
+        }
     }
 
     private var modelList: some View {

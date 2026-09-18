@@ -53,6 +53,34 @@ enum TokenUsageTests {
             try expectEqual(unknown.text, "")
         }
 
+        TestKit.test("TokenReportExporter 导出 Markdown 与 CSV 报表") {
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let sources = [
+                TokenSourceUsage(agentId: "claude-3-7-sonnet", tokens: 100_000, cost: 0.60, isAvailable: true),
+                TokenSourceUsage(agentId: "dim", tokens: 50_000, cost: 0, isAvailable: true)
+            ]
+            let timeline = TokenUsageTimeline(
+                range: .day,
+                points: [],
+                sources: sources,
+                tokens: 150_000,
+                cost: 0.60,
+                previousTokens: 80_000,
+                previousCost: 0.30
+            )
+            let grand = TokenUsage(tokens24h: 150_000, tokensTotal: 500_000, cost24h: 0.60, costTotal: 3.50)
+
+            let md = TokenReportExporter.generateMarkdown(timeline: timeline, range: .day, grandTotal: grand, now: now)
+            try expectTrue(md.contains("# AgentIsland Token 消费与用量分析报表"))
+            try expectTrue(md.contains("150.0k"))
+            try expectTrue(md.contains("claude-3-7-sonnet"))
+
+            let csv = TokenReportExporter.generateCSV(timeline: timeline, range: .day, now: now)
+            try expectTrue(csv.hasPrefix("\u{FEFF}")) // UTF-8 BOM
+            try expectTrue(csv.contains("报表时间,周期,Agent,Tokens,费用,状态"))
+            try expectTrue(csv.contains("claude-3-7-sonnet"))
+        }
+
         TestKit.test("TokenUsage 相加合并") {
             let a = TokenUsage(tokens24h: 100, tokensTotal: 1000, cost24h: 0.1, costTotal: 1.0)
             let b = TokenUsage(tokens24h: 200, tokensTotal: 2000, cost24h: 0.2, costTotal: 2.0)

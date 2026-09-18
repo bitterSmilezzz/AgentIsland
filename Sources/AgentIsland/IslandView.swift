@@ -371,6 +371,23 @@ struct IslandView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("当前在线 \(engine.visibleSnapshots.count) 个，共监控 \(engine.snapshots.count) 个")
 
+                // 即时搜索过滤按钮
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        controller.isSearchActive.toggle()
+                        if !controller.isSearchActive { controller.searchText = "" }
+                    }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(controller.isSearchActive ? Theme.sydedockCyan : (colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint))
+                        .padding(4)
+                        .topBarChip()
+                }
+                .buttonStyle(.plain)
+                .help(controller.isSearchActive ? "关闭即时过滤 (Esc)" : "即时搜索过滤 (快捷键 /)")
+                .accessibilityLabel("搜索过滤智能体")
+
                 // 外观模式切换
                 Menu {
                     ForEach(IslandAppearance.allCases) { mode in
@@ -499,6 +516,11 @@ struct IslandView: View {
                 DarkDivider()
             }
 
+            // 即时搜索输入框
+            if controller.isSearchActive {
+                searchBar
+            }
+
             // Agent 列表
             if engine.visibleSnapshots.isEmpty {
                 VStack(spacing: 8) {
@@ -524,10 +546,21 @@ struct IslandView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, IslandMetrics.emptyStatePaddingVertical)
+            } else if filteredSnapshots.isEmpty && !controller.searchText.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 18))
+                        .foregroundColor(Theme.onDarkFaint)
+                    Text("未找到匹配「\(controller.searchText)」的智能体")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.onDarkFaint)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 2) {
-                        ForEach(engine.visibleSnapshots) { snapshot in
+                        ForEach(filteredSnapshots) { snapshot in
                             AgentRowView(snapshot: snapshot, engine: engine, controller: controller)
                         }
                     }
@@ -559,6 +592,53 @@ struct IslandView: View {
         // 事件横幅的插入/移除与列表布局使用同一时长，避免关闭按钮导致内容硬切。
         .animation(.easeInOut(duration: 0.24), value: engine.latestEvent?.id)
         .cardShell(dockEdge: controller.dockEdge, controller: controller)
+    }
+
+    private var filteredSnapshots: [AgentSnapshot] {
+        guard controller.isSearchActive && !controller.searchText.isEmpty else {
+            return engine.visibleSnapshots
+        }
+        let q = controller.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return engine.visibleSnapshots.filter {
+            $0.profile.name.lowercased().contains(q) ||
+            $0.profile.id.lowercased().contains(q) ||
+            $0.profile.processNames.contains { $0.lowercased().contains(q) }
+        }
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Theme.sydedockCyan)
+            TextField("按名称或 CLI 快速过滤...", text: $controller.searchText)
+                .textFieldStyle(.plain)
+                .font(Theme.bodyFont(11))
+                .foregroundColor(Theme.onDark)
+            if !controller.searchText.isEmpty {
+                Button {
+                    controller.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.onDarkFaint)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Theme.obsidianCardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Theme.sydedockCyan.opacity(0.4), lineWidth: 0.8)
+                )
+        )
+        .padding(.horizontal, 10)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
     }
 
     // MARK: 状态点

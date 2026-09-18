@@ -67,6 +67,27 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// 键盘导航高亮选中的 Agent ID
     @Published public var focusedAgentId: String? = nil
 
+    /// 主列表即时搜索关键词与激活状态
+    @Published public var searchText: String = ""
+    @Published public var isSearchActive: Bool = false
+
+    /// 极简纯净模式：是否隐藏收起态 6pt 边缘微细条
+    @Published public var hideDockedSliver: Bool = UserDefaults.standard.bool(forKey: SettingKey.hideDockedSliver) {
+        didSet {
+            UserDefaults.standard.set(hideDockedSliver, forKey: SettingKey.hideDockedSliver)
+            updateSliverVisibility()
+        }
+    }
+
+    public func updateSliverVisibility() {
+        guard let panel else { return }
+        if displayState == .docked && hideDockedSliver {
+            panel.animator().alphaValue = 0.0
+        } else {
+            panel.animator().alphaValue = 1.0
+        }
+    }
+
     /// 拖动相关状态
     var isDragging = false
     var dragCooldownUntil: Date = .distantPast
@@ -595,13 +616,23 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                     return
                 }
 
-                // Esc: 逐级返回上一层；若已在主列表则收起面板
+                // Esc: 退出搜索 / 逐级返回 / 收起面板
                 if event.keyCode == 53 {
-                    if self.route != .list {
+                    if self.isSearchActive {
+                        self.isSearchActive = false
+                        self.searchText = ""
+                    } else if self.route != .list {
                         self.stepBackRoute()
                     } else {
                         self.collapse()
                     }
+                    handled = true
+                    return
+                }
+
+                // 按 "/" 键呼出即时搜索框（仅主列表且未在搜索时）
+                if self.route == .list && !self.isSearchActive && event.characters == "/" && !event.modifierFlags.contains(.command) {
+                    self.isSearchActive = true
                     handled = true
                     return
                 }
