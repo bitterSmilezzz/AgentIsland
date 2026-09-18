@@ -190,10 +190,24 @@ struct AgentDetailView: View {
         }
     }
 
+    private var estimatedCostTotal: Double? {
+        guard !models.isEmpty else { return nil }
+        let sum = models.reduce(0.0) { acc, m in
+            let res = TokenCostEstimator.resolveCost(actual: m.cost, modelId: m.modelId, tokens: m.tokens)
+            return acc + res.cost
+        }
+        return sum > 0 ? sum : nil
+    }
+
     private func overviewCard(_ u: TokenUsage) -> some View {
-        HStack(spacing: 0) {
+        let cost24 = TokenUsage.cost(u.cost24h)
+        let costTot = TokenUsage.cost(u.costTotal)
+        let estTotal = (!costTot.isEmpty) ? nil : estimatedCostTotal
+        let displayCostTotal = !costTot.isEmpty ? costTot : (estTotal != nil ? TokenCostEstimator.formatEstimate(estTotal!) : nil)
+
+        return HStack(spacing: 0) {
             overviewCell("24h", TokenUsage.compact(u.tokens24h),
-                         cost: TokenUsage.cost(u.cost24h).isEmpty ? nil : TokenUsage.cost(u.cost24h))
+                         cost: cost24.isEmpty ? nil : cost24)
             Rectangle()
                 .fill(
                     LinearGradient(
@@ -208,7 +222,7 @@ struct AgentDetailView: View {
                 )
                 .frame(width: 1, height: 30)
             overviewCell("累计", TokenUsage.compact(u.tokensTotal),
-                         cost: TokenUsage.cost(u.costTotal).isEmpty ? nil : TokenUsage.cost(u.costTotal))
+                         cost: displayCostTotal)
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
@@ -259,11 +273,24 @@ struct AgentDetailView: View {
                             Text("\(TokenUsage.compact(m.tokens)) tok")
                                 .font(Theme.monoDigitFont(9.5, weight: .medium))
                                 .foregroundColor(Theme.onDarkMuted)
-                            let c = TokenUsage.cost(m.cost)
-                            if !c.isEmpty {
-                                Text(c)
-                                    .font(Theme.monoDigitFont(9.5, weight: .semibold))
-                                    .foregroundColor(Theme.sydedockAmber)
+                            let resolved = TokenCostEstimator.resolveCost(actual: m.cost, modelId: m.modelId, tokens: m.tokens)
+                            if !resolved.text.isEmpty {
+                                HStack(spacing: 2) {
+                                    Text(resolved.text)
+                                        .font(Theme.monoDigitFont(9.5, weight: .semibold))
+                                        .foregroundColor(Theme.sydedockAmber)
+                                    if resolved.isEstimated {
+                                        Text("估算")
+                                            .font(.system(size: 7.5, weight: .medium))
+                                            .foregroundColor(Theme.sydedockAmber.opacity(0.75))
+                                            .padding(.horizontal, 3)
+                                            .padding(.vertical, 0.5)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 3)
+                                                    .fill(Theme.sydedockAmber.opacity(0.12))
+                                            )
+                                    }
+                                }
                             }
                             Text("\(m.messages) 次")
                                 .font(Theme.monoDigitFont(9))

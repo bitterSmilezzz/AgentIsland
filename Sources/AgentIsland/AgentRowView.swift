@@ -321,6 +321,10 @@ struct AgentRowView: View {
         // 与横条显示条件严格一致：空字符串动作不显示横条，也不应多出 2pt 内边距
         .padding(.vertical, hasActionBar ? 5 : 4)
         .hoverRowBackground(cornerRadius: 10, idleFill: Theme.obsidianCardFill)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(controller.focusedAgentId == snapshot.profile.id ? Theme.sydedockCyan.opacity(0.85) : Color.clear, lineWidth: 1.2)
+        )
         .padding(.horizontal, 6)
         .contentShape(Rectangle())
         .onHover { hovering in
@@ -331,6 +335,7 @@ struct AgentRowView: View {
         .scaleEffect(isHoveringRow ? 1.004 : 1.0)
         .animation(.spring(response: 0.22, dampingFraction: 0.75), value: isHoveringRow)
         .onTapGesture {
+            controller.focusedAgentId = snapshot.profile.id
             // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表），带有丝滑弹簧转场
             withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
                 controller.route = .agentDetail(snapshot.profile.id)

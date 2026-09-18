@@ -64,6 +64,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         }
     }
 
+    /// 键盘导航高亮选中的 Agent ID
+    @Published public var focusedAgentId: String? = nil
+
     /// 拖动相关状态
     var isDragging = false
     var dragCooldownUntil: Date = .distantPast
@@ -570,17 +573,59 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                 self.collapse()
             }
         }
-        // 4. Esc 收起（弱回退路径）：本地监听只在事件派发到本 App 窗口时触发
-        //（面板或其他本 App 窗口为 key 的场合）；点击外部/光标离开仍是主路径
+        // 4. 全键盘交互与快捷键导航（Esc 逐级返回 / 方向键选择 / Enter 详情 / ⌘R 刷新 / ⌘, 设置）
         keyEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            var handled = false
             MainActor.assumeIsolated {
                 guard let self,
-                      event.keyCode == 53,   // Esc
                       self.displayState == .expanded,
                       !self.isDragging else { return }
-                self.collapse()
+
+                // 快捷键: ⌘R (立即重新采样刷新)
+                if event.modifierFlags.contains(.command), event.keyCode == 15 {
+                    self.engine.sampleInBackground()
+                    handled = true
+                    return
+                }
+
+                // 快捷键: ⌘, (打开偏好设置)
+                if event.modifierFlags.contains(.command), event.keyCode == 43 {
+                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    handled = true
+                    return
+                }
+
+                // Esc: 逐级返回上一层；若已在主列表则收起面板
+                if event.keyCode == 53 {
+                    if self.route != .list {
+                        self.stepBackRoute()
+                    } else {
+                        self.collapse()
+                    }
+                    handled = true
+                    return
+                }
+
+                // 方向键上下移动与回车下钻详情（仅主列表下启用）
+                if self.route == .list {
+                    if event.keyCode == 125 { // Down
+                        self.moveFocus(step: 1)
+                        handled = true
+                        return
+                    } else if event.keyCode == 126 { // Up
+                        self.moveFocus(step: -1)
+                        handled = true
+                        return
+                    } else if event.keyCode == 36 { // Return / Enter
+                        if let fid = self.focusedAgentId {
+                            self.openAgentDetail(fid)
+                            handled = true
+                            return
+                        }
+                    }
+                }
             }
-            return event
+            return handled ? nil : event
         }
 
         clickLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in

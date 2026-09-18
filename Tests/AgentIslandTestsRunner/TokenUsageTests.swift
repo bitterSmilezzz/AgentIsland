@@ -22,6 +22,37 @@ enum TokenUsageTests {
             try expectEqual(TokenUsage.cost(14.8275), "$14.83")
         }
 
+        TestKit.test("TokenCostEstimator 模型费率匹配与智能估算") {
+            // 模糊与精确匹配测试
+            try expectTrue(TokenCostEstimator.rate(for: "claude-3-7-sonnet-20250219") != nil, "Claude 3.7 版本后缀")
+            try expectTrue(TokenCostEstimator.rate(for: "gpt-4o-2024-08-06") != nil, "GPT-4o 日期后缀")
+            try expectTrue(TokenCostEstimator.rate(for: "deepseek-reasoner") != nil, "DeepSeek R1")
+            try expectTrue(TokenCostEstimator.rate(for: "gemini-2.5-flash") != nil, "Gemini 2.5 Flash")
+
+            // 混合估算公式：Claude 3.5 Sonnet: (3*3 + 15*1)/4 = 6.0 USD / 1M tokens
+            let estSonnet = try XCTUnwrap(TokenCostEstimator.estimateCost(modelId: "claude-3-5-sonnet", tokens: 1_000_000))
+            try expectTrue(abs(estSonnet - 6.0) < 0.001, "Sonnet 混合单价应为 $6.00 / 1M")
+
+            // 格式化输出
+            try expectEqual(TokenCostEstimator.formatEstimate(0.42), "~$0.42")
+            try expectEqual(TokenCostEstimator.formatEstimate(0.004), "~<$0.01")
+            try expectEqual(TokenCostEstimator.formatEstimate(0), "")
+
+            // resolveCost 优先级保护：真实值优先，未提供时估算
+            let actualOnly = TokenCostEstimator.resolveCost(actual: 1.25, modelId: "gpt-4o", tokens: 10_000)
+            try expectEqual(actualOnly.cost, 1.25)
+            try expectEqual(actualOnly.text, "$1.25")
+            try expectFalse(actualOnly.isEstimated)
+
+            let estimated = TokenCostEstimator.resolveCost(actual: 0, modelId: "claude-3-7-sonnet", tokens: 100_000)
+            try expectTrue(estimated.isEstimated)
+            try expectEqual(estimated.text, "~$0.60")
+
+            let unknown = TokenCostEstimator.resolveCost(actual: 0, modelId: "my-custom-local-model", tokens: 50_000)
+            try expectFalse(unknown.isEstimated)
+            try expectEqual(unknown.text, "")
+        }
+
         TestKit.test("TokenUsage 相加合并") {
             let a = TokenUsage(tokens24h: 100, tokensTotal: 1000, cost24h: 0.1, costTotal: 1.0)
             let b = TokenUsage(tokens24h: 200, tokensTotal: 2000, cost24h: 0.2, costTotal: 2.0)

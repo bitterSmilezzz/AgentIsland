@@ -519,12 +519,62 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsCard(title: "采样节律与能耗") {
+            if engine.isLowPowerModeActive {
+                HStack(spacing: 8) {
+                    Image(systemName: "leaf.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(Theme.statusWorking)
+                    Text("系统「低电量模式」已开启：引擎已自动适配低能耗节律")
+                        .font(Theme.bodyFont(11, weight: .medium))
+                        .foregroundColor(Theme.statusWorking)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Theme.statusWorking.opacity(0.12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Theme.statusWorking.opacity(0.35), lineWidth: 0.5)
+                        )
+                )
+            }
+
+            SettingsCard(title: "性能与能耗预设") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("一键档位")
+                            .font(Theme.bodyFont(12, weight: .semibold))
+                            .foregroundColor(Theme.ink)
+                        Spacer()
+                        Button("恢复默认") {
+                            resetEngineToDefaults()
+                        }
+                        .buttonStyle(.plain)
+                        .font(Theme.bodyFont(11, weight: .medium))
+                        .foregroundColor(Theme.actionBlue)
+                    }
+
+                    HStack(spacing: 8) {
+                        presetButton(.fast, title: "⚡️ 极速灵敏")
+                        presetButton(.balanced, title: "⚖️ 平衡标准")
+                        presetButton(.eco, title: "🍃 极致省电")
+                    }
+
+                    Text("• 极速灵敏：采样 1s / 闲置 3s / 窗口 30s（高频并发编码推荐）\n• 平衡标准：采样 2s / 闲置 5s / 窗口 60s（默认平衡推荐）\n• 极致省电：采样 3s / 闲置 12s / 窗口 90s（电池供电出行推荐）")
+                        .font(Theme.bodyFont(10))
+                        .foregroundColor(Theme.inkMuted48)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            SettingsCard(title: "采样节律精细微调") {
                 VStack(alignment: .leading, spacing: 12) {
                     sliderRow(title: "活动采样间隔", value: $sampleInterval, range: 1...10, unit: "秒")
                     sliderRow(title: "闲置降频间隔", value: $idleSampleInterval, range: 5...60, unit: "秒")
 
-                    Text("当有 Agent 处于活跃工作中时，引擎以活动采样间隔高频探测（默认 2s）；当全部待机或离线时，自动降频至闲置间隔以节省 CPU 与电量。注意：活动间隔不可大于闲置间隔，超出时会被自动压平到闲置值。")
+                    Text("当有 Agent 处于活跃工作中时，引擎以活动采样间隔高频探测；当全部待机或离线时，自动降频至闲置间隔以节省 CPU 与电量。")
                         .font(Theme.bodyFont(10))
                         .foregroundColor(Theme.inkMuted48)
                 }
@@ -649,6 +699,88 @@ struct SettingsView: View {
         let s = String(format: "%.1f", v)
         let trimmed = s.hasSuffix(".0") ? String(s.dropLast(2)) : s
         return "\(trimmed)\(unit)"
+    }
+
+    // MARK: - 性能预设档位与辅助
+
+    private enum PerformancePreset: String, CaseIterable, Identifiable {
+        case fast = "极速"
+        case balanced = "平衡"
+        case eco = "省电"
+
+        var id: String { rawValue }
+        var description: String {
+            switch self {
+            case .fast: return "活动 1.0s / 闲置 3.0s / 窗口 30s"
+            case .balanced: return "活动 2.0s / 闲置 5.0s / 窗口 60s"
+            case .eco: return "活动 3.0s / 闲置 12.0s / 窗口 90s"
+            }
+        }
+    }
+
+    private var currentPreset: PerformancePreset? {
+        if abs(sampleInterval - 1.0) < 0.1 && abs(idleSampleInterval - 3.0) < 0.1 && abs(workingWindow - 30.0) < 0.1 {
+            return .fast
+        }
+        if abs(sampleInterval - 2.0) < 0.1 && abs(idleSampleInterval - 5.0) < 0.1 && abs(workingWindow - 60.0) < 0.1 {
+            return .balanced
+        }
+        if abs(sampleInterval - 3.0) < 0.1 && abs(idleSampleInterval - 12.0) < 0.1 && abs(workingWindow - 90.0) < 0.1 {
+            return .eco
+        }
+        return nil
+    }
+
+    private func applyPreset(_ preset: PerformancePreset) {
+        switch preset {
+        case .fast:
+            sampleInterval = 1.0
+            idleSampleInterval = 3.0
+            workingWindow = 30.0
+        case .balanced:
+            sampleInterval = 2.0
+            idleSampleInterval = 5.0
+            workingWindow = 60.0
+        case .eco:
+            sampleInterval = 3.0
+            idleSampleInterval = 12.0
+            workingWindow = 90.0
+        }
+        applyConfig()
+    }
+
+    private func resetEngineToDefaults() {
+        let def = SettingsView.defaultConfig
+        workingWindow = def.workingWindow
+        sampleInterval = def.sampleInterval
+        idleSampleInterval = def.idleSampleInterval
+        cpuThreshold = def.cpuThreshold
+        activeSessionWindow = def.activeSessionWindow
+        applyConfig()
+    }
+
+    private func presetButton(_ preset: PerformancePreset, title: String) -> some View {
+        let isSelected = currentPreset == preset
+        return Button {
+            applyPreset(preset)
+        } label: {
+            Text(title)
+                .font(Theme.bodyFont(11.5, weight: isSelected ? .bold : .medium))
+                .foregroundColor(isSelected ? Theme.actionBlue : Theme.ink)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? Theme.actionBlue.opacity(0.12) : Theme.onDark.opacity(0.04))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(isSelected ? Theme.actionBlue.opacity(0.6) : Theme.hairline.opacity(0.4), lineWidth: 0.8)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .help(preset.description)
     }
 
     private func sliderRow(title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double = 1, unit: String,

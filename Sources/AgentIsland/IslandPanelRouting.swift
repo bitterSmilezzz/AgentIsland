@@ -43,4 +43,36 @@ extension IslandPanelController {
     func navigateToList() {
         route = .list
     }
+
+    /// 逐级后退导航（Esc 快捷键调用）
+    func stepBackRoute() {
+        switch route {
+        case .agentDetail:
+            closeAgentDetail()
+        case .liveStream:
+            closeLiveStream()
+        case .sessions(let agentId, _):
+            openAgentDetail(agentId)
+        case .tokenAnalytics, .toolbox:
+            navigateToList()
+        default:
+            navigateToList()
+        }
+    }
+
+    /// 键盘上下方向键选择列表中的 Agent
+    func moveFocus(step: Int) {
+        let list = engine.visibleSnapshots
+        guard !list.isEmpty else {
+            focusedAgentId = nil
+            return
+        }
+
+        if let cur = focusedAgentId, let idx = list.firstIndex(where: { $0.id == cur }) {
+            let nextIdx = min(max(0, idx + step), list.count - 1)
+            focusedAgentId = list[nextIdx].id
+        } else {
+            focusedAgentId = (step >= 0) ? list.first?.id : list.last?.id
+        }
+    }
 }

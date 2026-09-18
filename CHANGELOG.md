@@ -4,6 +4,28 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.70] - 2026-09-18
+
+### 🚀 智能计费估算、全键盘穿梭、绿色节能感知与性能预设
+
+- **智能 Token 计费估算引擎（TokenCostEstimator）**：
+  - 为 DimAgent、Codex 及大量本地未上报消费金额的日志和会话，基于官方最新费率表（Claude 3.5/3.7 Sonnet、Haiku、Opus，OpenAI GPT-4o、o1、o3-mini，DeepSeek V3/R1，Gemini 2.0/2.5 Flash 与 Pro 等）提供加权混合参考估算；
+  - 在 Agent 详情页概览卡片、模型列表行与 Token 分析页中智能呈现带 `~` 标识的估算费用与徽标，底层真实 DB 零污染。
+- **全键盘极速交互与快捷键导航（Full Keyboard Navigation）**：
+  - 展开卡片时支持键盘极速穿梭：`Esc` 智能逐级返回（二级页面返回主列表，主列表返回收起）；
+  - `↑` / `↓` 方向键在主列表中平滑移动焦点并渲染青色微光外框；
+  - `Enter` / `Return` 直达选中的 Agent 详情页；
+  - 全局支持 `⌘R` 立即采样刷新、`⌘,` 快捷呼出偏好设置面板。
+- **MacBook 电池与绿色节能感知自适应调度（Eco Battery Awareness）**：
+  - 深度集成 macOS 原生低电量模式（`ProcessInfo.isLowPowerModeEnabled`）与 `NSProcessInfoPowerStateDidChange` 通知监听；
+  - 开启低电量模式时，引擎自动将闲置采样间隔延展至 10s、全离线至 120s，在保证灵敏度的同时大幅降低唤醒与电池消耗。
+- **设置页性能预设档位与体验重构（Performance Presets）**：
+  - 引擎与性能设置增加「⚡️ 极速灵敏 / ⚖️ 平衡标准 / 🍃 极致省电」一键档位切换；
+  - 增加一键「恢复默认」快捷重置功能；
+  - 实时联动展示「系统低电量模式已开启」绿色节能指示。
+
+---
+
 ## [0.0.69] - 2026-09-17
 
 ### 💎 优雅、高效、精简的架构去重与单一职责重构

@@ -650,8 +650,9 @@ private struct TokenSourceRow: View {
                             .font(Theme.monoDigitFont(10, weight: .bold))
                             .foregroundColor(Theme.onDark)
                             .contentTransition(.numericText())
-                        if !TokenUsage.cost(usage.cost).isEmpty {
-                            Text(TokenUsage.cost(usage.cost))
+                        let resolvedCost = TokenCostEstimator.resolveCost(actual: usage.cost, modelId: name, tokens: usage.tokens)
+                        if !resolvedCost.text.isEmpty {
+                            Text(resolvedCost.text)
                                 .font(Theme.monoDigitFont(9, weight: .medium))
                                 .foregroundColor(Theme.sydedockAmber)
                         }

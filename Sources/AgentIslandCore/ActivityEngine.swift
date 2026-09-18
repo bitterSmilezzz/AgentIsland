@@ -103,7 +103,35 @@ public final class ActivityEngine: ObservableObject {
         // 初始配置同步（applyConfig 只在 config didSet 时触发，init 传入的配置需显式应用）
         fileMonitor.setActiveSessionWindow(config.activeSessionWindow)
         fileMonitor.setWorkingWindow(config.workingWindow)
+
+        // 绿色节能调度：监听系统低电量模式状态改变
+        powerStateObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let isLow = ProcessInfo.processInfo.isLowPowerModeEnabled
+                if self.isLowPowerModeActive != isLow {
+                    self.isLowPowerModeActive = isLow
+                    if self.running {
+                        self.scheduleNext()
+                    }
+                }
+            }
+        }
     }
+
+    deinit {
+        if let observer = powerStateObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// 低电量节能模式感知（macOS 12+ 原生支持）
+    @Published public private(set) var isLowPowerModeActive: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private var powerStateObserver: NSObjectProtocol?
 
     private var running = false   // stop() 后阻止在飞回调重建定时器
     // MARK: token 轮询生命周期（单一 owner：引擎）
@@ -933,17 +961,18 @@ public final class ActivityEngine: ObservableObject {
         return counts.values.reduce(0, +)
     }
 
-    /// 节电调度：有 working 快采样，闲置降频，全离线进一步拉大间隔（无 UI 需求）
+    /// 节电调度：有 working 快采样，闲置降频，全离线进一步拉大间隔（系统低电量模式自动加码）
     private func scheduleNext() {
         guard running, !isSystemSleeping else { return }   // stop() 或休眠期间不再重建定时器
         timer?.invalidate()
         let interval: TimeInterval
+        let isPowerSaving = isLowPowerModeActive
         if anyWorking {
-            interval = config.sampleInterval
+            interval = isPowerSaving ? max(config.sampleInterval, 3.0) : config.sampleInterval
         } else if snapshots.contains(where: { $0.processRunning }) {
-            interval = config.idleSampleInterval
+            interval = isPowerSaving ? max(config.idleSampleInterval * 2.0, 10.0) : config.idleSampleInterval
         } else {
-            interval = max(config.idleSampleInterval, 60)   // 全离线：60s 起
+            interval = isPowerSaving ? max(config.idleSampleInterval * 4.0, 120.0) : max(config.idleSampleInterval, 60.0)   // 全离线
         }
         let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
