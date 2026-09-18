@@ -114,6 +114,7 @@ struct IslandView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showingHistoryPopover = false
 
     /// 收起窗口大部分会移出屏幕；把微细条对齐到仍在屏幕中的那一侧。
     private var dockedAlignment: Alignment {
@@ -427,6 +428,23 @@ struct IslandView: View {
                 .buttonStyle(.plain)
                 .help("智能体维护工作台：扫描清理孤儿进程、死锁与内存泄露")
                 .accessibilityLabel("智能体维护工作台")
+
+                // 任务与事件历史流 (v0.0.73)
+                Button {
+                    showingHistoryPopover.toggle()
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(showingHistoryPopover ? Theme.sydedockCyan : (colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint))
+                        .padding(4)
+                        .topBarChip()
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingHistoryPopover, arrowEdge: controller.dockEdge == .top ? .bottom : .leading) {
+                    EventHistoryPopoverView(engine: engine, controller: controller)
+                }
+                .help("查看最近任务完成与告警事件历史时间线")
+                .accessibilityLabel("查看最近事件历史")
 
                 // 一键收起按钮
                 Button {

@@ -28,6 +28,24 @@ public enum SettingKey {
     public static let budgetAlertEnabled = "budgetAlertEnabled"
     public static let compactView = "compactView"
     public static let globalHotKeyEnabled = "globalHotKeyEnabled"
+    public static let menuBarBadgeMode = "menuBarBadgeMode"
+}
+
+/// 菜单栏图标附加徽标模式 (v0.0.73)
+public enum MenuBarBadgeMode: String, CaseIterable, Identifiable {
+    case iconOnly = "iconOnly"
+    case activeCount = "activeCount"
+    case tokenUsage = "tokenUsage"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .iconOnly: return "仅图标（极简）"
+        case .activeCount: return "活跃任务数 (例: ⚡️ 2)"
+        case .tokenUsage: return "今日 Token (例: 120k)"
+        }
+    }
 }
 
 /// UserDefaults 读取的钳制区间（脏持久化值自愈；与设置页滑杆 range 对齐）。

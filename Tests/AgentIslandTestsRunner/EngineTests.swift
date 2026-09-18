@@ -43,6 +43,100 @@ enum EngineTests {
             try expectEqual(recentStats.totalWorkTime, 110)
         }
 
+        TestKit.test("AgentHealthEvaluator 健康度评分与诊断状态机") {
+            let profile = dim
+
+            // 1. 未运行状态（进程离线）：100分，健康
+            let snapOffline = AgentSnapshot(profile: profile, level: .offline, processRunning: false,
+                                            cpuPercent: 0, installed: false, activeSessions: 0,
+                                            lastActivityAgo: nil, lastActivityText: "离线",
+                                            tokenUsage: nil, pid: nil, currentAction: nil,
+                                            memoryBytes: 0, isHung: false)
+            let reportOffline = AgentHealthEvaluator.evaluate(snapshot: snapOffline)
+            try expectEqual(reportOffline.score, 100, "offline 100")
+            try expectEqual(reportOffline.grade, .healthy, "offline healthy")
+            try expectTrue(reportOffline.issues.isEmpty, "no issues")
+
+            // 2. 正常运行状态：CPU 5%, 内存 100MB：100分，健康
+            let snapNormal = AgentSnapshot(profile: profile, level: .working, processRunning: true,
+                                           cpuPercent: 5.0, installed: true, activeSessions: 1,
+                                           lastActivityAgo: 1, lastActivityText: "1秒前",
+                                           tokenUsage: nil, pid: 1234, currentAction: "编译",
+                                           memoryBytes: 100 * 1024 * 1024, isHung: false)
+            let reportNormal = AgentHealthEvaluator.evaluate(snapshot: snapNormal)
+            try expectEqual(reportNormal.score, 100, "normal 100")
+            try expectEqual(reportNormal.grade, .healthy, "normal healthy")
+
+            // 3. 高 CPU (85%)：扣 25 分，score = 75，需留意
+            let snapHighCpu = AgentSnapshot(profile: profile, level: .working, processRunning: true,
+                                            cpuPercent: 85.0, installed: true, activeSessions: 1,
+                                            lastActivityAgo: 1, lastActivityText: "1秒前",
+                                            tokenUsage: nil, pid: 1234, currentAction: "计算",
+                                            memoryBytes: 200 * 1024 * 1024, isHung: false)
+            let reportHighCpu = AgentHealthEvaluator.evaluate(snapshot: snapHighCpu)
+            try expectEqual(reportHighCpu.score, 75, "high cpu 75")
+            try expectEqual(reportHighCpu.grade, .attention, "grade attention")
+            try expectTrue(reportHighCpu.issues.count == 1, "has high cpu issue")
+
+            // 4. 内存溢出 (2.2GB)：扣 30 分，score = 70，需留意
+            let mem2_2GB = UInt64(2200) * 1024 * 1024
+            let snapHighMem = AgentSnapshot(profile: profile, level: .working, processRunning: true,
+                                            cpuPercent: 10.0, installed: true, activeSessions: 1,
+                                            lastActivityAgo: 1, lastActivityText: "1秒前",
+                                            tokenUsage: nil, pid: 1234, currentAction: nil,
+                                            memoryBytes: mem2_2GB, isHung: false)
+            let reportHighMem = AgentHealthEvaluator.evaluate(snapshot: snapHighMem)
+            try expectEqual(reportHighMem.score, 70, "high mem 70")
+            try expectEqual(reportHighMem.grade, .attention, "high mem attention")
+
+            // 5. 卡死死锁 (isHung = true)：扣 50 分，若还伴随高 CPU 扣 25 分，危急
+            let mem2_5GB = UInt64(2500) * 1024 * 1024
+            let snapHung = AgentSnapshot(profile: profile, level: .attention, processRunning: true,
+                                         cpuPercent: 90.0, installed: true, activeSessions: 1,
+                                         lastActivityAgo: 10, lastActivityText: "10秒前",
+                                         tokenUsage: nil, pid: 1234, currentAction: nil,
+                                         memoryBytes: mem2_5GB, isHung: true)
+            let reportHung = AgentHealthEvaluator.evaluate(snapshot: snapHung)
+            try expectTrue(reportHung.score <= 30, "score <= 30")
+            try expectEqual(reportHung.grade, .critical, "grade critical")
+            try expectTrue(reportHung.suggestion.contains("逃生舱") || reportHung.suggestion.contains("死锁"), "remedy suggestion")
+        }
+
+        TestKit.test("ActivityEngine eventHistory 历史事件时间线与有界队列限制") {
+            let engine = makeEngine(processNames: [], writes: [:])
+            try expectTrue(engine.eventHistory.isEmpty, "initial empty history")
+
+            // 派发 30 个事件，验证上限为 25 条
+            for i in 1...30 {
+                engine.postEvent(AgentTaskEvent(
+                    agentId: "dim",
+                    agentName: "DimAgent",
+                    eventType: .completed,
+                    duration: TimeInterval(i),
+                    timestamp: Date(),
+                    pid: 1000 + Int32(i),
+                    message: "任务 \(i) 完成"
+                ))
+            }
+            try expectEqual(engine.eventHistory.count, 25, "bounded to 25 items")
+            try expectEqual(engine.eventHistory.first?.message, "任务 30 完成", "latest event is at index 0")
+
+            // 清空历史
+            engine.clearEventHistory()
+            try expectTrue(engine.eventHistory.isEmpty, "cleared history")
+        }
+
+        TestKit.test("MenuBarBadgeMode 模式枚举健全性") {
+            let all = MenuBarBadgeMode.allCases
+            try expectEqual(all.count, 3, "3 modes")
+            try expectTrue(all.contains(.iconOnly), "contains iconOnly")
+            try expectTrue(all.contains(.activeCount), "contains activeCount")
+            try expectTrue(all.contains(.tokenUsage), "contains tokenUsage")
+            for m in all {
+                try expectFalse(m.label.isEmpty, "label not empty")
+            }
+        }
+
         TestKit.test("进程: provider 原始大小写也能匹配") {
             let names: Set<String> = ["DimAgent"]
             let provider = FakeProcessProvider(processNames: names, bundleIDs: [])

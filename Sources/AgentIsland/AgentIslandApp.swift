@@ -475,32 +475,49 @@ struct MenuBarPopoverView: View {
 
 struct MenuBarIconView: View {
     @ObservedObject var engine: ActivityEngine
+    @AppStorage(SettingKey.menuBarBadgeMode) private var badgeMode: String = MenuBarBadgeMode.iconOnly.rawValue
 
     private var needsAttention: Bool {
         engine.visibleSnapshots.contains { $0.level == .attention }
     }
 
+    private var workingCount: Int {
+        engine.visibleSnapshots.filter { $0.level == .working }.count
+    }
+
     var body: some View {
-        Image(systemName: needsAttention ? "bell.badge.fill" : (engine.anyWorking ? "dot.radiowaves.left.and.right" : "sparkles"))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(needsAttention ? Theme.warningOrange : (engine.anyWorking ? Theme.statusWorking : Theme.inkMuted48))
-            // H2：状态切换淡入过渡（macOS 13 无 symbolEffect，用内容过渡替代）
-            .contentTransition(.opacity)
-            .animation(.easeInOut(duration: 0.25), value: engine.anyWorking)
-            .overlay(alignment: .topTrailing) {
-                if engine.anyWorking || needsAttention {
-                    // H1：角标用 alignment+padding 完全收进图标内圈（不用 offset，避免越出被裁）
-                    // 随图标同节奏淡入淡出
-                    Circle()
-                        .fill(needsAttention ? Theme.warningOrange : Theme.statusWorking)
-                        .frame(width: 4, height: 4)
-                        .padding(1)
-                        .transition(.opacity)
+        HStack(spacing: 3) {
+            Image(systemName: needsAttention ? "bell.badge.fill" : (engine.anyWorking ? "dot.radiowaves.left.and.right" : "sparkles"))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(needsAttention ? Theme.warningOrange : (engine.anyWorking ? Theme.statusWorking : Theme.inkMuted48))
+                // H2：状态切换淡入过渡（macOS 13 无 symbolEffect，用内容过渡替代）
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: 0.25), value: engine.anyWorking)
+                .overlay(alignment: .topTrailing) {
+                    if engine.anyWorking || needsAttention {
+                        // H1：角标用 alignment+padding 完全收进图标内圈（不用 offset，避免越出被裁）
+                        // 随图标同节奏淡入淡出
+                        Circle()
+                            .fill(needsAttention ? Theme.warningOrange : Theme.statusWorking)
+                            .frame(width: 4, height: 4)
+                            .padding(1)
+                            .transition(.opacity)
+                    }
                 }
+
+            if badgeMode == MenuBarBadgeMode.activeCount.rawValue && (engine.anyWorking || needsAttention) {
+                Text(needsAttention ? "!" : "\(workingCount)")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundColor(needsAttention ? Theme.warningOrange : Theme.statusWorking)
+            } else if badgeMode == MenuBarBadgeMode.tokenUsage.rawValue && engine.grandTotal.tokens24h > 0 {
+                Text(TokenUsage.compact(engine.grandTotal.tokens24h))
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Theme.inkMuted80)
             }
-            // VoiceOver：菜单栏图标是应用的第一入口，纯图标无文案，需显式播报当前状态
-            .accessibilityLabel(needsAttention ? "AgentIsland：有智能体等待你确认" : (engine.anyWorking ? "AgentIsland：有智能体正在工作" : "AgentIsland：全部空闲"))
-            .accessibilityHint("打开监控面板")
+        }
+        // VoiceOver：菜单栏图标是应用的第一入口，纯图标无文案，需显式播报当前状态
+        .accessibilityLabel(needsAttention ? "AgentIsland：有智能体等待你确认" : (engine.anyWorking ? "AgentIsland：有智能体正在工作" : "AgentIsland：全部空闲"))
+        .accessibilityHint("打开监控面板")
     }
 }
 

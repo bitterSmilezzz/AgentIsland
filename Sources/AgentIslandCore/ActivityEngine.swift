@@ -19,6 +19,8 @@ public final class ActivityEngine: ObservableObject {
     @Published public private(set) var anyWorking = false
     @Published public private(set) var updatedAt = Date()
     @Published public private(set) var latestEvent: AgentTaskEvent? = nil
+    /// 任务与告警历史事件时间线（最多保留 25 条）(v0.0.73)
+    @Published public private(set) var eventHistory: [AgentTaskEvent] = []
     /// 每一条需要对外投递的事件流。latestEvent 是 UI 单槽位，多个 Agent 同拍进入
     /// 等待确认时会互相覆盖；独立事件流保证系统通知逐条收到，不丢任一 Agent。
     public let taskEvents = PassthroughSubject<AgentTaskEvent, Never>()
@@ -960,6 +962,11 @@ public final class ActivityEngine: ObservableObject {
         alertProtectedUntil = nil
     }
 
+    /// 清空事件历史时间线 (v0.0.73)
+    public func clearEventHistory() {
+        eventHistory.removeAll()
+    }
+
     public func postEvent(_ event: AgentTaskEvent) {
         publish(event)
     }
@@ -971,6 +978,12 @@ public final class ActivityEngine: ObservableObject {
     /// 告警就消失了。这里给告警一个保护窗口：窗口内的普通事件不覆盖它。
     /// 不排队：横幅只展示一条，把被抑制的普通事件补发出来只会让过期信息再次弹出。
     private func publish(_ event: AgentTaskEvent) {
+        // 记录事件历史时间线（最多保留 25 条）
+        eventHistory.insert(event, at: 0)
+        if eventHistory.count > 25 {
+            eventHistory.removeLast()
+        }
+
         var acceptedForBanner = true
         if event.eventType == .costSpike {
             alertProtectedUntil = Date().addingTimeInterval(Self.alertProtectionWindow)

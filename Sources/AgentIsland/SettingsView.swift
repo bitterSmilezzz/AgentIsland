@@ -105,6 +105,7 @@ struct SettingsView: View {
     @AppStorage(SettingKey.budgetAlertEnabled) private var budgetAlertEnabled = true
     @AppStorage(SettingKey.compactView) private var compactView = false
     @AppStorage(SettingKey.globalHotKeyEnabled) private var globalHotKeyEnabled = true
+    @AppStorage(SettingKey.menuBarBadgeMode) private var menuBarBadgeMode = MenuBarBadgeMode.iconOnly.rawValue
 
     /// 内置 Agent 列表缓存盒（引用语义）：设置页开着时引擎每拍发布使 body 重算，
     /// fullRegistry 每次都要 loadCustomProfiles（UserDefaults 读 + JSONDecoder 解码）
@@ -395,6 +396,23 @@ struct SettingsView: View {
                     }
                     .toggleStyle(.switch)
                     .tint(Theme.actionBlue)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("系统状态栏图标附加动态徽标")
+                            .font(Theme.bodyFont(13))
+                            .foregroundColor(Theme.ink)
+                        Picker("", selection: $menuBarBadgeMode) {
+                            ForEach(MenuBarBadgeMode.allCases) { mode in
+                                Text(mode.label).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text("在 macOS 顶栏图标旁动态显示活跃任务数或今日 Token 消耗，无需展开即可一瞥全局。")
+                            .font(Theme.bodyFont(10))
+                            .foregroundColor(Theme.inkMuted48)
+                    }
                 }
             }
 

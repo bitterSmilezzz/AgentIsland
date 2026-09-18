@@ -292,6 +292,9 @@ struct AgentDetailView: View {
             Text("按模型")
                 .font(Theme.bodyFont(10.5, weight: .bold))
                 .foregroundColor(Theme.onDark)
+            if models.count > 1 {
+                ModelDonutChartView(models: models)
+            }
             ForEach(models) { m in
                 HStack(spacing: 8) {
                     ZStack {
@@ -421,6 +424,30 @@ struct AgentDetailView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    // 常用已安装 IDE 一键呼出
+                    ForEach(Self.knownEditors.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil }, id: \.bundleID) { editor in
+                        Button {
+                            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: editor.bundleID) {
+                                NSWorkspace.shared.open([URL(fileURLWithPath: dir)], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
+                            }
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: editor.icon)
+                                    .font(.system(size: 8))
+                                Text(editor.name)
+                                    .font(Theme.bodyFont(9.5, weight: .medium))
+                            }
+                            .foregroundColor(Theme.sydedockCyan)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3.5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Theme.sydedockCyan.opacity(0.12))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .padding(10)
@@ -429,6 +456,63 @@ struct AgentDetailView: View {
                     .fill(Theme.obsidianCardFill)
             )
         }
+    }
+
+    private struct KnownEditor {
+        let name: String
+        let bundleID: String
+        let icon: String
+    }
+
+    private static let knownEditors: [KnownEditor] = [
+        KnownEditor(name: "VS Code", bundleID: "com.microsoft.VSCode", icon: "chevron.left.forwardslash.chevron.right"),
+        KnownEditor(name: "Cursor", bundleID: "com.todesktop.230313mzl4w4u92", icon: "cursorarrow.rays"),
+        KnownEditor(name: "Windsurf", bundleID: "com.exafunction.windsurf", icon: "wind"),
+        KnownEditor(name: "Xcode", bundleID: "com.apple.dt.Xcode", icon: "hammer.fill")
+    ]
+
+    /// 智能体健康诊断卡片 (v0.0.73)
+    private func healthDiagnosticCard(_ s: AgentSnapshot) -> some View {
+        let report = AgentHealthEvaluator.evaluate(snapshot: s)
+        let gradeColor: Color = {
+            switch report.grade {
+            case .healthy: return Theme.sydedockEmerald
+            case .attention: return Theme.sydedockCyan
+            case .warning: return Theme.warningOrange
+            case .critical: return Theme.dangerRed
+            }
+        }()
+
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                HStack(spacing: 4) {
+                    Image(systemName: report.grade.icon)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(gradeColor)
+                    Text("稳定性诊断")
+                        .font(Theme.bodyFont(9.5, weight: .semibold))
+                        .foregroundColor(Theme.onDarkFaint)
+                }
+                Spacer()
+                Text("\(report.score)分 · \(report.grade.rawValue)")
+                    .font(Theme.monoDigitFont(9.5, weight: .bold))
+                    .foregroundColor(gradeColor)
+            }
+
+            Text(report.suggestion)
+                .font(Theme.bodyFont(9))
+                .foregroundColor(Theme.onDarkMuted)
+                .lineLimit(2)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(gradeColor.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(gradeColor.opacity(0.20), lineWidth: 0.5)
+                )
+        )
     }
 
     /// 性能与健康监控卡片（v1.7.6）
@@ -478,6 +562,9 @@ struct AgentDetailView: View {
                     )
                     .shadow(color: Color.black.opacity(colorScheme == .light ? 0.025 : 0), radius: 1.5, y: 1)
             )
+
+            // 稳定性诊断微卡片
+            healthDiagnosticCard(s)
 
             // 实时流水抽屉入口
             Button {
