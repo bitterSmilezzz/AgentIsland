@@ -101,6 +101,10 @@ struct SettingsView: View {
     @AppStorage(SettingKey.tokenAlertEnabled) private var tokenAlertEnabled = true
     @AppStorage(SettingKey.tokenAlertThreshold) private var tokenAlertThreshold = 200_000
     @AppStorage(SettingKey.runawayCpuAlert) private var runawayCpuAlert = true
+    @AppStorage(SettingKey.dailyTokenBudget) private var dailyTokenBudget = 0
+    @AppStorage(SettingKey.budgetAlertEnabled) private var budgetAlertEnabled = true
+    @AppStorage(SettingKey.compactView) private var compactView = false
+    @AppStorage(SettingKey.globalHotKeyEnabled) private var globalHotKeyEnabled = true
 
     /// 内置 Agent 列表缓存盒（引用语义）：设置页开着时引擎每拍发布使 body 重算，
     /// fullRegistry 每次都要 loadCustomProfiles（UserDefaults 读 + JSONDecoder 解码）
@@ -347,6 +351,50 @@ struct SettingsView: View {
                     Text("鼠标移出卡片后，延迟多长时间平滑收回为屏幕边缘的微细条。")
                         .font(Theme.bodyFont(10))
                         .foregroundColor(Theme.inkMuted48)
+
+                    Divider()
+
+                    Toggle(isOn: $globalHotKeyEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text("全局快捷键呼出 / 收起")
+                                    .font(Theme.bodyFont(13))
+                                    .foregroundColor(Theme.ink)
+                                Text("⌥ A")
+                                    .font(Theme.monoDigitFont(11, weight: .bold))
+                                    .foregroundColor(Theme.actionBlue)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1.5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .fill(Theme.tile1)
+                                    )
+                            }
+                            Text("系统级 Carbon 全局热键（免辅助功能权限），在任何全屏应用下秒级呼出或收起灵动岛")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+                    .onChange(of: globalHotKeyEnabled) { enabled in
+                        GlobalHotKeyManager.shared.setEnabled(enabled)
+                    }
+
+                    Divider()
+
+                    Toggle(isOn: $compactView) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("紧凑排版密度 (Compact View)")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("高密度条目与微型指示环，针对 13 寸 MacBook 或多 Agent 并发场景大幅减少滚动")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
                 }
             }
 
@@ -658,6 +706,35 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
                     .tint(Theme.actionBlue)
                     .onChange(of: runawayCpuAlert) { _ in applyConfig() }
+
+                    Divider()
+
+                    Toggle(isOn: $budgetAlertEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("每日 Token 消费预算预警与封顶")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("设定每日消耗预算上限，用量达 80% 触发黄色预警，达 100% 触发红色超额告警")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+
+                    if budgetAlertEnabled {
+                        Picker("每日消费预算上限", selection: $dailyTokenBudget) {
+                            Text("不设限额").tag(0)
+                            Text("100k tokens / 天").tag(100_000)
+                            Text("200k tokens / 天").tag(200_000)
+                            Text("500k tokens / 天").tag(500_000)
+                            Text("1.0M tokens / 天").tag(1_000_000)
+                            Text("2.0M tokens / 天").tag(2_000_000)
+                            Text("5.0M tokens / 天").tag(5_000_000)
+                            Text("10.0M tokens / 天").tag(10_000_000)
+                        }
+                        .font(Theme.bodyFont(12))
+                    }
                 }
             }
         }

@@ -81,6 +81,52 @@ enum TokenUsageTests {
             try expectTrue(csv.contains("claude-3-7-sonnet"))
         }
 
+        TestKit.test("TokenBudgetTracker 预算阈值与预警状态机") {
+            let tracker = TokenBudgetTracker()
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+            // 1. 未设预算 (budget <= 0)
+            let res0 = tracker.evaluate(used24h: 50_000, budget: 0, now: now)
+            try expectEqual(res0.status, TokenBudgetStatus.disabled, "disabled")
+            try expectNil(res0.alertMessage, "no alert when disabled")
+
+            // 2. 正常区间 (used < 80%)
+            let res1 = tracker.evaluate(used24h: 50_000, budget: 100_000, now: now)
+            try expectTrue(res1.status == TokenBudgetStatus.normal(used: 50_000, budget: 100_000, ratio: 0.5), "normal")
+            try expectNil(res1.alertMessage, "no alert below 80%")
+
+            // 3. 达到 80% 预警线
+            let res2 = tracker.evaluate(used24h: 85_000, budget: 100_000, now: now)
+            try expectTrue(res2.status.isWarning, "warning flag")
+            try expectTrue(res2.alertMessage != nil, "warning alert triggered")
+            try expectTrue(res2.alertMessage?.contains("85%") ?? false, "pct in warning")
+
+            // 4. 重复处于预警区间（去重不重复发 alertMessage）
+            let res2Repeat = tracker.evaluate(used24h: 88_000, budget: 100_000, now: now)
+            try expectTrue(res2Repeat.status.isWarning, "still warning")
+            try expectNil(res2Repeat.alertMessage, "dedup alertMessage")
+
+            // 5. 跨越到 100% 预算超额
+            let res3 = tracker.evaluate(used24h: 110_000, budget: 100_000, now: now)
+            try expectTrue(res3.status.isExceeded, "exceeded flag")
+            try expectTrue(res3.alertMessage != nil, "exceeded alert triggered")
+            try expectTrue(res3.alertMessage?.contains("110%") ?? false, "pct in exceeded")
+
+            // 6. 再次采样超额去重
+            let res3Repeat = tracker.evaluate(used24h: 120_000, budget: 100_000, now: now)
+            try expectNil(res3Repeat.alertMessage, "dedup exceeded alert")
+        }
+
+        TestKit.test("ProcessInspector 读取当前进程工作目录") {
+            let pid = ProcessInfo.processInfo.processIdentifier
+            let cwd = ProcessInspector.currentWorkingDirectory(of: pid)
+            try expectTrue(cwd != nil, "CWD must not be nil for current process")
+            try expectTrue(cwd?.contains("AgentIsland") ?? false, "CWD contains project name")
+            // 非法 PID 安全返回 nil
+            try expectNil(ProcessInspector.currentWorkingDirectory(of: -1), "invalid pid returns nil")
+            try expectNil(ProcessInspector.currentWorkingDirectory(of: 0), "pid 0 returns nil")
+        }
+
         TestKit.test("TokenUsage 相加合并") {
             let a = TokenUsage(tokens24h: 100, tokensTotal: 1000, cost24h: 0.1, costTotal: 1.0)
             let b = TokenUsage(tokens24h: 200, tokensTotal: 2000, cost24h: 0.2, costTotal: 2.0)

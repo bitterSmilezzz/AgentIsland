@@ -140,6 +140,7 @@ struct AgentDetailView: View {
                                         overviewCard(usage)
                                         workEfficiencyCard
                                         if let s = snapshot, s.processRunning {
+                                            workspaceCard(s)
                                             performanceCard(s)
                                         }
                                         if !models.isEmpty {
@@ -164,6 +165,7 @@ struct AgentDetailView: View {
                                         basicInfoCard
                                         workEfficiencyCard
                                         if let s = snapshot, s.processRunning {
+                                            workspaceCard(s)
                                             performanceCard(s)
                                         }
                                     }
@@ -348,6 +350,84 @@ struct AgentDetailView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel(m.modelId)
             }
+        }
+    }
+
+    /// 工作区与直达终端卡片
+    @ViewBuilder
+    private func workspaceCard(_ s: AgentSnapshot) -> some View {
+        let cwd: String? = {
+            if let pid = s.pid, let dir = ProcessInspector.currentWorkingDirectory(of: pid) {
+                return dir
+            }
+            return nil
+        }()
+
+        if let dir = cwd {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(Theme.sydedockCyan)
+                    Text("当前工作区")
+                        .font(Theme.bodyFont(10, weight: .semibold))
+                        .foregroundColor(Theme.onDarkFaint)
+                    Spacer()
+                }
+
+                Text(dir)
+                    .font(Theme.monoFont(9.5))
+                    .foregroundColor(Theme.onDark)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 8) {
+                    Button {
+                        let script = "open -a Terminal \"\(dir)\""
+                        var err: NSDictionary?
+                        NSAppleScript(source: "do shell script \"\(script.replacingOccurrences(of: "\"", with: "\\\""))\"")?.executeAndReturnError(&err)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "terminal.fill")
+                                .font(.system(size: 8.5))
+                            Text("打开终端")
+                                .font(Theme.bodyFont(9.5, weight: .medium))
+                        }
+                        .foregroundColor(Theme.sydedockCyan)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Theme.sydedockCyan.opacity(0.12))
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "macwindow")
+                                .font(.system(size: 8.5))
+                            Text("在访达中显示")
+                                .font(Theme.bodyFont(9.5, weight: .medium))
+                        }
+                        .foregroundColor(Theme.onDarkMuted)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Theme.chipFill)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                    .fill(Theme.obsidianCardFill)
+            )
         }
     }
 

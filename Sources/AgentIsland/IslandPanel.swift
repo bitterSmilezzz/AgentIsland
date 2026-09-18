@@ -160,6 +160,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         super.init()
         setupPanel()
         observe()
+        setupGlobalHotKey()
     }
 
     private func setupPanel() {
@@ -456,6 +457,7 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         if let m = clickLocalMonitor { NSEvent.removeMonitor(m) }
         if let m = clickGlobalMonitor { NSEvent.removeMonitor(m) }
         if let m = keyEscapeMonitor { NSEvent.removeMonitor(m) }
+        GlobalHotKeyManager.shared.unregister()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -479,6 +481,24 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             expand(graceDuration: 3.0)
         case .expanded:
             collapse()
+        }
+    }
+
+    func setupGlobalHotKey() {
+        let hotKeyManager = GlobalHotKeyManager.shared
+        hotKeyManager.onToggle = { [weak self] in
+            guard let self = self else { return }
+            self.toggleExpandFromHotKey()
+        }
+        let enabled = UserDefaults.standard.object(forKey: SettingKey.globalHotKeyEnabled) as? Bool ?? true
+        hotKeyManager.setEnabled(enabled)
+    }
+
+    func toggleExpandFromHotKey() {
+        if displayState == .expanded {
+            collapse()
+        } else {
+            expand(graceDuration: 2.5)
         }
     }
 

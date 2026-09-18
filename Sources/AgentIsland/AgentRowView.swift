@@ -10,6 +10,7 @@ struct AgentRowView: View {
     @ObservedObject var engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(SettingKey.compactView) private var isCompact = false
     @State private var confirmingKill = false
     @State private var showingTooltip = false
     @State private var isHoveringRow = false
@@ -52,9 +53,9 @@ struct AgentRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                AgentRingView(snapshot: snapshot, size: 26)
+        VStack(alignment: .leading, spacing: isCompact ? 2 : 4) {
+            HStack(spacing: isCompact ? 6 : 8) {
+                AgentRingView(snapshot: snapshot, size: isCompact ? 22 : 26)
                     .onHover { h in
                         // 延迟关闭：给用户时间把鼠标从 26×26 的环移到 popover 上，
                         // 否则 popover 里的「终止 / 直达窗口」永远来不及点。
@@ -79,7 +80,7 @@ struct AgentRowView: View {
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(snapshot.profile.name)
-                        .font(Theme.bodyFont(12.5, weight: .semibold))
+                        .font(Theme.bodyFont(isCompact ? 11.5 : 12.5, weight: .semibold))
                         .foregroundColor(Theme.onDark)
                         .readableSingleLine(
                             fullText: snapshot.profile.name,
@@ -313,13 +314,13 @@ struct AgentRowView: View {
                                 .strokeBorder(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xfde68a).opacity(0.8) : Color(hex: 0xbbf7d0).opacity(0.8)) : actionColor.opacity(0.22), lineWidth: 0.5)
                         )
                 )
-                .padding(.leading, 34) // 与 Agent 名称对齐
+                .padding(.leading, isCompact ? 30 : 34) // 与 Agent 名称对齐
                 .help(action)
             }
         }
         .padding(.horizontal, 8)
         // 与横条显示条件严格一致：空字符串动作不显示横条，也不应多出 2pt 内边距
-        .padding(.vertical, hasActionBar ? 5 : 4)
+        .padding(.vertical, isCompact ? (hasActionBar ? 3.5 : 2.5) : (hasActionBar ? 5 : 4))
         .hoverRowBackground(cornerRadius: 10, idleFill: Theme.obsidianCardFill)
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)

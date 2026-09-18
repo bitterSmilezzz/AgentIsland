@@ -589,3 +589,23 @@ public enum ProcessTerminator {
         return tree
     }
 }
+
+// MARK: - 进程环境与工作区探测
+
+public enum ProcessInspector {
+    /// 获取指定进程当前的工作目录（CWD）。
+    /// 使用 macOS 内核 proc_pidinfo(PROC_PIDVNODEPATHINFO) 直读，微秒级响应、零子进程开销。
+    public static func currentWorkingDirectory(of pid: Int32) -> String? {
+        guard pid > 1 else { return nil }
+        var vpi = proc_vnodepathinfo()
+        let size = MemoryLayout<proc_vnodepathinfo>.stride
+        let ret = proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &vpi, Int32(size))
+        guard ret == size else { return nil }
+        return withUnsafePointer(to: &vpi.pvi_cdir.vip_path) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { cStr in
+                let path = String(cString: cStr).trimmingCharacters(in: .whitespacesAndNewlines)
+                return path.isEmpty ? nil : path
+            }
+        }
+    }
+}

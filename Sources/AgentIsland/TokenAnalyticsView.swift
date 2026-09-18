@@ -34,8 +34,12 @@ struct TokenAnalyticsView: View {
                         TokenAnalyticsSkeleton()
                             .transition(.opacity)
                     } else {
+                        budgetProgressCard
                         metricsCard
                         trendCard
+                        if range == .day {
+                            ActivityHeatmapView(points: timeline.points)
+                        }
                         sourceCard
                         methodologyNote
                     }
@@ -46,6 +50,76 @@ struct TokenAnalyticsView: View {
         }
         .cardShell(dockEdge: controller.dockEdge, controller: controller)
         .task(id: range) { loadTimeline() }
+    }
+
+    @ViewBuilder
+    private var budgetProgressCard: some View {
+        let budget = UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
+        if budget > 0 {
+            let used = engine.grandTotal.tokens24h
+            let ratio = min(1.0, Double(used) / Double(budget))
+            let isOver = used >= budget
+            let isWarn = !isOver && ratio >= 0.8
+            let accentColor = isOver ? Theme.dangerRed : (isWarn ? Theme.warningOrange : Theme.sydedockCyan)
+            let pctText = "\(Int(ratio * 100))%"
+            let titleText = isOver ? "今日 Token 预算已超额" : (isWarn ? "今日 Token 预算预警" : "今日 Token 预算进度")
+            let iconName = isOver ? "exclamationmark.octagon.fill" : (isWarn ? "exclamationmark.triangle.fill" : "target")
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    HStack(spacing: 4) {
+                        Image(systemName: iconName)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(accentColor)
+                        Text(titleText)
+                            .font(Theme.bodyFont(10.5, weight: .medium))
+                            .foregroundColor(Theme.onDark)
+                    }
+                    Spacer()
+                    Text(pctText)
+                        .font(Theme.monoDigitFont(11, weight: .bold))
+                        .foregroundColor(accentColor)
+                }
+
+                // 进度条
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.chipFill)
+                            .frame(height: 6)
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(accentColor)
+                            .frame(width: max(4, g.size.width * CGFloat(ratio)), height: 6)
+                    }
+                }
+                .frame(height: 6)
+
+                HStack {
+                    Text("已用 \(TokenUsage.compact(used)) / 限额 \(TokenUsage.compact(budget))")
+                        .font(Theme.monoFont(9.5))
+                        .foregroundColor(Theme.onDarkFaint)
+                    Spacer()
+                    if isOver {
+                        Text("超出 \(TokenUsage.compact(used - budget))")
+                            .font(Theme.monoFont(9.5))
+                            .foregroundColor(Theme.dangerRed)
+                    } else {
+                        Text("剩余 \(TokenUsage.compact(budget - used))")
+                            .font(Theme.monoFont(9.5))
+                            .foregroundColor(Theme.onDarkFaint)
+                    }
+                }
+            }
+            .padding(9)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(colorScheme == .light ? Color.white : Theme.obsidianCardFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(isOver ? Theme.dangerRed.opacity(0.4) : (isWarn ? Theme.warningOrange.opacity(0.3) : Theme.obsidianHairline), lineWidth: 0.5)
+                    )
+            )
+        }
     }
 
     private var metricsCard: some View {

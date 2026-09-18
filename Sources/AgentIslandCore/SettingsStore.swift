@@ -24,6 +24,10 @@ public enum SettingKey {
     public static let runawayCpuAlert = "runawayCpuAlert"
     public static let knownAgents = "knownAgents"
     public static let hideDockedSliver = "hideDockedSliver"
+    public static let dailyTokenBudget = "dailyTokenBudget"
+    public static let budgetAlertEnabled = "budgetAlertEnabled"
+    public static let compactView = "compactView"
+    public static let globalHotKeyEnabled = "globalHotKeyEnabled"
 }
 
 /// UserDefaults 读取的钳制区间（脏持久化值自愈；与设置页滑杆 range 对齐）。

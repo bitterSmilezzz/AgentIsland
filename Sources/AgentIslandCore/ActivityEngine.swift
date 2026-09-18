@@ -136,6 +136,11 @@ public final class ActivityEngine: ObservableObject {
     /// 任务耗时与效率统计追踪器
     public let durationTracker = TaskDurationTracker()
 
+    /// Token 预算超额与预警追踪器
+    public let budgetTracker = TokenBudgetTracker()
+    /// 当前预算状态（UI 绑定）
+    @Published public private(set) var budgetStatus: TokenBudgetStatus = .disabled
+
     private var running = false   // stop() 后阻止在飞回调重建定时器
     // MARK: token 轮询生命周期（单一 owner：引擎）
     // 三状态合法组合（其余组合按不变量不可达）：
@@ -747,6 +752,35 @@ public final class ActivityEngine: ObservableObject {
             // 仅重置「本次会话是否已告警」的去重标记，让重新开启开关后能立即告警；
             // highCpuSince 是 isHung 的数据源，不受开关影响、不在此清除
             lastRunawayAlertedAt.removeAll()
+        }
+
+        // Token 预算预警与超额告警
+        let budgetEnabled = UserDefaults.standard.bool(forKey: SettingKey.budgetAlertEnabled)
+        let dailyBudget = UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
+        if budgetEnabled && dailyBudget > 0 {
+            let eval = budgetTracker.evaluate(used24h: grandTotal.tokens24h, budget: dailyBudget, now: now)
+            DispatchQueue.main.async { [weak self] in
+                self?.budgetStatus = eval.status
+            }
+            if let alert = eval.alertMessage {
+                postEvent(AgentTaskEvent(
+                    agentId: "system",
+                    agentName: "Token 预算",
+                    eventType: .costSpike,
+                    duration: 0,
+                    timestamp: now,
+                    pid: nil,
+                    message: eval.status.isExceeded ? "🚨 Token 预算超额" : "⚠️ Token 预算预警",
+                    detail: alert
+                ))
+            }
+        } else {
+            let status = dailyBudget > 0
+                ? TokenBudgetStatus.normal(used: grandTotal.tokens24h, budget: dailyBudget, ratio: Double(grandTotal.tokens24h) / Double(dailyBudget))
+                : TokenBudgetStatus.disabled
+            DispatchQueue.main.async { [weak self] in
+                self?.budgetStatus = status
+            }
         }
     }
 
