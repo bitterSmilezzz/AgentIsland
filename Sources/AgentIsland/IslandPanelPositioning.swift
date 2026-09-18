@@ -36,6 +36,7 @@ extension IslandPanelController {
         UserDefaults.standard.set(dockEdge.rawValue, forKey: SettingKey.dockEdge)
 
         updateChrome()
+        SoundEffectsManager.performHapticClick()
         if displayState == .expanded {
             snapToDockEdge(animated: true)
         } else {
@@ -45,7 +46,9 @@ extension IslandPanelController {
 
     func snapToDockEdge(animated: Bool) {
         guard displayState == .expanded else { return }
-        guard let screen = panel.screen ?? Self.screenContainingMouse() else { return }
+        let modeRaw = UserDefaults.standard.string(forKey: SettingKey.screenFollowMode) ?? ScreenFollowMode.followMouse.rawValue
+        let followMode = ScreenFollowMode(rawValue: modeRaw) ?? .followMouse
+        let screen = panel.screen ?? Self.targetScreen(mode: followMode, currentPanelScreen: panel.screen)
         let targetRect = dockTargetFrame(for: screen)
         let targetOrigin = targetRect.origin
         let dx = targetOrigin.x - panel.frame.origin.x
@@ -70,6 +73,35 @@ extension IslandPanelController {
     static func screenContainingMouse() -> NSScreen? {
         let loc = NSEvent.mouseLocation
         return NSScreen.screens.first { $0.frame.contains(loc) } ?? NSScreen.main
+    }
+
+    /// 根据用户偏好解析目标屏幕 (v0.0.74)
+    static func targetScreen(mode: ScreenFollowMode, currentPanelScreen: NSScreen?) -> NSScreen {
+        let currentScreens = NSScreen.screens
+        guard !currentScreens.isEmpty else { return NSScreen.main ?? NSScreen() }
+
+        switch mode {
+        case .followMouse:
+            return screenContainingMouse() ?? currentPanelScreen ?? currentScreens.first ?? NSScreen.main!
+        case .mainScreen:
+            return NSScreen.main ?? currentScreens.first!
+        case .builtInScreen:
+            if let builtIn = currentScreens.first(where: {
+                let name = $0.localizedName.lowercased()
+                return name.contains("built-in") || name.contains("内建") || name.contains("color lcd")
+            }) {
+                return builtIn
+            }
+            return currentScreens.first!
+        case .externalScreen:
+            if let external = currentScreens.first(where: {
+                let name = $0.localizedName.lowercased()
+                return !name.contains("built-in") && !name.contains("内建") && !name.contains("color lcd")
+            }) {
+                return external
+            }
+            return currentScreens.first!
+        }
     }
 
     // MARK: - 窗口帧度量与放置
@@ -181,13 +213,9 @@ extension IslandPanelController {
     }
 
     func placeWindow(animated: Bool) {
-        let currentScreens = NSScreen.screens
-        let screen: NSScreen
-        if let s = panel.screen, currentScreens.contains(s) {
-            screen = s
-        } else {
-            screen = Self.screenContainingMouse() ?? currentScreens.first ?? NSScreen.main!
-        }
+        let modeRaw = UserDefaults.standard.string(forKey: SettingKey.screenFollowMode) ?? ScreenFollowMode.followMouse.rawValue
+        let followMode = ScreenFollowMode(rawValue: modeRaw) ?? .followMouse
+        let screen = Self.targetScreen(mode: followMode, currentPanelScreen: panel.screen)
 
         let targetRect = dockTargetFrame(for: screen)
         let targetOrigin = targetRect.origin

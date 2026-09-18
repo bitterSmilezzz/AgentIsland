@@ -36,6 +36,7 @@ struct ToolboxView: View {
     @State private var cleanAllConfirmTask: Task<Void, Never>?
     /// 清理失败提示（terminate 无权限/进程已消失时不能说「已清理」）
     @State private var cleanFeedback: String?
+    @State private var copiedReport = false
     @Environment(\.colorScheme) private var colorScheme
 
     private var filteredAnomalies: [AgentAnomaly] {
@@ -58,6 +59,9 @@ struct ToolboxView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         // 顶部状态指标卡
                         metricsCard
+
+                        // 运维与用量审计报告 (v0.0.74)
+                        auditExportCard
 
                         if !anomalies.isEmpty {
                             anomalyFilterBar
@@ -132,6 +136,114 @@ struct ToolboxView: View {
         .help(help)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(label) \(value)")
+    }
+
+    // MARK: 运维与用量审计报告 (v0.0.74)
+    private var auditExportCard: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.sydedockCyan)
+
+            Text("用量与运维审计")
+                .font(Theme.bodyFont(10, weight: .semibold))
+                .foregroundColor(Theme.onDark)
+
+            Spacer()
+
+            Button {
+                copyMarkdownReport()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: copiedReport ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 9))
+                    Text(copiedReport ? "已复制" : "复制报告")
+                        .font(Theme.bodyFont(9.5, weight: .medium))
+                }
+                .foregroundColor(copiedReport ? Theme.sydedockEmerald : Theme.onDark)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radiusSm)
+                        .fill(Theme.chipFill)
+                )
+            }
+            .buttonStyle(.plain)
+            .help("将当前智能体状态与 Token 审计报告复制为 Markdown 格式")
+
+            Menu {
+                Button("导出为 Markdown (.md)...") {
+                    saveReport(format: .markdown)
+                }
+                Button("导出为 CSV 表格 (.csv)...") {
+                    saveReport(format: .csv)
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Text("导出文件")
+                        .font(Theme.bodyFont(9.5, weight: .medium))
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8))
+                }
+                .foregroundColor(Theme.sydedockCyan)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radiusSm)
+                        .fill(Theme.sydedockCyan.opacity(0.12))
+                )
+            }
+            .menuStyle(.borderlessButton)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .subtleCardStyle()
+    }
+
+    private func copyMarkdownReport() {
+        let md = AuditReportExporter.generateMarkdown(
+            snapshots: engine.snapshots,
+            history: engine.eventHistory,
+            now: Date()
+        )
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(md, forType: .string)
+        copiedReport = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            copiedReport = false
+        }
+    }
+
+    private enum ExportFormat { case markdown, csv }
+
+    private func saveReport(format: ExportFormat) {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        switch format {
+        case .markdown:
+            panel.nameFieldStringValue = AuditReportExporter.defaultFilename(extension: "md")
+        case .csv:
+            panel.nameFieldStringValue = AuditReportExporter.defaultFilename(extension: "csv")
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            let content: String
+            switch format {
+            case .markdown:
+                content = AuditReportExporter.generateMarkdown(
+                    snapshots: engine.snapshots,
+                    history: engine.eventHistory,
+                    now: Date()
+                )
+            case .csv:
+                content = AuditReportExporter.generateCSV(
+                    snapshots: engine.snapshots,
+                    now: Date()
+                )
+            }
+            try? content.write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     // MARK: 分类筛选条

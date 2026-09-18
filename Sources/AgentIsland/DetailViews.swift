@@ -566,6 +566,11 @@ struct AgentDetailView: View {
             // 稳定性诊断微卡片
             healthDiagnosticCard(s)
 
+            // 派生工具与子进程全景树 (v0.0.74)
+            if let report = engine.inspectProcessTree(agentId: agentId) {
+                ProcessTreeView(report: report)
+            }
+
             // 实时流水抽屉入口
             Button {
                 controller.openLiveStream(agentId: agentId)
@@ -740,6 +745,16 @@ private struct SessionRowView: View {
             }
             Spacer()
             if hasDir {
+                Button {
+                    RecentSessionNavigator.resumeInTerminal(directory: session.directory)
+                } label: {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 9.5))
+                        .foregroundColor(Theme.onDarkFaint)
+                }
+                .buttonStyle(.plain)
+                .help("在终端中打开该会话工作区")
+
                 Image(systemName: "folder")
                     .font(.system(size: 10))
                     .foregroundColor(Theme.onDarkFaint)
@@ -749,6 +764,16 @@ private struct SessionRowView: View {
                     .font(Theme.monoFont(9))
                     .foregroundColor(Theme.onDarkFaint.opacity(0.6))
             }
+
+            Button {
+                RecentSessionNavigator.copySessionId(session.sessionId)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(Theme.onDarkFaint)
+            }
+            .buttonStyle(.plain)
+            .help("拷贝会话 ID: \(session.sessionId)")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

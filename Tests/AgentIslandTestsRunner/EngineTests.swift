@@ -137,6 +137,94 @@ enum EngineTests {
             }
         }
 
+        TestKit.test("ProcessTreeInspector 进程树递归解析与开销聚合") {
+            let entries: [ProcessSnapshot.Entry] = [
+                ProcessSnapshot.Entry(pid: 1000, path: "/usr/local/bin/agent", basename: "agent", cpuPercent: 5.0, rssBytes: 50 * 1024 * 1024, ppid: 1),
+                ProcessSnapshot.Entry(pid: 1001, path: "/opt/node/bin/node", basename: "node", cpuPercent: 15.0, rssBytes: 100 * 1024 * 1024, ppid: 1000),
+                ProcessSnapshot.Entry(pid: 1002, path: "/bin/zsh", basename: "zsh", cpuPercent: 0.0, rssBytes: 10 * 1024 * 1024, ppid: 1000),
+                ProcessSnapshot.Entry(pid: 1003, path: "/opt/homebrew/bin/rg", basename: "rg", cpuPercent: 25.0, rssBytes: 50 * 1024 * 1024, ppid: 1002),
+                ProcessSnapshot.Entry(pid: 2000, path: "/usr/bin/python3", basename: "python3", cpuPercent: 30.0, rssBytes: 80 * 1024 * 1024, ppid: 1)
+            ]
+
+            let report = ProcessTreeInspector.buildTree(for: 1000, from: entries)
+            try expectEqual(report.rootPid, 1000)
+            try expectEqual(report.subprocessCount, 3, "1001, 1002, 1003")
+            try expectEqual(report.totalSubprocessCpu, 40.0, "15 + 0 + 25")
+            try expectEqual(report.totalSubprocessMemory, 160 * 1024 * 1024, "100MB + 10MB + 50MB")
+            try expectEqual(report.nodes.count, 2, "2 direct children (node & zsh)")
+
+            let zshNode = report.nodes.first { $0.name == "zsh" }
+            try expectEqual(zshNode?.children.count, 1, "zsh spawned rg")
+            try expectEqual(zshNode?.children.first?.name, "rg")
+
+            // 根 PID 负数或 0 返回空报表
+            let emptyReport = ProcessTreeInspector.buildTree(for: 0, from: entries)
+            try expectEqual(emptyReport.subprocessCount, 0)
+            try expectTrue(emptyReport.nodes.isEmpty)
+
+            // 引擎方法冒烟
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+            _ = engine.inspectProcessTree(agentId: "dim")
+        }
+
+        TestKit.test("AuditReportExporter 运维审计报告 Markdown 与 CSV 生成") {
+            let snap = AgentSnapshot(
+                profile: dim,
+                level: .working,
+                processRunning: true,
+                cpuPercent: 12.5,
+                installed: true,
+                activeSessions: 2,
+                lastActivityAgo: 5,
+                lastActivityText: "5秒前",
+                tokenUsage: TokenUsage(tokens24h: 50_000, tokensTotal: 200_000, cost24h: 0.15, costTotal: 0.85),
+                pid: 54321,
+                currentAction: "代码重构",
+                memoryBytes: 150 * 1024 * 1024,
+                isHung: false
+            )
+
+            let event = AgentTaskEvent(
+                agentId: "dim",
+                agentName: "DimAgent",
+                eventType: .completed,
+                duration: 42,
+                timestamp: Date(),
+                pid: 54321,
+                message: "重构已完成"
+            )
+
+            let md = AuditReportExporter.generateMarkdown(snapshots: [snap], history: [event], now: Date())
+            try expectTrue(md.contains("# AgentIsland"), "md header")
+            try expectTrue(md.contains("DimAgent"), "agent in md")
+            try expectTrue(md.contains("50.0k"), "24h token in md")
+            try expectTrue(md.contains("重构已完成"), "event in md")
+
+            let csv = AuditReportExporter.generateCSV(snapshots: [snap], now: Date())
+            try expectTrue(csv.hasPrefix("Timestamp,AgentID,AgentName"), "csv header")
+            try expectTrue(csv.contains("dim,DimAgent,working,54321,12.5"), "csv row values")
+        }
+
+        TestKit.test("ScreenFollowMode 与 SoundOption 枚举及健壮性") {
+            let screens = ScreenFollowMode.allCases
+            try expectEqual(screens.count, 4)
+            for s in screens {
+                try expectFalse(s.label.isEmpty)
+                try expectEqual(s.id, s.rawValue)
+            }
+
+            let compSounds = CompletionSoundOption.allCases
+            try expectEqual(compSounds.count, 5)
+            try expectNil(CompletionSoundOption.mute.systemSoundName)
+            try expectEqual(CompletionSoundOption.glass.systemSoundName, "Glass")
+
+            let alertSounds = AlertSoundOption.allCases
+            try expectEqual(alertSounds.count, 4)
+            try expectNil(AlertSoundOption.mute.systemSoundName)
+            try expectEqual(AlertSoundOption.sosumi.systemSoundName, "Sosumi")
+        }
+
         TestKit.test("进程: provider 原始大小写也能匹配") {
             let names: Set<String> = ["DimAgent"]
             let provider = FakeProcessProvider(processNames: names, bundleIDs: [])

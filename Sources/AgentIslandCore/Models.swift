@@ -9,6 +9,16 @@ public enum ActivityLevel: String, Codable, Equatable, Comparable {
     case working
     case attention
 
+    public var label: String {
+        switch self {
+        case .offline: return "离线"
+        case .idle: return "待机"
+        case .completed: return "已完成"
+        case .working: return "工作中"
+        case .attention: return "待确认"
+        }
+    }
+
     public static func < (lhs: ActivityLevel, rhs: ActivityLevel) -> Bool {
         order(lhs) < order(rhs)
     }

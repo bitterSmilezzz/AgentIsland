@@ -906,13 +906,9 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         let soundEnabled = UserDefaults.standard.object(forKey: SettingKey.playCompletionSound) as? Bool ?? true
         if notificationPolicy.shouldPlaySound(for: event.eventType, soundEnabled: soundEnabled) {
             if event.eventType == .costSpike {
-                if let sound = NSSound(named: "Sosumi") ?? NSSound(named: "Basso") {
-                    sound.play()
-                } else {
-                    NSSound(named: "Glass")?.play()
-                }
+                SoundEffectsManager.playAlertSound()
             } else {
-                NSSound(named: "Glass")?.play()
+                SoundEffectsManager.playCompletionSound()
             }
         }
     }

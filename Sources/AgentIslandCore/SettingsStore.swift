@@ -29,6 +29,77 @@ public enum SettingKey {
     public static let compactView = "compactView"
     public static let globalHotKeyEnabled = "globalHotKeyEnabled"
     public static let menuBarBadgeMode = "menuBarBadgeMode"
+    public static let screenFollowMode = "screenFollowMode"
+    public static let completionSoundOption = "completionSoundOption"
+    public static let alertSoundOption = "alertSoundOption"
+    public static let hapticFeedbackEnabled = "hapticFeedbackEnabled"
+}
+
+/// 屏幕自适应与跟随模式 (v0.0.74)
+public enum ScreenFollowMode: String, CaseIterable, Identifiable {
+    case followMouse = "followMouse"
+    case mainScreen = "mainScreen"
+    case builtInScreen = "builtInScreen"
+    case externalScreen = "externalScreen"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .followMouse: return "跟随鼠标所在屏幕"
+        case .mainScreen: return "固定主屏幕 (带菜单栏)"
+        case .builtInScreen: return "优先内置屏幕 (MacBook)"
+        case .externalScreen: return "优先外接显示器"
+        }
+    }
+}
+
+/// 任务完成提示音选项 (v0.0.74)
+public enum CompletionSoundOption: String, CaseIterable, Identifiable {
+    case glass = "Glass"
+    case pop = "Pop"
+    case ping = "Ping"
+    case blow = "Blow"
+    case mute = "mute"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .glass: return "Glass (清脆水滴)"
+        case .pop: return "Pop (轻快微泡)"
+        case .ping: return "Ping (清脆叮咚)"
+        case .blow: return "Blow (低调柔和)"
+        case .mute: return "静音 (无声音)"
+        }
+    }
+
+    public var systemSoundName: String? {
+        self == .mute ? nil : rawValue
+    }
+}
+
+/// 熔断与严重异常告警音效选项 (v0.0.74)
+public enum AlertSoundOption: String, CaseIterable, Identifiable {
+    case sosumi = "Sosumi"
+    case basso = "Basso"
+    case funk = "Funk"
+    case mute = "mute"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .sosumi: return "Sosumi (经典敲击)"
+        case .basso: return "Basso (低沉警示)"
+        case .funk: return "Funk (强烈警报)"
+        case .mute: return "静音 (无声音)"
+        }
+    }
+
+    public var systemSoundName: String? {
+        self == .mute ? nil : rawValue
+    }
 }
 
 /// 菜单栏图标附加徽标模式 (v0.0.73)

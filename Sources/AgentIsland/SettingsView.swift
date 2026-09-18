@@ -106,6 +106,10 @@ struct SettingsView: View {
     @AppStorage(SettingKey.compactView) private var compactView = false
     @AppStorage(SettingKey.globalHotKeyEnabled) private var globalHotKeyEnabled = true
     @AppStorage(SettingKey.menuBarBadgeMode) private var menuBarBadgeMode = MenuBarBadgeMode.iconOnly.rawValue
+    @AppStorage(SettingKey.screenFollowMode) private var screenFollowMode = ScreenFollowMode.followMouse.rawValue
+    @AppStorage(SettingKey.completionSoundOption) private var completionSoundOption = CompletionSoundOption.glass.rawValue
+    @AppStorage(SettingKey.alertSoundOption) private var alertSoundOption = AlertSoundOption.sosumi.rawValue
+    @AppStorage(SettingKey.hapticFeedbackEnabled) private var hapticFeedbackEnabled = true
 
     /// 内置 Agent 列表缓存盒（引用语义）：设置页开着时引擎每拍发布使 body 重算，
     /// fullRegistry 每次都要 loadCustomProfiles（UserDefaults 读 + JSONDecoder 解码）
@@ -339,6 +343,67 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
                     .tint(Theme.actionBlue)
 
+                    if playCompletionSound {
+                        HStack(spacing: 8) {
+                            Text("完成音效")
+                                .font(Theme.bodyFont(11, weight: .medium))
+                                .foregroundColor(Theme.ink)
+                            Picker("", selection: $completionSoundOption) {
+                                ForEach(CompletionSoundOption.allCases) { opt in
+                                    Text(opt.label).tag(opt.rawValue)
+                                }
+                            }
+                            .pickerStyle(.menu)
+
+                            Button {
+                                SoundEffectsManager.previewSound(named: completionSoundOption)
+                            } label: {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.actionBlue)
+                            }
+                            .buttonStyle(.plain)
+                            .help("试听任务完成音效")
+                        }
+                        .padding(.leading, 12)
+
+                        HStack(spacing: 8) {
+                            Text("熔断告警音")
+                                .font(Theme.bodyFont(11, weight: .medium))
+                                .foregroundColor(Theme.ink)
+                            Picker("", selection: $alertSoundOption) {
+                                ForEach(AlertSoundOption.allCases) { opt in
+                                    Text(opt.label).tag(opt.rawValue)
+                                }
+                            }
+                            .pickerStyle(.menu)
+
+                            Button {
+                                SoundEffectsManager.previewSound(named: alertSoundOption)
+                            } label: {
+                                Image(systemName: "speaker.wave.3.fill")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.dangerRed)
+                            }
+                            .buttonStyle(.plain)
+                            .help("试听熔断告警音效")
+                        }
+                        .padding(.leading, 12)
+                    }
+
+                    Toggle(isOn: $hapticFeedbackEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("触控板微触觉反馈 (Haptics)")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("任务完成、严重告警或面板边缘停靠时，提供细腻的触控板震动感知")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+
                     Divider()
 
                     sliderRow(
@@ -466,6 +531,26 @@ struct SettingsView: View {
                     }
                     .toggleStyle(.switch)
                     .tint(Theme.actionBlue)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("多显示器停靠策略 (Multi-Monitor)")
+                            .font(Theme.bodyFont(13))
+                            .foregroundColor(Theme.ink)
+                        Picker("", selection: $screenFollowMode) {
+                            ForEach(ScreenFollowMode.allCases) { mode in
+                                Text(mode.label).tag(mode.rawValue)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        Text("外接显示器时，选择灵动岛是自动跟随当前活跃鼠标所在的屏幕，还是固定在指定屏幕")
+                            .font(Theme.bodyFont(10))
+                            .foregroundColor(Theme.inkMuted48)
+                    }
+                    .onChange(of: screenFollowMode) { _ in
+                        controller.placeWindow(animated: true)
+                    }
                 }
             }
         }

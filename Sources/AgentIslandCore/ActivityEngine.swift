@@ -1075,6 +1075,16 @@ public final class ActivityEngine: ObservableObject {
         }
     }
 
+    /// 获取某 Agent 根进程的派生子进程树报告 (v0.0.74)
+    public func inspectProcessTree(agentId: String) -> ProcessTreeReport? {
+        guard let snap = snapshots.first(where: { $0.id == agentId }),
+              let pid = snap.pid, pid > 0 else {
+            return nil
+        }
+        let procSnap = processMonitor.snapshot()
+        return ProcessTreeInspector.buildTree(for: pid, from: procSnap.entries)
+    }
+
     /// 可见口径（唯一实现）：仅当前在线（进程仍在）的 Agent。
     /// 历史活动与 token 只用于在线条目的内容展示，不得让已退出 Agent 形成幽灵列表项。
     /// 展开卡片列表、菜单摘要、高度计算统一消费此属性，改口径只改这一处。
