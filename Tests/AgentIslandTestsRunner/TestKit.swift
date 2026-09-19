@@ -150,3 +150,24 @@ enum TestDefaults {
         }.count
     }
 }
+
+/// snapshot() 故意慢的假提供者：用来构造「后台采样还在飞、此时 stop()」的竞态窗口
+final class SlowProcessProvider: ProcessProviding, @unchecked Sendable {
+    private let names: Set<String>
+    private let delay: TimeInterval
+
+    init(names: Set<String>, delay: TimeInterval) {
+        self.names = names
+        self.delay = delay
+    }
+
+    func snapshot() -> ProcessSnapshot {
+        Thread.sleep(forTimeInterval: delay)   // 后台队列，阻塞以撑开竞态窗口
+        return ProcessSnapshot(entries: names.map {
+            ProcessSnapshot.Entry(pid: 777, path: "/Applications/\($0).app/Contents/MacOS/\($0)",
+                                  basename: $0.lowercased(), cpuPercent: 0, rssBytes: 1_000_000)
+        })
+    }
+
+    func runningBundleIDs() -> Set<String> { [] }
+}

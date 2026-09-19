@@ -431,6 +431,10 @@ public final class ActivityEngine: ObservableObject {
             Task { @MainActor [weak self] in
                 defer { self?.samplingInFlight = false }
                 guard let self else { return }
+                // 回到主线程时可能已经 stop()：入口那一次 running 检查保护不了这段异步
+                // 间隙。不挡住就会在停止后再落地一拍——发布快照、发完成/告警事件，并经
+                // sampleCore→scheduleNext 把刚被 invalidate 的定时器重建回来
+                guard self.running else { return }
                 let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: bundleIDs, profiles: self.profiles)
                 self.sampleCore(matcher: matcher, now: Date())
             }

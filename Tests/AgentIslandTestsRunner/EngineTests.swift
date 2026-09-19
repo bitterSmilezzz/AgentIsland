@@ -1964,6 +1964,20 @@ enum EngineTests {
             )
             try expectFalse(throttleAC, "插电供电时不应降频")
         }
+
+        TestKit.test("引擎: stop() 之后在飞的后台采样不得落地") {
+            let dir = FileManager.default.homeDirectoryForCurrentUser.path + "/.dimcode/v2/data/sessions"
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [dir: Date()],
+                                    processMonitor: SlowProcessProvider(names: ["DimAgent"], delay: 0.08))
+            engine.start()                        // 首拍同步完成
+            let stamp = engine.updatedAt
+            engine.sampleInBackground()           // 后台 libproc 遍历在飞
+            engine.stop()                         // 就在这一拍的间隙里停止
+            let deadline = Date().addingTimeInterval(0.5)
+            while Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            try expectEqual(engine.updatedAt, stamp,
+                            "落地的那一拍会发布快照，并经 sampleCore→scheduleNext 把刚被 invalidate 的定时器重建回来")
+        }
     }
 
     // MARK: - 工具
