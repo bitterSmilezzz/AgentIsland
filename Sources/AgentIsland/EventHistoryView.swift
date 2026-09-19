@@ -8,6 +8,9 @@ struct EventHistoryPopoverView: View {
     @ObservedObject var controller: IslandPanelController
     @Environment(\.colorScheme) private var colorScheme
 
+    /// 清空是不可逆动作，先落确认态再执行
+    @State private var confirmingClear = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // 顶栏
@@ -25,7 +28,8 @@ struct EventHistoryPopoverView: View {
 
                 if !engine.eventHistory.isEmpty {
                     Button("清空") {
-                        engine.clearEventHistory()
+                        // 与设置页删除档案、工具箱清理同一确认标准：一键抹掉全部历史不可撤销
+                        confirmingClear = true
                     }
                     .buttonStyle(.plain)
                     .font(Theme.bodyFont(9.5, weight: .medium))
@@ -56,10 +60,36 @@ struct EventHistoryPopoverView: View {
                     .padding(.vertical, 2)
                 }
                 .frame(maxHeight: 280)
+                // 时间线是按图标+颜色编码的自绘内容，VoiceOver 收敛成一句可核对的播报
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(historyAccessibilitySummary)
             }
         }
         .padding(10)
         .frame(width: 290)
+        .confirmationDialog(
+            "清空全部事件历史?",
+            isPresented: $confirmingClear,
+            titleVisibility: .visible
+        ) {
+            Button("清空", role: .destructive) { engine.clearEventHistory() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将移除本机记录的 \(engine.eventHistory.count) 条任务与告警事件，且无法撤销。")
+        }
+    }
+
+    /// 事件历史的口语化摘要（eventHistory 为最新在前）
+    private var historyAccessibilitySummary: String {
+        let events = engine.eventHistory
+        guard !events.isEmpty else { return "暂无任务历史记录" }
+        let completed = events.filter { $0.eventType == .completed }.count
+        let attention = events.filter { $0.eventType == .attention }.count
+        let spikes = events.filter { $0.eventType == .costSpike }.count
+        let recent = events.prefix(3)
+            .map { "\($0.agentName) \($0.summaryText)" }
+            .joined(separator: "；")
+        return "任务事件历史共 \(events.count) 条，完成 \(completed) 条、待确认 \(attention) 条、成本告警 \(spikes) 条。最近：\(recent)"
     }
 
     private func eventRow(_ event: AgentTaskEvent) -> some View {
