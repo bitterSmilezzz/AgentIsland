@@ -3,7 +3,7 @@ import AgentIslandCore
 
 @main
 struct AgentIslandCLI {
-    static let version = "0.0.80"
+    static let version = AppVersion.string
 
     @MainActor
     static func main() async {

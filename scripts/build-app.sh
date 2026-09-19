@@ -28,6 +28,14 @@ if [[ "$README_VERSION" != "$VERSION" ]]; then
     exit 1
 fi
 
+# 版本单一来源校验：代码里的 AppVersion.string 必须与 CHANGELOG 首条一致。
+# CLI 横幅、导出的 Raycast 清单与设置页都读它——曾经应用已到 v0.0.84 而 CLI 仍打印 v0.0.80。
+CODE_VERSION=$(grep -m1 -oE 'public static let string = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/AgentIslandCore/AppVersion.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+if [[ "$CODE_VERSION" != "$VERSION" ]]; then
+    echo "✗ 版本漂移：CHANGELOG=$VERSION 但 AppVersion.string=${CODE_VERSION:-缺失}。先改 AppVersion.swift 再发布。" >&2
+    exit 1
+fi
+
 # 测试门禁：打包前全量测试（SKIP_TESTS=1 跳过，仅供快速冒烟）
 if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
     echo "==> 测试门禁（SKIP_TESTS=1 可跳过）"

@@ -1057,11 +1057,12 @@ enum EngineTests {
                                        sessionDirs: [dir],
                                        sessionDatabase: AgentSessionDatabase(path: dbPath, schema: .dimTasks))
             let provider = MutableProcessProvider(names: ["blind-agent"], bundleIDs: [], cpu: 0)
+            let fileSource = FakeFileActivityProvider(writes: [:], files: [dir: transcript])
             let engine = ActivityEngine(
                 profiles: [profile],
                 config: EngineConfig(workingWindow: 20),
                 processMonitor: provider,
-                fileMonitor: FakeFileActivityProvider(writes: [:], files: [dir: transcript]),
+                fileMonitor: fileSource,
                 installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
             )
             let now = Date()
@@ -1076,6 +1077,17 @@ enum EngineTests {
             // last-known 语义：连续采样每拍覆盖为最近一次结果，坏源不会自己洗白
             let again = engine.sample(now: now.addingTimeInterval(2)).first { $0.id == "blind" }
             try expectEqual(again?.sessionProbeHealth?.failure, .prepareFailed, "应保持为最近已知状态")
+
+            // 保质期：源修好了、但此后一直没有新写入 ⇒ 探测被跳过（不再写新值）。
+            // 旧的「读不到」若永远挂着，就是反过来把「读不到」伪装成「坏了」——同样是谎报
+            fileSource.files = [:]
+            let stale = engine.sample(now: now.addingTimeInterval(600)).first { $0.id == "blind" }
+            try expectNil(stale?.sessionProbeHealth, "超过保质期的探测健康必须退场")
+
+            // 退场不是洗白：坏源重新被探测到时，证据必须重新留下
+            fileSource.files = [dir: transcript]
+            let back = engine.sample(now: now.addingTimeInterval(602)).first { $0.id == "blind" }
+            try expectEqual(back?.sessionProbeHealth?.failure, .prepareFailed, "重新探测到故障必须重新记录")
 
             // 生命周期：进程消失 → resetTracking 连带回收，Agent 重启后不带旧证据
             provider.names = []

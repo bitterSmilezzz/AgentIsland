@@ -129,5 +129,25 @@ enum FormatTests {
             try expectEqual(LogTailReader.read(from: file, maxLines: 10, maxBytes: 1_000), ["B"],
                             "等长改写必须立刻读到新内容")
         }
+
+        TestKit.test("版本单一来源: AppVersion.string 必须与 CHANGELOG 首条一致") {
+            // 发版脚本已经校验过一遍；这条是给「绕过脚本手工构建」兜底的：
+            // CLI 横幅与导出的 Raycast 清单都读 AppVersion.string，漂移就是对外报错版本号
+            let repoRoot = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()   // Tests/AgentIslandTestsRunner
+                .deletingLastPathComponent()   // Tests
+                .deletingLastPathComponent()   // repo root
+            let changelog = repoRoot.appendingPathComponent("CHANGELOG.md")
+            guard let text = try? String(contentsOf: changelog, encoding: .utf8) else {
+                return   // 非源码树环境（如打包后）不做强断言
+            }
+            guard let line = text.split(separator: "\n").first(where: { $0.hasPrefix("## [") }),
+                  let range = line.range(of: "["), let end = line.range(of: "]") else {
+                throw TestError(message: "CHANGELOG 首条版本标题解析失败")
+            }
+            let declared = String(line[range.upperBound..<end.lowerBound])
+            try expectEqual(AppVersion.string, declared,
+                            "AppVersion.string 停在旧版而 CHANGELOG 已发新版")
+        }
     }
 }

@@ -544,10 +544,20 @@ public enum SessionProbeFailure: String, Equatable {
 public struct SessionProbeHealth: Equatable {
     public let failure: SessionProbeFailure
     public let path: String
+    /// 这条「读不到」是哪一拍观测到的。它是最近值而不是事件，必须有保质期：
+    /// 源恢复之后若长时间没有新写入（探测被跳过），旧故障会一直挂着，
+    /// 于是「读不到」反过来伪装成「坏了」——同样是 CONTEXT.md 反对的谎报。
+    public let observedAt: Date
 
-    public init(failure: SessionProbeFailure, path: String) {
+    public init(failure: SessionProbeFailure, path: String, observedAt: Date = Date()) {
         self.failure = failure
         self.path = path
+        self.observedAt = observedAt
+    }
+
+    /// 由引擎按采样时钟盖章（而不是构造点取 `Date()`）：合成时间的测试才能稳定判定保质期。
+    public func observed(at date: Date) -> SessionProbeHealth {
+        SessionProbeHealth(failure: failure, path: path, observedAt: date)
     }
 
     /// 详情卡与「复制当前状态诊断快照」里的单行文案：先说结论，再说这条结论的边界

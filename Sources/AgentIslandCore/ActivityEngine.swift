@@ -180,6 +180,11 @@ public final class ActivityEngine: ObservableObject {
     var tokenSpikeAlerted: Set<String> = []
     /// 激增评估档长：满一档才结算一次速率，一次性落盘会被摊平
     static let tokenRateWindow: TimeInterval = 60
+
+    /// 会话源「读不到」这条证据的保质期（约 60 拍）。坏掉的源每拍都会重新盖章，实际不会
+    /// 误过期；只有「源已修好但长时间没有新写入 ⇒ 探测被跳过」这种情形会走到这条线，
+    /// 此时必须让旧故障退场，否则「读不到」反过来伪装成了「坏了」。
+    static let probeHealthStaleness: TimeInterval = 120
     /// 需连续多少档超阈值才告警（滤掉长任务结束时的一次性账本落盘）
     static let tokenSpikeConfirmations = 3
     /// 持续高负载时间追踪（agentId → 开始高负载的时间戳），用于判定真正的死循环
@@ -542,7 +547,8 @@ public final class ActivityEngine: ObservableObject {
             // 本轮没探测（离线/无活动文件）时不写，保留上一轮的值——否则一次跳过就会把
             // 「源坏了」这条证据擦掉，而它恰恰只在长时间坏掉时最有用。
             if let sessionProbe {
-                sessionProbeHealth[profile.id] = sessionProbe.health
+                // 按本拍的采样时钟盖章，而不是探测内部取 Date()：合成时间的测试才能稳定判定保质期
+                sessionProbeHealth[profile.id] = sessionProbe.health?.observed(at: now)
             }
             let sessionSignal = sessionProbe?.signal
             // 上下文的取法与 sessionProbe 同批次（探测跳过时为空上下文，下面的
@@ -703,6 +709,22 @@ public final class ActivityEngine: ObservableObject {
             // 用当拍采集后的值判定，比此前「读上一拍残留」更及时
             let isHung = (highCpuSince[profile.id].map { now.timeIntervalSince($0) >= config.runawayDurationThreshold } ?? false)
 
+            // 会话源健康的对外口径：
+            // · 离线一律不报——进程都不在，本就没有「应该去读会话」这回事，报出来是假警报
+            // · 超过保质期即回收——源修好之后如果长时间没有新写入，探测会被跳过（不写新值），
+            //   那条旧的「读不到」若永远挂着，就把「读不到」反过来伪装成了「坏了」
+            let displayHealth: SessionProbeHealth? = {
+                guard level != .offline, let stored = sessionProbeHealth[profile.id] else {
+                    sessionProbeHealth[profile.id] = nil
+                    return nil
+                }
+                guard now.timeIntervalSince(stored.observedAt) <= Self.probeHealthStaleness else {
+                    sessionProbeHealth[profile.id] = nil
+                    return nil
+                }
+                return stored
+            }()
+
             results.append(AgentSnapshot(
                 profile: profile,
                 level: level,
@@ -720,7 +742,7 @@ public final class ActivityEngine: ObservableObject {
                 backgroundTasks: sessionSignal == nil ? [] : probeContext.backgroundTasks,
                 subagents: sessionSignal == nil ? [] : probeContext.subagents,
                 tokenBreakdown: sessionSignal == nil ? nil : probeContext.tokenBreakdown,
-                sessionProbeHealth: sessionProbeHealth[profile.id]
+                sessionProbeHealth: displayHealth
             ))
             // 本拍 CPU/PID 供告警链路复用（避免二次全表匹配）
             sampleInfo[profile.id] = SampleInfo(cpu: cpu, pid: matchedPID)

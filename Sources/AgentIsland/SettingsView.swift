@@ -87,7 +87,7 @@ struct SettingsView: View {
     /// 版本号从 bundle 读取（与 Info.plist 同源）。
     /// 此前硬编码 "v1.7.9"，发版后忘记同步就会显示错误版本。
     static var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? AppVersion.string
     }
 
     @AppStorage(SettingKey.workingWindow) private var workingWindow: Double = SettingsView.defaultConfig.workingWindow
