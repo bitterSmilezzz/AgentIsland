@@ -8,14 +8,16 @@ struct ModelDonutChartView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredModelId: String? = nil
 
+    /// 调色板必须走 Theme 的动态浅/深成对色（Theme.swift 的强调色规则）：
+    /// 浅色模式加深、深色模式高亮，硬编码 hex 在浅色背景下对比度不达标
     private static let palette: [Color] = [
         Theme.sydedockCyan,
         Theme.sydedockEmerald,
         Theme.sydedockAmber,
-        Color(hex: 0xa855f7), // 紫
-        Color(hex: 0x3b82f6), // 蓝
-        Color(hex: 0xec4899), // 粉
-        Color(hex: 0x64748b)  // 灰
+        Color(dynamicLight: 0x7c3aed, dark: 0xa855f7), // 紫
+        Theme.sydedockBlue,
+        Color(dynamicLight: 0xdb2777, dark: 0xec4899), // 粉
+        Color(dynamicLight: 0x475569, dark: 0x64748b)  // 灰
     ]
 
     private struct Slice: Identifiable {
@@ -29,6 +31,13 @@ struct ModelDonutChartView: View {
 
     private var totalTokens: Int {
         models.reduce(0) { $0 + $1.tokens }
+    }
+
+    /// 图例取舍口径（含「其余」合并）收敛到 ModelDonutAggregate，可被测试 runner 断言
+    private var breakdown: ModelDonutAggregate.Breakdown {
+        ModelDonutAggregate.breakdown(models.map {
+            ModelDonutAggregate.Entry(modelId: $0.modelId, tokens: $0.tokens)
+        })
     }
 
     private var slices: [Slice] {
@@ -81,7 +90,7 @@ struct ModelDonutChartView: View {
                                 .font(Theme.monoDigitFont(11, weight: .bold))
                                 .foregroundColor(Theme.onDark)
                             Text("模型")
-                                .font(Theme.bodyFont(7.5))
+                                .font(Theme.bodyFont(9))
                                 .foregroundColor(Theme.onDarkFaint)
                         }
                     }
@@ -89,7 +98,7 @@ struct ModelDonutChartView: View {
 
                     // 图例与占比列表
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(slices.prefix(4)) { slice in
+                        ForEach(slices.prefix(breakdown.shownCount)) { slice in
                             HStack(spacing: 5) {
                                 Circle()
                                     .fill(slice.color)
@@ -100,11 +109,11 @@ struct ModelDonutChartView: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                 Spacer()
-                                Text(String(format: "%.0f%%", slice.percentage))
-                                    .font(Theme.monoDigitFont(8.5, weight: .semibold))
+                                Text(ModelDonutAggregate.Breakdown.percentText(slice.percentage))
+                                    .font(Theme.monoDigitFont(9, weight: .semibold))
                                     .foregroundColor(slice.color)
                                 Text(TokenUsage.compact(slice.model.tokens))
-                                    .font(Theme.monoDigitFont(8.5))
+                                    .font(Theme.monoDigitFont(9))
                                     .foregroundColor(Theme.onDarkFaint)
                             }
                             .contentShape(Rectangle())
@@ -112,7 +121,34 @@ struct ModelDonutChartView: View {
                                 hoveredModelId = isHover ? slice.id : nil
                             }
                         }
+
+                        // 被折进「其余」的模型必须显式出现，否则图例百分比之和不到 100%
+                        if breakdown.hasHidden {
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(Color(dynamicLight: 0x94a3b8, dark: 0x475569))
+                                    .frame(width: 5, height: 5)
+                                Text(breakdown.hiddenText)
+                                    .font(Theme.monoFont(9))
+                                    .foregroundColor(Theme.onDarkFaint)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(TokenUsage.compact(breakdown.hiddenTokens))
+                                    .font(Theme.monoDigitFont(9))
+                                    .foregroundColor(Theme.onDarkFaint)
+                            }
+                            .help(breakdown.hiddenDetailText)
+                        }
                     }
+                }
+
+                // 图表口径标注：总数 + 遗漏说明，读图时不必自己换算
+                VStack(alignment: .leading, spacing: 3) {
+                    DarkDivider()
+                    Text("总计 \(models.count) 个模型 · \(TokenUsage.compact(totalTokens)) tokens"
+                         + (breakdown.hasHidden ? " · 图例仅列前 \(breakdown.shownCount) 项" : ""))
+                        .font(Theme.monoFont(9))
+                        .foregroundColor(Theme.onDarkFaint)
                 }
             }
             .padding(8)
@@ -124,6 +160,20 @@ struct ModelDonutChartView: View {
                             .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
                     )
             )
+            // 环与图例都是自绘内容，VoiceOver 读不到任何信息，收敛成一句占比播报
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilitySummary)
         }
+    }
+
+    private var accessibilitySummary: String {
+        let shown = slices.prefix(breakdown.shownCount).map { slice in
+            "\(slice.model.modelId) \(ModelDonutAggregate.Breakdown.percentText(slice.percentage))"
+        }.joined(separator: "，")
+        var text = "按模型占比：\(shown)，总计 \(totalTokens) Token"
+        if breakdown.hasHidden {
+            text += "，其余 \(breakdown.hiddenCount) 个模型合计 \(ModelDonutAggregate.Breakdown.percentText(breakdown.hiddenPercent))"
+        }
+        return text
     }
 }

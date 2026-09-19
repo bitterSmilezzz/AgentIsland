@@ -506,7 +506,7 @@ struct SettingsView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .confirmationDialog("重置灵动岛位置？",
+                        .confirmationDialog("重置灵动岛位置?",
                                             isPresented: $confirmingResetPosition,
                                             titleVisibility: .visible) {
                             Button("重置", role: .destructive) { controller.resetPosition() }
@@ -663,7 +663,7 @@ struct SettingsView: View {
         }
         // 删除是不可逆操作：与工作台清理保持同样的二次确认标准
         .confirmationDialog(
-            "删除自定义 Agent「\(pendingRemove?.name ?? "")」？",
+            "删除自定义 Agent「\(pendingRemove?.name ?? "")」?",
             isPresented: Binding(get: { pendingRemove != nil },
                                  set: { if !$0 { pendingRemove = nil } }),
             titleVisibility: .visible
@@ -674,7 +674,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) { pendingRemove = nil }
         } message: {
-            Text("该条目的监控配置将被移除，且无法撤销。")
+            Text("该条目的监控档案将被移除，且无法撤销。")
         }
     }
 

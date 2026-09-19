@@ -116,6 +116,10 @@ struct IslandView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingHistoryPopover = false
 
+    /// 搜索条的键盘焦点。灵动岛本来就是全键盘优先的界面（/ 搜索、j/k 选择、Enter 下钻），
+    /// 但「/」只是把搜索条挂出来，不落到输入框里的话用户还得再点一次，流程断在中间。
+    @FocusState private var searchFieldFocused: Bool
+
     /// 收起窗口大部分会移出屏幕；把微细条对齐到仍在屏幕中的那一侧。
     private var dockedAlignment: Alignment {
         switch controller.dockEdge {
@@ -622,24 +626,35 @@ struct IslandView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 24)
             } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 2) {
-                        ForEach(filteredSnapshots) { snapshot in
-                            AgentRowView(snapshot: snapshot, engine: engine, controller: controller)
+                // ScrollViewReader：j/k 与方向键把焦点移到列表末尾时，原先只有行高亮在动、
+                // 滚动位置不动（>6 个 Agent 就会滚出可视区），等于「按到但看不见」
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 2) {
+                            ForEach(filteredSnapshots) { snapshot in
+                                AgentRowView(snapshot: snapshot, engine: engine, controller: controller)
+                                    .id(snapshot.id)
+                            }
+                        }
+                        .padding(.vertical, IslandMetrics.listVerticalPadding)
+                    }
+                    // 与窗口高度同源（IslandMetrics.listHeight）：封顶时压缩列表而非裁掉底部汇总栏
+                    .frame(maxHeight: IslandMetrics.listHeight(
+                        visibleCount: engine.visibleSnapshots.count,
+                        hasSummary: !engine.grandTotal.isEmpty,
+                        hasRings: !activeSnapshots.isEmpty,
+                        hasEvent: engine.latestEvent != nil,
+                        eventExpanded: controller.eventBannerExpanded))
+                    // 空间不足时只压列表：列表可滚动，压缩不丢信息；
+                    // 汇总栏是不可滚动的定高条，被压就会截断（用户反馈「多一个元素就被截」）
+                    .layoutPriority(-1)
+                    .onChange(of: controller.focusedAgentId) { focused in
+                        guard let focused else { return }
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            proxy.scrollTo(focused, anchor: .center)
                         }
                     }
-                    .padding(.vertical, IslandMetrics.listVerticalPadding)
                 }
-                // 与窗口高度同源（IslandMetrics.listHeight）：封顶时压缩列表而非裁掉底部汇总栏
-                .frame(maxHeight: IslandMetrics.listHeight(
-                    visibleCount: engine.visibleSnapshots.count,
-                    hasSummary: !engine.grandTotal.isEmpty,
-                    hasRings: !activeSnapshots.isEmpty,
-                    hasEvent: engine.latestEvent != nil,
-                    eventExpanded: controller.eventBannerExpanded))
-                // 空间不足时只压列表：列表可滚动，压缩不丢信息；
-                // 汇总栏是不可滚动的定高条，被压就会截断（用户反馈「多一个元素就被截」）
-                .layoutPriority(-1)
             }
 
             // Token 汇总栏
@@ -659,15 +674,10 @@ struct IslandView: View {
     }
 
     private var filteredSnapshots: [AgentSnapshot] {
-        guard controller.isSearchActive && !controller.searchText.isEmpty else {
-            return engine.visibleSnapshots
-        }
-        let q = controller.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return engine.visibleSnapshots.filter {
-            $0.profile.name.lowercased().contains(q) ||
-            $0.profile.id.lowercased().contains(q) ||
-            $0.profile.processNames.contains { $0.lowercased().contains(q) }
-        }
+        // 命中判定收敛到 IslandPanelController.focusableAgents：列表与 j/k 聚焦集同源
+        IslandPanelController.focusableAgents(from: engine.visibleSnapshots,
+                                              isSearchActive: controller.isSearchActive,
+                                              searchText: controller.searchText)
     }
 
     private var searchBar: some View {
@@ -679,15 +689,26 @@ struct IslandView: View {
                 .textFieldStyle(.plain)
                 .font(Theme.bodyFont(11))
                 .foregroundColor(Theme.onDark)
+                // 「/」只是把搜索条挂出来，键盘焦点要跟上，否则还得用鼠标点一次输入框
+                .focused($searchFieldFocused)
+                .onSubmit { searchFieldFocused = false }
+                // 搜索态下 Enter 不下钻详情（全局快捷键让位给输入框），这里只交还键盘焦点
+                .accessibilityLabel("按名称或 CLI 过滤智能体")
             if !controller.searchText.isEmpty {
                 Button {
                     controller.searchText = ""
+                    // 清空后仍留在输入框内，便于直接改词而不是重新点一次
+                    searchFieldFocused = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 10))
                         .foregroundColor(Theme.onDarkFaint)
+                        // 图标只有 10pt，热区靠 padding 撑开，保证输入框聚焦时仍点得到
+                        .padding(3)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("清空搜索关键词")
             }
         }
         .padding(.horizontal, 8)
@@ -703,6 +724,10 @@ struct IslandView: View {
         .padding(.horizontal, 10)
         .padding(.top, 4)
         .padding(.bottom, 2)
+        // 焦点请求只能挂在搜索条自己身上：它与 isSearchActive 出自同一次更新，
+        // 在 toggle 的那一刻直接赋值会落到还不存在的输入框上、静默失效
+        .onAppear { searchFieldFocused = true }
+        .onDisappear { searchFieldFocused = false }
     }
 
     // MARK: 状态点
@@ -842,6 +867,7 @@ struct ShortcutHUDView: View {
                             .foregroundColor(Theme.onDarkFaint)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("关闭快捷键速查")
                 }
 
                 DarkDivider()

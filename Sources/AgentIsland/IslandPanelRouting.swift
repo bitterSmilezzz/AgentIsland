@@ -60,17 +60,25 @@ extension IslandPanelController {
         }
     }
 
+    /// 键盘导航命中口径：与主列表 filteredSnapshots 共用 AgentSearchFilter，
+    /// 两处各写一份就会让「看得见的行」与「j/k 能聚焦的行」静默分叉
+    static func focusableAgents(from snapshots: [AgentSnapshot],
+                                isSearchActive: Bool,
+                                searchText: String) -> [AgentSnapshot] {
+        guard isSearchActive else { return snapshots }
+        return snapshots.filter {
+            AgentSearchFilter.matches(name: $0.profile.name,
+                                      id: $0.profile.id,
+                                      processNames: $0.profile.processNames,
+                                      query: searchText)
+        }
+    }
+
     /// 键盘上下方向键选择列表中的 Agent
     func moveFocus(step: Int) {
-        var list = engine.visibleSnapshots
-        if isSearchActive && !searchText.isEmpty {
-            let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            list = list.filter {
-                $0.profile.name.lowercased().contains(q) ||
-                $0.profile.id.lowercased().contains(q) ||
-                $0.profile.processNames.contains { $0.lowercased().contains(q) }
-            }
-        }
+        let list = Self.focusableAgents(from: engine.visibleSnapshots,
+                                        isSearchActive: isSearchActive,
+                                        searchText: searchText)
         guard !list.isEmpty else {
             focusedAgentId = nil
             return
