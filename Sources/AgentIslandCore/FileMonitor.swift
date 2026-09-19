@@ -434,6 +434,19 @@ public final class FileActivityMonitor: FileActivityProviding {
                     }
                 }
             }
+            // 深度上限真正生效的地方：`level == maxDepth` 的**目录**条目照常参与上面的
+            // topLevel/activeTops 判定（其 mtime 是合法信号，不可跳），但它的子项落在
+            // maxDepth+1，一律被开头的 `en.level <= maxDepth` 守卫丢弃——枚举器却仍然
+            // 为每个这样的目录 opendir + readdir 一轮，纯支出、零收入。
+            // 实测 `~/.gemini/antigravity/brain`：8,716 个 `.system_generated/steps/<n>`
+            // 目录正卡在这一层（内层 `output.txt` 在 level 5，今天就读不到），
+            // 趟数 19,490 → 10,756，单趟全量扫描 218ms → 74ms（同机同树，
+            // newest / activeSessions / newestFile 逐项相等）。
+            // 注意别把这行「优化」成按目录名剪掉 steps 子树：那会连 level-4 目录自身的
+            // mtime 一起丢掉，activeSessions 不再等价（夹具测试已锁死这一点）。
+            if isDir, en.level >= maxDepth {
+                en.skipDescendants()
+            }
         }
         return DirScanResult(newest: newest, activeSessions: activeTops.count, newestFile: newestFile)
     }

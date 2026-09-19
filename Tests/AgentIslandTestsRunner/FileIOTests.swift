@@ -328,5 +328,56 @@ enum FileIOTests {
             try expectEqual(result.activeSessions, 0,
                             "缓存子目录不得被计成活跃会话（此前 Antigravity 空闲时虚报 8 个）")
         }
+
+        TestKit.test("文件监控: 深度上限层的目录照常参与判定，只是不再下探（steps/<n>/output.txt 夹具）") {
+            // R38/P1 剪枝的等价性证明。scanTree 现在对 level == maxDepth 的目录直接
+            // skipDescendants（实测 ~/.gemini/antigravity/brain 19,490 趟 → 10,756 趟、
+            // 218ms → 74ms）。这一层今天本来就读不到任何东西：子项落在 maxDepth+1，
+            // 一律被深度守卫丢弃——所以剪的是「 opendir 一趟空转」，不是任何判定输入。
+            // 夹具同时锁死两头：
+            // · level-4 的 steps/<n> 目录**自身**的 mtime 仍是 activeTops 的合法输入
+            //   （`level > top` 分支）→ 谁要是按目录名把 steps 子树整个剪掉，本用例即红；
+            // · level-5 的 output.txt 从来不可见 → 谁要是放开深度守卫，newest 会被它抬走。
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let fm = FileManager.default
+            let old = Date().addingTimeInterval(-3000)
+            let fresh = Date().addingTimeInterval(-5)
+            let future = Date().addingTimeInterval(600)
+            // 真实产物：level-2 文件，旧 mtime —— newest 只能是它
+            let artifact = root.appendingPathComponent("sess-a/notes.jsonl")
+            try fm.createDirectory(at: artifact.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: artifact)
+            // Antigravity 形态：sess-a(1) / .system_generated(2) / steps(3) / <n>(4) / output.txt(5)
+            for (step, mtime) in [("1", fresh), ("2", old)] {
+                let dir = root.appendingPathComponent("sess-a/.system_generated/steps/\(step)")
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                let payload = dir.appendingPathComponent("output.txt")
+                try Data("payload".utf8).write(to: payload)
+                // 深层载荷写成「未来 mtime」：一旦被枚举到就会顶掉 newest，剪枝失效即刻露馅
+                try fm.setAttributes([.modificationDate: future], ofItemAtPath: payload.path)
+                try fm.setAttributes([.modificationDate: mtime], ofItemAtPath: dir.path)
+            }
+            // 建目录/写文件都会刷新祖先目录 mtime，统一回拨：唯一的「新鲜事物」只有 steps/1
+            for path in [root.path, root.appendingPathComponent("sess-a").path,
+                         root.appendingPathComponent("sess-a/.system_generated").path,
+                         root.appendingPathComponent("sess-a/.system_generated/steps").path,
+                         artifact.path] {
+                try fm.setAttributes([.modificationDate: old], ofItemAtPath: path)
+            }
+
+            let now = Date()
+            let result = FileActivityMonitor.scanTree(in: root.path, maxDepth: 4, window: 60, now: now)
+            try expectEqual(result.activeSessions, 1,
+                            "steps/1 目录自身的新鲜 mtime 必须仍把 sess-a 记成活跃会话（level-4 目录参与判定）")
+            try expectTrue(result.newest != nil && abs(result.newest!.timeIntervalSince(old)) < 2,
+                           "newest 只能是 level-2 的 notes.jsonl，level-5 的 output.txt 从来不可见（实际 \(String(describing: result.newest))）")
+            try expectEqual(result.newestFile?.lastPathComponent, "notes.jsonl")
+            // 窗口收到 1s：steps/1 距今 5s → 不再活跃。这一支证明 activeSessions 真的由
+            // 那层目录的 mtime 决定，而不是夹具里某处恒真的巧合
+            let narrow = FileActivityMonitor.scanTree(in: root.path, maxDepth: 4, window: 1, now: now)
+            try expectEqual(narrow.activeSessions, 0, "窗口收紧后唯一的新鲜源退出")
+            try expectEqual(narrow.newestFile?.lastPathComponent, "notes.jsonl", "newest 与窗口无关")
+        }
     }
 }

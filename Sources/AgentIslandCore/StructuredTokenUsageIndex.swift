@@ -17,19 +17,35 @@ struct StructuredTokenSource {
 struct StructuredTokenUsageSnapshot {
     let records: [TokenUsageRecord]
     let availableToolIds: Set<String>
+    /// records 按 agentId 分桶；**桶内保持 records 里的原始先后顺序**，因此每个桶的累加
+    /// 序列与「线性扫全表 + 按 agentId 取数」逐字一致，饱和/钳制的生效时机不变。
+    let recordsByAgent: [AgentBucket]
 
+    struct AgentBucket {
+        let agentId: String
+        let records: [TokenUsageRecord]
+    }
+
+    /// 24h / 累计两个口径。按桶累加而非逐条查字典：本机实测 5,778 条记录时旧写法
+    /// （线性扫 + 每条一次 `result[agentId] ?? TokenUsage()` 读写）0.99ms/轮，
+    /// 分桶后 0.53ms/轮，且每轮只剩每桶一次字典写入——与累计会话数无关的增长被切断。
     func usage(now: Date) -> [String: TokenUsage] {
         let cutoff = now.addingTimeInterval(-86_400)
         var result: [String: TokenUsage] = [:]
-        for record in records where record.time <= now {
-            var value = result[record.agentId] ?? TokenUsage()
-            value.tokensTotal = Self.safeSum(value.tokensTotal, record.tokens)
-            value.costTotal = Self.safeCostSum(value.costTotal, record.cost)
-            if record.time >= cutoff {
-                value.tokens24h = Self.safeSum(value.tokens24h, record.tokens)
-                value.cost24h = Self.safeCostSum(value.cost24h, record.cost)
+        for bucket in recordsByAgent {
+            var value = TokenUsage()
+            var counted = false
+            for record in bucket.records where record.time <= now {
+                counted = true
+                value.tokensTotal = Self.safeSum(value.tokensTotal, record.tokens)
+                value.costTotal = Self.safeCostSum(value.costTotal, record.cost)
+                if record.time >= cutoff {
+                    value.tokens24h = Self.safeSum(value.tokens24h, record.tokens)
+                    value.cost24h = Self.safeCostSum(value.cost24h, record.cost)
+                }
             }
-            result[record.agentId] = value
+            // 与线性扫一致：一条记录都没落进 `time <= now` 的工具不出现在结果里
+            if counted { result[bucket.agentId] = value }
         }
         return result
     }
@@ -51,23 +67,41 @@ struct StructuredTokenUsageSnapshot {
 ///
 /// 每轮只 stat JSONL；文件未变化直接复用解析结果，避免 60s 轮询反复重读完整会话。
 /// 同一响应可能因 fork/恢复出现在多个文件中，Codex response_id 和 WorkBuddy id 会全局去重。
+///
+/// 稳态开销的最后一道闸是「全库戳备忘录」：解析结果按文件缓存后，剩下的摊平/去重/分桶
+/// 仍随**生命周期内累计会话数**线性增长（本机 5,778 条记录实测 8.2ms/轮），而绝大多数
+/// 轮询里整棵日志树一个字节都没变——戳逐字相同即直接复用上一趟的快照对象。
 final class StructuredTokenUsageIndex: @unchecked Sendable {
     private struct Event {
         let uniqueId: String
         let record: TokenUsageRecord
     }
 
-    private struct CachedFile {
+    /// 单文件的变更戳（inode 防「同名文件被整体替换」，mtime+size 防原地改写）。
+    /// 三个事实来自同一次 stat(2)。
+    private struct FileStamp: Equatable {
         let inode: UInt64
         let modifiedAt: TimeInterval
         let size: Int
+    }
+
+    private struct CachedFile {
+        let stamp: FileStamp
         let endedWithNewline: Bool
         let events: [Event]
+    }
+
+    /// 全库戳 → 已构建快照。戳逐字相同 ⇒ 各文件事件集合与顺序都不变 ⇒ 摊平、去重、
+    /// 分桶的结果必然逐字相同，直接复用（数组按引用共享，不再逐元素拷贝）。
+    private struct Memo {
+        let stamps: [String: FileStamp]
+        let snapshot: StructuredTokenUsageSnapshot
     }
 
     private let sources: [StructuredTokenSource]
     private let lock = NSLock()
     private var cache: [String: CachedFile] = [:]
+    private var memo: Memo?
 
     init(sources: [StructuredTokenSource]) {
         self.sources = sources
@@ -82,50 +116,59 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
 
         var availableToolIds = Set<String>()
         var seenCacheKeys = Set<String>()
-        var allEvents: [Event] = []
+        var stamps: [String: FileStamp] = [:]
+        // 按遍历顺序持有各文件的事件**数组**（每个文件一次 append，共享底层存储）：
+        // 戳未变的常态下这一趟只有这点开销，摊平与去重整套跳过
+        var fileEvents: [[Event]] = []
 
         for source in sources {
             for root in source.roots where FileManager.default.fileExists(atPath: root) {
                 availableToolIds.insert(source.agentId)
                 guard let enumerator = FileManager.default.enumerator(
                     at: URL(fileURLWithPath: root, isDirectory: true),
-                    includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
+                    includingPropertiesForKeys: nil,
                     options: [.skipsHiddenFiles, .skipsPackageDescendants]
                 ) else { continue }
 
                 for case let url as URL in enumerator where url.pathExtension.lowercased() == "jsonl" {
-                    guard let values = try? url.resourceValues(
-                        forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
-                    ), values.isRegularFile == true else { continue }
-
+                    // 一次 stat(2) 拿齐 (普通文件, mtime, size, inode)。此前这里先
+                    // `resourceValues` 取 mtime/size、再 `attributesOfItem` 取 inode——
+                    // 同一条元数据付两遍：本机实测 attributesOfItem 单次 26µs（为一次比对
+                    // 组装 NSDictionary/NSNumber），stat(2) 只要 0.6µs；且 resourceValues
+                    // 还有毫秒级陈旧窗口（同一问题曾咬到尾读备忘，见 LogTailReader 开头注释）。
+                    guard let facts = LogTailReader.statRegularFile(url.path) else { continue }
                     let cacheKey = source.agentId + "|" + url.path
+                    let stamp = FileStamp(inode: facts.inode,
+                                          modifiedAt: facts.mtime.timeIntervalSince1970,
+                                          size: Int(truncatingIfNeeded: facts.size))
                     seenCacheKeys.insert(cacheKey)
-                    let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-                    let inode = (attributes?[.systemFileNumber] as? UInt64) ?? 0
-                    let modifiedAt = values.contentModificationDate?.timeIntervalSince1970 ?? 0
-                    let size = values.fileSize ?? 0
-                    if let cached = cache[cacheKey],
-                       cached.inode == inode, cached.modifiedAt == modifiedAt, cached.size == size {
-                        allEvents.append(contentsOf: cached.events)
+
+                    // stamps[键] 一律记「**实际贡献了事件的那份 CachedFile 的戳**」——
+                    // 备忘录只在「每个贡献者的戳都没变」时才命中，这样「上次读失败、
+                    // 这次同一 mtime/size 下读成功」不会被误判成没变（那正是统计静默
+                    // 丢一整个文件的场景）。
+                    if let cached = cache[cacheKey], cached.stamp == stamp {
+                        stamps[cacheKey] = cached.stamp
+                        fileEvents.append(cached.events)
                         continue
                     }
 
                     let old = cache[cacheKey]
-                    let canAppend = old?.inode == inode && old?.endedWithNewline == true && size > (old?.size ?? 0)
-                    let offset = canAppend ? (old?.size ?? 0) : 0
+                    let canAppend = old?.stamp.inode == stamp.inode
+                        && old?.endedWithNewline == true && stamp.size > (old?.stamp.size ?? 0)
+                    let offset = canAppend ? (old?.stamp.size ?? 0) : 0
                     if let parsed = Self.parse(url: url, source: source, offset: offset) {
                         let events = canAppend ? (old?.events ?? []) + parsed.events : parsed.events
-                        cache[cacheKey] = CachedFile(
-                            inode: inode,
-                            modifiedAt: modifiedAt,
-                            size: size,
-                            endedWithNewline: parsed.endedWithNewline,
-                            events: events
-                        )
-                        allEvents.append(contentsOf: events)
-                    } else if let cached = cache[cacheKey] {
+                        cache[cacheKey] = CachedFile(stamp: stamp,
+                                                     endedWithNewline: parsed.endedWithNewline,
+                                                     events: events)
+                        stamps[cacheKey] = stamp
+                        fileEvents.append(events)
+                    } else if let cached = old {
                         // 文件正被写入或瞬时不可读时沿用上一份成功结果，避免统计闪回零。
-                        allEvents.append(contentsOf: cached.events)
+                        // 戳沿用旧那份（而不是本次观测到的新戳）→ 下一趟仍会重试解析
+                        stamps[cacheKey] = cached.stamp
+                        fileEvents.append(cached.events)
                     }
                 }
             }
@@ -133,12 +176,35 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
 
         cache = cache.filter { seenCacheKeys.contains($0.key) }
 
-        var uniqueIds = Set<String>()
-        let records = allEvents.compactMap { event -> TokenUsageRecord? in
-            guard uniqueIds.insert(event.uniqueId).inserted else { return nil }
-            return event.record
+        // 稳态：整棵日志树一个字节都没变（绝大多数轮询都是这一支）。
+        // availableToolIds 也要比：某个 root 里一个 jsonl 都没有时，戳集合会保持不变，
+        // 而活性集合却会随该 root 出现/消失而变。
+        if let memo, memo.stamps == stamps, memo.snapshot.availableToolIds == availableToolIds {
+            return memo.snapshot
         }
-        return StructuredTokenUsageSnapshot(records: records, availableToolIds: availableToolIds)
+
+        var uniqueIds = Set<String>()
+        var records: [TokenUsageRecord] = []
+        var agentOrder: [String] = []
+        var byAgent: [String: [TokenUsageRecord]] = [:]
+        for events in fileEvents {
+            for event in events where uniqueIds.insert(event.uniqueId).inserted {
+                records.append(event.record)
+                if byAgent[event.record.agentId] == nil { agentOrder.append(event.record.agentId) }
+                byAgent[event.record.agentId, default: []].append(event.record)
+            }
+        }
+        var buckets: [StructuredTokenUsageSnapshot.AgentBucket] = []
+        buckets.reserveCapacity(agentOrder.count)
+        for agentId in agentOrder {
+            buckets.append(StructuredTokenUsageSnapshot.AgentBucket(
+                agentId: agentId, records: byAgent[agentId] ?? []))
+        }
+        let snapshot = StructuredTokenUsageSnapshot(records: records,
+                                                    availableToolIds: availableToolIds,
+                                                    recordsByAgent: buckets)
+        memo = Memo(stamps: stamps, snapshot: snapshot)
+        return snapshot
     }
 
     private static func parse(url: URL, source: StructuredTokenSource, offset: Int)

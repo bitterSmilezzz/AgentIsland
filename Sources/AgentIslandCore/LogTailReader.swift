@@ -64,10 +64,23 @@ enum LogTailReader {
 
     /// 单次 stat() 取 mtime（纳秒）与长度；非普通文件或取不到时返回 nil。
     private static func statRegular(_ path: String) -> (mtime: Date, size: UInt64)? {
+        guard let stamp = statRegularFile(path) else { return nil }
+        return (stamp.mtime, UInt64(bitPattern: Int64(stamp.size)))
+    }
+
+    /// 单次 stat() 同时取普通文件的 (mtime, size, inode)。
+    /// 三个事实一次 syscall 拿齐：`URL.resourceValues` 与 `attributesOfItem` 各有自己的
+    /// 缓存/装箱代价（后者为一次比对要组装 NSDictionary + NSNumber，本机实测 26µs/次，
+    /// 而 stat(2) 是 0.6µs/次；前者的毫秒级陈旧窗口就是上面说的那类误命中来源）。
+    /// 增量索引需要「inode 防同名替换 + mtime/size 防原地改写」，三者缺一不可。
+    static func statRegularFile(_ path: String) -> (mtime: Date, size: Int, inode: UInt64)? {
         var st = stat()
         guard stat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return nil }
         let seconds = TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1_000_000_000
-        return (Date(timeIntervalSince1970: seconds), UInt64(st.st_size))
+        // st_size 是 off_t(Int64)：本机 64 位下与 Int 等宽，truncatingIfNeeded 无损
+        return (Date(timeIntervalSince1970: seconds),
+                Int(truncatingIfNeeded: st.st_size),
+                UInt64(truncatingIfNeeded: st.st_ino))
     }
 
     private static func readUncached(file: URL, maxLines: Int, maxBytes: Int) -> [String] {

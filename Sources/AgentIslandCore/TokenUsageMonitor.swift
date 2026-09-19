@@ -847,56 +847,93 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     private func queryDimAgent(cutoffISO: String) -> TokenUsage? {
         // createdAt 是 ISO8601 UTC 字符串（同格式字符串比较即时间比较）；cost 全表 SUM（NULL 记 0）
-        let sql24h = """
-        SELECT \(DimUsageSQL.netTokens),
-               COALESCE(SUM(cost),0)
-        FROM usage_ledger WHERE createdAt >= '\(cutoffISO)'
+        //
+        // 一趟同时出「24h」与「累计」两个口径。此前是两条独立查询：usage_ledger 上没有
+        // createdAt 打头的索引（只有 (sessionId, createdAt, ledgerId)），两条都是全表 SCAN，
+        // 而净 token 表达式要逐行 json_extract(usage)——同一遍表扫两次、同一批 JSON 解两遍。
+        // 实测（本机、只读、prepare 后 min-of-20 次 step）：1,208 行的真实 dimcode.sqlite
+        // 两趟 0.05 + 0.60 = 0.65ms、合并 0.65ms（打平，省下的那次全表扫被逐行 CASE 比
+        // 较抵消）；把同一张表按行放大到 77,312 行（44MB）后两趟 8.24 + 44.26 = 52.5ms、
+        // 合并 48.1ms（-8%，四列输出与两趟逐项相同）。省的是一遍全表扫描，随行数线性增长。
+        // 等价性（逐条对照原式，真实库与夹具库均已对拍）：
+        // · 子查询把每行净 token 先落成标量 t，两个口径只是对同一批 t 分别「全表求和」与
+        //   「CASE 过滤求和」，加数集合与原两条查询一致；
+        // · completionTokens 缺失时原式靠 SUM 跳过 NULL，此处显式 COALESCE 成 0——同为加 0；
+        // · cost 为 NULL 时同理（COALESCE(cost,0)）；空表 / 窗口内无行都经 COALESCE 归 0；
+        // · MAX(a,b) 是标量 max（任一参数 NULL 即返回 NULL），两个参数都已 COALESCE 故不为 NULL。
+        let sql = """
+        SELECT COALESCE(SUM(t),0),
+               COALESCE(SUM(c),0),
+               COALESCE(SUM(CASE WHEN createdAt >= ? THEN t ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN createdAt >= ? THEN c ELSE 0 END),0)
+        FROM (
+            SELECT createdAt,
+                   COALESCE(cost,0) AS c,
+                   MAX(COALESCE(json_extract(usage,'$.promptTokens'),0)
+                     - COALESCE(json_extract(usage,'$.cacheReadTokens'),0), 0)
+                     + COALESCE(json_extract(usage,'$.completionTokens'),0) AS t
+            FROM usage_ledger
+        )
         """
-        let sqlTotal = """
-        SELECT \(DimUsageSQL.netTokens),
-               COALESCE(SUM(cost),0)
-        FROM usage_ledger
-        """
-        var u: TokenUsage?
-        if let (t24, c24) = scalarSum(sql24h, dbPath: dimAgentDB, source: "dim"),
-           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: dimAgentDB, source: "dim") {
-            u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
+        guard let row = rawRows(sql, dbPath: dimAgentDB, cols: 4, textParams: [cutoffISO, cutoffISO]).first else {
+            return nil
         }
-        return u
+        return TokenUsage(tokens24h: Self.tokenColumn(row[2], source: "dim.24h.tokens"),
+                          tokensTotal: Self.tokenColumn(row[0], source: "dim.total.tokens"),
+                          cost24h: Self.costColumn(row[3], source: "dim.24h.cost"),
+                          costTotal: Self.costColumn(row[1], source: "dim.total.cost"))
     }
 
     private func queryOpenCode(cutoffMs: Int64) -> TokenUsage? {
-        let tokensExpr = """
-        COALESCE(SUM(json_extract(data,'$.tokens.input')),0)
-        + COALESCE(SUM(json_extract(data,'$.tokens.output')),0)
-        + COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0)
+        // 与 dim 同构：单趟出两个口径。role 过滤后逐行 json_extract(data) 三次，
+        // 两条查询等于把这些 JSON 解两遍。实测（本机 opencode.db 缺失，故用与
+        // TokenFixture 同 schema 的夹具库对拍：数值逐项一致，见「SQLite 单趟汇总」用例）。
+        // cutoffMs 是饱和后的 Int64 字面量（无注入面），24h 条件用 CASE 复用同一次扫描。
+        // 净 token 沿用原口径：input+output+reasoning 三项直加（cache.read 不参与）。
+        let sql = """
+        SELECT COALESCE(SUM(t),0),
+               COALESCE(SUM(c),0),
+               COALESCE(SUM(CASE WHEN time_created >= \(cutoffMs) THEN t ELSE 0 END),0),
+               COALESCE(SUM(CASE WHEN time_created >= \(cutoffMs) THEN c ELSE 0 END),0)
+        FROM (
+            SELECT time_created,
+                   COALESCE(json_extract(data,'$.cost'),0) AS c,
+                   COALESCE(json_extract(data,'$.tokens.input'),0)
+                     + COALESCE(json_extract(data,'$.tokens.output'),0)
+                     + COALESCE(json_extract(data,'$.tokens.reasoning'),0) AS t
+            FROM message
+            WHERE json_extract(data,'$.role')='assistant'
+        )
         """
-        let roleFilter = "json_extract(data,'$.role')='assistant'"
-        let sql24h = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter) AND time_created >= \(cutoffMs)"
-        let sqlTotal = "SELECT \(tokensExpr), COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(roleFilter)"
-        var u: TokenUsage?
-        if let (t24, c24) = scalarSum(sql24h, dbPath: openCodeDB, source: "opencode"),
-           let (tAll, cAll) = scalarSum(sqlTotal, dbPath: openCodeDB, source: "opencode") {
-            u = TokenUsage(tokens24h: t24, tokensTotal: tAll, cost24h: c24, costTotal: cAll)
-        }
-        return u
+        guard let row = rawRows(sql, dbPath: openCodeDB, cols: 4).first else { return nil }
+        return TokenUsage(tokens24h: Self.tokenColumn(row[2], source: "opencode.24h.tokens"),
+                          tokensTotal: Self.tokenColumn(row[0], source: "opencode.total.tokens"),
+                          cost24h: Self.costColumn(row[3], source: "opencode.24h.cost"),
+                          costTotal: Self.costColumn(row[1], source: "opencode.total.cost"))
     }
 
     // MARK: - SQLite 底层
 
-    /// 两列标量查询：(token, cost)；查询失败返回 nil
-    private func scalarSum(_ sql: String, dbPath: String, source: String) -> (Int, Double)? {
-        guard let row = rawRows(sql, dbPath: dbPath, cols: 2).first else { return nil }
-        // 经 Double 中转：SQLite 对 REAL 列求和会输出 "19067783.5" 这类带小数文本，
-        // 直接 Int("...") 会返回 nil 并被 ?? 0 静默归零（统计整体消失且无任何报错）。
-        // 兜底转换必须走 SafeNumber：脏数据（1e19 / Inf / NaN）在该路径上会直接 trap。
-        let tokens = SafeNumber.parseInt(row[0], source: "\(source).total.tokens")
-        return (tokens, SafeNumber.parseCost(row[1], source: "\(source).total.cost"))
+    /// 文本参数析构器 TRANSIENT：让 SQLite 自行复制一份。Swift 侧 String 桥接出的 C
+    /// 缓冲区只在 `sqlite3_bind_text` 那一行有效，而绑定之后才 step。
+    /// C 的 `SQLITE_TRANSIENT` 是 `((sqlite3_destructor_type)-1)` 强转宏，不导入 Swift，需自建。
+    private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    /// 汇总列 → Int。经 Double 中转：SQLite 对 REAL 列求和会输出 "19067783.5" 这类
+    /// 带小数文本，直接 Int("...") 会返回 nil 并被 ?? 0 静默归零（统计整体消失且无任何
+    /// 报错）。兜底转换必须走 SafeNumber：脏数据（1e19 / Inf / NaN）在该路径上会直接 trap。
+    private static func tokenColumn(_ raw: String, source: String) -> Int {
+        SafeNumber.parseInt(raw, source: source)
+    }
+
+    /// 汇总列 → 金额（同 tokenColumn 的防护口径）
+    private static func costColumn(_ raw: String, source: String) -> Double {
+        SafeNumber.parseCost(raw, source: source)
     }
 
     /// 通用查询：全部列转字符串返回（数值/文本统一处理，空结果返回 []）
     /// 线程安全：所有查询在 dbQueue 串行执行，连接按路径缓存复用（只读，应用生命周期内不关闭）
-    private func rawRows(_ sql: String, dbPath: String, cols: Int) -> [[String]] {
+    private func rawRows(_ sql: String, dbPath: String, cols: Int, textParams: [String] = []) -> [[String]] {
         dbQueue.sync {
             let fm = FileManager.default
             guard fm.fileExists(atPath: dbPath) else {
@@ -927,6 +964,12 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 return []
             }
             defer { sqlite3_finalize(stmt) }
+
+            // 文本参数按位绑定（1 起）：汇总查询用同一 SQL 同时出 24h 与累计两个口径，
+            // cutoff 必须以参数进入——字面量拼接会把它写进 SQL 两次（且难以比对）。
+            for (offset, value) in textParams.enumerated() {
+                sqlite3_bind_text(stmt, Int32(offset + 1), value, -1, Self.sqliteTransient)
+            }
 
             var rows: [[String]] = []
             while sqlite3_step(stmt) == SQLITE_ROW {

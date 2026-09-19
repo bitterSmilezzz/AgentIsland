@@ -734,7 +734,204 @@ enum TokenUsageTests {
             try expectNil(got, "不存在的库应打开失败")
         }
 
+        // MARK: - R38/P2·P3：单趟汇总与戳备忘录
+
+        TestKit.test("Token汇总: dim 的 24h 与累计合并成单趟后必须逐列等于原两趟") {
+            // 两趟→一趟（SUM(CASE WHEN …)）只允许改「怎么扫」，不允许改「扫出什么」。
+            // 夹具把三条容易走偏的分支都摆进来了：cost 为 NULL、completionTokens 键缺失
+            // （原式靠 SUM 跳过 NULL）、cacheRead > prompt 使净额逐行钳制为 0。
+            // 四个期望值两两不同，任何「24h / 累计」列序写反都会露馅。
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let dimDB = dir.appendingPathComponent("dimcode.sqlite").path
+            // 用闭包而不是嵌套 func：闭包继承外层 @MainActor 隔离，能直接调 TokenFixture.iso
+            let row: (TimeInterval, String, String) -> String = { age, usage, cost in
+                "INSERT INTO usage_ledger VALUES ('\(TokenFixture.iso(now.addingTimeInterval(age)))', 'm1', '\(usage)', \(cost), 's')"
+            }
+            try TokenFixture.exec(dimDB, [
+                "CREATE TABLE usage_ledger (createdAt TEXT, modelId TEXT, usage TEXT, cost REAL, sessionId TEXT)",
+                row(-60, "{\"promptTokens\":100,\"completionTokens\":50}", "0.10"),
+                row(-48 * 3600, "{\"promptTokens\":1000}", "2.00"),
+                row(-30, "{\"promptTokens\":30}", "NULL"),
+                row(-20, "{\"promptTokens\":10,\"cacheReadTokens\":40,\"completionTokens\":7}", "0.50"),
+            ])
+            let cutoff = TokenUsageMonitor.iso24hAgo(now: now)
+            let net = DimUsageSQL.netTokens
+            // 参照 = 改造前的两条 SQL（各自全表扫一遍，逐字照搬）
+            let refTokens24 = try queryColumn(dimDB, sql: "SELECT \(net) FROM usage_ledger WHERE createdAt >= '\(cutoff)'", column: 0).first ?? ""
+            let refTokensAll = try queryColumn(dimDB, sql: "SELECT \(net) FROM usage_ledger", column: 0).first ?? ""
+            let refCost24 = try queryColumn(dimDB, sql: "SELECT COALESCE(SUM(cost),0) FROM usage_ledger WHERE createdAt >= '\(cutoff)'", column: 0).first ?? ""
+            let refCostAll = try queryColumn(dimDB, sql: "SELECT COALESCE(SUM(cost),0) FROM usage_ledger", column: 0).first ?? ""
+
+            let m = TokenUsageMonitor(dimAgentDB: dimDB, openCodeDB: dir.appendingPathComponent("none.db").path)
+            m.refresh(now: now)
+            let dim = try XCTUnwrap(m.usage["dim"], "dim 源缺席")
+            try expectEqual("\(dim.tokensTotal)", refTokensAll, "累计 token 必须等于原两趟")
+            try expectEqual("\(dim.tokens24h)", refTokens24, "24h token 必须等于原两趟")
+            try expectEqual(dim.costTotal, Double(refCostAll) ?? -1, "累计 cost 必须等于原两趟")
+            try expectEqual(dim.cost24h, Double(refCost24) ?? -1, "24h cost 必须等于原两趟")
+            try expectEqual(dim.tokensTotal, 1187, "(100+50)+1000+30+7")
+            try expectEqual(dim.tokens24h, 187, "累计去掉 48h 前那条")
+            try expectTrue(abs(dim.costTotal - 2.6) < 0.0001, "NULL cost 记 0")
+            try expectTrue(abs(dim.cost24h - 0.6) < 0.0001)
+        }
+
+        TestKit.test("Token汇总: opencode 的 24h 与累计合并成单趟后必须逐列等于原两趟") {
+            // 本机没有 opencode.db（该 Agent 未安装），所以这条只能靠同 schema 夹具对拍：
+            // 原式是「每列一个 SUM、NULL 由 SUM 跳过」，现式是「逐行 COALESCE 后相加」，
+            // 两者对缺失字段必须给出同一个数。
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let ocDB = dir.appendingPathComponent("opencode.db").path
+            let row: (TimeInterval, String) -> String = { age, data in
+                "INSERT INTO message VALUES ('s1', '\(data)', \(TokenFixture.ms(now.addingTimeInterval(age))))"
+            }
+            try TokenFixture.exec(ocDB, [
+                "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
+                row(-60, "{\"role\":\"assistant\",\"tokens\":{\"input\":10,\"output\":20,\"reasoning\":5},\"cost\":0.5}"),
+                row(-48 * 3600, "{\"role\":\"assistant\",\"tokens\":{\"input\":200},\"cost\":2.0}"),
+                // 缺 output/reasoning 与 cost：原式三个 SUM 各跳过 NULL，现式逐项 COALESCE
+                row(-30, "{\"role\":\"assistant\",\"tokens\":{\"input\":7}}"),
+                // user 角色：两条查询都不得计入
+                row(-60, "{\"role\":\"user\",\"tokens\":{\"input\":50000,\"output\":1},\"cost\":9.9}"),
+            ])
+            let cutoffMs = Int64(now.timeIntervalSince1970 * 1000) - 86_400_000
+            let expr = """
+            COALESCE(SUM(json_extract(data,'$.tokens.input')),0)
+            + COALESCE(SUM(json_extract(data,'$.tokens.output')),0)
+            + COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0)
+            """
+            let role = "json_extract(data,'$.role')='assistant'"
+            let refTokens24 = try queryColumn(ocDB, sql: "SELECT \(expr) FROM message WHERE \(role) AND time_created >= \(cutoffMs)", column: 0).first ?? ""
+            let refTokensAll = try queryColumn(ocDB, sql: "SELECT \(expr) FROM message WHERE \(role)", column: 0).first ?? ""
+            let refCost24 = try queryColumn(ocDB, sql: "SELECT COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(role) AND time_created >= \(cutoffMs)", column: 0).first ?? ""
+            let refCostAll = try queryColumn(ocDB, sql: "SELECT COALESCE(SUM(json_extract(data,'$.cost')),0) FROM message WHERE \(role)", column: 0).first ?? ""
+
+            let m = TokenUsageMonitor(dimAgentDB: dir.appendingPathComponent("none.sqlite").path, openCodeDB: ocDB)
+            m.refresh(now: now)
+            let oc = try XCTUnwrap(m.usage["opencode"], "opencode 源缺席")
+            try expectEqual("\(oc.tokensTotal)", refTokensAll, "累计 token 必须等于原两趟")
+            try expectEqual("\(oc.tokens24h)", refTokens24, "24h token 必须等于原两趟")
+            try expectEqual(oc.costTotal, Double(refCostAll) ?? -1, "累计 cost 必须等于原两趟")
+            try expectEqual(oc.cost24h, Double(refCost24) ?? -1, "24h cost 必须等于原两趟")
+            try expectEqual(oc.tokensTotal, 242, "35+200+7，user 角色不计")
+            try expectEqual(oc.tokens24h, 42, "去掉 48h 前那条")
+        }
+
+        TestKit.test("结构化Token索引: 无关文件变动不得改变聚合，日志自身变化必须计入（戳备忘录）") {
+            // 稳态命中的全库戳备忘录把「摊平 + 全局去重 + 分桶」整套跳过（本机实测
+            // 5,778 条记录时快照稳态 8.25ms → 2.70ms）。它只在整棵日志树的戳逐字不变时
+            // 生效，因此两头都要钉住：无关变动不得改一个数字，日志变动一个数字都不能漏。
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let logs = root.appendingPathComponent("codex")
+            try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [logs.path], format: .codex)
+            ])
+            let rollout = logs.appendingPathComponent("rollout.jsonl")
+            // 同一 response_id 出现两次 → 只计一次（(100-60)+10 = 50）
+            try (Self.codexLine("r1", 5) + "\n" + Self.codexLine("r1", 5) + "\n")
+                .write(to: rollout, atomically: true, encoding: .utf8)
+
+            let base = Self.structuredSignature(index.snapshot())
+            try expectTrue(base.contains("n=1"), "一条去重后的记录，实际 \(base)")
+
+            // 1) 同一棵树里新增无关文件、改动无关文件：聚合数字必须逐字不变
+            try Data("readme".utf8).write(to: logs.appendingPathComponent("README.md"))
+            try expectEqual(Self.structuredSignature(index.snapshot()), base, "同目录非 jsonl 文件不得影响聚合")
+            // 2) 另一个 root 里新增 jsonl 之外的一堆目录/文件（戳集合不变）
+            let other = root.appendingPathComponent("noise/deep/dir")
+            try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: other.appendingPathComponent("scratch.txt"))
+            try expectEqual(Self.structuredSignature(index.snapshot()), base, "监控根之外的变动不得影响聚合")
+            // 3) 追加新响应到已有日志（同 inode 增量分支）：必须立刻出现在聚合里
+            let handle = try FileHandle(forWritingTo: rollout)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data((Self.codexLine("r2", 3, input: 300, cached: 100, output: 20)
+                + "\n" + Self.codexLine("r3", 2, input: 40, cached: 0, output: 6) + "\n").utf8))
+            try handle.close()
+            let appended = Self.structuredSignature(index.snapshot())
+            try expectTrue(appended != base, "追加新响应必须重算")
+            try expectTrue(appended.contains("n=3"), "r1 去重后共 3 条，实际 \(appended)")
+            // 4) 新增日志文件：必须计入
+            let extra = logs.appendingPathComponent("rollout2.jsonl")
+            try (Self.codexLine("r4", 1, input: 10, cached: 0, output: 1) + "\n").write(to: extra, atomically: true, encoding: .utf8)
+            try expectTrue(Self.structuredSignature(index.snapshot()).contains("n=4"), "新文件的响应不得被备忘录吞掉")
+            // 5) 删除日志文件：必须退出（备忘录不得把已消失的来源继续算进去）
+            try FileManager.default.removeItem(at: extra)
+            try expectTrue(Self.structuredSignature(index.snapshot()).contains("n=3"), "删除文件后必须回退")
+        }
+
+        TestKit.test("ReadonlyDB: 同路径被外部替换（新 inode）当拍即弃用旧连接") {
+            // 连接身份比对已从 attributesOfItem 换成单次 stat(2)，这条钉住其语义：
+            // 库被删除重建（备份恢复、VACUUM 后 rename）后，旧句柄指向的 inode 已失效。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let target = dir.appendingPathComponent("state.db").path
+            try TokenFixture.exec(target, ["CREATE TABLE t (v TEXT)", "INSERT INTO t VALUES ('第一份')"])
+            try expectEqual(Self.readFirstValueViaCache(target), "第一份")
+            try expectEqual(Self.readFirstValueViaCache(target), "第一份", "第二次走缓存连接，结果必须一致")
+            // 删掉重建同名文件 → 新 inode，缓存连接必须作废
+            try FileManager.default.removeItem(atPath: target)
+            try TokenFixture.exec(target, ["CREATE TABLE t (v TEXT)", "INSERT INTO t VALUES ('第二份')"])
+            try expectEqual(Self.readFirstValueViaCache(target), "第二份", "同路径换 inode 后不得再吃旧连接")
+        }
+
         // MARK: 等待辅助：主线程轮询 RunLoop（避免信号量死锁 MainActor）
+    }
+
+    /// 结构化快照的可比签名：记录逐条（顺序敏感）+ 两口径用量 + 活性集合。
+    /// 备忘录若吞掉任何一次变化，这里就会不等。
+    @MainActor
+    private static func structuredSignature(_ snap: StructuredTokenUsageSnapshot) -> String {
+        let body = snap.records.map {
+            "\($0.agentId)|\(String(format: "%.3f", $0.time.timeIntervalSince1970))|\($0.tokens)|\(String(format: "%.6f", $0.cost))"
+        }.joined(separator: ";")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let usage = snap.usage(now: now)
+        let tail = usage.keys.sorted().map { key -> String in
+            let value = usage[key]!
+            return "u:\(key)=\(value.tokensTotal)/\(value.tokens24h)/\(String(format: "%.6f", value.costTotal))/\(String(format: "%.6f", value.cost24h))"
+        }.joined(separator: ";")
+        return "tools=\(snap.availableToolIds.sorted()) n=\(snap.records.count) [\(body)] [\(tail)]"
+    }
+
+    /// Codex rollout 的一行 `token_usage_record`（基准时间固定，签名才可跨次比对）
+    @MainActor
+    private static func codexLine(_ responseId: String, _ minutes: Int,
+                                  input: Int = 100, cached: Int = 60, output: Int = 10) -> String {
+        let stamp = TokenFixture.iso(Date(timeIntervalSince1970: 1_700_000_000 - Double(minutes) * 60))
+        return "{\"timestamp\":\"\(stamp)\",\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"\(responseId)\",\"usage\":{\"input_tokens\":\(input),\"cached_input_tokens\":\(cached),\"output_tokens\":\(output)}}}"
+    }
+
+    /// 与 TokenFixture.iso 同格式（含毫秒 UTC）；放在本文件的静态位是为了让嵌套 helper
+    /// 能在 MainActor 上下文里直接调用
+    @MainActor
+    private static func testISO(_ date: Date) -> String {
+        TokenFixture.iso(date)
+    }
+
+    /// 经 ReadonlyDB 的缓存连接读一个标量。返回值统一压成非可选字符串，
+    /// 「无连接 / prepare 失败 / 无行」各有专名，免得双层可选把类型推断绕死
+    @MainActor
+    private static func readFirstValueViaCache(_ path: String) -> String {
+        return ReadonlyDB.withConnection(path) { db -> String in
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT v FROM t", -1, &stmt, nil) == SQLITE_OK, let stmt else {
+                return "<prepare 失败>"
+            }
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_step(stmt) == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) else {
+                return "<无行>"
+            }
+            return String(cString: text)
+        } ?? "<无连接>"
     }
 
     /// 在临时库上执行查询并取指定列（流水窗口 SQL 的语义验证）

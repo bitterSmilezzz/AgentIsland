@@ -552,6 +552,17 @@ public enum AgentActionInspector {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return withDB(dbPath) { db in
             // 查询未软删除的最新活跃/最近会话
+            //
+            // 不要用 max(rowid) 替掉这里的 ORDER BY updated_at DESC（本文件 dim 探测器
+            // 235 行那一招在这里**不成立**，本机真实库可反驳）：sessions 行会被就地 UPDATE，
+            // rowid 顺序不代表 updated_at 顺序。实测 ~/.workbuddy/workbuddy.db（5 行）:
+            //   ORDER BY updated_at DESC LIMIT 1 → rowid 1 / 1789832472978
+            //   WHERE rowid = max(rowid)         → rowid 5 / 1788920103273（早 10.6 天）
+            // 取错会话即读错 status 与 updated_at，本函数下游的「闲置 >120s 即判非在途」
+            // 门限会直接失真。代价侧也没有可省的：EXPLAIN QUERY PLAN 是 SCAN sessions +
+            // USE TEMP B-TREE FOR ORDER BY，LIMIT 1 让临时 B 树只存一行，实测 5 行库
+            // 0.16µs——瓶颈是全表扫本身，而 updated_at 无索引是第三方应用的库结构决定，
+            // 只读连接加不了索引。
             let sql = "SELECT id, COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
