@@ -4,6 +4,18 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.84] - 2026-09-20
+
+### ⚙️ 后台扫描与索引聚合提速，告警隔离与解析失败可见性
+
+- **目录枚举在深度上限真正生效处剪枝**：`FileMonitor.scanTree` 的 `maxDepth` 守卫原先只丢弃 level+1 的条目，枚举器却仍为每个 `level == maxDepth` 的目录 `opendir/readdir` 一轮——纯支出、零收入。实测 `~/.gemini/antigravity/brain` 有 8,716 个 `steps/<n>` 目录正卡在这一层（其 `output.txt` 在 level 5，今天就读不到），趟数 **19,490 → 10,756**，单趟全量扫描 **218ms → 74ms**，`newest` / `activeSessions` / `newestFile` 逐项相等（夹具测试锁死）。刻意**没有**按目录名剪掉 `steps` 子树：那会连 level-4 目录自身的 mtime 一起丢掉，活跃会话判定不再等价。
+- **结构化 Token 索引改分桶聚合**：按 (路径, mtime, 长度) 缓存每个文件的合计，未变文件不再参与本轮聚合——首趟 **1,988ms → 稳态 2.69ms**，`usage(now:)` 汇总 **1,002µs → 528µs**，逐工具用量签名与改造前完全一致；只读库探测改 `stat(2)`（26.2µs → 0.6µs/次，且避开 `resourceValues` 的毫秒级陈旧窗口）。
+- **成本告警保护窗口按 Agent 隔离**：`alertProtectedUntil` 原是单个全局时间戳，而 `clearLatestEvent()` 会无条件清掉它——用户 dismiss 掉 B 的横幅，等于顺手解除了 A 正在生效的激增保护，A 可以立刻再告警。现改为按 agent id 记录，并接入 `resetTracking` / `resetAllTracking` / `retainTracking` 三个既有生命周期入口。
+- **「解析器坏了」不再伪装成待机**：只读库打不开、`sqlite3_prepare` 失败（第三方应用改了 schema）、会话文件超上限这些路径原先一律返回 `nil`，UI 显示「待机」，用户没有任何线索。现在失败原因作为 `SessionProbeHealth` 随探测结果一起带出（沿用 v0.0.81 那条「不放进全局字典」的隔离原则），在诊断快照与详情页的既有状态位上如实呈现；「库里确实没数据」与「这个源读不到」重新分开，兑现 CONTEXT.md 的诚实性规则。
+- **SQL 扫描合并**：DimAgent 的 24h 与累计两趟 `usage_ledger` 全表扫合并为单趟。
+- **一处被证伪的优化没有做**：`workbuddy` 的 `ORDER BY updated_at DESC LIMIT 1` 不改用 `max(rowid)`——本机真实库即可反驳（rowid 5 比 rowid 1 早 10.6 天，因为行会被就地 UPDATE），且代价也没有可省的（`LIMIT 1` 让临时 B 树只存一行，实测 0.16µs，瓶颈是全表扫本身而 `updated_at` 无索引是第三方库结构决定）。证据写进注释，避免后人再试一遍。
+- **回归验证**：全量 310 项自建测试 100% 通过（0 失败）。
+
 ## [0.0.83] - 2026-09-20
 
 ### 🩹 采样正确性、界面诚实性与键盘流补全（多智能体并行审计轮）
