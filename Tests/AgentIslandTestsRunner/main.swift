@@ -25,6 +25,7 @@ func runAllTests() -> Int32 {
     MemoryTextTests.register()
     FormatTests.register()
     PerformanceOptimizationTests.register()
+    CLITests.register()
     let result = TestKit.runAll()
     // R16 测试卫生：登记套件统一清理 + 自守护（零 plist 残留）
     TestDefaults.cleanupAll()

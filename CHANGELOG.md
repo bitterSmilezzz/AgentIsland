@@ -4,6 +4,30 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.76] - 2026-09-19
+
+### 💻 原生终端命令行工具（agentisland-cli）与终端运维生态
+
+- **轻量原生 CLI 二进制（`agentisland`）**：
+  - 零额外三方依赖，直接基于 `AgentIslandCore` 构建编译，发布随附 `dist/agentisland` 及 `.app/Contents/MacOS/agentisland`；
+  - 自动感知终端环境（TTY vs Pipe/Redirect），支持高对比度 ANSI 彩色排版与管道纯文本无缝回退。
+- **快照总览与结构化输出（`agentisland status`）**：
+  - 终端精美表格列出所有 Agent 状态（工作态 🟢 / 待机 🟡 / 离线 ⚪️）、PID、CPU%、内存、会话数、24h 用量及最近活动；
+  - 支持 `--json` 格式化导出全量结构化 DTO，便于与 Raycast / Alfred 脚本无缝集成；支持 `--all` 包含未运行离线项。
+- **Token 消耗分析与月末走势（`agentisland tokens`）**：
+  - 汇总打印最近 24h 与历史总计 Token 及支出费用，展示各大智能体消耗排行；
+  - 集成 `TokenForecastEvaluator`，一秒推算当月末消耗预期与预算耗尽风险。
+- **死锁与异常进程诊断排查（`agentisland check`）**：
+  - 自动探测长时间死锁卡顿、终端断开孤儿后台（ppid=1）与高内存泄漏（>2GB）目标，清晰列出诊断原因与处置安全性。
+- **智能体一键清理释放（`agentisland clean`）**：
+  - 支持 `--dry-run` 预览拟终止目标与预计释放内存；默认安全批处理模式，支持 `--force` 强行彻底清理。
+- **深度链接呼出与交互（`agentisland open`）**：
+  - 终端一条命令触发桌面灵动岛展开/收起、直达 Token 分析（`analytics`）、工作台（`toolbox`）或指定智能体卡片（`agent <id>`）。
+- **Markdown 运维审计报告生成（`agentisland report`）**：
+  - 快速生成格式化 Markdown 审计报告，支持 `--copy` 直接入系统剪贴板，支持 `--output` 保存至本地文件。
+
+---
+
 ## [0.0.75] - 2026-09-19
 
 ### 🔗 URL Scheme 深度链接、能耗自适应、日志智能特征识别、月末成本预测与异常自愈守护

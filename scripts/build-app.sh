@@ -31,8 +31,9 @@ if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
     .build/debug/AgentIslandTestsRunner
 fi
 
-echo "==> Release 构建 v${VERSION}（仅主产品）"
+echo "==> Release 构建 v${VERSION}（主产品与 CLI 工具）"
 swift build -c release --product AgentIsland
+swift build -c release --product AgentIslandCLI
 
 echo "==> 生成图标"
 ICON_DIR="/tmp/agentisland-icon.iconset"
@@ -40,11 +41,15 @@ rm -rf "$ICON_DIR"
 swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
 iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
 
-echo "==> 组装 .app"
+echo "==> 组装 .app 与 CLI 工具"
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "dist"
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/"
 cp "$ICON_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
+cp "$BUILD_DIR/AgentIslandCLI" "dist/agentisland"
+chmod +x "dist/agentisland"
+cp "$BUILD_DIR/AgentIslandCLI" "$APP_DIR/Contents/MacOS/agentisland"
+chmod +x "$APP_DIR/Contents/MacOS/agentisland"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -75,6 +80,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 PLIST
 
 echo "==> 签名（ad-hoc）"
+codesign --force --sign - "dist/agentisland"
 codesign --force --deep --sign - "$APP_DIR"
 
 echo "==> 完成: $(pwd)/$APP_DIR"

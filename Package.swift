@@ -16,6 +16,12 @@ let package = Package(
             dependencies: ["AgentIslandCore"],
             path: "Sources/AgentIsland"
         ),
+        // 命令行工具：终端快捷状态/用量/异常排查/一键清理与直达联动
+        .executableTarget(
+            name: "AgentIslandCLI",
+            dependencies: ["AgentIslandCore"],
+            path: "Sources/AgentIslandCLI"
+        ),
         // UI 层纯几何（IslandMetrics.swift 经符号链接纳入编译，不拉 SwiftUI 视图）：
         // 让「窗口高度 vs 子项之和」这组历史高频回归可在测试 runner 里断言。
         .target(

@@ -2,7 +2,14 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.75）
+## 功能（v0.0.76）
+
+### 原生终端命令行工具（agentisland-cli · v0.0.76）
+- **终端全景快照（`agentisland status` / `agentisland`）**：快速输出所有已监控智能体状态、PID、CPU%、内存、会话数与用量表格，支持 `--json` 供 Raycast/脚本联动。
+- **Token 趋势与成本看板（`agentisland tokens`）**：终端汇总最近 24h/累计消耗，并自动基于 `TokenForecastEvaluator` 推算当月末总消耗与预算枯竭预警。
+- **死锁排查与一键清理（`agentisland check` / `agentisland clean`）**：排查挂起死锁或内存泄漏进程，支持 `--dry-run` 预览与安全批量一键终止释放。
+- **深度链接呼出（`agentisland open`）**：终端直接控制桌面灵动岛展开、折叠或直达指定 Agent 与分析看板。
+- **审计报告导出（`agentisland report`）**：一键生成 Markdown 运维审计报告，支持 `--copy` 复制到剪贴板或 `--output` 存盘。
 
 ### 深度集成与自愈增强 (v0.0.75)
 - **URL Scheme 深度链接协议（`agentisland://`）**：支持外部应用通过 `open agentisland://toggle`、`expand`、`collapse`、`agent?id=<id>`、`analytics`、`toolbox`、`clean`、`export` 实现无缝操作联动。
