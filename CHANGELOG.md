@@ -4,6 +4,25 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.80] - 2026-09-19
+
+### 🚀 多 Agent 在途命令感知、Antigravity 子任务树与 Token 细分、悬浮胶囊与菜单增强
+
+- **多 Agent 在途命令（Bash / exec_command / say command）全生命周期闭环感知**：
+  - **Claude Code 终端命令感知**：深度解析 `tool_use`（如 `Bash`）生命周期，在命令未交付 `tool_result` 前严格拦截 `completed` 终态，并实时抽取展示所执行的命令；
+  - **Codex 函数调用感知**：精准感知 `exec_command` 及参数，在终端长命令执行中保持活跃工作态；
+  - **Cline & Roo Code 任务流解析**：解析 `ui_messages.json`，将 `ask: command` 识别为等待批准操作（`.attention`），`say: command` 识别为活跃执行（`.active`），并在完成消息交付后准确恢复为 `.completed`。
+- **Antigravity 专有深度分析能力升级**：
+  - **子智能体树（Subagent Tree）全链路追踪**：提取 `invoke_subagent` 调用及其角色、模型与状态，建立子智能体生命周期映射；
+  - **Token 深度细分指标拆解（TokenBreakdown）**：实时抽取 Prompt、Completion、Cached Read、Cache Write 与 Thoughts/Reasoning Token 细分数据，并在详情卡片直观呈现；
+  - **任务取消与完成安全识别**：联动 `manage_task` 取消/终止指令与子智能体应答完成标记，杜绝死锁与虚假活跃。
+- **灵动岛 UI 与上下文交互全面增强**：
+  - **行内活跃胶囊（Capsules）与悬停 Tooltip**：智能体行内动态呈现 `⚡ 后台N` 与 `🤖 N子任务` 微胶囊，悬停展示在途任务命令详情；
+  - **右键上下文菜单（Context Menu）扩展**：支持快捷吸附切边（上/右/下/左）、切换深浅外观、通知分级模式、静音/开启完成提示音与复制当前诊断快照；
+  - **CLI 终端看板（`status` / `top`）同步升级**：直观高亮展示后台任务与子智能体状态标识。
+- **高覆盖率回归验证**：
+  - 新增 `MultiAgentAdvancedTests` 专有测试套件，全量 283 项自建测试 100% 通过（0 失败）。
+
 ## [0.0.79] - 2026-09-19
 
 ### 🎯 深度优化 Google Antigravity 运行感知与后台任务生命周期跟踪

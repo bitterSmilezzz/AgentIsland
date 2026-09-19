@@ -193,7 +193,7 @@ public enum AuditReportExporter {
 
         let dict: [String: Any] = [
             "name": "AgentIsland Raycast Commands",
-            "version": "0.0.79",
+            "version": "0.0.80",
             "commands": commands
         ]
 

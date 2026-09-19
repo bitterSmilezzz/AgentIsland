@@ -59,10 +59,16 @@ public enum StatusCommand {
         ])
 
         for s in filtered {
-            let statusText: String
+            var statusText: String
             switch s.level {
             case .working:
-                statusText = CLIColor.green("🟢 工作中")
+                if !s.backgroundTasks.isEmpty {
+                    statusText = CLIColor.green("🟢 后台(\(s.backgroundTasks.count))")
+                } else if !s.subagents.isEmpty {
+                    statusText = CLIColor.green("🟢 子任务(\(s.subagents.count))")
+                } else {
+                    statusText = CLIColor.green("🟢 工作中")
+                }
             case .attention:
                 statusText = CLIColor.yellow("⚠️ 需确认")
             case .completed:
@@ -85,7 +91,10 @@ public enum StatusCommand {
             let costText = cost24h > 0 ? TokenUsage.cost(cost24h) : CLIColor.dim("$0.00")
 
             var activityText = ""
-            if let ago = s.lastActivityAgo {
+            if let act = s.currentAction, !act.isEmpty, s.level == .working {
+                let agoStr = s.lastActivityAgo != nil ? formatAgoShort(s.lastActivityAgo!) : ""
+                activityText = "\(act) \(CLIColor.dim(agoStr))".trimmingCharacters(in: .whitespaces)
+            } else if let ago = s.lastActivityAgo {
                 let agoStr = formatAgoShort(ago)
                 let detail = s.lastActivityText
                 activityText = "\(agoStr) \(detail)".trimmingCharacters(in: .whitespaces)

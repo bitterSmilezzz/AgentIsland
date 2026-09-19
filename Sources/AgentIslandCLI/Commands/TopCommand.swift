@@ -125,10 +125,16 @@ public enum TopCommand {
             ])
 
             for s in displayed {
-                let statusIcon: String
+                var statusIcon: String
                 switch s.level {
                 case .working:
-                    statusIcon = CLIColor.green("🟢 工作中")
+                    if !s.backgroundTasks.isEmpty {
+                        statusIcon = CLIColor.green("🟢 后台(\(s.backgroundTasks.count))")
+                    } else if !s.subagents.isEmpty {
+                        statusIcon = CLIColor.green("🟢 子任务(\(s.subagents.count))")
+                    } else {
+                        statusIcon = CLIColor.green("🟢 工作中")
+                    }
                 case .attention:
                     statusIcon = CLIColor.yellow("⏳ 待确认")
                 case .idle:
@@ -144,7 +150,10 @@ public enum TopCommand {
                 let memStr = s.processRunning ? s.memoryText : "-"
                 let tokenStr = (s.tokenUsage?.tokens24h ?? 0) > 0 ? TokenUsage.compact(s.tokenUsage!.tokens24h) : "0"
                 let costStr = (s.tokenUsage?.cost24h ?? 0) > 0 ? TokenUsage.cost(s.tokenUsage!.cost24h) : "$0.00"
-                let actStr = s.lastActivityText.isEmpty ? "无记录" : s.lastActivityText
+                var actStr = s.lastActivityText.isEmpty ? "无记录" : s.lastActivityText
+                if let act = s.currentAction, !act.isEmpty, s.level == .working {
+                    actStr = act
+                }
 
                 table.addRow([
                     statusIcon,

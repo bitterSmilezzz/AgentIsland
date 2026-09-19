@@ -11,6 +11,7 @@ func runAllTests() -> Int32 {
     AttentionTests.register()
     DSHTrackingTests.register()
     AntigravityTrackingTests.register()
+    MultiAgentAdvancedTests.register()
     TypographyTests.register()
     TokenUsageTests.register()
     RegistryTests.register()

@@ -7,6 +7,10 @@ APP_NAME="AgentIsland"
 BUILD_DIR=".build/release"
 APP_DIR="dist/$APP_NAME.app"
 
+if [[ -z "${SDKROOT:-}" && -d "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk" ]]; then
+    export SDKROOT="/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
+fi
+
 # 版本号：$1 优先，否则从 CHANGELOG 首条版本抽取（单一事实源，替代手工双处硬编码）
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then

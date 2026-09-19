@@ -189,6 +189,64 @@ public enum MemoryFormat {
     }
 }
 
+// MARK: - 后台在途任务与子智能体模型
+
+public struct AgentBackgroundTask: Equatable, Codable, Sendable {
+    public let id: String
+    public let action: String
+    public let startTime: Date?
+
+    public init(id: String, action: String, startTime: Date? = nil) {
+        self.id = id
+        self.action = action
+        self.startTime = startTime
+    }
+}
+
+public struct AgentSubagentInfo: Equatable, Codable, Sendable {
+    public let conversationId: String
+    public let role: String
+    public let model: String?
+    public let state: String?
+
+    public init(conversationId: String, role: String, model: String? = nil, state: String? = nil) {
+        self.conversationId = conversationId
+        self.role = role
+        self.model = model
+        self.state = state
+    }
+}
+
+public struct AgentTokenBreakdown: Equatable, Codable, Sendable {
+    public let promptTokens: Int
+    public let completionTokens: Int
+    public let cacheReadTokens: Int
+    public let cacheWriteTokens: Int
+    public let reasoningTokens: Int
+    public let totalTokens: Int
+
+    public init(promptTokens: Int = 0, completionTokens: Int = 0, cacheReadTokens: Int = 0, cacheWriteTokens: Int = 0, reasoningTokens: Int = 0, totalTokens: Int = 0) {
+        self.promptTokens = promptTokens
+        self.completionTokens = completionTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.reasoningTokens = reasoningTokens
+        self.totalTokens = totalTokens > 0 ? totalTokens : (promptTokens + completionTokens + cacheReadTokens + cacheWriteTokens + reasoningTokens)
+    }
+}
+
+public struct SessionActiveContext: Equatable, Sendable {
+    public var backgroundTasks: [AgentBackgroundTask]
+    public var subagents: [AgentSubagentInfo]
+    public var tokenBreakdown: AgentTokenBreakdown?
+
+    public init(backgroundTasks: [AgentBackgroundTask] = [], subagents: [AgentSubagentInfo] = [], tokenBreakdown: AgentTokenBreakdown? = nil) {
+        self.backgroundTasks = backgroundTasks
+        self.subagents = subagents
+        self.tokenBreakdown = tokenBreakdown
+    }
+}
+
 // MARK: - 实时快照（引擎输出）
 
 public struct AgentSnapshot: Identifiable, Equatable {
@@ -205,6 +263,9 @@ public struct AgentSnapshot: Identifiable, Equatable {
     public let currentAction: String?          // 实时动作透传（执行的命令/修改的文件/思考等）
     public let memoryBytes: UInt64             // 物理内存占用（RSS 字节数）
     public let isHung: Bool                    // 进程是否疑似死锁/僵死卡顿
+    public let backgroundTasks: [AgentBackgroundTask] // 正在运行的后台命令/任务
+    public let subagents: [AgentSubagentInfo]   // 正在运行/关联的子智能体列表
+    public let tokenBreakdown: AgentTokenBreakdown?   // Token 细分耗损指标
 
     public var id: String { profile.id }
 
@@ -217,7 +278,10 @@ public struct AgentSnapshot: Identifiable, Equatable {
                 cpuPercent: Double, installed: Bool, activeSessions: Int,
                 lastActivityAgo: TimeInterval?, lastActivityText: String,
                 tokenUsage: TokenUsage? = nil, pid: Int32? = nil, currentAction: String? = nil,
-                memoryBytes: UInt64 = 0, isHung: Bool = false) {
+                memoryBytes: UInt64 = 0, isHung: Bool = false,
+                backgroundTasks: [AgentBackgroundTask] = [],
+                subagents: [AgentSubagentInfo] = [],
+                tokenBreakdown: AgentTokenBreakdown? = nil) {
         self.profile = profile
         self.level = level
         self.processRunning = processRunning
@@ -231,6 +295,9 @@ public struct AgentSnapshot: Identifiable, Equatable {
         self.currentAction = currentAction
         self.memoryBytes = memoryBytes
         self.isHung = isHung
+        self.backgroundTasks = backgroundTasks
+        self.subagents = subagents
+        self.tokenBreakdown = tokenBreakdown
     }
 }
 
@@ -322,6 +389,36 @@ public enum AgentSessionSignal: Equatable {
     public var attentionRequest: AgentAttentionRequest? {
         guard case let .attention(request) = self else { return nil }
         return request
+    }
+
+    public var isActive: Bool {
+        if case .active = self { return true }
+        return false
+    }
+
+    public var fingerprint: String? {
+        switch self {
+        case let .attention(req): return req.fingerprint
+        case let .completed(fp): return fp
+        case let .active(fp, _): return fp
+        }
+    }
+
+    public var actionText: String? {
+        if case let .active(_, act) = self { return act }
+        return nil
+    }
+
+    public var backgroundTasks: [AgentBackgroundTask] {
+        AgentSessionInspector.activeContext(for: "antigravity").backgroundTasks
+    }
+
+    public var subagents: [AgentSubagentInfo] {
+        AgentSessionInspector.activeContext(for: "antigravity").subagents
+    }
+
+    public var tokenBreakdown: AgentTokenBreakdown? {
+        AgentSessionInspector.activeContext(for: "antigravity").tokenBreakdown
     }
 }
 

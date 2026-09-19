@@ -37,15 +37,41 @@ public enum AgentSessionInspector {
         "stepstart", "turnstart", "toolcall", "assistantmessage"
     ]
 
+    // MARK: - 活跃会话附加上下文（后台任务、子智能体、Token细分）
+    private static let contextLock = NSLock()
+    private static var activeContexts: [String: SessionActiveContext] = [:]
+
+    public static func activeContext(for agentId: String) -> SessionActiveContext {
+        contextLock.lock()
+        defer { contextLock.unlock() }
+        return activeContexts[agentId] ?? SessionActiveContext()
+    }
+
+    public static func setActiveContext(_ context: SessionActiveContext, for agentId: String) {
+        contextLock.lock()
+        defer { contextLock.unlock() }
+        activeContexts[agentId] = context
+    }
+
+    public static func clearActiveContext(for agentId: String) {
+        contextLock.lock()
+        defer { contextLock.unlock() }
+        activeContexts.removeValue(forKey: agentId)
+    }
+
     /// 对 FileMonitor 已在后台定位出的每目录最新文件做有界尾读；不递归枚举目录。
     public static func inspect(profile: AgentProfile, activityFiles: [URL], now: Date = Date()) -> AgentSessionSignal? {
-        // 专有 Agent 协议优先：拥有高保真结构化日志/专有解析器的 Agent（如 Antigravity、DSH）
+        // 专有 Agent 协议优先：拥有高保真结构化日志/专有解析器的 Agent（如 Antigravity、DSH、Cline、Roo）
         // 必须使用其专有解析器，避免被通用检测器的关键字深搜造成 attention/active 误判。
         switch profile.id {
         case "antigravity":
             return inspectAntigravitySession(now: now)
         case "dsh":
             return inspectDSHSession(now: now)
+        case "cline", "roo-code":
+            if let signal = inspectClineOrRooTasks(dirs: profile.sessionDirs, now: now) {
+                return signal
+            }
         default:
             break
         }
@@ -61,6 +87,13 @@ public enum AgentSessionInspector {
             let age = max(0, now.timeIntervalSince(mtime))
             // 等待确认可以持续较久；完成态只保留一小段时间，之后自然显示“待机”。
             guard age <= 24 * 3600 else { continue }
+            if file.lastPathComponent == "ui_messages.json" {
+                if let data = try? Data(contentsOf: file),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                   let signal = detectClineOrRoo(messages: json, fileAge: age) {
+                    return signal
+                }
+            }
             let lines = LogTailReader.read(from: file, maxLines: 96, maxBytes: 262_144)
             guard let signal = detect(lines: lines) else { continue }
             if case .completed = signal, age > 15 * 60 { continue }
@@ -74,13 +107,18 @@ public enum AgentSessionInspector {
     /// 纯函数解析入口，供 fixture 测试与未来新增 Agent 格式时复用。
     public static func detect(lines: [String]) -> AgentSessionSignal? {
         var signal: AgentSessionSignal?
+        var pendingCalls: [String: ActiveToolCall] = [:]
+        var completedCallIds: Set<String> = []
 
-        for line in lines {
+        for (idx, line) in lines.enumerated() {
             guard let data = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) else {
                 signal = applyPlainText(line, to: signal)
                 continue
             }
+
+            extractToolCalls(from: object, lineIndex: idx, into: &pendingCalls, completedIds: &completedCallIds)
+            extractToolResolutions(from: object, into: &completedCallIds)
 
             if let request = signal?.attentionRequest,
                resolvesAttention(object, fingerprint: request.fingerprint) {
@@ -109,7 +147,198 @@ public enum AgentSessionInspector {
                 if case .attention = signal { signal = nil }
             }
         }
+
+        // 关键防御：若模型产出了 completed 或处于普通待定，但仍有在途未决的执行类命令（如 Claude Code 的 Bash、Codex 的 exec_command 等）
+        if signal?.attentionRequest == nil {
+            let unresolved = pendingCalls.filter { !completedCallIds.contains($0.key) }
+            // 只拦截真正的终端执行类命令调用，普通提问或读取类工具不破坏通用状态
+            let unresolvedCommands = unresolved.values.filter { call in
+                let n = normalized(call.name)
+                return !requestNames.contains(n) && (n.contains("bash") || n.contains("command") || n.contains("terminal") || n.contains("exec") || call.command != nil)
+            }
+            if let lastCmd = unresolvedCommands.max(by: { $0.lineIndex < $1.lineIndex }) {
+                let action: String
+                if let cmd = lastCmd.command, !cmd.isEmpty {
+                    action = "执行: \(cleanActionCommand(cmd))"
+                } else if !lastCmd.name.isEmpty {
+                    action = "执行: \(lastCmd.name)"
+                } else {
+                    action = "执行命令中"
+                }
+                return .active(fingerprint: "tool-\(lastCmd.id)", action: action)
+            }
+        }
+
         return signal
+    }
+
+    // MARK: - 工具调用与命令提取
+
+    private struct ActiveToolCall {
+        let id: String
+        let name: String
+        let command: String?
+        let lineIndex: Int
+    }
+
+    private static func extractToolCalls(from value: Any, lineIndex: Int, into calls: inout [String: ActiveToolCall], completedIds: inout Set<String>) {
+        if let dict = value as? [String: Any] {
+            let type = normalized(dict["type"] as? String)
+            let status = normalized(dict["status"] as? String)
+            if type == "tooluse" || type == "functioncall" || type == "customtoolcall" || type == "toolcall" {
+                if let id = identifier(in: dict) {
+                    if status == "completed" || status == "done" || status == "success" || status == "failed" || status == "error" {
+                        completedIds.insert(id)
+                    } else {
+                        let name = dict["name"] as? String ?? dict["function"] as? String ?? ""
+                        let cmd = extractCommand(from: dict)
+                        calls[id] = ActiveToolCall(id: id, name: name, command: cmd, lineIndex: lineIndex)
+                    }
+                }
+            }
+            for child in dict.values {
+                extractToolCalls(from: child, lineIndex: lineIndex, into: &calls, completedIds: &completedIds)
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                extractToolCalls(from: child, lineIndex: lineIndex, into: &calls, completedIds: &completedIds)
+            }
+        }
+    }
+
+    private static func extractToolResolutions(from value: Any, into completedIds: inout Set<String>) {
+        if let dict = value as? [String: Any] {
+            let type = normalized(dict["type"] as? String)
+            let status = normalized(dict["status"] as? String)
+            if type == "toolresult" || type == "functioncalloutput" || type == "customtoolcalloutput" || status == "completed" || status == "success" || status == "done" {
+                for key in ["tool_use_id", "toolUseId", "call_id", "callId", "id"] {
+                    if let id = dict[key] as? String, !id.isEmpty {
+                        completedIds.insert(id)
+                    }
+                }
+            }
+            for child in dict.values {
+                extractToolResolutions(from: child, into: &completedIds)
+            }
+        } else if let array = value as? [Any] {
+            for child in array {
+                extractToolResolutions(from: child, into: &completedIds)
+            }
+        }
+    }
+
+    private static func extractCommand(from dict: [String: Any]) -> String? {
+        if let input = dict["input"] as? [String: Any] {
+            if let cmd = input["command"] as? String ?? input["cmd"] as? String { return cmd }
+        }
+        if let args = dict["args"] as? [String: Any] {
+            if let cmd = args["command"] as? String ?? args["cmd"] as? String ?? args["CommandLine"] as? String { return cmd }
+        }
+        if let arguments = dict["arguments"] as? String {
+            if let data = arguments.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let cmd = obj["command"] as? String ?? obj["cmd"] as? String ?? obj["CommandLine"] as? String { return cmd }
+            }
+        }
+        return nil
+    }
+
+    private static func cleanActionCommand(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("export ") || text.hasPrefix("SDKROOT=") {
+            if let firstCmd = text.components(separatedBy: "&&").last {
+                text = firstCmd.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        if text.hasPrefix("arch -arm64 ") {
+            text = String(text.dropFirst("arch -arm64 ".count))
+        }
+        let maxLen = 36
+        if text.count > maxLen {
+            return String(text.prefix(maxLen)) + "…"
+        }
+        return text
+    }
+
+    // MARK: - Cline / Roo Code 专有解析器
+
+    public static func detectClineOrRoo(messages: [[String: Any]], fileAge: TimeInterval) -> AgentSessionSignal? {
+        guard !messages.isEmpty else { return nil }
+
+        for msg in messages.reversed() {
+            let type = msg["type"] as? String ?? ""
+            let ts = msg["ts"] as? Double ?? Double(Date().timeIntervalSince1970 * 1000)
+            let text = msg["text"] as? String ?? ""
+            let fp = "cline-\(Int64(ts))"
+
+            if type == "ask" {
+                let ask = msg["ask"] as? String ?? ""
+                if ask == "command" || ask == "command_output" {
+                    let cmd = text.isEmpty ? "终端命令" : cleanActionCommand(text)
+                    return .attention(AgentAttentionRequest(fingerprint: fp, message: "等待你批准命令: \(cmd)"))
+                } else if ask == "followup" {
+                    let question = text.isEmpty ? "等待你输入或回答" : clipDSHString(text, limit: 30)
+                    return .attention(AgentAttentionRequest(fingerprint: fp, message: question))
+                } else if ask == "tool" {
+                    return .attention(AgentAttentionRequest(fingerprint: fp, message: "等待你批准工具操作"))
+                } else {
+                    return .attention(AgentAttentionRequest(fingerprint: fp, message: "等待你选择或确认"))
+                }
+            } else if type == "say" {
+                let say = msg["say"] as? String ?? ""
+                if say == "command" {
+                    let cmd = text.isEmpty ? "执行命令中" : "执行命令: \(cleanActionCommand(text))"
+                    return .active(fingerprint: fp, action: cmd)
+                } else if say == "tool" {
+                    let toolName = text.isEmpty ? "执行工具" : text
+                    return .active(fingerprint: fp, action: "调用工具: \(toolName)")
+                } else if say == "browser_action" {
+                    return .active(fingerprint: fp, action: "执行浏览器操作")
+                } else if say == "completion_result" || say == "task_completed" {
+                    if fileAge <= 15 * 60 {
+                        return .completed(fingerprint: fp)
+                    } else {
+                        return nil
+                    }
+                } else if say == "text" {
+                    if fileAge <= 15 * 60 {
+                        return .completed(fingerprint: fp)
+                    } else {
+                        return nil
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    public static func inspectClineOrRooTasks(dirs: [String], now: Date) -> AgentSessionSignal? {
+        let fm = FileManager.default
+        var newestURL: URL?
+        var newestMtime: Date = .distantPast
+
+        for dir in dirs {
+            guard let taskDirs = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for sub in taskDirs {
+                let uiPath = "\(dir)/\(sub)/ui_messages.json"
+                if fm.fileExists(atPath: uiPath),
+                   let attrs = try? fm.attributesOfItem(atPath: uiPath),
+                   let mtime = attrs[.modificationDate] as? Date {
+                    if mtime > newestMtime {
+                        newestMtime = mtime
+                        newestURL = URL(fileURLWithPath: uiPath)
+                    }
+                }
+            }
+        }
+        guard let url = newestURL else { return nil }
+        let age = max(0, now.timeIntervalSince(newestMtime))
+        guard age <= 24 * 3600 else { return nil }
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return nil
+        }
+        return detectClineOrRoo(messages: json, fileAge: age)
     }
 
     private static func findRequest(in value: Any, sourceLine: String) -> AgentAttentionRequest? {
@@ -561,6 +790,15 @@ public enum AgentSessionInspector {
         var finishedTaskIds: Set<String> = []
         var activeSubagents: Set<String> = []
         var finishedSubagents: Set<String> = []
+        var subagentInfoMap: [String: AgentSubagentInfo] = [:]
+        var subagentCandidateRoles: [(role: String, model: String)] = []
+
+        var totalPromptTokens = 0
+        var totalCompletionTokens = 0
+        var totalCacheReadTokens = 0
+        var totalCacheWriteTokens = 0
+        var totalReasoningTokens = 0
+        var totalTokens = 0
 
         for rawLine in lines {
             guard let data = rawLine.data(using: .utf8),
@@ -571,6 +809,22 @@ public enum AgentSessionInspector {
             let st = obj["type"] as? String ?? ""
             let hasTC = (obj["tool_calls"] as? [[String: Any]])?.isEmpty == false
             parsedMeta.append((si, st, hasTC))
+
+            // 提取 Token 统计细分
+            if let usage = obj["usageMetadata"] as? [String: Any] ?? obj["usage"] as? [String: Any] ?? obj["token_count"] as? [String: Any] {
+                let p = usage["promptTokenCount"] as? Int ?? usage["prompt_tokens"] as? Int ?? usage["input_tokens"] as? Int ?? 0
+                let c = usage["candidatesTokenCount"] as? Int ?? usage["candidates_tokens"] as? Int ?? usage["output_tokens"] as? Int ?? 0
+                let cr = usage["cachedContentTokenCount"] as? Int ?? usage["cache_read_tokens"] as? Int ?? 0
+                let cw = usage["cache_write_tokens"] as? Int ?? 0
+                let th = usage["thoughtsTokenCount"] as? Int ?? usage["reasoning_tokens"] as? Int ?? 0
+                let tot = usage["totalTokenCount"] as? Int ?? usage["total_tokens"] as? Int ?? (p + c + cr + cw + th)
+                totalPromptTokens += p
+                totalCompletionTokens += c
+                totalCacheReadTokens += cr
+                totalCacheWriteTokens += cw
+                totalReasoningTokens += th
+                totalTokens += tot
+            }
 
             let content = obj["content"] as? String ?? ""
 
@@ -608,6 +862,15 @@ public enum AgentSessionInspector {
                             let tid = normalizeTaskId(rawTid)
                             finishedTaskIds.insert(tid)
                         }
+                    } else if name.contains("invokesubagent") || name.contains("invoke_subagent") {
+                        if let args = tc["args"] as? [String: Any],
+                           let subs = args["Subagents"] as? [[String: Any]] {
+                            for s in subs {
+                                let r = s["Role"] as? String ?? s["TypeName"] as? String ?? "子任务"
+                                let m = s["Model"] as? String ?? "inherit"
+                                subagentCandidateRoles.append((role: r, model: m))
+                            }
+                        }
                     }
                 }
             }
@@ -615,7 +878,11 @@ public enum AgentSessionInspector {
             // (D) 子智能体生命周期 (Created the following subagents:)
             if content.contains("Created the following subagents:") {
                 let subIds = extractSubagentIds(from: content)
-                for sid in subIds { activeSubagents.insert(sid) }
+                for sid in subIds {
+                    activeSubagents.insert(sid)
+                    let cand = !subagentCandidateRoles.isEmpty ? subagentCandidateRoles.removeFirst() : (role: "子智能体", model: "inherit")
+                    subagentInfoMap[sid] = AgentSubagentInfo(conversationId: sid, role: cand.role, model: cand.model, state: "running")
+                }
             }
             if !activeSubagents.isEmpty {
                 for sid in activeSubagents {
@@ -634,6 +901,35 @@ public enum AgentSessionInspector {
             }
         }
         unresolvedTasks.sort { $0.stepIndex > $1.stepIndex }
+
+        let bgTaskModels = unresolvedTasks.map { task in
+            AgentBackgroundTask(id: task.id, action: formatAntigravityBackgroundTaskAction(task.desc))
+        }
+
+        let pendingSubs = activeSubagents.subtracting(finishedSubagents)
+        let subagentModels = pendingSubs.compactMap { sid -> AgentSubagentInfo? in
+            subagentInfoMap[sid] ?? AgentSubagentInfo(conversationId: sid, role: "子智能体", model: "inherit", state: "running")
+        }
+
+        let tokenBreakdown: AgentTokenBreakdown? = totalTokens > 0 ? AgentTokenBreakdown(
+            promptTokens: totalPromptTokens,
+            completionTokens: totalCompletionTokens,
+            cacheReadTokens: totalCacheReadTokens,
+            cacheWriteTokens: totalCacheWriteTokens,
+            reasoningTokens: totalReasoningTokens,
+            totalTokens: totalTokens
+        ) : nil
+
+        let ctx = SessionActiveContext(
+            backgroundTasks: bgTaskModels,
+            subagents: subagentModels,
+            tokenBreakdown: tokenBreakdown
+        )
+        setActiveContext(ctx, for: "antigravity")
+
+        func makeActiveSignal(fingerprint: String, action: String) -> AgentSessionSignal {
+            return .active(fingerprint: fingerprint, action: action)
+        }
 
         // 从尾部逆序扫描推导当前最新状态信号
         for rawLine in lines.reversed() {
@@ -691,7 +987,7 @@ public enum AgentSessionInspector {
                     }
                 }
                 let display = actionText.map { AgentActionInspector.cleanAntigravityAction($0) } ?? "执行工具中"
-                return .active(fingerprint: fingerprint, action: display)
+                return makeActiveSignal(fingerprint: fingerprint, action: display)
             }
 
             // 2. 规划响应与最终回答
@@ -702,13 +998,14 @@ public enum AgentSessionInspector {
                     guard fileAge <= 15 * 60 else { return nil }
                     let action = formatAntigravityBackgroundTaskAction(activeTask.desc)
                     let bgFingerprint = "antigravity-bg-\(activeTask.id)-\(stepIndex)"
-                    return .active(fingerprint: bgFingerprint, action: action)
+                    return makeActiveSignal(fingerprint: bgFingerprint, action: action)
                 }
 
                 let pendingSubagents = activeSubagents.subtracting(finishedSubagents)
                 if let subagentId = pendingSubagents.first {
                     guard fileAge <= 15 * 60 else { return nil }
-                    return .active(fingerprint: "antigravity-subagent-\(subagentId)-\(stepIndex)", action: "子智能体执行中")
+                    let subRole = subagentInfoMap[subagentId]?.role ?? "子智能体"
+                    return makeActiveSignal(fingerprint: "antigravity-subagent-\(subagentId)-\(stepIndex)", action: "\(subRole) 执行中")
                 }
 
                 let content = obj["content"] as? String
@@ -727,14 +1024,14 @@ public enum AgentSessionInspector {
                 // 只有思考而无工具调用也无最终内容：正在思考规划中
                 if hasActiveThinking {
                     guard fileAge <= 300 else { return nil }
-                    return .active(fingerprint: fingerprint, action: "思考规划中")
+                    return makeActiveSignal(fingerprint: fingerprint, action: "思考规划中")
                 }
             }
 
             // 3. 用户刚发送输入，模型正在启动准备
             if stepType == "USER_INPUT" {
                 guard fileAge <= 300 else { return nil }
-                return .active(fingerprint: fingerprint, action: "思考规划中")
+                return makeActiveSignal(fingerprint: fingerprint, action: "思考规划中")
             }
 
             // 4. 工具输出返回 (GENERIC)，正在等待下一拍模型调度或后台任务执行中
@@ -743,7 +1040,7 @@ public enum AgentSessionInspector {
                     guard fileAge <= 15 * 60 else { return nil }
                     let action = formatAntigravityBackgroundTaskAction(activeTask.desc)
                     let bgFingerprint = "antigravity-bg-\(activeTask.id)-\(stepIndex)"
-                    return .active(fingerprint: bgFingerprint, action: action)
+                    return makeActiveSignal(fingerprint: bgFingerprint, action: action)
                 }
 
                 guard fileAge <= 300 else { return nil }
@@ -764,15 +1061,15 @@ public enum AgentSessionInspector {
                 }
                 if let toolActionDesc {
                     let cleaned = AgentActionInspector.cleanAntigravityAction(toolActionDesc)
-                    return .active(fingerprint: fingerprint, action: "\(cleaned) (处理中)")
+                    return makeActiveSignal(fingerprint: fingerprint, action: "\(cleaned) (处理中)")
                 }
-                return .active(fingerprint: fingerprint, action: "处理中")
+                return makeActiveSignal(fingerprint: fingerprint, action: "处理中")
             }
 
             // 5. 系统通知或任务完成结果返回 (SYSTEM_MESSAGE)
             if stepType == "SYSTEM_MESSAGE" {
                 guard fileAge <= 300 else { return nil }
-                return .active(fingerprint: fingerprint, action: "处理任务结果中")
+                return makeActiveSignal(fingerprint: fingerprint, action: "处理任务结果中")
             }
         }
 
@@ -887,6 +1184,16 @@ public enum AgentSessionInspector {
                 }
             }
             searchRange = range.upperBound..<content.endIndex
+        }
+        if ids.isEmpty, let textMarker = content.range(of: "Created the following subagents:") {
+            let after = content[textMarker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            let tokens = after.components(separatedBy: CharacterSet(charactersIn: " ,;\n\r\t[](){}\""))
+            for t in tokens {
+                let trimmed = t.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty && (trimmed.contains("conv-") || trimmed.contains("subagent-") || trimmed.count >= 8) {
+                    ids.append(trimmed)
+                }
+            }
         }
         return ids
     }

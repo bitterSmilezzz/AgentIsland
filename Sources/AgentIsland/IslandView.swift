@@ -154,6 +154,20 @@ struct IslandView: View {
                 }
                 Divider()
             }
+            Menu("吸附边缘") {
+                ForEach(DockEdge.allCases, id: \.self) { edge in
+                    Button {
+                        controller.setDockEdge(edge)
+                    } label: {
+                        HStack {
+                            Text(edge.label)
+                            if controller.dockEdge == edge {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
             Menu("外观主题") {
                 ForEach(IslandAppearance.allCases) { mode in
                     Button {
@@ -181,6 +195,33 @@ struct IslandView: View {
                         }
                     }
                 }
+            }
+            Divider()
+            Button {
+                let current = UserDefaults.standard.bool(forKey: SettingKey.playCompletionSound)
+                UserDefaults.standard.set(!current, forKey: SettingKey.playCompletionSound)
+            } label: {
+                let on = UserDefaults.standard.bool(forKey: SettingKey.playCompletionSound)
+                HStack {
+                    Text(on ? "静音已完成提示音" : "开启已完成提示音")
+                    Image(systemName: on ? "speaker.slash" : "speaker.wave.2")
+                }
+            }
+            Button {
+                let current = UserDefaults.standard.bool(forKey: SettingKey.compactView)
+                UserDefaults.standard.set(!current, forKey: SettingKey.compactView)
+            } label: {
+                let compact = UserDefaults.standard.bool(forKey: SettingKey.compactView)
+                HStack {
+                    Text(compact ? "切换至常规视图" : "切换至紧凑视图")
+                    Image(systemName: compact ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                }
+            }
+            Button("复制当前状态诊断快照") {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                let summary = AuditReportExporter.generateMarkdown(snapshots: engine.snapshots)
+                pasteboard.setString(summary, forType: .string)
             }
             Divider()
             Button("偏好设置…") {

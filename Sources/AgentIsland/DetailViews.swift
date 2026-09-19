@@ -140,6 +140,12 @@ struct AgentDetailView: View {
                                         overviewCard(usage)
                                         workEfficiencyCard
                                         if let s = snapshot, s.processRunning {
+                                            if !s.backgroundTasks.isEmpty || !s.subagents.isEmpty {
+                                                activeTasksAndSubagentsCard(s)
+                                            }
+                                            if let tb = s.tokenBreakdown {
+                                                tokenBreakdownCard(tb)
+                                            }
                                             workspaceCard(s)
                                             performanceCard(s)
                                         }
@@ -165,6 +171,12 @@ struct AgentDetailView: View {
                                         basicInfoCard
                                         workEfficiencyCard
                                         if let s = snapshot, s.processRunning {
+                                            if !s.backgroundTasks.isEmpty || !s.subagents.isEmpty {
+                                                activeTasksAndSubagentsCard(s)
+                                            }
+                                            if let tb = s.tokenBreakdown {
+                                                tokenBreakdownCard(tb)
+                                            }
                                             workspaceCard(s)
                                             performanceCard(s)
                                         }
@@ -601,6 +613,128 @@ struct AgentDetailView: View {
             .buttonStyle(.plain)
             .help("展开该智能体的实时工具调用与输出时序抽屉")
         }
+    }
+
+    /// 在途后台任务与活跃子智能体卡片
+    private func activeTasksAndSubagentsCard(_ s: AgentSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "bolt.badge.clock.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.sydedockAmber)
+                Text("在途后台任务与子智能体")
+                    .font(Theme.bodyFont(10.5, weight: .bold))
+                    .foregroundColor(Theme.onDark)
+                Spacer()
+                Text("\(s.backgroundTasks.count + s.subagents.count) 个并行")
+                    .font(Theme.monoDigitFont(9.5))
+                    .foregroundColor(Theme.onDarkMuted)
+            }
+
+            if !s.backgroundTasks.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(s.backgroundTasks, id: \.id) { task in
+                        HStack(spacing: 6) {
+                            Image(systemName: "terminal.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(Theme.sydedockAmber)
+                            Text(task.action)
+                                .font(Theme.monoFont(9.5))
+                                .foregroundColor(Theme.onDark)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text("后台运行")
+                                .font(Theme.badgeFont())
+                                .foregroundColor(Theme.sydedockAmber)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Theme.sydedockAmber.opacity(0.12)))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Theme.obsidianCardFill))
+                    }
+                }
+            }
+
+            if !s.subagents.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(s.subagents, id: \.conversationId) { sub in
+                        HStack(spacing: 6) {
+                            Image(systemName: "person.2.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(Theme.sydedockCyan)
+                            Text(sub.role)
+                                .font(Theme.bodyFont(9.5, weight: .semibold))
+                                .foregroundColor(Theme.onDark)
+                            if let model = sub.model {
+                                Text(model)
+                                    .font(Theme.badgeFont())
+                                    .foregroundColor(Theme.onDarkFaint)
+                                    .padding(.horizontal, 3)
+                                    .padding(.vertical, 0.5)
+                                    .background(RoundedRectangle(cornerRadius: 3).fill(Theme.chipFill))
+                            }
+                            Spacer(minLength: 4)
+                            Text(sub.state ?? "active")
+                                .font(Theme.badgeFont())
+                                .foregroundColor(Theme.sydedockCyan)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Theme.sydedockCyan.opacity(0.12)))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(Theme.obsidianCardFill))
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .subtleCardStyle()
+    }
+
+    /// Token 深度构成分析卡片
+    private func tokenBreakdownCard(_ tb: AgentTokenBreakdown) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.sydedockCyan)
+                Text("Token 深度指标拆解")
+                    .font(Theme.bodyFont(10.5, weight: .bold))
+                    .foregroundColor(Theme.onDark)
+                Spacer()
+                Text("共 \(TokenUsage.compact(tb.totalTokens)) tok")
+                    .font(Theme.monoDigitFont(9.5, weight: .bold))
+                    .foregroundColor(Theme.sydedockCyan)
+            }
+
+            HStack(spacing: 4) {
+                tokenMetricCell("输入/提示", tb.promptTokens, color: Theme.onDark)
+                tokenMetricCell("输出/生成", tb.completionTokens, color: Theme.sydedockCyan)
+                tokenMetricCell("缓存读取", tb.cacheReadTokens, color: Theme.sydedockEmerald)
+                if tb.reasoningTokens > 0 {
+                    tokenMetricCell("深度思考", tb.reasoningTokens, color: Theme.sydedockAmber)
+                }
+            }
+        }
+        .padding(10)
+        .subtleCardStyle()
+    }
+
+    private func tokenMetricCell(_ label: String, _ value: Int, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(TokenUsage.compact(value))
+                .font(Theme.monoDigitFont(11, weight: .bold))
+                .foregroundColor(color)
+            Text(label)
+                .font(Theme.bodyFont(8.5))
+                .foregroundColor(Theme.onDarkFaint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(6)
+        .background(RoundedRectangle(cornerRadius: 4).fill(Theme.obsidianCardFill))
     }
 
     /// 无 token 数据的 agent：显示主卡瘦身撤下的基础信息

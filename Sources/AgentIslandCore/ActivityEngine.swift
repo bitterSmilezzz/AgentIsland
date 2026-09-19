@@ -533,7 +533,7 @@ public final class ActivityEngine: ObservableObject {
                 workingSince[profile.id] = nil
                 workingPeriodHadWrite.remove(profile.id)
                 lastSignalAt[profile.id] = nil
-            } else if case .active? = sessionSignal {
+            } else if let sig = sessionSignal, sig.isActive {
                 activeAttentionFingerprints[profile.id] = nil
                 level = .working
                 if workingSince[profile.id] == nil {
@@ -606,7 +606,7 @@ public final class ActivityEngine: ObservableObject {
                 let detected = inspector(matchedPID, profile, profile.sessionDirs, matcher.snapshot)
                 if let detected, !detected.isEmpty {
                     action = detected
-                } else if case let .active(_, actionText)? = sessionSignal {
+                } else if let sig = sessionSignal, let actionText = sig.actionText {
                     action = actionText
                 } else {
                     action = nil
@@ -648,7 +648,10 @@ public final class ActivityEngine: ObservableObject {
                 pid: matchedPID,
                 currentAction: action,
                 memoryBytes: memory,
-                isHung: isHung
+                isHung: isHung,
+                backgroundTasks: sessionSignal?.backgroundTasks ?? [],
+                subagents: sessionSignal?.subagents ?? [],
+                tokenBreakdown: sessionSignal?.tokenBreakdown
             ))
             // 本拍 CPU/PID 供告警链路复用（避免二次全表匹配）
             sampleInfo[profile.id] = SampleInfo(cpu: cpu, pid: matchedPID)

@@ -286,6 +286,35 @@ struct AgentRowView: View {
                         .font(Theme.monoFont(9.5))
                         .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xb45309) : Color(hex: 0x065f46)) : actionColor)
                         .readableSingleLine(fullText: action, minWidth: 80, priority: 2)
+
+                    if !snapshot.subagents.isEmpty {
+                        HStack(spacing: 2.5) {
+                            Image(systemName: "person.2.fill")
+                                .font(.system(size: 7.5))
+                            Text("\(snapshot.subagents.count)子任务")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .foregroundColor(Theme.sydedockCyan)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Theme.sydedockCyan.opacity(0.18)))
+                        .help("当前活跃子智能体: \(snapshot.subagents.map { "\($0.role) (\($0.model ?? "default"))" }.joined(separator: ", "))")
+                    }
+
+                    if !snapshot.backgroundTasks.isEmpty {
+                        HStack(spacing: 2.5) {
+                            Image(systemName: "bolt.horizontal.fill")
+                                .font(.system(size: 7.5))
+                            Text("后台\(snapshot.backgroundTasks.count)")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .foregroundColor(Theme.sydedockAmber)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Theme.sydedockAmber.opacity(0.18)))
+                        .help("在途后台任务: \(snapshot.backgroundTasks.map { $0.action }.joined(separator: "; "))")
+                    }
+
                     Spacer(minLength: 0)
                     // 工作态也保留 token 徽标：正在消耗的 Agent 恰是最需要关注的，
                     // 此前它只在非工作态显示，工作中反而看不到用量

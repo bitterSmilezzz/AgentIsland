@@ -2,7 +2,12 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.79）
+## 功能（v0.0.80）
+
+### 多 Agent 在途感知、Antigravity 子任务树与 Token 细分、UI 增强 (v0.0.80)
+- **多 Agent 在途命令全周期感知与拦截**：全面支持 Claude Code（`Bash` tool_use）、Codex（`exec_command`）、Cline / Roo Code（`ask/say command`），执行在途命令期间严格拦截误报已完成；
+- **Antigravity 专有深度分析能力**：全链路追踪 `invoke_subagent` 子任务树生命周期，深度拆解 Prompt/Completion/Cache/Thoughts 等 Token 细分指标并在详情直观呈现；
+- **灵动岛 UI 胶囊与交互全面升级**：行内活跃显示 `⚡ 后台N` 与 `🤖 N子任务` 微胶囊及悬停浮窗，右键支持一键切边、深浅外观、通知分级与复制当前诊断快照。
 
 ### 深度优化 Antigravity 运行感知与后台任务生命周期跟踪 (v0.0.79)
 - **彻底消除后台任务误判已完成**：精准识别 Antigravity 异步执行的命令、定时器与子智能体，后台运行期间严格保持工作态，阻断已完成横幅与提示音轰炸；
