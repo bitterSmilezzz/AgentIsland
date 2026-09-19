@@ -17,7 +17,7 @@ DerivedData/
 # 调试日志
 /tmp/agentisland.log
 
-# 测试/工具临时文件
+# 截图/OCR 验证产物：仅供本地宣传与验证，不上传（屏幕内容可能含个人会话数据）
 artifacts/
 
 # 本地工作区：issue/spec 草稿（单人开发，不入库）；验证记录自 R19 起入库
@@ -25,3 +25,15 @@ artifacts/
 
 # 发布包（Release 附件已上传 GitHub）
 *.zip
+
+# 个人凭据/账号：任何本地凭据文件一律不得入库
+.env
+.env.*
+*.pem
+*.p12
+*.key
+id_rsa
+id_ed25519
+*credentials*
+*secrets*
+!docs/agents/triage-labels.md

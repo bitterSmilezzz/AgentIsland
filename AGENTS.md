@@ -20,6 +20,13 @@ pkill -x AgentIsland; sleep 0.6; open dist/AgentIsland.app
 
 - 改造完成后，只要测试通过，就自动提交到远端，然后执行发版并更新文档
 
+### 数据脱敏红线（交付给第三方工具前必读）
+
+本项目对外交付前必须保证工作区不含个人数据。约定见 `docs/agent/desensitization.md`：
+- 本项目**不存储任何凭据**（源码零硬编码 secret）；如未来需要凭据，一律走环境变量注入，禁止写进任何文件
+- `.scratch/`、`artifacts/`、`dist/`、`.build/`、根目录 `*.zip` 均不入库、不交付（屏幕截图可能含个人会话内容）
+- 交付第三方收集数据的工具前，先删上述本地目录再用 `docs/agent/desensitization.md` 的复扫清单过一遍
+
 ## Agent skills
 
 ### Issue tracker
