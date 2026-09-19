@@ -186,6 +186,9 @@ public final class ActivityEngine: ObservableObject {
     private var highCpuSince: [String: Date] = [:]
     /// 上次高负载告警时间（agentId → 告警时间），防止每个采样周期重复轰炸
     private var lastRunawayAlertedAt: [String: Date] = [:]
+    /// 会话探测的失败原因（agentId → 最近一次为什么没读到会话源）。
+    /// 「读不到源」与「源里确实没活动」必须可区分，否则解析器坏了就等于永久显示待机。
+    private var sessionProbeHealth: [String: SessionProbeHealth] = [:]
 
     public func start() {
         guard !running else { return }
@@ -320,7 +323,8 @@ public final class ActivityEngine: ObservableObject {
 
     // MARK: - 每 Agent 跟踪状态的生命周期
 
-    // 「working 滞回 + 事件去重 + 告警基准」由 10 个按 agent id 索引的集合并同构成。
+    // 「working 滞回 + 事件去重 + 告警基准/保护期 + 会话探测健康」由 12 个按 agent id
+    // 索引的集合并同构成。
     // 任何一处残留都会让该 Agent 带着上一轮状态被判定（离线后速率基线不清 → 重启首个
     // 窗口把离线全程摊进分母，激增告警被推迟）。历史上这些清空散落在 5 处，
     // tokenRateBaseline 就曾被 terminateAgent 与 cleanAnomalies 漏掉——新增集合时
@@ -343,6 +347,8 @@ public final class ActivityEngine: ObservableObject {
         tokenSpikeStreak[agentId] = nil
         tokenSpikeAlerted.remove(agentId)
         tokenRateBaseline[agentId] = nil
+        alertProtectedUntil[agentId] = nil
+        sessionProbeHealth[agentId] = nil
     }
 
     /// 清空全部计时/速率类状态（睡眠/挂起断点：墙钟差值不可信，一切从本拍重新起算）。
@@ -359,6 +365,10 @@ public final class ActivityEngine: ObservableObject {
         tokenSpikeStreak.removeAll()
         tokenSpikeAlerted.removeAll()
         tokenRateBaseline.removeAll()
+        // 保护期是墙钟时刻：跨过睡眠断点后多半已名存实亡，随其余计时状态一起作废
+        alertProtectedUntil.removeAll()
+        // 探测健康**不在此清除**：睡眠不会让第三方 App 的会话库突然变得可读，
+        // 断点醒来后「源仍读不到」这条证据必须照旧留在详情卡与诊断快照里
     }
 
     /// 只保留仍启用的 Agent（档案增删后回收，防止已删除的自定义 Agent 长期占坑）
@@ -373,6 +383,8 @@ public final class ActivityEngine: ObservableObject {
         tokenSpikeStreak = tokenSpikeStreak.filter { activeIDs.contains($0.key) }
         tokenSpikeAlerted = tokenSpikeAlerted.filter { activeIDs.contains($0) }
         tokenRateBaseline = tokenRateBaseline.filter { activeIDs.contains($0.key) }
+        alertProtectedUntil = alertProtectedUntil.filter { activeIDs.contains($0.key) }
+        sessionProbeHealth = sessionProbeHealth.filter { activeIDs.contains($0.key) }
     }
 
     private func refreshWatchedDirs() {
@@ -511,18 +523,27 @@ public final class ActivityEngine: ObservableObject {
             // 谎报“待机”；task_complete 刚写入文件时旧逻辑反而会被 workingWindow 拖住。
             // 通用解析只读 FileMonitor 后台定位出的文件；专有解析器（Antigravity/DSH/Cline）
             // 按各自协议自行定位会话，其目录遍历由 AgentSessionInspector 的定位缓存限流。
-            let sessionProbe: AgentSessionProbe = {
-                guard running else { return AgentSessionProbe() }
+            let sessionProbe: AgentSessionProbe? = {
+                guard running else { return nil }
                 let files = Array(fileMonitor.latestActivityFiles(for: profile.sessionDirs).values)
                 if let inspectSessionHook {
                     return AgentSessionProbe(signal: inspectSessionHook(profile, files, now))
                 }
                 // 没有本轮扫描命中的活动文件时不得凭 profile 的约定路径旁路读取：
                 // 一方面避免把旧数据库中的终态套到当前进程，另一方面保持采样输入可复现。
-                guard !files.isEmpty else { return AgentSessionProbe() }
+                guard !files.isEmpty else { return nil }
                 return AgentSessionInspector.probe(profile: profile, activityFiles: files, now: now)
             }()
-            let sessionSignal = sessionProbe.signal
+            // 探测健康按 Agent 记账（「最近一次为什么没读到」，不是事件流：每拍覆盖，无节流）。
+            // 本轮没探测（离线/无活动文件）时不写，保留上一轮的值——否则一次跳过就会把
+            // 「源坏了」这条证据擦掉，而它恰恰只在长时间坏掉时最有用。
+            if let sessionProbe {
+                sessionProbeHealth[profile.id] = sessionProbe.health
+            }
+            let sessionSignal = sessionProbe?.signal
+            // 上下文的取法与 sessionProbe 同批次（探测跳过时为空上下文，下面的
+            // 「无信号即丢弃上下文」判定保持不变）
+            let probeContext = sessionProbe?.context ?? SessionActiveContext()
 
             let level: ActivityLevel
             if !running {
@@ -692,9 +713,10 @@ public final class ActivityEngine: ObservableObject {
                 currentAction: action,
                 memoryBytes: memory,
                 isHung: isHung,
-                backgroundTasks: sessionSignal == nil ? [] : sessionProbe.context.backgroundTasks,
-                subagents: sessionSignal == nil ? [] : sessionProbe.context.subagents,
-                tokenBreakdown: sessionSignal == nil ? nil : sessionProbe.context.tokenBreakdown
+                backgroundTasks: sessionSignal == nil ? [] : probeContext.backgroundTasks,
+                subagents: sessionSignal == nil ? [] : probeContext.subagents,
+                tokenBreakdown: sessionSignal == nil ? nil : probeContext.tokenBreakdown,
+                sessionProbeHealth: sessionProbeHealth[profile.id]
             ))
             // 本拍 CPU/PID 供告警链路复用（避免二次全表匹配）
             sampleInfo[profile.id] = SampleInfo(cpu: cpu, pid: matchedPID)
@@ -1010,9 +1032,14 @@ public final class ActivityEngine: ObservableObject {
     }
 
     public func clearLatestEvent() {
+        // 用户已确认过告警，解除保护期，后续事件正常展示。
+        // 只解除「被消掉的这条横幅所属 Agent」的保护期：本方法会从别的 Agent 的状态迁移
+        // （见 sampleCore 的横幅联动）以及通知点击回调里被调用，无条件清空全局保护期
+        // 等于让用户关掉 B 的横幅顺手解除了 A 正在生效的激增保护。
+        if let agentId = latestEvent?.agentId {
+            alertProtectedUntil[agentId] = nil
+        }
         latestEvent = nil
-        // 用户已确认过告警，解除保护期，后续事件正常展示
-        alertProtectedUntil = nil
     }
 
     /// 清空事件历史时间线 (v0.0.73)
@@ -1039,9 +1066,12 @@ public final class ActivityEngine: ObservableObject {
 
         var acceptedForBanner = true
         if event.eventType == .costSpike {
-            alertProtectedUntil = Date().addingTimeInterval(Self.alertProtectionWindow)
-        } else if let until = alertProtectedUntil, Date() < until {
-            acceptedForBanner = false   // 告警保护期内，普通横幅让位
+            // 保护窗口按 Agent 记账：A 的告警只登记 A 自己的保护期
+            alertProtectedUntil[event.agentId] = Date().addingTimeInterval(Self.alertProtectionWindow)
+        } else if isAlertProtected(event.agentId) {
+            acceptedForBanner = false   // 自己刚发过告警：保护期内它自己的普通横幅让位
+        } else if let shown = latestEvent, shown.eventType == .costSpike, isAlertProtected(shown.agentId) {
+            acceptedForBanner = false   // 展示位上挂着别人的告警：单槽位，普通横幅不得顶掉处置入口
         }
         if acceptedForBanner {
             latestEvent = event
@@ -1055,8 +1085,23 @@ public final class ActivityEngine: ObservableObject {
 
     /// 告警保护窗口：足够用户看到横幅并决定是否处置，又不至于长期占位
     static let alertProtectionWindow: TimeInterval = 30
-    /// 告警保护截止时间（见 publish）
-    private var alertProtectedUntil: Date?
+    /// 各 Agent 的告警保护截止时间（agentId → 到期时间，见 publish）。
+    ///
+    /// 必须按 Agent 记账：单个全局 Date 时，任何一次横幅清理（`clearLatestEvent` 会被
+    /// 别的 Agent 的状态迁移与通知点击回调调用）都会把 A 正在生效的保护期一并抹掉，
+    /// A 的普通横幅随即顶掉/稀释 A 自己的告警。与其余每-Agent 跟踪状态同构，
+    /// 故登记进 resetTracking / resetAllTracking / retainTracking 三个入口。
+    private var alertProtectedUntil: [String: Date] = [:]
+
+    /// 该 Agent 是否仍在告警保护期内（顺带回收已过期条目，字典不会长期堆积）
+    private func isAlertProtected(_ agentId: String, now: Date = Date()) -> Bool {
+        guard let until = alertProtectedUntil[agentId] else { return false }
+        guard now < until else {
+            alertProtectedUntil[agentId] = nil
+            return false
+        }
+        return true
+    }
 
     /// 活跃会话数（离线 agent 直接 0；在线读 FileMonitor 后台扫描缓存，主线程零扫描）
     private func sessionCount(for profile: AgentProfile, running: Bool) -> Int {

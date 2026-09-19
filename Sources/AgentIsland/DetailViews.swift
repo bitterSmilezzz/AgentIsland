@@ -539,6 +539,14 @@ struct AgentDetailView: View {
                     Text("疑似卡死")
                         .font(Theme.bodyFont(9, weight: .bold))
                         .foregroundColor(Theme.dangerRed)
+                } else if s.processRunning, let health = s.sessionProbeHealth {
+                    // 复用同一处状态位，不新增行：进程在跑却读不到会话源时，卡上的
+                    // 「待机」是不可信的——把这条证据显式化（悬停给原因与路径）
+                    Text("会话源不可读")
+                        .font(Theme.bodyFont(9, weight: .medium))
+                        .foregroundColor(Theme.warningOrange)
+                        .help(health.diagnosticText)
+                        .accessibilityLabel(health.diagnosticText)
                 } else if s.processRunning {
                     Text("运行正常")
                         .font(Theme.bodyFont(9, weight: .medium))

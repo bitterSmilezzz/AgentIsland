@@ -105,19 +105,29 @@ public enum AgentSessionInspector {
     /// 专有解析器需要自行定位会话时，走带失效令牌的定位缓存（见 `locatedSession`），
     /// 因此调用方（@MainActor 采样）不会每拍重走会话树。
     public static func probe(profile: AgentProfile, activityFiles: [URL], now: Date = Date()) -> AgentSessionProbe {
+        // 本轮探测的失败现场：用局部变量随 AgentSessionProbe 一起交回，不进任何按
+        // agent id 索引的静态字典——那正是上一轮修掉的跨 Agent 串味形态（见 AgentSessionProbe 的说明）。
+        // 一轮只留第一条原因：多条原因对用户的诊断价值相同，而「读不到」这件事本身只需说一次。
+        var failure: SessionProbeHealth?
+        let report: (SessionProbeHealth) -> Void = { health in
+            if failure == nil { failure = health }
+        }
         // 专有 Agent 协议优先：拥有高保真结构化日志/专有解析器的 Agent（如 Antigravity、DSH、Cline、Roo）
         // 必须使用其专有解析器，避免被通用检测器的关键字深搜造成 attention/active 误判。
         // 按档案声明的**方言**分派而非 agent id：Cline 与 Roo Code 共用一套格式，
         // 新增复用既有格式的 Agent 只改注册表。
         switch profile.sessionDialect {
         case .antigravityBrain:
+            // Antigravity 读自家 tasks/log 尾窗，不涉及只读库与整体读入的大 JSON，
+            // 本轮没有可上报的探测故障（其解析失败仍按「无信号」降级）
             return probeAntigravitySession(dirs: profile.sessionDirs, now: now)
         case .dshProjection:
             guard let dir = dshProjectionDir(in: profile.sessionDirs) else { return AgentSessionProbe() }
-            return AgentSessionProbe(signal: inspectDSHSession(baseDir: dir, now: now))
+            return AgentSessionProbe(signal: inspectDSHSession(baseDir: dir, now: now, report: report),
+                                     health: failure)
         case .clineTasks:
-            if let signal = inspectClineOrRooTasks(dirs: profile.sessionDirs, now: now) {
-                return AgentSessionProbe(signal: signal)
+            if let signal = inspectClineOrRooTasks(dirs: profile.sessionDirs, now: now, report: report) {
+                return AgentSessionProbe(signal: signal, health: failure)
             }
         case .genericTail:
             break
@@ -133,20 +143,21 @@ public enum AgentSessionInspector {
             // 等待确认可以持续较久；完成态只保留一小段时间，之后自然显示“待机”。
             guard age <= 24 * 3600 else { continue }
             if file.lastPathComponent == "ui_messages.json" {
-                if let data = readJSONFile(file),
+                if let data = readJSONFile(file, report: report),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                    let signal = detectClineOrRoo(messages: json, fileAge: age) {
-                    return AgentSessionProbe(signal: signal)
+                    return AgentSessionProbe(signal: signal, health: failure)
                 }
             }
             let lines = LogTailReader.read(from: file, maxLines: 96, maxBytes: 262_144)
             guard let signal = detect(lines: lines) else { continue }
             if case .completed = signal, age > 15 * 60 { continue }
-            return AgentSessionProbe(signal: signal)
+            return AgentSessionProbe(signal: signal, health: failure)
         }
         // 部分桌面 Agent 把会话只写进 SQLite，FileMonitor 的 latest file 只能定位到
         // 二进制库本身。对已知 schema 做只读、索引命中的末条查询；失败即无信号。
-        return AgentSessionProbe(signal: inspectKnownDatabase(profile: profile, now: now))
+        return AgentSessionProbe(signal: inspectKnownDatabase(profile: profile, now: now, report: report),
+                                 health: failure)
     }
 
     /// 大会话文件按内存映射读取：Cline 的 ui_messages.json、DSH 的投影缓存都会随会话
@@ -154,9 +165,15 @@ public enum AgentSessionInspector {
     /// 超过上限直接放弃本轮信号，降级到 CPU/写入双信号判定，不能让解析拖垮采样。
     private static let maxSessionFileBytes = 32_000_000
 
-    private static func readJSONFile(_ url: URL) -> Data? {
+    private static func readJSONFile(_ url: URL,
+                                     report: (SessionProbeHealth) -> Void = { _ in }) -> Data? {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        guard size <= maxSessionFileBytes else { return nil }
+        guard size <= maxSessionFileBytes else {
+            // 上限本身就是「本轮放弃」的现场：不记下来，这轮与「会话里真的没内容」在
+            // 用户侧完全同形（都显示待机），而 32MB 的会话文件恰恰是最常见的那类会失明的
+            report(SessionProbeHealth(failure: .oversizedFile, path: url.path))
+            return nil
+        }
         return try? Data(contentsOf: url, options: [.mappedIfSafe])
     }
 
@@ -462,14 +479,15 @@ public enum AgentSessionInspector {
         return nil
     }
 
-    public static func inspectClineOrRooTasks(dirs: [String], now: Date) -> AgentSessionSignal? {
+    public static func inspectClineOrRooTasks(dirs: [String], now: Date,
+                                              report: (SessionProbeHealth) -> Void = { _ in }) -> AgentSessionSignal? {
         // 任务数会随使用持续累积（每个任务一个目录 + 一次 stat），同样只在缓存失效时遍历
         guard let found = locatedSession(key: "cline|\(dirs.joined(separator: ","))", rootDir: nil, now: now, locate: {
             walkClineTasks(dirs: dirs)
         }) else { return nil }
         let age = max(0, now.timeIntervalSince(found.mtime))
         guard age <= 24 * 3600 else { return nil }
-        guard let data = readJSONFile(found.file),
+        guard let data = readJSONFile(found.file, report: report),
               let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return nil
         }
@@ -552,24 +570,29 @@ public enum AgentSessionInspector {
     // MARK: - 已知 SQLite 会话源
 
     /// 按档案声明的库位置与 schema 取会话终态；未登记 `sessionDatabase` 的 Agent 无此信号源。
-    private static func inspectKnownDatabase(profile: AgentProfile, now: Date) -> AgentSessionSignal? {
+    /// `report` 收下探测失败的原因：无信号 ≠ 探测成功，前者可能就是「我们瞎了」。
+    private static func inspectKnownDatabase(
+        profile: AgentProfile, now: Date,
+        report: (SessionProbeHealth) -> Void = { _ in }
+    ) -> AgentSessionSignal? {
         guard let database = profile.sessionDatabase else { return nil }
         switch database.schema {
         case .dimTasks:
-            return inspectDimDatabase(path: database.path, now: now)
+            return inspectDimDatabase(path: database.path, now: now, report: report)
         case .statusIndex:
             guard let sql = database.statusSQL else { return nil }
-            return inspectStatusDatabase(path: database.path, sql: sql, now: now)
+            return inspectStatusDatabase(path: database.path, sql: sql, now: now, report: report)
         case .openCode:
-            return inspectOpenCodeDatabase(path: database.path, now: now)
+            return inspectOpenCodeDatabase(path: database.path, now: now, report: report)
         }
     }
 
     /// Dim 的确认请求是一条 assistant AskUserQuestion tool call，用户处理后追加关联
     /// tool_result；读取最新会话的末 32 条即可按 call id 配对，不碰问题/答案正文。
-    private static func inspectDimDatabase(path: String, now: Date) -> AgentSessionSignal? {
+    private static func inspectDimDatabase(path: String, now: Date,
+                                           report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
-        return withDB(path) { db in
+        return withDB(path, report: report) { db in
             let sql = """
             SELECT rowid, role, toolMetadata, parts
             FROM messages
@@ -577,7 +600,12 @@ public enum AgentSessionInspector {
             ORDER BY rowid DESC LIMIT 32;
             """
             var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                // schema 变了（例如 messages 表改名/整库迁移）：这恰是最需要留下证据的一刻，
+                // 否则该 Agent 从此永远显示待机，无人知道为什么
+                report(SessionProbeHealth(failure: .prepareFailed, path: path))
+                return nil
+            }
             defer { sqlite3_finalize(stmt) }
 
             var rows: [(id: Int64, role: String, tool: Any?, parts: Any?)] = []
@@ -618,11 +646,15 @@ public enum AgentSessionInspector {
     }
 
     /// ZCode / WorkBuddy 的会话表直接提供终态 status。时间字段兼容毫秒与秒 epoch。
-    private static func inspectStatusDatabase(path: String, sql: String, now: Date) -> AgentSessionSignal? {
+    private static func inspectStatusDatabase(path: String, sql: String, now: Date,
+                                              report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
-        return withDB(path) { db in
+        return withDB(path, report: report) { db in
             var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                report(SessionProbeHealth(failure: .prepareFailed, path: path))
+                return nil
+            }
             defer { sqlite3_finalize(stmt) }
             guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
             let id = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? stableFingerprint(path)
@@ -644,16 +676,20 @@ public enum AgentSessionInspector {
         }
     }
 
-    private static func inspectOpenCodeDatabase(path: String, now: Date) -> AgentSessionSignal? {
+    private static func inspectOpenCodeDatabase(path: String, now: Date,
+                                                report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
-        return withDB(path) { db in
+        return withDB(path, report: report) { db in
             let sql = """
             SELECT data FROM part
             WHERE session_id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1)
             ORDER BY rowid DESC LIMIT 32;
             """
             var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                report(SessionProbeHealth(failure: .prepareFailed, path: path))
+                return nil
+            }
             defer { sqlite3_finalize(stmt) }
             var lines: [String] = []
             while sqlite3_step(stmt) == SQLITE_ROW {
@@ -668,7 +704,8 @@ public enum AgentSessionInspector {
     }
 
     /// 解析 DeepSeek Harness (DSH) 官方会话投影缓存 (sessionProjectionCache)，提取活跃执行态与终态。
-    public static func inspectDSHSession(baseDir: String, now: Date = Date()) -> AgentSessionSignal? {
+    public static func inspectDSHSession(baseDir: String, now: Date = Date(),
+                                         report: (SessionProbeHealth) -> Void = { _ in }) -> AgentSessionSignal? {
         let projcacheDir = URL(fileURLWithPath: baseDir)
         // 投影目录实测 500+ 会话文件，一趟 stat 约 15ms，不能每拍在 @MainActor 上重走
         let key = "dsh|\(projcacheDir.path)"
@@ -678,7 +715,7 @@ public enum AgentSessionInspector {
         let age = max(0, now.timeIntervalSince(found.mtime))
         guard age <= 24 * 3600 else { return nil }
 
-        guard let data = readJSONFile(found.file),
+        guard let data = readJSONFile(found.file, report: report),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let record = root["record"] as? [String: Any],
               let rows = record["rows"] as? [String: Any] else {
@@ -1254,7 +1291,20 @@ public enum AgentSessionInspector {
         return max(0, now.timeIntervalSince(date))
     }
 
-    private static func withDB<T>(_ path: String, _ body: (OpaquePointer) -> T?) -> T? {
-        ReadonlyDB.withConnection(path, body) ?? nil
+    /// 只读会话库查询的统一入口：结果仍按「查不到就是 nil」降级，但把「为什么查不到」
+    /// 交给 `report`——「解析器坏了」绝不能与「Agent 空闲」同形（见 SessionProbeHealth）。
+    private static func withDB<T>(_ path: String,
+                                  report: (SessionProbeHealth) -> Void = { _ in },
+                                  _ body: (OpaquePointer) -> T?) -> T? {
+        ReadonlyDB.withConnection(path, onFailure: { failure in
+            switch failure {
+            case .missing:
+                // 库从未创建（App 装了但没跑过会话）不是故障：报出来会把首次启动刷成一片红，
+                // 而这恰恰是「还没有会话」的正常形态
+                break
+            case .openFailed:
+                report(SessionProbeHealth(failure: .unreadableDB, path: path))
+            }
+        }, body) ?? nil
     }
 }

@@ -732,6 +732,20 @@ enum TokenUsageTests {
             let missing = "/tmp/agentisland-no-such-dir-\(UUID().uuidString)/no-such.db"
             let got: String? = ReadonlyDB.withConnection(missing) { _ in "x" }
             try expectNil(got, "不存在的库应打开失败")
+
+            // 失败原因出口：nil 结果本身分不出「没数据」与「读不到」，会话探测要用后者
+            var openFailure: ReadonlyDB.ConnectionFailure?
+            let gotLocked: String? = ReadonlyDB.withConnection(locked.path,
+                                                              onFailure: { openFailure = $0 }) { _ in "x" }
+            try expectNil(gotLocked, "onFailure 变体的降级语义不变")
+            if case .openFailed? = openFailure {
+                // 存在但打不开 → openFailed（带上 rc 供诊断）
+            } else {
+                throw TestError(message: "不可读库应记录 openFailed，实际 \(String(describing: openFailure))")
+            }
+            var missingFailure: ReadonlyDB.ConnectionFailure?
+            _ = ReadonlyDB.withConnection(missing, onFailure: { missingFailure = $0 }) { _ in "x" }
+            try expectEqual(missingFailure, .missing, "缺失库应单独成类（会话探测据此不误报故障）")
         }
 
         // MARK: - R38/P2·P3：单趟汇总与戳备忘录

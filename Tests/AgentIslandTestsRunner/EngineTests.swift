@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 @testable import AgentIslandCore
 
 // MARK: - ActivityEngine 状态机测试
@@ -984,6 +985,123 @@ enum EngineTests {
             ))
             try expectEqual(highEngine.latestEvent?.eventType, .completed,
                             "关闭告警后保护应解除")
+        }
+
+        TestKit.test("熔断保护: 保护期按 Agent 记账，关掉 B 的横幅不得解除 A 的保护") {
+            // 保护期曾是单个全局 Date，而 clearLatestEvent 会被「另一个 Agent」的横幅清理
+            // 与通知点击回调调用：用户消掉 B 的横幅，A 正在生效的激增保护就凭空消失。
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 0)
+            let now = Date()
+            engine.postEvent(AgentTaskEvent(agentId: "dim", agentName: "DimAgent", eventType: .costSpike,
+                                            duration: 0, timestamp: now, message: "⚠️ DimAgent Token 激增"))
+            // 同类告警总是可占位：B 的告警盖在 A 之上（展示位仍只有一条）
+            engine.postEvent(AgentTaskEvent(agentId: "claude", agentName: "Claude", eventType: .costSpike,
+                                            duration: 0, timestamp: now, message: "⚠️ Claude Token 激增"))
+            try expectEqual(engine.latestEvent?.agentId, "claude", "前置条件：当前展示的是 B 的告警")
+            // 用户此刻关掉 B 的横幅（或 B 从等待确认回到 working 触发同一次清理）
+            engine.clearLatestEvent()
+
+            // A 的保护窗口仍在途（30s 才过了瞬间）：A 自己的普通横幅必须继续让位
+            engine.postEvent(AgentTaskEvent(agentId: "dim", agentName: "DimAgent", eventType: .completed,
+                                            duration: 5, timestamp: now, message: "A 的普通完成事件"))
+            try expectNil(engine.latestEvent,
+                          "B 的横幅清理不应解除 A 的保护期，实际: \(engine.latestEvent?.message ?? "nil")")
+            // 反向守卫：保护不是全局压制，B 没有保护期，其普通横幅照常展示
+            engine.postEvent(AgentTaskEvent(agentId: "claude", agentName: "Claude", eventType: .completed,
+                                            duration: 5, timestamp: now, message: "B 的普通完成事件"))
+            try expectEqual(engine.latestEvent?.agentId, "claude", "保护期不得跨 Agent 压制普通横幅")
+        }
+
+        TestKit.test("熔断保护: Agent 终止与断点会清掉自己的保护期（不长期占坑）") {
+            let provider = MutableProcessProvider(names: ["broken-agent"], bundleIDs: [], cpu: 0)
+            let profile = AgentProfile(id: "broken", name: "Broken", icon: "terminal",
+                                       bundleIDs: [], processNames: ["broken-agent"], sessionDirs: [])
+            let engine = ActivityEngine(
+                profiles: [profile],
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: provider,
+                fileMonitor: FakeFileActivityProvider(writes: [:]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            _ = engine.sample(now: now)                     // 先建立基准，避免被判为采样断点
+            engine.postEvent(AgentTaskEvent(agentId: "broken", agentName: "Broken", eventType: .costSpike,
+                                            duration: 0, timestamp: now, message: "⚠️ Broken Token 激增"))
+            provider.names = []                             // 进程消失 → offline → resetTracking
+            _ = engine.sample(now: now.addingTimeInterval(2))
+            engine.postEvent(AgentTaskEvent(agentId: "broken", agentName: "Broken", eventType: .completed,
+                                            duration: 5, timestamp: now, message: "普通完成事件"))
+            try expectEqual(engine.latestEvent?.eventType, .completed,
+                            "Agent 已离线，残留保护期不得压住后续横幅（否则告警状态泄漏）")
+        }
+
+        TestKit.test("会话探测健康: 库改表/不可读时快照带着证据，不把「读不到」渲染成待机") {
+            // 合法的空库 + 档案登记的查询：schema 对不上 → prepare 注定失败。
+            // 这正是第三方 App 升级换表的形态：以前它和「Agent 真的闲着」在 UI 上完全同形，
+            // 智能体从此永久失明且零证据（对齐 CONTEXT.md：源缺失不得当作零活动）。
+            let dir = NSTemporaryDirectory() + "probe-health-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let dbPath = dir + "/state.db"
+            var opened: OpaquePointer?
+            guard sqlite3_open_v2(dbPath, &opened, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK,
+                  let handle = opened else { throw TestError(message: "fixture 建库失败") }
+            sqlite3_exec(handle, "CREATE TABLE unrelated (a TEXT);", nil, nil, nil)   // 就是没有 messages 表
+            sqlite3_close(handle)
+            // 会话尾窗里没有任何可辨识语义 → 探测落到「已知库」兜底分支，在那里撞上桌
+            let transcript = URL(fileURLWithPath: dir + "/session.jsonl")
+            try #"{"note":"probe health fixture"}"#.data(using: .utf8)!.write(to: transcript)
+
+            let profile = AgentProfile(id: "blind", name: "Blind", icon: "terminal",
+                                       bundleIDs: [], processNames: ["blind-agent"],
+                                       sessionDirs: [dir],
+                                       sessionDatabase: AgentSessionDatabase(path: dbPath, schema: .dimTasks))
+            let provider = MutableProcessProvider(names: ["blind-agent"], bundleIDs: [], cpu: 0)
+            let engine = ActivityEngine(
+                profiles: [profile],
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: provider,
+                fileMonitor: FakeFileActivityProvider(writes: [:], files: [dir: transcript]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            let snap = engine.sample(now: now).first { $0.id == "blind" }
+            try expectEqual(snap?.level, .idle, "前置条件：只看等级它确实是「待机」")
+            try expectEqual(snap?.sessionProbeHealth?.failure, .prepareFailed,
+                            "prepare 失败必须留下可归因的探测健康，而不是无声降级")
+            try expectEqual(snap?.sessionProbeHealth?.path, dbPath, "证据要指明是哪个库，用户才能自查")
+            try expectTrue(snap?.sessionProbeHealth?.diagnosticText.contains("不代表智能体真的空闲") == true,
+                           "诊断文案必须说清这里的「待机」不可信")
+
+            // last-known 语义：连续采样每拍覆盖为最近一次结果，坏源不会自己洗白
+            let again = engine.sample(now: now.addingTimeInterval(2)).first { $0.id == "blind" }
+            try expectEqual(again?.sessionProbeHealth?.failure, .prepareFailed, "应保持为最近已知状态")
+
+            // 生命周期：进程消失 → resetTracking 连带回收，Agent 重启后不带旧证据
+            provider.names = []
+            let off = engine.sample(now: now.addingTimeInterval(4)).first { $0.id == "blind" }
+            try expectEqual(off?.level, .offline, "进程消失应转离线")
+            try expectNil(off?.sessionProbeHealth, "探测健康须随每-Agent 状态一起回收，不得长期占坑")
+        }
+
+        TestKit.test("会话探测健康: 库存在但打不开 → unreadableDB（不是「库里没数据」）") {
+            let dir = NSTemporaryDirectory() + "probe-unreadable-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let dbPath = dir + "/state.db"
+            try Data("not a db".utf8).write(to: URL(fileURLWithPath: dbPath))
+            // runner 非 root，chmod 生效：这是「文件在、但我们读不到」的最小复现
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dbPath)
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dbPath)
+                try? FileManager.default.removeItem(atPath: dir)
+            }
+            let profile = AgentProfile(id: "locked", name: "Locked", icon: "terminal",
+                                       bundleIDs: [], processNames: ["locked-agent"], sessionDirs: [dir],
+                                       sessionDatabase: AgentSessionDatabase(path: dbPath, schema: .dimTasks))
+            let probe = AgentSessionInspector.probe(profile: profile, activityFiles: [], now: Date())
+            try expectNil(probe.signal, "读不到库仍按「无信号」降级，不谎报会话状态")
+            try expectEqual(probe.health?.failure, .unreadableDB,
+                            "但必须留下「源不可读」的证据，否则用户只看到一片待机")
         }
 
         TestKit.test("引擎: 睡眠/挂起断点不误报任务完成") {
