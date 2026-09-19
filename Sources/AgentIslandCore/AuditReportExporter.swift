@@ -64,6 +64,16 @@ public enum AuditReportExporter {
 
             md += "| \(snap.profile.name) | \(snap.level.label) | \(pidStr) | \(cpuStr) | \(memStr) | \(report.score) | \(gradeStr) | \(report.suggestion) |\n"
         }
+        // 会话源不可读的 Agent 单独列出：健康评分只看进程/CPU/内存，读不到会话库时
+        // 报告里只会是一片「待机」，等于把「解析器坏了」伪装成「智能体闲着」。
+        let blindSources = snapshots.compactMap { snap -> String? in
+            guard let health = snap.sessionProbeHealth else { return nil }
+            return "- **\(snap.profile.name)**：\(health.diagnosticText)"
+        }
+        if !blindSources.isEmpty {
+            md += "\n### 会话源不可读（下述智能体的「待机」只代表没有信号）\n\n"
+            md += blindSources.joined(separator: "\n") + "\n"
+        }
         md += "\n"
 
         // 2. Token 消耗统计

@@ -366,6 +366,9 @@ public struct AgentSnapshot: Identifiable, Equatable {
     public let backgroundTasks: [AgentBackgroundTask] // 正在运行的后台命令/任务
     public let subagents: [AgentSubagentInfo]   // 正在运行/关联的子智能体列表
     public let tokenBreakdown: AgentTokenBreakdown?   // Token 细分耗损指标
+    /// 会话探测最近一次失败的原因（nil 表示源可读或本轮未探测）。
+    /// 有值时 level 的「待机」不可信——见 SessionProbeHealth。
+    public let sessionProbeHealth: SessionProbeHealth?
 
     public var id: String { profile.id }
 
@@ -381,7 +384,8 @@ public struct AgentSnapshot: Identifiable, Equatable {
                 memoryBytes: UInt64 = 0, isHung: Bool = false,
                 backgroundTasks: [AgentBackgroundTask] = [],
                 subagents: [AgentSubagentInfo] = [],
-                tokenBreakdown: AgentTokenBreakdown? = nil) {
+                tokenBreakdown: AgentTokenBreakdown? = nil,
+                sessionProbeHealth: SessionProbeHealth? = nil) {
         self.profile = profile
         self.level = level
         self.processRunning = processRunning
@@ -398,6 +402,7 @@ public struct AgentSnapshot: Identifiable, Equatable {
         self.backgroundTasks = backgroundTasks
         self.subagents = subagents
         self.tokenBreakdown = tokenBreakdown
+        self.sessionProbeHealth = sessionProbeHealth
     }
 }
 
@@ -510,18 +515,63 @@ public enum AgentSessionSignal: Equatable {
     }
 }
 
-/// 一轮会话探测的完整产出：强语义信号 + 该 Agent 本轮的活跃上下文。
+/// 会话探测**自身**失败的原因。与 `AgentSessionSignal == nil` 是两件事：
+/// 「没有信号」可能是真的空闲，也可能是根本没读到源——后者绝不能渲染成「待机」，
+/// 否则第三方 App 改了 schema 时智能体永久失明，而用户看到的却是「空闲」且毫无证据。
+/// 与 token 子系统里 `TokenSourceUsage.isAvailable`（false 表示没有可读取的明细，
+/// 而不是用量为 0）是同一条诚实性规则，见 CONTEXT.md。
+public enum SessionProbeFailure: String, Equatable {
+    /// 会话库存在但打不开（无权限 / 被占用 / open_v2 返回非 OK）
+    case unreadableDB
+    /// 会话库能打开，但档案登记的查询 prepare 失败——典型形态：对方改了 schema
+    case prepareFailed
+    /// 会话文件超过单次读取上限，本轮信号直接放弃
+    case oversizedFile
+
+    public var label: String {
+        switch self {
+        case .unreadableDB: return "会话数据库无法打开"
+        case .prepareFailed: return "会话数据库结构已变更（查询无法执行）"
+        case .oversizedFile: return "会话文件超出单次读取上限"
+        }
+    }
+}
+
+/// 最近一次会话探测失败的证据（原因 + 涉及路径）。
 ///
-/// 上下文必须随信号一起返回，不能存放在按 agent id 索引的全局缓存里：
+/// 这是「最近已知状态」而不是事件流：每一拍探测覆盖一次，失败后不做任何节律上报，
+/// 成功探测则清回 nil。路径要带上——用户据此才能判断是自家没跑过还是会话库搬家了。
+public struct SessionProbeHealth: Equatable {
+    public let failure: SessionProbeFailure
+    public let path: String
+
+    public init(failure: SessionProbeFailure, path: String) {
+        self.failure = failure
+        self.path = path
+    }
+
+    /// 详情卡与「复制当前状态诊断快照」里的单行文案：先说结论，再说这条结论的边界
+    public var diagnosticText: String {
+        "会话源不可读：\(failure.label)（\(path)）——此后的「待机」只代表没有读到信号，不代表智能体真的空闲"
+    }
+}
+
+/// 一轮会话探测的完整产出：强语义信号 + 该 Agent 本轮的活跃上下文 + 探测失败原因。
+///
+/// 上下文与探测健康都必须随信号一起返回，不能存放在按 agent id 索引的全局缓存里：
 /// 读取方（快照装配）拿的是「上一个被解析的 Agent」的上下文，会让 Claude、Codex 等
 /// 任意 Agent 的卡片串到 Antigravity 的子任务与 Token 细分，且 Agent 退出后残留永不失效。
 public struct AgentSessionProbe: Equatable {
     public var signal: AgentSessionSignal?
     public var context: SessionActiveContext
+    /// 本轮探测为什么没读成（nil = 探测本身没问题，见 SessionProbeHealth）
+    public var health: SessionProbeHealth?
 
-    public init(signal: AgentSessionSignal? = nil, context: SessionActiveContext = SessionActiveContext()) {
+    public init(signal: AgentSessionSignal? = nil, context: SessionActiveContext = SessionActiveContext(),
+                health: SessionProbeHealth? = nil) {
         self.signal = signal
         self.context = context
+        self.health = health
     }
 }
 

@@ -24,15 +24,31 @@ enum ReadonlyDB {
     /// 库缺失 / 不可读 / open 失败时返回 nil——与调用方既有「查不到数据」语义一致。
     /// - Warning: body 执行期间持有内部锁，body 内**不得**再进 withConnection（不可重入死锁）。
     ///   当前全部调用点在主线程，锁无竞争；未来若加后台调用方，注意跨路径也会串行。
+    /// 需要区分「查不到数据」与「库读不到」时改用下面的 onFailure 变体。
     static func withConnection<T>(_ path: String, _ body: (OpaquePointer) -> T) -> T? {
+        withConnection(path, onFailure: { _ in }, body)
+    }
+
+    /// 「打不开」的原因：只返回 nil 时调用方无法区分「库里确实没数据」与
+    /// 「这个源根本读不到」——会话探测需要后者（见 SessionProbeHealth）。
+    enum ConnectionFailure: Equatable {
+        /// 文件不存在（App 没跑过 / 库换了位置）
+        case missing
+        /// 文件在但 open_v2 返回非 OK（权限拒绝、被独占等），带 SQLite 返回码
+        case openFailed(code: Int32)
+    }
+
+    static func withConnection<T>(_ path: String, onFailure: (ConnectionFailure) -> Void,
+                                  _ body: (OpaquePointer) -> T) -> T? {
         lock.lock()
         defer { lock.unlock() }
-        guard let db = connection(for: path) else { return nil }
+        guard let db = connection(for: path, onFailure: onFailure) else { return nil }
         return body(db)
     }
 
     /// 取可用连接：文件标识未变则复用；库被删除或替换则关旧开新；失败返回 nil（不留脏缓存）
-    private static func connection(for path: String) -> OpaquePointer? {
+    private static func connection(for path: String,
+                                   onFailure: (ConnectionFailure) -> Void) -> OpaquePointer? {
         // stat 一次拿到当前 (设备号, inode)（文件不存在时为 nil）
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let current = attrs.flatMap { id(for: $0) }
@@ -45,16 +61,22 @@ enum ReadonlyDB {
             sqlite3_close(cached)
             connections[path] = nil
             identities[path] = nil
-            guard current != nil else { return nil }   // 已删除，不再重开
+            guard current != nil else {
+                onFailure(.missing)   // 已删除，不再重开
+                return nil
+            }
         } else if current == nil {
+            onFailure(.missing)
             return nil   // 文件不存在，免一次注定失败的 open
         }
 
         var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+        let rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
+        guard rc == SQLITE_OK else {
             // open 失败仍会分配 handle（rc=14 等场景 handle 非 NULL，实测约 1.5KB/次），
             // 必须关闭——0.0.17 修过的泄漏类契约在此继续成立
             if let db { sqlite3_close(db) }
+            onFailure(.openFailed(code: rc))
             return nil
         }
         connections[path] = db
