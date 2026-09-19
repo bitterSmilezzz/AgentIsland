@@ -48,8 +48,9 @@ cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/"
 cp "$ICON_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
 cp "$BUILD_DIR/AgentIslandCLI" "dist/agentisland"
 chmod +x "dist/agentisland"
-cp "$BUILD_DIR/AgentIslandCLI" "$APP_DIR/Contents/MacOS/agentisland"
-chmod +x "$APP_DIR/Contents/MacOS/agentisland"
+mkdir -p "$APP_DIR/Contents/Helpers"
+cp "$BUILD_DIR/AgentIslandCLI" "$APP_DIR/Contents/Helpers/agentisland"
+chmod +x "$APP_DIR/Contents/Helpers/agentisland"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
