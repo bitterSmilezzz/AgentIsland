@@ -3,7 +3,7 @@ import AgentIslandCore
 
 @main
 struct AgentIslandCLI {
-    static let version = "0.0.77"
+    static let version = "0.0.78"
 
     @MainActor
     static func main() async {
@@ -26,6 +26,10 @@ struct AgentIslandCLI {
         case "status", "ls", "ps":
             let subArgs = Array(rawArgs.dropFirst())
             await StatusCommand.run(args: subArgs)
+
+        case "top", "watch":
+            let subArgs = Array(rawArgs.dropFirst())
+            await TopCommand.run(args: subArgs)
 
         case "tokens", "token", "stats":
             let subArgs = Array(rawArgs.dropFirst())
@@ -51,6 +55,10 @@ struct AgentIslandCLI {
             let subArgs = Array(rawArgs.dropFirst())
             await ReportCommand.run(args: subArgs)
 
+        case "raycast":
+            let subArgs = ["--format", "raycast"]
+            await ReportCommand.run(args: subArgs)
+
         default:
             if first.starts(with: "-") {
                 // 如果传入以 - 开头的参数（例如 --json, --all），视作 status 的参数
@@ -73,13 +81,15 @@ macOS 智能体运行态监控与运维终端工具
   agentisland [command] [options]
 
 \(CLIColor.bold("核心命令:"))
-  \(CLIColor.cyan("status"))     查看所有 AI 智能体当前运行态快照 (默认)
+  \(CLIColor.cyan("status"))     查看所有 AI 智能体当前运行态快照 (默认，支持 -w 动态监控)
+  \(CLIColor.cyan("top"))        类似 htop 的交互式全屏动态监控看板 (或 watch)
   \(CLIColor.cyan("tokens"))     查看 24h Token 用量明细、成本分析与月末预测
   \(CLIColor.cyan("check"))      排查长期死锁、孤儿后台与高内存泄漏异常
   \(CLIColor.cyan("clean"))      一键清理释放异常智能体占用的系统资源
   \(CLIColor.cyan("open"))       通过深度链接呼出/联动桌面灵动岛
   \(CLIColor.cyan("notify"))     主动向灵动岛投递智能体完成、待确认或告警事件
-  \(CLIColor.cyan("report"))     生成 Markdown 运维审计报告
+  \(CLIColor.cyan("report"))     生成 Markdown / CSV / JSON 运维审计报告
+  \(CLIColor.cyan("raycast"))    导出 Raycast Extension 命令清单配置
 
 \(CLIColor.bold("常用选项:"))
   \(CLIColor.yellow("--json"))          以标准 JSON 结构化输出（供脚本/Raycast 调用）

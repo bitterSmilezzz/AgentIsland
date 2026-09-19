@@ -2,7 +2,13 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.77）
+## 功能（v0.0.78）
+
+### 动态终端看板、生态扩展、快捷键速查 HUD 与 Raycast 导出 (v0.0.78)
+- **类似 htop 的 CLI 动态交互看板（`agentisland top` / `status -w`）**：终端全屏动态刷新智能体状态、CPU/内存与 Token 走势，支持 `q` 退出、`r` 刷新、`c` 一键清理；
+- **热门 AI 编码智能体生态扩展**：内置识别 **Cline**、**Roo Code**、**Continue.dev**（`continue-core`）与 **Goose**；
+- **展开态快捷键速查 HUD（`?` 键触发）**：半透明磨砂玻璃浮层清晰指引 `1~3` 切页、`j/k` 选择、`Enter` 详情、`/` 搜索、`Esc` 返回；
+- **多格式数据与 Raycast 扩展清单导出（`agentisland report` / `raycast`）**：支持 CSV、JSON 与 Raycast Commands 配置清单一键生成。
 
 ### 多屏热插拔、本地 Webhook、Token 预算与全键盘流 (v0.0.77)
 - **多显示器协同与断连自愈（Multi-display Resilience）**：外接屏拔出时自动平滑重定位，杜绝窗口悬空或坐标越界；

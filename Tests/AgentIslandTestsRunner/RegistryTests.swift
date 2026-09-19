@@ -198,5 +198,23 @@ enum RegistryTests {
             try expectTrue(aider != nil, "Aider 必须存在于内置档案中")
             try expectTrue(aider?.processNames.contains("aider") == true, "Aider 必须包含进程名")
         }
+
+        TestKit.test("注册表: Cline, Roo Code, Continue 与 Goose 内置档案完整性") {
+            let cline = AgentRegistry.builtin.first { $0.id == "cline" }
+            try expectTrue(cline != nil, "Cline 必须存在于内置档案中")
+            try expectTrue(cline?.processNames.contains("cline") == true, "Cline 必须包含进程名")
+
+            let roo = AgentRegistry.builtin.first { $0.id == "roo-code" }
+            try expectTrue(roo != nil, "Roo Code 必须存在于内置档案中")
+            try expectTrue(roo?.processNames.contains("roo") == true, "Roo Code 必须包含进程名")
+
+            let cont = AgentRegistry.builtin.first { $0.id == "continue" }
+            try expectTrue(cont != nil, "Continue 必须存在于内置档案中")
+            try expectTrue(cont?.processNames.contains("continue-core") == true, "Continue 必须包含进程名")
+
+            let goose = AgentRegistry.builtin.first { $0.id == "goose" }
+            try expectTrue(goose != nil, "Goose 必须存在于内置档案中")
+            try expectTrue(goose?.processNames.contains("goose") == true, "Goose 必须包含进程名")
+        }
     }
 }

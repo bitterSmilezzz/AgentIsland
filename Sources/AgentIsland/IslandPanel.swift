@@ -33,6 +33,8 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     var agentDetailOrigin: CardRoute = .list
     /// 停靠贴边方位（上、右、下、左）
     @Published var dockEdge: DockEdge = .right
+    /// 是否显示快捷键速查 HUD (v0.0.78)
+    @Published var showShortcutHUD: Bool = false
 
     var panel: NSPanel!
     var hostingView: NSHostingView<IslandView>!
@@ -636,9 +638,18 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                     return
                 }
 
-                // Esc: 退出搜索 / 逐级返回 / 收起面板
+                // 快捷键: ? 呼出或关闭快捷键速查指南 (v0.0.78)
+                if !self.isSearchActive && event.characters == "?" && !event.modifierFlags.contains(.command) {
+                    self.showShortcutHUD.toggle()
+                    handled = true
+                    return
+                }
+
+                // Esc: 退出快捷键指南 / 退出搜索 / 逐级返回 / 收起面板
                 if event.keyCode == 53 {
-                    if self.isSearchActive {
+                    if self.showShortcutHUD {
+                        self.showShortcutHUD = false
+                    } else if self.isSearchActive {
                         self.isSearchActive = false
                         self.searchText = ""
                     } else if self.route != .list {

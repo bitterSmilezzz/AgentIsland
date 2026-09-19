@@ -149,5 +149,34 @@ enum CLITests {
             try expectEqual(decoded.budgetStatus, "正常", "预算状态一致")
             try expectEqual(decoded.budgetExhaustionDay, 18, "超额天数一致")
         }
+
+        TestKit.test("CLI: CSV 与 Raycast 导出格式生成") {
+            let dummyProfile = AgentRegistry.builtin[0]
+            let snapshot = AgentSnapshot(
+                profile: dummyProfile,
+                level: .working,
+                processRunning: true,
+                cpuPercent: 15.0,
+                installed: true,
+                activeSessions: 1,
+                lastActivityAgo: 30,
+                lastActivityText: "正在运行",
+                tokenUsage: TokenUsage(tokens24h: 5000, tokensTotal: 10000, cost24h: 0.1, costTotal: 0.2),
+                pid: 1234,
+                currentAction: "test",
+                memoryBytes: 100_000_000,
+                isHung: false
+            )
+
+            let csv = AuditReportExporter.generateCSV(snapshots: [snapshot])
+            try expectTrue(csv.contains("Timestamp,AgentID,AgentName"), "CSV 包含表头")
+            try expectTrue(csv.contains("dim"), "CSV 包含 agent id")
+            try expectTrue(csv.contains("1234"), "CSV 包含 PID")
+
+            let raycast = AuditReportExporter.generateRaycastManifest(snapshots: [snapshot])
+            try expectTrue(raycast.contains("AgentIsland Raycast Commands"), "Raycast 清单包含标题")
+            try expectTrue(raycast.contains("agentisland://toggle"), "Raycast 清单包含 toggle 协议")
+            try expectTrue(raycast.contains("agentisland://agent?id=dim"), "Raycast 清单包含 agent 直达协议")
+        }
     }
 }

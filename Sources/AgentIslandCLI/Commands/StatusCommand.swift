@@ -4,6 +4,11 @@ import AgentIslandCore
 public enum StatusCommand {
     @MainActor
     public static func run(args: [String]) async {
+        if args.contains("--watch") || args.contains("-w") {
+            await TopCommand.run(args: args)
+            return
+        }
+
         let isJson = args.contains("--json")
         let showAll = args.contains("--all") || args.contains("-a")
 

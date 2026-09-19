@@ -182,7 +182,7 @@ public enum AgentRegistry {
             name: "Continue",
             icon: "arrow.triangle.2.circlepath",
             bundleIDs: ["com.continue.continue"],
-            processNames: ["Continue", "continue"],
+            processNames: ["Continue", "continue", "continue-core"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".continue")],
             defaultEnabled: false,
@@ -263,6 +263,33 @@ public enum AgentRegistry {
             bundleIDs: [],
             processNames: ["aider"],
             sessionDirs: [home(".aider")],
+            category: .assistant
+        ),
+        AgentProfile(
+            id: "cline",
+            name: "Cline",
+            icon: "brain.head.profile",
+            bundleIDs: [],
+            processNames: ["cline"],
+            sessionDirs: [home("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks")],
+            category: .assistant
+        ),
+        AgentProfile(
+            id: "roo-code",
+            name: "Roo Code",
+            icon: "sparkle.magnifyingglass",
+            bundleIDs: [],
+            processNames: ["roo", "roo-code"],
+            sessionDirs: [home("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/tasks")],
+            category: .assistant
+        ),
+        AgentProfile(
+            id: "goose",
+            name: "Goose",
+            icon: "bird.fill",
+            bundleIDs: [],
+            processNames: ["goose"],
+            sessionDirs: [home(".config/goose/sessions")],
             category: .assistant
         ),
     ]

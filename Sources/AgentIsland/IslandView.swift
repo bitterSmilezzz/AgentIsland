@@ -246,6 +246,11 @@ struct IslandView: View {
             }
         }
         .id(controller.route)
+        .overlay {
+            if controller.showShortcutHUD {
+                ShortcutHUDView(controller: controller)
+            }
+        }
     }
 
     // MARK: 贴边微细条（露 6pt，晶莹质感 + 多状态状态呼吸光晕）
@@ -764,3 +769,83 @@ extension ActivityLevel {
 }
 
 // EventBannerView 已拆分至 EventBannerView.swift（R15）
+
+// MARK: - 快捷键速查 HUD (v0.0.78)
+
+struct ShortcutHUDView: View {
+    @ObservedObject var controller: IslandPanelController
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.45)
+                .edgesIgnoringSafeArea(.all)
+                .onTapGesture {
+                    controller.showShortcutHUD = false
+                }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: "keyboard.fill")
+                        .foregroundColor(Theme.sydedockCyan)
+                        .font(.system(size: 13, weight: .bold))
+                    Text("键盘快捷键速查")
+                        .font(Theme.bodyFont(12, weight: .bold))
+                        .foregroundColor(Theme.onDark)
+                    Spacer()
+                    Button {
+                        controller.showShortcutHUD = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(Theme.onDarkFaint)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                DarkDivider()
+
+                VStack(spacing: 6) {
+                    shortcutRow(key: "1 ~ 3", desc: "快速切页 (1主页 / 2用量 / 3工具箱)")
+                    shortcutRow(key: "j / k 或 ↓ / ↑", desc: "上下选择聚焦智能体")
+                    shortcutRow(key: "Enter / Return", desc: "下钻查看智能体详情与会话")
+                    shortcutRow(key: "/", desc: "激活智能体即时搜索过滤")
+                    shortcutRow(key: "Esc", desc: "逐级返回或收起面板")
+                    shortcutRow(key: "⌘R", desc: "立即重新采样与后台刷新")
+                    shortcutRow(key: "⌘,", desc: "打开偏好设置窗口")
+                    shortcutRow(key: "?", desc: "呼出 / 关闭此帮助面板")
+                }
+            }
+            .padding(14)
+            .frame(width: IslandMetrics.cardWidth - 24)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                    .fill(colorScheme == .light ? Color.white.opacity(0.95) : Color(hex: 0x1A1B23).opacity(0.95))
+                    .shadow(color: Color.black.opacity(0.25), radius: 16, x: 0, y: 8)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                    .stroke(Theme.obsidianCardBorder, lineWidth: 0.75)
+            )
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .center)))
+    }
+
+    private func shortcutRow(key: String, desc: String) -> some View {
+        HStack {
+            Text(key)
+                .font(Theme.bodyFont(10, weight: .semibold))
+                .foregroundColor(Theme.sydedockCyan)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Theme.sydedockCyan.opacity(0.12))
+                )
+            Spacer()
+            Text(desc)
+                .font(Theme.bodyFont(10))
+                .foregroundColor(Theme.onDarkMuted)
+        }
+    }
+}

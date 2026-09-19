@@ -4,6 +4,28 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.78] - 2026-09-19
+
+### 🖥️ 终端交互动态看板、热门 Agent 生态扩充、快捷键速查 HUD 与 Raycast 导出
+
+- **CLI 类似 htop 交互式动态监控看板（`agentisland top` / `status -w` · 方案 A）**：
+  - 基于 ANSI 光标与清屏转义序列构建轻量全屏看板，支持自定义刷新周期（`-i <sec>`，默认 1.5s）；
+  - 动态展示监控智能体总数、工作态占比、总 CPU% 与 24h Token/费用走势，高频刷新各智能体明细表格；
+  - 终端 Raw 模式单字符交互：支持 `q` 退出并恢复终端光标、`r` 立即重采刷新、`c` 快速清理死锁与孤儿后台。
+- **新兴 AI 编码智能体深度生态扩展（方案 B）**：
+  - 内置增加 **Cline**（开源自治 Agent，监控 `saoudrizwan.claude-dev/tasks` 会话目录与进程）；
+  - 内置增加 **Roo Code**（高频迭代分支 Agent，监控 `rooveterinaryinc.roo-cline/tasks` 与 `roo` 进程）；
+  - 内置增加 **Continue.dev** 增强进程识别（支持 `continue-core`）；
+  - 内置增加 **Goose**（Block 开源自治 CLI 智能体，监控 `~/.config/goose/sessions` 与 `goose` 进程）。
+- **展开态快捷键速查指南 HUD（方案 C）**：
+  - 展开卡片下按下 `?` 键，平滑呼出精美磨砂玻璃质感快捷键速查面板（`ShortcutHUDView`）；
+  - 完整呈现 `1~3` 切页、`j/k` 焦点导航、`Enter` 下钻、`/` 搜索、`Esc` 逐级退出与 `⌘R` 刷新；
+  - 再次按 `?`、`Esc` 或点击任意外部空白区域即刻淡出，无门槛驾驭全键盘流。
+- **多格式数据报表与 Raycast 扩展清单导出（`agentisland report` · 方案 D）**：
+  - `agentisland report` 扩展支持 `--format <markdown|csv|json|raycast>`（简写 `-f`）；
+  - `--format csv`：生成标准逗号分隔数据表，包含时间戳、ID、名称、状态、PID、CPU、内存、健康评分与 24h/累计 Token 费用；
+  - `--format raycast`（或直接运行 `agentisland raycast`）：导出适配 Raycast 扩展的命令清单配置，一键映射灵动岛协议联动。
+
 ## [0.0.77] - 2026-09-19
 
 ### 🚀 多屏热插拔自愈、本地 Webhook 外部事件接收器、Token 预算进度管控与全键盘流

@@ -146,4 +146,61 @@ public enum AuditReportExporter {
         }
         return str
     }
+
+    /// 生成 Raycast Extension 命令定义清单 (v0.0.78)
+    public static func generateRaycastManifest(snapshots: [AgentSnapshot]) -> String {
+        var commands: [[String: String]] = [
+            [
+                "name": "toggle",
+                "title": "Toggle AgentIsland",
+                "description": "展开或收起灵动岛监控面板",
+                "url": "agentisland://toggle"
+            ],
+            [
+                "name": "analytics",
+                "title": "Token Analytics",
+                "description": "打开 Token 用量与成本预测分析",
+                "url": "agentisland://analytics"
+            ],
+            [
+                "name": "toolbox",
+                "title": "Agent Workbench & Diagnostics",
+                "description": "打开维护工作台与死锁排查",
+                "url": "agentisland://toolbox"
+            ],
+            [
+                "name": "clean",
+                "title": "Clean Orphan & Hung Agents",
+                "description": "一键安全清理挂起死锁与孤儿后台进程",
+                "url": "agentisland://clean"
+            ],
+            [
+                "name": "export",
+                "title": "Export Audit Report",
+                "description": "导出 Markdown 运维审计报告至剪贴板",
+                "url": "agentisland://export"
+            ]
+        ]
+
+        for s in snapshots where s.installed || s.processRunning {
+            commands.append([
+                "name": "agent-\(s.id)",
+                "title": "Inspect \(s.profile.name)",
+                "description": "直达 \(s.profile.name) 运行态详情与会话",
+                "url": "agentisland://agent?id=\(s.id)"
+            ])
+        }
+
+        let dict: [String: Any] = [
+            "name": "AgentIsland Raycast Commands",
+            "version": "0.0.78",
+            "commands": commands
+        ]
+
+        if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+           let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "{}"
+    }
 }
