@@ -139,8 +139,10 @@ public enum AgentLogStreamer {
     // MARK: - 1. Antigravity 日志流 (transcript.jsonl)
 
     public static func fetchAntigravityEvents(limit: Int = 20) -> [AgentLogEvent] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
+        // brain 目录由注册表档案声明（同一份 transcript 树此前在探测与日志流里各写一遍路径）
+        guard let brain = AgentSessionInspector.antigravityBrainDir(
+            in: AgentRegistry.profile("antigravity")?.sessionDirs ?? []) else { return [] }
+        let brainDir = URL(fileURLWithPath: brain)
         guard let subdirs = try? FileManager.default.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
             return []
         }
@@ -290,8 +292,7 @@ public enum AgentLogStreamer {
     // MARK: - 3. DimAgent 日志流 (dimcode.sqlite)
 
     public static func fetchDimEvents(limit: Int = 20) -> [AgentLogEvent] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.dimcode/v2/dimcode.sqlite"
+        guard let dbPath = AgentRegistry.databasePath(for: "dim") else { return [] }
         // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
         return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
             // 原查询对全表排序（EXPLAIN: SCAN + USE TEMP B-TREE FOR ORDER BY）：中型库上
@@ -411,8 +412,7 @@ public enum AgentLogStreamer {
     // MARK: - 5. OpenCode 日志流 (opencode.db)
 
     public static func fetchOpenCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.local/share/opencode/opencode.db"
+        guard let dbPath = AgentRegistry.databasePath(for: "opencode") else { return [] }
         // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
         return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
             // 同 dim：rowid 窗口限流 + 时间排序（原全表排序实测 25ms/次，每 2s 一次）
@@ -460,8 +460,7 @@ public enum AgentLogStreamer {
     // MARK: - 6. ZCode 日志流 (tasks-index.sqlite)
 
     public static func fetchZCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.zcode/v2/tasks-index.sqlite"
+        guard let dbPath = AgentRegistry.databasePath(for: "zcode") else { return [] }
         // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
         return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
             let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT \(limit);"
@@ -491,7 +490,7 @@ public enum AgentLogStreamer {
     // MARK: - 7. WorkBuddy 日志流 (workbuddy.db)
 
     public static func fetchWorkBuddyEvents(agentId: String, limit: Int = 20) -> [AgentLogEvent] {
-        let dbPath = "\(AgentActionInspector.workbuddyDataDir(for: agentId))/workbuddy.db"
+        guard let dbPath = AgentRegistry.databasePath(for: agentId) else { return [] }
         // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
         return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
             let sql = "SELECT title, status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT \(limit);"

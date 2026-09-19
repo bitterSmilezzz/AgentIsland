@@ -11,8 +11,14 @@ macOS 灵动岛应用：监控本机 AI 编码智能体的运行状态与 token 
 _Avoid_: 助手、机器人、目标进程
 
 **Agent Profile（档案）**:
-一个 Agent 的静态识别定义：bundle id、进程名前缀、可执行路径特征、会话目录。
+一个 Agent 的静态识别定义：bundle id、进程名前缀、可执行路径特征、会话目录，以及展示符号、会话方言与只读会话库位置。档案是这些事实的**唯一声明处**，解析器不再按 id 反推。
 _Avoid_: 配置、agent 定义
+
+**会话方言（session dialect）**:
+一个 Agent 的会话记录存放格式：`genericTail`（通用 JSONL 尾读）、`antigravityBrain`、`dshProjection`、`clineTasks`。解析器按**格式**分派而非按 agent id 分派——格式数量远少于 Agent 数量（Cline 与 Roo Code 同源），新增复用既有格式的 Agent 只改注册表。
+
+**只读会话库（session database）**:
+会话只写进 SQLite 的 Agent，其库文件位置与查询 schema（`dimTasks` / `statusIndex` / `openCode`）随档案声明。FileMonitor 对这类目录只能定位到二进制库本身，强语义须由末条索引查询给出。
 
 **自定义 Agent**:
 用户在设置界面手动新增的档案，id 以 `custom-` 为前缀。
@@ -46,6 +52,13 @@ working 信号消失后保持 working 的最短时长，防止临界抖动导致
 
 **活跃会话数（activeSessions）**:
 会话目录下、判定窗口内有文件写入的顶层子目录数。
+
+**会话定位缓存（session locator cache）**:
+专有解析器「选哪个会话文件」的结果缓存（TTL 3s，并以根目录 mtime 作失效令牌）。**只缓存定位**——尾读与解析每拍照常进行，故新会话与状态转移无延迟。存在的前提是专有解析器要跨多层目录挑最新会话，实测单趟遍历达 500~800 次 stat，不能每拍在采样主线程上重走。
+_Avoid_: 会话结果缓存（并不缓存信号本身）
+
+**尾读合并（tail read memo）**:
+同一文件在 mtime 与长度都未变时复用上一次读出的尾部行——「会话强语义」与「当前动作文案」两条链路每拍各读一次同一份 transcript，而尾读比解析更贵。有效期短于采样周期；新鲜度取 `stat()` 而非 `URL.resourceValues`（后者有毫秒级缓存窗口，恰好会在这两条链路的微秒间隔内误命中）。
 
 **可见口径（visibleSnapshots）**:
 仅进程仍在的 Agent 可见；待机、工作中、待确认、已完成均显示，离线一律隐藏。卡片列表、菜单摘要、高度计算都消费这一统一口径；历史活动与 token 不得让离线 Agent 形成幽灵条目。

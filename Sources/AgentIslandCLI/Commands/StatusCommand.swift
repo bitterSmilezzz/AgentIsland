@@ -79,7 +79,7 @@ public enum StatusCommand {
                 statusText = CLIColor.dim("⚪️ 离线")
             }
 
-            let icon = iconEmoji(for: s.profile)
+            let icon = s.profile.emoji
             let nameText = "\(icon) \(s.profile.name)"
             let pidText = s.pid.map { "\($0)" } ?? CLIColor.dim("-")
             let cpuText = s.processRunning ? String(format: "%.1f%%", s.cpuPercent) : CLIColor.dim("-")
@@ -129,32 +129,6 @@ public enum StatusCommand {
             return "\(Int(seconds / 3600))h前"
         } else {
             return "\(Int(seconds / 86400))d前"
-        }
-    }
-
-    private static func iconEmoji(for profile: AgentProfile) -> String {
-        switch profile.id {
-        case "antigravity": return "⚛️"
-        case "dim", "dimagent": return "✨"
-        case "claude": return "🧠"
-        case "codex": return "🤖"
-        case "cursor": return "💻"
-        case "chatgpt": return "💬"
-        case "dsh": return "⚡️"
-        case "vibe", "vibe-usage": return "📊"
-        case "windsurf": return "🏄"
-        case "trae": return "📐"
-        case "copilot", "ima.copilot": return "🧑‍✈️"
-        case "aider": return "🛠️"
-        case "hermes": return "🪄"
-        case "opencode": return "📖"
-        case "workbuddy", "workbuddy-ai": return "💼"
-        case "zcode": return "🧩"
-        case "openviking": return "📦"
-        case "continue": return "▶️"
-        case "egobrowser": return "🌐"
-        default:
-            return "🤖"
         }
     }
 }

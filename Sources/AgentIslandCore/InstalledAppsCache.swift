@@ -142,7 +142,7 @@ public final class InstalledAppsCache: @unchecked Sendable {
     // MARK: 真实扫描（生产默认）
 
     /// 已知 CLI 名（PATH 扫描用）
-    private static let knownCLIs = ["dim", "codex", "claude", "cursor", "trae", "opencode",
+    private static let knownCLIs = ["dim", "dimcode", "codex", "claude", "cursor", "trae", "opencode",
                             "hermes-agent", "aider", "gemini", "windsurf", "agent-browser",
                             "tiny-agents", "continue", "zcode", "zcode-cli", "antigravity", "agy",
                             "dsh", "ego-browser", "vibe-usage", "openviking", "ov", "vikingbot",

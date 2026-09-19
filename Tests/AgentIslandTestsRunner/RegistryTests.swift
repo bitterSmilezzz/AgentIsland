@@ -216,5 +216,29 @@ enum RegistryTests {
             try expectTrue(goose != nil, "Goose 必须存在于内置档案中")
             try expectTrue(goose?.processNames.contains("goose") == true, "Goose 必须包含进程名")
         }
+
+        TestKit.test("注册表自洽: 声明的会话方言与只读库必须能在同一份档案里定位到") {
+            // 方言/库位置都是档案数据，解析器不再按 id 猜路径。一旦注册表里声明了专有
+            // 方言却没给出对应目录，探测会静默返回「无信号」（表现为该 Agent 永远只显示
+            // 待机），所以这条一致性必须在测试里就被拦住。
+            for profile in AgentRegistry.builtin {
+                switch profile.sessionDialect {
+                case .genericTail, .clineTasks:
+                    break
+                case .antigravityBrain:
+                    try expectTrue(AgentSessionInspector.antigravityBrainDir(in: profile.sessionDirs) != nil,
+                                   "\(profile.id) 声明了 antigravityBrain 方言但 sessionDirs 里没有 brain 目录")
+                case .dshProjection:
+                    try expectTrue(AgentSessionInspector.dshProjectionDir(in: profile.sessionDirs) != nil,
+                                   "\(profile.id) 声明了 dshProjection 方言但 sessionDirs 里没有投影缓存目录")
+                }
+                if let db = profile.sessionDatabase {
+                    try expectTrue(db.path.hasPrefix("/"), "\(profile.id) 的会话库必须是绝对路径: \(db.path)")
+                    if db.schema == .statusIndex {
+                        try expectTrue(db.statusSQL?.isEmpty == false, "\(profile.id) 的 statusIndex 方言缺少查询语句")
+                    }
+                }
+            }
+        }
     }
 }

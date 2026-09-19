@@ -4,6 +4,24 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.82] - 2026-09-20
+
+### 🏗 能力收进档案：路径漂移消除与通用会话解析再提速
+
+- **`detect(lines:)` 由每行约 13 趟全树递归合并为单趟事实收集**：
+  - 实测 96 行尾窗单拍 **7.61ms → 2.89ms**，其中 JSON 解析只占 0.27ms——即改造前 96% 的开销是把同一棵已解析好的树反复走完；
+  - 新增 `LineFacts` 一次遍历产出请求标记、完成标记、工具调用与结果、`role/source/type/status/state` 集合与标识符，键值在每个节点只读一次并归一化；`identifier(in:)`（12 次键查找 + 下钻 `data`/`payload`）由每节点最多 3 次降为 1 次；
+  - 判定顺序、DFS 首个命言语义与解除等待确认的条件均与原实现逐条对齐，287→286 项既有测试（该解析器是全仓测试最密处）零回归；
+  - 删除被取代的 9 个辅助函数（`findRequest` / `findCompletion` / `resolvesAttention` / `isResolutionRecord` / `startsOrContinuesWork` / `structuralValues` / `identifiers` / `extractToolCalls` / `extractToolResolutions`）。
+- **Agent 能力改为档案声明（见 ADR-0004）**：新增 `emoji`、`sessionDialect`、`sessionDatabase` 三个档案字段与 `AgentRegistry.profile(_:)` / `databasePath(for:)` 取值入口：
+  - 同一批会话库路径此前在解析器、动作探测、日志流、Token 统计里各硬编码一份（`~/.dimcode/v2/dimcode.sqlite` 出现 4 次且完全不在注册表里），现由注册表唯一声明，日志流与 Token 统计一律向注册表取值；
+  - 会话探测与库查询由 `switch profile.id` 改为按**方言/schema 穷尽分派**——格式数量远少于 Agent 数量（Cline 与 Roo Code 同源），新增复用既有格式的 Agent 只需登记档案；
+  - 删除 CLI 状态表的 19 分支 id→emoji 梯子，其中 4 个 id（`dimagent` / `vibe` / `ima.copilot` / `egobrowser`）在档案改名后已不存在，只会静默退化成默认符号；
+  - 新增「注册表自洽」测试：声明专有方言却没有对应会话目录的档案直接测失败（线上表现为该 Agent 永远只显示待机）；字段全部带默认值并走 `decodeIfPresent`，升级前存档的自定义 Agent 照旧可解。
+- **日志流与会话探测共用注册表路径**：`AgentLogStreamer` 的 4 处库路径与 Antigravity `brain` 目录改为向注册表取值，`workbuddyDataDir` 这一中间层随之退役；`detectAntigravitySession` 的上下文出口由全局字典改为参数。
+- **DimAgent CLI 名补登记**：`knownCLIs` 原本只认 `dim`，而其发行版可执行名同样有 `dimcode`——开启「自动发现」时 `dimcode` 会被当成一个陌生 CLI，与 DimAgent 重复成一行。
+- **回归验证**：全量 286 项自建测试 100% 通过（0 失败）。
+
 ## [0.0.81] - 2026-09-20
 
 ### ⚡ 采样热路径主线程 I/O 治理与跨 Agent 上下文隔离

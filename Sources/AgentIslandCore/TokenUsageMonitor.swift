@@ -479,18 +479,18 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
     /// 现网构造：SQLite + 可审计 JSONL，全部只读且不触碰凭证/正文。
+    /// 库与会话目录一律取自注册表档案——同样的路径若在这里再写一份字面量，
+    /// 档案换目录或改名后只有的一半会生效（`dimcode.sqlite` 之前就不在注册表里）。
     public convenience init() {
         let expand: (String) -> String = { NSString(string: $0).expandingTildeInPath }
+        func dirs(_ id: String) -> [String] { AgentRegistry.profile(id)?.sessionDirs ?? [] }
+        func database(_ id: String) -> String { AgentRegistry.databasePath(for: id) ?? "" }
         self.init(
-            dimAgentDB: expand("~/.dimcode/v2/dimcode.sqlite"),
-            openCodeDB: expand("~/.local/share/opencode/opencode.db"),
+            dimAgentDB: database("dim"),
+            openCodeDB: database("opencode"),
             structuredSources: [
-                StructuredTokenSource(agentId: "codex", roots: [expand("~/.codex/sessions")], format: .codex),
-                StructuredTokenSource(
-                    agentId: "claude",
-                    roots: [expand("~/.claude/projects"), expand("~/.claude/sessions")],
-                    format: .anthropic
-                ),
+                StructuredTokenSource(agentId: "codex", roots: dirs("codex"), format: .codex),
+                StructuredTokenSource(agentId: "claude", roots: dirs("claude"), format: .anthropic),
                 StructuredTokenSource(
                     agentId: "workbuddy",
                     roots: [expand("~/.workbuddy/projects")],

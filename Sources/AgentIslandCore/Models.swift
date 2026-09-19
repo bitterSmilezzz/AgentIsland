@@ -59,6 +59,49 @@ public enum DockEdge: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+// MARK: - Agent 会话解析方言
+
+/// 会话记录的存放格式。解析器按**格式**分派，而不是按 agent id 分派：
+/// 格式数量远少于 Agent 数量（Cline 与 Roo Code 同源、WorkBuddy 两版同 schema），
+/// 新增一个复用既有格式的 Agent 时只需登记档案，不必再改解析器里的 id 梯子。
+public enum AgentSessionDialect: String, Codable {
+    /// 通用 JSONL/文本尾部（FileMonitor 定位的活动文件 + 有界尾读）
+    case genericTail
+    /// Antigravity：`brain/<session>/.system_generated/logs/transcript.jsonl` + 同名 tasks 目录
+    case antigravityBrain
+    /// DSH：`session_projcache/sessions/<id>.json` 投影缓存
+    case dshProjection
+    /// Cline / Roo Code：`tasks/<taskId>/ui_messages.json`
+    case clineTasks
+}
+
+/// 只读会话库：部分桌面 Agent 把会话只写进 SQLite，FileMonitor 的「最新文件」只能定位到
+/// 二进制库本身，需要按已知 schema 做索引命中的末条查询。
+///
+/// 位置随档案声明：此前同一批 `.sqlite` 路径在解析器、动作探测、日志流、Token 统计里各
+/// 硬编码一份，注册表只记目录不记库文件，已经漂移（`dimcode.sqlite` 不在注册表里）。
+public struct AgentSessionDatabase: Codable, Equatable {
+    public enum Schema: String, Codable {
+        /// dimcode：末 32 条会话按 tool call id 配对确认请求与结果
+        case dimTasks
+        /// 通用状态索引：`SELECT id, <status>, updated_at … ORDER BY updated_at DESC LIMIT 1`
+        case statusIndex
+        /// OpenCode：message/part 双表
+        case openCode
+    }
+
+    public let path: String
+    public let schema: Schema
+    /// 仅 `statusIndex` 需要：完整查询语句（各产品列名与软删条件不同）
+    public let statusSQL: String?
+
+    public init(path: String, schema: Schema, statusSQL: String? = nil) {
+        self.path = path
+        self.schema = schema
+        self.statusSQL = statusSQL
+    }
+}
+
 // MARK: - Agent 定义（注册表条目）
 
 public struct AgentProfile: Identifiable, Codable, Equatable {
@@ -98,6 +141,15 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
     ///   调低时不会突破该 Agent 的保护下限。
     public let tokenAlertFloor: Int?
     public let sessionDirs: [String]      // 会话目录（后台扫描）
+    /// 终端看板（`agentisland status` / `top`）与摘要里用的展示符号。
+    /// 曾经是 CLI 里一张 19 分支的 id→emoji 表，其中 4 个 id（dimagent / vibe /
+    /// ima.copilot / egobrowser）在注册表里并不存在——档案改名后梯子不会报错，只会静默
+    /// 退化成默认符号，所以展示数据随档案声明。
+    public let emoji: String
+    /// 会话记录的解析方言（见 `AgentSessionDialect`）
+    public let sessionDialect: AgentSessionDialect
+    /// 只读会话库（nil 表示该 Agent 的会话不落 SQLite）
+    public let sessionDatabase: AgentSessionDatabase?
     public let defaultEnabled: Bool
     public let category: AgentCategory
     /// 是否为用户自定义（来自设置界面）
@@ -122,7 +174,10 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
                 tokenAlertFloor: Int? = nil,
                 sessionDirs: [String],
                 defaultEnabled: Bool = true, category: AgentCategory = .assistant,
-                isCustom: Bool = false) {
+                isCustom: Bool = false,
+                emoji: String = "🤖",
+                sessionDialect: AgentSessionDialect = .genericTail,
+                sessionDatabase: AgentSessionDatabase? = nil) {
         self.id = id
         self.name = name
         self.icon = icon
@@ -134,6 +189,9 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         self.cpuWorkingThreshold = cpuWorkingThreshold
         self.tokenAlertFloor = tokenAlertFloor
         self.sessionDirs = sessionDirs
+        self.emoji = emoji
+        self.sessionDialect = sessionDialect
+        self.sessionDatabase = sessionDatabase
         self.defaultEnabled = defaultEnabled
         self.category = category
         self.isCustom = isCustom
@@ -147,6 +205,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, name, icon, bundleIDs, processNames, pathContains, pathExcludes
         case hostBundleIDs, cpuWorkingThreshold, tokenAlertFloor, sessionDirs, defaultEnabled, category, isCustom
+        case emoji, sessionDialect, sessionDatabase
     }
 
     public init(from decoder: Decoder) throws {
@@ -162,6 +221,9 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         cpuWorkingThreshold = try c.decodeIfPresent(Double.self, forKey: .cpuWorkingThreshold)
         tokenAlertFloor = try c.decodeIfPresent(Int.self, forKey: .tokenAlertFloor)
         sessionDirs = try c.decodeIfPresent([String].self, forKey: .sessionDirs) ?? []
+        emoji = try c.decodeIfPresent(String.self, forKey: .emoji) ?? "🤖"
+        sessionDialect = try c.decodeIfPresent(AgentSessionDialect.self, forKey: .sessionDialect) ?? .genericTail
+        sessionDatabase = try c.decodeIfPresent(AgentSessionDatabase.self, forKey: .sessionDatabase)
         defaultEnabled = try c.decodeIfPresent(Bool.self, forKey: .defaultEnabled) ?? true
         category = try c.decodeIfPresent(AgentCategory.self, forKey: .category) ?? .assistant
         isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom) ?? false

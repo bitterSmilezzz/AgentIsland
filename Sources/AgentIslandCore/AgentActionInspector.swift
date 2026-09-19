@@ -20,21 +20,21 @@ public enum AgentActionInspector {
         // 2. 根据各 Agent 的专用会话数据库/日志提取最近动作
         switch profile.id {
         case "dim":
-            return inspectDimAction()
+            return inspectDimAction(agentId: "dim")
         case "codex":
             return inspectCodexAction()
         case "claude":
             return inspectClaudeAction(sessionDirs: sessionDirs)
         case "zcode":
-            return inspectZCodeAction()
+            return inspectZCodeAction(agentId: "zcode")
         case "antigravity":
-            return inspectAntigravityAction()
+            return inspectAntigravityAction(dirs: sessionDirs)
         case "workbuddy":
             return inspectWorkBuddyAction(agentId: "workbuddy")
         case "workbuddy-ai":
             return inspectWorkBuddyAction(agentId: "workbuddy-ai")
         case "opencode":
-            return inspectOpenCodeAction()
+            return inspectOpenCodeAction(agentId: "opencode")
         case "dsh":
             return inspectDSHAction(pid: pid, snapshot: snapshot)
         case "hermes":
@@ -42,6 +42,13 @@ public enum AgentActionInspector {
         default:
             return nil
         }
+    }
+
+    /// 会话库位置统一取自注册表档案（路径字面量在注册表只写一份）。
+    /// 此前同一批 `.sqlite`/`.db` 路径在动作探测、会话探测、日志流与 Token 统计里各写一遍，
+    /// 档案改名或换目录时只会有一处生效，其余静默读不到数据。
+    static func sessionDatabasePath(for agentId: String) -> String? {
+        AgentRegistry.databasePath(for: agentId)
     }
 
     // MARK: - 1. 进程级子命令探测
@@ -217,15 +224,10 @@ public enum AgentActionInspector {
 
     // MARK: - 2. DimAgent 会话数据库探测
 
-    public static func inspectDimAction(dbPath: String? = nil, now: Date = Date()) -> String? {
-        let path: String
-        if let custom = dbPath {
-            path = custom
-        } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            path = "\(home)/.dimcode/v2/dimcode.sqlite"
-        }
-        // 库缺失 / open 失败 → withDB 返回 nil（原 fileExists 快路径由 ReadonlyDB.connection 的 inode 检查覆盖）
+    public static func inspectDimAction(agentId: String = "dim", now: Date = Date()) -> String? {
+        // 库位置取自注册表档案；库缺失 / open 失败 → withDB 返回 nil
+        // （原 fileExists 快路径由 ReadonlyDB.connection 的 inode 检查覆盖）
+        guard let path = sessionDatabasePath(for: agentId) else { return nil }
         return withDB(path) { db in
             // 查询最新的 1 条消息。
             // 性能关键：不能 `ORDER BY createdAt DESC LIMIT 1`——messages 表没有 createdAt
@@ -444,9 +446,8 @@ public enum AgentActionInspector {
 
     // MARK: - 5. ZCode 任务数据库探测
 
-    public static func inspectZCodeAction() -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.zcode/v2/tasks-index.sqlite"
+    public static func inspectZCodeAction(agentId: String = "zcode") -> String? {
+        guard let dbPath = sessionDatabasePath(for: agentId) else { return nil }
         return withDB(dbPath) { db in
             let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
             let twoHourAgoMs = nowMs - (2 * 60 * 60 * 1000)
@@ -474,10 +475,10 @@ public enum AgentActionInspector {
 
     // MARK: - 6. Antigravity 轨迹日志探测
 
-    public static func inspectAntigravityAction() -> String? {
+    public static func inspectAntigravityAction(dirs: [String]) -> String? {
         // 优先从 Antigravity 原生会话探测中读取当前正在活跃执行的动作；
         // 处于已完成、待审批或待机状态时返回 nil，绝不残留回溯上一轮旧命令。
-        if let signal = AgentSessionInspector.probeAntigravitySession().signal,
+        if let signal = AgentSessionInspector.probeAntigravitySession(dirs: dirs).signal,
            case let .active(_, actionText) = signal,
            let actionText, !actionText.isEmpty {
             return actionText
@@ -544,16 +545,11 @@ public enum AgentActionInspector {
 
     // MARK: - 7. WorkBuddy 会话数据库探测
 
-    /// WorkBuddy 变体数据根（R：国内 ~/.workbuddy / 国外 ~/.workbuddy-ai）
-    public static func workbuddyDataDir(for agentId: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return agentId == "workbuddy-ai" ? "\(home)/.workbuddy-ai" : "\(home)/.workbuddy"
-    }
-
     public static func inspectWorkBuddyAction(agentId: String = "workbuddy", now: Date = Date()) -> String? {
+        guard let dbPath = sessionDatabasePath(for: agentId) else { return nil }
+        // 会话 jsonl 落在库的同级目录，由注册的库路径推出，避免再写一份 home 字面量
+        let dataDir = (dbPath as NSString).deletingLastPathComponent
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dataDir = workbuddyDataDir(for: agentId)
-        let dbPath = "\(dataDir)/workbuddy.db"
         return withDB(dbPath) { db in
             // 查询未软删除的最新活跃/最近会话
             let sql = "SELECT id, COALESCE(NULLIF(custom_title, ''), NULLIF(title, ''), ''), status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
@@ -633,9 +629,8 @@ public enum AgentActionInspector {
 
     // MARK: - 8. OpenCode 会话数据库探测
 
-    public static func inspectOpenCodeAction() -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dbPath = "\(home)/.local/share/opencode/opencode.db"
+    public static func inspectOpenCodeAction(agentId: String = "opencode") -> String? {
+        guard let dbPath = sessionDatabasePath(for: agentId) else { return nil }
         return withDB(dbPath) { db in
             // 性能关键：原实现 `LEFT JOIN part ... ORDER BY s.time_updated DESC, p.time_updated
             // DESC LIMIT 1` 的相关子查询对 part 按 time_updated 排序（无索引 → 临时 B 树，
@@ -694,9 +689,10 @@ public enum AgentActionInspector {
 
     // MARK: - 9. DSH (DeepSeek Harness) 运行模式探测
 
-    public static func inspectDSHAction(pid: Int32?, snapshot: ProcessSnapshot? = nil) -> String? {
+    public static func inspectDSHAction(pid: Int32?, snapshot: ProcessSnapshot? = nil, sessionDirs: [String] = []) -> String? {
         // 1. 优先从 DSH 官方投影缓存中提取正在运行的活跃任务与步骤
-        if let signal = AgentSessionInspector.inspectDSHSession(),
+        if let projection = AgentSessionInspector.dshProjectionDir(in: sessionDirs),
+           let signal = AgentSessionInspector.inspectDSHSession(baseDir: projection),
            case let .active(_, actionText) = signal,
            let actionText, !actionText.isEmpty {
             return actionText

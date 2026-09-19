@@ -80,22 +80,36 @@ public enum AgentSessionInspector {
         try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
+    /// DSH 投影缓存目录：从档案 sessionDirs 里挑出投影那一层。
+    /// 路径由注册表声明一次即可——解析器再硬编码一份，档案换目录时只会有一半生效。
+    static func dshProjectionDir(in dirs: [String]) -> String? {
+        dirs.first { URL(fileURLWithPath: $0).lastPathComponent == "sessions" && $0.contains("session_projcache") }
+    }
+
+    /// Antigravity 会话根（`~/.gemini/antigravity/brain`，同样只在注册表里写一次）
+    static func antigravityBrainDir(in dirs: [String]) -> String? {
+        dirs.first { URL(fileURLWithPath: $0).lastPathComponent == "brain" }
+    }
+
     /// 探测一轮会话：优先消费 FileMonitor 已在后台定位出的每目录最新文件并做有界尾读。
     /// 专有解析器需要自行定位会话时，走带失效令牌的定位缓存（见 `locatedSession`），
     /// 因此调用方（@MainActor 采样）不会每拍重走会话树。
     public static func probe(profile: AgentProfile, activityFiles: [URL], now: Date = Date()) -> AgentSessionProbe {
         // 专有 Agent 协议优先：拥有高保真结构化日志/专有解析器的 Agent（如 Antigravity、DSH、Cline、Roo）
         // 必须使用其专有解析器，避免被通用检测器的关键字深搜造成 attention/active 误判。
-        switch profile.id {
-        case "antigravity":
-            return probeAntigravitySession(baseDir: nil, now: now)
-        case "dsh":
-            return AgentSessionProbe(signal: inspectDSHSession(now: now))
-        case "cline", "roo-code":
+        // 按档案声明的**方言**分派而非 agent id：Cline 与 Roo Code 共用一套格式，
+        // 新增复用既有格式的 Agent 只改注册表。
+        switch profile.sessionDialect {
+        case .antigravityBrain:
+            return probeAntigravitySession(dirs: profile.sessionDirs, now: now)
+        case .dshProjection:
+            guard let dir = dshProjectionDir(in: profile.sessionDirs) else { return AgentSessionProbe() }
+            return AgentSessionProbe(signal: inspectDSHSession(baseDir: dir, now: now))
+        case .clineTasks:
             if let signal = inspectClineOrRooTasks(dirs: profile.sessionDirs, now: now) {
                 return AgentSessionProbe(signal: signal)
             }
-        default:
+        case .genericTail:
             break
         }
 
@@ -149,32 +163,36 @@ public enum AgentSessionInspector {
                 continue
             }
 
-            extractToolCalls(from: object, lineIndex: idx, into: &pendingCalls, completedIds: &completedCallIds)
-            extractToolResolutions(from: object, into: &completedCallIds)
+            var facts = LineFacts()
+            collectFacts(object, depth: 0, lineIndex: idx, sourceLine: line, into: &facts)
+            for (id, call) in facts.toolCalls { pendingCalls[id] = call }
+            completedCallIds.formUnion(facts.resolvedCallIds)
 
-            if let request = signal?.attentionRequest,
-               resolvesAttention(object, fingerprint: request.fingerprint) {
+            if let request = signal?.attentionRequest, facts.resolves(request) {
                 signal = nil
                 continue
             }
 
             // 尾窗可能只包含 AskUserQuestion 的 tool_result、而请求本身已落在窗口外；
             // 结果记录里的 toolName 不能被反向当成一条新请求。
-            if isResolutionRecord(object) { continue }
+            if facts.isResolutionRecord { continue }
 
-            if let request = findRequest(in: object, sourceLine: line) {
-                signal = .attention(request)
+            if let marker = facts.requestMarker {
+                signal = .attention(AgentAttentionRequest(
+                    fingerprint: marker.fingerprint,
+                    message: marker.approval ? "等待你批准操作" : "等待你选择或确认"
+                ))
                 continue
             }
 
-            if let completion = findCompletion(in: object, sourceLine: line, depth: 0) {
+            if let completion = facts.completionFingerprint {
                 signal = .completed(fingerprint: completion)
                 continue
             }
 
             // 新一轮用户消息、推理或工具调用使旧 task_complete 或旧 attention 失效。token_count / usage /
             // item_completed 等收尾记账事件是中性的，不会把状态立即冲掉。
-            if startsOrContinuesWork(object) {
+            if facts.mentionsActiveWork {
                 if case .completed = signal { signal = nil }
                 if case .attention = signal { signal = nil }
             }
@@ -204,58 +222,123 @@ public enum AgentSessionInspector {
         return signal
     }
 
-    // MARK: - 工具调用与命令提取
+    // MARK: - 单行事实收集（一次遍历替代十余次递归）
 
-    private struct ActiveToolCall {
+    struct ActiveToolCall {
         let id: String
         let name: String
         let command: String?
         let lineIndex: Int
     }
 
-    private static func extractToolCalls(from value: Any, lineIndex: Int, into calls: inout [String: ActiveToolCall], completedIds: inout Set<String>) {
-        if let dict = value as? [String: Any] {
-            let type = normalized(dict["type"] as? String)
-            let status = normalized(dict["status"] as? String)
-            if type == "tooluse" || type == "functioncall" || type == "customtoolcall" || type == "toolcall" {
-                if let id = identifier(in: dict) {
-                    if status == "completed" || status == "done" || status == "success" || status == "failed" || status == "error" {
-                        completedIds.insert(id)
-                    } else {
-                        let name = dict["name"] as? String ?? dict["function"] as? String ?? ""
-                        let cmd = extractCommand(from: dict)
-                        calls[id] = ActiveToolCall(id: id, name: name, command: cmd, lineIndex: lineIndex)
-                    }
-                }
-            }
-            for child in dict.values {
-                extractToolCalls(from: child, lineIndex: lineIndex, into: &calls, completedIds: &completedIds)
-            }
-        } else if let array = value as? [Any] {
-            for child in array {
-                extractToolCalls(from: child, lineIndex: lineIndex, into: &calls, completedIds: &completedIds)
-            }
+    /// 一行 JSON 解析后一次遍历所得的事实。
+    ///
+    /// 此前每行要跑约 13 趟全树递归（请求标记、完成标记、工具调用与结果、
+    /// role/source/type/status/state 各一趟、标识符再一趟），实测 96 行尾窗
+    /// 7.6ms/拍且全部发生在 @MainActor 上，其中 JSON 解析本身只占 0.27ms：
+    /// 也就是说 96% 的开销是把同一棵已经解析好的树反复走完。
+    /// 现在每行一趟，键值只在节点上读一次。
+    private struct LineFacts {
+        var requestMarker: (fingerprint: String, approval: Bool)?
+        var completionFingerprint: String?
+        var toolCalls: [String: ActiveToolCall] = [:]
+        var resolvedCallIds: Set<String> = []
+        var roles: Set<String> = []
+        var sources: Set<String> = []
+        var types: Set<String> = []
+        /// status 与 state 两个键合并收集：只有「等待/已解决」类判定用到，二者语义相同
+        var states: Set<String> = []
+        var identifiers: Set<String> = []
+
+        /// 结果由用户/用户显式动作产生（解除等待确认的依据之一）
+        var attributedToUser: Bool { roles.contains("user") || sources.contains("user") || sources.contains("userexplicit") }
+        var isResolutionRecord: Bool { roles.contains("toolresult") || !types.isDisjoint(with: resolutionTypes) }
+        var mentionsActiveWork: Bool { roles.contains("user") || !types.isDisjoint(with: activeTypes) }
+        var mentionsResolution: Bool {
+            !types.isDisjoint(with: resolutionTypes) || !states.isDisjoint(with: resolutionStates)
+        }
+
+        /// 是否解除当前等待确认。判定顺序与原实现一致：先看是否出自用户，
+        /// 再看是否携带明确的解决态；有关联 ID 时必须对应当前请求，无 ID 的显式
+        /// approval_response 也可解除。
+        func resolves(_ request: AgentAttentionRequest) -> Bool {
+            if attributedToUser { return true }
+            guard mentionsResolution else { return false }
+            return identifiers.isEmpty || identifiers.contains(request.fingerprint)
         }
     }
 
-    private static func extractToolResolutions(from value: Any, into completedIds: inout Set<String>) {
-        if let dict = value as? [String: Any] {
-            let type = normalized(dict["type"] as? String)
-            let status = normalized(dict["status"] as? String)
-            if type == "toolresult" || type == "functioncalloutput" || type == "customtoolcalloutput" || status == "completed" || status == "success" || status == "done" {
-                for key in ["tool_use_id", "toolUseId", "call_id", "callId", "id"] {
-                    if let id = dict[key] as? String, !id.isEmpty {
-                        completedIds.insert(id)
-                    }
+    private static func collectFacts(_ value: Any, depth: Int, lineIndex: Int, sourceLine: String, into facts: inout LineFacts) {
+        if let array = value as? [Any] {
+            for child in array {
+                collectFacts(child, depth: depth, lineIndex: lineIndex, sourceLine: sourceLine, into: &facts)
+            }
+            return
+        }
+        guard let dict = value as? [String: Any] else { return }
+
+        // 每个键只读一次并归一化，供本节点的全部判定复用
+        let type = normalized(dict["type"] as? String)
+        let status = normalized(dict["status"] as? String)
+        let role = normalized(dict["role"] as? String)
+        let source = normalized(dict["source"] as? String)
+        if !role.isEmpty { facts.roles.insert(role) }
+        if !source.isEmpty { facts.sources.insert(source) }
+        if !type.isEmpty { facts.types.insert(type) }
+        let state = normalized(dict["state"] as? String)
+        if !status.isEmpty { facts.states.insert(status) }
+        if !state.isEmpty { facts.states.insert(state) }
+
+        // identifier(in:) 会做 12 次键查找并向下钻 data/payload，每节点只算一次
+        let nodeID = identifier(in: dict)
+        if let id = nodeID { facts.identifiers.insert(id) }
+
+        // 在途工具调用与其结果（终端类命令的生命周期，用于拦截虚假 completed）
+        if type == "tooluse" || type == "functioncall" || type == "customtoolcall" || type == "toolcall" {
+            if let id = nodeID {
+                if status == "completed" || status == "done" || status == "success" || status == "failed" || status == "error" {
+                    facts.resolvedCallIds.insert(id)
+                } else {
+                    let name = dict["name"] as? String ?? dict["function"] as? String ?? ""
+                    facts.toolCalls[id] = ActiveToolCall(id: id, name: name, command: extractCommand(from: dict), lineIndex: lineIndex)
                 }
             }
-            for child in dict.values {
-                extractToolResolutions(from: child, into: &completedIds)
+        }
+        if type == "toolresult" || type == "functioncalloutput" || type == "customtoolcalloutput"
+            || status == "completed" || status == "success" || status == "done" {
+            for key in ["tool_use_id", "toolUseId", "call_id", "callId", "id"] {
+                if let id = dict[key] as? String, !id.isEmpty {
+                    facts.resolvedCallIds.insert(id)
+                }
             }
-        } else if let array = value as? [Any] {
-            for child in array {
-                extractToolResolutions(from: child, into: &completedIds)
+        }
+
+        // 请求标记与完成标记都取 DFS 首个命中，与原先各自早退的遍历语义一致
+        if facts.requestMarker == nil {
+            let kind = normalized(dict["kind"] as? String)
+            let name = normalized(dict["name"] as? String)
+            let marker = [name, type, status, state, kind].first {
+                requestNames.contains($0) || requestStates.contains($0)
             }
+            if let marker {
+                let approval = marker.contains("approval") || marker.contains("permission") || marker.contains("confirm")
+                facts.requestMarker = (nodeID ?? stableFingerprint(sourceLine), approval)
+            }
+        }
+        if facts.completionFingerprint == nil {
+            let subtype = normalized(dict["subtype"] as? String)
+            let isCompletion = completionTypes.contains(type) || completionTypes.contains(subtype)
+                || (depth == 0 && type == "result")
+            // WorkBuddy 等格式以 message.status=completed 表示本轮消息终态；普通工具调用
+            // 的 status=completed 不会命中，因为其 type 是 tool_use/custom_tool_call。
+            let isCompletedMessage = depth <= 1 && type == "message" && status == "completed"
+            if isCompletion || isCompletedMessage {
+                facts.completionFingerprint = nodeID ?? stableFingerprint(sourceLine)
+            }
+        }
+
+        for child in dict.values {
+            collectFacts(child, depth: depth + 1, lineIndex: lineIndex, sourceLine: sourceLine, into: &facts)
         }
     }
 
@@ -375,91 +458,6 @@ public enum AgentSessionInspector {
         return newest
     }
 
-    private static func findRequest(in value: Any, sourceLine: String) -> AgentAttentionRequest? {
-        if let dict = value as? [String: Any] {
-            let name = normalized(dict["name"] as? String)
-            let type = normalized(dict["type"] as? String)
-            let status = normalized(dict["status"] as? String)
-            let state = normalized(dict["state"] as? String)
-            let kind = normalized(dict["kind"] as? String)
-            let marker = [name, type, status, state, kind].first {
-                requestNames.contains($0) || requestStates.contains($0)
-            }
-            if let marker {
-                let fingerprint = identifier(in: dict) ?? stableFingerprint(sourceLine)
-                let approval = marker.contains("approval") || marker.contains("permission") || marker.contains("confirm")
-                return AgentAttentionRequest(
-                    fingerprint: fingerprint,
-                    message: approval ? "等待你批准操作" : "等待你选择或确认"
-                )
-            }
-            for child in dict.values {
-                if let request = findRequest(in: child, sourceLine: sourceLine) { return request }
-            }
-        } else if let array = value as? [Any] {
-            for child in array {
-                if let request = findRequest(in: child, sourceLine: sourceLine) { return request }
-            }
-        }
-        return nil
-    }
-
-    private static func resolvesAttention(_ value: Any, fingerprint: String) -> Bool {
-        let roles = structuralValues(for: "role", in: value)
-        if roles.contains("user") { return true }
-
-        let sources = structuralValues(for: "source", in: value)
-        if sources.contains("user") || sources.contains("userexplicit") { return true }
-
-        let types = structuralValues(for: "type", in: value)
-        let states = structuralValues(for: "status", in: value)
-            .union(structuralValues(for: "state", in: value))
-        let hasResolution = !types.isDisjoint(with: resolutionTypes)
-            || !states.isDisjoint(with: resolutionStates)
-        guard hasResolution else { return false }
-
-        let ids = identifiers(in: value)
-        // 有关联 ID 时必须对应当前请求；无 ID 的显式 approval_response 也可解除。
-        return ids.isEmpty || ids.contains(fingerprint)
-    }
-
-    private static func isResolutionRecord(_ value: Any) -> Bool {
-        let roles = structuralValues(for: "role", in: value)
-        if roles.contains("toolresult") { return true }
-        let types = structuralValues(for: "type", in: value)
-        return !types.isDisjoint(with: resolutionTypes)
-    }
-
-    private static func findCompletion(in value: Any, sourceLine: String, depth: Int) -> String? {
-        if let dict = value as? [String: Any] {
-            let type = normalized(dict["type"] as? String)
-            let subtype = normalized(dict["subtype"] as? String)
-            if completionTypes.contains(type) || completionTypes.contains(subtype)
-                || (depth == 0 && type == "result") {
-                return identifier(in: dict) ?? stableFingerprint(sourceLine)
-            }
-            // WorkBuddy 等格式以 message.status=completed 表示本轮消息终态；普通工具调用
-            // 的 status=completed 不会命中，因为其 type 是 tool_use/custom_tool_call。
-            if depth <= 1, type == "message", normalized(dict["status"] as? String) == "completed" {
-                return identifier(in: dict) ?? stableFingerprint(sourceLine)
-            }
-            for child in dict.values {
-                if let completion = findCompletion(in: child, sourceLine: sourceLine, depth: depth + 1) { return completion }
-            }
-        } else if let array = value as? [Any] {
-            for child in array {
-                if let completion = findCompletion(in: child, sourceLine: sourceLine, depth: depth + 1) { return completion }
-            }
-        }
-        return nil
-    }
-
-    private static func startsOrContinuesWork(_ value: Any) -> Bool {
-        if structuralValues(for: "role", in: value).contains("user") { return true }
-        let types = structuralValues(for: "type", in: value)
-        return !types.isDisjoint(with: activeTypes)
-    }
-
     private static func applyPlainText(_ line: String, to current: AgentSessionSignal?) -> AgentSessionSignal? {
         let lower = line.lowercased()
         // 纯文本降级只接受短状态行；大段终端输出/源码里偶然出现关键字不能改变状态。
@@ -487,17 +485,6 @@ public enum AgentSessionInspector {
         return current
     }
 
-    private static func structuralValues(for key: String, in value: Any) -> Set<String> {
-        var result = Set<String>()
-        if let dict = value as? [String: Any] {
-            if let string = dict[key] as? String { result.insert(normalized(string)) }
-            for child in dict.values { result.formUnion(structuralValues(for: key, in: child)) }
-        } else if let array = value as? [Any] {
-            for child in array { result.formUnion(structuralValues(for: key, in: child)) }
-        }
-        return result
-    }
-
     private static func identifier(in dict: [String: Any]) -> String? {
         for key in ["call_id", "tool_use_id", "request_id", "toolCallId", "toolUseId",
                     "requestId", "id", "turn_id", "session_id", "turnId", "sessionId"] {
@@ -510,17 +497,6 @@ public enum AgentSessionInspector {
             return id
         }
         return nil
-    }
-
-    private static func identifiers(in value: Any) -> Set<String> {
-        var result = Set<String>()
-        if let dict = value as? [String: Any] {
-            if let id = identifier(in: dict) { result.insert(id) }
-            for child in dict.values { result.formUnion(identifiers(in: child)) }
-        } else if let array = value as? [Any] {
-            for child in array { result.formUnion(identifiers(in: child)) }
-        }
-        return result
     }
 
     private static func normalized(_ value: String?) -> String {
@@ -540,33 +516,17 @@ public enum AgentSessionInspector {
 
     // MARK: - 已知 SQLite 会话源
 
+    /// 按档案声明的库位置与 schema 取会话终态；未登记 `sessionDatabase` 的 Agent 无此信号源。
     private static func inspectKnownDatabase(profile: AgentProfile, now: Date) -> AgentSessionSignal? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        switch profile.id {
-        case "dim":
-            return inspectDimDatabase(path: "\(home)/.dimcode/v2/dimcode.sqlite", now: now)
-        case "zcode":
-            return inspectStatusDatabase(
-                path: "\(home)/.zcode/v2/tasks-index.sqlite",
-                sql: "SELECT id, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT 1;",
-                now: now
-            )
-        case "workbuddy":
-            return inspectStatusDatabase(
-                path: "\(home)/.workbuddy/workbuddy.db",
-                sql: "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;",
-                now: now
-            )
-        case "workbuddy-ai":
-            return inspectStatusDatabase(
-                path: "\(home)/.workbuddy-ai/workbuddy.db",
-                sql: "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;",
-                now: now
-            )
-        case "opencode":
-            return inspectOpenCodeDatabase(path: "\(home)/.local/share/opencode/opencode.db", now: now)
-        default:
-            return nil
+        guard let database = profile.sessionDatabase else { return nil }
+        switch database.schema {
+        case .dimTasks:
+            return inspectDimDatabase(path: database.path, now: now)
+        case .statusIndex:
+            guard let sql = database.statusSQL else { return nil }
+            return inspectStatusDatabase(path: database.path, sql: sql, now: now)
+        case .openCode:
+            return inspectOpenCodeDatabase(path: database.path, now: now)
         }
     }
 
@@ -673,14 +633,8 @@ public enum AgentSessionInspector {
     }
 
     /// 解析 DeepSeek Harness (DSH) 官方会话投影缓存 (sessionProjectionCache)，提取活跃执行态与终态。
-    public static func inspectDSHSession(baseDir: String? = nil, now: Date = Date()) -> AgentSessionSignal? {
-        let projcacheDir: URL
-        if let baseDir {
-            projcacheDir = URL(fileURLWithPath: baseDir)
-        } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            projcacheDir = URL(fileURLWithPath: "\(home)/.dsh/storages/session_projcache/sessions")
-        }
+    public static func inspectDSHSession(baseDir: String, now: Date = Date()) -> AgentSessionSignal? {
+        let projcacheDir = URL(fileURLWithPath: baseDir)
         // 投影目录实测 500+ 会话文件，一趟 stat 约 15ms，不能每拍在 @MainActor 上重走
         let key = "dsh|\(projcacheDir.path)"
         guard let found = locatedSession(key: key, rootDir: projcacheDir, now: now, locate: {
@@ -770,14 +724,9 @@ public enum AgentSessionInspector {
 
     /// 解析 Google Antigravity 轨迹日志 (.system_generated/logs/transcript.jsonl)，
     /// 提取活跃执行态、提问确认与终态，以及本轮的后台任务/子智能体/Token 细分上下文。
-    public static func probeAntigravitySession(baseDir: String? = nil, now: Date = Date()) -> AgentSessionProbe {
-        let brainDir: URL
-        if let baseDir {
-            brainDir = URL(fileURLWithPath: baseDir)
-        } else {
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
-        }
+    public static func probeAntigravitySession(dirs: [String], now: Date = Date()) -> AgentSessionProbe {
+        guard let brain = antigravityBrainDir(in: dirs) else { return AgentSessionProbe() }
+        let brainDir = URL(fileURLWithPath: brain)
         let key = "antigravity|\(brainDir.path)"
         guard let found = locatedSession(key: key, rootDir: brainDir, now: now, locate: {
             walkAntigravitySessions(in: brainDir)

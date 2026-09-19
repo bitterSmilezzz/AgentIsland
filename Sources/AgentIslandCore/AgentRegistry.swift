@@ -6,6 +6,17 @@ import Foundation
 
 public enum AgentRegistry {
 
+    /// 按 id 取内置档案：会话库位置、会话方言等能力一律从这里取，
+    /// 各子系统不再重复硬编码 `~/...` 字面量（档案换目录时不会只有一半生效）。
+    public static func profile(_ id: String) -> AgentProfile? {
+        builtin.first { $0.id == id }
+    }
+
+    /// 某 Agent 的只读会话库位置（未登记则为 nil）
+    public static func databasePath(for id: String) -> String? {
+        profile(id)?.sessionDatabase?.path
+    }
+
     /// 桌面类 Agent 的 CPU 判定下限（Electron/多进程空闲抖动约 4%~15%）
     private static let desktopCPUFloor: Double = 20.0
     /// WorkBuddy 常驻多个 prewarm 进程，CPU 汇总更容易抬高，需要更高下限
@@ -24,7 +35,9 @@ public enum AgentRegistry {
             processNames: ["DimAgent", "DimRemote", "dim"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".dimcode/v2/data/sessions")],
-            category: .assistant
+            category: .assistant,
+            emoji: "✨",
+            sessionDatabase: AgentSessionDatabase(path: home(".dimcode/v2/dimcode.sqlite"), schema: .dimTasks),
         ),
         AgentProfile(
             id: "claude",
@@ -34,7 +47,8 @@ public enum AgentRegistry {
             processNames: ["claude", "Claude", "claude-code"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".claude/sessions"), home(".claude/projects")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🧠",
         ),
         AgentProfile(
             id: "codex",
@@ -52,7 +66,8 @@ public enum AgentRegistry {
             // 只监控会话 JSONL 目录；~/.codex 根目录含 sqlite/WAL/cache，被 app 后台高频刷新，
             // 会导致 Codex 仅打开但未运行任务时被误判为 WORKING
             sessionDirs: [home(".codex/sessions")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🤖",
         ),
         AgentProfile(
             id: "cursor",
@@ -62,7 +77,8 @@ public enum AgentRegistry {
             processNames: ["Cursor", "cursor"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/Cursor/User/workspaceStorage")],
-            category: .codeEditor
+            category: .codeEditor,
+            emoji: "💻",
         ),
         AgentProfile(
             id: "trae",
@@ -73,7 +89,8 @@ public enum AgentRegistry {
             pathContains: ["trae"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/Trae CN/User/workspaceStorage")],
-            category: .codeEditor
+            category: .codeEditor,
+            emoji: "📐",
         ),
         AgentProfile(
             id: "copilot",
@@ -83,7 +100,8 @@ public enum AgentRegistry {
             processNames: ["ima.copilot", "Copilot"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/com.tencent.imamac")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🧑‍✈️",
         ),
         AgentProfile(
             // 国内版（腾讯系，WorkBuddy.app）。数据目录与国外版（workbuddy-ai）完全独立。
@@ -103,7 +121,9 @@ public enum AgentRegistry {
                 // memory 也会被后台同步触碰。任务产物才是工作信号。
                 home(".workbuddy/tasks")
             ],
-            category: .assistant
+            category: .assistant,
+            emoji: "💼",
+            sessionDatabase: AgentSessionDatabase(path: home(".workbuddy/workbuddy.db"), schema: .statusIndex, statusSQL: "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"),
         ),
         // 国外版（WorkBuddy AI.app，com.workbuddy.workbuddy）：数据目录 ~/.workbuddy-ai，
         // 进程 basename 同为 Electron，只能靠路径区分（app 内路径含 "WorkBuddy AI"）
@@ -121,7 +141,9 @@ public enum AgentRegistry {
             sessionDirs: [
                 home(".workbuddy-ai/tasks")
             ],
-            category: .assistant
+            category: .assistant,
+            emoji: "💼",
+            sessionDatabase: AgentSessionDatabase(path: home(".workbuddy-ai/workbuddy.db"), schema: .statusIndex, statusSQL: "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"),
         ),
         AgentProfile(
             id: "zcode",
@@ -136,7 +158,9 @@ public enum AgentRegistry {
                 // checkpoints 才对应一次实际 Agent 运行的状态落盘。
                 home(".zcode/v2/checkpoints")
             ],
-            category: .codeEditor
+            category: .codeEditor,
+            emoji: "🧩",
+            sessionDatabase: AgentSessionDatabase(path: home(".zcode/v2/tasks-index.sqlite"), schema: .statusIndex, statusSQL: "SELECT id, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT 1;"),
         ),
         AgentProfile(
             id: "antigravity",
@@ -154,7 +178,9 @@ public enum AgentRegistry {
                 home(".gemini/antigravity/conversations"),
                 home(".gemini/antigravity/brain")
             ],
-            category: .codeEditor
+            category: .codeEditor,
+            emoji: "⚛️",
+            sessionDialect: .antigravityBrain,
         ),
         AgentProfile(
             id: "opencode",
@@ -166,7 +192,9 @@ public enum AgentRegistry {
             // 只监控会话数据库目录。~/.config/opencode 是配置目录（含 node_modules），
             // 与任务无关却占全量扫描 22-50ms / 2098 个条目（实测）——依赖安装不是工作信号。
             sessionDirs: [home(".local/share/opencode")],
-            category: .assistant
+            category: .assistant,
+            emoji: "📖",
+            sessionDatabase: AgentSessionDatabase(path: home(".local/share/opencode/opencode.db"), schema: .openCode),
         ),
         AgentProfile(
             id: "hermes",
@@ -175,7 +203,8 @@ public enum AgentRegistry {
             bundleIDs: [],
             processNames: ["hermes-agent", "hermes"],
             sessionDirs: [home(".hermes/sessions"), home(".hermes/logs")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🪄",
         ),
         AgentProfile(
             id: "continue",
@@ -186,7 +215,8 @@ public enum AgentRegistry {
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".continue")],
             defaultEnabled: false,
-            category: .codeEditor
+            category: .codeEditor,
+            emoji: "▶️",
         ),
         AgentProfile(
             id: "chatgpt",
@@ -196,7 +226,8 @@ public enum AgentRegistry {
             processNames: ["ChatGPT"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/com.openai.codex")],
-            category: .assistant
+            category: .assistant,
+            emoji: "💬",
         ),
         AgentProfile(
             id: "dsh",
@@ -211,7 +242,9 @@ public enum AgentRegistry {
             // storages/workspace.json 是网页宿主的工作区状态，会在空闲时被后台刷新；
             // 真实会话目录与投影检查点目录 (session_projcache/sessions) 联动代表 DSH 真实任务生命周期。
             sessionDirs: [home(".dsh/sessions"), home(".dsh/storages/session_projcache/sessions")],
-            category: .assistant
+            category: .assistant,
+            emoji: "⚡️",
+            sessionDialect: .dshProjection,
         ),
         AgentProfile(
             id: "ego-browser",
@@ -221,7 +254,8 @@ public enum AgentRegistry {
             processNames: ["ego-browser", "ego lite", "ego"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".local/share/ego"), home("Library/Application Support/ego lite")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🌐",
         ),
         AgentProfile(
             id: "vibe-usage",
@@ -231,7 +265,8 @@ public enum AgentRegistry {
             processNames: ["vibe-usage", "Vibe Usage"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".vibe-usage"), home("Library/Application Support/Vibe Usage")],
-            category: .assistant
+            category: .assistant,
+            emoji: "📊",
         ),
         AgentProfile(
             id: "openviking",
@@ -243,7 +278,8 @@ public enum AgentRegistry {
             // 只监控数据目录。~/.local/share/uv/tools/openviking 是 uv 装的 Python venv
             // （lib/bin/pyvenv.cfg，4452 个条目），与任务无关，实测占全量扫描最大的一块。
             sessionDirs: [home(".openviking")],
-            category: .assistant
+            category: .assistant,
+            emoji: "📦",
         ),
         AgentProfile(
             id: "windsurf",
@@ -254,7 +290,8 @@ public enum AgentRegistry {
             pathContains: ["windsurf"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home("Library/Application Support/Windsurf/User/workspaceStorage")],
-            category: .codeEditor
+            category: .codeEditor,
+            emoji: "🏄",
         ),
         AgentProfile(
             id: "aider",
@@ -263,7 +300,8 @@ public enum AgentRegistry {
             bundleIDs: [],
             processNames: ["aider"],
             sessionDirs: [home(".aider")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🛠️",
         ),
         AgentProfile(
             id: "cline",
@@ -272,7 +310,9 @@ public enum AgentRegistry {
             bundleIDs: [],
             processNames: ["cline"],
             sessionDirs: [home("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🪡",
+            sessionDialect: .clineTasks,
         ),
         AgentProfile(
             id: "roo-code",
@@ -281,7 +321,9 @@ public enum AgentRegistry {
             bundleIDs: [],
             processNames: ["roo", "roo-code"],
             sessionDirs: [home("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/tasks")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🦘",
+            sessionDialect: .clineTasks,
         ),
         AgentProfile(
             id: "goose",
@@ -290,7 +332,8 @@ public enum AgentRegistry {
             bundleIDs: [],
             processNames: ["goose"],
             sessionDirs: [home(".config/goose/sessions")],
-            category: .assistant
+            category: .assistant,
+            emoji: "🪿",
         ),
     ]
 
