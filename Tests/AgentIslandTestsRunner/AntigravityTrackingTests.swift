@@ -116,6 +116,83 @@ enum AntigravityTrackingTests {
             try expectNil(signalIdle, "超过 15 分钟的已完成应自然转为待机 (nil)")
         }
 
+        TestKit.test("Antigravity后台任务: 启动后台任务后 PLANNER_RESPONSE 不得报 completed，保持 active 态") {
+            let lineStart = #"{"step_index":200,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"arch -arm64 swift build"}}]}"#
+            let lineBg = #"{"step_index":201,"source":"MODEL","type":"GENERIC","status":"RUNNING","content":"Tool is running as a background task with task id: conv123/task-400\nTask Description: arch -arm64 swift build\nTask logs are available at: task-400.log"}"#
+            let lineTurnEnd = #"{"step_index":202,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"已在后台启动编译任务，正在等待完成…"}"#
+
+            let signal = AgentSessionInspector.detectAntigravitySession(lines: [lineStart, lineBg, lineTurnEnd], fileAge: 10)
+            guard case let .active(fingerprint, action)? = signal else {
+                throw TestError(message: "后台任务运行中，PLANNER_RESPONSE 绝不得报 completed，必须返回 .active")
+            }
+            try expectEqual(fingerprint, "antigravity-bg-task-400-202")
+            try expectEqual(action, "后台任务: swift build")
+        }
+
+        TestKit.test("Antigravity后台任务: 后台任务完成后，模型最终回答正常转换为 completed") {
+            let lineStart = #"{"step_index":200,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"run_command","args":{"CommandLine":"arch -arm64 swift build"}}]}"#
+            let lineBg = #"{"step_index":201,"source":"MODEL","type":"GENERIC","status":"RUNNING","content":"Tool is running as a background task with task id: conv123/task-400\nTask Description: arch -arm64 swift build\nTask logs are available at: task-400.log"}"#
+            let lineTurnEnd = #"{"step_index":202,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"已在后台启动编译任务，正在等待完成…"}"#
+            let lineFinishMsg = #"{"step_index":203,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","content":"[Message] sender=conv123/task-400 content=Task id \"conv123/task-400\" finished with result:\nBuild complete!"}"#
+            let lineFinalDone = #"{"step_index":204,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"编译通过！所有单元测试全部通过。"}"#
+
+            let signal = AgentSessionInspector.detectAntigravitySession(lines: [lineStart, lineBg, lineTurnEnd, lineFinishMsg, lineFinalDone], fileAge: 10)
+            guard case let .completed(fingerprint)? = signal else {
+                throw TestError(message: "后台任务完成后，模型最终汇报必须正常返回 .completed")
+            }
+            try expectEqual(fingerprint, "antigravity-step-204")
+        }
+
+        TestKit.test("Antigravity后台任务: 多个后台任务时，只有全部完成才 completed") {
+            let lineBg1 = #"{"step_index":301,"source":"MODEL","type":"GENERIC","status":"RUNNING","content":"Tool is running as a background task with task id: conv123/task-1\nTask Description: arch -arm64 swift build"}"#
+            let lineBg2 = #"{"step_index":302,"source":"MODEL","type":"GENERIC","status":"RUNNING","content":"Tool is running as a background task with task id: conv123/task-2\nTask Description: Timer: 10s, Prompt: Check status"}"#
+            let lineTurnEnd = #"{"step_index":303,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"等待任务…"}"#
+            // 只有 task-2 (计时器) 完成
+            let lineTimerDone = #"{"step_index":304,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","content":"Task id \"conv123/task-2\" finished with result: ok"}"#
+            let lineCheckAgain = #"{"step_index":305,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"编译仍在继续…"}"#
+
+            // task-1 仍未完成，应保持 active
+            let signalPartial = AgentSessionInspector.detectAntigravitySession(lines: [lineBg1, lineBg2, lineTurnEnd, lineTimerDone, lineCheckAgain], fileAge: 10)
+            guard case let .active(fp, act)? = signalPartial else {
+                throw TestError(message: "task-1 仍在进行中，必须返回 .active")
+            }
+            try expectEqual(fp, "antigravity-bg-task-1-305")
+            try expectEqual(act, "后台任务: swift build")
+
+            // task-1 也完成
+            let lineBuildDone = #"{"step_index":306,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","content":"Task id \"conv123/task-1\" finished with result: success"}"#
+            let lineAllDone = #"{"step_index":307,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"全部构建完成。"}"#
+
+            let signalAll = AgentSessionInspector.detectAntigravitySession(lines: [lineBg1, lineBg2, lineTurnEnd, lineTimerDone, lineCheckAgain, lineBuildDone, lineAllDone], fileAge: 10)
+            guard case let .completed(fingerprint)? = signalAll else {
+                throw TestError(message: "全部后台任务交付后，必须返回 .completed")
+            }
+            try expectEqual(fingerprint, "antigravity-step-307")
+        }
+
+        TestKit.test("Antigravity后台任务: 任务被取消或被 kill 后解除阻塞") {
+            let lineBg = #"{"step_index":401,"source":"MODEL","type":"GENERIC","status":"RUNNING","content":"Tool is running as a background task with task id: conv123/task-999\nTask Description: long running job"}"#
+            let lineCancel = #"{"step_index":402,"source":"MODEL","type":"GENERIC","status":"DONE","content":"Task \"conv123/task-999\" cancelled."}"#
+            let lineDone = #"{"step_index":403,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"已取消任务。"}"#
+
+            let signal = AgentSessionInspector.detectAntigravitySession(lines: [lineBg, lineCancel, lineDone], fileAge: 10)
+            guard case let .completed(fingerprint)? = signal else {
+                throw TestError(message: "任务取消后，模型回答应返回 .completed")
+            }
+            try expectEqual(fingerprint, "antigravity-step-403")
+        }
+
+        TestKit.test("Antigravity后台任务: 动作文案规范化与环境变量清洗") {
+            let act1 = AgentSessionInspector.formatAntigravityBackgroundTaskAction("SDKROOT=/SDK arch -arm64 swift build")
+            try expectEqual(act1, "后台任务: swift build")
+
+            let act2 = AgentSessionInspector.formatAntigravityBackgroundTaskAction("Timer: 10s, Prompt: Check status")
+            try expectEqual(act2, "后台定时中 (10s)")
+
+            let act3 = AgentSessionInspector.formatAntigravityBackgroundTaskAction("grep -rn \"foo\" .")
+            try expectEqual(act3, "后台任务: grep -rn \"foo\" .")
+        }
+
         TestKit.test("Antigravity动作文案: 原生工具名称本土化汉化与 GENERIC 结果处理") {
             try expectEqual(AgentActionInspector.cleanAntigravityAction("run_command"), "执行终端命令")
             try expectEqual(AgentActionInspector.cleanAntigravityAction("view_file"), "查看文件")

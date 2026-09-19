@@ -518,14 +518,27 @@ public enum AgentSessionInspector {
             return nil
         }
         var newestFile: URL?
+        var newestTasksDir: URL?
         var newestTime: Date = .distantPast
         for sub in subdirs {
             let logFile = sub.appendingPathComponent(".system_generated/logs/transcript.jsonl")
             if let attrs = try? FileManager.default.attributesOfItem(atPath: logFile.path),
                let mtime = attrs[.modificationDate] as? Date {
-                if mtime > newestTime {
-                    newestTime = mtime
+                var effectiveTime = mtime
+                let tasksDir = sub.appendingPathComponent(".system_generated/tasks")
+                if let taskFiles = try? FileManager.default.contentsOfDirectory(at: tasksDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) {
+                    for tf in taskFiles where tf.pathExtension == "log" {
+                        if let tAttrs = try? FileManager.default.attributesOfItem(atPath: tf.path),
+                           let tMTime = tAttrs[.modificationDate] as? Date,
+                           tMTime > effectiveTime {
+                            effectiveTime = tMTime
+                        }
+                    }
+                }
+                if effectiveTime > newestTime {
+                    newestTime = effectiveTime
                     newestFile = logFile
+                    newestTasksDir = tasksDir
                 }
             }
         }
@@ -533,27 +546,96 @@ public enum AgentSessionInspector {
         let age = max(0, now.timeIntervalSince(newestTime))
         guard age <= 24 * 3600 else { return nil }
 
-        let lines = LogTailReader.read(from: target, maxLines: 48, maxBytes: 131_072)
+        let lines = LogTailReader.read(from: target, maxLines: 120, maxBytes: 262_144)
         guard !lines.isEmpty else { return nil }
 
-        return detectAntigravitySession(lines: lines, fileAge: age, now: now)
+        return detectAntigravitySession(lines: lines, fileAge: age, now: now, tasksDir: newestTasksDir)
     }
 
     /// 解析 Antigravity transcript.jsonl 末尾若干行，推导当前状态信号
-    public static func detectAntigravitySession(lines: [String], fileAge: TimeInterval, now: Date = Date()) -> AgentSessionSignal? {
-        // 预解析：收集所有行的 step_index 与 type，用于判断 ask_question 是否已被答复
-        // 采用轻量元数据扫描，避免重复全量 JSON 解析
+    public static func detectAntigravitySession(lines: [String], fileAge: TimeInterval, now: Date = Date(), tasksDir: URL? = nil) -> AgentSessionSignal? {
+        // 预解析与状态扫描：
+        // 1. 扫描所有行，收集 step 元数据与后台任务/子智能体生命周期
         var parsedMeta: [(stepIndex: Int, stepType: String, hasToolCalls: Bool)] = []
+        var launchedTasks: [String: (desc: String, stepIndex: Int)] = [:]
+        var finishedTaskIds: Set<String> = []
+        var activeSubagents: Set<String> = []
+        var finishedSubagents: Set<String> = []
+
         for rawLine in lines {
-            if let data = rawLine.data(using: .utf8),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let si = obj["step_index"] as? Int ?? 0
-                let st = obj["type"] as? String ?? ""
-                let hasTC = (obj["tool_calls"] as? [[String: Any]])?.isEmpty == false
-                parsedMeta.append((si, st, hasTC))
+            guard let data = rawLine.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            let si = obj["step_index"] as? Int ?? 0
+            let st = obj["type"] as? String ?? ""
+            let hasTC = (obj["tool_calls"] as? [[String: Any]])?.isEmpty == false
+            parsedMeta.append((si, st, hasTC))
+
+            let content = obj["content"] as? String ?? ""
+
+            // (A) 后台任务启动 (Tool is running as a background task with task id: ...)
+            if content.contains("Tool is running as a background task with task id:") {
+                if let taskId = extractAntigravityTaskId(from: content) {
+                    let desc = extractAntigravityTaskDescription(from: content)
+                    launchedTasks[taskId] = (desc: desc, stepIndex: si)
+                }
+            }
+
+            // (B) 后台任务完成 / 取消 / 中断检测
+            if content.contains("finished with result:") ||
+               content.contains("cancelled") ||
+               content.contains("was killed") ||
+               content.contains("Wait cancelled") {
+                for taskId in launchedTasks.keys {
+                    if content.contains(taskId) {
+                        finishedTaskIds.insert(taskId)
+                    }
+                }
+                if let finishedId = extractFinishedAntigravityTaskId(from: content) {
+                    finishedTaskIds.insert(finishedId)
+                }
+            }
+
+            // (C) manage_task 工具调用取消/杀掉任务
+            if let toolCalls = obj["tool_calls"] as? [[String: Any]] {
+                for tc in toolCalls {
+                    let name = normalized(tc["name"] as? String)
+                    if name.contains("managetask") || name.contains("manage_task") {
+                        if let args = tc["args"] as? [String: Any],
+                           let action = args["Action"] as? String, action == "kill",
+                           let rawTid = args["TaskId"] as? String {
+                            let tid = normalizeTaskId(rawTid)
+                            finishedTaskIds.insert(tid)
+                        }
+                    }
+                }
+            }
+
+            // (D) 子智能体生命周期 (Created the following subagents:)
+            if content.contains("Created the following subagents:") {
+                let subIds = extractSubagentIds(from: content)
+                for sid in subIds { activeSubagents.insert(sid) }
+            }
+            if !activeSubagents.isEmpty {
+                for sid in activeSubagents {
+                    if content.contains("sender=\(sid)") || (content.contains(sid) && content.contains("finished")) {
+                        finishedSubagents.insert(sid)
+                    }
+                }
             }
         }
 
+        // 计算当前仍未交付完成的后台任务
+        var unresolvedTasks: [(id: String, desc: String, stepIndex: Int)] = []
+        for (id, info) in launchedTasks {
+            if !finishedTaskIds.contains(id) {
+                unresolvedTasks.append((id: id, desc: info.desc, stepIndex: info.stepIndex))
+            }
+        }
+        unresolvedTasks.sort { $0.stepIndex > $1.stepIndex }
+
+        // 从尾部逆序扫描推导当前最新状态信号
         for rawLine in lines.reversed() {
             guard let data = rawLine.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -570,8 +652,6 @@ public enum AgentSessionInspector {
                     let name = normalized($0["name"] as? String)
                     return requestNames.contains(name) || name.contains("askquestion") || name.contains("askuser")
                 }) {
-                    // 如果该 ask_question step 之后已有 GENERIC 或 USER_INPUT step，
-                    // 说明用户已经回复，不应再触发 attention；继续向前扫描更早的步骤。
                     let alreadyAnswered = parsedMeta.contains { meta in
                         meta.stepIndex > stepIndex &&
                         (meta.stepType == "GENERIC" || meta.stepType == "USER_INPUT")
@@ -595,7 +675,6 @@ public enum AgentSessionInspector {
                 }
 
                 // 正在执行工具调用
-                // 只有在最近 300 秒内发生文件变动才视为实时活跃执行；超时则视为挂起或已中断
                 guard fileAge <= 300 else { return nil }
 
                 var actionText: String? = nil
@@ -617,11 +696,26 @@ public enum AgentSessionInspector {
 
             // 2. 规划响应与最终回答
             if stepType == "PLANNER_RESPONSE" {
+                // 关键防御：若仍有后台任务在飞（如终端编译、测试运行、定时等待），
+                // 此时 PLANNER_RESPONSE 只是模型对用户的阶段告知，绝非全流程完成，必须保持 active！
+                if let activeTask = unresolvedTasks.first {
+                    guard fileAge <= 15 * 60 else { return nil }
+                    let action = formatAntigravityBackgroundTaskAction(activeTask.desc)
+                    let bgFingerprint = "antigravity-bg-\(activeTask.id)-\(stepIndex)"
+                    return .active(fingerprint: bgFingerprint, action: action)
+                }
+
+                let pendingSubagents = activeSubagents.subtracting(finishedSubagents)
+                if let subagentId = pendingSubagents.first {
+                    guard fileAge <= 15 * 60 else { return nil }
+                    return .active(fingerprint: "antigravity-subagent-\(subagentId)-\(stepIndex)", action: "子智能体执行中")
+                }
+
                 let content = obj["content"] as? String
                 let status = obj["status"] as? String
                 let hasActiveThinking = (obj["thinking"] as? String)?.isEmpty == false
 
-                // 如果有内容输出给用户，或者无思考的明确 DONE 状态：判定为轮次结束
+                // 只有在所有后台任务和子智能体完全交付后，有内容输出给用户或无思考的明确 DONE 状态：才判定为轮次结束
                 if (content != nil && !content!.isEmpty) || (status == "DONE" && !hasActiveThinking) {
                     if fileAge <= 15 * 60 {
                         return .completed(fingerprint: fingerprint)
@@ -643,8 +737,15 @@ public enum AgentSessionInspector {
                 return .active(fingerprint: fingerprint, action: "思考规划中")
             }
 
-            // 4. 工具输出返回 (GENERIC)，正在等待下一拍模型调度
+            // 4. 工具输出返回 (GENERIC)，正在等待下一拍模型调度或后台任务执行中
             if stepType == "GENERIC" {
+                if let activeTask = unresolvedTasks.first {
+                    guard fileAge <= 15 * 60 else { return nil }
+                    let action = formatAntigravityBackgroundTaskAction(activeTask.desc)
+                    let bgFingerprint = "antigravity-bg-\(activeTask.id)-\(stepIndex)"
+                    return .active(fingerprint: bgFingerprint, action: action)
+                }
+
                 guard fileAge <= 300 else { return nil }
                 var toolActionDesc: String? = nil
                 for prevRaw in lines.reversed() {
@@ -667,9 +768,127 @@ public enum AgentSessionInspector {
                 }
                 return .active(fingerprint: fingerprint, action: "处理中")
             }
+
+            // 5. 系统通知或任务完成结果返回 (SYSTEM_MESSAGE)
+            if stepType == "SYSTEM_MESSAGE" {
+                guard fileAge <= 300 else { return nil }
+                return .active(fingerprint: fingerprint, action: "处理任务结果中")
+            }
         }
 
         return nil
+    }
+
+    /// 规范化后台任务文案格式（如将 arch / SDKROOT / Timer 等提炼为精炼动作）
+    public static func formatAntigravityBackgroundTaskAction(_ desc: String) -> String {
+        let trimmed = desc.trimmingCharacters(in: CharacterSet(charactersIn: "\" '`\t\n\r"))
+        if trimmed.isEmpty {
+            return "执行后台任务中"
+        }
+        if trimmed.hasPrefix("Timer:") {
+            let parts = trimmed.split(separator: ",")
+            if let firstPart = parts.first {
+                let duration = firstPart.replacingOccurrences(of: "Timer:", with: "").trimmingCharacters(in: .whitespaces)
+                return "后台定时中 (\(duration))"
+            }
+            return "后台定时中"
+        }
+        // 清除环境变量前缀
+        var cmd = trimmed
+        while let spaceIdx = cmd.firstIndex(of: " ") {
+            let prefix = String(cmd[..<spaceIdx])
+            if prefix.contains("=") && !prefix.contains(" ") {
+                cmd = String(cmd[cmd.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
+            } else {
+                break
+            }
+        }
+        if cmd.hasPrefix("arch -arm64 ") {
+            cmd = String(cmd.dropFirst("arch -arm64 ".count))
+        }
+        let cleaned = AgentActionInspector.cleanAntigravityAction(cmd)
+        if cleaned.hasPrefix("后台任务:") || cleaned.hasPrefix("执行: 后台任务") {
+            return cleaned
+        }
+        if cleaned.hasPrefix("执行: ") {
+            return "后台任务: " + cleaned.dropFirst("执行: ".count)
+        }
+        return "后台任务: \(cleaned)"
+    }
+
+    private static func normalizeTaskId(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\" '`\t\n\r"))
+        if let last = trimmed.split(separator: "/").last {
+            return String(last)
+        }
+        return trimmed
+    }
+
+    private static func extractAntigravityTaskId(from content: String) -> String? {
+        let marker = "Tool is running as a background task with task id:"
+        guard let markerRange = content.range(of: marker) else { return nil }
+        let after = content[markerRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        let line = after.components(separatedBy: .newlines).first ?? ""
+        let rawId = line.trimmingCharacters(in: .whitespaces)
+        guard !rawId.isEmpty else { return nil }
+        return normalizeTaskId(rawId)
+    }
+
+    private static func extractAntigravityTaskDescription(from content: String) -> String {
+        let marker = "Task Description:"
+        guard let markerRange = content.range(of: marker) else { return "" }
+        let after = content[markerRange.upperBound...].trimmingCharacters(in: .whitespaces)
+        let lines = after.components(separatedBy: .newlines)
+        var descLines: [String] = []
+        for line in lines {
+            if line.contains("Task logs are available at:") ||
+               line.contains("YOU MUST TAKE ONE OF THE FOLLOWING") {
+                break
+            }
+            descLines.append(line)
+        }
+        return descLines.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func extractFinishedAntigravityTaskId(from content: String) -> String? {
+        if let range = content.range(of: "Task id \"") {
+            let after = content[range.upperBound...]
+            if let endQuote = after.firstIndex(of: "\"") {
+                return normalizeTaskId(String(after[..<endQuote]))
+            }
+        }
+        if let range = content.range(of: "Task \"") {
+            let after = content[range.upperBound...]
+            if let endQuote = after.firstIndex(of: "\"") {
+                return normalizeTaskId(String(after[..<endQuote]))
+            }
+        }
+        if let range = content.range(of: "sender=") {
+            let after = content[range.upperBound...]
+            let token = after.split(separator: " ").first ?? ""
+            if token.contains("task-") {
+                return normalizeTaskId(String(token))
+            }
+        }
+        return nil
+    }
+
+    private static func extractSubagentIds(from content: String) -> [String] {
+        var ids: [String] = []
+        let marker = "\"conversationId\":"
+        var searchRange = content.startIndex..<content.endIndex
+        while let range = content.range(of: marker, range: searchRange) {
+            let after = content[range.upperBound...].trimmingCharacters(in: .whitespaces)
+            if let firstQuote = after.firstIndex(of: "\"") {
+                let rest = after[after.index(after: firstQuote)...]
+                if let secondQuote = rest.firstIndex(of: "\"") {
+                    let cid = String(rest[..<secondQuote])
+                    if !cid.isEmpty { ids.append(cid) }
+                }
+            }
+            searchRange = range.upperBound..<content.endIndex
+        }
+        return ids
     }
 
     private static func clipDSHString(_ text: String, limit: Int = 26) -> String {

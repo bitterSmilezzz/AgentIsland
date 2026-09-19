@@ -2,7 +2,12 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.78）
+## 功能（v0.0.79）
+
+### 深度优化 Antigravity 运行感知与后台任务生命周期跟踪 (v0.0.79)
+- **彻底消除后台任务误判已完成**：精准识别 Antigravity 异步执行的命令、定时器与子智能体，后台运行期间严格保持工作态，阻断已完成横幅与提示音轰炸；
+- **智能动态动作提取与清洗**：自动抽取后台运行中的任务（如 `swift build`、`pytest`、`后台定时中 (10秒)`），深度清洗冗长环境变量与 architecture 包装前缀；
+- **任务日志联动保鲜**：结合 `.system_generated/tasks/*.log` 实时活跃写入时间戳，防止长编译任务在无主对话写入时被降级为待机。
 
 ### 动态终端看板、生态扩展、快捷键速查 HUD 与 Raycast 导出 (v0.0.78)
 - **类似 htop 的 CLI 动态交互看板（`agentisland top` / `status -w`）**：终端全屏动态刷新智能体状态、CPU/内存与 Token 走势，支持 `q` 退出、`r` 刷新、`c` 一键清理；
