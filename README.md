@@ -2,7 +2,13 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.76）
+## 功能（v0.0.77）
+
+### 多屏热插拔、本地 Webhook、Token 预算与全键盘流 (v0.0.77)
+- **多显示器协同与断连自愈（Multi-display Resilience）**：外接屏拔出时自动平滑重定位，杜绝窗口悬空或坐标越界；
+- **本地零依赖 Webhook 接收器（LocalEventServer）**：基于 `NWListener` 监听 `127.0.0.1:41999`，支持 `POST /notify` 毫秒级直推智能体完成与告警事件；
+- **终端预算进度可视化（`agentisland tokens --budget`）**：终端字符进度条自适应渲染，超额/预警分级高亮显示；
+- **展开态全键盘流操作**：`1~3` 数字键秒切视图、`j/k` Vim 风格智能体焦点移动、`Enter` 下钻详情、`Esc` 逐级返回。
 
 ### 原生终端命令行工具（agentisland-cli · v0.0.76）
 - **终端全景快照（`agentisland status` / `agentisland`）**：快速输出所有已监控智能体状态、PID、CPU%、内存、会话数与用量表格，支持 `--json` 供 Raycast/脚本联动。

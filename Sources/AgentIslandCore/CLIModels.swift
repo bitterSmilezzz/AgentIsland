@@ -43,6 +43,9 @@ public struct CLITokenReportDTO: Codable, Sendable {
     public let projectedMonthEndCost: Double
     public let budgetExhaustionDay: Int?
     public let forecastSummary: String
+    public let dailyBudget: Int?
+    public let budgetRatio: Double?
+    public let budgetStatus: String?
     public let agents: [String: CLIAgentTokenDTO]
 
     public init(
@@ -54,6 +57,9 @@ public struct CLITokenReportDTO: Codable, Sendable {
         projectedMonthEndCost: Double,
         budgetExhaustionDay: Int?,
         forecastSummary: String,
+        dailyBudget: Int? = nil,
+        budgetRatio: Double? = nil,
+        budgetStatus: String? = nil,
         agents: [String: CLIAgentTokenDTO]
     ) {
         self.tokens24h = tokens24h
@@ -64,7 +70,36 @@ public struct CLITokenReportDTO: Codable, Sendable {
         self.projectedMonthEndCost = projectedMonthEndCost
         self.budgetExhaustionDay = budgetExhaustionDay
         self.forecastSummary = forecastSummary
+        self.dailyBudget = dailyBudget
+        self.budgetRatio = budgetRatio
+        self.budgetStatus = budgetStatus
         self.agents = agents
+    }
+}
+
+public struct CLINotifyRequestDTO: Codable, Sendable {
+    public let agent: String
+    public let type: String
+    public let message: String
+    public let detail: String?
+
+    public init(agent: String, type: String, message: String, detail: String? = nil) {
+        self.agent = agent
+        self.type = type
+        self.message = message
+        self.detail = detail
+    }
+}
+
+public struct CLINotifyResultDTO: Codable, Sendable {
+    public let success: Bool
+    public let eventId: String?
+    public let message: String
+
+    public init(success: Bool, eventId: String? = nil, message: String) {
+        self.success = success
+        self.eventId = eventId
+        self.message = message
     }
 }
 

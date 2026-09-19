@@ -3,7 +3,7 @@ import AgentIslandCore
 
 @main
 struct AgentIslandCLI {
-    static let version = "0.0.76"
+    static let version = "0.0.77"
 
     @MainActor
     static func main() async {
@@ -43,6 +43,10 @@ struct AgentIslandCLI {
             let subArgs = Array(rawArgs.dropFirst())
             await OpenCommand.run(args: subArgs)
 
+        case "notify", "event", "alert":
+            let subArgs = Array(rawArgs.dropFirst())
+            await NotifyCommand.run(args: subArgs)
+
         case "report", "export":
             let subArgs = Array(rawArgs.dropFirst())
             await ReportCommand.run(args: subArgs)
@@ -74,6 +78,7 @@ macOS 智能体运行态监控与运维终端工具
   \(CLIColor.cyan("check"))      排查长期死锁、孤儿后台与高内存泄漏异常
   \(CLIColor.cyan("clean"))      一键清理释放异常智能体占用的系统资源
   \(CLIColor.cyan("open"))       通过深度链接呼出/联动桌面灵动岛
+  \(CLIColor.cyan("notify"))     主动向灵动岛投递智能体完成、待确认或告警事件
   \(CLIColor.cyan("report"))     生成 Markdown 运维审计报告
 
 \(CLIColor.bold("常用选项:"))

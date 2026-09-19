@@ -105,5 +105,49 @@ enum CLITests {
             try expectEqual(decodedResult.killedPids, [100], "Killed PIDs 往返一致")
             try expectFalse(decodedResult.dryRun, "dryRun 标志一致")
         }
+
+        TestKit.test("CLI: Notify DTO 序列化与解析往返") {
+            let notifyReq = CLINotifyRequestDTO(
+                agent: "antigravity",
+                type: "completed",
+                message: "构建与单元测试通过",
+                detail: "265 个测试全部通过"
+            )
+            let data = try JSONEncoder().encode(notifyReq)
+            let decoded = try JSONDecoder().decode(CLINotifyRequestDTO.self, from: data)
+            try expectEqual(decoded.agent, "antigravity", "智能体名称一致")
+            try expectEqual(decoded.type, "completed", "类型一致")
+            try expectEqual(decoded.message, "构建与单元测试通过", "消息一致")
+            try expectEqual(decoded.detail, "265 个测试全部通过", "详情一致")
+
+            let notifyRes = CLINotifyResultDTO(success: true, eventId: "evt-123", message: "Accepted")
+            let resData = try JSONEncoder().encode(notifyRes)
+            let decodedRes = try JSONDecoder().decode(CLINotifyResultDTO.self, from: resData)
+            try expectTrue(decodedRes.success, "结果成功标志一致")
+            try expectEqual(decodedRes.eventId, "evt-123", "事件 ID 一致")
+        }
+
+        TestKit.test("CLI: Token 预算报告 DTO 字段与往返") {
+            let report = CLITokenReportDTO(
+                tokens24h: 500_000,
+                cost24h: 5.0,
+                tokensTotal: 1_000_000,
+                costTotal: 10.0,
+                projectedMonthEndTokens: 15_000_000,
+                projectedMonthEndCost: 150.0,
+                budgetExhaustionDay: 18,
+                forecastSummary: "按当前消耗速率预计第 18 天超额",
+                dailyBudget: 1_000_000,
+                budgetRatio: 0.5,
+                budgetStatus: "正常",
+                agents: [:]
+            )
+            let data = try JSONEncoder().encode(report)
+            let decoded = try JSONDecoder().decode(CLITokenReportDTO.self, from: data)
+            try expectEqual(decoded.dailyBudget, 1_000_000, "预算上限一致")
+            try expectEqual(decoded.budgetRatio, 0.5, "预算比例一致")
+            try expectEqual(decoded.budgetStatus, "正常", "预算状态一致")
+            try expectEqual(decoded.budgetExhaustionDay, 18, "超额天数一致")
+        }
     }
 }

@@ -4,6 +4,26 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.77] - 2026-09-19
+
+### 🚀 多屏热插拔自愈、本地 Webhook 外部事件接收器、Token 预算进度管控与全键盘流
+
+- **多显示器协同与屏幕热插拔自适应（方案 A）**：
+  - `IslandPanelPositioning` 屏幕有效性断连自愈：新增 `isValidScreen` 校验，当外接显示器断开拔出时，自动平滑回退至有效屏幕，杜绝窗口悬空或坐标越界；
+  - 统一 `snapToDockEdge` 与 `placeWindow` 的目标屏幕计算口径，多屏跟随模式（`followMouse` / `mainScreen` / `builtInScreen` / `externalScreen`）全面提升健壮性。
+- **本地零依赖 Webhook / IPC 外部事件接收器（`LocalEventServer` · 方案 B）**：
+  - 基于 Apple 原生 `Network.framework`（`NWListener`）构建轻量本地 HTTP 监听服务，仅绑定 `127.0.0.1:41999`；
+  - 支持通过 `POST /notify` 接收外部 JSON 载荷（`agent`、`type`、`message`、`detail`），毫秒级触发灵动岛微窥横幅、提示音与系统通知；
+  - 原生 CLI 子命令 `agentisland notify`：支持命令行 `-a <agent> -t <type> -m <message>`，优先 HTTP 推送，服务未就绪时自动回退至 URL Scheme 分发。
+- **智能体用量预算与成本警戒系统（方案 C）**：
+  - 终端 CLI 工具 `agentisland tokens` 支持 `--budget <num>`（如 `--budget 1m` / `-b 500k`）或自动读取系统设置中的预算配置；
+  - 终端字符级进度条呈现：`[██████████░░░░░░░░░░] 52% (520k / 1.0M)`，根据用量比例自适应切换色彩（正常绿/警告黄/超额红）；
+  - `--json` 输出结构中增加 `dailyBudget`、`budgetRatio` 与 `budgetStatus` 字段。
+- **展开态全键盘流操作体验（方案 D）**：
+  - 数字快捷键 `1` ~ `3` 快速切页（`1`: 主列表，`2`: Token 用量分析，`3`: 维护工具箱）；
+  - 支持 Vim 风格键位 `j`（下移）/ `k`（上移）聚焦选择智能体，配合 `Enter` 快速下钻详情；
+  - 保留 `/` 搜索呼出与 `Esc` 逐级返回或收起面板。
+
 ## [0.0.76] - 2026-09-19
 
 ### 💻 原生终端命令行工具（agentisland-cli）与终端运维生态

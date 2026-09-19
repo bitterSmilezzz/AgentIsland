@@ -21,6 +21,9 @@ final class AppContext {
         return c
     }
 
+    /// 本地 Webhook / 事件接收服务 (v0.0.77)
+    lazy var localEventServer: LocalEventServer = LocalEventServer(engine: engine)
+
     /// 启停集读取与自愈：纯核 resolvedEnabled 计算（空数组主动全关照常生效；存量升级自动补全新增内置项）
     private static func enabledOrDefault(registry: [AgentProfile]) -> Set<String> {
         EnabledAgentStore.resolvedEnabled(registry: registry)
@@ -540,10 +543,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             controller.expand(graceDuration: 30.0)
         }
         context.engine.start()
+        context.localEventServer.start()
         controller.show()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppContext.shared.localEventServer.stop()
         AppContext.shared.engine.stop()
     }
 

@@ -650,6 +650,23 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                     return
                 }
 
+                // 快捷键: 1~3 快速切换主要面板 (仅在未激活搜索且未按修饰键时)
+                if !self.isSearchActive && !event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.control) {
+                    if event.keyCode == 18 { // 1: 主列表
+                        self.route = .list
+                        handled = true
+                        return
+                    } else if event.keyCode == 19 { // 2: Token 用量分析
+                        self.navigateToTokenAnalytics()
+                        handled = true
+                        return
+                    } else if event.keyCode == 20 { // 3: 维护工具箱
+                        self.navigateToToolbox()
+                        handled = true
+                        return
+                    }
+                }
+
                 // 按 "/" 键呼出即时搜索框（仅主列表且未在搜索时）
                 if self.route == .list && !self.isSearchActive && event.characters == "/" && !event.modifierFlags.contains(.command) {
                     self.isSearchActive = true
@@ -657,13 +674,13 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
                     return
                 }
 
-                // 方向键上下移动与回车下钻详情（仅主列表下启用）
-                if self.route == .list {
-                    if event.keyCode == 125 { // Down
+                // 方向键与 Vim (j/k) 上下移动与回车下钻详情（仅主列表且未激活搜索时启用）
+                if self.route == .list && !self.isSearchActive {
+                    if event.keyCode == 125 || event.characters == "j" { // Down or j
                         self.moveFocus(step: 1)
                         handled = true
                         return
-                    } else if event.keyCode == 126 { // Up
+                    } else if event.keyCode == 126 || event.characters == "k" { // Up or k
                         self.moveFocus(step: -1)
                         handled = true
                         return

@@ -48,7 +48,7 @@ extension IslandPanelController {
         guard displayState == .expanded else { return }
         let modeRaw = UserDefaults.standard.string(forKey: SettingKey.screenFollowMode) ?? ScreenFollowMode.followMouse.rawValue
         let followMode = ScreenFollowMode(rawValue: modeRaw) ?? .followMouse
-        let screen = panel.screen ?? Self.targetScreen(mode: followMode, currentPanelScreen: panel.screen)
+        let screen = Self.targetScreen(mode: followMode, currentPanelScreen: panel.screen)
         let targetRect = dockTargetFrame(for: screen)
         let targetOrigin = targetRect.origin
         let dx = targetOrigin.x - panel.frame.origin.x
@@ -75,14 +75,22 @@ extension IslandPanelController {
         return NSScreen.screens.first { $0.frame.contains(loc) } ?? NSScreen.main
     }
 
-    /// 根据用户偏好解析目标屏幕 (v0.0.74)
+    /// 校验屏幕对象是否仍属于当前连接的有效屏幕集合 (防止拔掉显示器后悬空)
+    static func isValidScreen(_ screen: NSScreen?) -> Bool {
+        guard let screen else { return false }
+        return NSScreen.screens.contains { $0 == screen || $0.frame.equalTo(screen.frame) }
+    }
+
+    /// 根据用户偏好解析目标屏幕 (v0.0.74, v0.0.77 断连自愈增强)
     static func targetScreen(mode: ScreenFollowMode, currentPanelScreen: NSScreen?) -> NSScreen {
         let currentScreens = NSScreen.screens
         guard !currentScreens.isEmpty else { return NSScreen.main ?? NSScreen() }
 
+        let validCurrent = isValidScreen(currentPanelScreen) ? currentPanelScreen : nil
+
         switch mode {
         case .followMouse:
-            return screenContainingMouse() ?? currentPanelScreen ?? currentScreens.first ?? NSScreen.main!
+            return screenContainingMouse() ?? validCurrent ?? NSScreen.main ?? currentScreens.first!
         case .mainScreen:
             return NSScreen.main ?? currentScreens.first!
         case .builtInScreen:
@@ -92,7 +100,7 @@ extension IslandPanelController {
             }) {
                 return builtIn
             }
-            return currentScreens.first!
+            return validCurrent ?? currentScreens.first!
         case .externalScreen:
             if let external = currentScreens.first(where: {
                 let name = $0.localizedName.lowercased()
@@ -100,7 +108,8 @@ extension IslandPanelController {
             }) {
                 return external
             }
-            return currentScreens.first!
+            // 外接显示器拔出后自愈回落至主屏，不留在虚空
+            return NSScreen.main ?? currentScreens.first!
         }
     }
 

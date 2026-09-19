@@ -26,6 +26,7 @@ public enum URLSchemeRouter {
         case toolbox
         case clean
         case export
+        case notify(agentId: String, type: String, message: String?, detail: String?)
         case unknown(String)
     }
 
@@ -85,6 +86,12 @@ public enum URLSchemeRouter {
             return .clean
         case "export", "report":
             return .export
+        case "notify", "event", "alert":
+            let agentId = queryDict["agent"] ?? queryDict["id"] ?? "system"
+            let type = queryDict["type"] ?? queryDict["event"] ?? "completed"
+            let msg = queryDict["message"] ?? queryDict["msg"] ?? queryDict["title"]
+            let detail = queryDict["detail"]
+            return .notify(agentId: agentId, type: type, message: msg, detail: detail)
         default:
             return .unknown(rawCommand)
         }
@@ -130,6 +137,28 @@ public enum URLSchemeRouter {
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.setString(md, forType: .string)
+
+        case .notify(let agentId, let type, let message, let detail):
+            let eventType: AgentTaskEvent.EventType
+            switch type.lowercased() {
+            case "attention", "wait", "confirm":
+                eventType = .attention
+            case "costspike", "cost", "budget", "alert":
+                eventType = .costSpike
+            default:
+                eventType = .completed
+            }
+            let event = AgentTaskEvent(
+                agentId: agentId,
+                agentName: agentId,
+                eventType: eventType,
+                duration: 0,
+                timestamp: Date(),
+                pid: nil,
+                message: message ?? "\(agentId) 任务通知",
+                detail: detail
+            )
+            engine.postEvent(event)
 
         case .unknown:
             return false
