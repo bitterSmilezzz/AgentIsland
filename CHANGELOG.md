@@ -4,6 +4,21 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.81] - 2026-09-20
+
+### ⚡ 采样热路径主线程 I/O 治理与跨 Agent 上下文隔离
+
+- **消除采样主线程的会话树递归遍历（实测单拍省约 84ms）**：
+  - Antigravity 与 DSH 的专有会话探测此前每拍在 `@MainActor` 上重新枚举整棵会话树——真实机器实测 Antigravity 797 次 stat / 24ms、DSH 501 次 stat / 15ms，而「会话强语义」与「当前动作文案」两条链路各走一遍；
+  - 新增**带失效令牌的会话定位缓存**（TTL 3s + 根目录 mtime 变化即刻重定位）：缓存的只是「选哪个文件」，尾读与解析每拍照常进行，因此新会话零延迟、状态转移无任何滞后；
+  - 新增**尾读合并**：262KB 尾部读取（3.7ms）比 120 行 JSON 解析（2ms）更贵，同一文件在 mtime 与长度未变时复用上一次的行（有效期 0.5s，短于采样周期）；新鲜度取 `stat()` 而非 `URL.resourceValues`——后者有毫秒级缓存窗口，恰好会在这两条链路的微秒间隔内误命中；
+  - 实测稳态单拍开销：Antigravity 4.6ms、DSH 0.2ms（改造前两条链路合计约 91ms）。
+- **修复跨 Agent 上下文串味**：`AgentSessionSignal.backgroundTasks / subagents / tokenBreakdown` 长期硬编码读取按 `"antigravity"` 索引的全局上下文，导致 Claude、Codex 等**任意 Agent 的卡片与终端看板都会显示 Antigravity 的在途子任务、后台命令与 Token 细分**；上下文改为随 `AgentSessionProbe` 显式返回，按 agent id 索引的全局字典（`clearActiveContext` 零调用点、残留永不失效）整体删除。
+- **大会话文件读取护栏**：Cline `ui_messages.json` 与 DSH 投影缓存的整块 `Data(contentsOf:)` 改为内存映射并加 32MB 上限，超限放弃本轮解析、降级到双信号判定，不再让无上限增长的日志拖垮采样。
+- **状态重置收敛**：10 个按 agent id 索引的滞回/去重/告警基准集合的清空逻辑原先散落 5 处，且 `terminateAgent` 与 `cleanAnomalies` 确实漏清了 `tokenRateBaseline`（杀掉进程后首个结算窗口把离线全程计入分母，速率被摊薄、激增告警被推迟）；收敛为 `resetTracking(for:)` / `resetAllTracking()` / `retainTracking(for:)` 三个入口。
+- **死配置清理**：删除 `predictiveAnalyticsEnabled`、`localEventServerEnabled`、`localEventServerPort` 三个声明后从未被读写的设置键。
+- **高覆盖率回归验证**：新增 3 项测试（跨 Agent 上下文隔离、TTL 内新会话立刻重定位、等长改写立刻读到新内容），全量 286 项自建测试 100% 通过（0 失败）。
+
 ## [0.0.80] - 2026-09-19
 
 ### 🚀 多 Agent 在途命令感知、Antigravity 子任务树与 Token 细分、悬浮胶囊与菜单增强

@@ -318,11 +318,46 @@ public final class ActivityEngine: ObservableObject {
         }
     }
 
-    private func refreshWatchedDirs() {
-        // 全量替换：当前启用的 profile 目录集合（移除自定义 agent 后其目录停止扫描）
-        fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
-        // M5：清理已移除 profile 的滞回状态，防止长期累积
-        let activeIDs = Set(profiles.map(\.id))
+    // MARK: - 每 Agent 跟踪状态的生命周期
+
+    // 「working 滞回 + 事件去重 + 告警基准」由 10 个按 agent id 索引的集合并同构成。
+    // 任何一处残留都会让该 Agent 带着上一轮状态被判定（离线后速率基线不清 → 重启首个
+    // 窗口把离线全程摊进分母，激增告警被推迟）。历史上这些清空散落在 5 处，
+    // tokenRateBaseline 就曾被 terminateAgent 与 cleanAnomalies 漏掉——新增集合时
+    // 只需登记进下面三个入口。
+
+    /// 清空单个 Agent 的全部跟踪状态（离线、被终止、被清理）
+    private func resetTracking(for agentId: String) {
+        workingSince[agentId] = nil
+        workingPeriodHadWrite.remove(agentId)
+        activeAttentionFingerprints[agentId] = nil
+        handledCompletionFingerprints[agentId] = nil
+        lastSignalAt[agentId] = nil
+        highCpuSince[agentId] = nil
+        lastRunawayAlertedAt[agentId] = nil
+        tokenSpikeStreak[agentId] = nil
+        tokenSpikeAlerted.remove(agentId)
+        tokenRateBaseline[agentId] = nil
+    }
+
+    /// 清空全部计时/速率类状态（睡眠/挂起断点：墙钟差值不可信，一切从本拍重新起算）。
+    ///
+    /// 刻意**不含**两个事件指纹字典（`activeAttentionFingerprints` /
+    /// `handledCompletionFingerprints`）：它们的作用是通知去重而非计时，唤醒后待确认与
+    /// 已完成状态往往照旧，重置等于把同一条通知再发一遍（弹窗与铃声轰炸）。
+    private func resetAllTracking() {
+        workingSince.removeAll()
+        workingPeriodHadWrite.removeAll()
+        lastSignalAt.removeAll()
+        highCpuSince.removeAll()
+        lastRunawayAlertedAt.removeAll()
+        tokenSpikeStreak.removeAll()
+        tokenSpikeAlerted.removeAll()
+        tokenRateBaseline.removeAll()
+    }
+
+    /// 只保留仍启用的 Agent（档案增删后回收，防止已删除的自定义 Agent 长期占坑）
+    private func retainTracking(for activeIDs: Set<String>) {
         workingSince = workingSince.filter { activeIDs.contains($0.key) }
         workingPeriodHadWrite = workingPeriodHadWrite.filter { activeIDs.contains($0) }
         activeAttentionFingerprints = activeAttentionFingerprints.filter { activeIDs.contains($0.key) }
@@ -333,6 +368,13 @@ public final class ActivityEngine: ObservableObject {
         tokenSpikeStreak = tokenSpikeStreak.filter { activeIDs.contains($0.key) }
         tokenSpikeAlerted = tokenSpikeAlerted.filter { activeIDs.contains($0) }
         tokenRateBaseline = tokenRateBaseline.filter { activeIDs.contains($0.key) }
+    }
+
+    private func refreshWatchedDirs() {
+        // 全量替换：当前启用的 profile 目录集合（移除自定义 agent 后其目录停止扫描）
+        fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
+        // M5：清理已移除 profile 的滞回状态，防止长期累积
+        retainTracking(for: Set(profiles.map(\.id)))
     }
 
     // MARK: - 安装检测（A4；缓存与刷新节律见 InstalledAppsCache，引擎只读判定）
@@ -391,18 +433,10 @@ public final class ActivityEngine: ObservableObject {
             return now.timeIntervalSince(last) > resumeGapThreshold
         }()
         if isResumeGap {
-            workingSince.removeAll()
-            workingPeriodHadWrite.removeAll()
-            lastSignalAt.removeAll()
-            highCpuSince.removeAll()
-            lastRunawayAlertedAt.removeAll()
-            // token 速率基准同步重置：跨越睡眠的窗口会把「睡眠期间的账本变化」
-            // 折算成极高速率，重置后从本拍重新起算
-            tokenRateBaseline.removeAll()
-            tokenSpikeStreak.removeAll()
-            // 激增告警去重标记一并清（R32/F7）：睡前已告警、醒后持续高速率的
-            // Agent 会被残留标记静默压制到出现低于阈值的一档才重新武装
-            tokenSpikeAlerted.removeAll()
+            // token 速率基准一并重置：跨越睡眠的窗口会把「睡眠期间的账本变化」折算成
+            // 极高速率；激增告警去重标记同清（R32/F7），否则醒后持续高速率的 Agent 会被
+            // 残留标记静默压制到低于阈值才重新武装。
+            resetAllTracking()
         }
         lastSampleAt = now
 
@@ -470,36 +504,29 @@ public final class ActivityEngine: ObservableObject {
 
             // 结构化会话终态优先于 CPU/mtime 近似值：等待用户时 CPU 通常为 0，旧逻辑会
             // 谎报“待机”；task_complete 刚写入文件时旧逻辑反而会被 workingWindow 拖住。
-            // FileMonitor 已在后台给出最新文件，主线程这里只做有界尾读，不重新遍历目录。
-            let sessionSignal: AgentSessionSignal? = {
-                guard running else { return nil }
+            // 通用解析只读 FileMonitor 后台定位出的文件；专有解析器（Antigravity/DSH/Cline）
+            // 按各自协议自行定位会话，其目录遍历由 AgentSessionInspector 的定位缓存限流。
+            let sessionProbe: AgentSessionProbe = {
+                guard running else { return AgentSessionProbe() }
                 let files = Array(fileMonitor.latestActivityFiles(for: profile.sessionDirs).values)
                 if let inspectSessionHook {
-                    return inspectSessionHook(profile, files, now)
+                    return AgentSessionProbe(signal: inspectSessionHook(profile, files, now))
                 }
                 // 没有本轮扫描命中的活动文件时不得凭 profile 的约定路径旁路读取：
                 // 一方面避免把旧数据库中的终态套到当前进程，另一方面保持采样输入可复现。
-                guard !files.isEmpty else { return nil }
-                return AgentSessionInspector.inspect(profile: profile, activityFiles: files, now: now)
+                guard !files.isEmpty else { return AgentSessionProbe() }
+                return AgentSessionInspector.probe(profile: profile, activityFiles: files, now: now)
             }()
+            let sessionSignal = sessionProbe.signal
 
             let level: ActivityLevel
             if !running {
                 // 进程消失 = Agent 被关闭/退出，不是任务完成：静默转 offline，不发完成事件。
                 // （此前会误报「任务已完成」——完成事件只应由「进程仍在但工作信号消失」产生）
                 level = .offline
-                workingSince[profile.id] = nil
-                workingPeriodHadWrite.remove(profile.id)
-                activeAttentionFingerprints[profile.id] = nil
-                handledCompletionFingerprints[profile.id] = nil
-                lastSignalAt[profile.id] = nil
-                highCpuSince[profile.id] = nil
-                lastRunawayAlertedAt[profile.id] = nil
-                tokenSpikeStreak[profile.id] = nil
-                tokenSpikeAlerted.remove(profile.id)
                 // 速率基线一并清除（与 resumeGap 断点处理口径一致）：否则重启后首个
                 // 结算窗口把离线全程计入分母，速率被摊薄，本应触发的激增告警被推迟
-                tokenRateBaseline[profile.id] = nil
+                resetTracking(for: profile.id)
             } else if case let .attention(request)? = sessionSignal {
                 level = .attention
                 // 等待用户不是任务完成：切断旧工作区间且绝不补完成事件。
@@ -649,9 +676,9 @@ public final class ActivityEngine: ObservableObject {
                 currentAction: action,
                 memoryBytes: memory,
                 isHung: isHung,
-                backgroundTasks: sessionSignal?.backgroundTasks ?? [],
-                subagents: sessionSignal?.subagents ?? [],
-                tokenBreakdown: sessionSignal?.tokenBreakdown
+                backgroundTasks: sessionSignal == nil ? [] : sessionProbe.context.backgroundTasks,
+                subagents: sessionSignal == nil ? [] : sessionProbe.context.subagents,
+                tokenBreakdown: sessionSignal == nil ? nil : sessionProbe.context.tokenBreakdown
             ))
             // 本拍 CPU/PID 供告警链路复用（避免二次全表匹配）
             sampleInfo[profile.id] = SampleInfo(cpu: cpu, pid: matchedPID)
@@ -884,15 +911,7 @@ public final class ActivityEngine: ObservableObject {
             ))
             return false
         }
-        workingSince[agentId] = nil
-        workingPeriodHadWrite.remove(agentId)
-        activeAttentionFingerprints[agentId] = nil
-        handledCompletionFingerprints[agentId] = nil
-        lastSignalAt[agentId] = nil
-        highCpuSince[agentId] = nil
-        lastRunawayAlertedAt[agentId] = nil
-        tokenSpikeStreak[agentId] = nil
-        tokenSpikeAlerted.remove(agentId)
+        resetTracking(for: agentId)
         publish(AgentTaskEvent(
             agentId: agentId,
             agentName: name,
@@ -917,15 +936,7 @@ public final class ActivityEngine: ObservableObject {
         guard !anomalies.isEmpty else { return CleanResult(terminatedCount: 0, reclaimedMemoryBytes: 0) }
         let res = cleaner.clean(anomalies: anomalies)
         for a in anomalies {
-            workingSince[a.profileId] = nil
-            workingPeriodHadWrite.remove(a.profileId)
-            activeAttentionFingerprints[a.profileId] = nil
-            handledCompletionFingerprints[a.profileId] = nil
-            lastSignalAt[a.profileId] = nil
-            highCpuSince[a.profileId] = nil
-            lastRunawayAlertedAt[a.profileId] = nil
-            tokenSpikeStreak[a.profileId] = nil
-            tokenSpikeAlerted.remove(a.profileId)
+            resetTracking(for: a.profileId)
         }
         // 一个都没杀掉 ≠ 清理成功：进程可能已退出、可能无权限、PID 可能已被复用。
         // 此前无论结果如何都宣告「已安全清理 N 个…系统资源已就绪」，用户看到条目消失

@@ -2,7 +2,12 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.80）
+## 功能（v0.0.81）
+
+### 采样热路径 I/O 治理与跨 Agent 上下文隔离 (v0.0.81)
+- **主线程零遍历**：Antigravity/DSH 专有会话探测的会话树遍历改由「带失效令牌的定位缓存 + 尾读合并」承担，实测稳态单拍开销由约 91ms 降到 4.8ms，灵动岛展开动画不再被采样抢帧（新建会话与状态转移零延迟）；
+- **上下文不再串味**：后台任务、子智能体与 Token 细分随探测结果显式返回，修复了 Claude、Codex 等任意 Agent 卡片误显示 Antigravity 在途任务的问题，并连带消除残留永不失效的全局上下文字典；
+- **超长日志护栏与状态收敛**：Cline `ui_messages.json`、DSH 投影缓存改为内存映射并设 32MB 上限；10 个滞回/告警基准集合的清空收敛为三个入口（补上终止与一键清理漏掉的 token 速率基线）。
 
 ### 多 Agent 在途感知、Antigravity 子任务树与 Token 细分、UI 增强 (v0.0.80)
 - **多 Agent 在途命令全周期感知与拦截**：全面支持 Claude Code（`Bash` tool_use）、Codex（`exec_command`）、Cline / Roo Code（`ask/say command`），执行在途命令期间严格拦截误报已完成；

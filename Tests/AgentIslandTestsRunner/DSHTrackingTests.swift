@@ -161,5 +161,41 @@ enum DSHTrackingTests {
             try expectEqual(snap4.first?.level, .completed)
             try expectNil(engine.latestEvent, "同一完成标记不得重复发送通知")
         }
+
+        TestKit.test("DSH投影缓存: TTL 内出现的新会话必须立刻被重新定位，不得被缓存钉住") {
+            let tempDir = NSTemporaryDirectory() + "dsh-locate-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tempDir) }
+
+            func writeSession(_ name: String, title: String) throws {
+                let body = """
+                { "record": { "rows": {
+                  "title": { "val": "\(title)" },
+                  "turnBoundary": { "val": { "openTurnStartSeq": 4, "lastTurn": 1 } },
+                  "sessionStats": { "val": { "turns": 1, "steps": 8, "lastTurn": 1, "openStep": { "turn": 1, "step": 9 } } }
+                } } }
+                """
+                try body.data(using: .utf8)!.write(
+                    to: URL(fileURLWithPath: tempDir).appendingPathComponent(name))
+            }
+
+            // 两次写入之间留一点真实时间差：不用 setAttributes 伪造 mtime，
+            // 时钟精度不足时「谁是最新会话」会变得不确定
+            try writeSession("old.json", title: "旧会话")
+            Thread.sleep(forTimeInterval: 0.05)
+            guard case let .active(firstFP, _)? = AgentSessionInspector.inspectDSHSession(baseDir: tempDir, now: Date()) else {
+                throw TestError(message: "首拍必须定位到已有会话并给出 active")
+            }
+            try expectEqual(firstFP, "dsh-old-turn1")
+
+            // 定位缓存 TTL 为 3s：新会话投影落地必然刷新父目录 mtime，以此作失效令牌，
+            // 用户点「新任务」后岛内不能迟滞 3s 才反应过来
+            try writeSession("new.json", title: "新会话")
+            guard case let .active(secondFP, secondAction)? = AgentSessionInspector.inspectDSHSession(baseDir: tempDir, now: Date()) else {
+                throw TestError(message: "TTL 内新增的会话必须立刻被重新定位")
+            }
+            try expectEqual(secondFP, "dsh-new-turn1", "定位结果必须切换到更新的会话")
+            try expectTrue(secondAction?.contains("新会话") == true, "动作文案应取自新会话标题")
+        }
     }
 }

@@ -106,6 +106,15 @@ enum FormatTests {
             try (Data("OK\n".utf8) + Data([0xe4, 0xb8])).write(to: file)
             try expectEqual(LogTailReader.read(from: file, maxLines: 10, maxBytes: 1_000), ["OK"],
                             "损坏的末行被丢弃，完整行保留")
+
+            // 同拍合并（尾读 262KB 比解析更贵，两条链路复用一次读取）必须对改写零延迟：
+            // 改写后长度不变是最危险的情形——只比长度会误命中，mtime 精度又受系统缓存影响
+            try Data("A\n".utf8).write(to: file)
+            try expectEqual(LogTailReader.read(from: file, maxLines: 10, maxBytes: 1_000), ["A"])
+            Thread.sleep(forTimeInterval: 0.02)
+            try Data("B\n".utf8).write(to: file)
+            try expectEqual(LogTailReader.read(from: file, maxLines: 10, maxBytes: 1_000), ["B"],
+                            "等长改写必须立刻读到新内容")
         }
     }
 }

@@ -477,7 +477,7 @@ public enum AgentActionInspector {
     public static func inspectAntigravityAction() -> String? {
         // 优先从 Antigravity 原生会话探测中读取当前正在活跃执行的动作；
         // 处于已完成、待审批或待机状态时返回 nil，绝不残留回溯上一轮旧命令。
-        if let signal = AgentSessionInspector.inspectAntigravitySession(),
+        if let signal = AgentSessionInspector.probeAntigravitySession().signal,
            case let .active(_, actionText) = signal,
            let actionText, !actionText.isEmpty {
             return actionText

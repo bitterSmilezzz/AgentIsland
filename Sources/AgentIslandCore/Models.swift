@@ -408,17 +408,20 @@ public enum AgentSessionSignal: Equatable {
         if case let .active(_, act) = self { return act }
         return nil
     }
+}
 
-    public var backgroundTasks: [AgentBackgroundTask] {
-        AgentSessionInspector.activeContext(for: "antigravity").backgroundTasks
-    }
+/// 一轮会话探测的完整产出：强语义信号 + 该 Agent 本轮的活跃上下文。
+///
+/// 上下文必须随信号一起返回，不能存放在按 agent id 索引的全局缓存里：
+/// 读取方（快照装配）拿的是「上一个被解析的 Agent」的上下文，会让 Claude、Codex 等
+/// 任意 Agent 的卡片串到 Antigravity 的子任务与 Token 细分，且 Agent 退出后残留永不失效。
+public struct AgentSessionProbe: Equatable {
+    public var signal: AgentSessionSignal?
+    public var context: SessionActiveContext
 
-    public var subagents: [AgentSubagentInfo] {
-        AgentSessionInspector.activeContext(for: "antigravity").subagents
-    }
-
-    public var tokenBreakdown: AgentTokenBreakdown? {
-        AgentSessionInspector.activeContext(for: "antigravity").tokenBreakdown
+    public init(signal: AgentSessionSignal? = nil, context: SessionActiveContext = SessionActiveContext()) {
+        self.signal = signal
+        self.context = context
     }
 }
 

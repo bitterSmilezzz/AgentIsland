@@ -56,7 +56,7 @@ enum AntigravityTrackingTests {
             }
         }
 
-        TestKit.test("Antigravity会话探测: 统一入口 inspect 优先分派至 Antigravity 专有探测器，防止通用检测器误报") {
+        TestKit.test("Antigravity会话探测: 统一入口 probe 优先分派至 Antigravity 专有探测器，防止通用检测器误报") {
             let antigravity = AgentRegistry.builtin.first { $0.id == "antigravity" }!
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             let brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
@@ -71,9 +71,10 @@ enum AntigravityTrackingTests {
             }
 
             let now = Date()
-            let signalInspect = AgentSessionInspector.inspect(profile: antigravity, activityFiles: files, now: now)
-            let signalDedicated = AgentSessionInspector.inspectAntigravitySession(now: now)
-            
+            let signalInspect = AgentSessionInspector.probe(profile: antigravity, activityFiles: files, now: now).signal
+            // 会话定位有 3s TTL 缓存：晚于 TTL 的一拍重新定位，才能独立校验两条入口
+            let signalDedicated = AgentSessionInspector.probeAntigravitySession(now: now.addingTimeInterval(4)).signal
+
             // inspect 必须与专有解析器行为完全一致，且绝不得出现虚假的 attention 误报
             switch (signalInspect, signalDedicated) {
             case (.none, .none):

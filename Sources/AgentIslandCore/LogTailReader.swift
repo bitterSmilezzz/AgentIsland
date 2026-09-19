@@ -2,9 +2,52 @@ import Foundation
 
 /// 有界尾读：不追随持续增长的日志；截断首行在解码前丢弃。
 enum LogTailReader {
+    // MARK: - 同一拍内重复尾读的合并
+    //
+    // 「会话强语义」与「当前动作文案」两条链路每拍各尾读一次同一个 transcript，
+    // 而尾读本身比解析更贵（262KB 实测 3.7ms，120 行 JSON 解析 2ms）。文件 mtime 与
+    // 长度都没变 ⇒ 尾部字节没变，直接复用上一次的行。有效期短于采样周期（2s），
+    // 即使出现「同一 mtime 刻度内原地改写且长度不变」这种极端写入，最多也只陈旧半秒。
+    private static let lock = NSLock()
+    private static var cached: (file: URL, mtime: Date, size: UInt64, maxLines: Int, maxBytes: Int, lines: [String], until: Date)?
+    private static let reuseWindow: TimeInterval = 0.5
+
     static func read(from file: URL, maxLines: Int, maxBytes: Int) -> [String] {
-        guard maxLines > 0, maxBytes > 0,
-              let handle = try? FileHandle(forReadingFrom: file) else { return [] }
+        guard maxLines > 0, maxBytes > 0 else { return [] }
+        // 只有「普通文件」才进缓存；特殊文件（FIFO 等）与 stat 失败的情形退回直读，
+        // 与此前行为一致。新鲜度取 stat() 而非 URL.resourceValues：后者的结果有毫秒级
+        // 缓存窗口，而这里恰好要比对「几十微秒内被改写过的同一个文件」，实测会误命中
+        // 一次陈旧（2s 采样节律下其他环节的毫秒级陈旧无影响，故不一并改动）。
+        guard let stamp = Self.statRegular(file.path) else {
+            return readUncached(file: file, maxLines: maxLines, maxBytes: maxBytes)
+        }
+        let now = Date()
+        lock.lock()
+        if let hit = cached, hit.file == file, hit.mtime == stamp.mtime, hit.size == stamp.size,
+           hit.maxLines == maxLines, hit.maxBytes == maxBytes, now < hit.until {
+            let lines = hit.lines
+            lock.unlock()
+            return lines
+        }
+        lock.unlock()
+
+        let lines = readUncached(file: file, maxLines: maxLines, maxBytes: maxBytes)
+        lock.lock()
+        cached = (file, stamp.mtime, stamp.size, maxLines, maxBytes, lines, now.addingTimeInterval(reuseWindow))
+        lock.unlock()
+        return lines
+    }
+
+    /// 单次 stat() 取 mtime（纳秒）与长度；非普通文件或取不到时返回 nil。
+    private static func statRegular(_ path: String) -> (mtime: Date, size: UInt64)? {
+        var st = stat()
+        guard stat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else { return nil }
+        let seconds = TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1_000_000_000
+        return (Date(timeIntervalSince1970: seconds), UInt64(st.st_size))
+    }
+
+    private static func readUncached(file: URL, maxLines: Int, maxBytes: Int) -> [String] {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return [] }
         defer { try? handle.close() }
         do {
             let size = try handle.seekToEnd()

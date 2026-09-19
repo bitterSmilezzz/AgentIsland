@@ -37,49 +37,70 @@ public enum AgentSessionInspector {
         "stepstart", "turnstart", "toolcall", "assistantmessage"
     ]
 
-    // MARK: - 活跃会话附加上下文（后台任务、子智能体、Token细分）
-    private static let contextLock = NSLock()
-    private static var activeContexts: [String: SessionActiveContext] = [:]
+    // MARK: - 会话定位缓存
 
-    public static func activeContext(for agentId: String) -> SessionActiveContext {
-        contextLock.lock()
-        defer { contextLock.unlock() }
-        return activeContexts[agentId] ?? SessionActiveContext()
+    /// 专有会话解析器要先在会话树里挑出「当前最新那个会话」的文件，再尾读它。
+    /// 实测一趟遍历在真实机器上的量级：Antigravity 797 次 stat / 24ms，DSH 501 次 stat / 15ms。
+    /// 而引擎每 2s 一拍，且「会话强语义」与「当前动作文案」两条链路各调一次同一棵树——
+    /// 采样运行在 @MainActor 上，这些遍历直接把悬浮岛的展开动画卡出可感知的丢帧。
+    ///
+    /// 缓存的只是「选哪个文件」，尾读与解析每拍照常进行，因此状态转移（新写入、完成、
+    /// 等待确认）不会有任何延迟。失效条件取两者较小值：
+    /// - TTL 到期（兜底，防止长期不重定位）
+    /// - 根目录 mtime 变化（新建会话目录必然刷新父目录 mtime → 立即重定位，新会话零延迟）
+    /// 深层文件写入不改变根目录 mtime，所以只靠 mtime 会长期钉死在旧会话上。
+    private struct LocatedSession {
+        let file: URL
+        var mtime: Date
+        let sidecar: URL?   // Antigravity: 同一会话的 tasks 目录
     }
 
-    public static func setActiveContext(_ context: SessionActiveContext, for agentId: String) {
-        contextLock.lock()
-        defer { contextLock.unlock() }
-        activeContexts[agentId] = context
+    private static let locateLock = NSLock()
+    private static var locateCache: [String: (expires: Date, rootDate: Date?, located: LocatedSession?)] = [:]
+    private static let locateTTL: TimeInterval = 3
+
+    /// 读取（必要时重算）指定会话树的定位结果。
+    /// - Parameters:
+    ///   - key: 缓存键，须同时区分 Agent 与根目录（测试会注入临时目录）
+    ///   - rootDir: mtime 作为失效令牌的目录；nil 表示无新会话可发现，只按 TTL 失效
+    ///   - locate: 真正的遍历实现，仅在缓存失效时调用
+    private static func locatedSession(key: String, rootDir: URL?, now: Date, locate: () -> LocatedSession?) -> LocatedSession? {
+        locateLock.lock()
+        defer { locateLock.unlock() }
+        let rootDate = rootDir.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+        if let cached = locateCache[key], now < cached.expires, cached.rootDate == rootDate {
+            return cached.located
+        }
+        let located = locate()
+        locateCache[key] = (now.addingTimeInterval(locateTTL), rootDate, located)
+        return located
     }
 
-    public static func clearActiveContext(for agentId: String) {
-        contextLock.lock()
-        defer { contextLock.unlock() }
-        activeContexts.removeValue(forKey: agentId)
+    private static func modifiedDate(of url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
-    /// 对 FileMonitor 已在后台定位出的每目录最新文件做有界尾读；不递归枚举目录。
-    public static func inspect(profile: AgentProfile, activityFiles: [URL], now: Date = Date()) -> AgentSessionSignal? {
+    /// 探测一轮会话：优先消费 FileMonitor 已在后台定位出的每目录最新文件并做有界尾读。
+    /// 专有解析器需要自行定位会话时，走带失效令牌的定位缓存（见 `locatedSession`），
+    /// 因此调用方（@MainActor 采样）不会每拍重走会话树。
+    public static func probe(profile: AgentProfile, activityFiles: [URL], now: Date = Date()) -> AgentSessionProbe {
         // 专有 Agent 协议优先：拥有高保真结构化日志/专有解析器的 Agent（如 Antigravity、DSH、Cline、Roo）
         // 必须使用其专有解析器，避免被通用检测器的关键字深搜造成 attention/active 误判。
         switch profile.id {
         case "antigravity":
-            return inspectAntigravitySession(now: now)
+            return probeAntigravitySession(baseDir: nil, now: now)
         case "dsh":
-            return inspectDSHSession(now: now)
+            return AgentSessionProbe(signal: inspectDSHSession(now: now))
         case "cline", "roo-code":
             if let signal = inspectClineOrRooTasks(dirs: profile.sessionDirs, now: now) {
-                return signal
+                return AgentSessionProbe(signal: signal)
             }
         default:
             break
         }
 
         let candidates = activityFiles.compactMap { url -> (URL, Date)? in
-            guard let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else {
-                return nil
-            }
+            guard let mtime = modifiedDate(of: url) else { return nil }
             return (url, mtime)
         }.sorted { $0.1 > $1.1 }
 
@@ -88,20 +109,31 @@ public enum AgentSessionInspector {
             // 等待确认可以持续较久；完成态只保留一小段时间，之后自然显示“待机”。
             guard age <= 24 * 3600 else { continue }
             if file.lastPathComponent == "ui_messages.json" {
-                if let data = try? Data(contentsOf: file),
+                if let data = readJSONFile(file),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                    let signal = detectClineOrRoo(messages: json, fileAge: age) {
-                    return signal
+                    return AgentSessionProbe(signal: signal)
                 }
             }
             let lines = LogTailReader.read(from: file, maxLines: 96, maxBytes: 262_144)
             guard let signal = detect(lines: lines) else { continue }
             if case .completed = signal, age > 15 * 60 { continue }
-            return signal
+            return AgentSessionProbe(signal: signal)
         }
         // 部分桌面 Agent 把会话只写进 SQLite，FileMonitor 的 latest file 只能定位到
         // 二进制库本身。对已知 schema 做只读、索引命中的末条查询；失败即无信号。
-        return inspectKnownDatabase(profile: profile, now: now)
+        return AgentSessionProbe(signal: inspectKnownDatabase(profile: profile, now: now))
+    }
+
+    /// 大会话文件按内存映射读取：Cline 的 ui_messages.json、DSH 的投影缓存都会随会话
+    /// 无上限增长，整块读进堆内存会在主线程上产生一次大拷贝（映射则由内核按需换页）。
+    /// 超过上限直接放弃本轮信号，降级到 CPU/写入双信号判定，不能让解析拖垮采样。
+    private static let maxSessionFileBytes = 32_000_000
+
+    private static func readJSONFile(_ url: URL) -> Data? {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard size <= maxSessionFileBytes else { return nil }
+        return try? Data(contentsOf: url, options: [.mappedIfSafe])
     }
 
     /// 纯函数解析入口，供 fixture 测试与未来新增 Agent 格式时复用。
@@ -313,32 +345,34 @@ public enum AgentSessionInspector {
     }
 
     public static func inspectClineOrRooTasks(dirs: [String], now: Date) -> AgentSessionSignal? {
-        let fm = FileManager.default
-        var newestURL: URL?
-        var newestMtime: Date = .distantPast
-
-        for dir in dirs {
-            guard let taskDirs = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for sub in taskDirs {
-                let uiPath = "\(dir)/\(sub)/ui_messages.json"
-                if fm.fileExists(atPath: uiPath),
-                   let attrs = try? fm.attributesOfItem(atPath: uiPath),
-                   let mtime = attrs[.modificationDate] as? Date {
-                    if mtime > newestMtime {
-                        newestMtime = mtime
-                        newestURL = URL(fileURLWithPath: uiPath)
-                    }
-                }
-            }
-        }
-        guard let url = newestURL else { return nil }
-        let age = max(0, now.timeIntervalSince(newestMtime))
+        // 任务数会随使用持续累积（每个任务一个目录 + 一次 stat），同样只在缓存失效时遍历
+        guard let found = locatedSession(key: "cline|\(dirs.joined(separator: ","))", rootDir: nil, now: now, locate: {
+            walkClineTasks(dirs: dirs)
+        }) else { return nil }
+        let age = max(0, now.timeIntervalSince(found.mtime))
         guard age <= 24 * 3600 else { return nil }
-        guard let data = try? Data(contentsOf: url),
+        guard let data = readJSONFile(found.file),
               let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             return nil
         }
         return detectClineOrRoo(messages: json, fileAge: age)
+    }
+
+    /// 遍历任务目录定位最近一次 ui_messages.json。
+    private static func walkClineTasks(dirs: [String]) -> LocatedSession? {
+        let fm = FileManager.default
+        var newest: LocatedSession?
+        for dir in dirs {
+            guard let taskDirs = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for sub in taskDirs {
+                let url = URL(fileURLWithPath: dir).appendingPathComponent(sub).appendingPathComponent("ui_messages.json")
+                guard let mtime = modifiedDate(of: url) else { continue }
+                if newest == nil || mtime > newest!.mtime {
+                    newest = LocatedSession(file: url, mtime: mtime, sidecar: nil)
+                }
+            }
+        }
+        return newest
     }
 
     private static func findRequest(in value: Any, sourceLine: String) -> AgentAttentionRequest? {
@@ -531,10 +565,6 @@ public enum AgentSessionInspector {
             )
         case "opencode":
             return inspectOpenCodeDatabase(path: "\(home)/.local/share/opencode/opencode.db", now: now)
-        case "dsh":
-            return inspectDSHSession(now: now)
-        case "antigravity":
-            return inspectAntigravitySession(now: now)
         default:
             return nil
         }
@@ -644,40 +674,29 @@ public enum AgentSessionInspector {
 
     /// 解析 DeepSeek Harness (DSH) 官方会话投影缓存 (sessionProjectionCache)，提取活跃执行态与终态。
     public static func inspectDSHSession(baseDir: String? = nil, now: Date = Date()) -> AgentSessionSignal? {
-        let projcacheDir: String
+        let projcacheDir: URL
         if let baseDir {
-            projcacheDir = baseDir
+            projcacheDir = URL(fileURLWithPath: baseDir)
         } else {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
-            projcacheDir = "\(home)/.dsh/storages/session_projcache/sessions"
+            projcacheDir = URL(fileURLWithPath: "\(home)/.dsh/storages/session_projcache/sessions")
         }
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(atPath: projcacheDir) else { return nil }
-
-        var newestPath: String?
-        var newestDate: Date = .distantPast
-        for file in files where file.hasSuffix(".json") {
-            let fullPath = "\(projcacheDir)/\(file)"
-            if let attrs = try? fm.attributesOfItem(atPath: fullPath),
-               let mdate = attrs[.modificationDate] as? Date {
-                if mdate > newestDate {
-                    newestDate = mdate
-                    newestPath = fullPath
-                }
-            }
-        }
-        guard let path = newestPath else { return nil }
-        let age = max(0, now.timeIntervalSince(newestDate))
+        // 投影目录实测 500+ 会话文件，一趟 stat 约 15ms，不能每拍在 @MainActor 上重走
+        let key = "dsh|\(projcacheDir.path)"
+        guard let found = locatedSession(key: key, rootDir: projcacheDir, now: now, locate: {
+            walkDSHProjections(in: projcacheDir)
+        }) else { return nil }
+        let age = max(0, now.timeIntervalSince(found.mtime))
         guard age <= 24 * 3600 else { return nil }
 
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+        guard let data = readJSONFile(found.file),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let record = root["record"] as? [String: Any],
               let rows = record["rows"] as? [String: Any] else {
             return nil
         }
 
-        let sessionId = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let sessionId = found.file.deletingPathExtension().lastPathComponent
 
         // 提取任务标题
         let titleDict = rows["title"] as? [String: Any]
@@ -734,8 +753,24 @@ public enum AgentSessionInspector {
         }
     }
 
-    /// 解析 Google Antigravity 轨迹日志 (.system_generated/logs/transcript.jsonl)，提取活跃执行态、提问确认与终态。
-    public static func inspectAntigravitySession(baseDir: String? = nil, now: Date = Date()) -> AgentSessionSignal? {
+    /// 遍历投影目录定位最新会话文件（仅在定位缓存失效时调用）。
+    private static func walkDSHProjections(in dir: URL) -> LocatedSession? {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: dir.path) else { return nil }
+        var newest: LocatedSession?
+        for name in files where name.hasSuffix(".json") {
+            let url = dir.appendingPathComponent(name)
+            guard let mdate = modifiedDate(of: url) else { continue }
+            if newest == nil || mdate > newest!.mtime {
+                newest = LocatedSession(file: url, mtime: mdate, sidecar: nil)
+            }
+        }
+        return newest
+    }
+
+    /// 解析 Google Antigravity 轨迹日志 (.system_generated/logs/transcript.jsonl)，
+    /// 提取活跃执行态、提问确认与终态，以及本轮的后台任务/子智能体/Token 细分上下文。
+    public static func probeAntigravitySession(baseDir: String? = nil, now: Date = Date()) -> AgentSessionProbe {
         let brainDir: URL
         if let baseDir {
             brainDir = URL(fileURLWithPath: baseDir)
@@ -743,7 +778,30 @@ public enum AgentSessionInspector {
             let home = FileManager.default.homeDirectoryForCurrentUser.path
             brainDir = URL(fileURLWithPath: "\(home)/.gemini/antigravity/brain")
         }
-        guard let subdirs = try? FileManager.default.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
+        let key = "antigravity|\(brainDir.path)"
+        guard let found = locatedSession(key: key, rootDir: brainDir, now: now, locate: {
+            walkAntigravitySessions(in: brainDir)
+        }) else {
+            return AgentSessionProbe()
+        }
+        let age = max(0, now.timeIntervalSince(found.mtime))
+        guard age <= 24 * 3600 else { return AgentSessionProbe() }
+
+        let lines = LogTailReader.read(from: found.file, maxLines: 120, maxBytes: 262_144)
+        guard !lines.isEmpty else { return AgentSessionProbe() }
+
+        var context = SessionActiveContext()
+        let signal = detectAntigravitySession(lines: lines, fileAge: age, now: now, tasksDir: found.sidecar) {
+            context = $0
+        }
+        return AgentSessionProbe(signal: signal, context: context)
+    }
+
+    /// 遍历 brain 找出「有效最新」的会话：transcript 与它自己的后台任务日志取较新者，
+    /// 这样长耗时后台命令（构建/测试）执行期间不会被误判为已完成。
+    private static func walkAntigravitySessions(in brainDir: URL) -> LocatedSession? {
+        guard let subdirs = try? FileManager.default.contentsOfDirectory(
+            at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else {
             return nil
         }
         var newestFile: URL?
@@ -751,38 +809,39 @@ public enum AgentSessionInspector {
         var newestTime: Date = .distantPast
         for sub in subdirs {
             let logFile = sub.appendingPathComponent(".system_generated/logs/transcript.jsonl")
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: logFile.path),
-               let mtime = attrs[.modificationDate] as? Date {
-                var effectiveTime = mtime
-                let tasksDir = sub.appendingPathComponent(".system_generated/tasks")
-                if let taskFiles = try? FileManager.default.contentsOfDirectory(at: tasksDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) {
-                    for tf in taskFiles where tf.pathExtension == "log" {
-                        if let tAttrs = try? FileManager.default.attributesOfItem(atPath: tf.path),
-                           let tMTime = tAttrs[.modificationDate] as? Date,
-                           tMTime > effectiveTime {
-                            effectiveTime = tMTime
-                        }
+            guard let mtime = modifiedDate(of: logFile) else { continue }
+            var effectiveTime = mtime
+            let tasksDir = sub.appendingPathComponent(".system_generated/tasks")
+            if let taskFiles = try? FileManager.default.contentsOfDirectory(
+                at: tasksDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) {
+                for tf in taskFiles where tf.pathExtension == "log" {
+                    if let tMTime = modifiedDate(of: tf), tMTime > effectiveTime {
+                        effectiveTime = tMTime
                     }
                 }
-                if effectiveTime > newestTime {
-                    newestTime = effectiveTime
-                    newestFile = logFile
-                    newestTasksDir = tasksDir
-                }
+            }
+            if effectiveTime > newestTime {
+                newestTime = effectiveTime
+                newestFile = logFile
+                newestTasksDir = tasksDir
             }
         }
         guard let target = newestFile else { return nil }
-        let age = max(0, now.timeIntervalSince(newestTime))
-        guard age <= 24 * 3600 else { return nil }
-
-        let lines = LogTailReader.read(from: target, maxLines: 120, maxBytes: 262_144)
-        guard !lines.isEmpty else { return nil }
-
-        return detectAntigravitySession(lines: lines, fileAge: age, now: now, tasksDir: newestTasksDir)
+        return LocatedSession(file: target, mtime: newestTime, sidecar: newestTasksDir)
     }
 
-    /// 解析 Antigravity transcript.jsonl 末尾若干行，推导当前状态信号
-    public static func detectAntigravitySession(lines: [String], fileAge: TimeInterval, now: Date = Date(), tasksDir: URL? = nil) -> AgentSessionSignal? {
+    /// 解析 Antigravity transcript.jsonl 末尾若干行，推导当前状态信号。
+    /// - Parameter contextSink: 收到本轮解析出的后台任务/子智能体/Token 细分上下文。
+    ///   上下文与信号一样只在一次探测内存活，由调用方随 `AgentSessionProbe` 带出；
+    ///   它曾经存放在按 agent id 索引的全局字典里，任何 Agent 的卡片都会因此串到
+    ///   Antigravity 的残留上下文。只关心信号的调用方可忽略（测试即如此）。
+    public static func detectAntigravitySession(
+        lines: [String],
+        fileAge: TimeInterval,
+        now: Date = Date(),
+        tasksDir: URL? = nil,
+        contextSink: (SessionActiveContext) -> Void = { _ in }
+    ) -> AgentSessionSignal? {
         // 预解析与状态扫描：
         // 1. 扫描所有行，收集 step 元数据与后台任务/子智能体生命周期
         var parsedMeta: [(stepIndex: Int, stepType: String, hasToolCalls: Bool)] = []
@@ -925,7 +984,7 @@ public enum AgentSessionInspector {
             subagents: subagentModels,
             tokenBreakdown: tokenBreakdown
         )
-        setActiveContext(ctx, for: "antigravity")
+        contextSink(ctx)
 
         func makeActiveSignal(fingerprint: String, action: String) -> AgentSessionSignal {
             return .active(fingerprint: fingerprint, action: action)

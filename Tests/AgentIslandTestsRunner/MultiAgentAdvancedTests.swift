@@ -78,12 +78,13 @@ enum MultiAgentAdvancedTests {
             let line2 = #"{"step_index":201,"source":"TOOL","type":"GENERIC","status":"DONE","content":"Created the following subagents: conv-sub-888"}"#
             let line3 = #"{"step_index":202,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","thinking":"Waiting for subagent to finish analysis..."}"#
 
-            let signal = AgentSessionInspector.detectAntigravitySession(lines: [line1, line2, line3], fileAge: 10)
+            var ctx = SessionActiveContext()
+            let signal = AgentSessionInspector.detectAntigravitySession(lines: [line1, line2, line3], fileAge: 10) { ctx = $0 }
             guard let sig = signal, sig.isActive else {
                 throw TestError(message: "子智能体在途中必须返回 active 态")
             }
-            try expectEqual(sig.subagents.count, 1, "应准确识别出 1 个在途子智能体")
-            let sub = sig.subagents.first!
+            try expectEqual(ctx.subagents.count, 1, "应准确识别出 1 个在途子智能体")
+            let sub = ctx.subagents.first!
             try expectEqual(sub.conversationId, "conv-sub-888")
             try expectEqual(sub.role, "Codebase Researcher")
             try expectEqual(sub.model, "pro")
@@ -92,8 +93,9 @@ enum MultiAgentAdvancedTests {
         TestKit.test("Antigravity: Token 深度指标拆解（prompt, completion, cache, thoughts）") {
             let line1 = #"{"step_index":300,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","thinking":"Thinking deeply...","usageMetadata":{"promptTokenCount":1500,"candidatesTokenCount":320,"cachedContentTokenCount":800,"thoughtsTokenCount":250,"totalTokenCount":2870}}"#
 
-            let signal = AgentSessionInspector.detectAntigravitySession(lines: [line1], fileAge: 10)
-            guard let sig = signal, sig.isActive, let tb = sig.tokenBreakdown else {
+            var ctx = SessionActiveContext()
+            let signal = AgentSessionInspector.detectAntigravitySession(lines: [line1], fileAge: 10) { ctx = $0 }
+            guard let sig = signal, sig.isActive, let tb = ctx.tokenBreakdown else {
                 throw TestError(message: "必须提取出 TokenBreakdown 细分指标")
             }
             try expectEqual(tb.promptTokens, 1500)
@@ -128,6 +130,33 @@ enum MultiAgentAdvancedTests {
             try expectEqual(snap.subagents.count, 1)
             try expectEqual(snap.subagents.first?.role, "Search Agent")
             try expectEqual(snap.tokenBreakdown?.totalTokens, 150)
+        }
+
+        TestKit.test("会话上下文隔离: 其他 Agent 的探测结果不得携带 Antigravity 的在途上下文") {
+            // 前置：Antigravity 解析器产出一份非空的在途上下文
+            let line1 = #"{"step_index":200,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"TypeName":"research","Role":"Codebase Researcher","Model":"pro"}]}}]}"#
+            let line2 = #"{"step_index":201,"source":"TOOL","type":"GENERIC","status":"DONE","content":"Created the following subagents: conv-sub-888"}"#
+            let line3 = #"{"step_index":202,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","thinking":"Waiting for subagent to finish analysis..."}"#
+            var agContext = SessionActiveContext()
+            _ = AgentSessionInspector.detectAntigravitySession(lines: [line1, line2, line3], fileAge: 10) { agContext = $0 }
+            try expectFalse(agContext.subagents.isEmpty, "前置条件：Antigravity 侧必须解析出在途子智能体")
+
+            // 同一时刻探测 Claude：上下文必须为空。上下文一旦存放在按 agent id 索引的
+            // 全局字典里，这里就会串到上面那份 Antigravity 子任务（悬浮胶囊误报 🤖1子任务）
+            let tempDir = NSTemporaryDirectory() + "ctx-isolation-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tempDir) }
+            let transcript = URL(fileURLWithPath: tempDir).appendingPathComponent("session.jsonl")
+            try #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}"#
+                .data(using: .utf8)!
+                .write(to: transcript)
+
+            let claude = AgentRegistry.builtin.first { $0.id == "claude" }!
+            let probe = AgentSessionInspector.probe(profile: claude, activityFiles: [transcript], now: Date())
+            try expectTrue(probe.signal?.isActive == true, "在途 Bash 未交付结果，Claude 应为 active")
+            try expectTrue(probe.context.subagents.isEmpty, "Claude 不得继承其他 Agent 的子智能体")
+            try expectTrue(probe.context.backgroundTasks.isEmpty, "Claude 不得继承其他 Agent 的后台任务")
+            try expectNil(probe.context.tokenBreakdown, "Claude 不得继承其他 Agent 的 Token 细分")
         }
     }
 }
