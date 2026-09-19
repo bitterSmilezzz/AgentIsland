@@ -161,5 +161,37 @@ enum AttentionTests {
             try expectEqual(Set(delivered), Set(["dim", "claude"]),
                             "latestEvent 虽只有一个槽位，系统通知事件流也不能丢另一个 Agent")
         }
+
+        TestKit.test("引擎: 进程匹配抖动一拍再恢复，同一条待确认不得重复通知") {
+            let start = Date()
+            let dir = FileManager.default.homeDirectoryForCurrentUser.path + "/.dimcode/v2/data/sessions"
+            let provider = MutableProcessProvider(names: ["DimAgent"])
+            let engine = ActivityEngine(
+                profiles: [dim],
+                config: EngineConfig(workingWindow: 5, minWorkingHold: 2),
+                processMonitor: provider,
+                fileMonitor: FakeFileActivityProvider(writes: [dir: start]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            engine.inspectSessionHook = { _, _, _ in
+                .attention(AgentAttentionRequest(fingerprint: "approval-7", message: "等待你批准操作"))
+            }
+
+            _ = engine.sample(now: start)
+            try expectEqual(engine.latestEvent?.eventType, .attention, "首次进入等待确认应通知")
+
+            // libproc 抖动：进程其实还在，只是这一拍没匹配上
+            engine.clearLatestEvent()
+            provider.names = []
+            _ = engine.sample(now: start.addingTimeInterval(2))
+            try expectEqual(engine.snapshots.first?.level, .offline)
+            try expectNil(engine.latestEvent, "进程消失不是任务完成，不该补发任何事件")
+
+            provider.names = ["DimAgent"]
+            _ = engine.sample(now: start.addingTimeInterval(4))
+            try expectEqual(engine.snapshots.first?.level, .attention)
+            try expectNil(engine.latestEvent,
+                          "同一条 approval-7 不得因为抖动一拍重新弹通知与铃声")
+        }
     }
 }

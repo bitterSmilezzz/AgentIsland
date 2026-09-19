@@ -125,9 +125,8 @@ struct EventHistoryPopoverView: View {
     }
 
     private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: date)
+        // 共享 POSIX 口径实例：既不跟随系统 locale 改写数字，也不再每次调用新建 DateFormatter
+        TimeFormat.clock.string(from: date)
     }
 
     private func formatDuration(_ sec: TimeInterval) -> String {

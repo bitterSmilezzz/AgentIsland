@@ -35,6 +35,8 @@ public enum AgentRegistry {
             processNames: ["DimAgent", "DimRemote", "dim"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".dimcode/v2/data/sessions")],
+            // 用量页按 sessionId 定位会话目录（明细就在该目录树下），路径只在此声明一次
+            tokenRoots: [home(".dimcode/v2/data/sessions")],
             category: .assistant,
             emoji: "✨",
             sessionDatabase: AgentSessionDatabase(path: home(".dimcode/v2/dimcode.sqlite"), schema: .dimTasks),
@@ -47,6 +49,7 @@ public enum AgentRegistry {
             processNames: ["claude", "Claude", "claude-code"],
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [home(".claude/sessions"), home(".claude/projects")],
+            tokenRoots: [home(".claude/sessions"), home(".claude/projects")],
             category: .assistant,
             emoji: "🧠",
         ),
@@ -66,6 +69,9 @@ public enum AgentRegistry {
             // 只监控会话 JSONL 目录；~/.codex 根目录含 sqlite/WAL/cache，被 app 后台高频刷新，
             // 会导致 Codex 仅打开但未运行任务时被误判为 WORKING
             sessionDirs: [home(".codex/sessions")],
+            // token_usage_record 就在 sessions 的 rollout JSONL 里（~/.codex 根目录另有
+            // sqlite/WAL，不是采集入口）
+            tokenRoots: [home(".codex/sessions")],
             category: .assistant,
             emoji: "🤖",
         ),
@@ -121,6 +127,8 @@ public enum AgentRegistry {
                 // memory 也会被后台同步触碰。任务产物才是工作信号。
                 home(".workbuddy/tasks")
             ],
+            // token 明细在 projects/ 的会话 JSONL 里，与 tasks/（工作信号）不同子树
+            tokenRoots: [home(".workbuddy/projects")],
             category: .assistant,
             emoji: "💼",
             sessionDatabase: AgentSessionDatabase(path: home(".workbuddy/workbuddy.db"), schema: .statusIndex, statusSQL: "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"),
@@ -141,6 +149,8 @@ public enum AgentRegistry {
             sessionDirs: [
                 home(".workbuddy-ai/tasks")
             ],
+            // 同国内版：明细在独立的 projects/ 子树（两变体数据目录完全独立）
+            tokenRoots: [home(".workbuddy-ai/projects")],
             category: .assistant,
             emoji: "💼",
             sessionDatabase: AgentSessionDatabase(path: home(".workbuddy-ai/workbuddy.db"), schema: .statusIndex, statusSQL: "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"),

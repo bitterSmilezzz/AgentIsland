@@ -326,12 +326,17 @@ public final class ActivityEngine: ObservableObject {
     // tokenRateBaseline 就曾被 terminateAgent 与 cleanAnomalies 漏掉——新增集合时
     // 只需登记进下面三个入口。
 
-    /// 清空单个 Agent 的全部跟踪状态（离线、被终止、被清理）
-    private func resetTracking(for agentId: String) {
+    /// 清空单个 Agent 的全部跟踪状态（被终止、被异常清理）
+    /// - Parameter keepEventFingerprints: 进程消失一拍时置 true。libproc 匹配抖动一拍、
+    ///   或 CLI 换 PID 重启到同一份会话，都不该让同一条「等待确认 / 已完成」再弹一次通知
+    ///   与铃声；指纹的清理留给显式终止与档案移除。
+    private func resetTracking(for agentId: String, keepEventFingerprints: Bool = false) {
         workingSince[agentId] = nil
         workingPeriodHadWrite.remove(agentId)
-        activeAttentionFingerprints[agentId] = nil
-        handledCompletionFingerprints[agentId] = nil
+        if !keepEventFingerprints {
+            activeAttentionFingerprints[agentId] = nil
+            handledCompletionFingerprints[agentId] = nil
+        }
         lastSignalAt[agentId] = nil
         highCpuSince[agentId] = nil
         lastRunawayAlertedAt[agentId] = nil
@@ -525,8 +530,9 @@ public final class ActivityEngine: ObservableObject {
                 // （此前会误报「任务已完成」——完成事件只应由「进程仍在但工作信号消失」产生）
                 level = .offline
                 // 速率基线一并清除（与 resumeGap 断点处理口径一致）：否则重启后首个
-                // 结算窗口把离线全程计入分母，速率被摊薄，本应触发的激增告警被推迟
-                resetTracking(for: profile.id)
+                // 结算窗口把离线全程计入分母，速率被摊薄，本应触发的激增告警被推迟。
+                // 两个通知去重指纹保留：见 resetTracking 的说明
+                resetTracking(for: profile.id, keepEventFingerprints: true)
             } else if case let .attention(request)? = sessionSignal {
                 level = .attention
                 // 等待用户不是任务完成：切断旧工作区间且绝不补完成事件。
@@ -630,7 +636,17 @@ public final class ActivityEngine: ObservableObject {
                 let inspector = inspectActionHook ?? { pid, profile, dirs, snap in
                     AgentActionInspector.inspectAction(pid: pid, profile: profile, sessionDirs: dirs, snapshot: snap)
                 }
-                let detected = inspector(matchedPID, profile, profile.sessionDirs, matcher.snapshot)
+                // 专有方言（Antigravity / DSH / Cline）的动作文案与会话强语义**同源**——都出自
+                // 同一份 transcript / 投影缓存。会话探测这一拍已经把它解析出来了，再走一次动作
+                // 探测等于把 262KB 尾读 + 120 行 JSON 解析重复付两遍（都在 @MainActor）。
+                // 通用尾窗 Agent 不在此列：动作探测读的是库与子进程，信息比信号里的更具体。
+                let detected: String?
+                if profile.sessionDialect != .genericTail, let fromSignal = sessionSignal?.actionText,
+                   !fromSignal.isEmpty {
+                    detected = fromSignal
+                } else {
+                    detected = inspector(matchedPID, profile, profile.sessionDirs, matcher.snapshot)
+                }
                 if let detected, !detected.isEmpty {
                     action = detected
                 } else if let sig = sessionSignal, let actionText = sig.actionText {
@@ -733,8 +749,14 @@ public final class ActivityEngine: ObservableObject {
                     continue
                 }
                 // 时钟回拨重锚：基线时间戳晚于本拍（系统时钟被回拨）会让结算窗口为负——
-                // 重锚到当前拍，速率追踪在当前时钟下重新计起
-                if base.timestamp > now { base.timestamp = now }
+                // 重锚到当前拍，速率追踪在当前时钟下重新计起。
+                // 必须**立即写回**：本档若因窗口不足而不结算（下面的 continue），
+                // 只改局部副本会让未来数小时的每一拍都重复走这条重锚分支，
+                // 激增检测在该 Agent 上彻底失效（时区错一秒是 1 秒，错 8 小时是 8 小时）
+                if base.timestamp > now {
+                    base.timestamp = now
+                    tokenRateBaseline[profile.id] = (timestamp: now, tokens: base.tokens)
+                }
                 let timeSpan = now.timeIntervalSince(base.timestamp)
                 // 不足一档不结算：一次采样就把长任务的账本落盘当激增会误报
                 guard timeSpan >= Self.tokenRateWindow else { continue }

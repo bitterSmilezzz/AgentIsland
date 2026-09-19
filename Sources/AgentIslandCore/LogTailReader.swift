@@ -9,7 +9,19 @@ enum LogTailReader {
     // 长度都没变 ⇒ 尾部字节没变，直接复用上一次的行。有效期短于采样周期（2s），
     // 即使出现「同一 mtime 刻度内原地改写且长度不变」这种极端写入，最多也只陈旧半秒。
     private static let lock = NSLock()
-    private static var cached: (file: URL, mtime: Date, size: UInt64, maxLines: Int, maxBytes: Int, lines: [String], until: Date)?
+    private struct Entry {
+        let file: URL
+        let mtime: Date
+        let size: UInt64
+        let maxLines: Int
+        let maxBytes: Int
+        let lines: [String]
+        let until: Date
+    }
+    // 四个 Agent 同时在跑时单槽会互相踢出（每拍换文件 ⇒ 命中率归零）；
+    // 尾读的是各自会话树里最新的少数几个文件，四槽足以覆盖常见并发规模。
+    private static var entries: [Entry] = []
+    private static let slotCount = 4
     private static let reuseWindow: TimeInterval = 0.5
 
     static func read(from file: URL, maxLines: Int, maxBytes: Int) -> [String] {
@@ -23,19 +35,31 @@ enum LogTailReader {
         }
         let now = Date()
         lock.lock()
-        if let hit = cached, hit.file == file, hit.mtime == stamp.mtime, hit.size == stamp.size,
-           hit.maxLines == maxLines, hit.maxBytes == maxBytes, now < hit.until {
-            let lines = hit.lines
+        if let slot = entries.firstIndex(where: {
+            $0.file == file && $0.mtime == stamp.mtime && $0.size == stamp.size
+                && $0.maxLines == maxLines && $0.maxBytes == maxBytes && now < $0.until
+        }) {
+            let lines = entries[slot].lines
             lock.unlock()
             return lines
         }
-        lock.unlock()
-
         let lines = readUncached(file: file, maxLines: maxLines, maxBytes: maxBytes)
-        lock.lock()
-        cached = (file, stamp.mtime, stamp.size, maxLines, maxBytes, lines, now.addingTimeInterval(reuseWindow))
+        // 新读到的放到最前面；被不同文件顶掉的是最久没用的那一头（近似 LRU，够用）
+        entries.insert(Entry(file: file, mtime: stamp.mtime, size: stamp.size, maxLines: maxLines,
+                             maxBytes: maxBytes, lines: lines, until: now.addingTimeInterval(reuseWindow)), at: 0)
+        if entries.count > slotCount { entries.removeLast(entries.count - slotCount) }
         lock.unlock()
         return lines
+    }
+
+    /// 单次 stat() 取 mtime（纳秒、不经任何缓存）。目录同样适用，
+    /// 供「目录是否变过」这类失效判定使用；`URL.resourceValues` 有毫秒级缓存窗口，
+    /// 不足以支撑「刚写入就下一秒读到」的场景。
+    static func statModificationDate(_ path: String) -> Date? {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)
+            + TimeInterval(st.st_mtimespec.tv_nsec) / 1_000_000_000)
     }
 
     /// 单次 stat() 取 mtime（纳秒）与长度；非普通文件或取不到时返回 nil。

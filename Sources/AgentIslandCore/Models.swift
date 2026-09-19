@@ -141,6 +141,13 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
     ///   调低时不会突破该 Agent 的保护下限。
     public let tokenAlertFloor: Int?
     public let sessionDirs: [String]      // 会话目录（后台扫描）
+    /// Token 明细根目录：这些目录树下的 JSONL 记录承载本 Agent 的 token 用量（空表示无）。
+    ///
+    /// 与 `sessionDirs` 分开声明是有原因的：两者常在不同子树里——WorkBuddy 的工作信号
+    /// 在 `tasks/`，token 明细却在 `projects/`。此前用量侧把这些路径又抄了一份字面量，
+    /// 档案换目录或改名后只有采集的一半生效（见 ADR-0004），故一律收进档案。
+    public let tokenRoots: [String]
+
     /// 终端看板（`agentisland status` / `top`）与摘要里用的展示符号。
     /// 曾经是 CLI 里一张 19 分支的 id→emoji 表，其中 4 个 id（dimagent / vibe /
     /// ima.copilot / egobrowser）在注册表里并不存在——档案改名后梯子不会报错，只会静默
@@ -173,6 +180,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
                 cpuWorkingThreshold: Double? = nil,
                 tokenAlertFloor: Int? = nil,
                 sessionDirs: [String],
+                tokenRoots: [String] = [],
                 defaultEnabled: Bool = true, category: AgentCategory = .assistant,
                 isCustom: Bool = false,
                 emoji: String = "🤖",
@@ -189,6 +197,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         self.cpuWorkingThreshold = cpuWorkingThreshold
         self.tokenAlertFloor = tokenAlertFloor
         self.sessionDirs = sessionDirs
+        self.tokenRoots = tokenRoots
         self.emoji = emoji
         self.sessionDialect = sessionDialect
         self.sessionDatabase = sessionDatabase
@@ -204,7 +213,8 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, icon, bundleIDs, processNames, pathContains, pathExcludes
-        case hostBundleIDs, cpuWorkingThreshold, tokenAlertFloor, sessionDirs, defaultEnabled, category, isCustom
+        case hostBundleIDs, cpuWorkingThreshold, tokenAlertFloor, sessionDirs, tokenRoots
+        case defaultEnabled, category, isCustom
         case emoji, sessionDialect, sessionDatabase
     }
 
@@ -221,6 +231,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         cpuWorkingThreshold = try c.decodeIfPresent(Double.self, forKey: .cpuWorkingThreshold)
         tokenAlertFloor = try c.decodeIfPresent(Int.self, forKey: .tokenAlertFloor)
         sessionDirs = try c.decodeIfPresent([String].self, forKey: .sessionDirs) ?? []
+        tokenRoots = try c.decodeIfPresent([String].self, forKey: .tokenRoots) ?? []
         emoji = try c.decodeIfPresent(String.self, forKey: .emoji) ?? "🤖"
         sessionDialect = try c.decodeIfPresent(AgentSessionDialect.self, forKey: .sessionDialect) ?? .genericTail
         sessionDatabase = try c.decodeIfPresent(AgentSessionDatabase.self, forKey: .sessionDatabase)
@@ -249,6 +260,33 @@ public enum MemoryFormat {
             return "\(Int(mb))M"
         }
     }
+}
+
+// MARK: - 时钟文案格式化（唯一实现）
+
+/// 定宽 UI 里的时钟列/轴标签（`HH:mm:ss`、`HH:mm`）必须锁死数字口径。
+///
+/// `DateFormatter` 默认跟随系统区域设置：换成 12 小时制 locale 会多出「上午/下午」，
+/// 部分 locale 还会改写数字字形与分隔符——同一份数据在用户机器上就会撑破固定宽度的
+/// 列（`DetailViews` / `LiveLogStreamView` 的原注释记录过这个坑）。口径只在这里声明一次。
+public enum TimeFormat {
+    /// 固定数字口径的 locale：不跟随系统区域设置
+    public static let posixLocale = Locale(identifier: "en_US_POSIX")
+
+    /// 构造一个 POSIX 口径的 DateFormatter。
+    /// 调用方务必 `static` 缓存（DateFormatter 创建昂贵，行 body 每次重算都 new 一个是回归点）
+    public static func formatter(_ dateFormat: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.dateFormat = dateFormat
+        f.locale = posixLocale
+        return f
+    }
+
+    /// 共享实例：`HH:mm:ss`（事件流 / 日志流的时钟列）
+    public static let clock: DateFormatter = formatter("HH:mm:ss")
+
+    /// 共享实例：`HH:mm`（时间轴刻度与趋势图悬浮提示）
+    public static let hourAndMinute: DateFormatter = formatter("HH:mm")
 }
 
 // MARK: - 后台在途任务与子智能体模型

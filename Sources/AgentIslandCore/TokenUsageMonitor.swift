@@ -479,28 +479,22 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
     /// 现网构造：SQLite + 可审计 JSONL，全部只读且不触碰凭证/正文。
-    /// 库与会话目录一律取自注册表档案——同样的路径若在这里再写一份字面量，
-    /// 档案换目录或改名后只有的一半会生效（`dimcode.sqlite` 之前就不在注册表里）。
+    /// 库与采集根目录一律取自注册表档案（`sessionDatabase` / `tokenRoots`）——同样的路径
+    /// 若在这里再写一份字面量，档案换目录或改名后只有一半会生效（`dimcode.sqlite` 与
+    /// WorkBuddy 的 `projects/` 之前就不在注册表里）。
     public convenience init() {
-        let expand: (String) -> String = { NSString(string: $0).expandingTildeInPath }
-        func dirs(_ id: String) -> [String] { AgentRegistry.profile(id)?.sessionDirs ?? [] }
         func database(_ id: String) -> String { AgentRegistry.databasePath(for: id) ?? "" }
+        // 采集根取自档案的 `tokenRoots`：它与 sessionDirs 分开声明，因为 WorkBuddy 一类的
+        // 明细目录与心跳目录不在同一子树
+        func tokenRoots(_ id: String) -> [String] { AgentRegistry.profile(id)?.tokenRoots ?? [] }
         self.init(
             dimAgentDB: database("dim"),
             openCodeDB: database("opencode"),
             structuredSources: [
-                StructuredTokenSource(agentId: "codex", roots: dirs("codex"), format: .codex),
-                StructuredTokenSource(agentId: "claude", roots: dirs("claude"), format: .anthropic),
-                StructuredTokenSource(
-                    agentId: "workbuddy",
-                    roots: [expand("~/.workbuddy/projects")],
-                    format: .anthropic
-                ),
-                StructuredTokenSource(
-                    agentId: "workbuddy-ai",
-                    roots: [expand("~/.workbuddy-ai/projects")],
-                    format: .anthropic
-                ),
+                StructuredTokenSource(agentId: "codex", roots: tokenRoots("codex"), format: .codex),
+                StructuredTokenSource(agentId: "claude", roots: tokenRoots("claude"), format: .anthropic),
+                StructuredTokenSource(agentId: "workbuddy", roots: tokenRoots("workbuddy"), format: .anthropic),
+                StructuredTokenSource(agentId: "workbuddy-ai", roots: tokenRoots("workbuddy-ai"), format: .anthropic),
             ]
         )
     }
@@ -731,7 +725,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             var rows: [SessionUsage] = []
             switch agentId {
             case "dim":
-                let dirPrefix = NSString(string: "~/.dimcode/v2/data/sessions").expandingTildeInPath
+                // 会话目录同样取自档案：这里不再抄一份 `~/...` 字面量
+                let dirPrefix = AgentRegistry.profile("dim")?.tokenRoots.first ?? ""
                 let sql = """
                 SELECT sessionId, COUNT(*),
                        \(DimUsageSQL.netTokens),

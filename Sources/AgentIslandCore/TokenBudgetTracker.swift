@@ -24,20 +24,6 @@ public enum TokenBudgetStatus: Equatable {
         case .normal(_, _, let r), .warning(_, _, let r), .exceeded(_, _, let r): return r
         }
     }
-
-    public var displayText: String {
-        switch self {
-        case .disabled:
-            return "未设预算"
-        case .normal(let used, let budget, let r),
-             .warning(let used, let budget, let r),
-             .exceeded(let used, let budget, let r):
-            let percent = Int(r * 100)
-            let usedStr = TokenUsage.compact(used)
-            let budgetStr = TokenUsage.compact(budget)
-            return "\(percent)% (\(usedStr)/\(budgetStr))"
-        }
-    }
 }
 
 /// 负责 Token 预算超额与预警判定的状态机（防止每次采样都重复弹窗/响铃）
@@ -91,11 +77,5 @@ public final class TokenBudgetTracker {
         }
 
         return (status, alertMessage)
-    }
-
-    /// 重置通知状态
-    public func reset() {
-        lastNotifiedLevel = 0
-        lastCheckedDay = -1
     }
 }

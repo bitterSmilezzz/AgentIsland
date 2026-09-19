@@ -171,6 +171,7 @@ enum ConfigTests {
             try expectEqual(p.pathExcludes, [], "缺失 → 默认空")
             try expectEqual(p.hostBundleIDs, [], "缺失 → 默认空")
             try expectEqual(p.sessionDirs, [], "缺失 → 默认空")
+            try expectEqual(p.tokenRoots, [], "缺失 → 无 Token 采集根")
             try expectNil(p.cpuWorkingThreshold, "缺失 → 无下限")
             try expectNil(p.tokenAlertFloor, "缺失 → 无 Token 下限")
             try expectEqual(p.defaultEnabled, true, "缺失 → 默认启用")
@@ -208,6 +209,7 @@ enum ConfigTests {
                                         hostBundleIDs: ["com.example.host"],
                                         cpuWorkingThreshold: 7.5,
                                         sessionDirs: ["/tmp/agentisland-rt"],
+                                        tokenRoots: ["/tmp/agentisland-rt/tokens"],
                                         defaultEnabled: false, category: .codeEditor, isCustom: true)
             let data = try JSONEncoder().encode(original)
             let decoded = try JSONDecoder().decode(AgentProfile.self, from: data)

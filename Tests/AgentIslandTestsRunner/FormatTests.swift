@@ -52,6 +52,19 @@ enum FormatTests {
             try expectEqual(ActivityEngine.formatAgo(172_800), "48h 前", "超过一天仍以小时累计，不切换到「天」")
         }
 
+        TestKit.test("格式化: TimeFormat 时钟口径锁死 POSIX，不跟随系统 locale") {
+            // 定宽 UI 列（HH:mm:ss / HH:mm）若跟随系统区域设置会被改写成 12 小时制或本地
+            // 数字字形，同一份数据在用户机器上撑破列宽；站点统一收敛到 TimeFormat 后在此钉死
+            try expectEqual(TimeFormat.clock.locale.identifier, "en_US_POSIX", "clock 口径")
+            try expectEqual(TimeFormat.hourAndMinute.locale.identifier, "en_US_POSIX", "hourAndMinute 口径")
+            try expectEqual(TimeFormat.formatter("HH:mm:ss").locale.identifier, "en_US_POSIX", "构造器口径")
+            let text = TimeFormat.clock.string(from: Date(timeIntervalSince1970: 1_700_000_000))
+            try expectEqual(text.count, 8, "HH:mm:ss 恒为 8 字符（实际 \(text)）")
+            try expectEqual(text.filter { $0 == ":" }.count, 2, "分隔符恒为半角冒号（实际 \(text)）")
+            try expectEqual(text.filter { $0.isASCII && $0.isNumber }.count, 6,
+                            "只含 6 个 ASCII 数字（实际 \(text)）")
+        }
+
         TestKit.test("格式化: String.escaped SQL 转义（单引号翻倍）") {
             try expectEqual("".escaped, "", "空串")
             try expectEqual("plain".escaped, "plain", "无引号不变")

@@ -132,6 +132,22 @@ enum MultiAgentAdvancedTests {
             try expectEqual(snap.tokenBreakdown?.totalTokens, 150)
         }
 
+        TestKit.test("用户中断撤销在途命令: 不得把 Agent 永久钉在 working") {
+            let bash = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"swift build"}}]}}"#
+            try expectTrue(AgentSessionInspector.detect(lines: [bash])?.isActive == true, "前置：在途 Bash 必须判为 working")
+
+            // Ctrl-C 不会补一条 tool_result：若这条僵尸调用不被撤销，尾窗每拍都会重新读到它
+            // 并谎报 working —— 引擎的完成/待机分支永远走不到，2s 快采样与高频全树扫描一并被锁死
+            let interrupt = #"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#
+            let after = AgentSessionInspector.detect(lines: [bash, interrupt])
+            try expectFalse(after?.isActive == true, "中断之后不得继续谎报工作态")
+
+            // 中断之后重新发起的命令仍然是在途：撤销只作用于中断之前的调用
+            let next = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"swift test"}}]}}"#
+            try expectEqual(AgentSessionInspector.detect(lines: [bash, interrupt, next])?.actionText,
+                            "执行: swift test", "中断后的新命令必须继续在途判定")
+        }
+
         TestKit.test("会话上下文隔离: 其他 Agent 的探测结果不得携带 Antigravity 的在途上下文") {
             // 前置：Antigravity 解析器产出一份非空的在途上下文
             let line1 = #"{"step_index":200,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"TypeName":"research","Role":"Codebase Researcher","Model":"pro"}]}}]}"#

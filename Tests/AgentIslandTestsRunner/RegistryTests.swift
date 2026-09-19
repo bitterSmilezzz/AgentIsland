@@ -217,10 +217,10 @@ enum RegistryTests {
             try expectTrue(goose?.processNames.contains("goose") == true, "Goose 必须包含进程名")
         }
 
-        TestKit.test("注册表自洽: 声明的会话方言与只读库必须能在同一份档案里定位到") {
-            // 方言/库位置都是档案数据，解析器不再按 id 猜路径。一旦注册表里声明了专有
-            // 方言却没给出对应目录，探测会静默返回「无信号」（表现为该 Agent 永远只显示
-            // 待机），所以这条一致性必须在测试里就被拦住。
+        TestKit.test("注册表自洽: 声明的会话方言、只读库与 token 采集根必须能在同一份档案里定位到") {
+            // 方言/库位置/采集根都是档案数据，解析器与用量页不再按 id 猜路径。一旦注册表里
+            // 声明了专有方言却没给出对应目录，探测会静默返回「无信号」（表现为该 Agent
+            // 永远只显示待机）；tokenRoots 漏声明则是该工具的用量静默消失。
             for profile in AgentRegistry.builtin {
                 switch profile.sessionDialect {
                 case .genericTail, .clineTasks:
@@ -238,6 +238,45 @@ enum RegistryTests {
                         try expectTrue(db.statusSQL?.isEmpty == false, "\(profile.id) 的 statusIndex 方言缺少查询语句")
                     }
                 }
+            }
+
+            // token 采集根：家目录下的绝对路径（相对路径会让索引静默扫不到任何文件）
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            for profile in AgentRegistry.builtin {
+                for root in profile.tokenRoots {
+                    try expectTrue(root.hasPrefix(home + "/"),
+                                   "\(profile.id) 的 tokenRoots 必须是家目录下的绝对路径: \(root)")
+                }
+            }
+
+            // 现网构造（TokenUsageMonitor.init / 会话目录定位）按 id 取档案读这些声明：
+            // 条目或声明一旦被删，该工具的用量会静默变空而没有任何报错，故逐个钉死。
+            // 期望值写死在此处是有意的——档案是唯一事实源，本测试是它不被悄悄改动的哨兵。
+            let expectedTokenRoots: [String: [String]] = [
+                "dim": ["\(home)/.dimcode/v2/data/sessions"],
+                "codex": ["\(home)/.codex/sessions"],
+                "claude": ["\(home)/.claude/sessions", "\(home)/.claude/projects"],
+                "workbuddy": ["\(home)/.workbuddy/projects"],
+                "workbuddy-ai": ["\(home)/.workbuddy-ai/projects"],
+            ]
+            for (id, roots) in expectedTokenRoots {
+                let profile = AgentRegistry.builtin.first { $0.id == id }
+                try expectTrue(profile != nil, "内置档案 \(id) 不能删：用量页按 id 取 tokenRoots")
+                try expectEqual(profile?.tokenRoots, roots, "\(id) 的 tokenRoots 声明漂移")
+            }
+            // 反向哨兵：没列进上表的档案不得声明采集根（否则新增 Agent 的用量来源不会被
+            // 用量页构造读到，需要显式把它加进 structuredSources）
+            let declared = Set(AgentRegistry.builtin.filter { !$0.tokenRoots.isEmpty }.map(\.id))
+            try expectEqual(declared, Set(expectedTokenRoots.keys),
+                            "声明了 tokenRoots 的档案集合与用量页读取的集合不一致")
+
+            // 落 SQLite 的 Agent：库位置必须是档案里的绝对路径
+            for id in ["dim", "opencode", "zcode", "workbuddy", "workbuddy-ai"] {
+                let profile = AgentRegistry.builtin.first { $0.id == id }
+                try expectTrue(profile != nil, "内置档案 \(id) 不能删")
+                try expectTrue(profile?.sessionDatabase != nil, "\(id) 依赖会话库，档案必须声明 sessionDatabase")
+                try expectTrue(profile?.sessionDatabase?.path.hasPrefix("/") == true,
+                               "\(id) 的会话库必须是绝对路径")
             }
         }
     }

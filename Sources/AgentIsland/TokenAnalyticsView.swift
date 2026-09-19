@@ -509,11 +509,7 @@ struct TokenAnalyticsView: View {
         }
     }
 
-    private static let hourFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
+    private static let hourFormatter: DateFormatter = TimeFormat.hourAndMinute
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -592,11 +588,7 @@ private struct TokenTrendChart: View {
     let range: TokenTimeRange
     @State private var hoveredIndex: Int? = nil
 
-    private static let timeTooltipFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
-        return f
-    }()
+    private static let timeTooltipFormatter: DateFormatter = TimeFormat.hourAndMinute
 
     private static let dateTooltipFormatter: DateFormatter = {
         let f = DateFormatter()

@@ -57,7 +57,9 @@ public enum AgentSessionInspector {
 
     private static let locateLock = NSLock()
     private static var locateCache: [String: (expires: Date, rootDate: Date?, located: LocatedSession?)] = [:]
-    private static let locateTTL: TimeInterval = 3
+    // TTL 取 10s：与 2s 采样节律错开（3s 会与每 2 拍一次的节律打拍，等于一半的拍仍在付费），
+    // 而「新会话出现」由下面的根目录 mtime 令牌即时捕获。
+    private static let locateTTL: TimeInterval = 10
 
     /// 读取（必要时重算）指定会话树的定位结果。
     /// - Parameters:
@@ -67,9 +69,17 @@ public enum AgentSessionInspector {
     private static func locatedSession(key: String, rootDir: URL?, now: Date, locate: () -> LocatedSession?) -> LocatedSession? {
         locateLock.lock()
         defer { locateLock.unlock() }
-        let rootDate = rootDir.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
-        if let cached = locateCache[key], now < cached.expires, cached.rootDate == rootDate {
-            return cached.located
+        // 令牌取 stat() 而非 URL.resourceValues：后者有毫秒级缓存窗口，作为「目录变没过」
+        // 的依据不够可靠（同一问题曾在尾读合并上实测误命中，见 LogTailReader）
+        let rootDate = rootDir.flatMap { LogTailReader.statModificationDate($0.path) }
+        if let cached = locateCache[key], now < cached.expires, cached.rootDate == rootDate, let hit = cached.located {
+            var fresh = hit
+            // 只把时间戳往前修正：定位到的文件本身若有新写入要跟上；而 Antigravity 的
+            // 有效时间可能来自同会话的后台任务日志（重算代价高），故绝不让它退化得更旧
+            if let current = LogTailReader.statModificationDate(hit.file.path), current > fresh.mtime {
+                fresh.mtime = current
+            }
+            return fresh
         }
         let located = locate()
         locateCache[key] = (now.addingTimeInterval(locateTTL), rootDate, located)
@@ -150,6 +160,21 @@ public enum AgentSessionInspector {
         return try? Data(contentsOf: url, options: [.mappedIfSafe])
     }
 
+    /// 用户主动中断本轮执行的系统提示（Claude Code 的 `[Request interrupted by user]`、
+    /// Codex 的 turn_aborted 等）。只认「来自用户的短消息」，因为工具输出里也可能
+    /// 原样出现这些字样（例如 Agent 正在读取自家的运行日志）。
+    private static func isInterruptionNotice(_ line: String, facts: LineFacts) -> Bool {
+        guard line.count <= 400, facts.roles.contains("user") || facts.types.contains("user") else { return false }
+        let lowered = line.lowercased()
+        return interruptionPhrases.contains { lowered.contains($0) }
+    }
+
+    private static let interruptionPhrases: [String] = [
+        "interrupted by user", "request interrupted", "user interrupted",
+        "turn_aborted", "turn aborted", "aborted by user",
+        "cancelled by user", "canceled by user", "user cancelled", "user canceled",
+    ]
+
     /// 纯函数解析入口，供 fixture 测试与未来新增 Agent 格式时复用。
     public static func detect(lines: [String]) -> AgentSessionSignal? {
         var signal: AgentSessionSignal?
@@ -167,6 +192,16 @@ public enum AgentSessionInspector {
             collectFacts(object, depth: 0, lineIndex: idx, sourceLine: line, into: &facts)
             for (id, call) in facts.toolCalls { pendingCalls[id] = call }
             completedCallIds.formUnion(facts.resolvedCallIds)
+
+            // 用户中断（Ctrl-C / 点停止）会留下一条永不交付 tool_result 的执行类调用。
+            // 不清掉的话：本行把 .completed 冲掉（下面的 mentionsActiveWork），而末尾的
+            // 「在途命令拦截」又据这条僵尸调用返回 .active —— 引擎每拍都拿到 active，
+            // 于是滞回与完成分支永远走不到，该 Agent 被钉死在 working，
+            // 2s 快采样 + 高频全树扫描一并被锁住（耗电与 CPU 双输）。
+            if isInterruptionNotice(line, facts: facts) {
+                pendingCalls.removeAll()
+                completedCallIds.removeAll()
+            }
 
             if let request = signal?.attentionRequest, facts.resolves(request) {
                 signal = nil
