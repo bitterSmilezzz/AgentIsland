@@ -37,3 +37,6 @@ id_ed25519
 *credentials*
 *secrets*
 !docs/agents/triage-labels.md
+
+# Qoder 智能体隔离工作树（工具状态，不入库）
+.qoder/
