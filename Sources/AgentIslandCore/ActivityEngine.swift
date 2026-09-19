@@ -143,6 +143,14 @@ public final class ActivityEngine: ObservableObject {
     /// 当前预算状态（UI 绑定）
     @Published public private(set) var budgetStatus: TokenBudgetStatus = .disabled
 
+    /// 死锁与内存泄漏自愈守护追踪器 (v0.0.75)
+    public let resilienceGuard = AgentResilienceGuard()
+
+    public var isPowerSavingActive: Bool {
+        let batterySaver = UserDefaults.standard.object(forKey: SettingKey.batterySaverEnabled) as? Bool ?? true
+        return PowerSourceMonitor.shouldThrottle(batterySaverEnabled: batterySaver)
+    }
+
     private var running = false   // stop() 后阻止在飞回调重建定时器
     // MARK: token 轮询生命周期（单一 owner：引擎）
     // 三状态合法组合（其余组合按不变量不可达）：
@@ -663,6 +671,15 @@ public final class ActivityEngine: ObservableObject {
         // （实测 2.5ms/拍，占主线程采样 34%）。
         checkCostSpikeAndRunaway(samples: sampleInfo, now: now, usage: usageSnapshot)
 
+        // 智能体死锁与异常驻留自愈守护 (v0.0.75)
+        let autoAlert = UserDefaults.standard.object(forKey: SettingKey.autoAnomaliesAlertEnabled) as? Bool ?? true
+        if autoAlert {
+            let guardEvents = resilienceGuard.evaluate(snapshots: results, now: now)
+            for ev in guardEvents {
+                publish(ev)
+            }
+        }
+
         scheduleNext()
         return results
     }
@@ -1017,7 +1034,7 @@ public final class ActivityEngine: ObservableObject {
         guard running, !isSystemSleeping else { return }   // stop() 或休眠期间不再重建定时器
         timer?.invalidate()
         let interval: TimeInterval
-        let isPowerSaving = isLowPowerModeActive
+        let isPowerSaving = isPowerSavingActive
         if anyWorking {
             interval = isPowerSaving ? max(config.sampleInterval, 3.0) : config.sampleInterval
         } else if snapshots.contains(where: { $0.processRunning }) {

@@ -2,7 +2,14 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.74）
+## 功能（v0.0.75）
+
+### 深度集成与自愈增强 (v0.0.75)
+- **URL Scheme 深度链接协议（`agentisland://`）**：支持外部应用通过 `open agentisland://toggle`、`expand`、`collapse`、`agent?id=<id>`、`analytics`、`toolbox`、`clean`、`export` 实现无缝操作联动。
+- **硬件电源与电池节能自适应（PowerSourceMonitor）**：MacBook 电池供电时自动平滑降频后台采样，插电即刻恢复满血探测，在续航与灵敏之间智能平衡。
+- **实时流水错误特征分析（LogPatternAnalyzer）**：自动提取 429 限流、编译报错、Git 冲突与鉴权失败，提供警示徽标与一键复制核心摘要。
+- **月末 Token 用量与成本预测（TokenForecastEvaluator）**：基于近 24h 消耗速率推算当月末消耗与费用，实时预测预算枯竭天数。
+- **智能体死锁与异常驻留自愈守护（AgentResilienceGuard）**：持续监视长期死锁与内存激增智能体，主动提供自愈警告与逃生终止通道。
 
 ### 设计美学与 CodeNotch 灵动交互
 - **贴边收起常态 0.0% CPU 极致省电（CoreAnimation 硬件加速）**：

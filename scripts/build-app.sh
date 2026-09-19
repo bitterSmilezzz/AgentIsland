@@ -63,6 +63,13 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>© 2026 AgentIsland</string>
     <key>LSUIElement</key><true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>com.agentisland.url</string>
+            <key>CFBundleURLSchemes</key><array><string>agentisland</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

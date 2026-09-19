@@ -35,6 +35,7 @@ struct TokenAnalyticsView: View {
                             .transition(.opacity)
                     } else {
                         budgetProgressCard
+                        forecastCard
                         metricsCard
                         trendCard
                         if range == .day {
@@ -120,6 +121,82 @@ struct TokenAnalyticsView: View {
                     )
             )
         }
+    }
+
+    @ViewBuilder
+    private var forecastCard: some View {
+        let budget = UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
+        let report = TokenForecastEvaluator.evaluate(
+            tokens24h: engine.grandTotal.tokens24h,
+            cost24h: engine.grandTotal.cost24h,
+            dailyBudget: budget
+        )
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HStack(spacing: 4) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Theme.sydedockCyan)
+                    Text("月末用量与成本预测")
+                        .font(Theme.bodyFont(10.5, weight: .medium))
+                        .foregroundColor(Theme.onDark)
+                }
+                Spacer()
+                Text("按近 24h 速率")
+                    .font(Theme.monoFont(8.5))
+                    .foregroundColor(Theme.onDarkFaint)
+            }
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("预估月末消耗")
+                        .font(Theme.bodyFont(9))
+                        .foregroundColor(Theme.onDarkFaint)
+                    Text(TokenUsage.compact(report.projectedMonthEndTokens))
+                        .font(Theme.monoDigitFont(11, weight: .semibold))
+                        .foregroundColor(Theme.onDark)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("预估月末费用")
+                        .font(Theme.bodyFont(9))
+                        .foregroundColor(Theme.onDarkFaint)
+                    Text(String(format: "$%.2f", report.projectedMonthEndCost))
+                        .font(Theme.monoDigitFont(11, weight: .semibold))
+                        .foregroundColor(Theme.sydedockEmerald)
+                }
+
+                if let days = report.budgetExhaustionDay {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("预算耗尽预警")
+                            .font(Theme.bodyFont(9))
+                            .foregroundColor(Theme.onDarkFaint)
+                        Text("\(days) 天")
+                            .font(Theme.monoDigitFont(11, weight: .semibold))
+                            .foregroundColor(days < 7 ? Theme.dangerRed : Theme.warningOrange)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("当月剩余自然日")
+                            .font(Theme.bodyFont(9))
+                            .foregroundColor(Theme.onDarkFaint)
+                        Text("\(report.daysRemainingInMonth) 天")
+                            .font(Theme.monoDigitFont(11, weight: .semibold))
+                            .foregroundColor(Theme.onDarkMuted)
+                    }
+                }
+            }
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(colorScheme == .light ? Color.white : Theme.obsidianCardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Theme.obsidianHairline, lineWidth: 0.5)
+                )
+        )
     }
 
     private var metricsCard: some View {

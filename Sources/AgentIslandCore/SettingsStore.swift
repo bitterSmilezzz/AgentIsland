@@ -33,6 +33,9 @@ public enum SettingKey {
     public static let completionSoundOption = "completionSoundOption"
     public static let alertSoundOption = "alertSoundOption"
     public static let hapticFeedbackEnabled = "hapticFeedbackEnabled"
+    public static let batterySaverEnabled = "batterySaverEnabled"
+    public static let autoAnomaliesAlertEnabled = "autoAnomaliesAlertEnabled"
+    public static let predictiveAnalyticsEnabled = "predictiveAnalyticsEnabled"
 }
 
 /// 屏幕自适应与跟随模式 (v0.0.74)

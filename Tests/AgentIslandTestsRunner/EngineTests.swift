@@ -1694,6 +1694,158 @@ enum EngineTests {
             engine.handleSystemWake()
             engine.stop()
         }
+
+        TestKit.test("日志智能分析: LogPatternAnalyzer 准确识别五类异常模式与摘要提取") {
+            // 1. 限流 429
+            let rateLimit = LogPatternAnalyzer.analyze(title: "API Error", detail: "Error: 429 Too Many Requests: Rate limit exceeded for model")
+            try expectTrue(rateLimit != nil, "应识别 429 限流")
+            try expectEqual(rateLimit?.kind, .rateLimit, "类别应为 rateLimit")
+            try expectTrue(rateLimit?.snippet.contains("429") == true, "摘要应保留关键错误")
+
+            // 2. 编译构建报错
+            let compileErr = LogPatternAnalyzer.analyze(title: "swift build failed", detail: "Sources/Foo.swift:12:5: error: cannot find 'bar' in scope")
+            try expectTrue(compileErr != nil, "应识别编译报错")
+            try expectEqual(compileErr?.kind, .compileError, "类别应为 compileError")
+            try expectTrue(compileErr?.snippet.contains("cannot find 'bar'") == true, "摘要应保留核心报错行")
+
+            // 3. Git 冲突
+            let gitConflict = LogPatternAnalyzer.analyze(title: "git merge", detail: "CONFLICT (content): Merge conflict in Package.swift")
+            try expectTrue(gitConflict != nil, "应识别 Git 冲突")
+            try expectEqual(gitConflict?.kind, .gitConflict, "类别应为 gitConflict")
+
+            // 4. 鉴权认证失败
+            let authErr = LogPatternAnalyzer.analyze(title: "curl API", detail: "HTTP 401 Unauthorized: Invalid API key provided")
+            try expectTrue(authErr != nil, "应识别 401 鉴权失效")
+            try expectEqual(authErr?.kind, .authError, "类别应为 authError")
+
+            // 5. 正常日志无报错
+            let normal = LogPatternAnalyzer.analyze(title: "正在写入文件", detail: "Saved 120 lines to Sources/Foo.swift")
+            try expectNil(normal, "正常日志不应误报错误")
+        }
+
+        TestKit.test("Token 预测: TokenForecastEvaluator 月末推算与预算耗尽测算") {
+            let baseDate = Date()
+            let cal = Calendar.current
+            let day = cal.component(.day, from: baseDate)
+            let range = cal.range(of: .day, in: .month, for: baseDate) ?? 1..<31
+            let totalDays = range.count
+            let remaining = max(0, totalDays - day)
+
+            // 1. 无预算限额预测（dailyBudget=0 表示不设限）
+            let reportNoBudget = TokenForecastEvaluator.evaluate(
+                tokens24h: 100_000,
+                cost24h: 1.5,
+                dailyBudget: 0,
+                now: baseDate
+            )
+            try expectEqual(reportNoBudget.daysRemainingInMonth, remaining, "剩余自然日应计算准确")
+            try expectEqual(reportNoBudget.projectedMonthEndTokens, 100_000 * totalDays, "预估月末 Token 应按速率×全月天数")
+            try expectEqual(reportNoBudget.projectedMonthEndCost, 1.5 * Double(totalDays), "预估月末费用应按速率×全月天数")
+            try expectNil(reportNoBudget.budgetExhaustionDay, "无预算时不应有耗尽倒计时")
+
+            // 2. 有预算且超额预警
+            let reportWithBudget = TokenForecastEvaluator.evaluate(
+                tokens24h: 200_000,
+                cost24h: 3.0,
+                dailyBudget: 50_000, // 预算 50k，日消耗 200k
+                now: baseDate
+            )
+            try expectTrue(reportWithBudget.budgetExhaustionDay != nil, "超支时应给出预算耗尽天数")
+        }
+
+        TestKit.test("守护自愈: AgentResilienceGuard 识别长死锁与内存泄漏并冷却防抖") {
+            let guardTrack = AgentResilienceGuard()
+            let dummyProfile = AgentRegistry.builtin[0]
+            let t0 = Date()
+
+            // 1. 刚出现死锁未超阈值（180s）不触发
+            let snapHungT0 = AgentSnapshot(
+                profile: dummyProfile,
+                level: .idle,
+                processRunning: true,
+                cpuPercent: 0,
+                installed: true,
+                activeSessions: 0,
+                lastActivityAgo: nil,
+                lastActivityText: "待机",
+                memoryBytes: 100 * 1024 * 1024,
+                isHung: true
+            )
+            let evs1 = guardTrack.evaluate(snapshots: [snapHungT0], now: t0)
+            try expectTrue(evs1.isEmpty, "死锁未超 180s 不应告警")
+
+            // 2. 死锁超 180s 触发自愈横幅
+            let t1 = t0.addingTimeInterval(181)
+            let evs2 = guardTrack.evaluate(snapshots: [snapHungT0], now: t1)
+            try expectEqual(evs2.count, 1, "死锁超 180s 应发出 1 条告警")
+            try expectTrue(evs2[0].message?.contains("死锁") == true, "事件信息应包含死锁")
+
+            // 3. 冷却期内（600s）不重复告警
+            let t2 = t1.addingTimeInterval(60)
+            let evs3 = guardTrack.evaluate(snapshots: [snapHungT0], now: t2)
+            try expectTrue(evs3.isEmpty, "冷却期内应抑制重复告警")
+
+            // 4. 解除死锁后状态复位
+            let snapNormal = AgentSnapshot(
+                profile: dummyProfile,
+                level: .idle,
+                processRunning: true,
+                cpuPercent: 0,
+                installed: true,
+                activeSessions: 0,
+                lastActivityAgo: nil,
+                lastActivityText: "待机",
+                memoryBytes: 100 * 1024 * 1024,
+                isHung: false
+            )
+            _ = guardTrack.evaluate(snapshots: [snapNormal], now: t2.addingTimeInterval(1))
+
+            // 5. 内存超 2GB 且超 300s 告警
+            let t3 = t2.addingTimeInterval(700)
+            let snapHighMem = AgentSnapshot(
+                profile: dummyProfile,
+                level: .idle,
+                processRunning: true,
+                cpuPercent: 0,
+                installed: true,
+                activeSessions: 0,
+                lastActivityAgo: nil,
+                lastActivityText: "待机",
+                memoryBytes: 3 * 1024 * 1024 * 1024, // 3GB
+                isHung: false
+            )
+            _ = guardTrack.evaluate(snapshots: [snapHighMem], now: t3)
+            let t4 = t3.addingTimeInterval(301)
+            let evs4 = guardTrack.evaluate(snapshots: [snapHighMem], now: t4)
+            try expectEqual(evs4.count, 1, "内存超限超 300s 应发出自愈告警")
+            try expectTrue(evs4[0].message?.contains("内存") == true, "事件信息应包含内存")
+        }
+
+        TestKit.test("能耗自适应: PowerSourceMonitor 节电节律判定") {
+            // 当未开启电池节能时，仅低电量模式节电
+            let throttleDisabled = PowerSourceMonitor.shouldThrottle(
+                batterySaverEnabled: false,
+                isLowPower: false,
+                onBattery: true
+            )
+            try expectFalse(throttleDisabled, "未开启电池节能且非系统低电量时不应降频")
+
+            // 开启电池节能且在电池供电时降频
+            let throttleBattery = PowerSourceMonitor.shouldThrottle(
+                batterySaverEnabled: true,
+                isLowPower: false,
+                onBattery: true
+            )
+            try expectTrue(throttleBattery, "电池供电且开启节能时应降频")
+
+            // 开启电池节能但插电（非电池供电）时不降频
+            let throttleAC = PowerSourceMonitor.shouldThrottle(
+                batterySaverEnabled: true,
+                isLowPower: false,
+                onBattery: false
+            )
+            try expectFalse(throttleAC, "插电供电时不应降频")
+        }
     }
 
     // MARK: - 工具

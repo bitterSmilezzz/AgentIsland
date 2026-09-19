@@ -110,6 +110,8 @@ struct SettingsView: View {
     @AppStorage(SettingKey.completionSoundOption) private var completionSoundOption = CompletionSoundOption.glass.rawValue
     @AppStorage(SettingKey.alertSoundOption) private var alertSoundOption = AlertSoundOption.sosumi.rawValue
     @AppStorage(SettingKey.hapticFeedbackEnabled) private var hapticFeedbackEnabled = true
+    @AppStorage(SettingKey.batterySaverEnabled) private var batterySaverEnabled = true
+    @AppStorage(SettingKey.autoAnomaliesAlertEnabled) private var autoAnomaliesAlertEnabled = true
 
     /// 内置 Agent 列表缓存盒（引用语义）：设置页开着时引擎每拍发布使 body 重算，
     /// fullRegistry 每次都要 loadCustomProfiles（UserDefaults 读 + JSONDecoder 解码）
@@ -735,6 +737,21 @@ struct SettingsView: View {
                         .font(Theme.bodyFont(10))
                         .foregroundColor(Theme.inkMuted48)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    Divider()
+
+                    Toggle(isOn: $batterySaverEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Mac 电池供电节能自适应")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("使用 MacBook 电池供电时自动适度平滑降频，插上电源即刻满血运行")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
                 }
             }
 
@@ -838,6 +855,21 @@ struct SettingsView: View {
                         }
                         .font(Theme.bodyFont(12))
                     }
+
+                    Divider()
+
+                    Toggle(isOn: $autoAnomaliesAlertEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("智能体长时间死锁与内存泄露守护")
+                                .font(Theme.bodyFont(13))
+                                .foregroundColor(Theme.ink)
+                            Text("持续追踪进程长时间无响应（≥3分钟）或内存严重泄露（≥5分钟），主动发出自愈告警")
+                                .font(Theme.bodyFont(10))
+                                .foregroundColor(Theme.inkMuted48)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
                 }
             }
         }

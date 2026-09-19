@@ -11,6 +11,7 @@ struct LiveLogStreamView: View {
 
     enum LogFilter: String, CaseIterable, Identifiable {
         case all = "全部"
+        case errors = "异常/报错"
         case tools = "工具/执行"
         case edits = "文件编辑"
         case reasoning = "思考/消息"
@@ -18,13 +19,15 @@ struct LiveLogStreamView: View {
 
         var id: String { rawValue }
 
-        func matches(_ kind: AgentLogEvent.EventKind) -> Bool {
+        func matches(_ event: AgentLogEvent) -> Bool {
             switch self {
             case .all: return true
-            case .tools: return kind == .toolCall || kind == .command
-            case .edits: return kind == .fileEdit
-            case .reasoning: return kind == .thinking || kind == .message
-            case .info: return kind == .info
+            case .errors:
+                return LogPatternAnalyzer.analyze(title: event.title, detail: event.detail) != nil
+            case .tools: return event.kind == .toolCall || event.kind == .command
+            case .edits: return event.kind == .fileEdit
+            case .reasoning: return event.kind == .thinking || event.kind == .message
+            case .info: return event.kind == .info
             }
         }
     }
@@ -49,7 +52,7 @@ struct LiveLogStreamView: View {
     }
 
     private var filteredEvents: [AgentLogEvent] {
-        events.filter { selectedFilter.matches($0.kind) }
+        events.filter { selectedFilter.matches($0) }
     }
 
     var body: some View {
@@ -196,7 +199,7 @@ struct LiveLogStreamView: View {
             selectedItem: $selectedFilter,
             title: { $0.rawValue },
             count: { filter in
-                filter == .all ? events.count : events.filter { filter.matches($0.kind) }.count
+                filter == .all ? events.count : events.filter { filter.matches($0) }.count
             },
             contentInsets: EdgeInsets(top: 4, leading: Theme.pageMargin, bottom: 4, trailing: Theme.pageMargin)
         )
@@ -207,10 +210,16 @@ struct LiveLogStreamView: View {
 
     private func eventRow(_ event: AgentLogEvent) -> some View {
         let isExpanded = (expandedEventId == event.id)
+        let analyzedIssue = LogPatternAnalyzer.analyze(title: event.title, detail: event.detail)
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 // 类型胶囊
                 badgeView(for: event.kind)
+
+                // 错误特征徽标 (v0.0.75)
+                if let issue = analyzedIssue {
+                    issueBadge(issue)
+                }
 
                 // 时间戳
                 Text(Self.timeFormatter.string(from: event.timestamp))
@@ -238,20 +247,7 @@ struct LiveLogStreamView: View {
 
             // 详情区域展开
             if isExpanded, let detail = event.detail, !detail.isEmpty {
-                Text(detail)
-                    .font(Theme.monoFont(9))
-                    .foregroundColor(Theme.onDarkMuted)
-                    .lineSpacing(2)
-                    .padding(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
-                            )
-                    )
+                issueDetailSection(detail: detail, issue: analyzedIssue)
             }
         }
         .padding(.horizontal, 8)
@@ -287,6 +283,71 @@ struct LiveLogStreamView: View {
     }
 
     // MARK: - 辅助组件与格式化
+
+    private func issueBadge(_ issue: AnalyzedLogIssue) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 8))
+            Text(issue.kind.label)
+                .font(Theme.badgeFont(.bold))
+        }
+        .foregroundColor(Theme.dangerRed)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 1.5)
+        .background(
+            Capsule()
+                .fill(Theme.dangerRed.opacity(0.15))
+                .overlay(Capsule().strokeBorder(Theme.dangerRed.opacity(0.3), lineWidth: 0.5))
+        )
+    }
+
+    @ViewBuilder
+    private func issueDetailSection(detail: String, issue: AnalyzedLogIssue?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let issue = issue {
+                HStack {
+                    Text("特征识别: \(issue.kind.label)")
+                        .font(Theme.bodyFont(9, weight: .semibold))
+                        .foregroundColor(Theme.dangerRed)
+                    Spacer()
+                    if !issue.snippet.isEmpty {
+                        Button {
+                            let pb = NSPasteboard.general
+                            pb.clearContents()
+                            pb.setString(issue.snippet, forType: .string)
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 8))
+                                Text("复制错误摘要")
+                                    .font(Theme.monoFont(8, weight: .medium))
+                            }
+                            .foregroundColor(Theme.dangerRed)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Theme.dangerRed.opacity(0.12)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Text(detail)
+                .font(Theme.monoFont(9))
+                .foregroundColor(Theme.onDarkMuted)
+                .lineSpacing(2)
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                )
+        )
+    }
 
     private func badgeView(for kind: AgentLogEvent.EventKind) -> some View {
         Text(kind.label)

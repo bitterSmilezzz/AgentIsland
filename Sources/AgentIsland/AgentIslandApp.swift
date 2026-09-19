@@ -64,6 +64,9 @@ struct AgentIslandApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuBarPopoverView(controller: AppContext.shared.controller, engine: AppContext.shared.engine)
+                .onOpenURL { url in
+                    URLSchemeRouter.handle(url: url, controller: AppContext.shared.controller, engine: AppContext.shared.engine)
+                }
         } label: {
             MenuBarIconView(engine: AppContext.shared.engine)
         }
@@ -542,6 +545,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         AppContext.shared.engine.stop()
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            URLSchemeRouter.handle(url: url, controller: AppContext.shared.controller, engine: AppContext.shared.engine)
+        }
     }
 
     nonisolated func userNotificationCenter(
