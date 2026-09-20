@@ -312,6 +312,12 @@ public final class ActivityEngine: ObservableObject {
         tokenMonitor.refreshAsync()
     }
 
+    /// 同步刷一次用量，供一次性 CLI 在采样前调用（见 `LiveSampler`）。
+    /// 不刷的话每个 Agent 的用量列都是 0——那是「没去取」而不是「没有」。
+    public func refreshTokenUsageSync() {
+        tokenMonitor.refreshSync()
+    }
+
     private func applyConfig() {
         // 活跃会话判定窗口同步给后台扫描器
         fileMonitor.setActiveSessionWindow(config.activeSessionWindow)

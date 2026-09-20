@@ -387,6 +387,9 @@ public protocol TokenUsagePolling: AnyObject {
     func pause()
     /// 按需单次刷新（R34/F6）：菜单栏 popover 等第三消费方打开时调用
     func refreshAsync()
+    /// 同步单次刷新：一次性 CLI（status / report / doctor）必须在采样前把用量取回来，
+    /// 否则每个 Agent 的用量列都会显示 0——把「没去取」呈现成「没有」
+    func refreshSync()
 }
 
 /// 默认轮询节律（唯一来源：类签名默认参数与无参便利方法共用）
@@ -397,6 +400,8 @@ public enum TokenUsagePollingDefaults {
 public extension TokenUsagePolling {
     /// 协议要求不带默认参数；无参形式走默认节律
     func start() { start(interval: TokenUsagePollingDefaults.interval) }
+    /// 测试替身与不提供同步取数的实现退回异步（下一次采样自然带上）
+    func refreshSync() { refreshAsync() }
 }
 
 /// 查询面：详情页按需下钻（引擎转发时消费）
@@ -574,6 +579,9 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     public func refresh() {
         refresh(now: Date())
     }
+
+    /// 同步刷一次：调用线程直接把 DB/文件读完后返回（一次性 CLI 用）
+    public func refreshSync() { refresh() }
 
     /// 同一次刷新共用时间边界；文件未变也需定期推进 24h 窗口。
     func refresh(now: Date) {

@@ -104,6 +104,7 @@ macOS 智能体运行态监控与运维终端工具
 \(CLIColor.bold("常用选项:"))
   \(CLIColor.yellow("--json"))          以标准 JSON 结构化输出（供脚本/Raycast 调用）
   \(CLIColor.yellow("--all, -a"))       包含全部支持的 Agent（状态包含离线项）
+  \(CLIColor.yellow("--usage"))         同步取回每 Agent 的 Token 用量（慢约 5s，否则该列显示 —）
   \(CLIColor.yellow("--agent <id>"))    只诊断指定智能体 (配合 doctor，可用 id 或名称)
   \(CLIColor.yellow("--quiet, -q"))     去掉进度提示，只输出结果 (配合 doctor)
   \(CLIColor.yellow("--dry-run, -n"))   模拟清理，仅预览不实际终止进程 (配合 clean)

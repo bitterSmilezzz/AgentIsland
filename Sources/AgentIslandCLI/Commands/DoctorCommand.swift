@@ -18,7 +18,7 @@ public enum DoctorCommand {
         }
 
         // 双采：doctor 是排障入口，宁可多等 1.5s 也要拿到真实 CPU 利用率
-        let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll)
+        let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll, refreshUsage: true)
         if !quiet {
             print(CLIColor.dim("  ⏳ 采集 CPU 基线…（1.5s）"))
         }

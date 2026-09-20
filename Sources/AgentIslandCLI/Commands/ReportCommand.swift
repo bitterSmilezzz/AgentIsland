@@ -26,7 +26,7 @@ public enum ReportCommand {
             i += 1
         }
 
-        let snapshots = LiveSampler.makeEngine(restrictToEnabled: false).sample()   // 审计报告覆盖全部支持项
+        let snapshots = LiveSampler.makeEngine(restrictToEnabled: false, refreshUsage: true).sample()   // 审计报告覆盖全部支持项
 
         let content: String
         switch format {

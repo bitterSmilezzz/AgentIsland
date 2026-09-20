@@ -2,7 +2,11 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.89）
+## 功能（v0.0.90）
+
+### 修掉 CLI「用量恒为 0」 (v0.0.90)
+- **没取数不再印成 0**：`status` 此前每行用量都是 `0` / `$0.00`，而 `tokens` 同时报 3.81M——一次性进程没人开启轮询，属于「把没取到呈现成没有」。现在默认列印 `—`（0.69s），`status --usage` 才同步取数（4.1s，DimAgent 2.85M 等真数据）；`doctor` / `report` 默认取数。
+- **JSON 契约变诚实**：`tokens24h` / `cost24h` 改为可空，`nil` 是没查、`0` 是查了确实为零。
 
 ### 债务棘轮 (v0.0.89)
 - **长期债务只准降不准升**：Theme 外硬编码色值 186 处、`UserDefaults.standard` 直读 37 处钉成基线，新增即测试失败并说明该用什么替代；不做 186 处视觉清扫，只保证它不再长。

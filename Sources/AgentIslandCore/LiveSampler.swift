@@ -38,20 +38,23 @@ public enum LiveSampler {
     ///   `false` 留给排障场景（`--all`、审计报告、`--probe`）。
     public static func makeEngine(config: EngineConfig = EngineConfig(),
                                   defaults: UserDefaults = .standard,
-                                  restrictToEnabled: Bool = true) -> ActivityEngine {
-        makeEngine(from: context(defaults: defaults), config: config, restrictToEnabled: restrictToEnabled)
+                                  restrictToEnabled: Bool = true,
+                                  refreshUsage: Bool = false) -> ActivityEngine {
+        makeEngine(from: context(defaults: defaults), config: config,
+                   restrictToEnabled: restrictToEnabled, refreshUsage: refreshUsage)
     }
 
     /// 已有上下文时复用之（避免同一进程里重复扫描安装集）
     public static func makeEngine(from ctx: Context,
                                   config: EngineConfig = EngineConfig(),
-                                  restrictToEnabled: Bool = true) -> ActivityEngine {
+                                  restrictToEnabled: Bool = true,
+                                  refreshUsage: Bool = false) -> ActivityEngine {
         let profiles = restrictToEnabled ? ctx.registry.filter { ctx.enabledIDs.contains($0.id) } : ctx.registry
         let monitor = FileActivityMonitor()
         monitor.watch(dirs: profiles.flatMap(\.sessionDirs))
         monitor.scanSync()
 
-        return ActivityEngine(
+        let engine = ActivityEngine(
             profiles: profiles,
             config: config,
             processMonitor: ProcessProvider(),
@@ -59,6 +62,12 @@ public enum LiveSampler {
             installedApps: ctx.installedApps,      // 已热缓存，init 首刷跳过
             enabledIDs: ctx.enabledIDs
         )
+        // 常驻引擎的用量轮询只在「呈现活跃」时开启；一次性进程里没人开启，
+        // 于是快照的 tokenUsage 恒空、每条用量都印成 0。展示用量的命令必须自己先取一次。
+        if refreshUsage {
+            engine.refreshTokenUsageSync()
+        }
+        return engine
     }
 
     /// 在已构造的引擎上走「基线拍 → interval → 实况拍」，返回第二拍快照。

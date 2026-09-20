@@ -232,8 +232,8 @@ enum CLITests {
                     profile: wiredProfile, level: .idle, processRunning: true, cpuPercent: 0,
                     installed: true, activeSessions: 0, lastActivityAgo: nil, lastActivityText: "—"))
                 try expectEqual(verdict.code, .noLocalData, "\(wiredProfile.id) 登记了源却读不到")
-                try expectTrue(verdict.evidence[0].contains("未必代表真的为零"),
-                               "一次性采样的空用量必须留有余地，不能断言为 0")
+                try expectTrue(verdict.evidence[0].contains("同步刷新用量源后仍无记录"),
+                               "依据必须说明「已经取过了」，而不是含糊的没赶上")
             }
             for (label, snapshot, expected) in cases {
                 let verdict = AgentObservability.evaluate(snapshot: snapshot)

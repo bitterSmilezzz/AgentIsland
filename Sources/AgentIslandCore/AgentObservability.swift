@@ -78,10 +78,7 @@ public enum AgentObservability {
                                 + "读不到明细是设计如此，不代表它没在工作")
                 return Verdict(code: .sourceNotWired, evidence: evidence)
             }
-            // 措辞必须留有余地：一次性采样（CLI doctor/status）不等待 token 监控的异步刷新，
-            // 用量为空很可能只是没赶上，把「没赶上」说成「没有」就是新的谎报
-            evidence.append("会话目录在判定窗口内没有活动会话，本轮也没取到用量账本"
-                            + "（一次性采样不等待异步刷新，未必代表真的为零）")
+            evidence.append("会话目录在判定窗口内没有活动会话，同步刷新用量源后仍无记录")
             return Verdict(code: .noLocalData, evidence: evidence)
         }
         evidence.append("活跃会话 \(snapshot.activeSessions) 个")

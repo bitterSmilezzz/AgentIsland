@@ -11,12 +11,15 @@ public enum StatusCommand {
 
         let isJson = args.contains("--json")
         let showAll = args.contains("--all") || args.contains("-a")
+        // 同步取用量要解析全部会话索引（本机实测多花 5s），对脚本/Raycast 场景不划算：
+        // 默认不取，用量列印「—」明说没取；`--usage` 才付这笔钱
+        let wantUsage = args.contains("--usage")
 
         // 档案集走共享采样器的 fullRegistry 口径：此前 status 只遍历内置集，
         // 用户自定义与自动发现的 Agent 在 status / status --json 里根本不存在，
         // 而 report 能看到——同一份数据两个口径，脚本侧尤其容易被误导。
         // 单拍即可：本命令要快（Raycast / 脚本调用），CPU% 首拍恒 0 的语义保持不变
-        let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll)
+        let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll, refreshUsage: wantUsage)
         let snapshots = engine.sample()
 
         let filtered: [AgentSnapshot]
@@ -82,10 +85,16 @@ public enum StatusCommand {
             let cpuText = s.processRunning ? String(format: "%.1f%%", s.cpuPercent) : CLIColor.dim("-")
             let memText = s.processRunning ? MemoryFormat.text(s.memoryBytes) : CLIColor.dim("-")
             let sessionsText = s.activeSessions > 0 ? "\(s.activeSessions)" : CLIColor.dim("0")
-            let tokens24h = s.tokenUsage?.tokens24h ?? 0
-            let cost24h = s.tokenUsage?.cost24h ?? 0
-            let tokensText = tokens24h > 0 ? TokenUsage.compact(tokens24h) : CLIColor.dim("0")
-            let costText = cost24h > 0 ? TokenUsage.cost(cost24h) : CLIColor.dim("$0.00")
+            let tokensText: String
+            let costText: String
+            if let usage = s.tokenUsage {
+                tokensText = usage.tokens24h > 0 ? TokenUsage.compact(usage.tokens24h) : CLIColor.dim("0")
+                costText = usage.cost24h > 0 ? TokenUsage.cost(usage.cost24h) : CLIColor.dim("$0.00")
+            } else {
+                // 没取数就明说，别印 0 —— 用户无法分辨「没用」和「没查」
+                tokensText = CLIColor.dim("—")
+                costText = CLIColor.dim("—")
+            }
 
             var activityText = ""
             if let act = s.currentAction, !act.isEmpty, s.level == .working {

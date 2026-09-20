@@ -12,8 +12,10 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
     public let memoryFormatted: String
     public let activeSessions: Int
     public let isHung: Bool
-    public let tokens24h: Int
-    public let cost24h: Double
+    /// nil = 本轮没有去取用量（一次性进程默认不付同步刷新的开销）；
+    /// 0 = 取到了、确实是 0。两者混成一谈就违反 CONTEXT.md 的「源缺失不得当作零活动」
+    public let tokens24h: Int?
+    public let cost24h: Double?
     public let lastActivityAgoSeconds: TimeInterval?
     public let lastActivityText: String?
     /// 稳定性评分（`AgentHealthEvaluator`）：只看卡死/CPU/内存，与下面的可观测性结论是两件事
@@ -34,8 +36,8 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
         self.memoryFormatted = MemoryFormat.text(snapshot.memoryBytes)
         self.activeSessions = snapshot.activeSessions
         self.isHung = snapshot.isHung
-        self.tokens24h = snapshot.tokenUsage?.tokens24h ?? 0
-        self.cost24h = snapshot.tokenUsage?.cost24h ?? 0
+        self.tokens24h = snapshot.tokenUsage?.tokens24h
+        self.cost24h = snapshot.tokenUsage?.cost24h
         self.lastActivityAgoSeconds = snapshot.lastActivityAgo
         self.lastActivityText = snapshot.lastActivityText
         let health = AgentHealthEvaluator.evaluate(snapshot: snapshot)
