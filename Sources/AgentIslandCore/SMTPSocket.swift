@@ -146,9 +146,6 @@ public final class SMTPSocketConnection: SMTPSessionIO, @unchecked Sendable {
         }
     }
 
-    /// STARTTLS 不支持（见类型注释）。返回 false 让上层如实报失败而不是走半条路径
-    public func upgradeTLS() async -> Bool { false }
-
     public func close() {
         stateLock.lock()
         let timer = pendingTimeout

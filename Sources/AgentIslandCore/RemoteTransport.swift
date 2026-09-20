@@ -178,12 +178,13 @@ public protocol SMTPSessionIO: AnyObject, Sendable {
     func readLine(timeout: TimeInterval) async -> String?
     /// 写一行（自带 CRLF）；连接已断返回 false
     func writeLine(_ text: String) async -> Bool
-    /// 升级为 TLS（STARTTLS 之后调用）
-    func upgradeTLS() async -> Bool
     func close()
 }
 
-/// 极简 SMTP 客户端。只实现「发一封纯文本信」所需的最小集合，不做 pipelining、不做多收件人优化。
+/// 极简 SMTP 客户端。只实现「发一封纯文本信」所需的最小集合：不做 pipelining、
+/// 不做多收件人优化，也**不做 STARTTLS**——`Network.framework` 不能在已建立的 TCP 上
+/// 原地升级 TLS，所以非 465 的连接在 `SMTPSocketConnection.connect()` 就返回 false，
+/// 这里没有第二条路可走（保留半条 STARTTLS 分支等于留一段永远不会执行的代码）。
 public enum SMTPClient {
     /// 跑完一次会话并**保证**关掉连接：失败分支若不关，每条走 SMTP 的通道
     /// 每次失败都留下一条活的 NWConnection（长时运行下会攒出几十个 socket）
@@ -235,14 +236,6 @@ public enum SMTPClient {
 
         if let fail = await expect([220], "问候") { return fail }
         if let fail = await ehlo() { return fail }
-
-        if !target.implicitTLS {
-            guard await io.writeLine("STARTTLS") else { return .failed(reason: "STARTTLS：连接已断开") }
-            if let fail = await expect([220], "STARTTLS") { return fail }
-            guard await io.upgradeTLS() else { return .failed(reason: "TLS 握手失败") }
-            // 升级后必须重新 EHLO：能力集是加密通道的一部分，旧回复不可信
-            if let fail = await ehlo() { return fail }
-        }
 
         guard await io.writeLine("AUTH LOGIN") else { return .failed(reason: "AUTH：连接已断开") }
         if let fail = await expect([334], "AUTH LOGIN") { return fail }

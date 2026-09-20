@@ -104,34 +104,6 @@ enum RemoteNotifyTests {
             }
         }
 
-        TestKit.test("SMTP: 587 走 STARTTLS 分支（会先升级再重新 EHLO）") {
-            let io = FakeSMTPSession(script: [
-                "220 hi",
-                "250-STARTTLS", "250 OK",       // 明文 EHLO
-                "220 ready",                      // STARTTLS 应答
-                "250-AUTH LOGIN", "250 OK",      // 升级后重新 EHLO
-                "334 u", "334 p", "235 ok",
-                "250 mail", "250 rcpt", "354 go", "250 queued",
-                    ])
-            let target = SMTPTarget(host: "h", port: 587, user: "u", password: "p", from: "u", to: "t")
-            let outcome = try awaitOnMain {
-                await SMTPClient.run(io: io, target: target, subject: "s", textBody: "b")
-            }
-            try expectEqual(outcome, .delivered)
-            try expectEqual(io.tlsUpgrades, 1, "非隐式 TLS 必须升级一次")
-            try expectEqual(io.written.filter { $0.hasPrefix("EHLO") }.count, 2,
-                "升级后必须重新 EHLO：能力集是加密通道的一部分，旧回复不可信")
-            // 顺序断言用索引比较；索引缺失时 -1 会让「STARTTLS 在 AUTH 之前」假通过，
-            // 所以先各取一次并显式要求都在
-            let startTLSAt = io.written.firstIndex(of: "STARTTLS")
-            let authAt = io.written.firstIndex(of: "AUTH LOGIN")
-            try expectTrue(startTLSAt != nil && authAt != nil,
-                "命令序列缺项：\(io.written)")
-            if let startTLSAt, let authAt {
-                try expectTrue(startTLSAt < authAt, "未升级就 AUTH 等于把口令明文送出：\(io.written)")
-            }
-        }
-
         TestKit.test("SMTP: 邮件头按 RFC 822 与 dot-stuffing 组好") {
             let target = SMTPTarget(host: "h", port: 465, user: "u", password: "p", from: "a@b.c", to: "d@e.f")
             let now = Date(timeIntervalSince1970: 1_800_000_000)
