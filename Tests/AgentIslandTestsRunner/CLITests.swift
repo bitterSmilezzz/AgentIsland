@@ -71,6 +71,11 @@ enum CLITests {
             let decoded = try decoder.decode(CLIAgentStatusDTO.self, from: data)
             try expectEqual(decoded.id, dto.id, "JSON 编解码往返后 id 一致")
             try expectEqual(decoded.tokens24h, dto.tokens24h, "JSON 编解码往返后 tokens24h 一致")
+            // 往返断言两边一起动，改键名它永远绿；对外契约只能按字面键名钉
+            let json = String(data: data, encoding: .utf8) ?? ""
+            for key in ["\"id\"", "\"status\"", "\"pid\"", "\"tokens24h\"", "\"cost24h\""] {
+                try expectTrue(json.contains(key), "对外 JSON 键名漂移：缺 \(key)（Raycast/CSV 下游按键名取数）")
+            }
         }
 
         TestKit.test("CLI: 异常诊断与清理 DTO 往返") {
@@ -104,6 +109,10 @@ enum CLITests {
             let decodedResult = try JSONDecoder().decode(CLICleanResultDTO.self, from: data)
             try expectEqual(decodedResult.killedPids, [100], "Killed PIDs 往返一致")
             try expectFalse(decodedResult.dryRun, "dryRun 标志一致")
+            let json = String(data: data, encoding: .utf8) ?? ""
+            for key in ["\"killedPids\"", "\"dryRun\""] {
+                try expectTrue(json.contains(key), "清理结果 JSON 键名漂移：缺 \(key)")
+            }
         }
 
         TestKit.test("CLI: Notify DTO 序列化与解析往返") {
@@ -145,6 +154,10 @@ enum CLITests {
             let data = try JSONEncoder().encode(report)
             let decoded = try JSONDecoder().decode(CLITokenReportDTO.self, from: data)
             try expectEqual(decoded.dailyBudget, 1_000_000, "预算上限一致")
+            let reportJSON = String(data: data, encoding: .utf8) ?? ""
+            for key in ["\"dailyBudget\"", "\"budgetRatio\"", "\"budgetStatus\""] {
+                try expectTrue(reportJSON.contains(key), "Token 报表 JSON 键名漂移：缺 \(key)")
+            }
             try expectEqual(decoded.budgetRatio, 0.5, "预算比例一致")
             try expectEqual(decoded.budgetStatus, "正常", "预算状态一致")
             try expectEqual(decoded.budgetExhaustionDay, 18, "超额天数一致")

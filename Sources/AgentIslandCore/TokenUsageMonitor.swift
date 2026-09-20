@@ -922,10 +922,6 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     // MARK: - SQLite 底层
 
-    /// 文本参数析构器 TRANSIENT：让 SQLite 自行复制一份。Swift 侧 String 桥接出的 C
-    /// 缓冲区只在 `sqlite3_bind_text` 那一行有效，而绑定之后才 step。
-    /// C 的 `SQLITE_TRANSIENT` 是 `((sqlite3_destructor_type)-1)` 强转宏，不导入 Swift，需自建。
-    private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     /// 汇总列 → Int。经 Double 中转：SQLite 对 REAL 列求和会输出 "19067783.5" 这类
     /// 带小数文本，直接 Int("...") 会返回 nil 并被 ?? 0 静默归零（统计整体消失且无任何
@@ -976,7 +972,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             // 文本参数按位绑定（1 起）：汇总查询用同一 SQL 同时出 24h 与累计两个口径，
             // cutoff 必须以参数进入——字面量拼接会把它写进 SQL 两次（且难以比对）。
             for (offset, value) in textParams.enumerated() {
-                sqlite3_bind_text(stmt, Int32(offset + 1), value, -1, Self.sqliteTransient)
+                sqlite3_bind_text(stmt, Int32(offset + 1), value, -1, ReadonlyDB.transientDestructor)
             }
 
             var rows: [[String]] = []

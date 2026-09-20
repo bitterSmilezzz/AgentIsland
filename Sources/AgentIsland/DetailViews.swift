@@ -398,9 +398,10 @@ struct AgentDetailView: View {
 
                 HStack(spacing: 8) {
                     Button {
-                        let script = "open -a Terminal \"\(dir)\""
+                        // dir 来自第三方会话库：词级转义 + AppleScript 字面量转义两层
+                        let shellCommand = "open -a Terminal " + ShellQuoting.shellWord(dir)
                         var err: NSDictionary?
-                        NSAppleScript(source: "do shell script \"\(script.replacingOccurrences(of: "\"", with: "\\\""))\"")?.executeAndReturnError(&err)
+                        NSAppleScript(source: "do shell script \"\(ShellQuoting.appleScriptLiteral(shellCommand))\"")?.executeAndReturnError(&err)
                     } label: {
                         HStack(spacing: 3) {
                             Image(systemName: "terminal.fill")

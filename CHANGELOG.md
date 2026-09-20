@@ -4,6 +4,80 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.93] - 2026-09-20
+
+### 🔒 五路并行深审两轮：修掉 2 处崩溃/UB、2 处命令注入、1 处局域网可伪造事件
+
+五个审计 agent 并行覆盖并发、资源、测试有效性、外部输入、视图与可访问性；结论一律
+**逐条复核后才动手**（本仓的审计有过假阳性，如「无锁字典」其实有 NSLock）。第二轮专门
+派一个 agent 复核我自己这一轮的改动，它抓出 4 处我引入或改漏的问题（见末段）。
+
+**崩溃与未定义行为**
+- **`sqlite3_bind_text` 传了 `nil` 析构器（= SQLITE_STATIC）**：Swift `String` 桥出的 C 缓冲区
+  只在 bind 那一行有效，而 `step` 在下一行——OpenCode 动作探测每 2s 在主线程读一次可能已回收
+  的内存（轻则把别的字符串当 session_id 查错会话、动作文案串味，重则崩）。析构器常量收进
+  `ReadonlyDB.transientDestructor` 单一来源（本仓另一处用法早就是对的，两处各写一份才漏了这一处）。
+- **Cline 的 `Int64(ts)` 对外部 `Double` 直接转换**：`ui_messages.json` 里一条 `1e30` / `-9.2e18`
+  哨兵就是运行时 trap，且发生在 `@MainActor` 采样拍上——岛直接消失，2s 后必复现。改走 `SafeNumber`
+  饱和钳制。把修复改回去跑测试，整条 runner 当场 `Fatal error` 而死，这是最硬的一种验证。
+
+**命令注入（两处，输入都是第三方库里的会话目录）**
+- `RecentSessionNavigator` 的 `do script "cd …"` 与详情页「打开终端」的 `do shell script`
+  都**只转义双引号**：`;` `|` `&&` `$()` 反引号照原样进 shell——点一次即在用户终端执行任意命令。
+  新增 `ShellQuoting`（POSIX 单引号词 + AppleScript 字面量两层，顺序固定），并把 `cd` 加上 `--`
+  终止选项。顺带修好一个真实故障：含空格的目录此前连 `cd` 都会失败。
+- 新增结构断言：任何 `do script` / `do shell script` 出口未经 `ShellQuoting` 即测试失败。
+
+**局域网可伪造岛上事件**
+- `LocalEventServer` 注释写「仅绑定 127.0.0.1」，但 `NWParameters.tcp` 不设 `requiredLocalEndpoint`
+  实际监听 `*:41999`（`lsof` 实测 IPv6 双栈通配），而 `/notify` 无鉴权——同局域网任意主机都能
+  往岛上写「任务完成 / 需要你确认」。现在 macOS 14+ 限定回环监听，低版本显式告警而不是假装安全。
+  改前 `lsof` 实测 `IPv6 TCP *:41999 (LISTEN)`，改后 `IPv4 TCP 127.0.0.1:41999 (LISTEN)`，且 `curl POST /notify` 仍返回 `{"success":true,…}`。
+  （第一版把 `requiredLocalEndpoint` 与 `on: port` 同时传给 `NWListener`，实测构造直接失败、端点整个不监听——curl 空应答才发现，端口只能由 `requiredLocalEndpoint` 提供。）
+- 同一处的三个资源缺陷：只连不发的客户端既不续收也不取消（连接与其完成块互相持有）、无并发上限、
+  无空闲超时。改为活连接表（计数一旦漏减就会把好端端的 notify 关门）+ 5s 回收 + 上限 16。
+
+**功能失效与主线程阻塞**
+- **展开态合盖再开盖，面板 Token 数字永久停更**：`handleSystemSleep` 只 `pause()` 未复位
+  `tokenPollingStarted`，唤醒路径的 `startTokenPollingIfNeeded()` 被 guard 挡回。复位后又引出
+  第二个问题——`stop()` 的收尾判据失效，盒盖期间退出应用就没人关只读连接；改用
+  「本次运行是否**曾经**启动过轮询」作判据，两条契约同时成立。
+- **只读库的锁跨整段 SQL 持有，而实时流水早已在后台队列共用它**：一次 500 行扫描就能堵住主线程
+  那一拍（类注释还写着「当前全部调用点在主线程」）。后台侧新增 `withDedicatedConnection`
+  （不进缓存、不碰共享锁、`close_v2` 收尾），5 个流水源全部改道。
+- **详情页每次渲染都付两次 `sysctl(KERN_PROC_ALL)`**：`performanceCard` 在 body 里调
+  `inspectProcessTree`，约 600 条 `kinfo_proc` + 每 pid 一次 `proc_pid_rusage` 全落主线程，
+  还会与采样拍互相消费 CPU 差分窗口把岛内占用数字带偏。改为复用上拍的进程表，零额外系统调用。
+
+**两处「写着安全其实没守」的护栏**
+- `InstalledAppsCache.refreshingThread` 全仓无人赋值，唯一的重入断言恒真；断言挪到会真死锁的
+  `refresh()` 等待之前，线程登记补在 `performRefresh`。
+- `locateCache` 把 `nil` 挡在命中条件外，等于「装了但闲置」的常态每拍重跑全树 stat；
+  负结果改为按 TTL 命中，但**只在有失效令牌时**——第一版无差别缓存，把 cline（`rootDir: nil`）
+  「用户刚开的第一个会话」的发现延迟从 ≤2s 拖到 10s，第二轮复核抓到后已收口。
+
+**测试有效性（审计报回 5 处永真断言，全部改成可失败）**
+- 「setEnabled 后走后台路径」三条断言恒真（`Int >= 0`、`while` 条件已假、`isEmpty` 由 setup 保证）
+  ——把采样改回主线程同步它照样绿。改为计数断言：`setEnabled` 返回前全表扫描次数不得增加。
+- `refreshTokenUsageOnce` 断言是 `expectTrue(true)`；清空方法体即红。
+- 休眠唤醒联动六个调用零断言；改为断言 pause/start 次数（重复事件必须幂等）。
+- 真实环境采样只断言 `dimSnap != nil`，而 profiles 就一个 dim——换成引擎契约（一档案一行快照、
+  返回值与发布状态一致）。零断言的「真实 sessions 目录信息」用例删除（行为已由临时目录用例覆盖）。
+- WorkBuddy bundle id 用例的 `data!` 会让整条 runner 崩溃而非失败；并补上不依赖本机的硬期望
+  （国外版必须登记 `com.workbuddy.workbuddy-ai`，不得登记 Application Support 目录名）。
+- CLI DTO 往返断言两边一起动，改 `CodingKeys` 键名永远绿——补字面 JSON 键名断言（下游 Raycast/CSV
+  按键名取数）。给状态 DTO 注入一次改名，测试如期变红。
+- 文件侧失明补 `.unreadableFile` / `.undecodableFile` 两个失败码并落证据：此前「会话文件读不出来」
+  与「这个会话没有待确认事项」在岛与 `doctor` 上完全同形，正是 CONTEXT.md 禁止的两态合一。
+- 新增 `HardeningTests` 共 10 例；结构类断言在扫不到源码时改为抛错（静默通过等于给自己发假绿证）。
+  全部 11 次变异验证逐条做过。测试 317 → 327。
+
+**第二轮复核抓出的一轮修复自身缺陷**
+`appleScriptLiteral` 把 0x00–0x1F 之外的控制字符写成 `\u{1b}`——实测 AppleScript **不认这个转义**，
+`NSAppleScript(source:)` 返回 nil，而两个调用点都静默跳过，症状恰是该函数声称要消灭的「点了没反应」。
+改为控制字符原样透传，并补一条「拼出的脚本必须真能编译」的断言（含 ESC / 换页 / 中文 / emoji /
+前导短横线路径）。同轮抓出：重入断言放错函数、`stop()` 收尾判据被自己的修复打断、负缓存丢首会话。
+
 ## [0.0.92] - 2026-09-20
 
 ### 🎨 语义色收到一处：硬编码色值 186 → 36，等级色阶 5 份副本并成 1 份

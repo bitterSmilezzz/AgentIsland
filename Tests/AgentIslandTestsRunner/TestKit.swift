@@ -94,10 +94,19 @@ final class FakeTokenUsageProvider: TokenUsagePolling, TokenUsageQuerying {
     var grandTotal: TokenUsage = TokenUsage()
     var onRefresh: (@MainActor () -> Void)?
 
-    func start(interval: TimeInterval) {}
-    func stop() {}
-    func pause() {}
-    func refreshAsync() {}
+    /// 生命周期调用计数（休眠/唤醒联动断言用）
+    private(set) var startCount = 0
+    private(set) var pauseCount = 0
+    private(set) var stopCount = 0
+
+    private(set) var refreshAsyncCount = 0
+    private(set) var refreshSyncCount = 0
+
+    func start(interval: TimeInterval) { startCount += 1 }
+    func stop() { stopCount += 1 }
+    func pause() { pauseCount += 1 }
+    func refreshAsync() { refreshAsyncCount += 1 }
+    func refreshSync() { refreshSyncCount += 1 }
     func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
         Task { @MainActor in completion([]) }
     }

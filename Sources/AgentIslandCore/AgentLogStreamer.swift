@@ -293,8 +293,9 @@ public enum AgentLogStreamer {
 
     public static func fetchDimEvents(limit: Int = 20) -> [AgentLogEvent] {
         guard let dbPath = AgentRegistry.databasePath(for: "dim") else { return [] }
-        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
-        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+        // 本文件所有流水源都在后台队列刷新：走 withDedicatedConnection，不与主线程采样抢那把跨 SQL 的锁。
+        // 打开失败返回 nil → 空流水
+        return ReadonlyDB.withDedicatedConnection(dbPath) { db -> [AgentLogEvent] in
             // 原查询对全表排序（EXPLAIN: SCAN + USE TEMP B-TREE FOR ORDER BY）：中型库上
             // 实测 160ms/次，而该页每 2s 刷新一次，等于持续空转读整库。
             let sql = dimEventsSQL(limit: limit)
@@ -413,8 +414,9 @@ public enum AgentLogStreamer {
 
     public static func fetchOpenCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
         guard let dbPath = AgentRegistry.databasePath(for: "opencode") else { return [] }
-        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
-        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+        // 本文件所有流水源都在后台队列刷新：走 withDedicatedConnection，不与主线程采样抢那把跨 SQL 的锁。
+        // 打开失败返回 nil → 空流水
+        return ReadonlyDB.withDedicatedConnection(dbPath) { db -> [AgentLogEvent] in
             // 同 dim：rowid 窗口限流 + 时间排序（原全表排序实测 25ms/次，每 2s 一次）
             let sql = openCodeEventsSQL(limit: limit)
             var stmt: OpaquePointer?
@@ -461,8 +463,9 @@ public enum AgentLogStreamer {
 
     public static func fetchZCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
         guard let dbPath = AgentRegistry.databasePath(for: "zcode") else { return [] }
-        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
-        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+        // 本文件所有流水源都在后台队列刷新：走 withDedicatedConnection，不与主线程采样抢那把跨 SQL 的锁。
+        // 打开失败返回 nil → 空流水
+        return ReadonlyDB.withDedicatedConnection(dbPath) { db -> [AgentLogEvent] in
             let sql = "SELECT title, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT \(limit);"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -491,8 +494,9 @@ public enum AgentLogStreamer {
 
     public static func fetchWorkBuddyEvents(agentId: String, limit: Int = 20) -> [AgentLogEvent] {
         guard let dbPath = AgentRegistry.databasePath(for: agentId) else { return [] }
-        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
-        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+        // 本文件所有流水源都在后台队列刷新：走 withDedicatedConnection，不与主线程采样抢那把跨 SQL 的锁。
+        // 打开失败返回 nil → 空流水
+        return ReadonlyDB.withDedicatedConnection(dbPath) { db -> [AgentLogEvent] in
             let sql = "SELECT title, status, mode, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT \(limit);"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -523,8 +527,9 @@ public enum AgentLogStreamer {
     public static func fetchHermesEvents(limit: Int = 20) -> [AgentLogEvent] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let dbPath = "\(home)/.hermes/state.db"
-        // 连接的开闭/缓存复用/inode 失效统一由 ReadonlyDB 负责；打开失败返回 nil → 空流水
-        return ReadonlyDB.withConnection(dbPath) { db -> [AgentLogEvent] in
+        // 本文件所有流水源都在后台队列刷新：走 withDedicatedConnection，不与主线程采样抢那把跨 SQL 的锁。
+        // 打开失败返回 nil → 空流水
+        return ReadonlyDB.withDedicatedConnection(dbPath) { db -> [AgentLogEvent] in
             let sql = "SELECT title, last_activity_description, started_at FROM sessions ORDER BY started_at DESC LIMIT \(limit);"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }

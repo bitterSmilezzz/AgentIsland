@@ -668,7 +668,9 @@ public enum AgentActionInspector {
             var partStmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, partSQL, -1, &partStmt, nil) == SQLITE_OK else { return nil }
             defer { sqlite3_finalize(partStmt) }
-            sqlite3_bind_text(partStmt, 1, sessionId, -1, nil)
+            // TRANSIENT 而非 nil(=SQLITE_STATIC)：sessionId 是 Swift String，桥出的 C 缓冲区
+            // 只在本行有效，而 step 在下一行
+            sqlite3_bind_text(partStmt, 1, sessionId, -1, ReadonlyDB.transientDestructor)
             var partDataStr: String?
             if sqlite3_step(partStmt) == SQLITE_ROW {
                 partDataStr = sqlite3_column_text(partStmt, 0).map { String(cString: $0) }

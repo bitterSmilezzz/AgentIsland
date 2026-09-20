@@ -11,7 +11,7 @@ public final class InstalledAppsCache: @unchecked Sendable {
     public typealias BundleScanner = () -> Set<String>
 
     private let lock = NSCondition()
-    /// 当前在途扫描的线程（refresh/performRefresh 的重入检测用）
+    /// 当前在途扫描的线程：由 performRefresh 登记/清除，仅供 refresh() 的重入断言比对
     private var refreshingThread: Thread?
     private var clis: Set<String> = []      // 小写命令名
     private var bundles: Set<String> = []   // 小写 bundle id
@@ -107,6 +107,11 @@ public final class InstalledAppsCache: @unchecked Sendable {
     /// UI 路径使用异步入口。扫描器不得递归调用刷新入口。
     public func refresh() {
         lock.lock()
+        // 重入护栏必须放在**这里**（而不是 performRefresh 里）：故障形态是扫描器递归调
+        // refresh() → 下面 `while refreshing { lock.wait() }` 等的是自己那一次 broadcast，
+        // 于是永久阻塞。断言要在进入等待之前发生。
+        assert(refreshingThread != Thread.current,
+               "InstalledAppsCache 扫描器不得递归调用 refresh()（会自等待自己发出的广播）")
         if refreshing {
             while refreshing { lock.wait() }
             lock.unlock()
@@ -118,15 +123,18 @@ public final class InstalledAppsCache: @unchecked Sendable {
     }
 
     private func performRefresh() {
-        // 重入断言（加固3）：扫描器若递归调 refresh() 会自等待广播永久阻塞——
-        // 把「不得递归」从注释约束变成运行期断言（扫描器经注入闭包注入时易踩）
-        assert(refreshingThread != Thread.current, "InstalledAppsCache 扫描器不得递归调用 refresh()")
+        // 登记扫描线程：refresh() 的重入断言靠它才有比对对象
+        // （此前全仓无人赋值，那条断言恒真，等于没有）
+        lock.lock()
+        refreshingThread = Thread.current
+        lock.unlock()
         let foundCLIs = scanCLIs()
         let foundBundles = scanBundles()
         lock.lock()
         clis = foundCLIs
         bundles = foundBundles
         lastRefreshAt = Date()
+        refreshingThread = nil
         refreshing = false
         let callbacks = completions
         completions.removeAll()

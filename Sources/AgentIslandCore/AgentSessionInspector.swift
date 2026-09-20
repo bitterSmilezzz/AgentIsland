@@ -72,7 +72,12 @@ public enum AgentSessionInspector {
         // 令牌取 stat() 而非 URL.resourceValues：后者有毫秒级缓存窗口，作为「目录变没过」
         // 的依据不够可靠（同一问题曾在尾读合并上实测误命中，见 LogTailReader）
         let rootDate = rootDir.flatMap { LogTailReader.statModificationDate($0.path) }
-        if let cached = locateCache[key], now < cached.expires, cached.rootDate == rootDate, let hit = cached.located {
+        if let cached = locateCache[key], now < cached.expires, cached.rootDate == rootDate {
+            // 负结果同样命中：没定位到会话的 Agent 才是常态（装了但闲置），
+            // 把 nil 挡在命中条件外等于每拍重跑一次全树 stat——正是本缓存要消掉的开销。
+            // 但**只在有失效令牌时**才缓存 nil：rootDir 为 nil 的调用方（cline 的 tasks 根）
+            // 令牌恒等于 nil，缓存负结果等于把「用户刚开的第一个会话」延迟到 TTL 到期才发现
+            guard let hit = cached.located else { return nil }
             var fresh = hit
             // 只把时间戳往前修正：定位到的文件本身若有新写入要跟上；而 Antigravity 的
             // 有效时间可能来自同会话的后台任务日志（重算代价高），故绝不让它退化得更旧
@@ -82,7 +87,10 @@ public enum AgentSessionInspector {
             return fresh
         }
         let located = locate()
-        locateCache[key] = (now.addingTimeInterval(locateTTL), rootDate, located)
+        // 无令牌可依据时不写负结果（见上）；正结果照写——它只是把「已经找到的」复用
+        if located != nil || rootDir != nil {
+            locateCache[key] = (now.addingTimeInterval(locateTTL), rootDate, located)
+        }
         return located
     }
 
@@ -143,8 +151,7 @@ public enum AgentSessionInspector {
             // 等待确认可以持续较久；完成态只保留一小段时间，之后自然显示“待机”。
             guard age <= 24 * 3600 else { continue }
             if file.lastPathComponent == "ui_messages.json" {
-                if let data = readJSONFile(file, report: report),
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                if let json = clineMessages(from: file, report: report),
                    let signal = detectClineOrRoo(messages: json, fileAge: age) {
                     return AgentSessionProbe(signal: signal, health: failure)
                 }
@@ -174,7 +181,24 @@ public enum AgentSessionInspector {
             report(SessionProbeHealth(failure: .oversizedFile, path: url.path))
             return nil
         }
-        return try? Data(contentsOf: url, options: [.mappedIfSafe])
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else {
+            // 静默 return nil 的话，岛显示待机、doctor 说「结论可信」——而文件明明就在那里
+            report(SessionProbeHealth(failure: .unreadableFile, path: url.path))
+            return nil
+        }
+        return data
+    }
+
+    /// 读并解码 Cline/Roo 的 `ui_messages.json`。解码失败必须留证据：
+    /// 「对方改版」与「这个会话确实没有待确认事项」在用户侧此前完全同形
+    private static func clineMessages(from url: URL,
+                                      report: (SessionProbeHealth) -> Void) -> [[String: Any]]? {
+        guard let data = readJSONFile(url, report: report) else { return nil }
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return json
+        }
+        report(SessionProbeHealth(failure: .undecodableFile, path: url.path))
+        return nil
     }
 
     /// 用户主动中断本轮执行的系统提示（Claude Code 的 `[Request interrupted by user]`、
@@ -436,7 +460,10 @@ public enum AgentSessionInspector {
             let type = msg["type"] as? String ?? ""
             let ts = msg["ts"] as? Double ?? Double(Date().timeIntervalSince1970 * 1000)
             let text = msg["text"] as? String ?? ""
-            let fp = "cline-\(Int64(ts))"
+            // 饱和转换：ts 来自第三方 ui_messages.json，一条 1e30 / -9.2e18 哨兵就能让
+            // Int64(Double) 在 @MainActor 采样拍上当场 trap（岛直接消失，2s 后必复现）。
+            // 同一 bug 类本仓已在 AgentLogStreamer / TokenUsageMonitor 修过并留了 SafeNumber。
+            let fp = "cline-\(SafeNumber.saturatingInt(ts, source: "cline.ts"))"
 
             if type == "ask" {
                 let ask = msg["ask"] as? String ?? ""
@@ -487,8 +514,7 @@ public enum AgentSessionInspector {
         }) else { return nil }
         let age = max(0, now.timeIntervalSince(found.mtime))
         guard age <= 24 * 3600 else { return nil }
-        guard let data = readJSONFile(found.file, report: report),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        guard let json = clineMessages(from: found.file, report: report) else {
             return nil
         }
         return detectClineOrRoo(messages: json, fileAge: age)

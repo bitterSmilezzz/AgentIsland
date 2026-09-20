@@ -3,14 +3,25 @@ import Network
 import AgentIslandCore
 
 // MARK: - 本地事件接收端 (LocalEventServer - v0.0.77)
-// 零外部依赖（基于 Apple 原生 Network.framework NWListener），仅绑定 127.0.0.1 端口 41999。
+// 零外部依赖（基于 Apple 原生 Network.framework NWListener），只接受发往回环地址的连接。
 // 允许本地脚本、CI/CD 任务、第三方工具（如 git hook、curl 或 agentisland notify）
 // 毫秒级直推智能体完成/需要关注事件。
+//
+// 安全边界（v0.0.93 收紧）：`/notify` 没有鉴权——任何能连上它的进程都能往岛上写
+// 「任务完成 / 需要你确认」。此前注释写着「仅绑定 127.0.0.1」，但 `NWParameters.tcp`
+// 不设 `requiredLocalEndpoint` 实际监听的是 `*:41999`（lsof 实测 IPv6 双栈通配），
+// 也就是同一局域网内任意主机都能伪造事件。现在两处都堵：能绑回环就只绑回环，
+// 并在 accept 后按本地端点复核（macOS 13 上 requiredLocalEndpoint 不可用时的兜底）。
 
 public final class LocalEventServer: @unchecked Sendable {
     public static let defaultPort: UInt16 = 41999
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "com.agentisland.eventserver", qos: .utility)
+    /// 在飞连接上限：无鉴权端口上，一条「只连不发」的 TCP 就能永久占住一个 fd。
+    /// 用活连接表而不是计数器——计数一旦漏减就会把好端端的 notify 关门
+    private let maxLiveConnections = 16
+    private let connectionsLock = NSLock()
+    private var liveConnections: [ObjectIdentifier: NWConnection] = [:]
     private weak var engine: ActivityEngine?
 
     public init(engine: ActivityEngine?) {
@@ -24,7 +35,19 @@ public final class LocalEventServer: @unchecked Sendable {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
             let endpointPort = NWEndpoint.Port(rawValue: port) ?? NWEndpoint.Port(rawValue: Self.defaultPort)!
-            let newListener = try NWListener(using: parameters, on: endpointPort)
+            // 只绑 IPv4 回环：不给局域网留监听面。requiredLocalEndpoint 是 macOS 14+ 的公开 API，
+            // 13 上设不了——此时监听面仍是通配，显式告警而不是假装安全。
+            // 注意端口来源：设了 requiredLocalEndpoint 就**不能**再传 `on:`，两者同时给会让
+            // `NWListener(using:on:)` 直接构造失败（实测），于是 notify 端点整个不监听。
+            let newListener: NWListener
+            if #available(macOS 14.0, *) {
+                parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: endpointPort)
+                newListener = try NWListener(using: parameters)
+            } else {
+                NSLog("[LocalEventServer] macOS < 14 无法限定回环监听：\(port) 对局域网可达，"
+                      + "而 /notify 无鉴权（任何能连上它的进程都能向岛内伪造事件）")
+                newListener = try NWListener(using: parameters, on: endpointPort)
+            }
 
             newListener.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
@@ -60,8 +83,43 @@ public final class LocalEventServer: @unchecked Sendable {
     }
 
     private func handleConnection(_ connection: NWConnection) {
+        // 只接受回环来源由监听端的 requiredLocalEndpoint 保证（见 start）：
+        // NWConnection 不公开 channel/localEndpoint，accept 后再复核这条路在公开 API 里不存在
+        guard admit(connection) else {
+            connection.cancel()
+            return
+        }
+        // 只连不发的客户端：5s 后回收（否则该 fd 与相关对象一直自持）
+        queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard self?.isAdmitted(connection) == true else { return }
+            connection.cancel()
+        }
         connection.start(queue: queue)
         receiveNext(connection)
+    }
+
+    /// 记入活连接表并判断是否还在上限内（先把已终止的摘掉，保证上限不会因漏减而关门）
+    private func admit(_ connection: NWConnection) -> Bool {
+        connectionsLock.lock(); defer { connectionsLock.unlock() }
+        liveConnections = liveConnections.filter { _, existing in
+            switch existing.state {
+            case .cancelled, .failed: return false
+            default: return true
+            }
+        }
+        guard liveConnections.count < maxLiveConnections else { return false }
+        liveConnections[ObjectIdentifier(connection)] = connection
+        return true
+    }
+
+    private func isAdmitted(_ connection: NWConnection) -> Bool {
+        connectionsLock.lock(); defer { connectionsLock.unlock() }
+        return liveConnections[ObjectIdentifier(connection)] != nil
+    }
+
+    private func dismiss(_ connection: NWConnection) {
+        connectionsLock.lock(); defer { connectionsLock.unlock() }
+        liveConnections[ObjectIdentifier(connection)] = nil
     }
 
     private func receiveNext(_ connection: NWConnection) {
@@ -73,6 +131,7 @@ public final class LocalEventServer: @unchecked Sendable {
 
             if let data = data, !data.isEmpty {
                 self.processHTTPPayload(data, connection: connection)
+                self.dismiss(connection)   // processHTTPPayload 各分支都以 cancel 收尾
                 return
             }
 

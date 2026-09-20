@@ -63,6 +63,8 @@ public final class ActivityEngine: ObservableObject {
     private var handledCompletionFingerprints: [String: String] = [:]
     /// 上一次采样的时刻，用于识别睡眠/挂起造成的采样断点（见 sampleCore）
     private var lastSampleAt: Date?
+    /// 上一拍的进程表（每次采样写入）。派生子进程树复用它，不再当场另开一次全表扫描
+    private var lastProcessSnapshot: ProcessSnapshot?
     /// 采样断点判定阈值：超过则视为发生睡眠/挂起。
     /// 必须显著大于正常调度间隔——最慢节律是全离线态的 60s（且用户可把闲置间隔
     /// 调到 60s），叠加调度延迟后仍不应误判。取「2 分钟」与「3 倍闲置间隔」的较大者，
@@ -163,6 +165,8 @@ public final class ActivityEngine: ObservableObject {
     private var presentationActive = false
     /// token 轮询当前是否已启动（引擎侧幂等标记；失活暂停后复位置 false）
     private var tokenPollingStarted = false
+    /// 本次运行内是否**曾经**启动过 token 轮询（休眠会复位 tokenPollingStarted）
+    private var tokenPollingEverStarted = false
     /// 最近一次启停集合（首刷完成后重放；见 init）
     private var lastEnabledIDs: Set<String>
     /// 上次记录的 Token 用量与时间基准（agentId → (timestamp, tokensTotal)），用于速率差分。
@@ -225,6 +229,7 @@ public final class ActivityEngine: ObservableObject {
     private func startTokenPollingIfNeeded() {
         guard !tokenPollingStarted else { return }
         tokenPollingStarted = true
+        tokenPollingEverStarted = true   // 供 stop() 判断「是否曾经开过轮询」，见 stop()
         // token 数据刷完后触发一次重采样（快照带上用量 + 卡片高度重算）
         tokenMonitor.onRefresh = { [weak self] in
             self?.sampleInBackground()
@@ -237,11 +242,15 @@ public final class ActivityEngine: ObservableObject {
         timer?.invalidate()
         timer = nil
         tokenMonitor.onRefresh = nil   // 停止后 in-flight token 刷新不再触发重采样
-        // 条件调用：轮询未启动时无需关闭连接（连接惰性打开，未启动即不存在）
-        if tokenPollingStarted {
+        // 收尾判据用「本轮启动过没有」而不是「此刻在不在轮询」：休眠路径 pause() 之后
+        // tokenPollingStarted 已复位（那是修「醒后用量停更」加的），拿它当条件会让
+        // 盒盖期间退出应用时没人关只读连接；而从未启动过轮询时不该触碰 token 面
+        // （连接是惰性打开的，未启动即不存在——见「stop 不触碰 token 面」用例）
+        if tokenPollingEverStarted {
             tokenMonitor.stop()
-            tokenPollingStarted = false
         }
+        tokenPollingStarted = false
+        tokenPollingEverStarted = false
     }
 
     /// 系统休眠标志：为 true 时彻底停止定时器和监控，极致节能
@@ -255,6 +264,10 @@ public final class ActivityEngine: ObservableObject {
         timer = nil
         if tokenPollingStarted {
             tokenMonitor.pause()
+            // pause() 真的销毁了 timer，所以标志必须一起复位：唤醒时 startTokenPollingIfNeeded
+            // 靠这个标志短路，不复位就等于「已启动」——展开态合盖再开盖，面板 Token 数字
+            // 从此永久停更，直到用户收起再展开一次才恢复
+            tokenPollingStarted = false
         }
     }
 
@@ -471,6 +484,7 @@ public final class ActivityEngine: ObservableObject {
             resetAllTracking()
         }
         lastSampleAt = now
+        lastProcessSnapshot = matcher.snapshot
 
         // 提取当前有运行中进程/应用的 sessionDirs，告知 FileMonitor 优化扫描（离线目录免深搜）
         var runningSessionDirs: Set<String> = []
@@ -1218,7 +1232,11 @@ public final class ActivityEngine: ObservableObject {
               let pid = snap.pid, pid > 0 else {
             return nil
         }
-        let procSnap = processMonitor.snapshot()
+        // 复用上拍的进程表，绝不在此当场调 processMonitor.snapshot()：本函数由详情页 body
+        // 调用，每次 sysctl(KERN_PROC_ALL) 要过 ~600 条 kinfo_proc（约 380KB）再给每个 pid
+        // 来一次 proc_pid_rusage，全落主线程；而且另开一次快照会与采样拍互相消费 CPU 差分
+        // 窗口（ProcessMonitor 注释明写「并发快照…CPU% 单拍失真」），把岛内的占用数字一起带偏。
+        guard let procSnap = lastProcessSnapshot else { return nil }
         return ProcessTreeInspector.buildTree(for: pid, from: procSnap.entries)
     }
 

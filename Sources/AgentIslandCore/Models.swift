@@ -533,12 +533,20 @@ public enum SessionProbeFailure: String, Equatable {
     case prepareFailed
     /// 会话文件超过单次读取上限，本轮信号直接放弃
     case oversizedFile
+    /// 会话文件在，但读不出来（权限拒绝 / 是目录 / 读取抛错）——SQLite 侧早有
+    /// `.unreadableDB` 的对应物，文件侧此前一条都不报，于是「读不到」被呈现成「闲着」
+    case unreadableFile
+    /// 会话文件读出来了，但不是解析器认识的形状（改版成 `{"messages":[…]}`、
+    /// 顶层类型漂移等）。与「文件里确实没有待确认事项」是两件事，不得混为一谈
+    case undecodableFile
 
     public var label: String {
         switch self {
         case .unreadableDB: return "会话数据库无法打开"
         case .prepareFailed: return "会话数据库结构已变更（查询无法执行）"
         case .oversizedFile: return "会话文件超出单次读取上限"
+        case .unreadableFile: return "会话文件无法读取"
+        case .undecodableFile: return "会话文件格式与解析器不匹配"
         }
     }
 }

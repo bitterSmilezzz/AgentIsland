@@ -1116,6 +1116,37 @@ enum EngineTests {
                             "但必须留下「源不可读」的证据，否则用户只看到一片待机")
         }
 
+        TestKit.test("会话探测健康: 会话文件读不出来 → unreadableFile（SQLite 侧的对应物此前文件侧没有）") {
+            // 用一个「名字叫 ui_messages.json 的目录」复现读不出来：不依赖权限、不依赖 root
+            let dir = NSTemporaryDirectory() + "probe-unreadable-file-\(UUID().uuidString)"
+            let fm = FileManager.default
+            try fm.createDirectory(atPath: dir + "/ui_messages.json", withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: dir) }
+            let profile = AgentProfile(id: "fileblind", name: "FileBlind", icon: "terminal",
+                                       bundleIDs: [], processNames: ["fileblind-agent"], sessionDirs: [dir])
+            let probe = AgentSessionInspector.probe(profile: profile,
+                                                    activityFiles: [URL(fileURLWithPath: dir + "/ui_messages.json")],
+                                                    now: Date())
+            try expectEqual(probe.health?.failure, .unreadableFile,
+                            "文件在、读不出，必须留证据；静默 nil 会让岛显示待机而 doctor 说「结论可信」")
+        }
+
+        TestKit.test("会话探测健康: 会话文件不是解析器认识的形状 → undecodableFile") {
+            // 真实触发形态：对方改版成 {"messages":[…]}（顶层由数组变对象），或半写入截断
+            let dir = NSTemporaryDirectory() + "probe-undecodable-\(UUID().uuidString)"
+            let fm = FileManager.default
+            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let file = dir + "/ui_messages.json"
+            try Data(#"{"messages":[{"type":"ask","ask":"command"}]}"#.utf8).write(to: URL(fileURLWithPath: file))
+            defer { try? fm.removeItem(atPath: dir) }
+            let profile = AgentProfile(id: "shapeshift", name: "ShapeShift", icon: "terminal",
+                                       bundleIDs: [], processNames: ["shapeshift-agent"], sessionDirs: [dir])
+            let probe = AgentSessionInspector.probe(profile: profile,
+                                                    activityFiles: [URL(fileURLWithPath: file)], now: Date())
+            try expectEqual(probe.health?.failure, .undecodableFile,
+                            "「格式改版」与「这个会话确实没有待确认事项」是两件事，不得混为一谈")
+        }
+
         TestKit.test("引擎: 睡眠/挂起断点不误报任务完成") {
             // 合盖睡眠 8 小时后唤醒：时间在走但期间没有任何采样，不能补发
             // 「任务完成 (480分0秒)」——Agent 只是被挂起，不是干完了活。
@@ -1172,24 +1203,38 @@ enum EngineTests {
 
         TestKit.test("引擎: setEnabled 后重采样走后台路径（R34/G1，主线程不阻塞）") {
             // 设置页开关此前触发主线程同步采样（snapshot+匹配+探测 ~10ms 全主线程）。
-            // 行为可测面：调用后立刻返回（不阻塞调用线程），快照稍后更新
-            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
-            _ = engine.sample(now: Date())
+            // 真正的可测面是「全表扫描发生在哪条线程、什么时刻」：
+            // 同步路径会在 setEnabled 返回**之前**就把表扫完，异步路径不会。
+            let provider = CountingProcessProvider(names: ["DimAgent"])
+            let engine = makeEngine(processNames: [], writes: [:], processMonitor: provider)
+            engine.start()                       // start 内含一拍同步采样，作为主线程基线
+            let before = provider.snapshotCalls
+            try expectTrue(before >= 1, "前置不成立：start 未采样，下面的「未增加」会假绿")
+            try expectEqual(provider.mainThreadSnapshotCalls, before,
+                            "前置不成立：基线那一拍本就在主线程，计数需对齐")
+
             engine.setEnabled(["dim"])
-            // 立即返回不阻塞：调用点后首行可达即为通过（同步路径会当场完成采样）
-            let immediate = engine.snapshots.count
-            try expectTrue(immediate >= 0, "setEnabled 同步返回（后台采样异步落地）")
-            let end = Date().addingTimeInterval(3.0)
-            while Date() < end, engine.snapshots.isEmpty {
+            try expectEqual(provider.snapshotCalls, before,
+                            "setEnabled 返回前就扫了全表：主线程同步采样路径回来了")
+
+            let deadline = Date().addingTimeInterval(3.0)
+            while provider.snapshotCalls == before && Date() < deadline {
                 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
             }
-            try expectTrue(!engine.snapshots.isEmpty, "后台采样最终落地")
+            try expectTrue(provider.snapshotCalls > before, "setEnabled 后的重采样未落地")
+            try expectEqual(provider.mainThreadSnapshotCalls, before,
+                            "重采样落在了主线程（应只在 start() 那一拍）")
+            engine.stop()
         }
 
-        TestKit.test("引擎: refreshTokenUsageOnce 出口可用（R34/F6，popover 按需刷新）") {
-            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
-            engine.refreshTokenUsageOnce()   // 不崩溃即通过（入口存在且可调用）
-            try expectTrue(true)
+        TestKit.test("引擎: refreshTokenUsageOnce 真的转成一次异步刷新（R34/F6）") {
+            // 原来是「调一下不崩就算过」：把方法体清空它照样绿，而 popover 用量会静默停更
+            let token = FakeTokenUsageProvider()
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], tokenMonitor: token)
+            engine.refreshTokenUsageOnce()
+            try expectEqual(token.refreshAsyncCount, 1, "未转成 tokenMonitor.refreshAsync()")
+            engine.refreshTokenUsageOnce()
+            try expectEqual(token.refreshAsyncCount, 2, "第二次调用被吞掉")
         }
 
         TestKit.test("引擎: 目录缺失时保持离线且不崩溃") {
@@ -1267,6 +1312,24 @@ enum EngineTests {
             // R31 复核：国外版真实 bundle id 是 com.workbuddy.workbuddy-ai（plutil 实测
             // Info.plist）——照抄 Application Support 目录名（com.workbuddy.workbuddy）
             // 会让「已安装」标记永远假阴性。哨兵：档案 id 与真实 Info.plist 必须对上
+            // 不依赖本机的硬期望（R31 用 plutil 实测过的真实 id）：历史缺陷是把
+            // Application Support 的目录名 com.workbuddy.workbuddy 抄给国外版，
+            // 「已安装」标记从此永远假阴性。
+            func profile(_ id: String) throws -> AgentProfile {
+                guard let found = AgentRegistry.builtin.first(where: { $0.id == id }) else {
+                    throw TestError(message: "档案缺失: \(id)")
+                }
+                return found
+            }
+            let cn = try profile("workbuddy")
+            let overseas = try profile("workbuddy-ai")
+            try expectEqual(overseas.bundleIDs, ["com.workbuddy.workbuddy-ai"],
+                            "国外版 bundle id 漂移（plutil 实测值）")
+            try expectFalse(overseas.bundleIDs.contains("com.workbuddy.workbuddy"),
+                            "国外版不得登记 Application Support 目录名——那是假阴性的成因")
+            // 两个变体主进程同为 Electron，只靠 bundle id / 路径区分：共用一个 id 会双份计数
+            try expectTrue(Set(cn.bundleIDs).isDisjoint(with: overseas.bundleIDs),
+                           "双变体 bundleIDs 不得相交（实际 \(cn.bundleIDs) / \(overseas.bundleIDs)）")
             for pair in [("workbuddy", "/Applications/WorkBuddy.app"),
                          ("workbuddy-ai", "/Applications/WorkBuddy AI.app")] {
                 guard let profile = AgentRegistry.builtin.first(where: { $0.id == pair.0 }) else {
@@ -1277,8 +1340,11 @@ enum EngineTests {
                 guard FileManager.default.fileExists(atPath: plistPath) else {
                     continue   // 本机未装该变体则跳过（不硬绑环境）
                 }
-                let data = FileManager.default.contents(atPath: plistPath)
-                let plist = (try? PropertyListSerialization.propertyList(from: data!, options: [], format: nil)) as? [String: Any]
+                guard let data = FileManager.default.contents(atPath: plistPath) else {
+                    // 读不到不该让整条 runner 崩（原来是 data!，强解失败是 abort 而非失败）
+                    throw TestError(message: "Info.plist 存在但读不出内容: \(plistPath)")
+                }
+                let plist = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) as? [String: Any]
                 let realID = plist?["CFBundleIdentifier"] as? String ?? ""
                 try expectTrue(profile.bundleIDs.contains(realID.lowercased()),
                                 "\(pair.0) bundleIDs 必须含真实 id \(realID)（实际 \(profile.bundleIDs)）")
@@ -1495,18 +1561,6 @@ enum EngineTests {
             try expectTrue(newest != nil, "depth-2 信号文件应被递归检测到")
         }
 
-        TestKit.test("文件: 真实 sessions 目录信息（无信号文件时如实 nil，不硬断言）") {
-            let dir = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".dimcode/v2/data/sessions").path
-            if FileManager.default.fileExists(atPath: dir) {
-                let newest = FileActivityMonitor.newestWrite(in: dir, maxDepth: 4)
-                print("   [info] sessions newest write: \(newest?.description ?? "nil"), ago \(newest.map { Int(Date().timeIntervalSince($0)) } ?? -1)s")
-                // 只验证可枚举不崩溃，不硬断言（真实目录内容随环境变化）
-            } else {
-                print("   [skip] 本机无 sessions 目录")
-            }
-        }
-
         TestKit.test("引擎: 真实环境引擎采样（真实进程+真实文件系统）") {
             // 环境依赖用例：进程表不可读（沙箱/CI）时显式跳过而非报错
             let probe = ProcessProvider().snapshot()
@@ -1525,10 +1579,17 @@ enum EngineTests {
                 fileMonitor: monitor,
                 installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
             )
-            let snaps = engine.sample(now: Date())
-            let dimSnap = snaps.first
-            print("   [info] dim real: level=\(dimSnap?.level.rawValue ?? "nil") process=\(dimSnap?.processRunning ?? false) cpu=\(dimSnap?.cpuPercent ?? -1) activity=\(dimSnap?.lastActivityText ?? "nil")")
-            try expectTrue(dimSnap != nil, "dim 快照存在")
+            let now = Date()
+            let snaps = engine.sample(now: now)
+            // 原来只断言 dimSnap != nil，而 profiles 就一个 dim——sample() 恒返回一行，
+            // 这条永远不会失败。换成真实环境上也必须成立的引擎契约：
+            // 一个档案一行快照、时间戳取调用方给的 now、id 对得上
+            try expectEqual(snaps.count, 1, "每个档案应恰好产出一行快照")
+            try expectEqual(snaps.first?.profile.id, "dim", "快照档案错位")
+            try expectEqual(engine.snapshots.map(\.profile.id), snaps.map(\.profile.id),
+                            "sample() 的返回值与引擎发布的快照不一致")
+            try expectEqual(snaps.first?.processRunning, engine.snapshots.first?.processRunning,
+                            "同上：进程信号不得两份口径")
         }
 
         TestKit.test("文件: 不存在的目录返回 nil") {
@@ -1687,14 +1748,23 @@ enum EngineTests {
             try expectTrue(engine.allProfiles.contains { $0.id == "dim" }, "重放不丢内置启用项")
         }
 
-        TestKit.test("动作透传: WorkBuddy/OpenCode/DSH/Hermes 探测器安全运行") {
-            // 真实/缺省环境均可安全执行，不抛出异常不崩溃
-            _ = AgentActionInspector.inspectWorkBuddyAction()
-            _ = AgentActionInspector.inspectOpenCodeAction()
-            _ = AgentActionInspector.inspectDSHAction(pid: -1)
-            _ = AgentActionInspector.inspectHermesAction()
-            _ = AgentActionInspector.inspectZCodeAction()
-            _ = AgentActionInspector.inspectDimAction()
+        TestKit.test("动作透传: WorkBuddy/OpenCode/DSH/Hermes 探测器契约") {
+            // 契约不是「不崩溃」，而是：要么 nil（没探到），要么**非空**文案。
+            // 空串会在岛上渲染出一条没有内容的动作文案，且会盖掉上一拍的真值。
+            func contract(_ name: String, _ value: String?) throws {
+                if let value {
+                    try expectFalse(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                                    "\(name) 返回了空串（应返回 nil 表示没探到）")
+                }
+            }
+            try contract("WorkBuddy", AgentActionInspector.inspectWorkBuddyAction())
+            try contract("OpenCode", AgentActionInspector.inspectOpenCodeAction())
+            try contract("Hermes", AgentActionInspector.inspectHermesAction())
+            try contract("ZCode", AgentActionInspector.inspectZCodeAction())
+            try contract("Dim", AgentActionInspector.inspectDimAction())
+            // 非法 pid 必须探不到东西：pid = -1 若仍能返回动作，说明查询没按 pid 收敛
+            try expectNil(AgentActionInspector.inspectDSHAction(pid: -1),
+                          "pid=-1 不应探测到任何动作")
         }
 
         TestKit.test("动作透传: DimAgent parseDimMessage 消息解析与已完成思考防误报") {
@@ -1815,13 +1885,22 @@ enum EngineTests {
             try expectNil(chatgptSnap?.currentAction, "ChatGPT 空闲时不应透传任何错误动作")
         }
 
-        TestKit.test("引擎: 系统休眠与唤醒调度联动（handleSystemSleep 与 handleSystemWake 幂等性）") {
-            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], cpu: 0)
+        TestKit.test("引擎: 系统休眠与唤醒联动幂等（重复事件不得重复启停轮询）") {
+            // 原来六个调用零断言：把 handleSystemWake 整段删掉它照样绿
+            let token = FakeTokenUsageProvider()
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], tokenMonitor: token)
             engine.start()
+            engine.setPresentationActive(true)
+            try expectEqual(token.startCount, 1, "前置：展开态应恰好启动一次轮询")
+
             engine.handleSystemSleep()
             engine.handleSystemSleep()
+            try expectEqual(token.pauseCount, 1, "连续两次休眠事件应只暂停一次（幂等）")
+
             engine.handleSystemWake()
             engine.handleSystemWake()
+            try expectEqual(token.startCount, 2, "连续两次唤醒事件应只重启一次轮询")
+            try expectEqual(token.pauseCount, 1, "唤醒路径不得反过来再暂停轮询")
             engine.stop()
         }
 
