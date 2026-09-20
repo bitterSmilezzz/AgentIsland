@@ -784,6 +784,25 @@ enum RemoteNotifyTests {
 
         // MARK: 设置页落盘
 
+        TestKit.test("结构: 带 delegate 的 URLSession 不许配 completionHandler 版 dataTask") {
+            // 真实回归：为了拦重定向给 session 加了 delegate，同时沿用
+            // `dataTask(with:) { ... }`——实测每次都是 NSURLError -999 且请求根本没出门，
+            // 而离线测试全绿（它们注入的是假传输，从不走 HTTPTransport）
+            let url = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/AgentIslandCore/RemoteTransport.swift")
+            let text = try XCTRequire(try? String(contentsOf: url, encoding: .utf8),
+                                      "读不到 RemoteTransport.swift，这条断言就成了永真")
+            try expectTrue(text.contains("URLSession(configuration:"),
+                           "前提变了（不再用 delegate session），这条断言就该跟着改，而不是静默通过")
+            let offenders = text.components(separatedBy: "\n").enumerated()
+                .filter { $0.element.contains("dataTask(with:") && !$0.element.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+                .map { "\($0.offset + 1): \($0.element.trimmingCharacters(in: .whitespaces))" }
+            try expectTrue(offenders.isEmpty,
+                           "设了 delegate 就必须用 async 的 data(for:)，否则 completionHandler 永不回调\n        \(offenders)")
+            try expectTrue(text.contains("session.data(for:"), "必须确实在用 async 版请求 API")
+        }
+
         TestKit.test("落盘: 策略与每个通道各自一份配置，存了能读回且互不覆盖") {
             let defaults = TestDefaults.suite("remote")
             var policy = RemoteNotifyPolicy(masterEnabled: true, throttleSeconds: 300,

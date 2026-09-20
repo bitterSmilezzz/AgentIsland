@@ -144,30 +144,34 @@ public struct HTTPTransport: RemoteTransport {
         req.timeoutInterval = 10
         for field in request.headers { req.setValue(field.value, forHTTPHeaderField: field.name) }
         if !request.body.isEmpty { req.httpBody = Data(request.body.utf8) }
-        return await withCheckedContinuation { continuation in
-            let config = URLSessionConfiguration.ephemeral
-            config.requestCachePolicy = .reloadIgnoringLocalCacheData
-            let session = URLSession(configuration: config, delegate: NoRedirectDelegate(),
-                                     delegateQueue: nil)
-            defer { session.invalidateAndCancel() }
-            let task = session.dataTask(with: req) { _, response, error in
-                if let error {
-                    continuation.resume(returning: .failed(reason: "网络错误：\((error as NSError).domain) \((error as NSError).code)"))
-                    return
-                }
-                guard let http = response as? HTTPURLResponse else {
-                    continuation.resume(returning: .failed(reason: "无 HTTP 响应"))
-                    return
-                }
-                if (200..<300).contains(http.statusCode) {
-                    // 注意语义：这是「对方接受了这条请求」。多数中转服务即使内部失败
-                    // 也回 200 + 一段错误 JSON，本层不去猜——设置页的文案对此写明
-                    continuation.resume(returning: .delivered)
-                } else {
-                    continuation.resume(returning: .failed(reason: "服务端返回 \(http.statusCode)"))
-                }
+        // 带 delegate 的 session 必须配 async 版 `data(for:)`：实测用 completionHandler 版
+        // `dataTask(with:)` 时每次都拿到 NSURLErrorDomain -999，请求根本没出门
+        // （Apple 的规则是二者取其一，设了 delegate 就不该再指望闭包回调）。
+        // 这个 delegate 只为拒绝重定向而存在：URL 里带着 SendKey/token，
+        // 跟着 302 走等于把凭据发给一个用户从没配置过的主机
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        sessionConfig.timeoutIntervalForRequest = 10
+        let session = URLSession(configuration: sessionConfig, delegate: NoRedirectDelegate(),
+                                 delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        do {
+            let (_, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                return .failed(reason: "无 HTTP 响应")
             }
-            task.resume()
+            if (200..<300).contains(http.statusCode) {
+                // 注意语义：这是「对方接受了这条请求」。多数中转服务即使内部失败
+                // 也回 200 + 一段错误 JSON，本层不去猜——设置页的文案对此写明
+                return .delivered
+            }
+            return .failed(reason: "服务端返回 \(http.statusCode)")
+        } catch let error as URLError where error.code == .cancelled {
+            return .failed(reason: "请求被取消：目标回了重定向，本 App 不跟着走（密钥不外送给第三方）")
+        } catch let error as URLError {
+            return .failed(reason: "网络错误：\(error.localizedDescription)")
+        } catch {
+            return .failed(reason: "网络错误：\((error as NSError).domain) \((error as NSError).code)")
         }
     }
 }
