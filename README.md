@@ -2,7 +2,14 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.93）
+## 功能（v0.0.94）
+
+### 第三轮收口：潜伏缺陷与自己修复里的缺陷 (v0.0.94)
+- **两处「改了但没修到」**：一次性 SQLite 连接的结算 `defer` 放在了 `prepare` 之后（Swift 的 defer 只对注册点之后生效，恰好漏掉它声称要覆盖的失败路径），且注册顺序晚于 `finalize`，逆序执行变成先 close 后 finalize ⇒ `SQLITE_BUSY` 下连接永不关闭；`openReadonly` 的代际校验在 open 之后才取基准，恒等成立，判不出「stop 发生在打开期间」。
+- **增量统计两侧一起收口**：只承认「扫描时量到的那段字节」并回吐实际消费位置，消除追加导致的重复计数与截断导致的对称漏算；实机核对改动前后 `tokens` 汇总同一时刻逐行一致。
+- **新鲜度与可诊断性**：`newestFile` 的 mtime 改 `stat(2)` 现取（`resourceValues` 的毫秒级陈旧窗口会让它系统性漏掉刚被写的文件）；条目预算耗尽时按目录去重告警一次，不再静默返回「部分枚举内最新」。
+
+### 五路并行深审两轮，修掉崩溃 / 注入 / 局域网可伪造事件 (v0.0.93)
 
 ### 五路并行深审两轮，修掉崩溃 / 注入 / 局域网可伪造事件 (v0.0.93)
 - **2 处崩溃与未定义行为**：`sqlite3_bind_text` 误用 `SQLITE_STATIC`（Swift 桥出的缓冲区活不到 `step`，每 2s 在主线程读已回收内存）；Cline 时间戳 `Int64(1e30)` 在采样拍当场 trap——改回旧写法跑测试，整条 runner 直接 `Fatal error` 而死。

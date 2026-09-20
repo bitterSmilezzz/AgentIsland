@@ -29,7 +29,7 @@ enum LogTailReader {
         // 只有「普通文件」才进缓存；特殊文件（FIFO 等）与 stat 失败的情形退回直读，
         // 与此前行为一致。新鲜度取 stat() 而非 URL.resourceValues：后者的结果有毫秒级
         // 缓存窗口，而这里恰好要比对「几十微秒内被改写过的同一个文件」，实测会误命中
-        // 一次陈旧（2s 采样节律下其他环节的毫秒级陈旧无影响，故不一并改动）。
+        // 一次陈旧（2s 采样节律下「找刚被写的那个文件」的 newestFile 已在用 stat(2)（见其注释），其余环节的毫秒级陈旧无影响）。
         guard let stamp = Self.statRegular(file.path) else {
             return readUncached(file: file, maxLines: maxLines, maxBytes: maxBytes)
         }
@@ -113,6 +113,17 @@ enum LogTailReader {
         }
     }
 
+    /// 已报过「预算耗尽」的目录（键空间 = 注册表里的会话目录数，有界）
+    private static var truncationReported = Set<String>()
+
+    /// 返回 true 表示这是该目录第一次触发告警
+    private static func markTruncationReported(_ path: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if truncationReported.contains(path) { return false }
+        truncationReported.insert(path)
+        return true
+    }
+
     /// 会话树中最近修改的常规文件。
     /// AgentActionInspector（主线程每拍）与 AgentLogStreamer（流水页）共用——
     /// 此前两处各持一份逐字相同的实现，且都不防符号链接循环、无条目上限。
@@ -129,9 +140,13 @@ enum LogTailReader {
         var newestDate = Date.distantPast
         let threshold = Date().addingTimeInterval(-maxAge)
         var visited = 0
+        var truncated = false
         while let item = en.nextObject() as? URL {
             visited += 1
-            if visited > maxEntries { break }
+            if visited > maxEntries { truncated = true; break }
+            // 目录类型/符号链接仍走枚举器预取的 resourceValues（只有「新鲜度」需要精确）；
+            // 但 mtime 必须 stat(2) 现取：resourceValues 有毫秒级陈旧窗口，而本函数的职责
+            // 恰恰是找出「刚被写的那个文件」——缓存窗口会让它系统性漏掉最新的一次写入
             guard let v = try? item.resourceValues(forKeys: Set(keys)) else { continue }
             if v.isSymbolicLink == true, v.isDirectory == true {
                 // 符号链接目录跳过整个子树，防循环（对齐 FileMonitor.scanTree）。
@@ -142,11 +157,18 @@ enum LogTailReader {
                 continue
             }
             guard v.isRegularFile == true,
-                  let mtime = v.contentModificationDate,
+                  let mtime = statModificationDate(item.path),
                   mtime >= threshold,
                   mtime > newestDate else { continue }
             newestDate = mtime
             newestURL = item
+        }
+        if truncated, markTruncationReported(dir.path) {
+            // 预算耗尽时枚举顺序并不保证是时间序，返回的只能算「目前已知最新」。
+            // 动作标签本就只用于展示、不参与状态判定，但静默不可接受。
+            // 每个目录只报一次：本函数每拍对每个会话目录各调一次，不去重就是日志风暴
+            AppLog.warn("LogTail: newestFile 条目预算耗尽(\(maxEntries))于 \(dir.path)，"
+                        + "返回值为部分枚举内的最新，可能不是全局最新")
         }
         return newestURL
     }

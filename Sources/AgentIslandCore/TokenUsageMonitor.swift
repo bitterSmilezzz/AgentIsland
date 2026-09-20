@@ -477,10 +477,6 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private var dbInodes: [String: UInt64] = [:]
     /// 一次性连接（stop 后迟到的重建；rawRows 收尾统一关闭，不写回缓存）
     private var transientHandles: [OpaquePointer] = []
-    private var currentDBGeneration: Int {
-        lock.lock(); defer { lock.unlock() }
-        return dbGeneration
-    }
     private let dbQueue = DispatchQueue(label: "com.agentisland.tokenusage.db")
 
     /// 现网构造：SQLite + 可审计 JSONL，全部只读且不触碰凭证/正文。
@@ -962,6 +958,21 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 db = handle
             }
 
+            // 一次性连接（stop 后迟到重建）用毕即关（R34/F9）。注册位置有两处讲究：
+            // ① 必须在 prepare 之前——Swift 的 defer 只对「注册之后」的控制流生效，
+            //    放在 prepare 之后就仍然漏掉 prepare 失败这条 return（而「一直失败」
+            //    恰恰是最需要收句柄的场景）；
+            // ② 必须早于下面 finalize 的 defer——defer 逆序执行，晚注册会先跑，
+            //    在未 finalize 的连接上 sqlite3_close 只会返回 SQLITE_BUSY 并把连接留下，
+            //    而数组已清空，等于永不重试。close_v2 再兜一层。
+            defer {
+                lock.lock()
+                let pending = transientHandles
+                transientHandles.removeAll()
+                lock.unlock()
+                for handle in pending { sqlite3_close_v2(handle) }
+            }
+
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
                 AppLog.warn("TokenUsage: prepare failed: \(String(cString: sqlite3_errmsg(db)))")
@@ -993,12 +1004,6 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 AppLog.warn("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
                 return []
             }
-            // 一次性连接（stop 后迟到重建）用毕即关（R34/F9）
-            lock.lock()
-            let pending = transientHandles
-            transientHandles.removeAll()
-            lock.unlock()
-            for handle in pending { sqlite3_close(handle) }
             return rows
         }
     }
@@ -1006,6 +1011,12 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     /// 只读打开并记录 inode
     private func openReadonly(_ dbPath: String) -> OpaquePointer? {
         var handle: OpaquePointer?
+        // 代际必须在 open **之前**取：open 之后再读，比较的就是同一个值读两遍，
+        // 恒等成立——「stop() 发生在打开期间」这一种恰恰判不出来，迟到新建的连接
+        // 会被写进 dbConnections，而 closeConnectionsAsync 早已跑完，从此无人再关
+        lock.lock()
+        let generationBeforeOpen = dbGeneration
+        lock.unlock()
         guard sqlite3_open_v2(dbPath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
             if let handle { sqlite3_close(handle) }
             AppLog.warn("TokenUsage: open failed \(dbPath)")
@@ -1017,9 +1028,9 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         // 代际校验（R34/F9）：stop() 之后（含在飞查询的迟到重建）不得写回缓存——
         // 写回后无人再关，违背 stop 的「彻底清理」契约；一次性连接用完即关
         lock.lock()
-        let generationAtOpen = dbGeneration
+        let generationAfterOpen = dbGeneration
         lock.unlock()
-        if generationAtOpen == currentDBGeneration {
+        if generationBeforeOpen == generationAfterOpen {
             dbConnections[dbPath] = handle
             dbInodes[dbPath] = currentInode(dbPath)
             return handle

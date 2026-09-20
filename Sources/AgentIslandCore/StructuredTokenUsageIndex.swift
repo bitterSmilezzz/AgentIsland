@@ -157,12 +157,20 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
                     let canAppend = old?.stamp.inode == stamp.inode
                         && old?.endedWithNewline == true && stamp.size > (old?.stamp.size ?? 0)
                     let offset = canAppend ? (old?.stamp.size ?? 0) : 0
-                    if let parsed = Self.parse(url: url, source: source, offset: offset) {
+                    if let parsed = Self.parse(url: url, source: source, offset: offset,
+                                               limit: stamp.size) {
+                        // 戳里的 size 换成**本轮真正承认过的字节数**：stat 与读之间文件被原地
+                        // 截断时，缓存虚高的 size 会让下一轮的 offset 落在从未解析的字节之后
+                        // （与修掉的「重复计数」正好对称的另一侧）
+                        let consumed = parsed.consumedThrough
+                        let settled = FileStamp(inode: stamp.inode,
+                                                modifiedAt: stamp.modifiedAt,
+                                                size: consumed)
                         let events = canAppend ? (old?.events ?? []) + parsed.events : parsed.events
-                        cache[cacheKey] = CachedFile(stamp: stamp,
+                        cache[cacheKey] = CachedFile(stamp: settled,
                                                      endedWithNewline: parsed.endedWithNewline,
                                                      events: events)
-                        stamps[cacheKey] = stamp
+                        stamps[cacheKey] = settled
                         fileEvents.append(events)
                     } else if let cached = old {
                         // 文件正被写入或瞬时不可读时沿用上一份成功结果，避免统计闪回零。
@@ -207,15 +215,21 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
         return snapshot
     }
 
-    private static func parse(url: URL, source: StructuredTokenSource, offset: Int)
-        -> (events: [Event], endedWithNewline: Bool)? {
+    /// 解析 `[offset, limit)` 这一段，并回吐真正承认到的位置 `consumedThrough`。
+    /// `limit` 必须是**扫描时量到的那个 size**：本函数在 stat 之后才 mmap 读文件，
+    /// 期间第三方还能继续追加。若按读到的实际长度解析、却把旧的较小 size 记进缓存，
+    /// 下一轮的 offset 就落在已解析过的字节上——而没有 eventId 的行，其去重键
+    /// `path#offset-lineIndex` 恰随 offset 一起外移，去重失效、Token 静默膨胀。
+    private static func parse(url: URL, source: StructuredTokenSource, offset: Int, limit: Int)
+        -> (events: [Event], endedWithNewline: Bool, consumedThrough: Int)? {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        guard offset >= 0, offset <= data.count else { return nil }
+        let end = min(limit, data.count)
+        guard offset >= 0, offset <= end else { return nil }
         var events: [Event] = []
         let relevantMarker = source.format == .codex
             ? Data("token_usage_record".utf8)
             : Data("\"usage\"".utf8)
-        for (lineIndex, line) in data.dropFirst(offset)
+        for (lineIndex, line) in data.subdata(in: offset..<end)
             .split(separator: 0x0A, omittingEmptySubsequences: true).enumerated() {
             // 对话正文可能极长；Token 记录本身很小，跳过异常巨型行避免临时解析峰值。
             let lineData = Data(line)
@@ -235,7 +249,8 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
                 )
             ))
         }
-        return (events, data.last == 0x0A)
+        // 「是否以换行结尾」也必须按被承认的那段判断，否则下一轮会从半行续起
+        return (events, end > 0 && data[data.startIndex + end - 1] == 0x0A, end)
     }
 
     private static func parse(json: [String: Any], format: StructuredTokenLogFormat)
