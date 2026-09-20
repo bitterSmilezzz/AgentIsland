@@ -62,7 +62,7 @@ struct AgentHoverTooltipCard: View {
                     LinearGradient(
                         colors: colorScheme == .light ? [
                             Color.white,
-                            Color(hex: 0xe2e8f0)
+                            Ramp.slate200
                         ] : [
                             Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.18),
                             Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06)
@@ -110,13 +110,13 @@ struct AgentHoverTooltipCard: View {
             if snapshot.isHung {
                 Text("卡死告警")
                     .font(Theme.bodyFont(9, weight: .bold))
-                    .foregroundColor(colorScheme == .light ? Color(hex: 0xb91c1c) : Theme.dangerRed)
+                    .foregroundColor(colorScheme == .light ? Ramp.red700 : Theme.dangerRed)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
                     .background(
                         Capsule()
-                            .fill(colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.2))
-                            .overlay(Capsule().strokeBorder(colorScheme == .light ? Color(hex: 0xfecaca) : Color.clear, lineWidth: 0.5))
+                            .fill(colorScheme == .light ? Ramp.red50 : Theme.dangerRed.opacity(0.2))
+                            .overlay(Capsule().strokeBorder(colorScheme == .light ? Ramp.red200 : Color.clear, lineWidth: 0.5))
                     )
             } else {
                 Text(snapshot.level.label)
@@ -157,10 +157,10 @@ struct AgentHoverTooltipCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
-                                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
+                                .fill(colorScheme == .light ? Ramp.slate100 : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 6)
-                                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                        .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                                 )
                         )
                 }
@@ -270,15 +270,15 @@ struct AgentHoverTooltipCard: View {
                             Text("终止")
                                 .font(Theme.bodyFont(10, weight: .medium))
                         }
-                        .foregroundColor(colorScheme == .light ? Color(hex: 0xb91c1c) : Theme.dangerRed.opacity(0.9))
+                        .foregroundColor(colorScheme == .light ? Ramp.red700 : Theme.dangerRed.opacity(0.9))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(
                             RoundedRectangle(cornerRadius: 6)
-                                .fill(colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.15))
+                                .fill(colorScheme == .light ? Ramp.red50 : Theme.dangerRed.opacity(0.15))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 6)
-                                        .strokeBorder(colorScheme == .light ? Color(hex: 0xfecaca) : Color.clear, lineWidth: 0.5)
+                                        .strokeBorder(colorScheme == .light ? Ramp.red200 : Color.clear, lineWidth: 0.5)
                                 )
                         )
                     }
@@ -311,7 +311,7 @@ struct AgentHoverTooltipCard: View {
                             .fill(Theme.chipFill)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                    .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                             )
                     )
                 }
@@ -322,35 +322,14 @@ struct AgentHoverTooltipCard: View {
     }
 
     private func levelForegroundColor(_ level: ActivityLevel) -> Color {
-        guard colorScheme == .light else { return level.color }
-        switch level {
-        case .working: return Color(hex: 0x047857)
-        case .idle: return Color(hex: 0x64748b)
-        case .attention: return Color(hex: 0xb45309)
-        case .completed: return Color(hex: 0x047857)
-        case .offline: return Color(hex: 0x94a3b8)
-        }
+        colorScheme == .light ? level.lightText : level.color
     }
 
     private func levelBackgroundColor(_ level: ActivityLevel) -> Color {
-        guard colorScheme == .light else { return level.color.opacity(0.18) }
-        switch level {
-        case .working: return Color(hex: 0xecfdf5)
-        case .idle: return Color(hex: 0xf1f5f9)
-        case .attention: return Color(hex: 0xfffbeb)
-        case .completed: return Color(hex: 0xecfdf5)
-        case .offline: return Color(hex: 0xf1f5f9)
-        }
+        colorScheme == .light ? level.lightFill : level.color.opacity(0.18)
     }
 
     private func levelBorderColor(_ level: ActivityLevel) -> Color {
-        guard colorScheme == .light else { return Color.clear }
-        switch level {
-        case .working: return Color(hex: 0xa7f3d0)
-        case .idle: return Color(hex: 0xe2e8f0)
-        case .attention: return Color(hex: 0xfde68a)
-        case .completed: return Color(hex: 0xa7f3d0)
-        case .offline: return Color(hex: 0xe2e8f0)
-        }
+        colorScheme == .light ? level.lightBorder : Color.clear
     }
 }

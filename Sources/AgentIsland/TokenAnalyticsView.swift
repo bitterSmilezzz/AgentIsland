@@ -86,7 +86,7 @@ struct TokenAnalyticsView: View {
                 GeometryReader { g in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.chipFill)
+                            .fill(colorScheme == .light ? Ramp.slate200 : Theme.chipFill)
                             .frame(height: 6)
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
                             .fill(accentColor)
@@ -572,10 +572,10 @@ private struct TokenRangePicker: View {
         .padding(2.5)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color.white.opacity(0.06))
+                .fill(colorScheme == .light ? Ramp.slate100 : Color.white.opacity(0.06))
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
+                        .strokeBorder(colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline, lineWidth: 0.5)
                 )
         )
     }
@@ -856,7 +856,7 @@ private struct TokenSourceRow: View {
             if usage.isAvailable {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.08))
+                        Capsule().fill(colorScheme == .light ? Ramp.slate200 : Color.white.opacity(0.08))
                         Capsule()
                             .fill(Theme.trackGradient)
                             .frame(width: max(geo.size.width * ratio, ratio > 0 ? 4 : 0))
@@ -873,7 +873,7 @@ private struct TokenSourceRow: View {
                 .fill((isHovered && showsDetailChevron) ? Theme.obsidianCardHoverFill : Color.clear)
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(colorScheme == .light && isHovered && showsDetailChevron ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                        .strokeBorder(colorScheme == .light && isHovered && showsDetailChevron ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                 )
         )
         .contentShape(Rectangle())

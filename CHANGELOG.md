@@ -4,6 +4,42 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.92] - 2026-09-20
+
+### 🎨 语义色收到一处：硬编码色值 186 → 36，等级色阶 5 份副本并成 1 份
+
+上一版把「Theme 外的硬编码色值」钉成 186 的棘轮基线，当时判断是大面积清扫、不划算。
+这一版回头量了一遍，结论变了：**这些色值不是 186 个各不相同的颜色，而是少数几支被反复抄写**——
+`slate-200` 一支描边色在 17 个文件里抄了 45 次。抄写的代价不是整洁，是漂移：改一次色板要改
+几十处，漏掉的那几处只有眼睛能发现，而上一版刚刚证明过我的眼睛看不到全部界面。
+
+- **`Theme.swift` 新增 `Ramp`（Tailwind 基色阶）**：18 支被复用 ≥2 次的基色在此唯一登记，
+  整数与 `Color` 成对给出（`slate200Hex` / `slate200`）。`Theme` 自身的动态令牌浅色半边也改引
+  这批整数，浅色色板与基色阶从此不可能各说各话。视图层 147 处字面量换成 `Ramp.xxx` 引用。
+- **五份 `ActivityLevel` 色阶副本并成一份**：`AgentIslandApp` / `AgentRowView` / `AgentHoverTooltip`
+  各有一份**逐字节相同**的浅色 text/fill/border 三段梯子（合计 45 处字面量），`IslandView` 还有
+  第四份基础色梯子。现统一为 `Theme` 上的 `color` / `lightText` / `lightFill` / `lightBorder`；
+  各调用点只保留自己的外观分支与染色系数（0.12 / 0.14 / 0.18 是组件自己的决定，不并入）。
+- **顺带删掉一份真正的死副本**：`IslandView` 里的 `ActivityLevel.label` 与 `AgentIslandCore`
+  中同名属性**五支文案完全一致**（Swift 允许 UI 模块的扩展遮蔽 Core 的实现，所以它一直静默存在）。
+- **辉光与状态色解耦重复**：`0xffd60a` 原写在 3 处、`0xff3b30` 与 `0x30d158` 各 2 处；
+  现收为 `Ramp.neonAmberHex` / `neonRedHex` / `neonGreenHex`，`DockedSliver` 的三处
+  `NSColor(hex:)` 改用 `Theme.glowAlert` / `glowWorking` / `glowIdle`。
+- **等价性用机器核对，不靠断言**：把新树里每个 `Ramp.xxx` 按其登记的整数还原回字面量，再与
+  `HEAD` 逐行比对——剩余差异只有「改设计的那些」，无一处色值变化。唯一的写法变化是
+  `Color(hex: X, alpha: A)` → `Ramp.x.opacity(A)`，对纯色而言同义。
+- **新测试先抓到我自己的漏网**：`语义色单点` 首跑即报出 5 处漏改（`ModelDonutChartView` 的
+  动态色对、`AgentRingView` 的 `Palette`——都是 `dynamicLight:` 形态，不在最初那轮替换的匹配里）；
+  修完后又报出 `IslandView` 的第四份色阶。同时反向修正了测试自身的一处误报：事件类型
+  （`EventType`，只有 `attention` 无 `working`）的梯子不该算重复。
+- **棘轮同步收紧**：`债务棘轮` 色值基线 186 → 36（余下 36 处是一次性强调色与黑/白半透蒙层，
+  收进 `Ramp` 只会多出十几支无人复用的色）；新增 `语义色单点` 测试——`Ramp` 基色整数只准出现在
+  `Theme.swift`，且等级色阶只准定义一处（解析 `Ramp` 块自动跟随，日后加色无需改测试）。
+  两条断言各自做过变异验证：抄一支基色、复制一份梯子，都能让测试红。
+
+- **顺手清空最后的编译告警**：`NotifyCommand` 两处 `[#NoUsage]`（`if let url` 只做存在性判断、
+  `let (data, response)` 的 `data` 无人用）——目标产物现在 Swift 告警为 0，下次真告警不会被埋。
+
 ## [0.0.91] - 2026-09-20
 
 ### 👁 首次目视核对岛内界面，就地修掉一处文案截断

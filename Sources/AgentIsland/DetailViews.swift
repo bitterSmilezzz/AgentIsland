@@ -27,14 +27,14 @@ struct DetailHeader: View {
             }) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDark.opacity(0.9))
+                    .foregroundColor(colorScheme == .light ? Ramp.slate700 : Theme.onDark.opacity(0.9))
                     .frame(width: 24, height: 24)
                     .background(
                         Circle()
-                            .fill(colorScheme == .light ? (backHovered ? Color.white : Color(hex: 0xf1f5f9)) : (backHovered ? Theme.hoverFill : Theme.chipFill))
+                            .fill(colorScheme == .light ? (backHovered ? Color.white : Ramp.slate100) : (backHovered ? Theme.hoverFill : Theme.chipFill))
                             .overlay(
                                 Circle()
-                                    .strokeBorder(colorScheme == .light ? (backHovered ? Color(hex: 0xcbd5e1) : Color(hex: 0xe2e8f0)) : Color.clear, lineWidth: 0.5)
+                                    .strokeBorder(colorScheme == .light ? (backHovered ? Ramp.slate300 : Ramp.slate200) : Color.clear, lineWidth: 0.5)
                             )
                             .shadow(color: Color.black.opacity(colorScheme == .light ? (backHovered ? 0.06 : 0.02) : 0), radius: 1, y: 0.5)
                     )
@@ -576,7 +576,7 @@ struct AgentDetailView: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
                             .strokeBorder(
-                                colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                                colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline,
                                 lineWidth: 0.75
                             )
                     )
@@ -614,7 +614,7 @@ struct AgentDetailView: View {
                         .fill(Theme.chipFill)
                         .overlay(
                             RoundedRectangle(cornerRadius: Theme.radiusSm)
-                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                         )
                 )
             }

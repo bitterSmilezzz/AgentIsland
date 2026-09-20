@@ -109,7 +109,7 @@ struct EventBannerView: View {
                         .fill(colorScheme == .light ? Color.white.opacity(0.92) : Color.black.opacity(0.20))
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.08), lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.white.opacity(0.08), lineWidth: 0.5)
                         )
                 )
             }
@@ -235,7 +235,7 @@ struct EventBannerView: View {
                             .fill(colorScheme == .light ? Color.white : Theme.chipFill)
                             .overlay(
                                 Capsule()
-                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xcbd5e1) : Color.clear, lineWidth: 0.5)
+                                    .strokeBorder(colorScheme == .light ? Ramp.slate300 : Color.clear, lineWidth: 0.5)
                             )
                             .shadow(color: Color.black.opacity(colorScheme == .light ? 0.03 : 0), radius: 1, y: 0.5)
                     )
@@ -251,10 +251,10 @@ struct EventBannerView: View {
         .padding(.vertical, 6)
         .background(
             event.eventType == .costSpike
-                ? (colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.18))
+                ? (colorScheme == .light ? Ramp.red50 : Theme.dangerRed.opacity(0.18))
                 : (event.eventType == .attention
-                   ? (colorScheme == .light ? Color(hex: 0xfffbeb) : Theme.warningOrange.opacity(0.15))
-                   : (colorScheme == .light ? Color(hex: 0xf0fdf4) : Color.white.opacity(0.06)))
+                   ? (colorScheme == .light ? Ramp.amber50 : Theme.warningOrange.opacity(0.15))
+                   : (colorScheme == .light ? Ramp.green50 : Color.white.opacity(0.06)))
         )
     }
 

@@ -129,11 +129,11 @@ struct DockedSliverCapsule: View {
 
     private var activeNSColor: NSColor {
         if hasAlert {
-            return NSColor(hex: 0xff3b30)
+            return Theme.glowAlert
         } else if isWorking {
-            return NSColor(hex: 0x10b981)
+            return Theme.glowWorking
         }
-        return NSColor(hex: 0xffd60a)
+        return Theme.glowIdle
     }
 
     private var shouldAnimate: Bool {

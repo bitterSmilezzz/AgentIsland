@@ -2,7 +2,13 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.91）
+## 功能（v0.0.92）
+
+### 语义色收敛到单一来源 (v0.0.92)
+- **186 → 36 处硬编码色值**：`Theme.swift` 新增 `Ramp` 基色阶（18 支复用 ≥2 次的 Tailwind 基色，整数与 `Color` 成对登记），视图层 147 处字面量改为 `Ramp.xxx` 引用；`slate-200` 一支描边色此前在 17 个文件里抄了 45 次。
+- **五份 `ActivityLevel` 色阶副本并成一份**：三份逐字节相同的浅色 text/fill/border 梯子（45 处）与 `IslandView` 的基础色梯子统一收到 `Theme` 的 `color` / `lightText` / `lightFill` / `lightBorder`；顺带删掉与 `AgentIslandCore` 逐字相同的死副本 `label`。
+- **外观零变化，且用机器核对**：把新树的 `Ramp.xxx` 按登记整数还原回字面量再与上一版逐行比对，剩余差异仅为有意改动；唯一写法变化是 `Color(hex:X,alpha:A)` → `Ramp.x.opacity(A)`。
+- **棘轮再加一条结构断言**：`Ramp` 基色整数只准出现在 `Theme.swift`，等级色阶只准定义一处（解析 `Ramp` 块自动跟随新增色）；两条断言均做过变异验证。测试 316 → 317。
 
 ### 首次目视核对岛内界面 (v0.0.91)
 - **修掉一处测试永远发现不了的缺陷**：工作台自查卡的依据行有 40 字，在约 370pt 宽的面板里被中段截断成「会话库与…细是设计如此」，读不通——缩短并把完整解释留在悬停提示，复验截图确认整行完整；

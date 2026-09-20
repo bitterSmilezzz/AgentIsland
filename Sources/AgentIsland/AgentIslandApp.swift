@@ -136,7 +136,7 @@ struct MenuBarPopoverView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(
-                    colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.12),
+                    colorScheme == .light ? Ramp.slate200 : Color.white.opacity(0.12),
                     lineWidth: 0.75
                 )
         )
@@ -326,7 +326,7 @@ struct MenuBarPopoverView: View {
                         .fill(Theme.chipFill)
                         .overlay(
                             RoundedRectangle(cornerRadius: 6)
-                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                         )
                 )
             }
@@ -356,7 +356,7 @@ struct MenuBarPopoverView: View {
                             .fill(Theme.chipFill)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                    .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                             )
                     )
             }
@@ -389,7 +389,7 @@ struct MenuBarPopoverView: View {
                             .fill(Theme.chipFill)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                    .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                             )
                     )
             }
@@ -412,7 +412,7 @@ struct MenuBarPopoverView: View {
                             .fill(Theme.chipFill)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                    .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                             )
                     )
             }
@@ -433,7 +433,7 @@ struct MenuBarPopoverView: View {
                             .fill(Theme.chipFill)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                    .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                             )
                     )
             }
@@ -444,36 +444,15 @@ struct MenuBarPopoverView: View {
     }
 
     private func levelForegroundColor(_ level: ActivityLevel) -> Color {
-        guard colorScheme == .light else { return level.color }
-        switch level {
-        case .working: return Color(hex: 0x047857)
-        case .idle: return Color(hex: 0x64748b)
-        case .attention: return Color(hex: 0xb45309)
-        case .completed: return Color(hex: 0x047857)
-        case .offline: return Color(hex: 0x94a3b8)
-        }
+        colorScheme == .light ? level.lightText : level.color
     }
 
     private func levelBackgroundColor(_ level: ActivityLevel) -> Color {
-        guard colorScheme == .light else { return level.color.opacity(0.14) }
-        switch level {
-        case .working: return Color(hex: 0xecfdf5)
-        case .idle: return Color(hex: 0xf1f5f9)
-        case .attention: return Color(hex: 0xfffbeb)
-        case .completed: return Color(hex: 0xecfdf5)
-        case .offline: return Color(hex: 0xf1f5f9)
-        }
+        colorScheme == .light ? level.lightFill : level.color.opacity(0.14)
     }
 
     private func levelBorderColor(_ level: ActivityLevel) -> Color {
-        guard colorScheme == .light else { return Color.clear }
-        switch level {
-        case .working: return Color(hex: 0xa7f3d0)
-        case .idle: return Color(hex: 0xe2e8f0)
-        case .attention: return Color(hex: 0xfde68a)
-        case .completed: return Color(hex: 0xa7f3d0)
-        case .offline: return Color(hex: 0xe2e8f0)
-        }
+        colorScheme == .light ? level.lightBorder : Color.clear
     }
 }
 

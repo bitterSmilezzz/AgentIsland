@@ -88,7 +88,7 @@ public enum NotifyCommand {
             urlStr += "&detail=\(escapedDetail)"
         }
 
-        if let url = URL(string: urlStr) {
+        if URL(string: urlStr) != nil {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
             proc.arguments = [urlStr]
@@ -115,7 +115,7 @@ public enum NotifyCommand {
         request.httpBody = try? JSONEncoder().encode(dto)
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode == 200 {
                 return true
             }

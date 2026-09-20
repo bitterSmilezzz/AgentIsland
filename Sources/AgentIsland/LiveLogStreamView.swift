@@ -186,7 +186,7 @@ struct LiveLogStreamView: View {
         .padding(.vertical, 5)
         .background(
             colorScheme == .light
-                ? Color(hex: 0xf8fafc).opacity(0.85)
+                ? Ramp.slate50.opacity(0.85)
                 : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.04), dark: NSColor(hex: 0x000000, alpha: 0.12))
         )
     }
@@ -203,7 +203,7 @@ struct LiveLogStreamView: View {
             },
             contentInsets: EdgeInsets(top: 4, leading: Theme.pageMargin, bottom: 4, trailing: Theme.pageMargin)
         )
-        .background(colorScheme == .light ? Color(hex: 0xf1f5f9).opacity(0.6) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.02), dark: NSColor(hex: 0x000000, alpha: 0.08)))
+        .background(colorScheme == .light ? Ramp.slate100.opacity(0.6) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.02), dark: NSColor(hex: 0x000000, alpha: 0.08)))
     }
 
     // MARK: - 单条事件行
@@ -257,7 +257,7 @@ struct LiveLogStreamView: View {
                 .fill(isExpanded ? Theme.hoverFill : (colorScheme == .light ? Color.white.opacity(0.92) : Color.white.opacity(0.04)))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0).opacity(0.8) : Color.clear, lineWidth: 0.5)
+                        .strokeBorder(colorScheme == .light ? Ramp.slate200.opacity(0.8) : Color.clear, lineWidth: 0.5)
                 )
                 .shadow(color: Color.black.opacity(colorScheme == .light ? 0.02 : 0), radius: 1, y: 0.5)
         )
@@ -341,10 +341,10 @@ struct LiveLogStreamView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
+                .fill(colorScheme == .light ? Ramp.slate100 : Color(dynamic: NSColor(hex: 0x000000, alpha: 0.05), dark: NSColor(hex: 0x000000, alpha: 0.35)))
                 .overlay(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                        .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                 )
         )
     }
@@ -368,12 +368,12 @@ struct LiveLogStreamView: View {
     private func badgeTextColor(for kind: AgentLogEvent.EventKind) -> Color {
         if colorScheme == .light {
             switch kind {
-            case .command: return Color(hex: 0x047857)
+            case .command: return Ramp.emerald700
             case .toolCall: return Color(hex: 0x1d4ed8)
-            case .fileEdit: return Color(hex: 0xb45309)
+            case .fileEdit: return Ramp.amber700
             case .thinking: return Color(hex: 0x7e22ce)
-            case .message: return Color(hex: 0x334155)
-            case .info: return Color(hex: 0x64748b)
+            case .message: return Ramp.slate700
+            case .info: return Ramp.slate500
             }
         }
         switch kind {
@@ -391,12 +391,12 @@ struct LiveLogStreamView: View {
     private func badgeBgColor(for kind: AgentLogEvent.EventKind) -> Color {
         if colorScheme == .light {
             switch kind {
-            case .command: return Color(hex: 0xecfdf5)
+            case .command: return Ramp.emerald50
             case .toolCall: return Color(hex: 0xeff6ff)
-            case .fileEdit: return Color(hex: 0xfffbeb)
+            case .fileEdit: return Ramp.amber50
             case .thinking: return Color(hex: 0xfaf5ff)
-            case .message: return Color(hex: 0xf8fafc)
-            case .info: return Color(hex: 0xf1f5f9)
+            case .message: return Ramp.slate50
+            case .info: return Ramp.slate100
             }
         }
         return badgeTextColor(for: kind).opacity(0.18)
@@ -405,12 +405,12 @@ struct LiveLogStreamView: View {
     private func badgeBorderColor(for kind: AgentLogEvent.EventKind) -> Color {
         if colorScheme == .light {
             switch kind {
-            case .command: return Color(hex: 0xa7f3d0)
+            case .command: return Ramp.emerald200
             case .toolCall: return Color(hex: 0xbfdbfe)
-            case .fileEdit: return Color(hex: 0xfde68a)
+            case .fileEdit: return Ramp.amber200
             case .thinking: return Color(hex: 0xe9d5ff)
-            case .message: return Color(hex: 0xe2e8f0)
-            case .info: return Color(hex: 0xe2e8f0)
+            case .message: return Ramp.slate200
+            case .info: return Ramp.slate200
             }
         }
         return badgeTextColor(for: kind).opacity(0.35)

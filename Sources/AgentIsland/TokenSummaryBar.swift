@@ -55,10 +55,10 @@ struct TokenSummaryBar: View {
                 .padding(.vertical, 2.5)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(colorScheme == .light ? Color(hex: 0xf8fafc) : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
+                        .fill(colorScheme == .light ? Ramp.slate50 : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline, lineWidth: 0.5)
                         )
                 )
 
@@ -68,15 +68,15 @@ struct TokenSummaryBar: View {
                 HStack(spacing: 4.5) {
                     Text("TOTAL")
                         .font(Theme.badgeFont(.semibold))
-                        .foregroundColor(colorScheme == .light ? Color(hex: 0x475569) : Theme.onDarkMuted)
+                        .foregroundColor(colorScheme == .light ? Ramp.slate600 : Theme.onDarkMuted)
                         .padding(.horizontal, 3.5)
                         .padding(.vertical, 1)
                         .background(
                             RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
+                                .fill(colorScheme == .light ? Ramp.slate100 : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.06))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
+                                        .strokeBorder(colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline, lineWidth: 0.5)
                                 )
                         )
                     Text(TokenUsage.compact(total.tokensTotal))
@@ -97,10 +97,10 @@ struct TokenSummaryBar: View {
                 .padding(.vertical, 2.5)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(colorScheme == .light ? Color(hex: 0xf8fafc) : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.045))
+                        .fill(colorScheme == .light ? Ramp.slate50 : Color(dynamicLight: 0x000000, dark: 0xffffff).opacity(0.045))
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline, lineWidth: 0.5)
                         )
                 )
 

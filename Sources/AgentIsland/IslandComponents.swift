@@ -91,7 +91,7 @@ struct DarkDivider: View {
 
     var body: some View {
         Rectangle()
-            .fill(colorScheme == .light ? Color(hex: 0xe2e8f0).opacity(0.85) : Color.white.opacity(0.10))
+            .fill(colorScheme == .light ? Ramp.slate200.opacity(0.85) : Color.white.opacity(0.10))
             .frame(height: 0.75)
     }
 }
@@ -291,7 +291,7 @@ private struct SubtleCardModifier: ViewModifier {
                     .overlay(
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .strokeBorder(
-                                colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                                colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline,
                                 lineWidth: 0.75
                             )
                     )
@@ -352,7 +352,7 @@ struct FilterCapsuleBar<Item: Identifiable & Equatable>: View {
                                 .fill(isSelected ? Theme.cardFill : Color.clear)
                                 .overlay(
                                     Capsule()
-                                        .strokeBorder(isSelected ? (colorScheme == .light ? Color(hex: 0xcbd5e1) : Theme.obsidianHairline) : Color.clear, lineWidth: 0.5)
+                                        .strokeBorder(isSelected ? (colorScheme == .light ? Ramp.slate300 : Theme.obsidianHairline) : Color.clear, lineWidth: 0.5)
                                 )
                         )
                     }

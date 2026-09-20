@@ -64,7 +64,7 @@ struct SettingsCard<Content: View>: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(
-                                colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.hairline.opacity(0.5),
+                                colorScheme == .light ? Ramp.slate200 : Theme.hairline.opacity(0.5),
                                 lineWidth: 0.5
                             )
                     )

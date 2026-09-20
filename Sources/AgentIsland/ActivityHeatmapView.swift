@@ -36,7 +36,7 @@ struct ActivityHeatmapView: View {
 
     private func cellColor(tokens: Int) -> Color {
         guard tokens > 0 else {
-            return colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline.opacity(0.6)
+            return colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline.opacity(0.6)
         }
         let ratio = min(1.0, Double(tokens) / Double(maxTokens))
         if ratio > 0.75 {
@@ -66,7 +66,7 @@ struct ActivityHeatmapView: View {
                 .fill(colorScheme == .light ? Color.white : Theme.obsidianCardFill)
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
+                        .strokeBorder(colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline, lineWidth: 0.5)
                 )
         )
         // 自绘网格对 VoiceOver 完全不可见，汇总成一句可读结论（与趋势图同一处理标准）

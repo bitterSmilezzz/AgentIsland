@@ -229,15 +229,15 @@ struct AgentRowView: View {
                         if snapshot.processRunning && snapshot.memoryBytes > 0 {
                             Text(snapshot.memoryText)
                                 .font(Theme.monoDigitFont(9, weight: .medium))
-                                .foregroundColor(colorScheme == .light ? Color(hex: 0x475569) : Theme.onDarkFaint)
+                                .foregroundColor(colorScheme == .light ? Ramp.slate600 : Theme.onDarkFaint)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
                                 .background(
                                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                        .fill(colorScheme == .light ? Color(hex: 0xf1f5f9) : Theme.obsidianPill)
+                                        .fill(colorScheme == .light ? Ramp.slate100 : Theme.obsidianPill)
                                         .overlay(
                                             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 0.5)
+                                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline, lineWidth: 0.5)
                                         )
                                 )
                                 .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
@@ -281,10 +281,10 @@ struct AgentRowView: View {
                 HStack(spacing: 5) {
                     Image(systemName: actionIcon)
                         .font(Theme.badgeFont())
-                        .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xb45309) : Color(hex: 0x047857)) : actionColor)
+                        .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Ramp.amber700 : Ramp.emerald700) : actionColor)
                     Text(action)
                         .font(Theme.monoFont(9.5))
-                        .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xb45309) : Color(hex: 0x065f46)) : actionColor)
+                        .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Ramp.amber700 : Color(hex: 0x065f46)) : actionColor)
                         .readableSingleLine(fullText: action, minWidth: 80, priority: 2)
 
                     if !snapshot.subagents.isEmpty {
@@ -321,14 +321,14 @@ struct AgentRowView: View {
                     if let usage = snapshot.tokenUsage, usage.tokens24h > 0 {
                         Text(Self.tokenBadge(usage))
                             .font(Theme.monoDigitFont(9, weight: .bold))
-                            .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xb45309) : Color(hex: 0x047857)) : Theme.onDark)
+                            .foregroundColor(colorScheme == .light ? (snapshot.level == .attention ? Ramp.amber700 : Ramp.emerald700) : Theme.onDark)
                             .lineLimit(1)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(
                                 Capsule()
                                     .fill(colorScheme == .light ? Color.white.opacity(0.95) : actionColor.opacity(0.20))
-                                    .overlay(Capsule().strokeBorder(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xfde68a) : Color(hex: 0xa7f3d0)) : actionColor.opacity(0.40), lineWidth: 0.5))
+                                    .overlay(Capsule().strokeBorder(colorScheme == .light ? (snapshot.level == .attention ? Ramp.amber200 : Ramp.emerald200) : actionColor.opacity(0.40), lineWidth: 0.5))
                             )
                             .help("24h \(TokenUsage.compact(usage.tokens24h)) token")
                     }
@@ -337,10 +337,10 @@ struct AgentRowView: View {
                 .padding(.vertical, 3)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xfffbeb) : Color(hex: 0xf0fdf4)) : actionColor.opacity(0.08))
+                        .fill(colorScheme == .light ? (snapshot.level == .attention ? Ramp.amber50 : Ramp.green50) : actionColor.opacity(0.08))
                         .overlay(
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .strokeBorder(colorScheme == .light ? (snapshot.level == .attention ? Color(hex: 0xfde68a).opacity(0.8) : Color(hex: 0xbbf7d0).opacity(0.8)) : actionColor.opacity(0.22), lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? (snapshot.level == .attention ? Ramp.amber200.opacity(0.8) : Color(hex: 0xbbf7d0).opacity(0.8)) : actionColor.opacity(0.22), lineWidth: 0.5)
                         )
                 )
                 .padding(.leading, isCompact ? 30 : 34) // 与 Agent 名称对齐
@@ -435,41 +435,21 @@ struct AgentRowView: View {
     }
 
     private func levelForegroundColor(_ level: ActivityLevel) -> Color {
-        if colorScheme == .light {
-            switch level {
-            case .working: return Color(hex: 0x047857) // emerald-700
-            case .attention: return Color(hex: 0xb45309) // amber-700
-            case .completed: return Color(hex: 0x047857) // emerald-700
-            case .idle: return Color(hex: 0x64748b) // slate-500
-            case .offline: return Color(hex: 0x94a3b8)
-            }
-        }
-        return level.color
+        colorScheme == .light ? level.lightText : level.color
     }
 
     private func levelBackgroundColor(_ level: ActivityLevel) -> Color {
-        if colorScheme == .light {
-            switch level {
-            case .working: return Color(hex: 0xecfdf5) // emerald-50
-            case .attention: return Color(hex: 0xfffbeb) // amber-50
-            case .completed: return Color(hex: 0xecfdf5) // emerald-50
-            case .idle: return Color(hex: 0xf1f5f9) // slate-100
-            case .offline: return Color(hex: 0xf1f5f9).opacity(0.6)
-            }
-        }
-        return level.color.opacity(0.12)
+        // 离线行要比其余浅色行更退一步，故只在本调用点压暗（基色仍同源）
+        guard colorScheme == .light else { return level.color.opacity(0.12) }
+        return level.lightFill.opacity(level == .offline ? 0.6 : 1)
     }
 
     private func levelBorderColor(_ level: ActivityLevel) -> Color {
-        if colorScheme == .light {
-            switch level {
-            case .working: return Color(hex: 0xa7f3d0).opacity(0.8) // emerald-200
-            case .attention: return Color(hex: 0xfde68a).opacity(0.8) // amber-200
-            case .completed: return Color(hex: 0xa7f3d0).opacity(0.8)
-            case .idle: return Color(hex: 0xe2e8f0) // slate-200
-            case .offline: return Color(hex: 0xe2e8f0).opacity(0.6)
-            }
+        guard colorScheme == .light else { return level.color.opacity(0.32) }
+        switch level {
+        case .idle: return level.lightBorder
+        case .offline: return level.lightBorder.opacity(0.6)
+        default: return level.lightBorder.opacity(0.8)
         }
-        return level.color.opacity(0.32)
     }
 }

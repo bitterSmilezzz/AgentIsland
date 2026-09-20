@@ -229,13 +229,13 @@ private struct PulsingAttentionArc: View {
 /// 此前四个颜色全部硬编码亮色：ringYellow 白底 ≈1.3:1、ringGreen ≈1.8:1，浅色主题下几乎不可见。
 enum Palette {
     /// 环形底轨灰（黑曜石微轨）
-    static let ringTrack = Color(dynamicLight: 0xe2e8f0, dark: 0x22222a)
-    /// 水位 0~49% Sydedock 翡翠绿
-    static let ringGreen = Color(dynamicLight: 0x157f3c, dark: 0x28E07B)
-    /// 水位 50~79% Sydedock 金琥珀
-    static let ringYellow = Color(dynamicLight: 0x8f6a00, dark: 0xE3C567)
+    static let ringTrack = Color(dynamicLight: Ramp.slate200Hex, dark: 0x22222a)
+    /// 水位 0~49% Sydedock 翡翠绿（浅色半边与 Theme.statusWorking 同源）
+    static let ringGreen = Color(dynamicLight: Ramp.inkGreenHex, dark: 0x28E07B)
+    /// 水位 50~79% Sydedock 金琥珀（浅色半边与 Theme.statusIdle 同源）
+    static let ringYellow = Color(dynamicLight: Ramp.inkAmberHex, dark: 0xE3C567)
     /// 水位 80~99% 预警橙
     static let ringOrange = Color(dynamicLight: 0xc23a00, dark: 0xFF6B35)
     /// 水位 100% / 熔断 极光赤红
-    static let ringRed = Color(dynamicLight: 0xc62828, dark: 0xFF3B30)
+    static let ringRed = Color(dynamicLight: 0xc62828, dark: Ramp.neonRedHex)
 }

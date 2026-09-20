@@ -428,7 +428,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(controller.isSearchActive ? Theme.sydedockCyan : (colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint))
+                        .foregroundColor(controller.isSearchActive ? Theme.sydedockCyan : (colorScheme == .light ? Ramp.slate700 : Theme.onDarkFaint))
                         .padding(4)
                         .topBarChip()
                 }
@@ -453,7 +453,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: controller.appearanceMode.icon)
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint)
+                        .foregroundColor(colorScheme == .light ? Ramp.slate700 : Theme.onDarkFaint)
                         .padding(4)
                         .topBarChip()
                 }
@@ -468,7 +468,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint)
+                        .foregroundColor(colorScheme == .light ? Ramp.slate700 : Theme.onDarkFaint)
                         .padding(4)
                         .topBarChip()
                 }
@@ -482,7 +482,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(showingHistoryPopover ? Theme.sydedockCyan : (colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint))
+                        .foregroundColor(showingHistoryPopover ? Theme.sydedockCyan : (colorScheme == .light ? Ramp.slate700 : Theme.onDarkFaint))
                         .padding(4)
                         .topBarChip()
                 }
@@ -499,7 +499,7 @@ struct IslandView: View {
                 } label: {
                     Image(systemName: collapseIcon)
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(colorScheme == .light ? Color(hex: 0x334155) : Theme.onDarkFaint)
+                        .foregroundColor(colorScheme == .light ? Ramp.slate700 : Theme.onDarkFaint)
                         .padding(4)
                         .topBarChip()
                 }
@@ -548,7 +548,7 @@ struct IslandView: View {
                                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                                 .strokeBorder(
                                                     colorScheme == .light
-                                                    ? (snap.level == .attention ? Color(hex: 0xfde68a).opacity(0.8) : (snap.level == .working ? Color(hex: 0xa7f3d0).opacity(0.8) : Color(hex: 0xe2e8f0)))
+                                                    ? (snap.level == .attention ? Ramp.amber200.opacity(0.8) : (snap.level == .working ? Ramp.emerald200.opacity(0.8) : Ramp.slate200))
                                                     : (snap.level == .attention ? Theme.warningOrange.opacity(0.45) : (snap.level == .working ? Theme.sydedockEmerald.opacity(0.3) : Theme.obsidianHairline)),
                                                     lineWidth: 0.5
                                                 )
@@ -781,13 +781,13 @@ private struct TopBarChipModifier: ViewModifier {
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(colorScheme == .light
-                          ? (hovering ? Color.white : Color(hex: 0xf1f5f9))
+                          ? (hovering ? Color.white : Ramp.slate100)
                           : (hovering ? Theme.hoverFill : Theme.chipFill))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .strokeBorder(
                                 colorScheme == .light
-                                ? (hovering ? Color(hex: 0xcbd5e1) : Color(hex: 0xe2e8f0))
+                                ? (hovering ? Ramp.slate300 : Ramp.slate200)
                                 : (hovering ? Color.white.opacity(0.22) : Color.white.opacity(0.08)),
                                 lineWidth: 0.5
                             )
@@ -806,30 +806,8 @@ extension View {
 }
 
 // DockedSliverCapsule / PulseAnimation 已拆分至 DockedSliver.swift（R15）
-
-// MARK: - 状态标签
-
-extension ActivityLevel {
-    var label: String {
-        switch self {
-        case .working: return "工作中"
-        case .attention: return "待确认"
-        case .completed: return "已完成"
-        case .idle: return "待机"
-        case .offline: return "离线"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .working: return Theme.statusWorking
-        case .attention: return Theme.warningOrange
-        case .completed: return Theme.statusWorking
-        case .idle: return Theme.statusIdle
-        case .offline: return Theme.statusOffline
-        }
-    }
-}
+// ActivityLevel 的 color / lightText / lightFill / lightBorder 与状态标签文案（Core 的 label）
+// 统一在 Theme.swift —— 色阶此前在 IslandView + 三个视图里各抄一份，改一次要对齐四处。
 
 // EventBannerView 已拆分至 EventBannerView.swift（R15）
 

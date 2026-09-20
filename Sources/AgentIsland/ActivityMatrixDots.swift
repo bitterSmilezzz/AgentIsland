@@ -44,16 +44,16 @@ struct ActivityMatrixDots: View {
         switch level {
         case 3:
             return snapshot.level == .attention
-                ? (colorScheme == .light ? Color(hex: 0xb45309) : Theme.warningOrange)
-                : (colorScheme == .light ? Color(hex: 0x047857) : Theme.sydedockEmerald)
+                ? (colorScheme == .light ? Ramp.amber700 : Theme.warningOrange)
+                : (colorScheme == .light ? Ramp.emerald700 : Theme.sydedockEmerald)
         case 2:
             return snapshot.level == .attention
                 ? (colorScheme == .light ? Color(hex: 0xd97706) : Theme.warningOrange.opacity(0.78))
                 : (colorScheme == .light ? Color(hex: 0x059669) : Theme.onDark.opacity(0.75))
         case 1:
-            return colorScheme == .light ? Color(hex: 0x94a3b8) : Theme.onDark.opacity(0.40)
+            return colorScheme == .light ? Ramp.slate400 : Theme.onDark.opacity(0.40)
         default:
-            return colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.white.opacity(0.08)
+            return colorScheme == .light ? Ramp.slate200 : Color.white.opacity(0.08)
         }
     }
 
@@ -70,7 +70,7 @@ struct ActivityMatrixDots: View {
                         Circle()
                             .strokeBorder(
                                 colorScheme == .light
-                                    ? (lvl == 0 ? Color(hex: 0xcbd5e1).opacity(0.8) : Color.clear)
+                                    ? (lvl == 0 ? Ramp.slate300.opacity(0.8) : Color.clear)
                                     : Theme.onDark.opacity(lvl == 0 ? 0.22 : 0.0),
                                 lineWidth: 0.5
                             )

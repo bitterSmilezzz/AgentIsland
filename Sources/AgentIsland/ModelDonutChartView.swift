@@ -17,7 +17,7 @@ struct ModelDonutChartView: View {
         Color(dynamicLight: 0x7c3aed, dark: 0xa855f7), // 紫
         Theme.sydedockBlue,
         Color(dynamicLight: 0xdb2777, dark: 0xec4899), // 粉
-        Color(dynamicLight: 0x475569, dark: 0x64748b)  // 灰
+        Color(dynamicLight: Ramp.slate600Hex, dark: Ramp.slate500Hex)  // 灰
     ]
 
     private struct Slice: Identifiable {
@@ -70,7 +70,7 @@ struct ModelDonutChartView: View {
                     ZStack {
                         // 底底槽
                         Circle()
-                            .stroke(colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline, lineWidth: 8)
+                            .stroke(colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline, lineWidth: 8)
                             .frame(width: 56, height: 56)
 
                         // 扇形切片
@@ -126,7 +126,7 @@ struct ModelDonutChartView: View {
                         if breakdown.hasHidden {
                             HStack(spacing: 5) {
                                 Circle()
-                                    .fill(Color(dynamicLight: 0x94a3b8, dark: 0x475569))
+                                    .fill(Color(dynamicLight: Ramp.slate400Hex, dark: Ramp.slate600Hex))
                                     .frame(width: 5, height: 5)
                                 Text(breakdown.hiddenText)
                                     .font(Theme.monoFont(9))

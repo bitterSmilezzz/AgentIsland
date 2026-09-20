@@ -47,7 +47,7 @@ struct ProcessTreeView: View {
                         .fill(Theme.chipFill)
                         .overlay(
                             RoundedRectangle(cornerRadius: Theme.radiusSm)
-                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                         )
                 )
             }

@@ -304,7 +304,7 @@ struct ToolboxView: View {
                         .fill(Theme.chipFill)
                         .overlay(
                             Capsule()
-                                .strokeBorder(colorScheme == .light ? Color(hex: 0xe2e8f0) : Color.clear, lineWidth: 0.5)
+                                .strokeBorder(colorScheme == .light ? Ramp.slate200 : Color.clear, lineWidth: 0.5)
                         )
                 )
             }
@@ -423,7 +423,7 @@ struct ToolboxView: View {
                         .overlay(
                             RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
                                 .strokeBorder(
-                                    colorScheme == .light ? Color(hex: 0xe2e8f0) : Theme.obsidianHairline,
+                                    colorScheme == .light ? Ramp.slate200 : Theme.obsidianHairline,
                                     lineWidth: 0.5
                                 )
                         )
@@ -441,19 +441,19 @@ struct ToolboxView: View {
         switch type {
         case .orphan:
             text = "孤儿进程"
-            fgColor = colorScheme == .light ? Color(hex: 0xb45309) : Theme.warningOrange
-            bgColor = colorScheme == .light ? Color(hex: 0xfffbeb) : Theme.warningOrange.opacity(0.18)
-            borderColor = colorScheme == .light ? Color(hex: 0xfde68a) : Theme.warningOrange.opacity(0.35)
+            fgColor = colorScheme == .light ? Ramp.amber700 : Theme.warningOrange
+            bgColor = colorScheme == .light ? Ramp.amber50 : Theme.warningOrange.opacity(0.18)
+            borderColor = colorScheme == .light ? Ramp.amber200 : Theme.warningOrange.opacity(0.35)
         case .hung:
             text = "疑似死锁"
-            fgColor = colorScheme == .light ? Color(hex: 0xb91c1c) : Theme.dangerRed
-            bgColor = colorScheme == .light ? Color(hex: 0xfef2f2) : Theme.dangerRed.opacity(0.18)
-            borderColor = colorScheme == .light ? Color(hex: 0xfecaca) : Theme.dangerRed.opacity(0.35)
+            fgColor = colorScheme == .light ? Ramp.red700 : Theme.dangerRed
+            bgColor = colorScheme == .light ? Ramp.red50 : Theme.dangerRed.opacity(0.18)
+            borderColor = colorScheme == .light ? Ramp.red200 : Theme.dangerRed.opacity(0.35)
         case .overweight:
             text = "内存超限"
             fgColor = colorScheme == .light ? Color(hex: 0x92400e) : Theme.statusIdle
             bgColor = colorScheme == .light ? Color(hex: 0xfef3c7) : Theme.statusIdle.opacity(0.18)
-            borderColor = colorScheme == .light ? Color(hex: 0xfde68a) : Theme.statusIdle.opacity(0.35)
+            borderColor = colorScheme == .light ? Ramp.amber200 : Theme.statusIdle.opacity(0.35)
         }
         return Text(text)
             .font(Theme.bodyFont(9, weight: .bold))
