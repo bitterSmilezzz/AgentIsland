@@ -475,7 +475,12 @@ enum TokenUsageTests {
             // 等待在飞刷新收尾
             let end = Date().addingTimeInterval(3.0)
             while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
-            try expectTrue(m.usage["dim"] != nil || m.usage.isEmpty, "并发调用不崩溃且有结果语义")
+            // 原断言是 `usage["dim"] != nil || usage.isEmpty`——两个分支都真，恒过。
+            // 夹具里 dim 近期两条各 150 净 token，合并后必须恰好 300，
+            // 且 8 次连发不得把同一批记录累加出 8 倍
+            try expectEqual(m.usage["dim"]?.tokens24h, 300,
+                            "在飞去重后应恰好一次刷新序列的结果")
+            try expectTrue(m.grandTotal.tokens24h >= 300, "汇总应包含 dim 的结果")
         }
 
         TestKit.test("数据源永久删除后连续缺失置空（源已消失终态）") {

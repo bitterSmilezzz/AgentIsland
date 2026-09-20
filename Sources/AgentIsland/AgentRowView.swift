@@ -7,7 +7,10 @@ import SwiftUI
 
 struct AgentRowView: View {
     let snapshot: AgentSnapshot
-    @ObservedObject var engine: ActivityEngine
+    // 行只渲染父级传下来的 snapshot，body 内不读 engine 任何 @Published 状态
+    // （engine 只用于 terminateAgent 调用与传给 tooltip）。观察它等于每拍白白
+    // 让整行重新求值一次，正落在展开弹簧期
+    let engine: ActivityEngine
     @ObservedObject var controller: IslandPanelController
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(SettingKey.compactView) private var isCompact = false
@@ -364,13 +367,7 @@ struct AgentRowView: View {
         }
         .scaleEffect(isHoveringRow ? 1.004 : 1.0)
         .animation(.spring(response: 0.22, dampingFraction: 0.75), value: isHoveringRow)
-        .onTapGesture {
-            controller.focusedAgentId = snapshot.profile.id
-            // 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表），带有丝滑弹簧转场
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                controller.route = .agentDetail(snapshot.profile.id)
-            }
-        }
+        .onTapGesture { openDetail() }
         .contextMenu {
             if snapshot.processRunning {
                 Button {
@@ -429,9 +426,23 @@ struct AgentRowView: View {
                 }
             }
         }
+        // 行内子元素（token/内存/点阵/环）逐个播报读起来是碎片；显式标签已把状态说全，
+        // 故收成一个元素。isButton 只改语义、不装 AXPress——没有下面这行，
+        // VoiceOver 用户听得到「按钮」却按不动（点按手势不是 Button）
+        .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(snapshot.profile.name)，\(snapshot.level.label)，点按查看详情")
         .accessibilityHint(snapshot.processRunning ? "悬停可执行终止 / 流水 / 直达操作，点按查看详情" : "点按查看详情")
+        .accessibilityAction { openDetail() }
+    }
+
+    /// 点行进 agent 详情页（原 Finder 跳转移入详情页会话列表），带有丝滑弹簧转场。
+    /// 手势与无障碍动作共用这一处，两条入口不会各写一遍再漂移
+    private func openDetail() {
+        controller.focusedAgentId = snapshot.profile.id
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+            controller.route = .agentDetail(snapshot.profile.id)
+        }
     }
 
     private func levelForegroundColor(_ level: ActivityLevel) -> Color {

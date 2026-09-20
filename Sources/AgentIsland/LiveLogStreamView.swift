@@ -51,17 +51,24 @@ struct LiveLogStreamView: View {
         snapshot?.profile.name ?? agentId
     }
 
+    /// 每次 body 求值只算一遍（在 body 顶部 hoist 成 `filtered`）：此前 4 处各自
+    /// 读这个计算属性，等于同一份筛选在一帧里重做 4 遍
     private var filteredEvents: [AgentLogEvent] {
         events.filter { selectedFilter.matches($0) }
     }
 
+    /// 每次刷新算一遍各筛选的条数，供筛选胶囊查表用（此前每个 chip 每次渲染
+    /// 都要 filter+count 整表一次，而 .errors 那支还会对每条事件跑一次模式分析）
+    @State private var countsByFilter: [LogFilter: Int] = [:]
+
     var body: some View {
+        let filtered = filteredEvents
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(
                 title: "\(agentName) 实时流水",
                 subtitle: refreshInFlight && events.isEmpty
                     ? "实时流水 · 加载中…"
-                    : "实时流水 · \(filteredEvents.count)/\(events.count) 条事件",
+                    : "实时流水 · \(filtered.count)/\(events.count) 条事件",
                 onBack: { controller.closeLiveStream() },
                 controller: controller
             )
@@ -85,11 +92,11 @@ struct LiveLogStreamView: View {
                             if loading && events.isEmpty {
                                 CenteredSpinner()
                                     .frame(maxWidth: .infinity, minHeight: 120)
-                            } else if filteredEvents.isEmpty {
+                            } else if filtered.isEmpty {
                                 emptyStreamView
                             } else {
                                 LazyVStack(alignment: .leading, spacing: 5) {
-                                    ForEach(filteredEvents) { event in
+                                    ForEach(filtered) { event in
                                         eventRow(event)
                                             .id(event.id)
                                     }
@@ -99,7 +106,7 @@ struct LiveLogStreamView: View {
                         .padding(.horizontal, Theme.pageMargin)
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity, minHeight: max(geo.size.height - 16, 0))
-                        .onChange(of: filteredEvents.first?.id) { firstId in
+                        .onChange(of: filtered.first?.id) { firstId in
                             if let firstId, autoRefresh {
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     proxy.scrollTo(firstId, anchor: .top)
@@ -199,7 +206,7 @@ struct LiveLogStreamView: View {
             selectedItem: $selectedFilter,
             title: { $0.rawValue },
             count: { filter in
-                filter == .all ? events.count : events.filter { filter.matches($0) }.count
+                filter == .all ? events.count : (countsByFilter[filter] ?? 0)
             },
             contentInsets: EdgeInsets(top: 4, leading: Theme.pageMargin, bottom: 4, trailing: Theme.pageMargin)
         )
@@ -207,6 +214,14 @@ struct LiveLogStreamView: View {
     }
 
     // MARK: - 单条事件行
+
+    /// 展开/收起本条事件。点按手势与无障碍 AXPress 共用，两条入口不会各写一遍再漂移
+    private func toggleExpanded(_ event: AgentLogEvent) {
+        guard event.detail != nil else { return }
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+            expandedEventId = expandedEventId == event.id ? nil : event.id
+        }
+    }
 
     private func eventRow(_ event: AgentLogEvent) -> some View {
         let isExpanded = (expandedEventId == event.id)
@@ -262,17 +277,8 @@ struct LiveLogStreamView: View {
                 .shadow(color: Color.black.opacity(colorScheme == .light ? 0.02 : 0), radius: 1, y: 0.5)
         )
         .contentShape(Rectangle())
-        .onTapGesture {
-            if event.detail != nil {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                    if expandedEventId == event.id {
-                        expandedEventId = nil
-                    } else {
-                        expandedEventId = event.id
-                    }
-                }
-            }
-        }
+        .onTapGesture { toggleExpanded(event) }
+        .accessibilityAction { toggleExpanded(event) }   // isButton 特质不装 AXPress
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(event.detail != nil ? .isButton : [])
         // 不设显式 label：.combine 自然合并徽标/时间/标题；显式 label 会把
@@ -445,8 +451,18 @@ struct LiveLogStreamView: View {
                 return
             }
             self.events = result
+            self.countsByFilter = Self.counts(for: result)
             self.loading = false
         }
+    }
+
+    /// 各筛选口径的条数（一次遍历出全部，替代「每个 chip 各 filter+count 一遍」）
+    static func counts(for events: [AgentLogEvent]) -> [LogFilter: Int] {
+        var out: [LogFilter: Int] = [:]
+        for filter in LogFilter.allCases {
+            out[filter] = filter == .all ? events.count : events.filter { filter.matches($0) }.count
+        }
+        return out
     }
 
     private func startTimer() {
@@ -459,6 +475,7 @@ struct LiveLogStreamView: View {
                 engine.fetchLogStream(agentId: agentId, limit: 30) { result in
                     defer { self.refreshInFlight = false }
                     if result != self.events {
+                        self.countsByFilter = Self.counts(for: result)
                         withAnimation(.easeInOut(duration: 0.2)) {
                             self.events = result
                         }

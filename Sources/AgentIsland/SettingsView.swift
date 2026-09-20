@@ -258,6 +258,7 @@ struct SettingsView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityValue(isSelected ? "已选择" : "未选择")
                         }
                     }
 
@@ -297,6 +298,7 @@ struct SettingsView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityValue(isSelected ? "已选择" : "未选择")
                         }
                     }
 
@@ -365,6 +367,7 @@ struct SettingsView: View {
                                     .foregroundColor(Theme.actionBlue)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("试听任务完成音效")
                             .help("试听任务完成音效")
                         }
                         .padding(.leading, 12)
@@ -388,6 +391,7 @@ struct SettingsView: View {
                                     .foregroundColor(Theme.dangerRed)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("试听熔断告警音效")
                             .help("试听熔断告警音效")
                         }
                         .padding(.leading, 12)
@@ -1010,6 +1014,7 @@ struct SettingsView: View {
                 )
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
         .help(preset.description)
     }
 

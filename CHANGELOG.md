@@ -4,6 +4,62 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.96] - 2026-09-20
+
+### ♿ 第五轮：浅色可读性、VoiceOver 可操作性、视图重算，与一批「能失败的」新测试
+
+三个并行 agent 分别做可访问性盘点、视图重算复核、测试盲区复核。这一轮的产出 mostly 不可见
+——但岛内小字号在浅色下读不清、以及 VoiceOver 用户「听得到按钮却按不动」，都是真实缺陷。
+
+**浅色对比度（实算 sRGB 相对亮度，非目测）**
+- 离线态文字压在浅底上原本只有 **2.34:1**（连 3:1 的图形线都不到），待机 4.34、青色系强调字 3.51、
+  琥珀强调字 4.25、`inkMuted48` 压在 chipFill 上 4.38 —— 全部低于 WCAG AA 正文 4.5:1，字号 8–10pt。
+- 因为上一轮把色板收进了 `Theme.Ramp` 一处，这次是**改 6 行**而不是改 45 处：
+  离线 `slate400→slate500` 且底色退浅一档 `slate100→slate50`（4.55）、待机 `slate500→slate600`（6.92）、
+  青色浅半边 `0x0284c7→sky800`（6.42）、琥珀浅半边 `amber700→amber900`（7.73）、
+  `inkMuted48`/`onDarkFaint` 浅半边压到 slate600（6.98）。深色外观一字未动。
+
+**VoiceOver 可操作**
+- 6 处 `.onTapGesture` + `.accessibilityAddTraits(.isButton)` 的元素**没有 AXPress**——
+  `isButton` 只改语义不装动作，VO 用户听得到「按钮」却按不动。逐个补 `.accessibilityAction`：
+  收起态细条（岛的第一入口）、列表行、模型行、会话行、流水条目、菜单栏快捷行。
+  点按体抽成 `openDetail()` / `openSessionDirectory()` / `toggleExpanded(_:)`，
+  手势与无障碍动作共用一处，不会两条入口各写一遍再漂移。
+- 列表行/模型行/会话行加 `.accessibilityElement(children: .ignore)`：显式标签已把状态说全，
+  不再让 VO 逐字播报 token/内存/点阵子元素。
+- 4 个只有 `.help` 的图标按钮补 `.accessibilityLabel`（help 不是标签，VO 读不到）；
+  3 个选中态只靠底色/字重表达的控件补 `.accessibilityValue("已选择"/"未选择")`。
+
+**视图重算（复核后只改真正值得的）**
+- `AgentRowView` / `AgentHoverTooltip` 把 `@ObservedObject var engine` 降为 `let`：
+  两者 body 内**一处都不读** engine 的 @Published 状态（只调 terminateAgent）。
+  复核同时纠正了审计的成本判断——父视图本就观察 engine 且无 `.equatable()`，
+  所以这一改动省下的是「多一个订阅者」而非「每拍 N 次重渲染」，属卫生而非性能悬崖。
+- 流水页：`filteredEvents` 计算属性在 body 里被读 4 次 → hoist 成一次；
+  筛选条数从「每个 chip 各 filter+count 一遍（.errors 那支还会对每条事件跑模式分析）」
+  改为刷新回调里一次算齐存 `countsByFilter`。
+- 审计报的第三项（`expandedCard` 12 次 `visibleSnapshots`）经复核为微秒级，按本仓规矩不动。
+
+**第三方 JSON 类型漂移容错**
+- 新增 `SafeNumber.jsonInt`：`"step_index": "3"` 或 `3.0` 这类改版，`as? Int` 会静默给 nil，
+  于是 `?? 0` 把 Antigravity 每行指纹压成 `step-0`（进度判定失效）。12 个站点统一改用它；
+  越界仍走饱和钳制。
+- 顺带把 ISO 时间戳插值也过一遍 `.escaped`（对它是恒等操作），换来一条**不需要例外清单**的
+  结构规则：字符串插值进 SQL 引号必须过 `.escaped`。
+
+**测试盲区（328 → 335，每条都做过变异验证）**
+- `ReadonlyDB`「连接已缓存、文件随后被删 → 上报 `.missing`」此前零覆盖（只测了从未打开那一支）。
+- SQL 转义此前只有纯函数用例：现在把含 `'` 的 modelId 灌进真实查询，去掉 `.escaped` 立刻变红。
+- `Verdict.summary` 五条文案逐字锁定（对调两支返回串此前全绿）；`Code` 加 `CaseIterable`，
+  新增码不补文案就会因数量断言失败。
+- 两处恒过断言换成可失败：`usage["dim"] != nil || usage.isEmpty`（两支皆真）改为断言夹具期望值；
+  可观测性夹具的 24h 与累计此前被构造成恒等，读错字段测不出——现在两者不同值并断言走 `tokensTotal`。
+- 三条结构棘轮：`@ObservedObject var engine` 计数、流水页 `events.filter {` 计数、SQL 引号插值必须转义。
+- **如实记录两处「没写测试」**：① 审计断言「parsedMeta 的 step_index 漂移会让已答复提问误报
+  attention」，把该站点单独退回旧写法后整套测试仍全绿，因果不成立，故不为其写用例；
+  ② `withDB` 重试「成功」分支需要「同 inode 且 prepare 瞬时失败」的夹具，构造不出来，
+  仍属未覆盖路径（已覆盖的是两次都失败那一支）。
+
 ## [0.0.95] - 2026-09-20
 
 ### 🔍 第四轮复核抓出上一轮修复引入的性能悬崖，并把它变成可测语义

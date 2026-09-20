@@ -769,13 +769,13 @@ public enum AgentSessionInspector {
         // 检查轮次与步骤
         let turnBoundary = rows["turnBoundary"] as? [String: Any]
         let tbVal = turnBoundary?["val"] as? [String: Any]
-        let openTurnStartSeq = tbVal?["openTurnStartSeq"] as? Int
+        let openTurnStartSeq = SafeNumber.jsonInt(tbVal?["openTurnStartSeq"])
 
         let sessionStats = rows["sessionStats"] as? [String: Any]
         let statsVal = sessionStats?["val"] as? [String: Any]
         let openStep = statsVal?["openStep"] as? [String: Any]
-        let currentStep = openStep?["step"] as? Int ?? statsVal?["steps"] as? Int
-        let currentTurn = openStep?["turn"] as? Int ?? statsVal?["lastTurn"] as? Int ?? 1
+        let currentStep = SafeNumber.jsonInt(openStep?["step"]) ?? SafeNumber.jsonInt(statsVal?["steps"])
+        let currentTurn = SafeNumber.jsonInt(openStep?["turn"]) ?? SafeNumber.jsonInt(statsVal?["lastTurn"]) ?? 1
 
         let isOpen = (openTurnStartSeq != nil) || (openStep != nil)
 
@@ -799,7 +799,7 @@ public enum AgentSessionInspector {
         } else {
             // 轮次已结束：若在完成后的 15 分钟内，返回 completed
             guard age <= 15 * 60 else { return nil }
-            let totalSteps = statsVal?["steps"] as? Int ?? 0
+            let totalSteps = SafeNumber.jsonInt(statsVal?["steps"]) ?? 0
             let fingerprint = "dsh-\(sessionId)-t\(currentTurn)-s\(totalSteps)"
             return .completed(fingerprint: fingerprint)
         }
@@ -911,19 +911,19 @@ public enum AgentSessionInspector {
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 continue
             }
-            let si = obj["step_index"] as? Int ?? 0
+            let si = SafeNumber.jsonInt(obj["step_index"]) ?? 0
             let st = obj["type"] as? String ?? ""
             let hasTC = (obj["tool_calls"] as? [[String: Any]])?.isEmpty == false
             parsedMeta.append((si, st, hasTC))
 
             // 提取 Token 统计细分
             if let usage = obj["usageMetadata"] as? [String: Any] ?? obj["usage"] as? [String: Any] ?? obj["token_count"] as? [String: Any] {
-                let p = usage["promptTokenCount"] as? Int ?? usage["prompt_tokens"] as? Int ?? usage["input_tokens"] as? Int ?? 0
-                let c = usage["candidatesTokenCount"] as? Int ?? usage["candidates_tokens"] as? Int ?? usage["output_tokens"] as? Int ?? 0
-                let cr = usage["cachedContentTokenCount"] as? Int ?? usage["cache_read_tokens"] as? Int ?? 0
-                let cw = usage["cache_write_tokens"] as? Int ?? 0
-                let th = usage["thoughtsTokenCount"] as? Int ?? usage["reasoning_tokens"] as? Int ?? 0
-                let tot = usage["totalTokenCount"] as? Int ?? usage["total_tokens"] as? Int ?? (p + c + cr + cw + th)
+                let p = SafeNumber.jsonInt(usage["promptTokenCount"]) ?? SafeNumber.jsonInt(usage["prompt_tokens"]) ?? SafeNumber.jsonInt(usage["input_tokens"]) ?? 0
+                let c = SafeNumber.jsonInt(usage["candidatesTokenCount"]) ?? SafeNumber.jsonInt(usage["candidates_tokens"]) ?? SafeNumber.jsonInt(usage["output_tokens"]) ?? 0
+                let cr = SafeNumber.jsonInt(usage["cachedContentTokenCount"]) ?? SafeNumber.jsonInt(usage["cache_read_tokens"]) ?? 0
+                let cw = SafeNumber.jsonInt(usage["cache_write_tokens"]) ?? 0
+                let th = SafeNumber.jsonInt(usage["thoughtsTokenCount"]) ?? SafeNumber.jsonInt(usage["reasoning_tokens"]) ?? 0
+                let tot = SafeNumber.jsonInt(usage["totalTokenCount"]) ?? SafeNumber.jsonInt(usage["total_tokens"]) ?? (p + c + cr + cw + th)
                 totalPromptTokens += p
                 totalCompletionTokens += c
                 totalCacheReadTokens += cr
@@ -1044,7 +1044,7 @@ public enum AgentSessionInspector {
                 continue
             }
 
-            let stepIndex = obj["step_index"] as? Int ?? 0
+            let stepIndex = SafeNumber.jsonInt(obj["step_index"]) ?? 0
             let stepType = obj["type"] as? String ?? ""
             let fingerprint = "antigravity-step-\(stepIndex)"
 

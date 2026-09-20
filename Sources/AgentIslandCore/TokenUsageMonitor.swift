@@ -287,6 +287,24 @@ enum SafeNumber {
     /// 避免污染汇总与后续运算。
     static let magnitudeCeiling = 1_000_000_000_000_000   // 1e15
 
+    /// JSON 整数字段容错读取。`value as? Int` 在第三方改版时会静默返回 nil：
+    /// `"step_index": "3"`（字符串）或 `3.0`（浮点）都拿不到值，于是
+    /// —— Antigravity 每行指纹退化成 `step-0`（进度判定与「已回答」比较全部失效）
+    /// —— DSH 的 openTurnStartSeq 变 nil，在途状态被降级成「已完成」
+    /// 三种写法都认；越界仍走饱和钳制，绝不 trap
+    static func jsonInt(_ value: Any?) -> Int? {
+        switch value {
+        case let n as Int: return n
+        case let d as Double: return d.isFinite ? saturatingInt(d, source: "jsonInt") : nil
+        case let s as String:
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let i = Int(trimmed) { return i }
+            if let d = Double(trimmed), d.isFinite { return saturatingInt(d, source: "jsonInt.string") }
+            return nil
+        default: return nil
+        }
+    }
+
     /// 金额上限（美元）：同为「不可能触及」的量级。
     static let costCeiling = 1_000_000_000.0
 
@@ -791,7 +809,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             let dimSQL = """
             SELECT createdAt, \(dimRowTokens), COALESCE(cost,0)
             FROM usage_ledger
-            WHERE createdAt >= '\(lowerISO)' AND createdAt <= '\(upperISO)'
+            WHERE createdAt >= '\(lowerISO.escaped)' AND createdAt <= '\(upperISO.escaped)'
             ORDER BY createdAt
             """
             let dimRecords = rawRows(dimSQL, dbPath: dimAgentDB, cols: 3).compactMap { row -> TokenUsageRecord? in

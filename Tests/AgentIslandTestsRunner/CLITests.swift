@@ -195,16 +195,25 @@ enum CLITests {
         TestKit.test("可观测性: 四类结论互斥，且「读不到」绝不与「闲着」混为一谈") {
             let profile = AgentRegistry.builtin[0]
             func snap(processRunning: Bool, installed: Bool, sessions: Int = 0,
-                      tokens: Int = 0, level: ActivityLevel = .idle,
+                      tokens: Int = 0, tokensTotal: Int? = nil, level: ActivityLevel = .idle,
                       health: SessionProbeHealth? = nil) -> AgentSnapshot {
-                AgentSnapshot(profile: profile, level: level, processRunning: processRunning,
+                // 24h 与累计默认取**不同**值：此前两者恒等，把生产里的
+                // `tokenUsage?.tokensTotal` 改成 `tokens24h` 也照样全绿
+                let total = tokensTotal ?? tokens * 7
+                return AgentSnapshot(profile: profile, level: level, processRunning: processRunning,
                               cpuPercent: 0, installed: installed, activeSessions: sessions,
                               lastActivityAgo: nil, lastActivityText: "—",
-                              tokenUsage: tokens > 0 ? TokenUsage(tokens24h: tokens, tokensTotal: tokens,
-                                                                 cost24h: 0, costTotal: 0) : nil,
+                              tokenUsage: tokens > 0 || total > 0
+                                  ? TokenUsage(tokens24h: tokens, tokensTotal: total,
+                                               cost24h: 0, costTotal: 0) : nil,
                               sessionProbeHealth: health)
             }
             let blind = SessionProbeHealth(failure: .prepareFailed, path: "/tmp/x.db")
+            // 无会话、24h 为零但累计有量：口径必须认「累计」，判成可信
+            let totalOnly = snap(processRunning: true, installed: true, sessions: 0,
+                                 tokens: 0, tokensTotal: 999)
+            try expectEqual(AgentObservability.evaluate(snapshot: totalOnly).code, .observed,
+                            "tokensTotal>0 就是「本地明细读到了」；读错字段会降级成无本地明细")
 
             // 表驱动：(名称, 输入, 期望 code)
             let cases: [(String, AgentSnapshot, AgentObservability.Code)] = [

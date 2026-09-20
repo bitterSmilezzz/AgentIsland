@@ -265,6 +265,12 @@ struct MenuBarPopoverView: View {
                     // a11y：与主卡 Agent 行同口径（R27）
                     .accessibilityAddTraits(.isButton)
                     .accessibilityLabel("\(s.profile.name)，\(s.level.label)，点按查看详情")
+                    .accessibilityAction {
+                        controller.route = .agentDetail(s.profile.id)
+                        if controller.displayState == .docked {
+                            controller.toggle()
+                        }
+                    }
                 }
             }
         }

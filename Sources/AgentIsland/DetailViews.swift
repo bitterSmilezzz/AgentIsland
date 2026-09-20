@@ -359,11 +359,11 @@ struct AgentDetailView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: Theme.obsidianCardFill)
-                .onTapGesture {
-                    controller.route = .sessions(agentId, m.modelId)
-                }
+                .onTapGesture { controller.route = .sessions(agentId, m.modelId) }
+                .accessibilityElement(children: .ignore)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel(m.modelId)
+                .accessibilityAction { controller.route = .sessions(agentId, m.modelId) }
             }
         }
     }
@@ -863,6 +863,19 @@ private struct SessionRowView: View {
     /// 打开目录失败反馈：目录失效（删除/改名/卸载）时点击静默无效此前无任何提示
     @State private var openFailureFeedback = false
 
+    /// 打开会话目录；目录失效（删除/改名/卸载）时给一次可见反馈而不是静默无效。
+    /// 点按手势与无障碍 AXPress 共用这一处
+    private func openSessionDirectory() {
+        guard let dir = session.directory else { return }
+        if !NSWorkspace.shared.open(URL(fileURLWithPath: dir)) {
+            openFailureFeedback = true
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                openFailureFeedback = false
+            }
+        }
+    }
+
     var body: some View {
         let timeText: String = {
             guard let t = session.lastTime else { return "—" }
@@ -896,6 +909,7 @@ private struct SessionRowView: View {
                         .foregroundColor(Theme.onDarkFaint)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("在终端中打开该会话工作区")
                 .help("在终端中打开该会话工作区")
 
                 Image(systemName: "folder")
@@ -916,23 +930,20 @@ private struct SessionRowView: View {
                     .foregroundColor(Theme.onDarkFaint)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("拷贝会话 ID")
             .help("拷贝会话 ID: \(session.sessionId)")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .hoverRowBackground(cornerRadius: Theme.radiusSm, idleFill: Theme.chipFill, hoverEnabled: hasDir)
-        .onTapGesture {
-            guard let dir = session.directory, hasDir else { return }
-            if !NSWorkspace.shared.open(URL(fileURLWithPath: dir)) {
-                openFailureFeedback = true
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    openFailureFeedback = false
-                }
-            }
-        }
-        // a11y：有目录的行是按钮（打开目录）；无目录行隐藏交互语义
+        .onTapGesture { openSessionDirectory() }
+        // a11y：有目录的行是按钮（打开目录）；无目录行隐藏交互语义。
+        // enabled: 让无障碍动作与 isButton 特质同进同退
+        .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(hasDir ? .isButton : [])
+        // 本 SDK 无 accessibilityAction(enabled:)；无目录的行本就不带 isButton 特质，
+        // 方法内再 guard 一次，按下也不会误开
+        .accessibilityAction { openSessionDirectory() }
         .overlay(alignment: .trailing) {
             if openFailureFeedback {
                 Text("目录未找到")

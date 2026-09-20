@@ -188,6 +188,9 @@ struct DockedSliverCapsule: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityHint("展开灵动岛卡片")
+        // .accessibilityAddTraits(.isButton) 只改语义、不装 AXPress：不加这一行，
+        // VoiceOver 用户听得到「按钮」却按不动（点按手势不是 Button）
+        .accessibilityAction { onTap() }
     }
 }
 

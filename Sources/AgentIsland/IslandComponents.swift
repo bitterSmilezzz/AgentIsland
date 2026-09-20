@@ -357,6 +357,8 @@ struct FilterCapsuleBar<Item: Identifiable & Equatable>: View {
                         )
                     }
                     .buttonStyle(.plain)
+                    // 选中态此前只靠底色/描边/字重表达，VO 听不出「哪个是当前筛选」
+                    .accessibilityValue(isSelected ? "已选择" : "未选择")
                 }
             }
             .padding(.top, contentInsets.top)

@@ -59,6 +59,10 @@ enum Ramp {
     static let red200Hex: UInt32    = 0xfecaca
     static let red700Hex: UInt32    = 0xb91c1c
     static let green50Hex: UInt32   = 0xf0fdf4
+    // 浅色下的强调色加深档：v0.0.96 的可读性收口专用（8–10pt 小字号压在浅底上，
+    // 原值只有 3.25–4.38:1，低于 WCAG AA 的 4.5:1；数值由 sRGB 相对亮度实算）
+    static let sky800Hex: UInt32    = 0x075985
+    static let amber900Hex: UInt32  = 0x78350f
 
     // 浅色底（白瓷）上的深压强调色：状态色与环形水位色在浅色下必须是同一支，
     // 原先 Theme 与 Palette 各写一次，改一支漏一支。
@@ -89,6 +93,8 @@ enum Ramp {
     static let red200    = Color(hex: red200Hex)
     static let red700    = Color(hex: red700Hex)
     static let green50   = Color(hex: green50Hex)
+    static let sky800    = Color(hex: sky800Hex)
+    static let amber900  = Color(hex: amber900Hex)
 }
 
 enum Theme {
@@ -115,9 +121,9 @@ enum Theme {
     static let obsidianCardBorderHover = Color(dynamic: NSColor(hex: Ramp.slate300Hex, alpha: 0.95), dark: NSColor(hex: 0xffffff, alpha: 0.28))
 
     // Sydedock 荧光强调色（深色模式绚丽高亮，浅色模式加深保障可读对比度）
-    static let sydedockCyan = Color(dynamicLight: 0x0284c7, dark: 0x00e1ff)
+    static let sydedockCyan = Color(dynamicLight: Ramp.sky800Hex, dark: 0x00e1ff)
     static let sydedockBlue = Color(dynamicLight: 0x1d4ed8, dark: 0x38bdf8)
-    static let sydedockAmber = Color(dynamicLight: Ramp.amber700Hex, dark: Ramp.neonAmberHex)
+    static let sydedockAmber = Color(dynamicLight: Ramp.amber900Hex, dark: Ramp.neonAmberHex)
     static let sydedockEmerald = Color(dynamicLight: 0x15803d, dark: Ramp.neonGreenHex)
 
     /// 立体黑曜石药丸背景渐变（Sydedock Pill）
@@ -151,10 +157,10 @@ enum Theme {
     // 文本（动态：深色模式纯净象牙白与清透柔银，浅色模式墨水黑与工控灰，HIG 对比度 ≥4.5:1 / 7:1）
     static let ink = Color(dynamicLight: 0x0f172a, dark: 0xf8fafc)
     static let inkMuted80 = Color(dynamicLight: Ramp.slate700Hex, dark: 0xcfd4dc)
-    static let inkMuted48 = Color(dynamicLight: Ramp.slate500Hex, dark: Ramp.slate400Hex)
+    static let inkMuted48 = Color(dynamicLight: Ramp.slate600Hex, dark: Ramp.slate400Hex)
     static let onDark = Color(dynamicLight: 0x0f172a, dark: 0xffffff)          // 主文字：深色纯白 100%，浅色黑蓝
     static let onDarkMuted = Color(dynamicLight: Ramp.slate700Hex, dark: Ramp.slate200Hex)     // 次要文字：清透软银色
-    static let onDarkFaint = Color(dynamicLight: Ramp.slate500Hex, dark: Ramp.slate400Hex)     // 弱化信息：清晰可辨浅石板灰
+    static let onDarkFaint = Color(dynamicLight: Ramp.slate600Hex, dark: Ramp.slate400Hex)     // 弱化信息：清晰可辨浅石板灰
 
     // 悬停/按压蒙层（浅色模式纯白磨砂浮层，深色模式纯白透光浮层）
     static let hoverFill = Color(dynamic: NSColor(hex: 0xffffff, alpha: 0.96), dark: NSColor(hex: 0xffffff, alpha: 0.12))
@@ -257,13 +263,14 @@ extension ActivityLevel {
     // 各抄了一份完全相同的副本（45 处字面量），改色板只能三处对齐着改。
     // 透明度与各卡暗色染色系数（0.12 / 0.14 / 0.18）留给调用点——那是组件自身的决定。
 
-    /// 浅色下的文字基色
+    /// 浅色下的文字基色（对比度按 sRGB 实算，压在各自 lightFill 上：
+    /// working/attention 5.21 与 4.84；idle 6.92；offline 4.55。全部 ≥ AA 正文 4.5）
     var lightText: Color {
         switch self {
         case .working, .completed: return Ramp.emerald700
         case .attention: return Ramp.amber700
-        case .idle: return Ramp.slate500
-        case .offline: return Ramp.slate400
+        case .idle: return Ramp.slate600
+        case .offline: return Ramp.slate500
         }
     }
 
@@ -272,7 +279,9 @@ extension ActivityLevel {
         switch self {
         case .working, .completed: return Ramp.emerald50
         case .attention: return Ramp.amber50
-        case .idle, .offline: return Ramp.slate100
+        case .idle: return Ramp.slate100
+        // 离线底再退浅一档，配合上面 slate500 的文字：4.55:1（slate100 底只有 4.34）
+        case .offline: return Ramp.slate50
         }
     }
 

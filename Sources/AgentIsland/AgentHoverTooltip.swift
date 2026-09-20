@@ -7,7 +7,7 @@ import AgentIslandCore
 
 struct AgentHoverTooltipCard: View {
     let snapshot: AgentSnapshot
-    @ObservedObject var engine: ActivityEngine
+    let engine: ActivityEngine   // 只用于 terminateAgent；卡片渲染的是传下来的 snapshot
     @ObservedObject var controller: IslandPanelController
     @State private var confirmingKill = false
     /// 直达失败反馈：activate 返回 false 时短暂切换按钮文案（ssh/tmux 启动的 CLI 无可激活窗口）

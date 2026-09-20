@@ -11,7 +11,7 @@ import Foundation
 // 口径只有一处。刻意只做纯函数（输入只有快照），因此可表驱动测试。
 public enum AgentObservability {
 
-    public enum Code: String, Equatable {
+    public enum Code: String, Equatable, CaseIterable {
         /// 结论可信：要么读到了会话信号，要么明确判定为离线/未安装
         case observed
         /// 进程在跑，但会话源读不到 —— 此时的「待机」只代表没读到信号
