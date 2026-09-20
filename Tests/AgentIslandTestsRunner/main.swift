@@ -20,6 +20,7 @@ func runAllTests() -> Int32 {
     IslandMetricsTests.register()
     IslandMetricsTests.registerSignatureSentinel()
     PanelPresentationTests.register()
+    DebtRatchetTests.register()
     CleanerTests.register()
     VisibilityTests.register()
     ConfigTests.register()
