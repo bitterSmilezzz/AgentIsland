@@ -16,6 +16,13 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
     public let cost24h: Double
     public let lastActivityAgoSeconds: TimeInterval?
     public let lastActivityText: String?
+    /// 稳定性评分（`AgentHealthEvaluator`）：只看卡死/CPU/内存，与下面的可观测性结论是两件事
+    public let healthScore: Int
+    public let healthGrade: String
+    /// 「这条状态结论可信吗」的口径（见 AgentObservability）。此前失明证据只在 Markdown 里，
+    /// 脚本与 Raycast 读到的 JSON 会把「读不到」当成「闲着」
+    public let observability: String
+    public let observabilityEvidence: [String]
 
     public init(from snapshot: AgentSnapshot) {
         self.id = snapshot.id
@@ -31,6 +38,12 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
         self.cost24h = snapshot.tokenUsage?.cost24h ?? 0
         self.lastActivityAgoSeconds = snapshot.lastActivityAgo
         self.lastActivityText = snapshot.lastActivityText
+        let health = AgentHealthEvaluator.evaluate(snapshot: snapshot)
+        self.healthScore = health.score
+        self.healthGrade = health.grade.rawValue
+        let verdict = AgentObservability.evaluate(snapshot: snapshot)
+        self.observability = verdict.code.rawValue
+        self.observabilityEvidence = verdict.evidence
     }
 }
 
@@ -162,5 +175,32 @@ public struct CLICleanResultDTO: Codable, Sendable {
         self.freedMemoryBytes = freedMemoryBytes
         self.freedMemoryFormatted = freedMemoryFormatted
         self.dryRun = dryRun
+    }
+}
+
+/// `agentisland doctor` 的结构化输出（见 AgentObservability）
+public struct CLIAgentDoctorDTO: Codable, Sendable {
+    public let id: String
+    public let name: String
+    public let status: String
+    public let processRunning: Bool
+    public let installed: Bool
+    public let activeSessions: Int
+    public let healthScore: Int
+    /// observed / blindSessionSource / noLocalData / notInstalled
+    public let observability: String
+    public let evidence: [String]
+
+    public init(from snapshot: AgentSnapshot) {
+        self.id = snapshot.id
+        self.name = snapshot.profile.name
+        self.status = snapshot.level.rawValue
+        self.processRunning = snapshot.processRunning
+        self.installed = snapshot.installed
+        self.activeSessions = snapshot.activeSessions
+        self.healthScore = AgentHealthEvaluator.evaluate(snapshot: snapshot).score
+        let verdict = AgentObservability.evaluate(snapshot: snapshot)
+        self.observability = verdict.code.rawValue
+        self.evidence = verdict.evidence
     }
 }

@@ -35,6 +35,10 @@ struct AgentIslandCLI {
             let subArgs = Array(rawArgs.dropFirst())
             await TokensCommand.run(args: subArgs)
 
+        case "doctor", "diagnose":
+            let subArgs = Array(rawArgs.dropFirst())
+            await DoctorCommand.run(args: subArgs)
+
         case "check", "anomalies", "anomaly":
             let subArgs = Array(rawArgs.dropFirst())
             await CheckCommand.run(args: subArgs)
@@ -84,6 +88,7 @@ macOS 智能体运行态监控与运维终端工具
   \(CLIColor.cyan("status"))     查看所有 AI 智能体当前运行态快照 (默认，支持 -w 动态监控)
   \(CLIColor.cyan("top"))        类似 htop 的交互式全屏动态监控看板 (或 watch)
   \(CLIColor.cyan("tokens"))     查看 24h Token 用量明细、成本分析与月末预测
+  \(CLIColor.cyan("doctor"))    一次性实况自查：这个 Agent 是真闲着，还是我根本没看到它
   \(CLIColor.cyan("check"))      排查长期死锁、孤儿后台与高内存泄漏异常
   \(CLIColor.cyan("clean"))      一键清理释放异常智能体占用的系统资源
   \(CLIColor.cyan("open"))       通过深度链接呼出/联动桌面灵动岛
@@ -94,6 +99,8 @@ macOS 智能体运行态监控与运维终端工具
 \(CLIColor.bold("常用选项:"))
   \(CLIColor.yellow("--json"))          以标准 JSON 结构化输出（供脚本/Raycast 调用）
   \(CLIColor.yellow("--all, -a"))       包含全部支持的 Agent（状态包含离线项）
+  \(CLIColor.yellow("--agent <id>"))    只诊断指定智能体 (配合 doctor，可用 id 或名称)
+  \(CLIColor.yellow("--quiet, -q"))     去掉进度提示，只输出结果 (配合 doctor)
   \(CLIColor.yellow("--dry-run, -n"))   模拟清理，仅预览不实际终止进程 (配合 clean)
   \(CLIColor.yellow("--force, -f"))     强行清理所有异常，包含孤儿后台 (配合 clean)
   \(CLIColor.yellow("--copy, -c"))      将生成的审计报告直接复制至系统剪贴板 (配合 report)
@@ -107,6 +114,8 @@ macOS 智能体运行态监控与运维终端工具
   $ agentisland status --json
 
   \(CLIColor.dim("# 排查并安全清理卡顿僵死的 Agent"))
+  $ agentisland doctor
+  $ agentisland doctor --json --all
   $ agentisland check
   $ agentisland clean --dry-run
   $ agentisland clean

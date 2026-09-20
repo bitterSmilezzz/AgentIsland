@@ -2,7 +2,13 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.85）
+## 功能（v0.0.86）
+
+### 新增 `agentisland doctor`：可观测性自查 (v0.0.86)
+- **一条结论回答「这个 Agent 是真闲着，还是我根本没看到它」**：逐 Agent 给出结论与依据，四类结论（结论可信 / 待机不可读 / 无本地明细 / 未安装）计数相加即总行数；支持 `--json`、`--agent <id|名称>`、`--all`、`--quiet`；
+- **两套「健康」合成一处**：稳定性评分只看卡死/CPU/内存，对根本没在被监控的 Agent 照样给 100 分；会话探测健康说得出「库读不到」却只活在详情页一个小标签里。现在合并为一条可测结论，并把「读不到」的证据一并带进 `status --json` 与 CSV 报表（此前只有 Markdown 有）；
+- **一次性采样统一**：`status` / `report` / `check` / `doctor` 同用 `LiveSampler`，顺带修掉一个真实缺陷——`status` 过去只遍历内置档案，用户自定义与自动发现的 Agent 在 `status --json` 里根本不存在，而 `report` 能看到；
+- **诊断快照与故障时间线**：三份各自拼装「复制诊断快照」的实现（其中右键菜单漏传事件历史，同一动作产出两份不同内容）收成一个入口；探测失败按 Agent+原因冷却记入日志，恢复时补一条，「从什么时候开始读不到」从此可查。
 
 ### 停止竞态、探测健康保质期与版本号单一来源 (v0.0.85)
 - **stop() 之后不再落地**：后台 libproc 遍历在飞时停止引擎，那一拍会照常发布快照并补发事件，还会把刚被取消的定时器重建回来——现在回到主线程时复检 `running`；
@@ -57,6 +63,7 @@
 - **终端全景快照（`agentisland status` / `agentisland`）**：快速输出所有已监控智能体状态、PID、CPU%、内存、会话数与用量表格，支持 `--json` 供 Raycast/脚本联动。
 - **Token 趋势与成本看板（`agentisland tokens`）**：终端汇总最近 24h/累计消耗，并自动基于 `TokenForecastEvaluator` 推算当月末总消耗与预算枯竭预警。
 - **死锁排查与一键清理（`agentisland check` / `agentisland clean`）**：排查挂起死锁或内存泄漏进程，支持 `--dry-run` 预览与安全批量一键终止释放。
+- **可观测性自查（`agentisland doctor` · v0.0.86）**：逐 Agent 判定「待机」是否可信——会话源读不到、本地无明细、未安装都给出依据；支持 `--json` 与 `--agent <id>`。
 - **深度链接呼出（`agentisland open`）**：终端直接控制桌面灵动岛展开、折叠或直达指定 Agent 与分析看板。
 - **审计报告导出（`agentisland report`）**：一键生成 Markdown 运维审计报告，支持 `--copy` 复制到剪贴板或 `--output` 存盘。
 

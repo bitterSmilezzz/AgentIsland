@@ -178,5 +178,78 @@ enum CLITests {
             try expectTrue(raycast.contains("agentisland://toggle"), "Raycast 清单包含 toggle 协议")
             try expectTrue(raycast.contains("agentisland://agent?id=dim"), "Raycast 清单包含 agent 直达协议")
         }
+
+        TestKit.test("可观测性: 四类结论互斥，且「读不到」绝不与「闲着」混为一谈") {
+            let profile = AgentRegistry.builtin[0]
+            func snap(processRunning: Bool, installed: Bool, sessions: Int = 0,
+                      tokens: Int = 0, level: ActivityLevel = .idle,
+                      health: SessionProbeHealth? = nil) -> AgentSnapshot {
+                AgentSnapshot(profile: profile, level: level, processRunning: processRunning,
+                              cpuPercent: 0, installed: installed, activeSessions: sessions,
+                              lastActivityAgo: nil, lastActivityText: "—",
+                              tokenUsage: tokens > 0 ? TokenUsage(tokens24h: tokens, tokensTotal: tokens,
+                                                                 cost24h: 0, costTotal: 0) : nil,
+                              sessionProbeHealth: health)
+            }
+            let blind = SessionProbeHealth(failure: .prepareFailed, path: "/tmp/x.db")
+
+            // 表驱动：(名称, 输入, 期望 code)
+            let cases: [(String, AgentSnapshot, AgentObservability.Code)] = [
+                ("未安装且不在跑", snap(processRunning: false, installed: false), .notInstalled),
+                ("已装但进程不在 → 离线可信", snap(processRunning: false, installed: true), .observed),
+                ("在跑但会话库坏了 → 待机不可信",
+                 snap(processRunning: true, installed: true, sessions: 3, tokens: 999, health: blind),
+                 .blindSessionSource),
+                ("在跑但无任何本地明细", snap(processRunning: true, installed: true), .noLocalData),
+                ("在跑且有活跃会话", snap(processRunning: true, installed: true, sessions: 2), .observed),
+                ("在跑但有用量账本", snap(processRunning: true, installed: true, tokens: 50), .observed),
+                // 会话强语义本身就是「源是通的」的证据：等级为待确认/已完成/工作中时，
+                // 哪怕活跃会话数为 0 也不能判成「无本地明细」（实测 Antigravity 会自相矛盾）
+                ("待确认但会话数为 0",
+                 snap(processRunning: true, installed: true, level: .attention), .observed),
+                ("工作中但会话数为 0",
+                 snap(processRunning: true, installed: true, level: .working), .observed),
+                ("已完成且无明细",
+                 snap(processRunning: true, installed: true, level: .completed), .observed),
+            ]
+            for (label, snapshot, expected) in cases {
+                let verdict = AgentObservability.evaluate(snapshot: snapshot)
+                try expectEqual(verdict.code, expected, label)
+                try expectEqual(verdict.isTrustworthy, expected == .observed, "\(label)：可信标记")
+                try expectFalse(verdict.evidence.isEmpty, "\(label)：结论必须带依据")
+            }
+            // 「读不到」的依据文案必须自己说清边界，否则用户仍会把它当待机
+            let blindVerdict = AgentObservability.evaluate(
+                snapshot: snap(processRunning: true, installed: true, health: blind))
+            try expectTrue(blindVerdict.evidence[0].contains("不代表智能体真的空闲"),
+                           "失明依据必须沿用 SessionProbeHealth 的原始措辞")
+        }
+
+        TestKit.test("CLI: doctor 与状态 DTO 携带可观测性结论与依据") {
+            let profile = AgentRegistry.builtin[0]
+            let snapshot = AgentSnapshot(profile: profile, level: .idle, processRunning: true,
+                                         cpuPercent: 0, installed: true, activeSessions: 0,
+                                         lastActivityAgo: nil, lastActivityText: "—",
+                                         sessionProbeHealth: SessionProbeHealth(
+                                            failure: .unreadableDB, path: "/tmp/blind.db"))
+            let doctor = CLIAgentDoctorDTO(from: snapshot)
+            try expectEqual(doctor.observability, "blindSessionSource")
+            try expectTrue(doctor.evidence.first?.contains("/tmp/blind.db") == true,
+                           "JSON 里要能定位到是哪个源读不到")
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode([CLIAgentStatusDTO(from: snapshot)])
+            let back = try JSONDecoder().decode([CLIAgentStatusDTO].self, from: data)
+            try expectEqual(back.first?.observability, "blindSessionSource", "状态 DTO 往返不得丢结论")
+            try expectEqual(back.first?.observabilityEvidence.isEmpty, false, "状态 DTO 也要带上依据")
+            try expectTrue((back.first?.healthScore ?? -1) >= 0, "状态 DTO 应携带稳定性评分")
+
+            let csv = AuditReportExporter.generateCSV(snapshots: [snapshot])
+            let header = csv.split(separator: "\n").first.map(String.init) ?? ""
+            try expectTrue(header.hasPrefix("Timestamp,AgentID,AgentName,Level"),
+                           "既有 CSV 列序不得变动（下游脚本按列位解析）")
+            try expectTrue(header.contains("Observability,ObservationEvidence"), "CSV 需追加可观测性两列")
+        }
     }
 }

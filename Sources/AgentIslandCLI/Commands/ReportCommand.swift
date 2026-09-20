@@ -26,18 +26,7 @@ public enum ReportCommand {
             i += 1
         }
 
-        let installedApps = InstalledAppsCache()
-        installedApps.refresh()
-
-        let registry = AgentRegistry.fullRegistry(
-            installedCLIs: installedApps.installedCLIs(),
-            installedBundles: installedApps.installedBundleIDs()
-        )
-        let engine = ActivityEngine(
-            profiles: registry,
-            installedApps: installedApps
-        )
-        let snapshots = engine.sample()
+        let snapshots = LiveSampler.makeEngine(restrictToEnabled: false).sample()   // 审计报告覆盖全部支持项
 
         let content: String
         switch format {

@@ -548,7 +548,14 @@ public final class ActivityEngine: ObservableObject {
             // 「源坏了」这条证据擦掉，而它恰恰只在长时间坏掉时最有用。
             if let sessionProbe {
                 // 按本拍的采样时钟盖章，而不是探测内部取 Date()：合成时间的测试才能稳定判定保质期
-                sessionProbeHealth[profile.id] = sessionProbe.health?.observed(at: now)
+                let health = sessionProbe.health?.observed(at: now)
+                sessionProbeHealth[profile.id] = health
+                // 快照里的健康只管「这一刻可信吗」且有保质期；故障的起始时间线走日志
+                if let health {
+                    ProbeFailureLog.record(health, agentId: profile.id, now: now)
+                } else {
+                    ProbeFailureLog.recordRecovery(agentId: profile.id, now: now)
+                }
             }
             let sessionSignal = sessionProbe?.signal
             // 上下文的取法与 sessionProbe 同批次（探测跳过时为空上下文，下面的

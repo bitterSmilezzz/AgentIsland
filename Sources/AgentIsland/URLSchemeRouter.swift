@@ -129,14 +129,7 @@ public enum URLSchemeRouter {
             controller.navigateToToolbox()
 
         case .export:
-            let md = AuditReportExporter.generateMarkdown(
-                snapshots: engine.snapshots,
-                history: engine.eventHistory,
-                now: Date()
-            )
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(md, forType: .string)
+            DiagnosticsSnapshot.copyToPasteboard(from: engine)
 
         case .notify(let agentId, let type, let message, let detail):
             let eventType: AgentTaskEvent.EventType

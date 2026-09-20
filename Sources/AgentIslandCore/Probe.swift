@@ -8,29 +8,10 @@ public enum Probe {
     @MainActor
     public static func run() -> Int32 {
         print("AgentIsland probe — 真实环境状态采样（双拍 CPU 差分）")
-        // 一次性 CLI 工具：同步扫描安装缓存可接受
-        let installedApps = InstalledAppsCache()
-        installedApps.refresh()
-        let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
-                                                  installedBundles: installedApps.installedBundleIDs())
-        // 真实文件监控：先同步扫一次填缓存，再采样
-        let monitor = FileActivityMonitor()
-        monitor.watch(dirs: registry.flatMap(\.sessionDirs))
-        monitor.scanSync()
-
-        let engine = ActivityEngine(
-            profiles: registry,
-            config: EngineConfig(),
-            processMonitor: ProcessProvider(),         // 真实进程
-            fileMonitor: monitor,                       // 真实文件系统（后台扫描）
-            installedApps: installedApps                // 已热缓存（init 首刷跳过，不双扫）
-        )
-        // 第一次采样：建立 CPU 差分基线（所有 PID 首次见到返回 0）
-        engine.sample()
+        // 构造与双采语义在 LiveSampler 里只定义一次，CLI 的 doctor 走同一条路
+        let engine = LiveSampler.makeEngine(restrictToEnabled: false)   // 排障转储：全档案集
         print("  ⏳ 采集 CPU 基线…（1.5s）")
-        Thread.sleep(forTimeInterval: 1.5)
-        // 第二次采样：此次 CPU% 为真实窗口差分值
-        let snaps = engine.sample()
+        let snaps = LiveSampler.twoBeatSample(engine)
 
         print("")
         print(pad("AGENT", 12) + pad("LEVEL", 9) + pad("CPU%", 6) + pad("MEM", 7) + pad("PROC", 5) + pad("INST", 5) + pad("SESS", 5) + pad("ACTION", 22) + "LAST ACTIVITY")

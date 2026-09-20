@@ -120,11 +120,12 @@ public enum AuditReportExporter {
 
     /// 生成标准 CSV 格式报表
     public static func generateCSV(snapshots: [AgentSnapshot], now: Date = Date()) -> String {
-        var csv = "Timestamp,AgentID,AgentName,Level,PID,CPU_Percent,Memory_Bytes,HealthScore,Grade,Tokens_24h,Cost_24h,Tokens_Total,Cost_Total\n"
+        var csv = "Timestamp,AgentID,AgentName,Level,PID,CPU_Percent,Memory_Bytes,HealthScore,Grade,Tokens_24h,Cost_24h,Tokens_Total,Cost_Total,Observability,ObservationEvidence\n"
         let timeStr = dateFormatter.string(from: now)
 
         for snap in snapshots {
             let report = AgentHealthEvaluator.evaluate(snapshot: snap)
+            let verdict = AgentObservability.evaluate(snapshot: snap)
             let pidStr = snap.pid.map { String($0) } ?? ""
             let u = snap.tokenUsage
 
@@ -141,7 +142,9 @@ public enum AuditReportExporter {
                 String(u?.tokens24h ?? 0),
                 String(format: "%.4f", u?.cost24h ?? 0.0),
                 String(u?.tokensTotal ?? 0),
-                String(format: "%.4f", u?.costTotal ?? 0.0)
+                String(format: "%.4f", u?.costTotal ?? 0.0),
+                escapeCSV(verdict.code.rawValue),
+                escapeCSV(verdict.evidence.first ?? "")
             ].joined(separator: ",")
 
             csv += row + "\n"

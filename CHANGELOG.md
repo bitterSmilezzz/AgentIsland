@@ -4,6 +4,18 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.86] - 2026-09-20
+
+### 🩺 新增 `agentisland doctor`：把「这个 Agent 是真闲着，还是我根本没看到它」变成一条可查的结论
+
+- **`agentisland doctor`（含 `--json` / `--agent <id|名称>` / `--all` / `--quiet`）**：一次性实况自查，逐 Agent 给出「结论 + 依据」，四类结论计数相加等于总行数便于核对。支持双拍采样拿真实 CPU 利用率（脚本友好的 `status` / `report` 仍走单拍）。
+- **`AgentObservability`：两套互不相识的「健康」合成一处**。此前 `AgentHealthEvaluator` 只看卡死/CPU/内存，对**根本没在被监控**的 Agent 直接给 100 分「健康」；`SessionProbeHealth` 说得出「会话库读不到」却只出现在详情页一个 9pt 标签和 Markdown 报告里。现在合并为 `observed / blindSessionSource / noLocalData / notInstalled` 四类，纯函数、可表驱动测试。其中一条规则是实测逼出来的：Antigravity 处于「待确认」却因活跃会话数为 0 被判成「无本地明细」——会话强语义本身就是「源是通的」的证据。
+- **失明证据进入结构化输出**：`CLIAgentStatusDTO` 新增 `healthScore` / `healthGrade` / `observability` / `observabilityEvidence`，CSV 追加 `Observability` / `ObservationEvidence` 两列（既有列序不变）。此前「读不到」的证据只存在于 Markdown，脚本与 Raycast 读到的 JSON 会把「读不到」当成「闲着」。
+- **一次性采样统一到 `LiveSampler`**：`Probe.run()` 里那套正确做法（热安装缓存 → 真实文件监控预热 → 双采拿 CPU 差分 → `fullRegistry` 含宿主内嵌过滤）此前只挂在 `.app --probe` 上，CLI 够不到，四处各自实现并已分叉。**修掉一个真实可见性缺陷**：`status` 只遍历 `AgentRegistry.builtin`，用户自定义与自动发现的 Agent 在 `status` / `status --json` 里根本不存在，而 `report` 能看到；现在 `status` / `report` / `check` / `doctor` 同口径，默认与灵动岛一致只看启用集（实测 21 项），`--all` 出全集。
+- **三份「复制诊断快照」收成一个入口**：右键菜单、工作台卡片与深度链接 `agentisland://export` 各自拼一份写剪贴板，其中**右键菜单那一处漏传了 `history:`** —— 同一个用户动作在两个入口产出两份不同内容且无人报错。现统一走 `DiagnosticsSnapshot`。
+- **探测故障时间线落日志**：快照里的探测健康只有 120s 保质期（回答「此刻可信吗」），新增 `ProbeFailureLog` 按 (Agent, 失败类型) 冷却 10 分钟记一条 `AppLog.error`，并在恢复时补一条、重新武装——坏源不会每 2s 刷满日志，但「从什么时候开始读不到」有迹可循。
+- **回归验证**：全量 315 项自建测试 100% 通过（0 失败），新增 3 项（可观测性四类互斥表驱动、DTO/CSV 承载证据、故障日志冷却与恢复）。
+
 ## [0.0.85] - 2026-09-20
 
 ### 🔒 停止后的采样竞态、探测健康保质期与版本号单一来源

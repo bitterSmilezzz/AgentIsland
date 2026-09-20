@@ -201,14 +201,7 @@ struct ToolboxView: View {
     }
 
     private func copyMarkdownReport() {
-        let md = AuditReportExporter.generateMarkdown(
-            snapshots: engine.snapshots,
-            history: engine.eventHistory,
-            now: Date()
-        )
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(md, forType: .string)
+        _ = DiagnosticsSnapshot.copyToPasteboard(from: engine)
         copiedReport = true
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_000_000_000)

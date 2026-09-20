@@ -2,11 +2,15 @@ import Foundation
 import AgentIslandCore
 
 public enum CheckCommand {
+    @MainActor
     public static func run(args: [String]) async {
         let isJson = args.contains("--json")
 
+        // 档案集与 status/report/doctor 同口径：自定义与自动发现的 Agent 一样会留下
+        // 孤儿与死锁进程，只看内置集等于对它们免疫
+        let profiles = LiveSampler.context().registry
         let cleaner = AgentCleaner(processMonitor: ProcessProvider())
-        let anomalies = cleaner.scanAnomalies(profiles: AgentRegistry.builtin)
+        let anomalies = cleaner.scanAnomalies(profiles: profiles)
 
         if isJson {
             let dtos = anomalies.map { CLIAnomalyDTO(from: $0) }

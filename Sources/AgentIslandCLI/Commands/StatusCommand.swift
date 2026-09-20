@@ -12,14 +12,11 @@ public enum StatusCommand {
         let isJson = args.contains("--json")
         let showAll = args.contains("--all") || args.contains("-a")
 
-        let installedApps = InstalledAppsCache()
-        installedApps.refresh()
-
-        let engine = ActivityEngine(
-            profiles: AgentRegistry.builtin,
-            installedApps: installedApps
-        )
-
+        // 档案集走共享采样器的 fullRegistry 口径：此前 status 只遍历内置集，
+        // 用户自定义与自动发现的 Agent 在 status / status --json 里根本不存在，
+        // 而 report 能看到——同一份数据两个口径，脚本侧尤其容易被误导。
+        // 单拍即可：本命令要快（Raycast / 脚本调用），CPU% 首拍恒 0 的语义保持不变
+        let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll)
         let snapshots = engine.sample()
 
         let filtered: [AgentSnapshot]

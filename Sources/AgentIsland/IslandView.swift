@@ -222,10 +222,7 @@ struct IslandView: View {
                 }
             }
             Button("复制当前状态诊断快照") {
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                let summary = AuditReportExporter.generateMarkdown(snapshots: engine.snapshots)
-                pasteboard.setString(summary, forType: .string)
+                DiagnosticsSnapshot.copyToPasteboard(from: engine)
             }
             Divider()
             Button("偏好设置…") {

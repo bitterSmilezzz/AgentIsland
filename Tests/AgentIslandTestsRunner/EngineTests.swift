@@ -1990,6 +1990,30 @@ enum EngineTests {
             try expectEqual(engine.updatedAt, stamp,
                             "落地的那一拍会发布快照，并经 sampleCore→scheduleNext 把刚被 invalidate 的定时器重建回来")
         }
+
+        TestKit.test("探测故障日志: 按 Agent+原因冷却，恢复时补一条并重新武装") {
+            ProbeFailureLog.resetForTesting()
+            let start = Date()
+            let health = SessionProbeHealth(failure: .prepareFailed, path: "/tmp/a.db")
+
+            try expectTrue(ProbeFailureLog.record(health, agentId: "dim", now: start), "首次故障必须落一条")
+            try expectFalse(ProbeFailureLog.record(health, agentId: "dim", now: start.addingTimeInterval(2)),
+                            "同一故障在冷却窗口内不得每拍打一条（2s 采样会刷满日志）")
+            try expectTrue(ProbeFailureLog.record(health, agentId: "dim",
+                                                  now: start.addingTimeInterval(ProbeFailureLog.cooldown)),
+                           "冷却到期后允许再记一次，坏源持续存在仍要留痕")
+            // 另一种失败类型是另一条时间线，不能被上一个冷却吞掉
+            try expectTrue(ProbeFailureLog.record(
+                SessionProbeHealth(failure: .unreadableDB, path: "/tmp/a.db"),
+                agentId: "dim", now: start.addingTimeInterval(ProbeFailureLog.cooldown)),
+                "不同失败类型各自冷却")
+
+            ProbeFailureLog.recordRecovery(agentId: "claude", now: start)   // 没记过故障 → 无操作
+            ProbeFailureLog.recordRecovery(agentId: "dim", now: start)
+            try expectTrue(ProbeFailureLog.record(health, agentId: "dim", now: start),
+                           "恢复后重新武装：再次变坏必须立刻再记一条")
+            ProbeFailureLog.resetForTesting()
+        }
     }
 
     // MARK: - 工具
