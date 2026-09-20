@@ -8,6 +8,7 @@ import ServiceManagement
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case agents
+    case remote
     case engine
     case about
 
@@ -17,6 +18,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "通用与外观"
         case .agents: return "Agent 监控"
+        case .remote: return "远程通知"
         case .engine: return "引擎与性能"
         case .about: return "关于"
         }
@@ -26,6 +28,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "paintpalette"
         case .agents: return "person.2.badge.gearshape"
+        case .remote: return "paperplane"
         case .engine: return "gauge.with.dots.needle.bottom.50percent"
         case .about: return "info.circle"
         }
@@ -213,6 +216,8 @@ struct SettingsView: View {
                     generalDetailView
                 case .agents:
                     agentsDetailView
+                case .remote:
+                    RemoteNotifySettingsView(notifier: controller.remoteNotifier)
                 case .engine:
                     engineDetailView
                 case .about:

@@ -211,7 +211,11 @@ public final class LocalEventServer: @unchecked Sendable {
             timestamp: Date(),
             pid: nil,
             message: req.message,
-            detail: req.detail
+            detail: req.detail,
+            // 这条路径与深链一样是「本机任意进程都能写」的入口：不带标记的话，
+            // 岛内看不出是伪造的，远程外发的「外部投递一律不转发」闸门也会失效
+            // （外发没有 shouldPeek 那类分级，直接就把文字送出去了）
+            externallyDelivered: true
         )
 
         Task { @MainActor [weak self] in

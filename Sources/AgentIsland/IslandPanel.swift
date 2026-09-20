@@ -57,6 +57,10 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
     /// 通知策略分级（标准模式 / 专注免打扰 / 完全静默）
     @Published public private(set) var notificationPolicy: NotificationPolicy = .focus
 
+    /// 远程外发调度器（可选功能，默认关闭）。整个进程共用一个实例：
+    /// 节流窗口与「最近外发结果」是跨事件的状态，设置页要读同一份
+    let remoteNotifier = RemoteNotifier()
+
     /// 事件提醒横幅是否展开详情（支持多行排查信息展示与动态窗口高度拓展）
     @Published public var eventBannerExpanded: Bool = false {
         didSet {
@@ -938,6 +942,56 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
             } else {
                 SoundEffectsManager.playCompletionSound()
             }
+        }
+        fireRemote(for: event)
+    }
+
+    /// 可选的远程外发（默认关闭）。与岛内/系统通知两条通道彼此独立：
+    /// 「完全静默」指不打扰坐在机器前的人，用户在 Windows 上远程看 Mac 时
+    /// 恰恰需要手机能收到——所以这里不看 notificationPolicy。
+    private func fireRemote(for event: AgentTaskEvent) {
+        // 外部投递（深链 / /notify）一律不转发：否则本机任意进程都能把任意文字
+        // 推到用户的手机或邮箱——岛内能看到「外部投递」标记，手机上看不出
+        guard !event.externallyDelivered else { return }
+        // 顺序有讲究：总开关排第一，关掉时后面的通道解码、配齐检查、钥匙串读取
+        // 一个都不做——功能关着就该是「什么都不发生」，而不是每拍都空转一遍外发流程
+        let policy = RemoteNotifyStore.loadPolicy()
+        guard policy.masterEnabled else { return }
+        let kind = RemoteNotifyStore.loadKind()
+        let config = RemoteNotifyStore.loadConfig(for: kind)
+        let inputs = RemoteNotifier.Inputs(
+            agentName: event.agentName,
+            agentId: event.agentId,
+            kind: Self.remoteEventKind(for: event.eventType),
+            // completed 带的是任务用时；其余类型事件就是此刻发生的
+            seconds: event.eventType == .completed ? event.duration : 0,
+            actionDetail: event.detail,
+            message: event.message)
+        // 配齐检查与发送用同一判据，且排在起 Task 之前：否则通道没配好时每个事件都要
+        // 起一个任务、读一次钥匙串，还会往设置页的历史里灌满失败记录
+        let notifier = remoteNotifier
+        guard notifier.isConfigured(kind: kind, config: config) else { return }
+        // 「是否无人」必须在事件这一刻取，不能等到 Task 真正跑起来——
+        // 用户在事件后 0.5 秒回到机器前，发出去的那条就已经失去意义
+        let away = ScreenPresence.isAway
+        Task {
+            // 刻意不标 @MainActor：await 之后整条链会留在主线程上，而这段
+            // （钥匙串读、策略判定、发请求、记账）没有一样需要主线程。
+            // 结果只进 notifier 的历史与统一日志：外发失败不该在岛上抢戏，
+            // 但必须查得到（设置页「最近外发」读同一份历史）
+            let outcome = await notifier.deliver(inputs: inputs, kind: kind, config: config,
+                                                 policy: policy, away: away)
+            if !outcome.isDelivered {
+                AppLog.warn("远程通知未送达（\(kind.rawValue)）：\(outcome.shortReason)")
+            }
+        }
+    }
+
+    private static func remoteEventKind(for type: AgentTaskEvent.EventType) -> RemoteEventKind {
+        switch type {
+        case .completed: return .completed
+        case .attention: return .attention
+        case .costSpike: return .costSpike
         }
     }
 

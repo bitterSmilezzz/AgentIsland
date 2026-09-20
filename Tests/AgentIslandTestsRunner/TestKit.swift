@@ -85,6 +85,41 @@ func expectNil<T>(_ value: T?, _ label: String = "") throws {
     }
 }
 
+func expectNotNil<T>(_ value: T?, _ label: String = "") throws {
+    if value == nil {
+        throw TestError(message: "\(label) 期望非 nil")
+    }
+}
+
+// MARK: - async 桥（runner 的测试体是同步闭包，本仓无 XCTest 的 async 支持）
+
+/// 在同步测试体内执行一段 @MainActor async 逻辑并取回结果。
+/// 机制与套件里既有的「回调 + 小步 RunLoop」同构：Task 派发到 MainActor，
+/// 本函数在 main run loop 上等它跑完（真异步 IO 也照常推进）。
+/// 注意 body 内的 throw 穿不出 Task 边界，断言一律写在调用方。
+@MainActor
+func awaitOnMain<T: Sendable>(_ timeout: TimeInterval = 15,
+                              _ body: @escaping @MainActor () async -> T) throws -> T {
+    let cell = MainCell<T>()
+    Task { @MainActor in cell.value = await body() }
+    let deadline = Date().addingTimeInterval(timeout)
+    while cell.value == nil {
+        if Date() >= deadline {
+            throw TestError(message: "async 测试体在 \(timeout)s 内未完成")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+    }
+    guard let value = cell.value else { throw TestError(message: "async 测试体结果为 nil") }
+    return value
+}
+
+/// awaitOnMain 的结果盒子：泛型函数内不能嵌套类型，故放文件作用域。
+/// 值只在 MainActor 上串行读写，@unchecked 表的是「同 actor 内可变」而非真并发。
+final class MainCell<T>: @unchecked Sendable {
+    var value: T?
+    init() {}
+}
+
 // MARK: - Token 监控假实现（引擎 token 速率链路测试用）
 
 /// 可变 usage 的假 token 监控（引用语义）：测试先改 usage 再触发采样。
