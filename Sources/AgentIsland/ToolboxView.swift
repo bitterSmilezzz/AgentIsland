@@ -63,6 +63,9 @@ struct ToolboxView: View {
                         // 运维与用量审计报告 (v0.0.74)
                         auditExportCard
 
+                        // 监控可信度自查 (v0.0.88)：与 CLI doctor 同一套结论
+                        monitoringHealthCard
+
                         if !anomalies.isEmpty {
                             anomalyFilterBar
                         }
