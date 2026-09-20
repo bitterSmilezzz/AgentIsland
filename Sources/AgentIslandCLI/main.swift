@@ -47,6 +47,10 @@ struct AgentIslandCLI {
             let subArgs = Array(rawArgs.dropFirst())
             await CleanCommand.run(args: subArgs)
 
+        case "selftest":
+            let subArgs = Array(rawArgs.dropFirst())
+            await SelftestCommand.run(args: subArgs)
+
         case "open":
             let subArgs = Array(rawArgs.dropFirst())
             await OpenCommand.run(args: subArgs)
@@ -91,6 +95,7 @@ macOS 智能体运行态监控与运维终端工具
   \(CLIColor.cyan("doctor"))    一次性实况自查：这个 Agent 是真闲着，还是我根本没看到它
   \(CLIColor.cyan("check"))      排查长期死锁、孤儿后台与高内存泄漏异常
   \(CLIColor.cyan("clean"))      一键清理释放异常智能体占用的系统资源
+  \(CLIColor.cyan("selftest"))  核心逻辑自检（假数据断言，验证构建本身；不读真实机器状态）
   \(CLIColor.cyan("open"))       通过深度链接呼出/联动桌面灵动岛
   \(CLIColor.cyan("notify"))     主动向灵动岛投递智能体完成、待确认或告警事件
   \(CLIColor.cyan("report"))     生成 Markdown / CSV / JSON 运维审计报告
@@ -116,6 +121,7 @@ macOS 智能体运行态监控与运维终端工具
   \(CLIColor.dim("# 排查并安全清理卡顿僵死的 Agent"))
   $ agentisland doctor
   $ agentisland doctor --json --all
+  $ agentisland selftest
   $ agentisland check
   $ agentisland clean --dry-run
   $ agentisland clean

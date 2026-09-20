@@ -592,7 +592,7 @@ public enum AgentSessionInspector {
     private static func inspectDimDatabase(path: String, now: Date,
                                            report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
-        return withDB(path, report: report) { db in
+        return withDB(path, report: report) { db, report in
             let sql = """
             SELECT rowid, role, toolMetadata, parts
             FROM messages
@@ -649,7 +649,7 @@ public enum AgentSessionInspector {
     private static func inspectStatusDatabase(path: String, sql: String, now: Date,
                                               report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
-        return withDB(path, report: report) { db in
+        return withDB(path, report: report) { db, report in
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
                 report(SessionProbeHealth(failure: .prepareFailed, path: path))
@@ -679,7 +679,7 @@ public enum AgentSessionInspector {
     private static func inspectOpenCodeDatabase(path: String, now: Date,
                                                 report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
-        return withDB(path, report: report) { db in
+        return withDB(path, report: report) { db, report in
             let sql = """
             SELECT data FROM part
             WHERE session_id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1)
@@ -1295,7 +1295,31 @@ public enum AgentSessionInspector {
     /// 交给 `report`——「解析器坏了」绝不能与「Agent 空闲」同形（见 SessionProbeHealth）。
     private static func withDB<T>(_ path: String,
                                   report: (SessionProbeHealth) -> Void = { _ in },
-                                  _ body: (OpaquePointer) -> T?) -> T? {
+                                  _ body: @escaping (OpaquePointer, (SessionProbeHealth) -> Void) -> T?) -> T? {
+        let box = HealthBox()
+        var result = attempt(path, box, body)
+        if box.containsPrepareFailure {
+            // prepare 失败先当作**句柄陈旧**处理：原地重建（VACUUM / 截断）不改 inode，
+            // 缓存的旧连接会被继续复用，此时直接定性为「对方改了表结构」是误诊。
+            // 作废连接重试一次，两次都失败才对外上报——真改表仍会落到 prepareFailed。
+            box.items.removeAll()
+            ReadonlyDB.invalidate(path)
+            result = attempt(path, box, body)
+        }
+        box.items.forEach(report)
+        return result
+    }
+
+    /// 收集一次查询过程中的故障。用引用类型承载：捕获局部变量的嵌套函数
+    /// 无法作为 `@escaping` 闭包传给连接层。
+    private final class HealthBox {
+        var items: [SessionProbeHealth] = []
+        var containsPrepareFailure: Bool { items.contains { $0.failure == .prepareFailed } }
+    }
+
+    private static func attempt<T>(_ path: String,
+                                   _ box: HealthBox,
+                                   _ body: @escaping (OpaquePointer, (SessionProbeHealth) -> Void) -> T?) -> T? {
         ReadonlyDB.withConnection(path, onFailure: { failure in
             switch failure {
             case .missing:
@@ -1303,8 +1327,8 @@ public enum AgentSessionInspector {
                 // 而这恰恰是「还没有会话」的正常形态
                 break
             case .openFailed:
-                report(SessionProbeHealth(failure: .unreadableDB, path: path))
+                box.items.append(SessionProbeHealth(failure: .unreadableDB, path: path))
             }
-        }, body) ?? nil
+        }, { db in body(db, { box.items.append($0) }) }) ?? nil
     }
 }

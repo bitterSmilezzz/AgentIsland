@@ -16,8 +16,10 @@ public enum AgentObservability {
         case observed
         /// 进程在跑，但会话源读不到 —— 此时的「待机」只代表没读到信号
         case blindSessionSource
-        /// 进程在跑，但本地没有任何可读到的会话与用量数据（源缺失，不等于没在用）
+        /// 进程在跑、档案登记了明细源，但本轮没读到任何会话与用量
         case noLocalData
+        /// 档案根本没登记本地明细源：读不到是设计如此，不是故障
+        case sourceNotWired
         /// 未安装且进程不在：不该期待任何状态
         case notInstalled
     }
@@ -35,6 +37,7 @@ public enum AgentObservability {
             case .observed: return "结论可信"
             case .blindSessionSource: return "待机不可信：会话源读不到"
             case .noLocalData: return "无本地明细：读不到会话与用量"
+            case .sourceNotWired: return "未接入明细源"
             case .notInstalled: return "未安装：不该期待状态"
             }
         }
@@ -70,7 +73,15 @@ public enum AgentObservability {
         }
         let hasUsage = (snapshot.tokenUsage?.tokensTotal ?? 0) > 0
         if snapshot.activeSessions == 0 && !hasUsage {
-            evidence.append("会话目录在判定窗口内没有活动会话，也没有可读到的用量账本")
+            if !snapshot.profile.hasLocalDetailSource {
+                evidence.append("档案未登记本地明细源（会话库与 token 目录都没有），"
+                                + "读不到明细是设计如此，不代表它没在工作")
+                return Verdict(code: .sourceNotWired, evidence: evidence)
+            }
+            // 措辞必须留有余地：一次性采样（CLI doctor/status）不等待 token 监控的异步刷新，
+            // 用量为空很可能只是没赶上，把「没赶上」说成「没有」就是新的谎报
+            evidence.append("会话目录在判定窗口内没有活动会话，本轮也没取到用量账本"
+                            + "（一次性采样不等待异步刷新，未必代表真的为零）")
             return Verdict(code: .noLocalData, evidence: evidence)
         }
         evidence.append("活跃会话 \(snapshot.activeSessions) 个")

@@ -45,6 +45,7 @@ public enum DoctorCommand {
         let blind = verdicts.filter { $0.1.code == .blindSessionSource }
         let noData = verdicts.filter { $0.1.code == .noLocalData }
         let absent = verdicts.filter { $0.1.code == .notInstalled }
+        let unwired = verdicts.filter { $0.1.code == .sourceNotWired }
 
         print("\n" + CLIColor.bold("🩺 AgentIsland 可观测性自查"))
         print(CLIColor.dim("──────────────────────────────────────────"))
@@ -52,6 +53,7 @@ public enum DoctorCommand {
         print("  共 \(verdicts.count) 项：" + CLIColor.green("结论可信 \(verdicts.filter { $0.1.isTrustworthy }.count)")
               + CLIColor.dim("   ·   待机不可读 ") + CLIColor.red("\(blind.count)")
               + CLIColor.dim("   ·   无本地明细 ") + CLIColor.yellow("\(noData.count)")
+              + CLIColor.dim("   ·   未接入明细源 ") + CLIColor.dim("\(unwired.count)")
               + CLIColor.dim("   ·   未安装 ") + CLIColor.dim("\(absent.count)"))
 
         var table = CLITable(columns: [
@@ -66,6 +68,7 @@ public enum DoctorCommand {
             case .observed: conclusion = CLIColor.green(verdict.summary)
             case .blindSessionSource: conclusion = CLIColor.red(verdict.summary)
             case .noLocalData: conclusion = CLIColor.yellow(verdict.summary)
+            case .sourceNotWired: conclusion = CLIColor.dim(verdict.summary)
             case .notInstalled: conclusion = CLIColor.dim(verdict.summary)
             }
             table.addRow([
@@ -86,8 +89,12 @@ public enum DoctorCommand {
             }
         }
         if !noData.isEmpty {
-            print("  " + CLIColor.dim("• \(noData.count) 个在跑的 Agent 本地读不到会话明细：可能未启用自动发现，"
-                                     + "或其会话写在别处（不代表它们没在工作）。"))
+            print("  " + CLIColor.dim("• \(noData.count) 个在跑的 Agent 登记了明细源却读不到数据："
+                                     + "可能未启用自动发现、会话写在别处，或一次性采样没等到异步刷新。"))
+        }
+        if !unwired.isEmpty {
+            print("  " + CLIColor.dim("• \(unwired.count) 个未接入本地明细源（档案没有会话库与 token 目录）："
+                                     + "它们的「待机」只代表进程与文件信号，属正常形态。"))
         }
         print("")
     }

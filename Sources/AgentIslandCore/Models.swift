@@ -168,6 +168,12 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         case other
     }
 
+    /// 该档案是否登记了任何**本地明细源**（只读会话库或 token 目录）。
+    /// 「没登记」与「登记了但本轮读不到」是两种结论：前者是设计如此，后者才可能是故障。
+    public var hasLocalDetailSource: Bool {
+        sessionDatabase != nil || !tokenRoots.isEmpty
+    }
+
     /// 自定义条目 id 推导（设置表单校验与落库共用，规则只此一处）
     public static func makeCustomID(_ processName: String) -> String {
         "custom-\(processName.lowercased().replacingOccurrences(of: " ", with: "-"))"

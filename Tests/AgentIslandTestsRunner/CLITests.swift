@@ -212,6 +212,29 @@ enum CLITests {
                 ("已完成且无明细",
                  snap(processRunning: true, installed: true, level: .completed), .observed),
             ]
+            // 「未接入明细源」与「接入却读不到」必须分家：前者是设计如此，后者才需要排查。
+            // 取一个既无会话库也无 token 目录的档案来断言（内置集里 ChatGPT 正是这种）
+            let unwiredProfile = AgentRegistry.builtin.first {
+                $0.sessionDatabase == nil && $0.tokenRoots.isEmpty
+            }
+            if let unwiredProfile {
+                let verdict = AgentObservability.evaluate(snapshot: AgentSnapshot(
+                    profile: unwiredProfile, level: .idle, processRunning: true, cpuPercent: 0,
+                    installed: true, activeSessions: 0, lastActivityAgo: nil, lastActivityText: "—"))
+                try expectEqual(verdict.code, .sourceNotWired, "\(unwiredProfile.id) 未接入明细源")
+                try expectTrue(verdict.evidence[0].contains("不代表它没在工作"),
+                               "未接入的依据必须明确它不是故障")
+            }
+            // 登记了源的档案在同样「什么都读不到」时必须落到 noLocalData
+            let wiredProfile = AgentRegistry.builtin.first { $0.hasLocalDetailSource }
+            if let wiredProfile {
+                let verdict = AgentObservability.evaluate(snapshot: AgentSnapshot(
+                    profile: wiredProfile, level: .idle, processRunning: true, cpuPercent: 0,
+                    installed: true, activeSessions: 0, lastActivityAgo: nil, lastActivityText: "—"))
+                try expectEqual(verdict.code, .noLocalData, "\(wiredProfile.id) 登记了源却读不到")
+                try expectTrue(verdict.evidence[0].contains("未必代表真的为零"),
+                               "一次性采样的空用量必须留有余地，不能断言为 0")
+            }
             for (label, snapshot, expected) in cases {
                 let verdict = AgentObservability.evaluate(snapshot: snapshot)
                 try expectEqual(verdict.code, expected, label)

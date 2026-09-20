@@ -2,7 +2,13 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.86）
+## 功能（v0.0.87）
+
+### 自查结论补齐三类真相 (v0.0.87)
+- **「没接入明细源」不再冒充「读不到数据」**：档案未登记会话库/token 目录的 Agent 现在有独立结论，实机把原先笼统的「无本地明细 4」拆成「无本地明细 1（值得排查）+ 未接入明细源 3（属正常形态）」；
+- **一次性采样不再把「没赶上」说成「没有」**：CLI 不等待 token 异步刷新，用量为空的依据措辞已改为留有余地；
+- **只读库不再把陈旧句柄误诊成「对方改了表」**：`VACUUM`/截断式原地重写不改 inode，prepare 失败现在先重开连接重试一次，两次都失败才定性；
+- **`agentisland selftest`**：核心逻辑自检从 `.app` 的隐藏参数变成可发现命令，与 `doctor`（这台机器可信吗）分工明确。
 
 ### 新增 `agentisland doctor`：可观测性自查 (v0.0.86)
 - **一条结论回答「这个 Agent 是真闲着，还是我根本没看到它」**：逐 Agent 给出结论与依据，四类结论（结论可信 / 待机不可读 / 无本地明细 / 未安装）计数相加即总行数；支持 `--json`、`--agent <id|名称>`、`--all`、`--quiet`；
@@ -63,7 +69,8 @@
 - **终端全景快照（`agentisland status` / `agentisland`）**：快速输出所有已监控智能体状态、PID、CPU%、内存、会话数与用量表格，支持 `--json` 供 Raycast/脚本联动。
 - **Token 趋势与成本看板（`agentisland tokens`）**：终端汇总最近 24h/累计消耗，并自动基于 `TokenForecastEvaluator` 推算当月末总消耗与预算枯竭预警。
 - **死锁排查与一键清理（`agentisland check` / `agentisland clean`）**：排查挂起死锁或内存泄漏进程，支持 `--dry-run` 预览与安全批量一键终止释放。
-- **可观测性自查（`agentisland doctor` · v0.0.86）**：逐 Agent 判定「待机」是否可信——会话源读不到、本地无明细、未安装都给出依据；支持 `--json` 与 `--agent <id>`。
+- **可观测性自查（`agentisland doctor` · v0.0.86）**：逐 Agent 判定「待机」是否可信——会话源读不到、未接入明细源、本地无明细、未安装都给出依据；支持 `--json` 与 `--agent <id>`。
+- **构建自检（`agentisland selftest` · v0.0.87）**：用假数据断言核心判定逻辑，验证构建本身而非本机状态。
 - **深度链接呼出（`agentisland open`）**：终端直接控制桌面灵动岛展开、折叠或直达指定 Agent 与分析看板。
 - **审计报告导出（`agentisland report`）**：一键生成 Markdown 运维审计报告，支持 `--copy` 复制到剪贴板或 `--output` 存盘。
 

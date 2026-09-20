@@ -20,6 +20,17 @@ enum ReadonlyDB {
     /// 连接打开时文件的 (设备号, inode)：外部替换/重挂载后据此失效缓存连接
     private static var identities: [String: (dev: UInt64, inode: UInt64)] = [:]
 
+    /// 作废某路径的缓存连接（关旧句柄，下次调用重新 open）。
+    /// 供调用方在「prepare 失败」时排除句柄陈旧这一成因——见 AgentSessionInspector.withDB。
+    static func invalidate(_ path: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let db = connections.removeValue(forKey: path) {
+            sqlite3_close(db)
+        }
+        identities.removeValue(forKey: path)
+    }
+
     /// 打开（或复用缓存的）只读连接并执行 `body`，返回 `body` 的结果。
     /// 库缺失 / 不可读 / open 失败时返回 nil——与调用方既有「查不到数据」语义一致。
     /// - Warning: body 执行期间持有内部锁，body 内**不得**再进 withConnection（不可重入死锁）。
