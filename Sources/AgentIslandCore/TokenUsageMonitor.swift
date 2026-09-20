@@ -514,6 +514,12 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 StructuredTokenSource(agentId: "claude", roots: tokenRoots("claude"), format: .anthropic),
                 StructuredTokenSource(agentId: "workbuddy", roots: tokenRoots("workbuddy"), format: .anthropic),
                 StructuredTokenSource(agentId: "workbuddy-ai", roots: tokenRoots("workbuddy-ai"), format: .anthropic),
+                // Qoder 刻意**不**接进来。它的逐行记录长得和 Anthropic 一模一样
+                // （message.usage.input_tokens / cache_read_input_tokens / output_tokens），
+                // 但本机实测 1,033 条 usage 记录里这四个字段全是 0——真值只在 `credits`
+                // （合计 303.37）与 `context_usage_ratio` 里。接进来的代价实测是冷跑
+                // `tokens` 从 ~2.05s 涨到 ~2.9–4.0s（会话文件单个可达 10MB），
+                // 换回 0 条可用数据。等 credits 有了明确的展示口径再接。
             ]
         )
     }

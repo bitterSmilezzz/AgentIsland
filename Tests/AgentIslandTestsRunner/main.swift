@@ -23,6 +23,7 @@ func runAllTests() -> Int32 {
     DebtRatchetTests.register()
     HardeningTests.register()
     BlindSpotTests.register()
+    QoderTrackingTests.register()
     CleanerTests.register()
     VisibilityTests.register()
     ConfigTests.register()

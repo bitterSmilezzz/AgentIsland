@@ -2,7 +2,15 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.98）
+## 功能（v0.0.99）
+
+### Qoder 监控上线；它的 Token 消耗确认无法监控 (v0.0.99)
+- **新增内置档案 Qoder**（`com.qoder.app`，会话根 `~/.qoder/projects`），可监控**运行状态、正在执行的动作、以及「等待你回答/确认」**。安装路径匹配锚定到 `/applications/qoder.app`，不用裸子串，避免把你自己的 Electron 程序认成 Qoder。
+- **专用会话方言**：Qoder 的「等待用户」是 `AskUserQuestion` 这个 tool_use 尚无对应 tool_result 这一**结构事实**，不是关键字。通用扫描会在「刚答完那一拍」反向误报，所以单独实现并配回归测试。实测在本会话运行期间即正确显示「运行: cd …」与「结论可信」。
+- **Token 消耗：诚实报告「监控不了」**。实测 1,033 条 usage 记录里四个 token 字段全为 0，真值只有 `credits`（合计 303.37）。接入采集会让用量页冷跑从 ~2.05s 涨到 ~2.9–4.0s 却拿不到数据，故撤掉；Qoder 的用量列显示 `—`（没取到）而**不是** `0`（没有）。
+- 两份调研文档：`docs/research/qoder-monitoring.md`（含若要支持 credits 需先定的三件事）、`docs/research/remote-notifications.md`（跨平台通知：为什么远程桌面收不到、通道对比、凭据与隐私约束）。
+
+### 清理复核不再谎报「已处置」 (v0.0.98)
 
 ### 清理复核不再谎报「已处置」(v0.0.98)
 - **成因**：复核看的是「条目还在不在异常列表」，而清理时 `resetTracking` 会清掉 hung 证据 → 1.2s 后重扫条目必然消失 → 忽略 SIGTERM 的死锁进程被报成「清理完成」。单条与批量同一口径，两处都改。

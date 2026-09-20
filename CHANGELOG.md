@@ -4,6 +4,41 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.99] - 2026-09-20
+
+### 🖥️ 新增 Qoder 监控（状态 / 动作 / 等待确认），并实测确认它的用量无法监控
+
+- **档案注册**：bundle id `com.qoder.app`、进程名 `qoder`（主进程与 `Qoder Helper (Renderer)`
+  走前缀族规则一并命中）、会话根 `~/.qoder/projects`。`pathContains` **锚定到
+  `/applications/qoder.app`** 而非裸子串 `qoder`——本仓刚把「过宽匹配可能误杀用户自己的
+  Electron 程序」记为已知风险，新档案不再制造一例。
+- **专用方言 `.qoderTranscript`**，而不是交给通用尾窗关键词扫描。Qoder 的逐行记录与
+  Anthropic 同形（`message.role/content/stop_reason/usage`，工具名 `Bash`/`Edit`/
+  `AskUserQuestion`/`Agent`），「等待用户」不是一个字段而是结构事实：
+  **`AskUserQuestion` 这个 tool_use 还没有对应的 tool_result**。只看关键字会在
+  「刚答完那一拍」反向误报（本仓在 Claude 上踩过同形），因此单独实现。
+- **实测跑通**（Qoder 正在执行本会话时）：
+  `🟢 工作中 ️ Qoder 514 0.0% 984M 3 — — 运行: cd /Users/…/workspace/Agent… 20s前`，
+  `doctor` 给出「结论可信：本轮读到了会话强语义」。
+- **Token 消耗：确认无法监控，并且没有假装能。** 本机 1,033 条 `usage` 记录求和：
+  `input_tokens / output_tokens / cache_read_input_tokens / cache_creation_input_tokens`
+  **全为 0**，唯一有值的是 `credits`（合计 303.37）与 `context_usage_ratio`；
+  `requestTokenAnchor` 的两个字段是 64 字符不透明串，logs 与 `.models` 里也没有计数。
+  试过接入采集：`agentisland tokens` 冷跑从 ~2.05s 涨到 ~2.9–4.0s（单个会话文件可达 10MB），
+  换回 0 条数据 → **撤掉**，用量列对 Qoder 显示 `—`（没取到）而不是 `0`（没有），
+  `doctor` 归入「未接入本地明细源」并说明「不代表它没在工作」。
+- 新增 `docs/research/qoder-monitoring.md`：把「字段存在」与「数据存在」的区别、
+  以及要做 credits 需要先定的三件事（单位、汇率来源、增量还是快照口径）写清楚。
+- 新增 `docs/research/remote-notifications.md`：跨平台通知调研。核心结论——
+  macOS 通知是本机另一个进程画的 UI，远程桌面只传像素，**在 Mac 侧无法穿透**，只能外发；
+  通道按「要不要自己养服务器」分类对比（ntfy / 企业微信 / 钉钉 / 飞书 / Server酱 / 邮箱），
+  并说明为什么邮箱排在后面（Foundation 无 SMTP 客户端，`sendmail` 无法判断是否真发出，
+  违反本仓的诚实原则）。三条不可谈判的约束：凭据只进钥匙串（webhook URL 本身就是密钥）、
+  默认只发「Agent 名 + 状态 + 时长」且发送前可预览、失败必须在岛内可见。
+
+测试 340 → 346（Qoder 方言 6 条，其中「提问已回答不得再报等待」与「命令已返回不得仍显示运行中」
+两条做过变异验证：让解析器忽略已回答集合，两条同时变红）。
+
 ## [0.0.98] - 2026-09-20
 
 ### 🧹 清理复核不再谎报「已处置」

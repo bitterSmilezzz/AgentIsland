@@ -73,6 +73,8 @@ public enum AgentSessionDialect: String, Codable {
     case dshProjection
     /// Cline / Roo Code：`tasks/<taskId>/ui_messages.json`
     case clineTasks
+    /// Qoder：`~/.qoder/projects/<项目 slug>/<会话 uuid>.jsonl`（Anthropic 兼容逐行）
+    case qoderTranscript
 }
 
 /// 只读会话库：部分桌面 Agent 把会话只写进 SQLite，FileMonitor 的「最新文件」只能定位到

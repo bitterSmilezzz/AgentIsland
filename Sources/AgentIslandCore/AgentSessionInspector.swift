@@ -133,6 +133,9 @@ public enum AgentSessionInspector {
             guard let dir = dshProjectionDir(in: profile.sessionDirs) else { return AgentSessionProbe() }
             return AgentSessionProbe(signal: inspectDSHSession(baseDir: dir, now: now, report: report),
                                      health: failure)
+        case .qoderTranscript:
+            return AgentSessionProbe(signal: inspectQoderTranscript(dirs: profile.sessionDirs, now: now, report: report),
+                                     health: failure)
         case .clineTasks:
             if let signal = inspectClineOrRooTasks(dirs: profile.sessionDirs, now: now, report: report) {
                 return AgentSessionProbe(signal: signal, health: failure)
@@ -449,6 +452,143 @@ public enum AgentSessionInspector {
             return String(text.prefix(maxLen)) + "…"
         }
         return text
+    }
+
+    // MARK: - Qoder 专有解析器
+
+    /// Qoder（阿里的 agentic IDE）：`~/.qoder/projects/<项目 slug>/<会话 uuid>.jsonl`，
+    /// 逐行是 Anthropic 兼容的对话记录（`message.role` / `content[]` / `stop_reason` / `usage`），
+    /// 工具名与 Claude Code 同源（Bash / Edit / Write / Read / Agent / AskUserQuestion）。
+    ///
+    /// 为什么不交给通用尾窗关键词扫描：Qoder 的「等待你回答」是 **`AskUserQuestion` 这个
+    /// tool_use 还没有对应 tool_result**；回答完之后结果会立刻补上。只看关键字会在
+    /// 「刚答完的那一拍」反向误报（本仓在 Claude 与 AskUserQuestion 上踩过同一形态），
+    /// 而反向误报的代价是用户被叫回来发现什么都没发生。
+    public static func inspectQoderTranscript(dirs: [String], now: Date,
+                                              report: (SessionProbeHealth) -> Void = { _ in }) -> AgentSessionSignal? {
+        let root = dirs.first.map { URL(fileURLWithPath: $0) }
+        guard let found = locatedSession(key: "qoder|\(dirs.joined(separator: ","))",
+                                         rootDir: root, now: now,
+                                         locate: { walkQoderSessions(dirs: dirs) }) else { return nil }
+        let age = max(0, now.timeIntervalSince(found.mtime))
+        guard age <= 24 * 3600 else { return nil }
+        // 单个会话文件实测可到 10MB（每行还挂 requestTokenAnchor 的整包请求/响应），
+        // 必须走有界尾读：状态只取决于最近若干条消息
+        let lines = LogTailReader.read(from: found.file, maxLines: 60, maxBytes: 262_144)
+        guard !lines.isEmpty else { return nil }
+        return detectQoder(lines: lines, fileAge: age)
+    }
+
+    /// 遍历 projects/<slug>/*.jsonl 取最近修改的一个。
+    /// 走 `locatedSession` 的 TTL + 根 mtime 缓存：项目数与历史会话数会一直涨，
+    /// 每拍全量 stat 正是当初给 Antigravity/DSH/Cline 加缓存的同一个理由。
+    private static func walkQoderSessions(dirs: [String]) -> LocatedSession? {
+        let fm = FileManager.default
+        var newest: LocatedSession?
+        for dir in dirs {
+            guard let slugs = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            let base = URL(fileURLWithPath: dir)
+            for slug in slugs {
+                let project = base.appendingPathComponent(slug)
+                guard let files = try? fm.contentsOfDirectory(atPath: project.path) else { continue }
+                for name in files where name.hasSuffix(".jsonl") {
+                    let url = project.appendingPathComponent(name)
+                    guard let mtime = modifiedDate(of: url) else { continue }
+                    if newest == nil || mtime > newest!.mtime {
+                        newest = LocatedSession(file: url, mtime: mtime, sidecar: nil)
+                    }
+                }
+            }
+        }
+        return newest
+    }
+
+    /// 这些工具在等**人**：没有 tool_result 时球在用户这边
+    private static let qoderRequestTools: Set<String> = [
+        "askuserquestion", "ask_question", "exitplanmode", "exit_plan_mode",
+    ]
+
+    public static func detectQoder(lines: [String], fileAge: TimeInterval) -> AgentSessionSignal? {
+        struct Row {
+            let id: String
+            let role: String
+            let stopReason: String
+            let uses: [(name: String, id: String, hint: String)]
+            let results: [String]
+        }
+        var rows: [Row] = []
+        rows.reserveCapacity(lines.count)
+        for raw in lines {
+            guard let data = raw.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let message = obj["message"] as? [String: Any],
+                  let role = message["role"] as? String else { continue }
+            var uses: [(name: String, id: String, hint: String)] = []
+            var results: [String] = []
+            if let content = message["content"] as? [[String: Any]] {
+                for block in content {
+                    switch block["type"] as? String {
+                    case "tool_use":
+                        guard let name = block["name"] as? String else { continue }
+                        uses.append((name, (block["id"] as? String) ?? "", qoderToolHint(block["input"])))
+                    case "tool_result":
+                        if let src = block["tool_use_id"] as? String { results.append(src) }
+                    default: break
+                    }
+                }
+            }
+            rows.append(Row(id: (message["id"] as? String) ?? "", role: role,
+                            stopReason: (message["stop_reason"] as? String) ?? "",
+                            uses: uses, results: results))
+        }
+        guard let first = rows.first else { return nil }
+        var answered = Set<String>()
+        for row in rows { for id in row.results where !id.isEmpty { answered.insert(id) } }
+        _ = first
+
+        guard let lastAssistant = rows.last(where: { $0.role == "assistant" }) else { return nil }
+        let pending = lastAssistant.uses.filter { !$0.id.isEmpty && !answered.contains($0.id) }
+
+        if let ask = pending.first(where: { qoderRequestTools.contains($0.name.lowercased()) }) {
+            return .attention(AgentAttentionRequest(
+                fingerprint: "qoder-\(ask.id)",
+                message: ask.name.lowercased().contains("plan") ? "等你确认下一步方案" : "等待你回答或选择"))
+        }
+        if let use = pending.first {
+            return .active(fingerprint: "qoder-\(use.id)",
+                           action: qoderActionText(name: use.name, hint: use.hint))
+        }
+        // 尾窗里的工具调用都已返回结果
+        if lastAssistant.stopReason == "end_turn" || lastAssistant.stopReason == "stop_sequence" {
+            // 完成态只保留一小段时间，之后自然回到「待机」——与其他方言同口径
+            guard fileAge <= 15 * 60 else { return nil }
+            return .completed(fingerprint: "qoder-\(lastAssistant.id)")
+        }
+        return .active(fingerprint: "qoder-cont-\(lastAssistant.id)", action: "继续处理中")
+    }
+
+    /// 从 tool_use 的 input 里取一条能给人看的线索（命令 / 文件名 / 任务描述）
+    private static func qoderToolHint(_ input: Any?) -> String {
+        guard let dict = input as? [String: Any] else { return "" }
+        for key in ["command", "file_path", "path", "pattern", "prompt", "description", "toolName"] {
+            if let text = dict[key] as? String, !text.isEmpty {
+                return clipDSHString(text.replacingOccurrences(of: "\n", with: " "), limit: 40)
+            }
+        }
+        return ""
+    }
+
+    private static func qoderActionText(name: String, hint: String) -> String {
+        switch name.lowercased() {
+        case "bash":            return hint.isEmpty ? "执行终端命令" : "运行: \(hint)"
+        case "edit", "write",
+             "multiedit":       return hint.isEmpty ? "修改文件" : "修改: \(hint)"
+        case "read", "grep",
+             "glob":            return hint.isEmpty ? "读取代码" : "读取: \(hint)"
+        case "agent":           return hint.isEmpty ? "派生子任务处理中" : "子任务: \(hint)"
+        case "mcp_call":        return hint.isEmpty ? "调用外部工具" : "调用工具: \(hint)"
+        default:                return hint.isEmpty ? "正在执行 \(name)" : "\(name): \(hint)"
+        }
     }
 
     // MARK: - Cline / Roo Code 专有解析器

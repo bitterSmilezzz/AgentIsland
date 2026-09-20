@@ -225,6 +225,11 @@ enum RegistryTests {
                 switch profile.sessionDialect {
                 case .genericTail, .clineTasks:
                     break
+                case .qoderTranscript:
+                    // Qoder 的会话定位是「projects/<slug>/*.jsonl」两层枚举，
+                    // 没有可静态推导的子目录名，只能要求 sessionDirs 给出 projects 根
+                    try expectTrue(profile.sessionDirs.contains { $0.hasSuffix("/projects") },
+                                   "\(profile.id) 声明了 qoderTranscript 方言但 sessionDirs 不指向 projects 根")
                 case .antigravityBrain:
                     try expectTrue(AgentSessionInspector.antigravityBrainDir(in: profile.sessionDirs) != nil,
                                    "\(profile.id) 声明了 antigravityBrain 方言但 sessionDirs 里没有 brain 目录")

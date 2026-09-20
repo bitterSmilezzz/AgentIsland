@@ -54,6 +54,29 @@ public enum AgentRegistry {
             emoji: "🧠",
         ),
         AgentProfile(
+            id: "qoder",
+            name: "Qoder",
+            icon: "cpu.fill",
+            // 实测：/Applications/Qoder.app/Contents/MacOS/Qoder，Helper 与 Renderer
+            // 走「name + 空格」前缀族规则命中（"qoder helper" / "qoder helper (renderer)"）
+            bundleIDs: ["com.qoder.app"],
+            processNames: ["qoder"],
+            // 路径锚定到安装目录，不用裸子串 "qoder"：裸子串会把 ~/code/qoder-playground
+            // 里跑的任何 Electron 程序认成本 Agent（同类过宽匹配已在工作台记为已知风险）
+            pathContains: ["/applications/qoder.app"],
+            // 桌面 IDE：空闲时的渲染/IPC 抖动会越过 CLI 档的 CPU 阈值
+            cpuWorkingThreshold: desktopCPUFloor,
+            // 实测：~/.qoder/projects/<项目 slug>/<会话 uuid>.jsonl
+            // 同目录还有 <uuid>/subagents/*.jsonl（子智能体）与 state.json
+            sessionDirs: [home(".qoder/projects")],
+            // tokenRoots 故意留空：Qoder 落盘的 token 字段全为 0（真值只有 credits），
+            // 接上采集只会多花 1~1.9s 换 0 条数据。详见 TokenUsageMonitor 的
+            // structuredSources 注释与 docs/research/ 的用量口径调研。
+            category: .assistant,
+            emoji: "🖥️",
+            sessionDialect: .qoderTranscript,
+        ),
+        AgentProfile(
             id: "codex",
             name: "Codex",
             icon: "chevron.left.forwardslash.chevron.right",
