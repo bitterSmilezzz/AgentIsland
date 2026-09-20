@@ -3,6 +3,18 @@ import Foundation
 // MARK: - 智能体审计报告导出器 (v0.0.74)
 
 public enum AuditReportExporter {
+    /// Markdown 表格单元转义。此前只有 `summaryText` 过了 `|`，`agentName` 与所有字段
+    /// 的**换行**都不处理——而 `agentisland://notify?...message=x%0A%7C...` 里
+    /// `URLComponents.queryItems` 会把 %0A 解成真换行，于是攻击者能往用户粘进工单/群聊
+    /// 的报告里自造行与小节（`export` 还会把这份报告写进剪贴板）
+    static func cell(_ text: String) -> String {
+        // 只处理会破坏表格结构的字符：`|` 分列、换行分行。反斜杠不转义——
+        // Markdown 单元里的 `\` 不是列分隔符，转它只会让文本变样
+        text.replacingOccurrences(of: "|", with: "\\|")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+    }
+
 
     private static let dateFormatter: DateFormatter = {
         let df = DateFormatter()
@@ -62,7 +74,7 @@ public enum AuditReportExporter {
                 }
             }()
 
-            md += "| \(snap.profile.name) | \(snap.level.label) | \(pidStr) | \(cpuStr) | \(memStr) | \(report.score) | \(gradeStr) | \(report.suggestion) |\n"
+            md += "| \(cell(snap.profile.name)) | \(snap.level.label) | \(pidStr) | \(cpuStr) | \(memStr) | \(report.score) | \(gradeStr) | \(cell(report.suggestion)) |\n"
         }
         // 会话源不可读的 Agent 单独列出：健康评分只看进程/CPU/内存，读不到会话库时
         // 报告里只会是一片「待机」，等于把「解析器坏了」伪装成「智能体闲着」。
@@ -88,7 +100,7 @@ public enum AuditReportExporter {
             let tokTot = u.map { TokenUsage.compact($0.tokensTotal) } ?? "0"
             let costTot = (u?.costTotal ?? 0) > 0 ? TokenUsage.cost(u!.costTotal) : "—"
 
-            md += "| \(snap.profile.name) | \(tok24) | \(cost24) | \(tokTot) | \(costTot) |\n"
+            md += "| \(cell(snap.profile.name)) | \(tok24) | \(cost24) | \(tokTot) | \(costTot) |\n"
         }
         md += "\n"
 
@@ -108,8 +120,8 @@ public enum AuditReportExporter {
                     case .costSpike: return "熔断告警"
                     }
                 }()
-                let msg = ev.summaryText.replacingOccurrences(of: "|", with: "\\|")
-                md += "| \(timeStr) | \(ev.agentName) | \(typeStr) | \(durStr) | \(msg) |\n"
+                let msg = cell(ev.summaryText)
+                md += "| \(timeStr) | \(cell(ev.agentName)) | \(typeStr) | \(durStr) | \(msg) |\n"
             }
             md += "\n"
         }

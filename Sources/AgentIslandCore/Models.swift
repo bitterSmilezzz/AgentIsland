@@ -424,6 +424,10 @@ public struct AgentTaskEvent: Identifiable, Equatable {
     public let pid: Int32?
     public let message: String?
     public let detail: String?
+    /// 由外部投递（`agentisland://notify` 深链、`/notify` HTTP 端点）而非引擎自己判定。
+    /// 岛内必须看得出来：否则任意本地进程（npm postinstall、cron、被截写的日志）
+    /// 都能伪造一条与真实「等待你确认」逐字节相同的横幅与系统通知
+    public let externallyDelivered: Bool
 
     public enum EventType: String, Equatable {
         case completed  // 任务执行完毕
@@ -431,7 +435,7 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         case costSpike  // 消耗突增/死循环熔断告警
     }
 
-    public init(id: UUID = UUID(), agentId: String, agentName: String, eventType: EventType, duration: TimeInterval, timestamp: Date = Date(), pid: Int32? = nil, message: String? = nil, detail: String? = nil) {
+    public init(id: UUID = UUID(), agentId: String, agentName: String, eventType: EventType, duration: TimeInterval, timestamp: Date = Date(), pid: Int32? = nil, message: String? = nil, detail: String? = nil, externallyDelivered: Bool = false) {
         self.id = id
         self.agentId = agentId
         self.agentName = agentName
@@ -441,6 +445,7 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         self.pid = pid
         self.message = message
         self.detail = detail
+        self.externallyDelivered = externallyDelivered
     }
 
     /// 「N分M秒」时长文案（唯一实现）：summaryText 兜底、引擎完成事件、系统通知共用。

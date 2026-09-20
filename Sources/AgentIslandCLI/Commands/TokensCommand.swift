@@ -12,15 +12,23 @@ public enum TokensCommand {
             let arg = args[i]
             if (arg == "--budget" || arg == "-b") && i + 1 < args.count {
                 let text = args[i + 1].lowercased().trimmingCharacters(in: .whitespaces)
+                let multiplier: Double
+                let digits: String
                 if text.hasSuffix("m") {
-                    let num = Double(text.dropLast()) ?? 0
-                    explicitBudget = Int(num * 1_000_000)
+                    multiplier = 1_000_000; digits = String(text.dropLast())
                 } else if text.hasSuffix("k") {
-                    let num = Double(text.dropLast()) ?? 0
-                    explicitBudget = Int(num * 1_000)
+                    multiplier = 1_000; digits = String(text.dropLast())
                 } else {
-                    explicitBudget = Int(text)
+                    multiplier = 1; digits = text
                 }
+                // 必须走饱和/可失败路径：`Int(1e308)` 与 `Int(Double.nan)` 是运行时 trap，
+                // 实测 `tokens --budget 1e308m` 以 SIGTRAP(133) 退出且不留任何诊断
+                guard let parsed = Double(digits), parsed.isFinite, parsed >= 0,
+                      parsed * multiplier <= Double(Int.max) else {
+                    CLIExit.fail("无效的预算值: \(args[i + 1])（需要非负数字，可带 k/m 后缀）",
+                                 code: CLIExit.badUsage)
+                }
+                explicitBudget = Int(parsed * multiplier)
                 i += 2
                 continue
             }

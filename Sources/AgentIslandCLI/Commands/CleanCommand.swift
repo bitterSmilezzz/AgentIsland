@@ -60,17 +60,21 @@ public enum CleanCommand {
 
         if isJson {
             let res = CLICleanResultDTO(
-                success: true,
-                killedPids: targets.map(\.pid),
+                success: !result.terminatedPids.isEmpty,
+                killedPids: result.terminatedPids,
                 freedMemoryBytes: result.reclaimedMemoryBytes,
                 freedMemoryFormatted: result.reclaimedMemoryText,
                 dryRun: false
             )
             printJSON(res)
         } else {
+            guard !result.terminatedPids.isEmpty else {
+                // 一个都没杀掉（身份不符 / EPERM / 已退出）不能报「清理完成」
+                CLIExit.fail("未能终止任何目标进程（\(targets.count) 个候选全部跳过或失败）")
+            }
             print("\n" + CLIColor.bold("🧹 智能体异常进程清理完成"))
             print(CLIColor.dim("──────────────────────────────────────────"))
-            print("  已终止进程: " + CLIColor.green("\(result.terminatedCount) 个"))
+            print("  已终止进程: " + CLIColor.green("\(result.terminatedPids.count) 个"))
             print("  已释放内存: " + CLIColor.green(result.reclaimedMemoryText))
             print("")
         }

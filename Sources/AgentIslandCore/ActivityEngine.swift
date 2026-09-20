@@ -901,7 +901,7 @@ public final class ActivityEngine: ObservableObject {
         }
 
         // Token 预算预警与超额告警
-        let budgetEnabled = UserDefaults.standard.bool(forKey: SettingKey.budgetAlertEnabled)
+        let budgetEnabled = SettingBool.read(SettingKey.budgetAlertEnabled, default: true)
         let dailyBudget = UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
         if budgetEnabled && dailyBudget > 0 {
             let eval = budgetTracker.evaluate(used24h: grandTotal.tokens24h, budget: dailyBudget, now: now)
@@ -1118,7 +1118,9 @@ public final class ActivityEngine: ObservableObject {
         }
 
         var acceptedForBanner = true
-        if event.eventType == .costSpike {
+        // 外部投递的告警不登记保护期：`for i in $(seq 60); do open "agentisland://notify?...type=costspike"; done`
+        // 曾可以把某个 Agent 的真实 completed 横幅与系统通知双双压掉，且可无限续期
+        if event.eventType == .costSpike && !event.externallyDelivered {
             // 保护窗口按 Agent 记账：A 的告警只登记 A 自己的保护期
             alertProtectedUntil[event.agentId] = Date().addingTimeInterval(Self.alertProtectionWindow)
         } else if isAlertProtected(event.agentId) {

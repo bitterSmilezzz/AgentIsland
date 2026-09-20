@@ -3,6 +3,20 @@ import Foundation
 // MARK: - 设置持久化（键名与启停集合的唯一 owner）
 
 /// 全部 UserDefaults 键名（UI/Core 共用；键名字面量不得散落在调用方）
+// MARK: - 布尔设置的唯一读法
+
+public enum SettingBool {
+    /// `UserDefaults.bool(forKey:)` 在「键不存在」时给 **false**，而多个开关的 UI 默认是
+    /// **true**——两边不一致时，功能对「从未进过设置页拨过这个开关」的用户永久失效。
+    /// 实测：`budgetAlertEnabled` 的 UI 默认 true，引擎用 `bool()` 读，于是预算预警
+    /// 与超额告警对新装用户一条都不发；声音开关同形（SoundEffectsManager 用 `?? true`
+    /// 而 IslandView 用 `bool()`，同一个键两种真相）。
+    public static func read(_ key: String, default fallback: Bool,
+                            defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? fallback
+    }
+}
+
 public enum SettingKey {
     public static let sampleInterval = "sampleInterval"
     public static let idleSampleInterval = "idleSampleInterval"
@@ -372,5 +386,18 @@ public enum NotificationPolicy: String, CaseIterable, Identifiable, Sendable {
         case .silent:
             return false
         }
+    }
+}
+
+public extension SettingKey {
+    /// 从一行源码里取出 `SettingKey.xxx` 的键名（结构断言用；不做语法解析，够用即可）
+    static func name(in line: String) -> String? {
+        guard let range = line.range(of: "SettingKey.") else { return nil }
+        let tail = line[range.upperBound...]
+        var out = ""
+        for ch in tail {
+            if ch.isLetter || ch.isNumber || ch == "_" { out.append(ch) } else { break }
+        }
+        return out.isEmpty ? nil : out
     }
 }

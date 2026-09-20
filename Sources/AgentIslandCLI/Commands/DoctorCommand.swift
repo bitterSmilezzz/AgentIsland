@@ -19,7 +19,8 @@ public enum DoctorCommand {
 
         // 双采：doctor 是排障入口，宁可多等 1.5s 也要拿到真实 CPU 利用率
         let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll, refreshUsage: true)
-        if !quiet {
+        // 进度提示走 stderr：`--json` 的 stdout 必须是可被 jq 直接吃的纯 JSON
+        if !quiet && !isJson {
             print(CLIColor.dim("  ⏳ 采集 CPU 基线…（1.5s）"))
         }
         var snaps = LiveSampler.twoBeatSample(engine)

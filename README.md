@@ -2,7 +2,16 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.96）
+## 功能（v0.0.97）
+
+### 改审四个从未被碰过的入口：深链 / 杀进程 / 设置持久化 / CLI (v0.0.97)
+- **6 条用已发布二进制实测复现的 CLI 缺陷**：`tokens --budget 1e308m` 当场 SIGTRAP 且零诊断；`doctor --json | jq` 被进度提示打断；`report -o` 写盘失败仍 exit 0；`notify` 缺参数与投递失败都报成功；`top` 把「没取用量」印成 `0`（同机 `report` 是 1.61M）；`report --json` 其实输出 Markdown。新增 `CLIExit`（1=失败 / 2=用法错）并统一走 `LiveSampler`。
+- **深链可伪造「等待你确认」**：`agentisland://notify?agent=claude&type=attention` 产生的横幅与系统通知和真实状态逐字节相同，任何本地进程都能触发。现在事件带来源标记，UI 显示「外部投递 ·」，投递目标必须解析到已知档案；循环发告警链接不再能压制真实告警；`export` 不再静默清空剪贴板。
+- **报告与解析**：Markdown 表格三处统一 `cell()` 转义（换行与 `|` 都能被外部 message 伪造出新行）；深链解析从 `@MainActor` 的 UI 抽进 `AgentIslandCore.URLSchemeParser`，补 15 条断言（此前该外部入口零覆盖）。
+- **设置口径**：`budgetAlertEnabled` 的 UI 默认 true 而引擎用 `bool(forKey:)` 读成 false —— 预算预警对从未碰过设置页的用户永久失效。新增 `SettingBool.read` 与一条不写死键名的结构断言。
+- **如实列出未修**：杀进程匹配过宽（`~/code/trae-sandbox` 里的 `npx electron` 会被认成 TRAE）、清理复核恒报成功、`customAgents` 损坏存档被覆写、`check` 与 `clean` 注册表不一致等 7 项，见 CHANGELOG v0.0.97 末段。
+
+### 浅色可读性、VoiceOver 与测试盲区 (v0.0.96)
 
 ### 浅色可读性、VoiceOver 与测试盲区 (v0.0.96)
 - **浅色对比度全部拉到 AA 以上**（sRGB 实算，非目测）：离线 2.34→4.55、待机 4.34→6.92、青色强调 3.51→6.42、琥珀 4.25→7.73、次要文字 4.38→6.98；因色板上一轮已收进 `Theme.Ramp`，这次只改了 6 行。深色外观未动。

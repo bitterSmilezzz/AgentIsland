@@ -202,10 +202,10 @@ struct IslandView: View {
             }
             Divider()
             Button {
-                let current = UserDefaults.standard.bool(forKey: SettingKey.playCompletionSound)
+                let current = SettingBool.read(SettingKey.playCompletionSound, default: true)
                 UserDefaults.standard.set(!current, forKey: SettingKey.playCompletionSound)
             } label: {
-                let on = UserDefaults.standard.bool(forKey: SettingKey.playCompletionSound)
+                let on = SettingBool.read(SettingKey.playCompletionSound, default: true)
                 HStack {
                     Text(on ? "静音已完成提示音" : "开启已完成提示音")
                     Image(systemName: on ? "speaker.slash" : "speaker.wave.2")
@@ -312,6 +312,12 @@ struct IslandView: View {
         eventType == .costSpike ? Theme.dangerRed : Theme.warningOrange
     }
 
+    /// 横幅角标：外部投递的事件要看得出来，不能与引擎自己判定的状态同形
+    private func alertBadgeText(_ alert: AgentTaskEvent) -> String {
+        if alert.externallyDelivered { return "外部\(alert.eventType == .costSpike ? "告警" : "确认")" }
+        return alert.eventType == .costSpike ? "告警" : "待确认"
+    }
+
     /// 稳定身份/状态放第一行，长度不可控的实时动作放第二行。
     private var headerPresentation: HeaderPresentation {
         if let alert = activeAlertEvent {
@@ -320,7 +326,7 @@ struct IslandView: View {
             return HeaderPresentation(
                 title: alert.agentName,
                 subtitle: alert.summaryText,
-                badge: alert.eventType == .costSpike ? "告警" : "待确认",
+                badge: alertBadgeText(alert),
                 tint: tint,
                 subtitleIcon: alert.eventType == .costSpike
                     ? "exclamationmark.octagon.fill" : "hand.tap.fill",

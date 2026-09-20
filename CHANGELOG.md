@@ -4,6 +4,72 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.97] - 2026-09-20
+
+### 🚪 第六轮：改审四个从未被碰过的入口（深链 / 杀进程 / 设置持久化 / CLI）
+
+前五轮都在引擎、解析、UI、测试上打转。这一轮换角度：把**外部输入面**与**破坏性操作面**
+交给四个并行 agent。回报 24 条，复核确认为真并已修的 14 条如下——其中 6 条是
+**用已发布二进制实测复现**的，不是静态推断。
+
+**实测复现并修掉的 CLI 契约缺陷**
+- `agentisland tokens --budget 1e308m` → **SIGTRAP(133)，无任何诊断**（`Int(无限)` 是运行时 trap）。
+  改为可失败解析 + stderr + `exit 2`。实测修复后：`无效的预算值: 1e308m（需要非负数字，可带 k/m 后缀）`。
+- `agentisland doctor --json | jq` → **jq 解析失败**：进度提示只看 `--quiet` 不看 `--json`，
+  把 `⏳ 采集 CPU 基线…` 印进了 stdout。实测修复后 stdout 首行即 `[`。
+- `agentisland report -o /不存在的目录/x.md` → 打印「导出报表失败」却 **exit 0**，CI 会认为报表已生成。
+  新增 `CLIExit`（1=执行失败，2=用法错误），report / notify / open / clean 的失败分支一律非零退出。
+- `agentisland notify` 缺消息 → 印红字后 exit 0；`--port abc` → 静默回落 41999；
+  URL Scheme 回退路径 `try? proc.run()` 后**无条件印 success:true**（open 起不来也报已投递）。
+  现在都按事实回报（含 `terminationStatus`）。
+- `agentisland top` 每行印 `24h Tokens: 0`，而同一台机器 `report` 是 **1.61M**——这正是 v0.0.90
+  在 `status` 修过的「把没取数印成 0」，`top` 自造一套引擎、从不 start 轮询。改为走 `LiveSampler`
+  （含启停集与用量），nil 列印 `—`。实测修复后 `top` 显示 1.61M。
+- `report --json` 实测输出的是 Markdown（help 里 `--json` 被宣称为全局写法）。现认成 `--format json`。
+- `clean --json` 把**所有候选 pid** 报成已杀、`success` 恒 true，与 `terminatedCount` 无关；
+  `CleanResult` 现在带 `terminatedPids`，一个都没杀掉时如实失败退出。
+
+**深链（`agentisland://`）——任何本地进程都够得着的入口**
+- 伪造「等待你确认」：`open "agentisland://notify?agent=claude&type=attention&message=..."`
+  产生的横幅与系统通知，和引擎自己判定的真实待确认**逐字节相同**。npm postinstall / `.command` /
+  cron 触发无需任何权限提示。现在事件带 `externallyDelivered` 来源标记，横幅角标与通知标题都会
+  显示「外部投递 · 」，外部事件也无法冒充未知 Agent（投递目标必须解析到已知档案）。
+- 循环发 `type=costspike` 的链接曾可**无限压制真实告警**：外部事件也登记 30s 保护期并抢占单槽横幅。
+  现在外部投递不参与保护期。
+- `agentisland://export` 会 `clearContents()` 静默销毁用户正准备粘贴的内容（密码/命令）。
+  深链改为只导航到工作台；自动化请走用户显式执行的 `agentisland report --copy`。
+- 审计报告 Markdown 表格只转义了 `summaryText` 的 `|`，`agentName` 与**换行**都不处理
+  （`queryItems` 会把 `%0A` 解成真实换行）→ 攻击者可往用户粘进工单的报告里自造行。
+  新增 `AuditReportExporter.cell()`，三处表格行统一转义。
+- 解析本身此前**零覆盖**（它在 `@MainActor` 的 UI 目标里，runner 够不着）。抽出
+  `AgentIslandCore.URLSchemeParser`，补 15 条解析断言（别名 / host 与 path 两形态 /
+  查询键大小写 / 重复键 first-wins / percent 解码 / 非本 scheme 拒绝）。
+- 文档纠正：`agentisland://clean` 从来只是跳到工作台，README 与代码注释却写着
+  「一键静默清理孤儿与异常进程」。
+
+**设置持久化**
+- **预算预警对从未碰过设置页的用户永久失效**：`budgetAlertEnabled` 的 UI 默认是 true，
+  引擎却用 `UserDefaults.bool(forKey:)` 读（缺键给 false）。新增 `SettingBool.read(_:default:)`
+  唯一读法，并修掉同形的完成音开关（`SoundEffectsManager` 用 `?? true`、`IslandView` 用 `bool()`，
+  同一个键两种真相）。
+- 新增一条**不写死键名**的结构断言：凡 `@AppStorage` 默认 true 的 `SettingKey`，任何地方都不得
+  再用 `bool(forKey:)` 裸读。把引擎改回旧写法，断言立刻指到 `ActivityEngine.swift:904`。
+
+测试 338 → 339（新增深链解析、来源标记、报告转义、设置口径四组，全部做过变异验证）。
+
+### 这一轮明确没做的（复核确认为真，但需要设计决定或目视确认）
+- **杀进程目标过宽**：`pathContains` 用全路径子串匹配，用户在 `~/code/trae-sandbox` 里
+  `npx electron .` 会被认成 TRAE；`terminateAgent` 的「身份复核」拿同一 pid 自己比自己，
+  不构成独立校验。改法要重定匹配口径，会影响识别率，留待单独一轮。
+- **清理复核恒报成功**：`cleanAnomalies` 先 `resetTracking` 把 hung 证据清零，1.2s 后重扫
+  时条目消失即被判「已死」，真死锁（忽略 SIGTERM）也会被报成已处置。
+- `clean --force` 仍绕过「孤儿只准逐条手动确认」的闸门；`top` 的 `[c]` 已改为先列目标再按 y 确认。
+- `customAgents` 损坏存档会被下一次增删整档覆写（`enabledAgents` 有只读降级保护，这边没有）；
+  自定义档案的数值/身份字段零校验（Infinity、空 id、重复 id、无条数上限）；
+  `dailyTokenBudget` 是唯一没有区间的数值设置；`resolvedEnabled` 在 CLI 侧带写副作用（跨进程丢更新）。
+- `check` 用完整注册表而 `clean` 只用内置表，于是 check 列出并承诺「clean 可一键终止」的目标，
+  clean 看不见。
+
 ## [0.0.96] - 2026-09-20
 
 ### ♿ 第五轮：浅色可读性、VoiceOver 可操作性、视图重算，与一批「能失败的」新测试

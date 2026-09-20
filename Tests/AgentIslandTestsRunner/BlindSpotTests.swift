@@ -161,6 +161,111 @@ enum BlindSpotTests {
                            "流水页又回到「每个 chip 各 filter+count 一遍」（实得 \(refilters) 处，基线 2）："
                            + "条数应在刷新回调里一次算好存进 countsByFilter")
         }
+
+        // MARK: 7. 深链解析（v0.0.96 之前零覆盖：解析待在 @MainActor 的 UI 目标里，runner 够不着）
+
+        TestKit.test("深链解析: 别名、host/path 两种形态、查询键大小写与重复键") {
+            func p(_ s: String) -> URLSchemeCommand? {
+                URLSchemeParser.parse(url: URL(string: s)!)
+            }
+            try expectEqual(p("agentisland://toggle"), .toggle)
+            try expectNil(p("https://example.com/toggle"), "非本 scheme 必须拒掉")
+            try expectEqual(p("agentisland:///collapse"), .collapse, "path 形态的命令名")
+            try expectEqual(p("agentisland://close"), .collapse)
+            try expectEqual(p("agentisland://hide"), .collapse)
+            try expectEqual(p("agentisland://tokens"), .analytics)
+            try expectEqual(p("agentisland://workbench"), .toolbox)
+            try expectEqual(p("agentisland://kill-orphans"), .clean)
+            try expectEqual(p("agentisland://report"), .export)
+            try expectEqual(p("agentisland://whatever"), .unknown("whatever"))
+            // expand?id=claude 等价于 agent?id=claude
+            try expectEqual(p("agentisland://expand?id=claude"), .agent(id: "claude"))
+            try expectEqual(p("agentisland://agent/claude"), .agent(id: "claude"), "路径段兜底取 id")
+            // 查询键大小写不敏感、重复键 first-wins（与 URLComponents 的顺序一致）
+            try expectEqual(p("agentisland://agent?ID=dim"), .agent(id: "dim"))
+            if case .agent(let id)? = p("agentisland://agent?id=first&id=second") {
+                try expectEqual(id, "first", "重复键必须 first-wins，不能后值覆盖")
+            } else { throw TestError(message: "重复键解析结果非 agent") }
+            // notify 的默认值与别名
+            if case let .notify(agent, type, msg, detail) = p("agentisland://notify?agent=dim&MSG=hi")! {
+                try expectEqual(agent, "dim")
+                try expectEqual(type, "completed", "缺 type 时默认 completed")
+                try expectEqual(msg, "hi", "msg 是 message 的别名且大小写不敏感")
+                try expectNil(detail)
+            } else { throw TestError(message: "notify 解析失败") }
+            // %0A 必须解成真换行——报告表格若不过 cell() 就会被它撑出新行
+            if case let .notify(_, _, msg, _) = p("agentisland://notify?agent=dim&message=a%0Ab")! {
+                try expectEqual(msg, "a\nb", "percent 解码语义")
+            } else { throw TestError(message: "换行样本解析失败") }
+        }
+
+        TestKit.test("深链来源: 外部投递的告警不得登记保护期") {
+            // 变异验证：把 publish() 里的 `&& !event.externallyDelivered` 去掉，
+            // 60 条循环链接就能把真实告警的横幅与系统通知双双压掉
+            let engine = EngineTests.makeEngine(processNames: ["DimAgent"], writes: [:])
+            let external = AgentTaskEvent(agentId: "dim", agentName: "DimAgent", eventType: .costSpike,
+                                          duration: 0, message: "占位", externallyDelivered: true)
+            engine.postEvent(external)
+            let real = AgentTaskEvent(agentId: "dim", agentName: "DimAgent", eventType: .completed,
+                                      duration: 12, message: "真完成")
+            engine.postEvent(real)
+            try expectEqual(engine.latestEvent?.message, "真完成",
+                            "外部 costSpike 抢了保护期，真实事件再也进不了展示位")
+            try expectTrue(engine.latestEvent?.externallyDelivered == false, "展示位应换成真实事件")
+        }
+
+        TestKit.test("审计报告: 表格单元必须挡住换行与竖线伪造") {
+            // 变异验证：把 cell() 改成原样返回，攻击者可用 message=a%0A%7C伪造行%7C 自造报告行
+            let forged = AuditReportExporter.cell("x\n| 伪造告警 | y |\n| 小节 |")
+            try expectFalse(forged.contains("\n"), "换行没被折叠，报告里会出现攻击者自造的行")
+            try expectEqual(forged, "x \\| 伪造告警 \\| y \\| \\| 小节 \\|")
+        }
+
+        TestKit.test("设置: 布尔开关默认值只有一套口径（UI 默认 true 的键不得裸读 bool(forKey:)）") {
+            let suite = TestDefaults.suite("bool-default")
+            try expectEqual(SettingBool.read("absentTrue", default: true, defaults: suite), true,
+                            "缺键必须回落到声明的默认，而不是 UserDefaults 的 false")
+            try expectEqual(SettingBool.read("absentFalse", default: false, defaults: suite), false)
+            suite.set(false, forKey: "explicitOff")
+            try expectEqual(SettingBool.read("explicitOff", default: true, defaults: suite), false,
+                            "用户显式关掉必须生效，不能被默认值吃掉")
+
+            // 通用规则（不写死键名）：凡 @AppStorage 里默认 true 的 SettingKey，
+            // 任何地方都不准再用 bool(forKey:) 裸读——那会把「没拨过开关」读成「用户关了」
+            var trueDefaults = Set<String>()
+            for (_, text) in try requireSources() {
+                for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                    let s = String(line)
+                    guard s.contains("@AppStorage(SettingKey."), s.hasSuffix("= true") else { continue }
+                    if let key = SettingKey.name(in: s) { trueDefaults.insert(key) }
+                }
+            }
+            try expectTrue(trueDefaults.contains("budgetAlertEnabled"),
+                           "夹具前提变了：@AppStorage 默认 true 的键集合里应有 budgetAlertEnabled")
+            var offenders: [String] = []
+            for (name, text) in try requireSources() {
+                for (i, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                    let s = String(line)
+                    if s.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+                    guard s.contains(".bool(forKey: SettingKey.") else { continue }
+                    if let key = SettingKey.name(in: s), trueDefaults.contains(key) {
+                        offenders.append("\(name):\(i + 1) \(key)")
+                    }
+                }
+            }
+            try expectTrue(offenders.isEmpty,
+                           "UI 默认 true 的开关被 bool(forKey:) 裸读（缺键读成 false，功能对新用户永久失效）："
+                           + offenders.joined(separator: "、") + "；请改用 SettingBool.read(_:default:)")
+        }
+
+    }
+
+    /// 源码清单；扫不到就抛——结构断言在「扫了个空」时静默通过等于给自己发假绿证
+    private static func requireSources() throws -> [(name: String, text: String)] {
+        let found = repoSwiftSources()
+        try expectTrue(found.count > 20,
+                       "未能定位仓库 Sources 目录（只扫到 \(found.count) 个文件），本测试的「通过」没有意义")
+        return found
     }
 
     private static func repoSwiftSources() -> [(name: String, text: String)] {

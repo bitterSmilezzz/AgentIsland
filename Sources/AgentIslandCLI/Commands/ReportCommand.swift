@@ -8,7 +8,9 @@ public enum ReportCommand {
         let isCopy = args.contains("--copy") || args.contains("-c")
 
         var outputPath: String? = nil
-        var format = "markdown"
+        // `--json` 在 help 里被当成全局写法宣传过，实测 `report --json | jq` 会拿到 Markdown：
+        // 这里直接把它认成 --format json，而不是留一个「看起来支持其实不支持」的口子
+        var format = args.contains("--json") ? "json" : "markdown"
 
         var i = 0
         while i < args.count {
@@ -65,7 +67,7 @@ public enum ReportCommand {
                 try content.write(toFile: expandedPath, atomically: true, encoding: .utf8)
                 print(CLIColor.green("审计报表 (\(format.uppercased())) 已成功导出至: \(expandedPath)"))
             } catch {
-                print(CLIColor.red("导出报表失败: \(error.localizedDescription)"))
+                CLIExit.fail("导出报表失败: \(error.localizedDescription)")
             }
             return
         }

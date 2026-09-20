@@ -29,15 +29,18 @@ enum CompletionNotification {
         }
 
         let content = UNMutableNotificationContent()
+        // 外部投递（深链 / /notify）必须标出来：否则任意本地进程都能发出一条
+        // 与真实「等待你确认」逐字节相同的系统通知，用户被训练去无条件点允许
+        let origin = event.externallyDelivered ? "外部投递 · " : ""
         switch event.eventType {
         case .completed:
-            content.title = "\(event.agentName) 任务完成"
+            content.title = "\(origin)\(event.agentName) 任务完成"
             content.body = event.message ?? "任务已完成，用时 \(AgentTaskEvent.durationText(event.duration))"
         case .attention:
-            content.title = "\(event.agentName) 等待你确认"
+            content.title = "\(origin)\(event.agentName) 等待你确认"
             content.body = event.message ?? event.detail ?? "有操作等待确认"
         case .costSpike:
-            content.title = "\(event.agentName) 资源告警"
+            content.title = "\(origin)\(event.agentName) 资源告警"
             content.body = event.message ?? event.detail ?? "检测到 Token 或 CPU 消耗异常"
         }
         // 固定不带声音：提示音统一由岛内的 NSSound 承担（见 IslandPanel.handleTaskEvent）。

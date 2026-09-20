@@ -5,6 +5,13 @@ import Darwin
 // MARK: - CLI 实时交互监控看板 (TopCommand - v0.0.78)
 // 类似 htop / top 的轻量级 ANSI 实时监控看板，每秒动态刷新 Agent 运行态与 Token 消耗。
 
+/// 阻塞读一个键（确认提示用；与看板主循环同一 raw 模式，不额外改终端状态）
+func readKeyBlocking() -> UInt8 {
+    var ch: UInt8 = 0
+    _ = read(STDIN_FILENO, &ch, 1)
+    return ch
+}
+
 public enum TopCommand {
     @MainActor
     public static func run(args: [String]) async {
@@ -24,14 +31,11 @@ public enum TopCommand {
             i += 1
         }
 
-        // 初始化采样引擎
-        let installedApps = InstalledAppsCache()
-        installedApps.refresh()
-        let registry = AgentRegistry.fullRegistry(
-            installedCLIs: installedApps.installedCLIs(),
-            installedBundles: installedApps.installedBundleIDs()
-        )
-        let engine = ActivityEngine(profiles: registry, installedApps: installedApps)
+        // 初始化采样引擎：走与 status/report/doctor 同一个一次性采样器。
+        // 此前 top 自造一套：既不受启停集约束（实测 `活跃: 0 / 27 项`，而 status 是 10 项），
+        // 也从不开用量轮询——一次性进程不 start()，tokenUsage 恒 nil，
+        // 于是每行都印 `0`，把「没去取数」呈现成「没有消耗」（v0.0.90 在 status 修过的同一类）
+        let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll, refreshUsage: true)
 
         // 终端 Raw 模式设置（非阻塞单字符读取）
         var origTermios = termios()
@@ -148,8 +152,9 @@ public enum TopCommand {
                 let pidStr = s.pid != nil ? "\(s.pid!)" : "-"
                 let cpuStr = s.processRunning ? String(format: "%.1f%%", s.cpuPercent) : "-"
                 let memStr = s.processRunning ? s.memoryText : "-"
-                let tokenStr = (s.tokenUsage?.tokens24h ?? 0) > 0 ? TokenUsage.compact(s.tokenUsage!.tokens24h) : "0"
-                let costStr = (s.tokenUsage?.cost24h ?? 0) > 0 ? TokenUsage.cost(s.tokenUsage!.cost24h) : "$0.00"
+                // nil 是「本轮没取到用量」，0 是「取到了、确实是 0」——两者不能同形
+                let tokenStr = s.tokenUsage.map { TokenUsage.compact($0.tokens24h) } ?? "—"
+                let costStr = s.tokenUsage.map { TokenUsage.cost($0.cost24h).isEmpty ? "—" : TokenUsage.cost($0.cost24h) } ?? "—"
                 var actStr = s.lastActivityText.isEmpty ? "无记录" : s.lastActivityText
                 if let act = s.currentAction, !act.isEmpty, s.level == .working {
                     actStr = act
@@ -186,14 +191,30 @@ public enum TopCommand {
                             // 立即刷新
                             break
                         } else if ch == UInt8(ascii: "c") || ch == UInt8(ascii: "C") {
-                            // 快速清理
+                            // 快速清理：先列目标等一次显式确认，再走与 CLI/App 同一条
+                            // ProcessTerminator 路径（带身份复核）。
+                            // 此前是单键裸发 SIGTERM：绕过复核、不杀进程树、
+                            // 且无论 kill 成败都印「已清理 N 个」
                             let cleaner = AgentCleaner(processMonitor: ProcessProvider())
-                            let anomalies = cleaner.scanAnomalies(profiles: AgentRegistry.builtin)
-                            let toKill = anomalies.filter { $0.batchCleanable }
-                            for a in toKill {
-                                kill(a.pid, SIGTERM)
+                            let anomalies = cleaner.scanAnomalies(profiles: engine.allProfiles)
+                                .filter { $0.batchCleanable }
+                            if anomalies.isEmpty {
+                                lastCleanMessage = "没有可批量清理的异常进程"
+                            } else {
+                                print("\n\(CLIColor.yellow("将终止以下 \(anomalies.count) 个进程："))")
+                                for a in anomalies {
+                                    print("  pid \(a.pid)  \(a.agentName)  \(a.reason)")
+                                }
+                                print(CLIColor.dim("按 y 确认，其它键取消: "), terminator: "")
+                                fflush(stdout)
+                                let confirmed = readKeyBlocking() == UInt8(ascii: "y")
+                                if confirmed {
+                                    let result = cleaner.clean(anomalies: anomalies)
+                                    lastCleanMessage = "已终止 \(result.terminatedPids.count)/\(anomalies.count) 个"
+                                } else {
+                                    lastCleanMessage = "已取消"
+                                }
                             }
-                            lastCleanMessage = "已清理 \(toKill.count) 个异常进程"
                             cleanMessageUntil = Date().addingTimeInterval(3.0)
                             break
                         }

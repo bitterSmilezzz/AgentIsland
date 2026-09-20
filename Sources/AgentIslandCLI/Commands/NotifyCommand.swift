@@ -43,9 +43,12 @@ public enum NotifyCommand {
                 continue
             }
             if arg == "--port" && i + 1 < args.count {
-                if let p = UInt16(args[i + 1]) {
-                    port = p
+                guard let parsed = UInt16(args[i + 1]) else {
+                    // 非数字静默回落 41999 等于把用户的显式意图丢掉
+                    CLIExit.fail("✗ --port 需要 1-65535 的整数，收到: \(args[i + 1])",
+                                 code: CLIExit.badUsage)
                 }
+                port = parsed
                 i += 2
                 continue
             }
@@ -56,8 +59,8 @@ public enum NotifyCommand {
         }
 
         guard let finalMessage = message, !finalMessage.isEmpty else {
-            print(CLIColor.red("✗ 缺少消息内容。用法: agentisland notify --agent <name> --message <text>"))
-            return
+            CLIExit.fail("✗ 缺少消息内容。用法: agentisland notify --agent <name> --message <text>",
+                         code: CLIExit.badUsage)
         }
 
         let reqDTO = CLINotifyRequestDTO(agent: agent, type: type, message: finalMessage, detail: detail)
@@ -79,21 +82,34 @@ public enum NotifyCommand {
             return
         }
 
-        // 回退至 URL Scheme 分发
-        let escapedAgent = agent.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? agent
-        let escapedType = type.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? type
-        let escapedMsg = finalMessage.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? finalMessage
-        var urlStr = "agentisland://notify?agent=\(escapedAgent)&type=\(escapedType)&message=\(escapedMsg)"
-        if let d = detail, let escapedDetail = d.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            urlStr += "&detail=\(escapedDetail)"
+        // 回退至 URL Scheme 分发。
+        // 不能用 .urlQueryAllowed：那个字符集**保留 & = +**，于是
+        // `notify -a 'x&type=attention'` 会拼出第二个 type 键，把参数注入进深链
+        var queryValueSet = CharacterSet.alphanumerics
+        queryValueSet.insert(charactersIn: "-._~")
+        func q(_ value: String) -> String {
+            value.addingPercentEncoding(withAllowedCharacters: queryValueSet) ?? ""
+        }
+        var urlStr = "agentisland://notify?agent=\(q(agent))&type=\(q(type))&message=\(q(finalMessage))"
+        if let d = detail {
+            urlStr += "&detail=\(q(d))"
         }
 
         if URL(string: urlStr) != nil {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
             proc.arguments = [urlStr]
-            try? proc.run()
+            // 此前是 `try? proc.run()` + 无条件印 success:true：open 起不来（没有注册
+            // agentisland:// 的 App、LaunchServices 拒绝）时 CLI 仍报告「已投递」
+            do {
+                try proc.run()
+            } catch {
+                CLIExit.fail("✗ 无法启动 /usr/bin/open: \(error.localizedDescription)")
+            }
             proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else {
+                CLIExit.fail("✗ open 以 \(proc.terminationStatus) 退出，事件未投递")
+            }
 
             if isJson {
                 let res = CLINotifyResultDTO(success: true, message: "Event delivered via URL Scheme")

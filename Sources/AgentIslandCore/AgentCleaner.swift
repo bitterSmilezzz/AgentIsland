@@ -64,6 +64,15 @@ public struct AgentAnomaly: Identifiable, Equatable {
 public struct CleanResult: Equatable {
     public let terminatedCount: Int
     public let reclaimedMemoryBytes: UInt64
+    /// **真正发出过信号**的 pid。此前 `clean --json` 上报的是「所有候选」，
+    /// 一个都没杀掉时 killedPids 依然非空、success 依然 true，CI 据此认为孤儿已回收
+    public let terminatedPids: [Int32]
+
+    public init(terminatedCount: Int, reclaimedMemoryBytes: UInt64, terminatedPids: [Int32] = []) {
+        self.terminatedCount = terminatedCount
+        self.reclaimedMemoryBytes = reclaimedMemoryBytes
+        self.terminatedPids = terminatedPids
+    }
 
     public var reclaimedMemoryText: String {
         MemoryFormat.text(reclaimedMemoryBytes)
@@ -173,16 +182,17 @@ public final class AgentCleaner {
     /// PID 被系统复用给无关程序），不带复核的 kill 会误杀。
     @discardableResult
     public func clean(anomalies: [AgentAnomaly]) -> CleanResult {
-        var terminated = 0
+        var killed: [Int32] = []
         var reclaimed: UInt64 = 0
 
-        for a in anomalies {
+        for a in anomalies where a.pid > 1 {
             if ProcessTerminator.terminate(pid: a.pid, expectedPath: a.commandPath) == .signalSent {
-                terminated += 1
+                killed.append(a.pid)
                 reclaimed += a.memoryBytes
             }
         }
 
-        return CleanResult(terminatedCount: terminated, reclaimedMemoryBytes: reclaimed)
+        return CleanResult(terminatedCount: killed.count,
+                           reclaimedMemoryBytes: reclaimed, terminatedPids: killed)
     }
 }

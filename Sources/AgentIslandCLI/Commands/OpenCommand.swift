@@ -46,9 +46,12 @@ public enum OpenCommand {
             do {
                 try task.run()
                 task.waitUntilExit()
+                guard task.terminationStatus == 0 else {
+                    CLIExit.fail("无法打开 URL \(urlString)：open 以 \(task.terminationStatus) 退出")
+                }
                 print(CLIColor.green("已触发操作: \(urlString)"))
             } catch {
-                print(CLIColor.red("无法打开 URL \(urlString): \(error.localizedDescription)"))
+                CLIExit.fail("无法打开 URL \(urlString): \(error.localizedDescription)")
             }
         }
     }
