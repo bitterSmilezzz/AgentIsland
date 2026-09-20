@@ -74,8 +74,9 @@ public enum AgentObservability {
         let hasUsage = (snapshot.tokenUsage?.tokensTotal ?? 0) > 0
         if snapshot.activeSessions == 0 && !hasUsage {
             if !snapshot.profile.hasLocalDetailSource {
-                evidence.append("档案未登记本地明细源（会话库与 token 目录都没有），"
-                                + "读不到明细是设计如此，不代表它没在工作")
+                // 依据会直接印在岛内一行里（面板宽约 370pt）：原先 40 字被中段截断成
+                // 「会话库与…细是设计如此」，读不通。留短，完整解释放 .help
+                evidence.append("该档案未登记本地明细源，不代表它没在工作")
                 return Verdict(code: .sourceNotWired, evidence: evidence)
             }
             evidence.append("会话目录在判定窗口内没有活动会话，同步刷新用量源后仍无记录")
