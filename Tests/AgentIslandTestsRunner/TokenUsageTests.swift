@@ -881,6 +881,42 @@ enum TokenUsageTests {
             try expectTrue(Self.structuredSignature(index.snapshot()).contains("n=3"), "删除文件后必须回退")
         }
 
+        TestKit.test("结构化Token索引: 段尾截在半行既不重复计数，也不得触发整文件重解析") {
+            // 增量解析只承认「扫描时量到的那段」，并且必须退回到最后一个完整行。
+            // 不回退的话：半行被当完整行解析（重复计数），或者 endedWithNewline=false
+            // 让下一轮 canAppend 不成立 → offset 归零 → 整文件重解析（比收口前更慢）
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let logs = root.appendingPathComponent("codex")
+            try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [logs.path], format: .codex)
+            ])
+            let rollout = logs.appendingPathComponent("rollout.jsonl")
+            try (Self.codexLine("r1", 5) + "\n").write(to: rollout, atomically: true, encoding: .utf8)
+            let base = Self.structuredSignature(index.snapshot())
+            try expectTrue(base.contains("n=1"), "前置：一条记录，实际 \(base)")
+
+            // 写一半（没有结尾换行）——正在被第三方追加的行不得计入
+            let appending = try FileHandle(forWritingTo: rollout)
+            try appending.seekToEnd()
+            try appending.write(contentsOf: Data(Self.codexLine("r2", 3).utf8))
+            try appending.close()
+            let partial = Self.structuredSignature(index.snapshot())
+            try expectEqual(partial, base, "未写完的一行不该出现在聚合里")
+
+            // 补齐换行：必须恰好 +1，且那半行不被重复计入
+            let closing = try FileHandle(forWritingTo: rollout)
+            try closing.seekToEnd()
+            try closing.write(contentsOf: Data("\n".utf8))
+            try closing.close()
+            let done = Self.structuredSignature(index.snapshot())
+            try expectTrue(done.contains("n=2"), "补完整行后必须计入一条，实际 \(done)")
+            // 反复采样数字必须稳定（重复计数或重解析回退都会在这里露出来）
+            try expectEqual(Self.structuredSignature(index.snapshot()), done, "第二轮采样数字漂移")
+            try expectEqual(Self.structuredSignature(index.snapshot()), done, "第三轮采样数字漂移")
+        }
+
         TestKit.test("ReadonlyDB: 同路径被外部替换（新 inode）当拍即弃用旧连接") {
             // 连接身份比对已从 attributesOfItem 换成单次 stat(2)，这条钉住其语义：
             // 库被删除重建（备份恢复、VACUUM 后 rename）后，旧句柄指向的 inode 已失效。

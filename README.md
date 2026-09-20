@@ -2,7 +2,14 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.94）
+## 功能（v0.0.95）
+
+### 第四轮复核：抓出上一轮修复引入的性能悬崖 (v0.0.95)
+- **收口太粗的代价**：v0.0.94 让增量解析只承认「量到的那段字节」方向正确，但段尾截在半行会让 `endedWithNewline=false` → 下一轮整文件重解析（对正在追加的日志几乎每轮触发），且那半行会被当完整行重复计入。现回退到最后一个完整行，并把这层语义变成可测断言（去掉回退，聚合立刻 `n=1/50` → `n=2/100`）。
+- **零拷贝**：`subdata(in:)` 换回 `dropFirst/prefix` 切片——前者会把 mmap 段整体搬到堆上，正好抵消 `.mappedIfSafe` 的意图。
+- **注释如实化**：代际校验的覆盖边界、`resourceValues` 陈旧窗口的适用范围，都改成代码真正做到的事。
+
+### 第三轮收口：潜伏缺陷与自己修复里的缺陷 (v0.0.94)
 
 ### 第三轮收口：潜伏缺陷与自己修复里的缺陷 (v0.0.94)
 - **两处「改了但没修到」**：一次性 SQLite 连接的结算 `defer` 放在了 `prepare` 之后（Swift 的 defer 只对注册点之后生效，恰好漏掉它声称要覆盖的失败路径），且注册顺序晚于 `finalize`，逆序执行变成先 close 后 finalize ⇒ `SQLITE_BUSY` 下连接永不关闭；`openReadonly` 的代际校验在 open 之后才取基准，恒等成立，判不出「stop 发生在打开期间」。
@@ -293,3 +300,14 @@ AgentIsland/
 - Token 统计当前适配 DimAgent、OpenCode、Codex、Claude、WorkBuddy 与 WorkBuddy AI；其他工具若不提供稳定的本地 usage 明细，会在分析页明确标为未接入而不估算
 - 闲置降频 5s 时，Agent 开始工作的检测最多延迟一个采样周期（可调「闲置降频间隔」）
 - 多显示器跟随鼠标所在屏的右缘（NSScreen.screens）
+- **浅色外观下若干小字号强调色低于 WCAG AA**（v0.0.95 实测算出，未改）：`sydedockCyan` 压在自身
+  12% 染色底上 3.51:1、`amber700` 压在 12% 底上 4.25:1、`slate500` 压在 `slate100` 上 4.34:1、
+  `slate400`（离线态文字）压在 `slate100` 上 **2.34:1**，字号都在 8–10pt。改法是压深浅半边或
+  把强调色只留给图标描边——属于观感取舍，等一次目视确认再动（色板已在 `Theme.Ramp` 一处收口）
+- **岛内列表行的可操作性**：行是 `.onTapGesture` + `.accessibilityAddTraits(.isButton)`，
+  VoiceOver 能读到标签但不会稳定地把它当作可按下元素（`AXPress` 由 `Button` 提供）；
+  顶栏三个快捷图标的命中区约 18×18pt，低于 WCAG 2.5.8 的 24×24。键盘流（`j/k`/`↩`）与
+  右键菜单可替代，故未改布局
+- Token 明细索引按「磁盘上存在的 jsonl」累积，重度使用数月后单次重建成本线性上升
+  （本机 5,778 条时稳态 2.7ms）；未按分析窗口裁剪
+- `/notify` 无鉴权，仅靠「只监听回环」限制来源（v0.0.93 起；macOS 13 无法限定，会在启动时告警）

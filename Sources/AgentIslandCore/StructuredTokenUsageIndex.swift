@@ -223,13 +223,26 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
     private static func parse(url: URL, source: StructuredTokenSource, offset: Int, limit: Int)
         -> (events: [Event], endedWithNewline: Bool, consumedThrough: Int)? {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        let end = min(limit, data.count)
-        guard offset >= 0, offset <= end else { return nil }
+        let rawEnd = min(limit, data.count)
+        guard offset >= 0, offset <= rawEnd else { return nil }
+        // 只承认到最后一个完整行。段尾截在半行上会让 endedWithNewline=false，
+        // 于是下一轮 canAppend 不成立 → offset 归零 → 整文件重解析：
+        // 正在追加的日志里这几乎每轮都发生，比收口之前更慢。
+        // 回退上限与下面「跳过 >1MB 巨行」的口径一致
+        var end = rawEnd
+        var backed = 0
+        while end > offset && data[data.startIndex + end - 1] != 0x0A {
+            end -= 1
+            backed += 1
+            if backed > 1_000_000 { end = rawEnd; break }
+        }
         var events: [Event] = []
         let relevantMarker = source.format == .codex
             ? Data("token_usage_record".utf8)
             : Data("\"usage\"".utf8)
-        for (lineIndex, line) in data.subdata(in: offset..<end)
+        // dropFirst/prefix 是切片，不拷贝：subdata 会把 mmap 段整体搬到堆上，
+        // 正好抵消上面 .mappedIfSafe 的意图
+        for (lineIndex, line) in data.dropFirst(offset).prefix(end - offset)
             .split(separator: 0x0A, omittingEmptySubsequences: true).enumerated() {
             // 对话正文可能极长；Token 记录本身很小，跳过异常巨型行避免临时解析峰值。
             let lineData = Data(line)
@@ -249,7 +262,6 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
                 )
             ))
         }
-        // 「是否以换行结尾」也必须按被承认的那段判断，否则下一轮会从半行续起
         return (events, end > 0 && data[data.startIndex + end - 1] == 0x0A, end)
     }
 

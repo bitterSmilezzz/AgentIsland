@@ -1025,8 +1025,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         // 降低瞬态 BUSY：只读连接遇到写锁立即返回 BUSY，
         // 等待最多 1s 再失败，避免偶发把整次查询打成失败
         sqlite3_busy_timeout(handle, 1000)
-        // 代际校验（R34/F9）：stop() 之后（含在飞查询的迟到重建）不得写回缓存——
-        // 写回后无人再关，违背 stop 的「彻底清理」契约；一次性连接用完即关
+        // 代际校验（R34/F9）：打开**期间**发生 stop() 时不得写回缓存——closeConnectionsAsync
+        // 已经跑过，写回来就无人再关；一次性连接用完即关。
+        // 边界如实说明：整次查询完全发生在 stop() 之后的（代际前后一致）仍会写回缓存，
+        // 当前唯一的 stop 点是应用退出，fd 随进程一起没，故不再补 lastClosedGeneration 机制
         lock.lock()
         let generationAfterOpen = dbGeneration
         lock.unlock()
