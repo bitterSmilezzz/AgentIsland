@@ -500,6 +500,23 @@ public enum TerminationOutcome: Equatable {
 }
 
 public enum ProcessTerminator {
+    /// 进程是否仍在。清理结果**只能这样复核**：异常列表变空不等于进程已终止——
+    /// `cleanAnomalies` 会 `resetTracking` 清掉 hung 证据，1.2s 后重扫时条目自然消失，
+    /// 而忽略 SIGTERM 的死锁进程其实还在跑，用户却被告知「清理完成」。
+    /// - Parameter expectedPath: 给出时同时校验当前可执行文件名，避免 pid 已被复用仍算存活。
+    public static func isAlive(pid: Int32, expectedPath: String? = nil) -> Bool {
+        guard pid > 1 else { return false }
+        guard kill(pid, 0) == 0 else { return false }
+        guard let expectedPath, !expectedPath.isEmpty else { return true }
+        guard let current = currentExecutablePath(of: pid) else {
+            // 探到活但取不到路径（权限/正在退出）：保守当作存活，宁可报失败不可谎报成功
+            return true
+        }
+        let want = (expectedPath as NSString).lastPathComponent.lowercased()
+        let got = (current as NSString).lastPathComponent.lowercased()
+        return want == got
+    }
+
     /// 终止指定 PID 进程（包括其派生的子进程树），先尝试 GUI terminate / SIGTERM，超时未退出则强制 SIGKILL
     /// - Parameters:
     ///   - expectedPath: 扫描/事件时刻记录的目标可执行路径。提供时先用 `proc_pidpath`

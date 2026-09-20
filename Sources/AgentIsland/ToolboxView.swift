@@ -596,7 +596,7 @@ struct ToolboxView: View {
             self.anomalies = remaining
             // 按 id 区分归因：原目标仍在列表才是「未能终止」；复核窗口内
             // 新升温的条目从未被清理，不得记到本次清理头上
-            guard remaining.contains(where: { $0.id == item.id }) else { return }
+            guard ProcessTerminator.isAlive(pid: item.pid, expectedPath: item.commandPath) else { return }
             self.cleanFeedback = "未能终止 \(item.agentName)（PID \(item.pid)）："
                 + "进程仍在运行，可能需要更高权限，可从活动监视器处理"
         }
@@ -614,6 +614,10 @@ struct ToolboxView: View {
         HapticFeedback.perform(.levelChange)
         let orphanCount = anomalies.count - toClean.count
         let originalIDs = Set(toClean.map(\.id))
+        // 复核依据是 pid 是否还活着，不是「条目是否还在异常列表里」：
+        // 引擎清理时会 resetTracking 清掉 hung 证据，重扫时条目必然消失，
+        // 用列表判成败等于对忽略 SIGTERM 的进程恒报「清理完成」
+        let targets = toClean.map { (pid: $0.pid, path: $0.commandPath) }
         engine.cleanAnomalies(toClean)
         // 与单条清理同一口径：不再直接清空列表并返回（那等于替引擎宣告成功）。
         // 复核后确认批量目标全部消失才算成功；孤儿进程本来就留在列表里（逐条清理），
@@ -622,16 +626,18 @@ struct ToolboxView: View {
             // 复核期间用户已离开工作台：只旁观，绝不把用户拽回主列表（U4）
             guard case .toolbox = self.controller.route else { return }
             self.anomalies = remaining
-            // id 差集归因：原目标残留 = 失败；复核窗口内新出现的条目从未被清理，不算失败
-            let failed = remaining.filter { originalIDs.contains($0.id) }
-            if failed.isEmpty {
+            // 原目标仍存活 = 失败；复核窗口内新升温的条目从未被清理，不算失败
+            let failed = targets.filter { ProcessTerminator.isAlive(pid: $0.pid, expectedPath: $0.path) }
+            if failed.isEmpty && remaining.filter({ originalIDs.contains($0.id) }).isEmpty {
                 if orphanCount > 0 {
                     self.cleanFeedback = "批量清理完成；列表中的孤儿进程为防误杀不参与批量清理，请逐条确认"
                 } else {
                     self.controller.route = .list
                 }
             } else {
-                self.cleanFeedback = "有 \(failed.count) 个进程未能终止，已保留在列表中"
+                let stuckCount = max(failed.count, remaining.filter { originalIDs.contains($0.id) }.count)
+                self.cleanFeedback = "有 \(stuckCount) 个进程未能终止：pid 仍在响应探活。"
+                    + "可能需要更高权限，可从活动监视器处理"
             }
         }
     }

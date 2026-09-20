@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SQLite3
 @testable import AgentIslandCore
 
@@ -256,6 +257,30 @@ enum BlindSpotTests {
             try expectTrue(offenders.isEmpty,
                            "UI 默认 true 的开关被 bool(forKey:) 裸读（缺键读成 false，功能对新用户永久失效）："
                            + offenders.joined(separator: "、") + "；请改用 SettingBool.read(_:default:)")
+        }
+
+        TestKit.test("清理复核: 按 pid 探活判定存活，路径不符时不得算同一个进程") {
+            // 变异验证：把 isAlive 改成恒返回 false（等于回到「列表空了就算清理成功」），
+            // 第一条断言立刻变红
+            try expectTrue(ProcessTerminator.isAlive(pid: Int32(getpid())),
+                           "本进程自己的 pid 必须探到存活")
+            try expectFalse(ProcessTerminator.isAlive(pid: 0), "pid 0 不是可清理目标")
+            try expectFalse(ProcessTerminator.isAlive(pid: -1), "非法 pid 一律不存活")
+            // pid 被复用给别的程序时，带路径的复核必须判「不是同一个进程」
+            try expectFalse(ProcessTerminator.isAlive(pid: Int32(getpid()),
+                                                      expectedPath: "/applications/some-other.app/contents/macos/other"),
+                            "路径不符即身份不符，不能算作同一目标存活")
+            // 已退出的子进程不得再被算作存活
+            let child = Process()
+            child.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+            try child.run()
+            child.waitUntilExit()
+            let deadPid = child.processIdentifier
+            let deadline = Date().addingTimeInterval(2)
+            while ProcessTerminator.isAlive(pid: deadPid) && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+            try expectFalse(ProcessTerminator.isAlive(pid: deadPid), "已退出的子进程仍被判存活")
         }
 
     }

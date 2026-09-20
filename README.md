@@ -2,7 +2,14 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode 等）的会话状态；以 macOS 灵动岛风格呈现，支持**自由拖拽智能贴边（上、右、下、左四边）**、**6pt 晶莹微细条常驻感知**、**深浅外观切换**与**光标触碰自动弹性弹出**。
 
-## 功能（v0.0.97）
+## 功能（v0.0.98）
+
+### 清理复核不再谎报「已处置」(v0.0.98)
+- **成因**：复核看的是「条目还在不在异常列表」，而清理时 `resetTracking` 会清掉 hung 证据 → 1.2s 后重扫条目必然消失 → 忽略 SIGTERM 的死锁进程被报成「清理完成」。单条与批量同一口径，两处都改。
+- **改法**：新增 `ProcessTerminator.isAlive(pid:expectedPath:)` 按 `kill(pid,0)` 探活并校验可执行文件名（pid 被复用不算存活；取不到路径时保守当作存活，宁可报失败不谎报成功）。
+- 新增 5 条断言；把探活改成恒 false（退回旧口径）第一条即变红。测试 339 → 340。
+
+### 深链 / 杀进程 / 设置持久化 / CLI 四个入口 (v0.0.97)
 
 ### 改审四个从未被碰过的入口：深链 / 杀进程 / 设置持久化 / CLI (v0.0.97)
 - **6 条用已发布二进制实测复现的 CLI 缺陷**：`tokens --budget 1e308m` 当场 SIGTRAP 且零诊断；`doctor --json | jq` 被进度提示打断；`report -o` 写盘失败仍 exit 0；`notify` 缺参数与投递失败都报成功；`top` 把「没取用量」印成 `0`（同机 `report` 是 1.61M）；`report --json` 其实输出 Markdown。新增 `CLIExit`（1=失败 / 2=用法错）并统一走 `LiveSampler`。
