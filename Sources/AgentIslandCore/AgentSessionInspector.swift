@@ -783,7 +783,7 @@ public enum AgentSessionInspector {
             defer { sqlite3_finalize(stmt) }
 
             var rows: [(id: Int64, role: String, tool: Any?, parts: Any?)] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
+            let stepped = Self.stepAll(stmt) {
                 let id = sqlite3_column_int64(stmt, 0)
                 let role = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
                 let toolText = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
@@ -792,7 +792,11 @@ public enum AgentSessionInspector {
                 let parts = partsText.data(using: .utf8).flatMap { try? JSONSerialization.jsonObject(with: $0) }
                 rows.append((id, role, tool, parts))
             }
-            guard let newest = rows.first else { return nil }
+            guard let newest = rows.first else {
+                // 一行都没拿到，且不是正常收尾 ⇒ 是查询被中断，不是「这个会话没消息」
+                if stepped { report(SessionProbeHealth(failure: .stepFailed, path: path)) }
+                return nil
+            }
 
             let lines = rows.reversed().compactMap { row -> String? in
                 var object: [String: Any] = ["role": row.role, "row_id": String(row.id)]
@@ -830,7 +834,13 @@ public enum AgentSessionInspector {
                 return nil
             }
             defer { sqlite3_finalize(stmt) }
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            let code = sqlite3_step(stmt)
+            guard code == SQLITE_ROW || code == SQLITE_DONE else {
+                // BUSY / LOCKED / CORRUPT：终态判定读不到，比读到一个旧值更危险的是把它当「没有终态」
+                report(SessionProbeHealth(failure: .stepFailed, path: path))
+                return nil
+            }
+            guard code == SQLITE_ROW else { return nil }
             let id = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? stableFingerprint(path)
             let status = sqlite3_column_text(stmt, 1).map { normalized(String(cString: $0)) } ?? ""
             let rawTime = sqlite3_column_double(stmt, 2)
@@ -866,12 +876,15 @@ public enum AgentSessionInspector {
             }
             defer { sqlite3_finalize(stmt) }
             var lines: [String] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
+            let stepped = Self.stepAll(stmt) {
                 if let text = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }), !text.isEmpty {
                     lines.append(text)
                 }
             }
-            guard let signal = detect(lines: Array(lines.reversed())) else { return nil }
+            guard let signal = detect(lines: Array(lines.reversed())) else {
+                if stepped, lines.isEmpty { report(SessionProbeHealth(failure: .stepFailed, path: path)) }
+                return nil
+            }
             if case .completed = signal, fileAge(path, now: now) > 15 * 60 { return nil }
             return signal
         }
@@ -1492,6 +1505,19 @@ public enum AgentSessionInspector {
     private final class HealthBox {
         var items: [SessionProbeHealth] = []
         var containsPrepareFailure: Bool { items.contains { $0.failure == .prepareFailed } }
+    }
+
+    /// 步进到结束，行交给 onRow。返回 true 表示**不是正常收尾**（既不是 ROW 也不是 DONE，
+    /// 即 BUSY / LOCKED / CORRUPT 之类）。调用方只在「因此一行都没拿到」时报 stepFailed：
+    /// 已经拿到行就照常出信号——查询中断丢的是更旧的行，最新那条已经在手里。
+    private static func stepAll(_ stmt: OpaquePointer?, onRow: () -> Void) -> Bool {
+        while true {
+            switch sqlite3_step(stmt) {
+            case SQLITE_ROW: onRow()
+            case SQLITE_DONE: return false
+            default: return true
+            }
+        }
     }
 
     private static func attempt<T>(_ path: String,

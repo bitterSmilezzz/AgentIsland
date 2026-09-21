@@ -80,6 +80,25 @@ final class GatedTransport: RemoteTransport, @unchecked Sendable {
 enum RemoteNotifyTests {
     @MainActor
     static func register() {
+        TestKit.test("未识别的通道名不再静默回落：原文要能交给界面说清楚") {
+            // 版本回退 / 手改 plist / 将来加新通道后降级都会留下不认识的 raw。
+            // 静默回落成 ntfy 的后果不是显示错，而是**写错**：用户在界面上敲的每个字符
+            // 都进 ntfy 的键，他原来的配置还躺在另一个键下，两份并存且无人说明。
+            let suite = TestDefaults.suite("remote-unknown-kind")
+            let loadedFresh = RemoteNotifyStore.loadKindDetailed(defaults: suite)
+            try expectEqual(loadedFresh.kind, .ntfy, "没有存档时按默认通道")
+            try expectNil(loadedFresh.unrecognized, "「没配过」不等于「配了个不认识的」")
+
+            suite.set("pushbullet", forKey: RemoteNotifyStore.kindKey)
+            let unknown = RemoteNotifyStore.loadKindDetailed(defaults: suite)
+            try expectEqual(unknown.kind, .ntfy, "仍要给出一个能用的通道，界面不能空转")
+            try expectEqual(unknown.unrecognized, "pushbullet", "原文必须回吐，供界面说明写到哪里")
+
+            suite.set(RemoteChannelKind.smtpEmail.rawValue, forKey: RemoteNotifyStore.kindKey)
+            try expectNil(RemoteNotifyStore.loadKindDetailed(defaults: suite).unrecognized,
+                          "认识的通道不该被误报")
+        }
+
         TestKit.test("坏掉的远程通知存档：留证据并备份原字节，不是静默关掉外发") {
             // 键在、解不开 ⇒ 今天的路径是回落默认值，而策略默认就是总开关关：
             // 外发从此静默停止、零日志，设置页还显示成「你没配置」。

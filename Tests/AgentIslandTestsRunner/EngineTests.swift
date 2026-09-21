@@ -1122,6 +1122,56 @@ enum EngineTests {
             try expectNil(off?.sessionProbeHealth, "探测健康须随每-Agent 状态一起回收，不得长期占坑")
         }
 
+        TestKit.test("会话探测健康: 查询被写锁挡住 → stepFailed（不是「库里没有确认请求」）") {
+            // 对方正在写库的那一拍最容易撞上 SQLITE_BUSY。此前 step 的错误码被当成
+            // 「没有行」，于是等确认的卡片显示成待机，且一条证据都不留。
+            let dir = NSTemporaryDirectory() + "probe-busy-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            let dbPath = dir + "/state.sqlite"
+            try TokenFixture.exec(dbPath, [
+                "CREATE TABLE messages (sessionId TEXT, rowid INTEGER PRIMARY KEY, role TEXT, toolMetadata TEXT, parts TEXT)",
+                "INSERT INTO messages VALUES ('s1', 1, 'assistant', '{\"toolUse\":{\"name\":\"AskUserQuestion\"}}', '[]')"
+            ])
+            let transcript = URL(fileURLWithPath: dir + "/session.jsonl")
+            try #"{"note":"busy fixture"}"#.data(using: .utf8)!.write(to: transcript)
+
+            let profile = AgentProfile(id: "busy", name: "Busy", icon: "terminal",
+                                       bundleIDs: [], processNames: ["busy-agent"],
+                                       sessionDirs: [dir],
+                                       sessionDatabase: AgentSessionDatabase(path: dbPath, schema: .dimTasks))
+            let engine = ActivityEngine(
+                profiles: [profile],
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: MutableProcessProvider(names: ["busy-agent"], bundleIDs: [], cpu: 0),
+                fileMonitor: FakeFileActivityProvider(writes: [:], files: [dir: transcript]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            let now = Date()
+            let clean = engine.sample(now: now).first { $0.id == "busy" }
+            try expectNil(clean?.sessionProbeHealth, "前置：无锁时探测正常，不该报任何故障")
+
+            // 另一个连接持排他写锁 ⇒ 只读连接的 step 撞上 SQLITE_BUSY
+            var writer: OpaquePointer?
+            try expectEqual(sqlite3_open_v2(dbPath, &writer, SQLITE_OPEN_READWRITE, nil), SQLITE_OK,
+                            "夹具库要能以读写方式打开")
+            let begin = sqlite3_exec(writer, "BEGIN EXCLUSIVE;", nil, nil, nil)
+            try expectEqual(begin, SQLITE_OK, "要能拿到排他锁")
+            defer {
+                sqlite3_exec(writer, "ROLLBACK;", nil, nil, nil)
+                sqlite3_close(writer)
+            }
+
+            let blocked = engine.sample(now: now.addingTimeInterval(1)).first { $0.id == "busy" }
+            try expectEqual(blocked?.sessionProbeHealth?.failure, .stepFailed,
+                            "查询被中断必须留下 stepFailed，而不是静默变成待机")
+            try expectEqual(blocked?.sessionProbeHealth?.path, dbPath, "证据要指明是哪个库")
+
+            // 锁释放后必须自愈：健康记录不能永久挂着
+            try expectEqual(sqlite3_exec(writer, "ROLLBACK;", nil, nil, nil), SQLITE_OK)
+            let healed = engine.sample(now: now.addingTimeInterval(2)).first { $0.id == "busy" }
+            try expectNil(healed?.sessionProbeHealth, "锁消失后应恢复为「探测本身没问题」")
+        }
+
         TestKit.test("会话探测健康: 库存在但打不开 → unreadableDB（不是「库里没数据」）") {
             let dir = NSTemporaryDirectory() + "probe-unreadable-\(UUID().uuidString)"
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

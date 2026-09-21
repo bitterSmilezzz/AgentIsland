@@ -28,11 +28,16 @@ final class RemoteNotifyModel: ObservableObject {
     @Published private(set) var history: [OutboundAttempt] = []
 
     let notifier: RemoteNotifier
+    /// 存档里的通道名认不出来时的原文（nil = 一切正常）。界面必须据此说明
+    /// 「现在显示/写入的是哪个通道」，否则用户以为自己在改原来那份配置。
+    @Published private(set) var unrecognizedKind: String?
 
     init(notifier: RemoteNotifier) {
         self.notifier = notifier
         // init 里直接赋值不触发 didSet，不会在加载阶段把原值再写回去
-        let k = RemoteNotifyStore.loadKind()
+        let loaded = RemoteNotifyStore.loadKindDetailed()
+        let k = loaded.kind
+        self.unrecognizedKind = loaded.unrecognized
         self.kind = k
         self.policy = RemoteNotifyStore.loadPolicy()
         self.config = RemoteNotifyStore.loadConfig(for: k)
@@ -63,8 +68,13 @@ final class RemoteNotifyModel: ObservableObject {
     /// 明文端点与「地址里直接粘了密钥」两条独立警告。与配齐检查分开，
     /// 否则「能发」和「不该这么发」会互相稀释成一句模糊的红字
     var warnings: [String] {
-        [kind.insecureEndpoint(config: config),
-         kind.plaintextSecretInTemplate(config: config)].compactMap { $0 }
+        var list = [unrecognizedKind.map {
+            "存档里的通道「\($0)」这台程序不认识：下面显示与写入的都是「\(kind.label)」的键，"
+            + "原通道的配置没有被动过，但也不会被读到"
+        }]
+        list += [kind.insecureEndpoint(config: config),
+                 kind.plaintextSecretInTemplate(config: config)]
+        return list.compactMap { $0 }
     }
 
     /// 界面上填的静默时段与**实际生效**的那份不一致时（写坏的时:分整段作废），

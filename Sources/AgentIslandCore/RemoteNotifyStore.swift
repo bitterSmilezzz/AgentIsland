@@ -29,8 +29,22 @@ public enum RemoteNotifyStore {
     }
 
     public static func loadKind(defaults: UserDefaults = .standard) -> RemoteChannelKind {
-        guard let raw = defaults.string(forKey: kindKey) else { return .ntfy }
-        return RemoteChannelKind(rawValue: raw) ?? .ntfy
+        loadKindDetailed(defaults: defaults).kind
+    }
+
+    /// 存档里的通道名不认识时（版本回退、手改 plist、将来加新通道后降级）不能只是
+    /// 「当没发生过」：回落成 ntfy 之后，用户在界面上敲的每个字符都会写进 ntfy 的键，
+    /// 而他真正的配置还留在原来那个键下——两份并存，且没人说过。
+    /// 所以把不认识的原文一并回吐，让界面能明说「现在显示的是 ntfy，改动会写 ntfy」。
+    public static func loadKindDetailed(defaults: UserDefaults = .standard)
+        -> (kind: RemoteChannelKind, unrecognized: String?) {
+        guard let raw = defaults.string(forKey: kindKey) else { return (.ntfy, nil) }
+        guard let kind = RemoteChannelKind(rawValue: raw) else {
+            AppLog.error("远程通知通道 \(raw) 无法识别，界面按 \(RemoteChannelKind.ntfy.rawValue) 显示；"
+                         + "此后的改动会写进该通道的键，原通道配置保持不动")
+            return (.ntfy, raw)
+        }
+        return (kind, nil)
     }
 
     public static func save(_ kind: RemoteChannelKind, defaults: UserDefaults = .standard) {

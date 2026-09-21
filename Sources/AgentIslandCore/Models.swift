@@ -560,6 +560,11 @@ public enum SessionProbeFailure: String, Equatable {
     /// 会话文件读出来了，但不是解析器认识的形状（改版成 `{"messages":[…]}`、
     /// 顶层类型漂移等）。与「文件里确实没有待确认事项」是两件事，不得混为一谈
     case undecodableFile
+    /// 查询能 prepare，但 `sqlite3_step` 返回了既不是 ROW 也不是 DONE 的码
+    /// （BUSY / LOCKED / CORRUPT…）。prepareFailed 抓的是「结构变了」，抓不到这一类：
+    /// 对方**正在写库**的那一拍最容易撞上 BUSY，而撞上之后按「库里没行」处理，
+    /// 正在等确认的卡片就变成了「待机」——恰好在最需要提醒的那一刻失灵。
+    case stepFailed
 
     public var label: String {
         switch self {
@@ -568,6 +573,7 @@ public enum SessionProbeFailure: String, Equatable {
         case .oversizedFile: return "会话文件超出单次读取上限"
         case .unreadableFile: return "会话文件无法读取"
         case .undecodableFile: return "会话文件格式与解析器不匹配"
+        case .stepFailed: return "会话数据库查询被中断（占用或损坏）"
         }
     }
 }
