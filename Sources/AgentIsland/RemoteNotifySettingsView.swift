@@ -152,7 +152,7 @@ final class RemoteNotifyModel: ObservableObject {
             case .notConfigured(let reason):
                 self.testResult = "未配置：\(reason)"
                 self.testFailed = true
-            case .failed(let reason):
+            case .failed(let reason, _):
                 self.testResult = "送出失败：\(reason)"
                 self.testFailed = true
             case .suppressed(let reason):
@@ -442,8 +442,10 @@ struct RemoteNotifySettingsView: View {
             }
             help("「发送测试」会真的送出一条消息到你在上方配置的地址，并绕过节流与静默时段。"
                  + "预览里的密钥是掩码，实发时才会替换成原值。\n"
-                 + "自动外发失败后隔 5 秒再试一次（一次网络抖动不该丢掉唯一能叫醒你的提醒），"
-                 + "「最近外发」会写明是重试后送达还是重试仍未送达。"
+                 + "自动外发遇到**暂时性**失败会隔 5 秒再试一次（一次网络抖动不该丢掉唯一能叫醒你的提醒）；"
+                 + "对端明确拒绝（主题不存在、授权码不对）不重试——再要一次也是同一个结果，"
+                 + "而且公开中转按条数限流。「最近外发」会写明是「重试后送达」「重试仍未送达」"
+                 + "还是「对端明确拒绝，重试无用」。\n"
                  + "「发送测试」不重试：它给的就是这一次的真实结果。")
         }
         .opacity(model.policy.masterEnabled ? 1 : 0.55)

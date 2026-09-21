@@ -21,11 +21,16 @@ public struct OutboundAttempt: Equatable, Hashable, Sendable {
         case .delivered: base = "已送达"
         case .suppressed(let reason): base = "未发：\(reason)"
         case .notConfigured(let reason): base = "未配置：\(reason)"
-        case .failed(let reason): base = "失败：\(reason)"
+        case .failed(let reason, _): base = "失败：\(reason)"
         }
-        guard tries > 1 else { return base }
-        return outcome.isDelivered ? "\(base)（重试 \(tries - 1) 次后）"
-                                   : "\(base)；重试 \(tries - 1) 次仍未送达"
+        if tries > 1 {
+            return outcome.isDelivered ? "\(base)（重试 \(tries - 1) 次后）"
+                                       : "\(base)；重试 \(tries - 1) 次仍未送达"
+        }
+        // 只试了一次就停下的两种含义要分开：对端明确拒绝（去改配置）与
+        // 「发送测试」按设计不重试（立刻给你这一次的真实结果）
+        if outcome.isPermanent { return "\(base)（对端明确拒绝，重试无用）" }
+        return base
     }}
 
 /// 渲染出来的消息（不含密钥），供「发送预览」原样展示
@@ -305,8 +310,11 @@ public final class RemoteNotifier: @unchecked Sendable {
         var outcome = await transport.perform(request)
         var tries = 1
         // 自动外发重试一次：这个功能存在的意义就是「人不在机器前也要收到」，而一次网络抖动
-        // 就把那条唯一的提醒永久丢掉。「发送测试」不重试——用户盯着界面等，立刻拿到如实结果更有用
-        if !bypassPolicy, case .failed = outcome, await waitBeforeRetry() {
+        // 就把那条唯一的提醒永久丢掉。「发送测试」不重试——用户盯着界面等，立刻拿到如实结果更有用。
+        // 对端明确拒绝（404 / 535 / 550）也不重试：再要一次只是给已经说过「不」的服务器加负载，
+        // 而且 ntfy.sh 这类公开中转是按条数限流的
+        if !bypassPolicy, case .failed(_, let permanent) = outcome, !permanent,
+           await waitBeforeRetry() {
             tries += 1
             outcome = await transport.perform(request)
         }

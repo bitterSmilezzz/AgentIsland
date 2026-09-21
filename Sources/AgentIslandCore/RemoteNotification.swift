@@ -25,11 +25,20 @@ public enum OutboundOutcome: Equatable, Hashable, Sendable {
     case suppressed(reason: String)
     /// 配置不完整（没填 key/主机/收件人等）
     case notConfigured(reason: String)
-    /// 送出但对方没接受：带可给人看的短说明（HTTP 状态码或 SMTP 回复码）
-    case failed(reason: String)
+    /// 送出但对方没接受：带可给人看的短说明（HTTP 状态码或 SMTP 回复码）。
+    /// `permanent` = 对端**明确拒绝**（404 主题不存在、535 授权码错、550 拒绝中继）：
+    /// 再试一次也是同一个结果。这一位既决定要不要重试，也决定界面怎么说——
+    /// 把「配置就是错的」显示成「链路在抖」会把人引向完全错误的排查方向。
+    case failed(reason: String, permanent: Bool = false)
 
     public var isDelivered: Bool {
         if case .delivered = self { return true }
+        return false
+    }
+
+    /// 只对 `.failed` 有意义；`.suppressed` / `.notConfigured` 不是「对端拒绝」
+    public var isPermanent: Bool {
+        if case .failed(_, let permanent) = self { return permanent }
         return false
     }
 
@@ -39,7 +48,7 @@ public enum OutboundOutcome: Equatable, Hashable, Sendable {
         case .delivered: return "已送达"
         case .suppressed(let reason): return reason
         case .notConfigured(let reason): return reason
-        case .failed(let reason): return reason
+        case .failed(let reason, _): return reason
         }
     }
 }

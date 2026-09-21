@@ -132,6 +132,16 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
 public struct HTTPTransport: RemoteTransport {
     public init() {}
 
+    /// 这个状态码值不值得 5 秒后再试一次。
+    /// 4xx（除 408 请求超时 / 425 数据未就绪 / 429 限流）与 3xx 是「对方看懂了但拒绝」：
+    /// 主题不存在、token 无效、要求订阅——再发一次也是同一个结果。而且 ntfy.sh 这类公开中转
+    /// 按条数限流，白重试会让用户更快撞上上限。5xx 与未知一律按可重试：那是服务端的临时状况。
+    static func isPermanent(status: Int) -> Bool {
+        if (300..<400).contains(status) { return true }
+        if (400..<500).contains(status) { return ![408, 425, 429].contains(status) }
+        return false
+    }
+
     public func perform(_ request: RenderedRequest) async -> OutboundOutcome {
         if let smtp = request.smtp {
             return await SMTPClient.deliver(target: smtp,
@@ -165,9 +175,12 @@ public struct HTTPTransport: RemoteTransport {
                 // 也回 200 + 一段错误 JSON，本层不去猜——设置页的文案对此写明
                 return .delivered
             }
-            return .failed(reason: "服务端返回 \(http.statusCode)")
+            return .failed(reason: "服务端返回 \(http.statusCode)",
+                           permanent: Self.isPermanent(status: http.statusCode))
         } catch let error as URLError where error.code == .cancelled {
-            return .failed(reason: "请求被取消：目标回了重定向，本 App 不跟着走（密钥不外送给第三方）")
+            // 重定向是我们自己拒的，重试一次还是同样的决定 → 永久
+            return .failed(reason: "请求被取消：目标回了重定向，本 App 不跟着走（密钥不外送给第三方）",
+                           permanent: true)
         } catch let error as URLError {
             return .failed(reason: "网络错误：\(error.localizedDescription)")
         } catch {
@@ -213,7 +226,11 @@ public enum SMTPClient {
                 return .failed(reason: "\(label)：服务器无响应（超时）")
             }
             let code = Int(line.prefix(3)) ?? -1
-            guard codes.contains(code) else { return .failed(reason: "\(label)：回复 \(code)") }
+            guard codes.contains(code) else {
+                // SMTP 自己区分这两种：5xx 是「明确拒绝」（535 授权码错、550 拒绝中继），
+                // 4xx 是「暂时不行」（421 服务器忙、450 稍后再试）——只有后者值得 5 秒后再来一次
+                return .failed(reason: "\(label)：回复 \(code)", permanent: code >= 500)
+            }
             // 「状态码-」是续行，必须读到出现「状态码空格」的那一行为止。
             // 只读一行的话，多行回复会把剩下的行留在流里，后面每一次读取全部错位
             while line.count >= 4, line.hasPrefix("\(code)-") {
@@ -233,7 +250,8 @@ public enum SMTPClient {
             while let line = await io.readLine(timeout: timeout) {
                 if line.count >= 4, line.hasPrefix("250-") { continue }
                 if line.hasPrefix("250") { return nil }
-                return .failed(reason: "EHLO：回复异常")
+                return .failed(reason: "EHLO：回复异常 \(line.prefix(3))",
+                               permanent: (Int(line.prefix(3)) ?? -1) >= 500)
             }
             return .failed(reason: "EHLO：服务器无响应")
         }

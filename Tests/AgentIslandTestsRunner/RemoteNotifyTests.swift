@@ -80,8 +80,11 @@ enum RemoteNotifyTests {
             let outcome = try awaitOnMain {
                 await SMTPClient.run(io: io, target: target, subject: "s", textBody: "b")
             }
-            if case .failed(let reason) = outcome {
+            if case .failed(let reason, let permanent) = outcome {
                 try expectTrue(reason.contains("535"), "失败原因要带服务器回复码，否则用户无从排查：\(reason)")
+                // 535 是「明确拒绝」（授权码不对），不是「暂时不行」：标成永久失败，
+                // 否则每个事件都要白重试一次，而且界面会把它显示成链路在抖
+                try expectTrue(permanent, "5xx 回复必须标为永久失败：\(reason)")
             } else {
                 throw TestError(message: "认证失败必须报 .failed，实得 \(String(describing: outcome))")
             }
@@ -1004,6 +1007,45 @@ enum RemoteNotifyTests {
             try expectEqual(transport.requests.count, 1, "测试按钮不该触发重试")
             try expectEqual(notifier.recentAttempts.first?.shortText, "失败：服务端返回 502",
                             "没重试就不该标注重试次数")
+        }
+
+        TestKit.test("重试分类: 对端明确拒绝不重试，暂时不行才重试") {
+            // 1) HTTP 状态码表：4xx（除 408/425/429）与 3xx 是「看懂了但拒绝」
+            for status in [301, 302, 400, 401, 403, 404, 410] {
+                try expectTrue(HTTPTransport.isPermanent(status: status),
+                               "\(status) 属配置类失败，重试只会再被拒一次")
+            }
+            for status in [408, 425, 429, 500, 502, 503, 599] {
+                try expectFalse(HTTPTransport.isPermanent(status: status),
+                                "\(status) 是暂时状况，值得 5 秒后再来一次")
+            }
+            // 2) SMTP 自己区分 4xx / 5xx
+            let busy = FakeSMTPSession(script: ["220 hi", "250 OK", "421 服务器忙，稍后再试"])
+            let busyOut = try awaitOnMain {
+                await SMTPClient.run(io: busy, target: SMTPTarget(host: "h", port: 465, user: "u",
+                    password: "p", from: "u", to: "t"), subject: "s", textBody: "b")
+            }
+            if case .failed(let reason, let permanent) = busyOut {
+                try expectFalse(permanent, "421 是「暂时不行」，标成永久会让这条永远等不到重试：\(reason)")
+            } else { throw TestError(message: "421 应报失败，实得 \(String(describing: busyOut))") }
+
+            // 3) 调度层：永久失败只发一次
+            let transport = RecordingTransport()
+            transport.result = .failed(reason: "服务端返回 404", permanent: true)
+            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil },
+                                          retryDelay: 0)
+            var config = RemoteChannelConfig()
+            config.topicOrURL = "topic"
+            let out = try awaitOnMain {
+                await notifier.deliver(inputs: .init(agentName: "Dim", kind: .completed, seconds: 1),
+                                       kind: .ntfy, config: config,
+                                       policy: RemoteNotifyPolicy(masterEnabled: true))
+            }
+            try expectEqual(out, .failed(reason: "服务端返回 404", permanent: true))
+            try expectEqual(transport.requests.count, 1, "明确拒绝不该再要一次（公开中转按条数限流）")
+            try expectEqual(notifier.recentAttempts.first?.shortText,
+                            "失败：服务端返回 404（对端明确拒绝，重试无用）",
+                            "「配置错了」与「链路在抖」必须在界面上分得开")
         }
 
         TestKit.test("结果记账: 最近外发结果有界可查，供设置页显示成败") {
