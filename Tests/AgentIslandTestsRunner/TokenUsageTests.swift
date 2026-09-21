@@ -1196,6 +1196,36 @@ enum TokenUsageTests {
                             "追加后：新响应进明细，旧账不重复")
         }
 
+        TestKit.test("结构化Token索引: 采集根读不了时不许报「已发现明细源」") {
+            // 根目录在、整棵读不了（权限/卷没挂全）时，此前照样置真 ⇒ 分析页显示
+            // 「有明细源 · 0 token」，把「没看到」讲成「真的没用量」。
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let logs = root.appendingPathComponent("codex")
+            try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                           ofItemAtPath: logs.path)
+                    try? FileManager.default.removeItem(at: root) }
+            try (Self.codexLine("r1", 60, input: 100, cached: 0, output: 0) + "\n")
+                .write(to: logs.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [logs.path], format: .codex)
+            ])
+            let ok = index.snapshot(now: Self.structuredClock)
+            try expectTrue(ok.availableToolIds.contains("codex"), "前置：可读时算已发现")
+            try expectEqual(ok.records.count, 1, "前置：明细读得到")
+
+            try FileManager.default.setAttributes([.posixPermissions: 0o100], ofItemAtPath: logs.path)
+            let blind = index.snapshot(now: Self.structuredClock)
+            try expectFalse(blind.availableToolIds.contains("codex"),
+                            "整棵读不了就不能报「已发现明细源」")
+            try expectTrue(blind.records.isEmpty, "读不到就是没有明细，不能拿旧值充数")
+
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: logs.path)
+            let healed = index.snapshot(now: Self.structuredClock)
+            try expectTrue(healed.availableToolIds.contains("codex"), "恢复后必须重新算已发现")
+            try expectEqual(healed.records.count, 1, "恢复后明细回来")
+        }
+
         TestKit.test("结构化Token索引: 保留窗口必须盖住最宽分析档的「上一周期」") {
             // 分析页 30 天档的对比项要往前读 2×30 = 60 天（`TokenTimelineBuilder` 的
             // previousStart）。窗口只要短于此，JSONL 工具在「上一周期」里就被静默少算：

@@ -182,14 +182,22 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
 
         for source in sources {
             for root in source.roots where FileManager.default.fileExists(atPath: root) {
-                availableToolIds.insert(source.agentId)
+                // 「明细源被发现」必须建立在**真的看过这个目录**上。此前只要根目录存在就置真，
+                // 于是根在、整棵读不了（权限、卷没挂全）时分析页显示「有明细源 · 0 token」——
+                // 把「没看到」讲成「真的没用量」，正是 CONTEXT.md 反对的那类谎报。
+                // 注意 FileManager 的枚举器对权限失败**不返回 nil**：它照样给一个枚举器，
+                // 错误只在 errorHandler 里出现（与 FileMonitor 同一处坑）。
+                var walkFailed = false
+                var sawJsonl = false
                 guard let enumerator = FileManager.default.enumerator(
                     at: URL(fileURLWithPath: root, isDirectory: true),
                     includingPropertiesForKeys: nil,
-                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                    errorHandler: { _, _ in walkFailed = true; return true }
                 ) else { continue }
 
                 for case let url as URL in enumerator where url.pathExtension.lowercased() == "jsonl" {
+                    sawJsonl = true
                     // 一次 stat(2) 拿齐 (普通文件, mtime, size, inode)。此前这里先
                     // `resourceValues` 取 mtime/size、再 `attributesOfItem` 取 inode——
                     // 同一条元数据付两遍：本机实测 attributesOfItem 单次 26µs（为一次比对
@@ -286,6 +294,12 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
                         account(agentId: source.agentId,
                                 tokens: cached.rolledTokens, count: cached.rolledCount)
                     }
+                }
+                if !walkFailed || sawJsonl {
+                    availableToolIds.insert(source.agentId)
+                } else {
+                    AppLog.warn("tokenDetailSource: \(source.agentId) 的采集根读不了（\(root)），"
+                                + "本轮不算「已发现明细源」——显示成 0 用量是谎报")
                 }
             }
         }
