@@ -1064,10 +1064,13 @@ enum TokenUsageTests {
                 StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
             ])
             let file = dir.appendingPathComponent("r.jsonl")
+            // 局部捕获：`structuredClock` 是 MainActor 隔离的静态属性，非隔离的嵌套函数
+            // 里直接引用在 Swift 6 语言模式下是错误
+            let clock = Self.structuredClock
             func signature(_ snap: StructuredTokenUsageSnapshot) -> String {
                 "n=\(snap.records.count) rolled=\(snap.rolledUpTokens["codex"] ?? 0)"
                     + "/\(snap.rolledUpCount["codex"] ?? 0) total="
-                    + "\(snap.usage(now: Self.structuredClock)["codex"]?.tokensTotal ?? -1)"
+                    + "\(snap.usage(now: clock)["codex"]?.tokensTotal ?? -1)"
             }
             let body = [Self.codexLine("a", 75 * 24 * 60, input: 240, cached: 0, output: 0),
                         Self.codexLine("b", 10, input: 100, cached: 0, output: 0)].map { $0 + "\n" }.joined()
