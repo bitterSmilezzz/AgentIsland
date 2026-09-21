@@ -57,8 +57,14 @@ enum FileIOTests {
             let before = monitor.lastWriteDates(for: [root.path])[root.path]
             try expectNotNil(before, "前置：首扫要看到写入信号")
 
+            // 关键一步：必须让第二拍**真的去做深层扫描**。根 mtime 没变 + 目录不在
+            // runningDirs 里 ⇒ 走「跳过深层递归」那条快路，缓存被原样返回，这条用例
+            // 就永远不可能失败（前两版都栽在这里，变异验证才抓得出来）。
+            // 新上线的目录会把 lastFullScans 置空 ⇒ 强制全量深搜。
+            try Data("y".utf8).write(to: session.appendingPathComponent("more.jsonl"))
             try FileManager.default.setAttributes([.posixPermissions: 0o100],
                                                   ofItemAtPath: root.path)
+            monitor.setRunningDirs([root.path])
             monitor.scanSync()
             let after = monitor.lastWriteDates(for: [root.path])[root.path]
             try expectEqual(after, before,
