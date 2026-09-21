@@ -52,7 +52,7 @@ struct StructuredTokenUsageSnapshot {
                     value.cost24h = Self.safeCostSum(value.cost24h, record.cost)
                 }
             }
-            // 折入的历史只加进累计：折入线是 40 天前，24h 窗口不可能落到它里面。
+            // 折入的历史只加进累计：折入线在 70 天前，24h 窗口不可能落到它里面。
             if let rolled = rolledUpTokens[bucket.agentId] {
                 counted = true
                 value.tokensTotal = Self.safeSum(value.tokensTotal, rolled)
@@ -90,11 +90,15 @@ struct StructuredTokenUsageSnapshot {
 /// （release、合成语料、`phys_footprint` 差值口径）每条留存明细约 780B 常驻、整趟重建约
 /// 0.63ms/千条，两者都随磁盘语料总量线性上升且永不回落；折进合计的那部分每条 ≈0B。
 /// 掉出窗口的响应就折成按工具的合计：累计口径逐字不变（折入是保和的），每轮成本从
-/// 「历史总量」变成「近 40 天数量」。取舍与被否决的方案见 `docs/adr/0007-*.md`。
+/// 「历史总量」变成「近 70 天数量」。取舍与被否决的方案见 `docs/adr/0007-*.md`。
 final class StructuredTokenUsageIndex: @unchecked Sendable {
-    /// 明细保留窗口。时间分析页最宽 30d，多出的 10d 是余量：窗口边界跟着每趟的 `now`
-    /// 往前挪，余量免得「刚好掉出分析窗口」的明细被反复折出/折回（折回要重读整份文件）。
-    static let detailRetention: TimeInterval = 40 * 86_400
+    /// 明细保留窗口。**70 天不是拍的**：分析页最宽 30 天，而那一档还要往前读同样长的
+    /// 「上一周期」做对比（`TokenTimelineBuilder.previousStart = now - 2 × duration`），
+    /// SQLite 那两个源本来就能查到 60 天前——JSONL 这边若只留 30 天，「较上一周期 ±N%」
+    /// 就会被静默少算一块，而图表上一点看不出来（图只画 30 天）。所以取
+    /// 2×最宽档 + 10 天余量（余量免得刚好掉出边界的明细被反复折出/折回，折回要重读
+    /// 整份文件）。动这个数之前先看用例「保留窗口必须盖住最宽分析档的「上一周期」」。
+    static let detailRetention: TimeInterval = 70 * 86_400
 
     /// 单文件明细条数硬上限：一个会话文件在窗口内挤出几十万条响应时的第二道保险。
     /// 触顶时折掉该文件**最早**的明细——累计不受影响，代价是最宽分析窗口可能少画一段。
@@ -242,7 +246,7 @@ final class StructuredTokenUsageIndex: @unchecked Sendable {
                     // 传给它的事件，已经折掉的那一段键不在其中。这条条件是**载荷性**的——
                     // 下面的折入结果直接顶掉旧合计、不做任何搬移，删掉它等于把折掉的历史
                     // 从合计里抹掉（变异验证过：三个用例同时变红）。
-                    // 代价落在罕见路径上：跨 40 天还在写的会话文件、以及被上限裁过的文件。
+                    // 代价落在罕见路径上：跨 70 天还在写的会话文件、以及被上限裁过的文件。
                     let canAppend = (old?.rolledTokens ?? 0) == 0
                         && old?.stamp.inode == stamp.inode
                         && old?.endedWithNewline == true && stamp.size > (old?.stamp.size ?? 0)
