@@ -213,14 +213,14 @@ public final class RemoteNotifier: @unchecked Sendable {
 
     /// 发一条。返回真实结果；调用方据此决定要不要提示失败。
     /// `away` = 人是否不在机器前，仅在策略打开 `onlyWhenAway` 时参与判定。
-    /// 默认 true 是有意的 fail-open：判定不了就照常发——「以为开了其实永远不发」
+    /// 默认 `.unavailable`（判定不了 → 按「已离开」照常发）：「以为开了其实永远不发」
     /// 是本仓最难查的那类失效，代价只是坐在机器前多收一条推送。
     @discardableResult
     public func deliver(inputs: Inputs, kind: RemoteChannelKind, config: RemoteChannelConfig,
-                        policy: RemoteNotifyPolicy, away: Bool = true,
+                        policy: RemoteNotifyPolicy, presence: PresenceSignals = .unavailable,
                         now: Date = Date()) async -> OutboundOutcome {
         await send(inputs: inputs, kind: kind, config: config, policy: policy, now: now,
-                   bypassPolicy: false, away: away)
+                   bypassPolicy: false, presence: presence)
     }
 
     /// 这条通道现在到底能不能发（与 `attempt` 用同一判据）。
@@ -240,14 +240,14 @@ public final class RemoteNotifier: @unchecked Sendable {
         let inputs = Inputs(agentName: "AgentIsland", kind: .attention, seconds: 0,
                             message: "这是一条测试消息")
         return await send(inputs: inputs, kind: kind, config: config,
-                          policy: policy, now: now, bypassPolicy: true, away: true)
+                          policy: policy, now: now, bypassPolicy: true, presence: .unavailable)
     }
 
     private func send(inputs: Inputs, kind: RemoteChannelKind, config: RemoteChannelConfig,
                       policy: RemoteNotifyPolicy, now: Date, bypassPolicy: Bool,
-                      away: Bool) async -> OutboundOutcome {
+                      presence: PresenceSignals) async -> OutboundOutcome {
         let outcome = await attempt(inputs: inputs, kind: kind, config: config, policy: policy,
-                                    now: now, bypassPolicy: bypassPolicy, away: away)
+                                    now: now, bypassPolicy: bypassPolicy, presence: presence)
         record(OutboundAttempt(at: now, title: Self.render(inputs: inputs, config: config, kind: kind).title,
                                outcome: outcome))
         return outcome
@@ -255,7 +255,7 @@ public final class RemoteNotifier: @unchecked Sendable {
 
     private func attempt(inputs: Inputs, kind: RemoteChannelKind, config: RemoteChannelConfig,
                          policy: RemoteNotifyPolicy, now: Date, bypassPolicy: Bool,
-                         away: Bool) async -> OutboundOutcome {
+                         presence: PresenceSignals) async -> OutboundOutcome {
         let normalized = policy.normalized()
         // 总开关连「发送测试」一起挡：它是这个功能的隐私闸门，若按一次测试就能出本机，
         // 开关本身就不可信。也正因为排在前面，关掉时不会去碰钥匙串
@@ -269,7 +269,9 @@ public final class RemoteNotifier: @unchecked Sendable {
             if normalized.inQuietHours(now) { return .suppressed(reason: "静默时段") }
             // 与静默时段同级：都挡在配置检查之前，否则坐在机器前时会看到「缺主题」
             // 这种根本没走到的提示
-            if normalized.onlyWhenAway, !away { return .suppressed(reason: "有人在机器前") }
+            if normalized.onlyWhenAway, !normalized.isAway(presence) {
+                return .suppressed(reason: "有人在机器前（\(normalized.presentReason(presence))）")
+            }
         }
         // 配置检查放在节流之前：配置坏了是每次都发不出去，
         // 若先判节流，用户会看到「节流命中」而实际是根本没配好

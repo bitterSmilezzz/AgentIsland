@@ -971,16 +971,16 @@ final class IslandPanelController: NSObject, NSWindowDelegate, ObservableObject 
         // 起一个任务、读一次钥匙串，还会往设置页的历史里灌满失败记录
         let notifier = remoteNotifier
         guard notifier.isConfigured(kind: kind, config: config) else { return }
-        // 「是否无人」必须在事件这一刻取，不能等到 Task 真正跑起来——
+        // 在场信号必须在事件这一刻取，不能等到 Task 真正跑起来——
         // 用户在事件后 0.5 秒回到机器前，发出去的那条就已经失去意义
-        let away = ScreenPresence.isAway
+        let presence = ScreenPresence.signals
         Task {
             // 刻意不标 @MainActor：await 之后整条链会留在主线程上，而这段
             // （钥匙串读、策略判定、发请求、记账）没有一样需要主线程。
             // 结果只进 notifier 的历史与统一日志：外发失败不该在岛上抢戏，
             // 但必须查得到（设置页「最近外发」读同一份历史）
             let outcome = await notifier.deliver(inputs: inputs, kind: kind, config: config,
-                                                 policy: policy, away: away)
+                                                 policy: policy, presence: presence)
             if !outcome.isDelivered {
                 AppLog.warn("远程通知未送达（\(kind.rawValue)）：\(outcome.shortReason)")
             }

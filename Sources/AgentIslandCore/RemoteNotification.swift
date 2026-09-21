@@ -195,25 +195,36 @@ public struct RemoteNotifyPolicy: Codable, Equatable, Sendable {
     /// 静默时段（本地时区的「时:分」，start > end 表示跨零点）
     public var quietStart: String = ""
     public var quietEnd: String = ""
-    /// 只在人不在机器前时外发（锁屏或显示器睡眠）。用户原始场景就是「人在
-    /// Windows 上远程看 Mac」：坐在机器前时手机再响一遍是噪声。
+    /// 只在人不在机器前时外发。
+    /// 光靠「锁屏 / 显示器睡眠」在用户的真实场景里是错的：他用 Windows 远程桌面连着 Mac
+    /// 时，会话既不会锁定也不会熄屏，人走开了这两个信号全为 false——实测本机正是这个形态
+    /// （无键 CGSSessionScreenIsLocked、显示器未睡，而键盘已 88 秒没动）。
+    /// 所以判定必须带上「无输入多久」这一条，见 `awayIdleSeconds`。
     public var onlyWhenAway: Bool = false
+    /// 无输入超过这么多秒就算「人不在」。默认 120s：短于它会在你只是去倒水时误报，
+    /// 长于它则等到忘了这回事才通知
+    public var awayIdleSeconds: Int = 120
 
     public init(masterEnabled: Bool = false, sendCompleted: Bool = true, sendAttention: Bool = true,
                 sendCostSpike: Bool = true, throttleSeconds: Int = 90,
-                quietStart: String = "", quietEnd: String = "", onlyWhenAway: Bool = false) {
+                quietStart: String = "", quietEnd: String = "",
+                onlyWhenAway: Bool = false, awayIdleSeconds: Int = 120) {
         self.masterEnabled = masterEnabled; self.sendCompleted = sendCompleted
         self.sendAttention = sendAttention; self.sendCostSpike = sendCostSpike
         self.throttleSeconds = throttleSeconds; self.quietStart = quietStart
         self.quietEnd = quietEnd; self.onlyWhenAway = onlyWhenAway
+        self.awayIdleSeconds = awayIdleSeconds
     }
 
     static let normalizedThrottle = 15...3600
+    static let normalizedIdle = 30...3600
 
     public func normalized() -> RemoteNotifyPolicy {
         var copy = self
         copy.throttleSeconds = min(max(throttleSeconds, Self.normalizedThrottle.lowerBound),
                                    Self.normalizedThrottle.upperBound)
+        copy.awayIdleSeconds = min(max(awayIdleSeconds, Self.normalizedIdle.lowerBound),
+                                   Self.normalizedIdle.upperBound)
         // 写坏的静默时段必须退化成「不静默」，而不是整天把通知吞掉——
         // 后者是静默失效，用户永远看不见，正是最难查的那类 bug
         if !Self.isHHmm(copy.quietStart) { copy.quietStart = "" }
@@ -249,6 +260,23 @@ public struct RemoteNotifyPolicy: Codable, Equatable, Sendable {
         return h * 60 + m
     }
 
+    /// 人是否不在机器前：锁屏 / 显示器睡眠 / 无输入超过阈值，任一成立即算离开。
+    ///
+    /// 三条里对远程桌面真正起作用的是第三条。取不到信号时按「已离开」处理：
+    /// 这一条 fail-open 与节流那条相反——宁可多发一条，也不要出现
+    /// 「开关看着开了、其实永远不发」那种查不出来的失效
+    public func isAway(_ signals: PresenceSignals) -> Bool {
+        if signals.screenLocked || signals.displayAsleep { return true }
+        guard let idle = signals.idleSeconds else { return true }
+        return idle >= Double(normalized().awayIdleSeconds)
+    }
+
+    /// 判成「有人在」时给出依据（写进「最近外发」，被挡下的通知要说得出为什么被挡）
+    public func presentReason(_ signals: PresenceSignals) -> String {
+        guard let idle = signals.idleSeconds else { return "取不到输入时长" }
+        return "距上次输入 \(Int(idle)) 秒，未达 \(normalized().awayIdleSeconds) 秒"
+    }
+
     /// 该事件类型是否允许外发
     public func allows(_ kind: RemoteEventKind) -> Bool {
         switch kind {
@@ -265,7 +293,7 @@ public struct RemoteNotifyPolicy: Codable, Equatable, Sendable {
 extension RemoteNotifyPolicy {
     private enum CodingKeys: String, CodingKey {
         case masterEnabled, sendCompleted, sendAttention, sendCostSpike
-        case throttleSeconds, quietStart, quietEnd, onlyWhenAway
+        case throttleSeconds, quietStart, quietEnd, onlyWhenAway, awayIdleSeconds
     }
 
     public init(from decoder: Decoder) throws {
@@ -278,10 +306,30 @@ extension RemoteNotifyPolicy {
         quietStart = try c.decodeIfPresent(String.self, forKey: .quietStart) ?? ""
         quietEnd = try c.decodeIfPresent(String.self, forKey: .quietEnd) ?? ""
         onlyWhenAway = try c.decodeIfPresent(Bool.self, forKey: .onlyWhenAway) ?? false
+        awayIdleSeconds = try c.decodeIfPresent(Int.self, forKey: .awayIdleSeconds) ?? 120
     }
 }
 
-public enum RemoteEventKind: String, Sendable {    case completed, attention, costSpike
+public enum RemoteEventKind: String, Sendable {
+    case completed, attention, costSpike
+}
+
+/// 「这台机器前现在有没有人」的原始信号。判定逻辑在 `RemoteNotifyPolicy.isAway(_:)`
+/// （纯函数、可离线测），取信号那一层不掺判断——它要碰窗口服务器，测不了。
+public struct PresenceSignals: Equatable, Sendable {
+    public var screenLocked: Bool
+    public var displayAsleep: Bool
+    /// 距上一次键盘/鼠标输入的秒数；nil = 取不到
+    public var idleSeconds: TimeInterval?
+
+    public init(screenLocked: Bool = false, displayAsleep: Bool = false,
+                idleSeconds: TimeInterval? = nil) {
+        self.screenLocked = screenLocked; self.displayAsleep = displayAsleep
+        self.idleSeconds = idleSeconds
+    }
+
+    /// 一个信号都取不到（非 GUI 进程、窗口服务器拒绝等）
+    public static let unavailable = PresenceSignals(idleSeconds: nil)
 }
 
 // MARK: - 钥匙串

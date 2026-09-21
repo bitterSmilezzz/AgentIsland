@@ -1,3 +1,4 @@
+import AgentIslandCore
 import CoreGraphics
 import Foundation
 
@@ -29,5 +30,22 @@ enum ScreenPresence {
         CGDisplayIsAsleep(CGMainDisplayID()) == 1
     }
 
-    static var isAway: Bool { isScreenLocked || isDisplayAsleep }
+    /// 距上一次「任意输入」的秒数：取各输入类型里最近的那一个。
+    /// 某类从没发生过时 `secondsSinceLastEventType` 会返回一个极大值，取 min 正好被
+    /// 其它类型压掉；全取不到时返回 nil（上层按 fail-open 处理）
+    static var idleSeconds: TimeInterval? {
+        let types: [CGEventType] = [.keyDown, .leftMouseDown, .rightMouseDown,
+                                    .mouseMoved, .scrollWheel]
+        let values = types.map {
+            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0)
+        }
+        guard let least = values.min(), least < 24 * 3600 else { return nil }
+        return least
+    }
+
+    /// 一次外发要用的完整信号。判定不在这里做（见 `RemoteNotifyPolicy.isAway`）
+    static var signals: PresenceSignals {
+        PresenceSignals(screenLocked: isScreenLocked, displayAsleep: isDisplayAsleep,
+                        idleSeconds: idleSeconds)
+    }
 }

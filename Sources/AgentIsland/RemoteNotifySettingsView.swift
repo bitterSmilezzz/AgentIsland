@@ -38,6 +38,7 @@ final class RemoteNotifyModel: ObservableObject {
         self.config = RemoteNotifyStore.loadConfig(for: k)
         self.secretStored = RemoteSecret.exists(k.defaultSecretName)
         self.history = notifier.recentAttempts
+        self.presenceNow = ScreenPresence.signals
     }
 
     private func savePolicy() { RemoteNotifyStore.save(policy) }
@@ -74,9 +75,16 @@ final class RemoteNotifyModel: ObservableObject {
             || policy.quietEnd != policy.normalized().quietEnd
     }
 
+    /// 当前在场信号 + 能不能取到。开关的效果必须在页面上看得见，
+    /// 否则「只在无人时发送」是一个只能靠猜有没有生效的开关
+    @Published private(set) var presenceNow: PresenceSignals = .unavailable
+
     /// 岛内事件与测试都会往 notifier 的历史里写，但那份记账不是 @Published；
     /// 页面开着时定时取一次，否则用户只能靠改字段触发 body 重算才能看到结果
-    func refreshHistory() { history = notifier.recentAttempts }
+    func refresh() {
+        history = notifier.recentAttempts
+        presenceNow = ScreenPresence.signals
+    }
 
     var needsSecret: Bool {
         switch kind {
@@ -136,6 +144,7 @@ final class RemoteNotifyModel: ObservableObject {
             let outcome = await notifier.testDeliver(kind: kind, config: config, policy: policy)
             self.testing = false
             self.history = notifier.recentAttempts
+        self.presenceNow = ScreenPresence.signals
             switch outcome {
             case .delivered:
                 self.testResult = "已送达（对方服务器已接受）"
@@ -173,11 +182,11 @@ struct RemoteNotifySettingsView: View {
             policyCard
             verifyCard
         }
-        .onAppear { model.refreshHistory() }
+        .onAppear { model.refresh() }
         // 岛内每拍都可能往外发并写历史，而那份记账不是 ObservableObject 的 @Published：
         // 页面开着时定时拉一次，否则用户要动一下字段才看得到新记录
         .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
-            model.refreshHistory()
+            model.refresh()
         }
     }
 
@@ -315,15 +324,30 @@ struct RemoteNotifySettingsView: View {
             Toggle("消耗与熔断告警", isOn: $model.policy.sendCostSpike)
             Toggle(isOn: $model.policy.onlyWhenAway) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("只在人不在机器前时发送（锁屏或显示器睡眠）")
+                    Text("只在人不在机器前时发送")
                         .font(Theme.bodyFont(12, weight: .medium))
-                    Text("坐在机器前时岛内已经看得见，手机再响一遍是噪声。"
-                         + "生效与否可在下方「最近外发」核对：被这条挡下会写「未发：有人在机器前」。")
+                    Text("三条信号任一成立即算离开：屏幕锁定、显示器睡眠、"
+                         + "键盘鼠标无输入超过下面的阈值。"
+                         + "用远程桌面连着时前两条永远不会成立，只有无输入这条管用。")
                         .font(Theme.bodyFont(10))
                         .foregroundColor(Theme.inkMuted48)
                 }
             }
             .toggleStyle(.switch)
+            Stepper(value: $model.policy.awayIdleSeconds, in: 30...3600, step: 30) {
+                Text("无输入满 \(model.policy.awayIdleSeconds) 秒算离开")
+                    .font(Theme.bodyFont(12))
+            }
+            // 实时判定：让用户当场看出这条判据在这台机器上到底成不成立
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(model.presenceNow.idleSeconds == nil ? Theme.warningOrange
+                                                                : Theme.statusWorking)
+                    .frame(width: 7, height: 7)
+                Text(presenceLine)
+                    .font(Theme.bodyFont(10))
+                    .foregroundColor(Theme.inkMuted48)
+            }
             Stepper(value: $model.policy.throttleSeconds, in: 15...3600, step: 15) {
                 Text("同一 Agent 同类事件 \(model.policy.throttleSeconds) 秒内只发一次")
                     .font(Theme.bodyFont(12))
@@ -341,6 +365,20 @@ struct RemoteNotifySettingsView: View {
                  + "完全静默岛内时外发照常。写坏的时段会整段作废（宁可多发也不全天吞掉）。")
         }
         .opacity(model.policy.masterEnabled ? 1 : 0.55)
+    }
+
+    /// 当前判定的一行说明。取不到输入时长要说破——那种情况下这条开关只能靠锁屏/熄屏，
+    /// 而远程桌面连着时那两个永远为 false，等于开了不管用
+    private var presenceLine: String {
+        let p = model.presenceNow
+        guard let idle = p.idleSeconds else {
+            return "当前判定：取不到键盘鼠标输入时长（这台机器上这条判据没有数据，"
+                + "只认锁屏与显示器睡眠）"
+        }
+        let away = model.policy.isAway(p)
+        return "当前判定：\(away ? "已离开" : "有人在机器前")"
+            + "（距上次输入 \(Int(idle)) 秒；锁屏 \(p.screenLocked ? "是" : "否")、"
+            + "显示器睡眠 \(p.displayAsleep ? "是" : "否")）"
     }
 
     // MARK: 验证
