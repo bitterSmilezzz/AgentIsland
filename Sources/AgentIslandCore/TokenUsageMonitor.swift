@@ -318,6 +318,20 @@ enum SafeNumber {
     /// 金额上限（美元）：同为「不可能触及」的量级。
     static let costCeiling = 1_000_000_000.0
 
+    /// 饱和乘（金额口径）：cost 全链路都钳在 `costCeiling`，唯独「月末预估费用」原先是裸的
+    /// `Double × 天数`——脏 cost 会让它跑到 Inf，界面上出现「累计 $1e9，预估月末
+    /// $3.1e10」这种自相矛盾的数（本该同量级的两个数差了 31 倍）。
+    /// 钳制方向与 `saturatingInt` 同一套口径：Inf → 上限、NaN → 0、负数 → 0。
+    static func costProduct(_ lhs: Double, _ rhs: Int) -> Double {
+        let days = Double(max(0, rhs))
+        guard days > 0 else { return 0 }
+        if lhs.isInfinite { return lhs > 0 ? costCeiling : 0 }
+        guard lhs.isFinite else { return 0 }
+        let value = max(lhs, 0) * days
+        guard value.isFinite else { return costCeiling }
+        return min(value, costCeiling)
+    }
+
     /// Double → Int 饱和转换：越界 / Inf / NaN 一律钳制在 ±ceiling，绝不 trap。
     static func saturatingInt(_ value: Double, ceiling: Int = magnitudeCeiling, source: String) -> Int {
         guard value.isFinite else {

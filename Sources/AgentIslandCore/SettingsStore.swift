@@ -236,9 +236,27 @@ public enum EnabledAgentStore {
 
     /// 空集合是有意全关，照常写入（不得当作「清除记录」）
     public static func save(_ ids: Set<String>, to defaults: UserDefaults = .standard) {
+        quarantineCorruptArchive(in: defaults)
         if let data = try? JSONEncoder().encode(Array(ids)) {
             defaults.set(data, forKey: SettingKey.enabledAgents)
         }
+    }
+
+    /// 损坏存档的备份键。与自定义档案同一套做法（`customAgentsCorruptBackup`）：
+    /// 覆盖前先把原字节抢救出来，用户还有手工恢复的机会。
+    public static let corruptBackupKey = "enabledAgents.corruptBackup"
+
+    /// 「解码失败 ⇒ 只读降级 ⇒ 不写回」这条保证此前只在读取侧成立：设置页把降级后的
+    /// 默认集装进 @State，用户拨任何一个开关就整体写回，损坏存档被就地覆盖——
+    /// 「保留可恢复原状」成了一句空话，而症状是「我的启停选择全没了」。
+    /// 只在「键存在且解不开」时备份，且只备份最早那一份（反复保存不会把备份也冲掉）。
+    static func quarantineCorruptArchive(in defaults: UserDefaults) {
+        guard let original = defaults.object(forKey: SettingKey.enabledAgents) else { return }
+        if let data = original as? Data,
+           (try? JSONDecoder().decode([String].self, from: data)) != nil { return }
+        guard defaults.object(forKey: corruptBackupKey) == nil else { return }
+        defaults.set(original, forKey: corruptBackupKey)
+        AppLog.error("enabledAgents 存档解码失败，原值已备份到 \(corruptBackupKey) 后再覆盖")
     }
 
     /// 读取已记录的已知 Agent ID 集合（nil = 无记录，表示需要从 legacy 迁移或全新安装）

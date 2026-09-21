@@ -159,8 +159,13 @@ public enum AgentSessionInspector {
                     return AgentSessionProbe(signal: signal, health: failure)
                 }
             }
-            let lines = LogTailReader.read(from: file, maxLines: 96, maxBytes: 262_144)
-            guard let signal = detect(lines: lines) else { continue }
+            let tail = LogTailReader.readChecked(from: file, maxLines: 96, maxBytes: 262_144)
+            if tail.unreadable {
+                // 读不出来与「这个会话确实没事」必须分开：前者要留在观测证据里，
+                // 否则岛显示待机 + doctor 说「结论可信」，而文件明明就在那里读不出
+                report(SessionProbeHealth(failure: .unreadableFile, path: file.path))
+            }
+            guard let signal = detect(lines: tail.lines) else { continue }
             if case .completed = signal, age > 15 * 60 { continue }
             return AgentSessionProbe(signal: signal, health: failure)
         }
@@ -474,9 +479,12 @@ public enum AgentSessionInspector {
         guard age <= 24 * 3600 else { return nil }
         // 单个会话文件实测可到 10MB（每行还挂 requestTokenAnchor 的整包请求/响应），
         // 必须走有界尾读：状态只取决于最近若干条消息
-        let lines = LogTailReader.read(from: found.file, maxLines: 60, maxBytes: 262_144)
-        guard !lines.isEmpty else { return nil }
-        return detectQoder(lines: lines, fileAge: age)
+        let tail = LogTailReader.readChecked(from: found.file, maxLines: 60, maxBytes: 262_144)
+        if tail.unreadable {
+            report(SessionProbeHealth(failure: .unreadableFile, path: found.file.path))
+        }
+        guard !tail.lines.isEmpty else { return nil }
+        return detectQoder(lines: tail.lines, fileAge: age)
     }
 
     /// 遍历 projects/<slug>/*.jsonl 取最近修改的一个。
@@ -974,14 +982,17 @@ public enum AgentSessionInspector {
         let age = max(0, now.timeIntervalSince(found.mtime))
         guard age <= 24 * 3600 else { return AgentSessionProbe() }
 
-        let lines = LogTailReader.read(from: found.file, maxLines: 120, maxBytes: 262_144)
-        guard !lines.isEmpty else { return AgentSessionProbe() }
+        let tail = LogTailReader.readChecked(from: found.file, maxLines: 120, maxBytes: 262_144)
+        // 读不出来要留在 health 里：这条链路的空 probe 与「Antigravity 真的闲置」同形
+        let unreadable = tail.unreadable
+            ? SessionProbeHealth(failure: .unreadableFile, path: found.file.path) : nil
+        guard !tail.lines.isEmpty else { return AgentSessionProbe(health: unreadable) }
 
         var context = SessionActiveContext()
-        let signal = detectAntigravitySession(lines: lines, fileAge: age, now: now, tasksDir: found.sidecar) {
+        let signal = detectAntigravitySession(lines: tail.lines, fileAge: age, now: now, tasksDir: found.sidecar) {
             context = $0
         }
-        return AgentSessionProbe(signal: signal, context: context)
+        return AgentSessionProbe(signal: signal, context: context, health: unreadable)
     }
 
     /// 遍历 brain 找出「有效最新」的会话：transcript 与它自己的后台任务日志取较新者，

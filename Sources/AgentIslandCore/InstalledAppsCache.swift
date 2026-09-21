@@ -130,8 +130,21 @@ public final class InstalledAppsCache: @unchecked Sendable {
         lock.unlock()
         let foundCLIs = scanCLIs()
         let foundBundles = scanBundles()
+        var keptCLICount = 0
         lock.lock()
-        clis = foundCLIs
+        // 「这趟没扫到」不能当成「全卸载了」。宿主内嵌过滤的口径是
+        // `hostInstalled && !selfInstalled ⇒ 摘掉这条档案`：CLI 集被一次失败的扫描清空、
+        // 而 bundle 集还在，就会把 Codex（ChatGPT 内嵌）这类档案从注册表里摘掉——
+        // 岛上的卡片消失，且没有任何地方说明为什么。空集 + 上一份非空 ⇒ 沿用旧值并留证据。
+        // bundle 侧不需要这道闸：空 bundle 集让 `hostInstalled` 为假，那条 guard 本来就
+        // 保留档案，方向是安全的。
+        // 日志要挪到锁外：这是一把 NSCondition，边持锁边写文件等于把 I/O 塞进临界区
+        let keptPreviousCLI = foundCLIs.isEmpty && !clis.isEmpty
+        if keptPreviousCLI {
+            keptCLICount = clis.count
+        } else {
+            clis = foundCLIs
+        }
         bundles = foundBundles
         lastRefreshAt = Date()
         refreshingThread = nil
@@ -140,6 +153,10 @@ public final class InstalledAppsCache: @unchecked Sendable {
         completions.removeAll()
         lock.broadcast()
         lock.unlock()
+        if keptCLICount > 0 {
+            AppLog.warn("installedApps: CLI 扫描返回空集（上一份有 \(keptCLICount) 项），沿用旧值"
+                        + "——否则宿主内嵌的档案会被当成已卸载而从注册表摘掉")
+        }
         if !callbacks.isEmpty {
             Task { @MainActor in
                 for callback in callbacks { callback() }

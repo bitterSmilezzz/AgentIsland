@@ -16,8 +16,11 @@ import Foundation
 enum DebtRatchetTests {
     /// Theme.swift 之外的 `Color(hex:` 字面量数量基线（v0.0.92 收敛自 186）
     private static let hardcodedColorBaseline = 36
-    /// `UserDefaults.standard` 直读点数量基线（SettingsStore 是合法入口，不计入）
-    private static let defaultsBaseline = 37
+    /// `UserDefaults.standard` 直读点数量基线（SettingsStore 是合法入口，不计入）。
+    /// 37 → 29：v0.0.108 把触觉反馈收进 `HapticFeedback` 一处，顺带清掉了设置读写
+    /// 绕过 SettingsStore 的那批散点（其中 `SoundEffectsManager` 与 `IslandView`
+    /// 对同一个键用了两套容错，见 SettingBool 的注释）。
+    private static let defaultsBaseline = 29
 
     @MainActor
     static func register() {
@@ -49,6 +52,53 @@ enum DebtRatchetTests {
                            "UserDefaults.standard 直读从 \(defaultsBaseline) 涨到 \(defaults)："
                            + "设置读写应经 SettingsStore/SettingKey（含 SettingLimits 归一化），"
                            + "否则新增项会绕过区间校验与启动自愈。收敛后请把基线改小。")
+        }
+
+        TestKit.test("触觉反馈只有一个出口: 设置里的开关必须管到每一次震动") {
+            // 「触控板微触觉反馈」这个开关此前只管 8 个调用点里的 2 个：其余 6 处直接
+            // 调 NSHapticFeedbackManager，关掉后展开/收起/停靠/Esc/工具箱照样震。
+            // 症状是「设置不生效」，而代码里两处都写着「（如果开启）」——谁都没错到看得见。
+            guard let sources = repoSourcesDirectory() else { return }
+            var direct = 0
+            var offenders: [String] = []
+            for url in swiftFiles(in: sources) {
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                // 注释里提这个 API 是合法的（解释为什么不能直调），只数真正的调用
+                let calls = text.components(separatedBy: "\n").filter { line in
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    guard trimmed.contains("NSHapticFeedbackManager.defaultPerformer.perform"),
+                          !trimmed.hasPrefix("//") else { return false }
+                    return true
+                }
+                direct += calls.count
+                if !calls.isEmpty { offenders.append(url.lastPathComponent) }
+            }
+            try expectEqual(direct, 1, "NSHapticFeedbackManager 直调点应为 1（HapticFeedback.perform），"
+                                    + "实际 \(direct)：\(offenders)")
+            // 光数出口数量不够：把开关那一行删掉，出口仍然只有 1 个，而设置又不管事了。
+            // 唯一的出口必须**查**这个键——所以要读进 perform 的函数体确认 guard 还在。
+            guard let holder = offenders.first,
+                  let text = try? String(contentsOf: URL(
+                    fileURLWithPath: "Sources/AgentIsland/" + holder), encoding: .utf8) else {
+                return
+            }
+            guard let start = text.range(of: "static func perform(") else {
+                throw TestError(message: "找不到 HapticFeedback.perform 的函数头")
+            }
+            // 从函数头起做括号配平，取出整个 perform 的函数体
+            var depth = 0
+            var body = ""
+            var cursor = text[start.lowerBound...].startIndex
+            while cursor < text.endIndex {
+                let ch = text[cursor]
+                if ch == "{" { depth += 1 }
+                if ch == "}" { depth -= 1 }
+                body.append(ch)
+                if depth == 0, ch == "}" { break }
+                cursor = text.index(after: cursor)
+            }
+            try expectTrue(body.contains("guard isEnabled"),
+                           "HapticFeedback.perform 必须查 isEnabled，实际函数体：\(body.prefix(200))")
         }
 
         TestKit.test("语义色单点: Ramp 基色与 ActivityLevel 浅色色阶各只定义一处") {

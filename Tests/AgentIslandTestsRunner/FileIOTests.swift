@@ -4,6 +4,34 @@ import Foundation
 @MainActor
 enum FileIOTests {
     static func register() {
+        TestKit.test("尾读: 打不开的文件回吐 unreadable，空文件回吐「真的没有」") {
+            // 两者都回 [] 的话，岛显示待机 + doctor 说「结论可信」，而文件明明在那里读不出
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let locked = root.appendingPathComponent("locked.jsonl")
+            try "content\n".write(to: locked, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644],
+                                                           ofItemAtPath: locked.path) }
+            let blocked = LogTailReader.readChecked(from: locked, maxLines: 8, maxBytes: 4096)
+            try expectTrue(blocked.unreadable, "权限拒绝必须是「没看到」，不是「没有」")
+            try expectTrue(blocked.lines.isEmpty, "读不到就是没有行")
+
+            let empty = root.appendingPathComponent("empty.jsonl")
+            try "".write(to: empty, atomically: true, encoding: .utf8)
+            let blank = LogTailReader.readChecked(from: empty, maxLines: 8, maxBytes: 4096)
+            try expectFalse(blank.unreadable, "空文件是「真的没有内容」，不该报失败")
+
+            let good = root.appendingPathComponent("good.jsonl")
+            try "a\nb\n".write(to: good, atomically: true, encoding: .utf8)
+            let read = LogTailReader.readChecked(from: good, maxLines: 8, maxBytes: 4096)
+            try expectFalse(read.unreadable, "正常读取不报失败")
+            try expectEqual(read.lines, ["a", "b"], "行内容照旧")
+            try expectEqual(LogTailReader.read(from: good, maxLines: 8, maxBytes: 4096).count, 2,
+                            "旧签名行为不变")
+        }
+
         TestKit.test("日志尾读：中文字符截断不影响后续完整记录") {
             let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: file) }

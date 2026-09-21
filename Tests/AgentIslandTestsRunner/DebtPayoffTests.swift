@@ -47,6 +47,24 @@ enum DebtPayoffTests {
                                                          now: Date(timeIntervalSince1970: 1_800_000_000))
             try expectEqual(report.projectedMonthEndTokens, Int.max, "溢出钳到上限而不是崩溃")
             try expectFalse(report.forecastSummary.isEmpty, "仍要给出可用的预估文案")
+            // 费用那一侧此前是裸的 `cost24h × 天数`：脏 cost 会让「预估月末」比累计还大几个
+            // 量级（同一屏上两个本该同量级的数自相矛盾），现在与 token 一样钳在 costCeiling
+            let dirty = TokenForecastEvaluator.evaluate(tokens24h: 1_000, cost24h: 1e308,
+                                                        dailyBudget: 0,
+                                                        now: Date(timeIntervalSince1970: 1_800_000_000))
+            try expectEqual(dirty.projectedMonthEndCost, SafeNumber.costCeiling,
+                            "预估月末费用必须钳在 costCeiling")
+            try expectTrue(dirty.projectedMonthEndCost.isFinite, "绝不能是 Inf")
+        }
+
+        TestKit.test("算术: SafeNumber.costProduct 把脏 cost 钳在上限而不是放大成 Inf") {
+            try expectEqual(SafeNumber.costProduct(2.5, 30), 75.0)
+            try expectEqual(SafeNumber.costProduct(1e308, 31), SafeNumber.costCeiling,
+                            "溢出到 Inf 要钳住，不是把 Inf 交给界面去格式化")
+            try expectEqual(SafeNumber.costProduct(Double.infinity, 3), SafeNumber.costCeiling)
+            try expectEqual(SafeNumber.costProduct(Double.nan, 3), 0.0, "NaN 落到 0")
+            try expectEqual(SafeNumber.costProduct(-5, 3), 0.0, "负数不落进累计")
+            try expectEqual(SafeNumber.costProduct(5, -3), 0.0, "负天数按 0 处理")
         }
 
         TestKit.test("算术: SafeNumber.product 在两端溢出时都不 trap") {

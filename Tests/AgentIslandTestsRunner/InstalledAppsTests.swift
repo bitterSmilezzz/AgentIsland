@@ -7,6 +7,21 @@ import Foundation
 enum InstalledAppsTests {
 
     static func register() {
+        TestKit.test("安装缓存: 扫描返回空集不覆盖上一份（否则宿主内嵌档案会被摘掉）") {
+            var cliScan: Set<String> = ["codex", "claude"]
+            let cache = InstalledAppsCache(scanCLIs: { cliScan }, scanBundles: { ["com.openai.chat"] })
+            cache.refresh()
+            try expectEqual(cache.installedCLIs(), Set(["codex", "claude"]), "前置：首扫正常落库")
+            cliScan = []
+            cache.refresh()
+            try expectEqual(cache.installedCLIs(), Set(["codex", "claude"]),
+                            "一次失败的扫描不能把 CLI 集清空")
+            cliScan = ["cursor"]
+            cache.refresh()
+            try expectEqual(cache.installedCLIs(), Set(["cursor"]),
+                            "真实卸载仍要能生效（只挡「整趟空了」这一种）")
+        }
+
         TestKit.test("安装缓存: 首扫中保持冷态，加入的调用方均收到完成通知") {
             let entered = DispatchSemaphore(value: 0)
             let release = DispatchSemaphore(value: 0)

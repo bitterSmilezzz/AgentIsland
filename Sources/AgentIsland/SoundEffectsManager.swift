@@ -36,10 +36,9 @@ public enum SoundEffectsManager {
         performHapticClick()
     }
 
-    /// 触发微触觉反馈（如果开启）
+    /// 触发微触觉反馈（如果开启）。开关判定收在 `HapticFeedback.perform` 那一处，
+    /// 这里只负责选节律——两处各读一次设置就会再长出「同一个键两种真相」。
     public static func performHapticClick() {
-        let hapticEnabled = UserDefaults.standard.object(forKey: SettingKey.hapticFeedbackEnabled) as? Bool ?? true
-        guard hapticEnabled else { return }
-        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        HapticFeedback.perform(.alignment, at: .now)
     }
 }

@@ -54,7 +54,7 @@ public enum TokenForecastEvaluator {
         let dailyCost = max(0, cost24h)
 
         let projectedMonthEndTokens = SafeNumber.product(dailyTokens, totalDays)
-        let projectedMonthEndCost = dailyCost * Double(totalDays)
+        let projectedMonthEndCost = SafeNumber.costProduct(dailyCost, totalDays)
 
         var exhaustionDay: Int? = nil
         var summary: String = ""

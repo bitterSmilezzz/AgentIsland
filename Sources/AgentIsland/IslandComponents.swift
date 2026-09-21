@@ -261,8 +261,19 @@ extension View {
 // MARK: - 原生触觉反馈工具 (Haptic Feedback)
 
 enum HapticFeedback {
-    static func perform(_ pattern: NSHapticFeedbackManager.FeedbackPattern = .alignment) {
-        NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .default)
+    /// 触觉反馈的**唯一**出口。设置页那个开关必须在这里生效：此前 8 个调用点里有 6 个
+    /// 绕过检查直接按 `NSHapticFeedbackManager`，关掉「触控板微触觉反馈」后展开、收起、
+    /// 停靠对齐、Esc 返回、工具箱动作照样震——「设置不生效」就是这么来的。
+    static func perform(_ pattern: NSHapticFeedbackManager.FeedbackPattern = .alignment,
+                        at time: NSHapticFeedbackManager.PerformanceTime = .default) {
+        guard isEnabled else { return }
+        NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: time)
+    }
+
+    /// 缺省 true：与设置页的初始态一致（`UserDefaults.bool` 在键不存在时给 false，
+    /// 那会让从没进过设置页的用户永久没有触觉反馈，见 SettingBool 的注释）
+    static var isEnabled: Bool {
+        SettingBool.read(SettingKey.hapticFeedbackEnabled, default: true)
     }
 }
 

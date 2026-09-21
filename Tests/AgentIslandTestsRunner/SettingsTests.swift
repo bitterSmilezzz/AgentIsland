@@ -7,6 +7,34 @@ import Foundation
 enum SettingsTests {
 
     static func register() {
+        TestKit.test("设置: 损坏的启停存档在第一次写回前被备份，不是就地蒸发") {
+            // 读取侧的「只读降级、不写回」保护不了设置页：它把降级后的默认集装进 @State，
+            // 用户拨任何一个开关就整体写回。备份这一步让「保留可恢复原状」真的可恢复。
+            let suite = TestDefaults.suite("settings-corrupt")
+            suite.set(Data("不是 JSON 的旧字节".utf8), forKey: SettingKey.enabledAgents)
+            let state = EnabledAgentStore.loadDetailed(from: suite).state
+            try expectTrue(state == .corrupt, "前置：非 JSON 字节判为损坏")
+
+            EnabledAgentStore.save(["dim", "codex"], to: suite)
+            let backup = suite.data(forKey: EnabledAgentStore.corruptBackupKey)
+            try expectEqual(backup, Data("不是 JSON 的旧字节".utf8), "原字节必须被抢救到备份键")
+            try expectEqual(EnabledAgentStore.load(from: suite), Set(["dim", "codex"]),
+                            "新值照常落库（用户能改设置，不必为了保数据而冻结界面）")
+
+            // 再损坏一次并保存：备份里留的仍是最早那一份，不被第二次的垃圾覆盖
+            suite.set(Data("第二份坏字节".utf8), forKey: SettingKey.enabledAgents)
+            EnabledAgentStore.save(["claude"], to: suite)
+            try expectEqual(suite.data(forKey: EnabledAgentStore.corruptBackupKey),
+                            Data("不是 JSON 的旧字节".utf8), "只备份最早那一份")
+
+            // 健康存档不产生备份（否则每次保存都留个孤儿键）
+            let clean = TestDefaults.suite("settings-clean")
+            EnabledAgentStore.save(["dim"], to: clean)
+            EnabledAgentStore.save(["codex"], to: clean)
+            try expectNil(clean.object(forKey: EnabledAgentStore.corruptBackupKey),
+                          "能解码的存档不该被备份")
+        }
+
         TestKit.test("设置: normalized 半值自愈/超上限/sample>idle 钳平") {
             var half = EngineConfig()
             half.cpuThreshold = 0.5

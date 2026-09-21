@@ -167,17 +167,33 @@ public struct ProcessProvider: ProcessProviding, @unchecked Sendable {
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL]
         var attempt = 0
         var procs: [kinfo_proc] = []
+        // 成功那一次才置真：三次 ENOMEM 之后原先会带着**全零缓冲区**继续往下走，
+        // 于是「拿不到进程表」被当成「机器上一个进程都没有」处理——所有档案判 offline、
+        // 岛整个清空，而日志里一个字都没有。
+        var tableRead = false
         while attempt < 3 {
-            guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return ProcessSnapshot(entries: []) }
+            guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else {
+                AppLog.warn("processTable: sysctl(KERN_PROC_ALL) 取长度失败 errno=\(errno)，"
+                            + "本轮无进程表（岛会短暂清空，不是「什么都没在跑」）")
+                return ProcessSnapshot(entries: [])
+            }
             let count = size / MemoryLayout<kinfo_proc>.stride
             procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
             var outSize = size
             guard sysctl(&mib, 3, &procs, &outSize, nil, 0) == 0 else {
                 if errno == ENOMEM { attempt += 1; continue }   // 表在增长，重试更大缓冲
+                AppLog.warn("processTable: sysctl(KERN_PROC_ALL) 取表失败 errno=\(errno)，"
+                            + "重试 \(attempt) 次后本轮放弃")
                 return ProcessSnapshot(entries: [])
             }
             size = outSize
+            tableRead = true
             break
+        }
+        guard tableRead else {
+            AppLog.warn("processTable: 连续 \(attempt) 次 ENOMEM，进程表本轮读不到；"
+                        + "空表会让所有档案显示离线——那是「没看到」，不是「没在跑」")
+            return ProcessSnapshot(entries: [])
         }
 
         var entries: [ProcessSnapshot.Entry] = []

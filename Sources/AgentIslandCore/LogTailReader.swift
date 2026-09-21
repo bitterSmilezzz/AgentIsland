@@ -25,7 +25,22 @@ enum LogTailReader {
     private static let reuseWindow: TimeInterval = 0.5
 
     static func read(from file: URL, maxLines: Int, maxBytes: Int) -> [String] {
-        guard maxLines > 0, maxBytes > 0 else { return [] }
+        readChecked(from: file, maxLines: maxLines, maxBytes: maxBytes).lines
+    }
+
+    /// 尾读结果。`unreadable` 必须与「文件里确实没有可解析的行」分开：前者是**没看到**，
+    /// 后者是**没有**。两者都回 `[]` 的话，岛显示待机、doctor 说「结论可信」，而文件明明
+    /// 在那里读不出来——这正是本仓最忌讳的那类错。
+    struct Tail {
+        let lines: [String]
+        let unreadable: Bool
+    }
+
+    /// 与 `read` 同一条路径，但把失败回吐给调用方（调用方负责记进观测证据）。
+    /// 读失败的結果**不进**尾读备忘：一次瞬时 EACCES/EBUSY 不该把「读不出」复用 0.5s，
+    /// 那会把恢复也一起吞掉。
+    static func readChecked(from file: URL, maxLines: Int, maxBytes: Int) -> Tail {
+        guard maxLines > 0, maxBytes > 0 else { return Tail(lines: [], unreadable: false) }
         // 只有「普通文件」才进缓存；特殊文件（FIFO 等）与 stat 失败的情形退回直读，
         // 与此前行为一致。新鲜度取 stat() 而非 URL.resourceValues：后者的结果有毫秒级
         // 缓存窗口，而这里恰好要比对「几十微秒内被改写过的同一个文件」，实测会误命中
@@ -41,15 +56,19 @@ enum LogTailReader {
         }) {
             let lines = entries[slot].lines
             lock.unlock()
-            return lines
+            return Tail(lines: lines, unreadable: false)
         }
-        let lines = readUncached(file: file, maxLines: maxLines, maxBytes: maxBytes)
-        // 新读到的放到最前面；被不同文件顶掉的是最久没用的那一头（近似 LRU，够用）
-        entries.insert(Entry(file: file, mtime: stamp.mtime, size: stamp.size, maxLines: maxLines,
-                             maxBytes: maxBytes, lines: lines, until: now.addingTimeInterval(reuseWindow)), at: 0)
-        if entries.count > slotCount { entries.removeLast(entries.count - slotCount) }
+        let fresh = readUncached(file: file, maxLines: maxLines, maxBytes: maxBytes)
+        // 读失败不进备忘：一次瞬时 EACCES/EBUSY 不该把「读不出」复用 0.5s，那会把恢复也吞掉
+        if !fresh.unreadable {
+            // 新读到的放到最前面；被不同文件顶掉的是最久没用的那一头（近似 LRU，够用）
+            entries.insert(Entry(file: file, mtime: stamp.mtime, size: stamp.size, maxLines: maxLines,
+                                 maxBytes: maxBytes, lines: fresh.lines,
+                                 until: now.addingTimeInterval(reuseWindow)), at: 0)
+            if entries.count > slotCount { entries.removeLast(entries.count - slotCount) }
+        }
         lock.unlock()
-        return lines
+        return fresh
     }
 
     /// 单次 stat() 取 mtime（纳秒、不经任何缓存）。目录同样适用，
@@ -83,22 +102,29 @@ enum LogTailReader {
                 UInt64(truncatingIfNeeded: st.st_ino))
     }
 
-    private static func readUncached(file: URL, maxLines: Int, maxBytes: Int) -> [String] {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return [] }
+    private static func readUncached(file: URL, maxLines: Int, maxBytes: Int) -> Tail {
+        // 打不开 = 没看到；空文件/没有完整行 = 真的没有。这两种必须分开回吐。
+        guard let handle = try? FileHandle(forReadingFrom: file) else {
+            return Tail(lines: [], unreadable: true)
+        }
         defer { try? handle.close() }
         do {
             let size = try handle.seekToEnd()
             let length = min(size, UInt64(maxBytes))
-            guard length > 0 else { return [] }
+            guard length > 0 else { return Tail(lines: [], unreadable: false) }
             let start = size - length
             // 多读前一个字节，区分恰好从行首开始和从行内开始。
             try handle.seek(toOffset: start > 0 ? start - 1 : 0)
-            guard var data = try handle.read(upToCount: Int(length) + (start > 0 ? 1 : 0)) else { return [] }
+            guard var data = try handle.read(upToCount: Int(length) + (start > 0 ? 1 : 0)) else {
+                return Tail(lines: [], unreadable: true)
+            }
             if start > 0 {
-                guard !data.isEmpty else { return [] }
+                guard !data.isEmpty else { return Tail(lines: [], unreadable: true) }
                 let preceding = data.removeFirst()
                 if preceding != 10 && preceding != 13 {
-                    guard let boundary = data.firstIndex(where: { $0 == 10 || $0 == 13 }) else { return [] }
+                    guard let boundary = data.firstIndex(where: { $0 == 10 || $0 == 13 }) else {
+                        return Tail(lines: [], unreadable: false)
+                    }
                     data = Data(data.suffix(from: data.index(after: boundary)))
                 }
             }
@@ -107,9 +133,9 @@ enum LogTailReader {
                 .compactMap { String(data: $0, encoding: .utf8) }
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
-            return Array(lines.suffix(maxLines))
+            return Tail(lines: Array(lines.suffix(maxLines)), unreadable: false)
         } catch {
-            return []
+            return Tail(lines: [], unreadable: true)
         }
     }
 
