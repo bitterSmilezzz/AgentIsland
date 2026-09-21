@@ -147,7 +147,7 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
     ///
     /// 与 `sessionDirs` 分开声明是有原因的：两者常在不同子树里——WorkBuddy 的工作信号
     /// 在 `tasks/`，token 明细却在 `projects/`。此前用量侧把这些路径又抄了一份字面量，
-    /// 档案换目录或改名后只有采集的一半生效（见 ADR-0004），故一律收进档案。
+    /// 档案换目录或改名后只有采集的一半生效（见 CHANGELOG「会话数据库位置与查询改为档案数据」一条），故一律收进档案。
     public let tokenRoots: [String]
 
     /// 终端看板（`agentisland status` / `top`）与摘要里用的展示符号。

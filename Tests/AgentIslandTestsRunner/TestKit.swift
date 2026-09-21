@@ -215,3 +215,42 @@ final class SlowProcessProvider: ProcessProviding, @unchecked Sendable {
 
     func runningBundleIDs() -> Set<String> { [] }
 }
+
+// MARK: - 源码树扫描（结构断言的唯一入口）
+
+/// 结构断言（「生产代码里不许再出现 X」）的全部价值在于它**会**失败。
+/// 找不到源码目录时 `return` 静默跳过，等于把守卫关掉还不报警——本仓已经为此
+/// 补过一轮（#32 永真断言）。所以这里扫不到就抛，让「通过」本身需要资格。
+enum SourceTree {
+    /// 仓库根：由本文件的编译期路径推出，不依赖 cwd（cwd 不同就静默跳过是上一版的坑）
+    static var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // Tests/AgentIslandTestsRunner
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // 仓库根
+    }
+
+    static var sources: URL { repoRoot.appendingPathComponent("Sources") }
+
+    /// 某个子树下的全部 .swift 文件；扫不到期望数量即抛错。
+    static func requireSwiftFiles(under subpath: String = "", atLeast minimum: Int = 20) throws -> [URL] {
+        let dir = subpath.isEmpty ? sources : sources.appendingPathComponent(subpath)
+        guard let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else {
+            throw TestError(message: "无法枚举源码目录 \(dir.path)：本测试的「通过」没有意义")
+        }
+        let files = en.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        try expectTrue(files.count >= minimum,
+                       "源码树只扫到 \(files.count) 个文件（期望 ≥\(minimum)），"
+                       + "结构断言不能在这种前提下算通过：\(dir.path)")
+        return files
+    }
+
+    /// 读某个源码文件的正文（相对仓库根）。读不到即抛，不静默跳过。
+    static func text(relativePath: String) throws -> String {
+        let url = repoRoot.appendingPathComponent(relativePath)
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            throw TestError(message: "读不到 \(relativePath)：结构断言不能建立在空文本上")
+        }
+        return text
+    }
+}

@@ -6,7 +6,8 @@ import AgentIslandCore
 /// 此前有三处各自拼装并写剪贴板：右键菜单（`IslandView`）、工作台卡片（`ToolboxView`）、
 /// 深度链接 `agentisland://export`（`URLSchemeRouter`）。它们调用同一个
 /// `generateMarkdown`，但右键菜单那一处漏传了 `history:` —— 同一个用户动作在两个入口
-/// 产出两份不同内容，且没有任何一处会报错。现在三处走同一份实现。
+/// 产出两份不同内容，且没有任何一处会报错。现在**两处**走同一份实现：
+/// 深链 `agentisland://export` 已改为只导航、不再写剪贴板（无手势清写用户剪贴板是另一回事）。
 @MainActor
 enum DiagnosticsSnapshot {
 

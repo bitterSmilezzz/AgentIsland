@@ -294,7 +294,7 @@ public final class ActivityEngine: ObservableObject {
                                              installedBundles: installedApps.installedBundleIDs())
         profiles = all.filter { enabledIDs.contains($0.id) }
         refreshWatchedDirs()
-        // 后台采样（R34/G1）：snapshot 全表 + 17 profile 匹配 + 动作探测此前全在
+        // 后台采样（R34/G1）：snapshot 全表 + 全部 profile 匹配 + 动作探测此前全在
         // 主线程同步执行（设置页每次开关可感知卡顿）；后台路径具备同等的
         // running/samplingInFlight 防护
         sampleInBackground()
@@ -501,7 +501,7 @@ public final class ActivityEngine: ObservableObject {
         installedApps.refreshIfNeeded(maxAge: 300)
 
         var results: [AgentSnapshot] = []
-        // 本拍取一次 token 用量快照（getter 持锁并整字典拷贝）：每拍 17 profile ×
+        // 本拍取一次 token 用量快照（getter 持锁并整字典拷贝）：每拍每个 profile ×
         // 2 处 = 34 次「锁+全字典拷贝」收敛为 1 次，告警链路复用同一快照
         let usageSnapshot = tokenMonitor.usage
         var anyWork = false
@@ -526,8 +526,9 @@ public final class ActivityEngine: ObservableObject {
             let matchedPID = entries.first(where: { $0.pid > 0 })?.pid
             let cpu = entries.reduce(0) { $0 + $1.cpuPercent }
 
-            // 最近写入时间直读 FileMonitor 缓存（写回为单调 merge：扫描失败保留旧值、
-            // 只进不退，引擎无需影子副本——见 FileMonitor.runScan 与 ADR-0001）
+            // 最近写入时间直读 FileMonitor 缓存：**扫描成功的目录直接替换缓存**（允许自然
+            // 变旧，否则一次历史写入会永久判成 working），只有扫描失败/目录暂缺才保留旧值；
+            // 引擎因此不需要影子副本——见 FileMonitor.runScan 与 ADR-0001
             let fresh = fileMonitor.lastWriteDates(for: profile.sessionDirs)
             let newestAgo: TimeInterval? = {
                 guard let newest = fresh.values.max() else { return nil }
@@ -1009,20 +1010,57 @@ public final class ActivityEngine: ObservableObject {
             return false
         }
         resetTracking(for: agentId)
+        // 结论要等复核，不在发完信号就宣布「资源已释放」：忽略 SIGTERM 的死锁进程收到信号
+        // 也不会消失，而异常列表变空**不算**复核（清理会顺手清掉判定证据，1.2s 后重扫条目
+        // 必然消失）。唯一口径是 kill(pid,0) 探活 + 路径校验，见 ProcessTerminator.isAlive。
+        // 批量清理那条路早就这么做了（工作台按 isAlive 统计失败项），这里补齐单条路径。
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.terminationRecheckDelay) { [weak self] in
+            self?.verifyTermination(agentId: agentId, pid: pid, path: verifiedPath)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.sampleInBackground()
+        }
+        return true
+    }
+
+    /// 终止后的复核窗口。SIGTERM 有 300ms 优雅期 + SIGKILL 兜底，取 0.8s 让两者都落地。
+    static let terminationRecheckDelay: TimeInterval = 0.8
+
+    /// 注入点：默认探活 + 路径校验。测试必须能注入，因为「收到信号又杀不掉」这一支
+    /// 用真进程造不出来——SIGKILL 兜底一定会带走它。
+    public var terminationProbe: (Int32, String) -> Bool = { pid, path in
+        ProcessTerminator.isAlive(pid: pid, expectedPath: path)
+    }
+
+    /// 复核一次终止结果并按结论发布。公开是为了让测试同步驱动（真实路径由定时器排程）。
+    /// - Returns: true = 已确认退出。
+    @discardableResult
+    public func verifyTermination(agentId: String, pid: Int32, path: String) -> Bool {
+        let name = profiles.first { $0.id == agentId }?.name ?? agentId
+        if terminationProbe(pid, path) {
+            publish(AgentTaskEvent(
+                agentId: agentId,
+                agentName: name,
+                eventType: .attention,
+                duration: 0,
+                timestamp: Date(),
+                pid: pid,
+                message: "\(name) 收到终止信号后仍在运行",
+                detail: "已向 PID \(pid) 及其子进程发送 SIGTERM/SIGKILL，探活复核显示进程仍然存在（死锁进程常忽略终止信号）。本次未宣称清理完成，请在活动监视器中处理。"
+            ))
+            return false
+        }
         publish(AgentTaskEvent(
             agentId: agentId,
             agentName: name,
-            // 终止成功是「已完成」而非「需关注」：用 attention 会让收起态细条误报红色告警
+            // 确认退出才是「已完成」；此时才用完成态措辞（attention 会让细条误报红色告警）
             eventType: .completed,
             duration: 0,
             timestamp: Date(),
             pid: pid,
             message: "\(name) 进程已终止",
-            detail: "已向 PID \(pid) 及其关联子进程发送 SIGTERM/SIGKILL 终止信号，系统资源已释放。"
+            detail: "PID \(pid) 及其关联子进程已确认退出（kill(0) 探活 + 可执行路径复核通过）。"
         ))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.sampleInBackground()
-        }
         return true
     }
 

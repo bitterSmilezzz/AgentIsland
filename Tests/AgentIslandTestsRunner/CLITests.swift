@@ -288,7 +288,10 @@ enum CLITests {
             let back = try JSONDecoder().decode([CLIAgentStatusDTO].self, from: data)
             try expectEqual(back.first?.observability, "blindSessionSource", "状态 DTO 往返不得丢结论")
             try expectEqual(back.first?.observabilityEvidence.isEmpty, false, "状态 DTO 也要带上依据")
-            try expectTrue((back.first?.healthScore ?? -1) >= 0, "状态 DTO 应携带稳定性评分")
+            // 评分被钳在 0...100，`>= 0` 是恒真式：要钉的是「往返没丢这个字段」
+            try expectEqual(back.first?.healthScore,
+                            AgentHealthEvaluator.evaluate(snapshot: snapshot).score,
+                            "状态 DTO 往返必须原样带上稳定性评分（评分被钳在 0...100，\n                            `>= 0` 那种断言恒真）")
 
             let csv = AuditReportExporter.generateCSV(snapshots: [snapshot])
             let header = csv.split(separator: "\n").first.map(String.init) ?? ""

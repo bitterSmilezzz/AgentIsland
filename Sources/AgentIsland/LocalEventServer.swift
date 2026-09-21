@@ -10,8 +10,9 @@ import AgentIslandCore
 // 安全边界（v0.0.93 收紧）：`/notify` 没有鉴权——任何能连上它的进程都能往岛上写
 // 「任务完成 / 需要你确认」。此前注释写着「仅绑定 127.0.0.1」，但 `NWParameters.tcp`
 // 不设 `requiredLocalEndpoint` 实际监听的是 `*:41999`（lsof 实测 IPv6 双栈通配），
-// 也就是同一局域网内任意主机都能伪造事件。现在两处都堵：能绑回环就只绑回环，
-// 并在 accept 后按本地端点复核（macOS 13 上 requiredLocalEndpoint 不可用时的兜底）。
+// 也就是同一局域网内任意主机都能伪造事件。现在能绑回环就只绑回环（macOS 14+ 的
+// requiredLocalEndpoint）；绑不了的那条路（macOS 13）**没有**第二道复核，端口仍是局域网
+// 可达，只 NSLog 一条警告——见 start/handleConnection，别把这里当成已经双向兜住了。
 
 public final class LocalEventServer: @unchecked Sendable {
     public static let defaultPort: UInt16 = 41999

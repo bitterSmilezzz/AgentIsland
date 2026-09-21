@@ -256,7 +256,7 @@ extension String {
     var escaped: String { replacingOccurrences(of: "'", with: "''") }
 }
 
-// MARK: - dim 净消耗 SQL 片段（唯一事实来源，汇总/模型/会话三处共用）
+// MARK: - dim 净消耗 SQL 片段（模型/会话两处共用；汇总与时间线各另写一份同式表达式）
 //
 // usage_ledger.usage.promptTokens 含缓存命中部分（cacheReadTokens），直接相加会
 // 把缓存重复计入，累计用量被大幅虚高（数十倍量级）。净消耗 =
@@ -950,7 +950,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     private func queryOpenCode(cutoffMs: Int64) -> TokenUsage? {
         // 与 dim 同构：单趟出两个口径。role 过滤后逐行 json_extract(data) 三次，
         // 两条查询等于把这些 JSON 解两遍。实测（本机 opencode.db 缺失，故用与
-        // TokenFixture 同 schema 的夹具库对拍：数值逐项一致，见「SQLite 单趟汇总」用例）。
+        // TokenFixture 同 schema 的夹具库对拍：数值逐项一致，见用例
+        // 「Token汇总: dim 的 24h 与累计合并成单趟后必须逐列等于原两趟」）。
         // cutoffMs 是饱和后的 Int64 字面量（无注入面），24h 条件用 CASE 复用同一次扫描。
         // 净 token 沿用原口径：input+output+reasoning 三项直加（cache.read 不参与）。
         let sql = """

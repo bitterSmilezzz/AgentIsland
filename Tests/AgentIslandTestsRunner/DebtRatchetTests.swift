@@ -25,10 +25,7 @@ enum DebtRatchetTests {
     @MainActor
     static func register() {
         TestKit.test("债务棘轮: 硬编码色值与 UserDefaults 直读点不得增长") {
-            guard let sources = repoSourcesDirectory() else {
-                return   // 非源码树环境（打包产物里跑测试）不做强断言
-            }
-            let files = swiftFiles(in: sources)
+            let files = try SourceTree.requireSwiftFiles()
             var colors = 0
             var defaults = 0
             for url in files {
@@ -58,10 +55,10 @@ enum DebtRatchetTests {
             // 「触控板微触觉反馈」这个开关此前只管 8 个调用点里的 2 个：其余 6 处直接
             // 调 NSHapticFeedbackManager，关掉后展开/收起/停靠/Esc/工具箱照样震。
             // 症状是「设置不生效」，而代码里两处都写着「（如果开启）」——谁都没错到看得见。
-            guard let sources = repoSourcesDirectory() else { return }
+            let files = try SourceTree.requireSwiftFiles()
             var direct = 0
-            var offenders: [String] = []
-            for url in swiftFiles(in: sources) {
+            var holders: [URL] = []
+            for url in files {
                 guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
                 // 注释里提这个 API 是合法的（解释为什么不能直调），只数真正的调用
                 let calls = text.components(separatedBy: "\n").filter { line in
@@ -71,19 +68,25 @@ enum DebtRatchetTests {
                     return true
                 }
                 direct += calls.count
-                if !calls.isEmpty { offenders.append(url.lastPathComponent) }
+                if !calls.isEmpty { holders.append(url) }
             }
             try expectEqual(direct, 1, "NSHapticFeedbackManager 直调点应为 1（HapticFeedback.perform），"
-                                    + "实际 \(direct)：\(offenders)")
+                                    + "实际 \(direct)：\(holders.map(\.lastPathComponent))")
             // 光数出口数量不够：把开关那一行删掉，出口仍然只有 1 个，而设置又不管事了。
             // 唯一的出口必须**查**这个键——所以要读进 perform 的函数体确认 guard 还在。
-            guard let holder = offenders.first,
-                  let text = try? String(contentsOf: URL(
-                    fileURLWithPath: "Sources/AgentIsland/" + holder), encoding: .utf8) else {
-                return
+            // 路径也从 SourceTree 取：上一版这里用 "Sources/AgentIsland/" + 文件名的**相对**
+            // 路径，cwd 不是仓库根时读不到文件、直接 return，把真正的断言整段跳过。
+            guard let holder = holders.first else {
+                throw TestError(message: "数到了直调点却没记下文件，计数逻辑有洞")
+            }
+            let text = try SourceTree.text(
+                relativePath: "Sources/" + holder.deletingLastPathComponent()
+                    .lastPathComponent + "/" + holder.lastPathComponent)
+            guard text.contains("static func perform(") else {
+                throw TestError(message: "\(holder.lastPathComponent) 里找不到 HapticFeedback.perform 的函数头")
             }
             guard let start = text.range(of: "static func perform(") else {
-                throw TestError(message: "找不到 HapticFeedback.perform 的函数头")
+                throw TestError(message: "函数头检查与上面的 contains 自相矛盾")
             }
             // 从函数头起做括号配平，取出整个 perform 的函数体
             var depth = 0
@@ -102,8 +105,7 @@ enum DebtRatchetTests {
         }
 
         TestKit.test("语义色单点: Ramp 基色与 ActivityLevel 浅色色阶各只定义一处") {
-            guard let sources = repoSourcesDirectory() else { return }
-            let files = swiftFiles(in: sources)
+            let files = try SourceTree.requireSwiftFiles()
             guard let theme = files.first(where: { $0.lastPathComponent == "Theme.swift" }),
                   let themeText = try? String(contentsOf: theme, encoding: .utf8) else {
                 return
@@ -159,9 +161,8 @@ enum DebtRatchetTests {
             // 于是「每 5 秒刷新」在界面持续变化时（用户在输入框里逐字改地址就是这种）
             // 永远走不满 5 秒——看着实时，其实冻在上一次空闲刷新上。
             // publisher 必须是只构造一次的存储属性（static let / 实例常量）。
-            guard let sources = repoSourcesDirectory() else { return }
             var offenders: [String] = []
-            for url in swiftFiles(in: sources.appendingPathComponent("AgentIsland")) {
+            for url in try SourceTree.requireSwiftFiles(under: "AgentIsland", atLeast: 10) {
                 guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
                 // 去掉全部空白再匹配：跨行写的就地构造（onReceive( 换行 Timer.publish…）也算
                 let dense = text.components(separatedBy: .whitespacesAndNewlines).joined()
@@ -190,6 +191,7 @@ enum DebtRatchetTests {
     }
 
     /// 从测试源文件位置回溯到仓库的 Sources 目录（与「版本单一来源」测试同一手法）
+    @available(*, deprecated, message: "改用 SourceTree.requireSwiftFiles()：扫不到源码树必须失败，不能静默跳过")
     private static func repoSourcesDirectory() -> URL? {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // Tests/AgentIslandTestsRunner

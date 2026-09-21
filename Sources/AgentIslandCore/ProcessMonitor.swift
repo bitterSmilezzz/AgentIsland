@@ -16,7 +16,7 @@ public struct ProcessSnapshot: Sendable {
         public let ppid: Int32        // 父进程 PID
         /// `path` 的小写形式（构造时预计算）。
         /// 匹配器要对每个 profile 遍历整张进程表，若每次现算 `lowercased()`，
-        /// 19 个 profile × 全表会白白烧掉约 1.5ms/拍（实测）。构造期算一次即可。
+        /// 二十多个 profile × 全表会白白烧掉约 1.5ms/拍（实测）。构造期算一次即可。
         public let pathLower: String
 
         public init(pid: Int32, path: String, basename: String, cpuPercent: Double, rssBytes: UInt64 = 0, ppid: Int32 = 0, pathLower: String? = nil) {
@@ -548,6 +548,11 @@ public enum ProcessTerminator {
     public static func isAlive(pid: Int32, expectedPath: String? = nil) -> Bool {
         guard pid > 1 else { return false }
         guard kill(pid, 0) == 0 else { return false }
+        // 僵尸不算存活：进程已经退出、只是父进程还没 wait 回收，此时 `kill(pid,0)` 照样
+        // 返回 0。把它算成「收到终止信号后仍在运行」是把复核做成了假警报——僵尸既不占
+        // CPU 也不占内存，而用户看到的是一句杀不掉。
+        // （实测入口：终止一个由测试进程派生、尚未回收的 sleep，探活会一直返回 true。）
+        if isZombie(pid) { return false }
         guard let expectedPath, !expectedPath.isEmpty else { return true }
         guard let current = currentExecutablePath(of: pid) else {
             // 探到活但取不到路径（权限/正在退出）：保守当作存活，宁可报失败不可谎报成功
@@ -556,6 +561,19 @@ public enum ProcessTerminator {
         let want = (expectedPath as NSString).lastPathComponent.lowercased()
         let got = (current as NSString).lastPathComponent.lowercased()
         return want == got
+    }
+
+    /// 是否已经是僵尸（`p_stat == SZOMB`）。实测口径：僵尸上 `proc_pidinfo(PROC_PIDTBSDINFO)`
+    /// 直接返回 0（拿不到结构体），所以只能走 `sysctl(KERN_PROC, KERN_PROC_PID)`——它对僵尸
+    /// 照样返回条目，`p_stat` 为 5；活进程为 2（SRUN）。取不到信息时按「不是僵尸」处理：
+    /// `kill(pid,0)` 已经判过存活，这里不该再引入第二次误判。
+    static func isZombie(_ pid: Int32) -> Bool {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return false }
+        // SZOMB = 5（<sys/proc_info.h>）；Swift 侧没导出该宏
+        return Int32(info.kp_proc.p_stat) == 5
     }
 
     /// 终止指定 PID 进程（包括其派生的子进程树），先尝试 GUI terminate / SIGTERM，超时未退出则强制 SIGKILL

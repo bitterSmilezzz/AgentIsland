@@ -189,7 +189,7 @@ public struct CLIAgentDoctorDTO: Codable, Sendable {
     public let installed: Bool
     public let activeSessions: Int
     public let healthScore: Int
-    /// observed / blindSessionSource / noLocalData / notInstalled
+    /// observed / blindSessionSource / noLocalData / sourceNotWired / notInstalled
     public let observability: String
     public let evidence: [String]
 

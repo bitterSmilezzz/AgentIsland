@@ -637,9 +637,71 @@ enum EngineTests {
             _ = engine.sample(now: Date())
             let ok = engine.terminateAgent(pid: sleeper.processIdentifier, agentId: "dim")
             try expectTrue(ok, "身份复核通过的 pid 应成功终止")
+            // 信号刚发出时**不许**已经有结论：那一刻我们只知道「发了信号」，
+            // 忽略 SIGTERM 的进程还在跑，而异常列表变空不算复核（清理顺手清掉了证据）
+            try expectTrue(engine.latestEvent?.message?.contains("已终止") != true,
+                           "复核之前不得宣布已终止")
+
+            // 同步驱动复核（真实路径由 0.8s 定时器排程）。先回收子进程：SIGTERM 已发出，
+            // 但 Foundation 不 wait 的话它会停在僵尸态——正是下面那条用例要单独钉的形态。
+            sleeper.waitUntilExit()
+            let verified = engine.verifyTermination(agentId: "dim", pid: sleeper.processIdentifier,
+                                                    path: "/opt/fake/bin/sleep")
+            try expectTrue(verified, "sleep 进程被 SIGKILL 兜底带走，探活应判定已退出")
             try expectEqual(engine.latestEvent?.eventType, .completed,
-                            "终止成功应为 completed（非 attention）")
+                            "确认退出应为 completed（非 attention）")
             try expectTrue(engine.latestEvent?.message?.contains("进程已终止") == true, "应提示已终止")
+            try expectTrue(engine.latestEvent?.detail?.contains("探活") == true,
+                           "文案要说清结论来自复核，不是来自信号发送")
+        }
+
+        TestKit.test("引擎: 复核发现进程仍在时，不得宣称清理完成") {
+            // 「收到 SIGTERM 又杀不掉」这一支用真进程造不出来（SIGKILL 兜底一定带走），
+            // 所以复核探针是注入点。
+            let sleeper = Process()
+            sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+            sleeper.arguments = ["30"]
+            try sleeper.run()
+            defer { if sleeper.isRunning { sleeper.terminate() } }
+            let provider = FakeProcessProvider(
+                processNames: [], bundleIDs: [],
+                entries: [ProcessSnapshot.Entry(pid: sleeper.processIdentifier,
+                                                path: "/opt/fake/bin/sleep", basename: "dimagent",
+                                                cpuPercent: 0, rssBytes: 0)])
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:], processMonitor: provider)
+            _ = engine.sample(now: Date())
+            try expectTrue(engine.terminateAgent(pid: sleeper.processIdentifier, agentId: "dim"),
+                           "前置：终止应通过身份复核")
+            engine.terminationProbe = { _, _ in true }   // 假装探活仍存活（死锁进程）
+            let verified = engine.verifyTermination(agentId: "dim", pid: sleeper.processIdentifier,
+                                                    path: "/opt/fake/bin/sleep")
+            try expectFalse(verified, "仍在运行必须返回 false")
+            try expectEqual(engine.latestEvent?.eventType, .attention,
+                            "杀不掉是要人接管的事，不是完成")
+            try expectTrue(engine.latestEvent?.message?.contains("仍在运行") == true,
+                           "文案要直说仍在运行，实际：\(engine.latestEvent?.message ?? "nil")")
+            try expectTrue(engine.latestEvent?.detail?.contains("未宣称清理完成") == true,
+                           "要明确这次没有宣告成功")
+        }
+
+        TestKit.test("进程探活: 僵尸不算存活（kill(0) 对它照样返回 0）") {
+            // 复核要是把僵尸算成「杀不掉」，用户会收到一句永远不消失的假警报：
+            // 进程早已退出，只是父进程还没 wait 回收，既不占 CPU 也不占内存。
+            var pid: pid_t = 0
+            var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/usr/bin/true"), nil]
+            var envp: [UnsafeMutablePointer<CChar>?] = [nil]
+            try expectEqual(posix_spawn(&pid, "/usr/bin/true", nil, nil, &argv, &envp), 0,
+                            "要能派生一个真子进程")
+            var status: Int32 = 0
+            defer { waitpid(pid, &status, 0) }        // 收尾回收，不留给测试进程
+            usleep(200_000)                            // /usr/bin/true 早已退出 ⇒ 此刻是僵尸
+            try expectEqual(kill(pid, 0), 0,
+                            "前置：pid 条目还在（kill(0) 成功），否则这条用例什么也没钉")
+            try expectTrue(ProcessTerminator.isZombie(pid), "应当判为僵尸")
+            try expectFalse(ProcessTerminator.isAlive(pid: pid),
+                            "僵尸不得算存活——否则复核会永远报「杀不掉」")
+            try expectFalse(ProcessTerminator.isAlive(pid: pid, expectedPath: "/usr/bin/true"),
+                            "带路径复核时同样不得算存活")
         }
 
         TestKit.test("引擎: terminateAgent 无 pid 时不谎报成功") {

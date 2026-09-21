@@ -115,15 +115,18 @@ enum RegistryTests {
         }
 
         TestKit.test("持久化: 全关（空数组）不被回退为默认") {
-            // 模拟「用户主动全关」：写入空数组后，读取路径应返回空而非默认集
-            let empty: [String] = []
-            if let data = try? JSONEncoder().encode(empty) {
-                UserDefaults.standard.set(data, forKey: SettingKey.enabledAgents)
-                defer { UserDefaults.standard.removeObject(forKey: SettingKey.enabledAgents) }
-                let raw = UserDefaults.standard.data(forKey: SettingKey.enabledAgents)
-                let decoded = raw.flatMap { try? JSONDecoder().decode([String].self, from: $0) }
-                try expectEqual(decoded ?? ["sentinel"], [], "空数组应解码为空集（无记录才算默认）")
-            }
+            // 「用户主动全关」与「从没配过」必须是两个不同的读取结果，否则一关就复活。
+            // 走 store 的读写路径：上一版直接拿 JSONEncoder/Decoder 对拍空数组，那是
+            // 一句恒成立的往返；而且它写的是 **UserDefaults.standard** 并随手 removeObject，
+            // 跑一次测试就把开发机上真实的启停集合清掉了。
+            let suite = TestDefaults.suite("registry-empty-enabled")
+            try expectNil(EnabledAgentStore.load(from: suite), "没写过 = 无记录（由调用方按默认处理）")
+            EnabledAgentStore.save([], to: suite)
+            try expectEqual(EnabledAgentStore.load(from: suite) ?? ["sentinel"], [],
+                            "空集合要能原样读回来，不能被当成「清除记录」")
+            let resolved = EnabledAgentStore.resolvedEnabled(registry: AgentRegistry.builtin,
+                                                             defaults: suite, readOnly: true)
+            try expectTrue(resolved.isEmpty, "全关时求解结果仍为空，不得被 defaultEnabled 复活")
         }
 
         TestKit.test("引擎: bundle 命中但进程名未匹配 → 标记运行且 CPU=0（[pid:-1] 占位）") {
