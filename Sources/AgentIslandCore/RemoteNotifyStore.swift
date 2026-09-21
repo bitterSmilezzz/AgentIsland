@@ -61,8 +61,21 @@ public enum RemoteNotifyStore {
     private static func decode<T: Decodable>(_ type: T.Type, key: String,
                                              defaults: UserDefaults) -> T? {
         guard let data = defaults.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        if let value = try? JSONDecoder().decode(type, from: data) { return value }
+        // 键在、解不开 ⇒ 这不是「用户没配」，是存档坏了。它今天的路径是回落默认值，
+        // 而策略的默认值就是总开关关——于是外发**静默停止**、零日志，设置页还显示成
+        // 「你没配置」。至少要留一笔，并把原字节挪到备份键：用户随手改一次设置
+        // 就不会把最后一点现场冲掉。
+        AppLog.error("远程通知配置 \(key) 解码失败，本项按默认值运行（外发可能因此静默关闭）")
+        let backup = corruptBackupKey(key)
+        if defaults.data(forKey: backup) == nil {
+            defaults.set(data, forKey: backup)
+        }
+        return nil
     }
+
+    /// 坏存档的备份键。测试与手工恢复都按这个名字找。
+    public static func corruptBackupKey(_ key: String) -> String { key + ".corrupt" }
 
     private static func encode<T: Encodable>(_ value: T, key: String, defaults: UserDefaults) {
         guard let data = try? JSONEncoder().encode(value) else { return }

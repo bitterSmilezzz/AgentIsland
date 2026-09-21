@@ -80,6 +80,25 @@ enum DebtPayoffTests {
             try expectFalse(legacy.contains("离线但仍有用量记录"), "没有差额就不该写口径说明")
         }
 
+        TestKit.test("会话下钻: 取满上限时标题必须说「还有更多未列出」") {
+            // 列表页标题写「N 个会话」而查询带 LIMIT：取满 200 时那句「200 个会话」
+            // 把「只看了前 200」讲成「一共 200」。没看到不等于没有。
+            try expectEqual(TokenUsageMonitor.sessionListSubtitle(count: 3), "3 个会话")
+            try expectEqual(TokenUsageMonitor.sessionListSubtitle(count: 199), "199 个会话")
+            let full = TokenUsageMonitor.sessionListSubtitle(
+                count: TokenUsageMonitor.sessionDrilldownLimit)
+            try expectTrue(full.contains("还有更多未列出"), "取满必须承认截断，实际 \(full)")
+            // 标题口径与 SQL 里的 LIMIT 必须同一个数：两处各写一遍迟早漂移
+            guard let text = try? String(
+                contentsOfFile: "Sources/AgentIslandCore/TokenUsageMonitor.swift",
+                encoding: .utf8) else { return }
+            let bare = text.components(separatedBy: "\n").filter {
+                $0.contains("LIMIT 200") && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//")
+            }
+            try expectTrue(bare.isEmpty, "SQL 里的 LIMIT 必须引用 sessionDrilldownLimit，"
+                                       + "还留着字面量 200：\(bare)")
+        }
+
         TestKit.test("算术: SafeNumber.costProduct 把脏 cost 钳在上限而不是放大成 Inf") {
             try expectEqual(SafeNumber.costProduct(2.5, 30), 75.0)
             try expectEqual(SafeNumber.costProduct(1e308, 31), SafeNumber.costCeiling,

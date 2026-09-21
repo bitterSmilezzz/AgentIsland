@@ -80,6 +80,24 @@ final class GatedTransport: RemoteTransport, @unchecked Sendable {
 enum RemoteNotifyTests {
     @MainActor
     static func register() {
+        TestKit.test("坏掉的远程通知存档：留证据并备份原字节，不是静默关掉外发") {
+            // 键在、解不开 ⇒ 今天的路径是回落默认值，而策略默认就是总开关关：
+            // 外发从此静默停止、零日志，设置页还显示成「你没配置」。
+            let suite = TestDefaults.suite("remote-corrupt")
+            let key = RemoteNotifyStore.policyKey
+            suite.set(Data("{ 这不是 JSON".utf8), forKey: key)
+            let policy = RemoteNotifyStore.loadPolicy(defaults: suite)
+            try expectFalse(policy.masterEnabled, "坏存档按默认值（关）运行，保守不外发")
+            let backup = suite.data(forKey: RemoteNotifyStore.corruptBackupKey(key))
+            try expectEqual(backup, Data("{ 这不是 JSON".utf8), "原字节要能被找回来")
+
+            // 再坏一次并读取：备份里仍是最早那份
+            suite.set(Data("{ 第二份坏".utf8), forKey: key)
+            _ = RemoteNotifyStore.loadPolicy(defaults: suite)
+            try expectEqual(suite.data(forKey: RemoteNotifyStore.corruptBackupKey(key)),
+                            Data("{ 这不是 JSON".utf8), "只备份最早那一份现场")
+        }
+
         // MARK: SMTP 协议序列
 
         TestKit.test("SMTP: 465 隐式 TLS 的完整命令序列与点填充") {

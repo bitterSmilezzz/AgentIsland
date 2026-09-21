@@ -771,6 +771,17 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         }
     }
 
+    /// 会话下钻一次最多取多少条。列表页的标题必须按这个数说话：取满了就不能说
+    /// 「N 个会话」——那是把「只看了前 200 条」讲成「一共就 200 条」。
+    public static let sessionDrilldownLimit = 200
+
+    /// 会话列表的标题口径（纯函数，便于测）：取满上限时明说是「最近 N 个，还有更多」
+    public static func sessionListSubtitle(count: Int) -> String {
+        count >= sessionDrilldownLimit
+            ? "最近 \(count) 个会话（还有更多未列出）"
+            : "\(count) 个会话"
+    }
+
     /// 某模型下的会话列表（按最后活动降序）
     public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -784,7 +795,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                        \(DimUsageSQL.netTokens),
                        COALESCE(SUM(cost),0), MAX(createdAt)
                 FROM usage_ledger WHERE modelId = '\(modelId.escaped)'
-                GROUP BY sessionId ORDER BY 5 DESC LIMIT 200
+                GROUP BY sessionId ORDER BY 5 DESC LIMIT \(Self.sessionDrilldownLimit)
                 """
                 rows = rawRows(sql, dbPath: dimAgentDB, cols: 5).map { r in
                     let dir = dirPrefix + "/" + r[0]
@@ -803,7 +814,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                        MAX(m.time_created), s.directory
                 FROM message m LEFT JOIN session s ON s.id = m.session_id
                 WHERE json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.modelID')='\(modelId.escaped)'
-                GROUP BY m.session_id ORDER BY 5 DESC LIMIT 200
+                GROUP BY m.session_id ORDER BY 5 DESC LIMIT \(Self.sessionDrilldownLimit)
                 """
                 rows = rawRows(sql, dbPath: openCodeDB, cols: 6).map { r in
                     // 与 dim 对齐：目录已删除则置 nil（点击不再显示文件夹图标）

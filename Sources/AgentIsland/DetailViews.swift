@@ -802,7 +802,7 @@ struct SessionListView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             DetailHeader(title: modelId,
-                         subtitle: "\(sessions.count) 个会话",
+                         subtitle: TokenUsageMonitor.sessionListSubtitle(count: sessions.count),
                          onBack: { controller.route = .agentDetail(agentId) },
                          controller: controller)
 
