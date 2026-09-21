@@ -320,7 +320,8 @@ public final class RemoteNotifier: @unchecked Sendable {
         }
         // 只有真送达才保留节流占位：claimThrottle 已经预登记，失败必须回滚，
         // 否则一次网络抖动会吞掉后面一整段（默认 90 秒）的通知。
-        // 回滚发生在重试**之后**，所以重试期间同一键的并发事件不会另发一条
+        // 回滚排在重试**之后**：这样占位在整个「初次 + 重试」期间都握着，同一键的并发事件
+        // 挤不进第二条（由测试「重试在途时同类事件不重复发」守住，把回滚提到重试之前即红）
         if !outcome.isDelivered { releaseThrottle(throttleKey, at: now) }
         return (outcome, tries)
     }

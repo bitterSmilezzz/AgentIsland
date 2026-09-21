@@ -35,6 +35,48 @@ final class RecordingTransport: RemoteTransport, @unchecked Sendable {
     }
 }
 
+/// 可门控假传输：每次 `perform` 挂起，直到测试显式放行那一次调用。
+/// 用它才观察得到「重试在途」这个中间态——否则整段发送在一次 await 里就跑完了，
+/// 而「在途时节流占位是否还握着」恰恰只能在中间态里验
+final class GatedTransport: RemoteTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [CheckedContinuation<OutboundOutcome, Never>] = []
+    private var callsCount = 0
+    /// 允许挂起的调用数。超出预算的调用**立刻**返回一个可辨识的结果：
+    /// 否则「多发了一次」这类缺陷会表现成 awaitOnMain 干等 15 秒超时，
+    /// 报错里连「多发了」三个字都没有，指不出排查方向
+    var parkedBudget = 1
+
+    /// 已挂起、尚未放行的次数（即「在途」）
+    var inFlight: Int { lock.lock(); defer { lock.unlock() }; return waiting.count }
+    var calls: Int { lock.lock(); defer { lock.unlock() }; return callsCount }
+
+    func perform(_ request: RenderedRequest) async -> OutboundOutcome {
+        await withCheckedContinuation { (c: CheckedContinuation<OutboundOutcome, Never>) in
+            lock.lock()
+            callsCount += 1
+            let unexpected = callsCount > parkedBudget
+            if !unexpected { waiting.append(c) }
+            lock.unlock()
+            if unexpected { c.resume(returning: .failed(reason: "意外外发（测试未预约）")) }
+        }
+    }
+
+    /// 放行最早的那一次调用
+    func release(_ outcome: OutboundOutcome) {
+        lock.lock(); let c = waiting.isEmpty ? nil : waiting.removeFirst(); lock.unlock()
+        c?.resume(returning: outcome)
+    }
+}
+
+/// 推进主 runloop 直到条件成立（超时即失败，不静默放行）
+@MainActor func pumpUntil(_ what: String, _ timeout: TimeInterval = 5, _ done: () -> Bool) throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !done() {
+        if Date() >= deadline { throw TestError(message: "等待「\(what)」超时（条件从未出现）") }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+    }
+}
 enum RemoteNotifyTests {
     @MainActor
     static func register() {
@@ -1046,6 +1088,51 @@ enum RemoteNotifyTests {
             try expectEqual(notifier.recentAttempts.first?.shortText,
                             "失败：服务端返回 404（对端明确拒绝，重试无用）",
                             "「配置错了」与「链路在抖」必须在界面上分得开")
+        }
+
+        TestKit.test("重试在途时同类事件不重复发：节流占位握到最终结果") {
+            let transport = GatedTransport()
+            transport.parkedBudget = 2      // 初次 + 一次重试；第三次就是「多发」
+            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil },
+                                          retryDelay: 0)
+            var config = RemoteChannelConfig()
+            config.topicOrURL = "topic"
+            let policy = RemoteNotifyPolicy(masterEnabled: true, throttleSeconds: 600)
+            let inputs = RemoteNotifier.Inputs(agentName: "Dim", kind: .completed, seconds: 1)
+            let box = MainCell<OutboundOutcome>()
+            Task { @MainActor in
+                box.value = await notifier.deliver(inputs: inputs, kind: .ntfy, config: config,
+                                                   policy: policy)
+            }
+            try pumpUntil("第一次外发在途") { transport.inFlight == 1 }
+
+            // 第一条还没出结果，第二条同类事件到达：占位必须仍然握着
+            let second = try awaitOnMain {
+                await notifier.deliver(inputs: inputs, kind: .ntfy, config: config, policy: policy)
+            }
+            if case .suppressed(let reason) = second {
+                try expectTrue(reason.contains("节流"), "第二条应被节流挡下，实得 \(reason)")
+            } else {
+                throw TestError(message: "首次发送在途时第二条同类事件不该发出，实得 \(String(describing: second))")
+            }
+            try expectEqual(transport.calls, 1, "被挡下的那条不该碰网络")
+
+            // 第一条失败 → 进入重试。关键就在这一段：占位是在**最终结果**之后才回滚的，
+            // 所以重试在途时同键事件仍然发不出去；若把回滚提到重试之前，这里就会多发一条
+            transport.release(.failed(reason: "服务端返回 503"))
+            try pumpUntil("重试在途") { transport.calls == 2 && transport.inFlight == 1 }
+            let third = try awaitOnMain {
+                await notifier.deliver(inputs: inputs, kind: .ntfy, config: config, policy: policy)
+            }
+            if case .suppressed = third { } else {
+                throw TestError(message: "重试在途时同样不该发出，实得 \(String(describing: third))")
+            }
+            transport.release(.delivered)
+            try pumpUntil("第一条收尾") { box.value != nil }
+            try expectEqual(box.value, .delivered)
+            try expectEqual(transport.calls, 2, "三条事件只对应两次真实请求：初次 + 一次重试")
+            try expectEqual(notifier.recentAttempts.first?.shortText, "已送达（重试 1 次后）",
+                            "最终送达的那条要排在最前，并带注重试")
         }
 
         TestKit.test("结果记账: 最近外发结果有界可查，供设置页显示成败") {
