@@ -241,7 +241,8 @@ enum ConfigTests {
             let readme = try String(contentsOfFile: "README.md", encoding: .utf8)
             let semver = "[0-9]+\\.[0-9]+\\.[0-9]+"
             guard let m1 = changelog.range(of: "## \\[" + semver + "]", options: .regularExpression),
-                  let m2 = readme.range(of: "## 功能（v" + semver + "）", options: .regularExpression) else {
+                  let m2 = readme.range(of: "本文档描述 \\*\\*v" + semver + "\\*\\*",
+                                        options: .regularExpression) else {
                 throw TestError(message: "版本标题格式异常，哨兵无法解析")
             }
             func extractVersion(_ text: String, _ range: Range<String.Index>) -> String {

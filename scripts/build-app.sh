@@ -21,8 +21,10 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
-# 版本一致性校验：README 功能版本必须同步（漂移即拒绝打包，杜绝三处各说各话）
-README_VERSION=$(grep -m1 -oE '## 功能（v[0-9]+\.[0-9]+\.[0-9]+）' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+# 版本一致性校验：README 开头的「本文档描述 vX.Y.Z」必须同步（漂移即拒绝打包）。
+# 校验的是「文档有没有跟着这版更新」，不是版本号写在哪——README 只留这一处版本，
+# 逐版记录归 CHANGELOG（此前 README 也记一遍版本史，结果长出了 5 组重复小节和 0.0.35 的过期下载链接）
+README_VERSION=$(grep -m1 -oE '本文档描述 \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
 if [[ "$README_VERSION" != "$VERSION" ]]; then
     echo "✗ 版本漂移：CHANGELOG=$VERSION 但 README 功能版本=${README_VERSION:-缺失}。先同步 README 再发布。" >&2
     exit 1
