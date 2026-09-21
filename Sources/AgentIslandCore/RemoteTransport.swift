@@ -127,8 +127,8 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate {
 /// 真实 HTTP 传输。超时固定 10s：外发在后台队列跑，绝不能让一次卡住的请求拖住事件管线
 ///
 /// 端口由用户填的 URL 决定，本层不额外限制（只有 SMTP 受 465 约束，见 `SMTPTarget`）。
-/// 非 465 的邮箱地址会走到 STARTTLS 分支，而 `SMTPSocketConnection` 无法原地升级 TLS，
-/// 于是如实回 `.failed(reason: "连不上 …")` ——不是静默丢弃。`missingField` 会在配置层先拦住
+/// 非 465 的邮箱地址在 `SMTPSocketConnection.connect()` 就直接返回 false（没有原地升级 TLS
+/// 这条路），于是如实回 `.failed(reason: "连不上 …")` ——不是静默丢弃。`missingField` 会在配置层先拦住
 public struct HTTPTransport: RemoteTransport {
     public init() {}
 

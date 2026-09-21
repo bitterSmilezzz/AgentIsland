@@ -7,18 +7,18 @@ import Foundation
 // 真实端到端只能靠设置页的「发送测试」在用户机器上验，这里不假装验过。
 
 /// 脚本化 SMTP 服务器：按队列吐出回复，并把客户端写来的每一行记下来。
-/// 只由测试在主线程串行驱动（同 FakeTokenUsageProvider 的做法）
+/// 只由测试在主线程串行驱动（同 FakeTokenUsageProvider 的做法）。
+/// 这里**没有** `upgradeTLS` 之类的东西：协议要求里已经没有原地升级 TLS 这条路
+/// （见 ADR 0005），假 IO 留一个多余实现只会诱使后人把 STARTTLS 分支加回来
 final class FakeSMTPSession: SMTPSessionIO, @unchecked Sendable {
     var script: [String]
     private(set) var written: [String] = []
-    var tlsUpgrades = 0
     var closed = false
 
     init(script: [String]) { self.script = script }
 
     func readLine(timeout: TimeInterval) async -> String? { script.isEmpty ? nil : script.removeFirst() }
     func writeLine(_ text: String) async -> Bool { written.append(text); return true }
-    func upgradeTLS() async -> Bool { tlsUpgrades += 1; return true }
     func close() { closed = true }
 }
 
