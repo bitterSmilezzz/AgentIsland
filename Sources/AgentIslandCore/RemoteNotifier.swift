@@ -8,17 +8,24 @@ public struct OutboundAttempt: Equatable, Hashable, Sendable {
     public let at: Date
     public let title: String
     public let outcome: OutboundOutcome
-    public init(at: Date, title: String, outcome: OutboundOutcome) {
-        self.at = at; self.title = title; self.outcome = outcome
+    /// 真的往网络上试了几次（1 = 一次就出结果）。重试必须留痕：
+    /// 「重试后送达」和「一次就送达」是不同的通道健康度，用户看得见才不会误判
+    public let tries: Int
+    public init(at: Date, title: String, outcome: OutboundOutcome, tries: Int = 1) {
+        self.at = at; self.title = title; self.outcome = outcome; self.tries = tries
     }
 
     public var shortText: String {
+        let base: String
         switch outcome {
-        case .delivered: return "已送达"
-        case .suppressed(let reason): return "未发：\(reason)"
-        case .notConfigured(let reason): return "未配置：\(reason)"
-        case .failed(let reason): return "失败：\(reason)"
+        case .delivered: base = "已送达"
+        case .suppressed(let reason): base = "未发：\(reason)"
+        case .notConfigured(let reason): base = "未配置：\(reason)"
+        case .failed(let reason): base = "失败：\(reason)"
         }
+        guard tries > 1 else { return base }
+        return outcome.isDelivered ? "\(base)（重试 \(tries - 1) 次后）"
+                                   : "\(base)；重试 \(tries - 1) 次仍未送达"
     }}
 
 /// 渲染出来的消息（不含密钥），供「发送预览」原样展示
@@ -67,11 +74,15 @@ public final class RemoteNotifier: @unchecked Sendable {
     private let transport: RemoteTransport
     /// 密钥解析（生产 = 钥匙串；测试 = 查表）
     private let secretReader: (String) -> String?
+    /// 自动外发失败后的重试间隔。见 `retryTries`：一次抖动不该让唯一能叫醒用户的信号丢掉
+    private let retryDelay: TimeInterval
 
     public init(transport: RemoteTransport = HTTPTransport(),
-                secretReader: @escaping (String) -> String? = { RemoteSecret.read($0) }) {
+                secretReader: @escaping (String) -> String? = { RemoteSecret.read($0) },
+                retryDelay: TimeInterval = 5) {
         self.transport = transport
         self.secretReader = secretReader
+        self.retryDelay = retryDelay
     }
 
     /// 纯函数：策略 + 配置 → 要发的内容。拆出来是因为它能被完整测试（不碰网络、不读钥匙串）
@@ -246,54 +257,72 @@ public final class RemoteNotifier: @unchecked Sendable {
     private func send(inputs: Inputs, kind: RemoteChannelKind, config: RemoteChannelConfig,
                       policy: RemoteNotifyPolicy, now: Date, bypassPolicy: Bool,
                       presence: PresenceSignals) async -> OutboundOutcome {
-        let outcome = await attempt(inputs: inputs, kind: kind, config: config, policy: policy,
-                                    now: now, bypassPolicy: bypassPolicy, presence: presence)
+        let sent = await attempt(inputs: inputs, kind: kind, config: config, policy: policy,
+                                 now: now, bypassPolicy: bypassPolicy, presence: presence)
         record(OutboundAttempt(at: now, title: Self.render(inputs: inputs, config: config, kind: kind).title,
-                               outcome: outcome))
-        return outcome
+                               outcome: sent.outcome, tries: sent.tries))
+        return sent.outcome
     }
 
+    /// 返回结果与「真的往网络上试了几次」——重试次数要进历史，不然设置页看不出
+    /// 这条通道其实在反复抖
     private func attempt(inputs: Inputs, kind: RemoteChannelKind, config: RemoteChannelConfig,
                          policy: RemoteNotifyPolicy, now: Date, bypassPolicy: Bool,
-                         presence: PresenceSignals) async -> OutboundOutcome {
+                         presence: PresenceSignals) async -> (outcome: OutboundOutcome, tries: Int) {
         let normalized = policy.normalized()
         // 总开关连「发送测试」一起挡：它是这个功能的隐私闸门，若按一次测试就能出本机，
         // 开关本身就不可信。也正因为排在前面，关掉时不会去碰钥匙串
-        guard normalized.masterEnabled else { return .suppressed(reason: "总开关未开") }
+        guard normalized.masterEnabled else { return (.suppressed(reason: "总开关未开"), 1) }
         let secret = secretReader(kind.defaultSecretName) ?? ""
         let hasSecret = !secret.isEmpty
         // 事件类型开关排在绕过范围之外：关掉「等待你确认」的人不该被测试按钮代发一条
-        guard normalized.allows(inputs.kind) else { return .suppressed(reason: "该类事件已关闭") }
+        guard normalized.allows(inputs.kind) else { return (.suppressed(reason: "该类事件已关闭"), 1) }
         if !bypassPolicy {
             // 绕过只覆盖「什么时候打扰用户」这三条里的后两条（节流/静默/在场）
-            if normalized.inQuietHours(now) { return .suppressed(reason: "静默时段") }
+            if normalized.inQuietHours(now) { return (.suppressed(reason: "静默时段"), 1) }
             // 与静默时段同级：都挡在配置检查之前，否则坐在机器前时会看到「缺主题」
             // 这种根本没走到的提示
             if normalized.onlyWhenAway, !normalized.isAway(presence) {
-                return .suppressed(reason: "有人在机器前（\(normalized.presentReason(presence))）")
+                return (.suppressed(reason: "有人在机器前（\(normalized.presentReason(presence))）"), 1)
             }
         }
         // 配置检查放在节流之前：配置坏了是每次都发不出去，
         // 若先判节流，用户会看到「节流命中」而实际是根本没配好
         if let missing = kind.missingField(config: config, hasSecret: hasSecret) {
-            return .notConfigured(reason: missing)
+            return (.notConfigured(reason: missing), 1)
         }
         let throttleKey = "\(inputs.agentId)|\(inputs.kind.rawValue)"
         // 检查与登记必须在一个锁里完成：分两次取锁时，同一键的两个并发尝试会双双通过
         // 检查、各发一条，节流窗口形同两个窗口宽
         if !bypassPolicy, !claimThrottle(throttleKey, at: now,
                                          window: normalized.throttleSeconds) {
-            return .suppressed(reason: "节流命中")
+            return (.suppressed(reason: "节流命中"), 1)
         }
 
         let message = Self.render(inputs: inputs, config: config, kind: kind)
         let request = Self.renderRequest(message: message, kind: kind, config: config,
                                         secret: hasSecret ? secret : nil, masked: false)
-        let outcome = await transport.perform(request)
+        var outcome = await transport.perform(request)
+        var tries = 1
+        // 自动外发重试一次：这个功能存在的意义就是「人不在机器前也要收到」，而一次网络抖动
+        // 就把那条唯一的提醒永久丢掉。「发送测试」不重试——用户盯着界面等，立刻拿到如实结果更有用
+        if !bypassPolicy, case .failed = outcome, await waitBeforeRetry() {
+            tries += 1
+            outcome = await transport.perform(request)
+        }
         // 只有真送达才保留节流占位：claimThrottle 已经预登记，失败必须回滚，
-        // 否则一次网络抖动会吞掉后面一整段（默认 90 秒）的通知
+        // 否则一次网络抖动会吞掉后面一整段（默认 90 秒）的通知。
+        // 回滚发生在重试**之后**，所以重试期间同一键的并发事件不会另发一条
         if !outcome.isDelivered { releaseThrottle(throttleKey, at: now) }
-        return outcome
+        return (outcome, tries)
+    }
+
+    /// 等一个重试间隔；返回 false 表示这次外发已被取消（进程要退出），不必再试
+    private func waitBeforeRetry() async -> Bool {
+        guard retryDelay > 0 else { return true }
+        do { try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000)) }
+        catch { return false }
+        return true
     }
 
     /// 原子地「查节流 + 预登记」。返回 false 表示落在窗口内，本次不该发

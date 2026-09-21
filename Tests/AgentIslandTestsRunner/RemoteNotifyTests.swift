@@ -26,8 +26,11 @@ final class FakeSMTPSession: SMTPSessionIO, @unchecked Sendable {
 final class RecordingTransport: RemoteTransport, @unchecked Sendable {
     private(set) var requests: [RenderedRequest] = []
     var result: OutboundOutcome = .delivered
+    /// 按次给结果（非空时优先于 `result`）——重试路径必须能编排「第一次失败、第二次成功」
+    var results: [OutboundOutcome] = []
     func perform(_ request: RenderedRequest) async -> OutboundOutcome {
         requests.append(request)
+        if !results.isEmpty { return results.removeFirst() }
         return result
     }
 }
@@ -302,7 +305,9 @@ enum RemoteNotifyTests {
 
         TestKit.test("策略: 节流只挡同类事件，失败不占用节流窗口") {
             let transport = RecordingTransport()
-            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil })
+            // retryDelay 0：这条测试要验的是失败后的节流行为，不是重试等待（生产是 5 秒）
+            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil },
+                                          retryDelay: 0)
             var config = RemoteChannelConfig()
             config.topicOrURL = "topic"
             let policy = RemoteNotifyPolicy(masterEnabled: true, throttleSeconds: 600)
@@ -921,19 +926,103 @@ enum RemoteNotifyTests {
             try expectEqual(portFixed.smtpHost, "h", "其余字段要保住")
         }
 
+        // MARK: 重试（人不在机器前时，一次抖动 = 那条提醒永久丢失）
+
+        TestKit.test("重试: 第一次失败后自动再试一次，并如实标注重试后送达") {
+            let transport = RecordingTransport()
+            transport.results = [.failed(reason: "服务端返回 502"), .delivered]
+            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil },
+                                          retryDelay: 0)
+            var config = RemoteChannelConfig()
+            config.topicOrURL = "topic"
+            let out = try awaitOnMain {
+                await notifier.deliver(inputs: .init(agentName: "Dim", kind: .attention, seconds: 1),
+                                       kind: .ntfy, config: config,
+                                       policy: RemoteNotifyPolicy(masterEnabled: true))
+            }
+            try expectEqual(out, .delivered)
+            try expectEqual(transport.requests.count, 2, "失败后必须再试一次")
+            try expectEqual(notifier.recentAttempts.count, 1, "一次外发只记一条，重试不是新事件")
+            try expectEqual(notifier.recentAttempts.first?.shortText, "已送达（重试 1 次后）",
+                            "重试后送达要与一次就送达分得开——通道在抖是用户该知道的")
+            // 重试带的是同一个请求：不该重新渲染（正文里的时间措辞、密钥替换都应一致）
+            try expectEqual(transport.requests[0], transport.requests[1], "重试必须重放同一请求")
+        }
+
+        TestKit.test("重试: 两次都失败要如实报，且立刻让出节流窗口好让下一条能马上再试") {
+            let transport = RecordingTransport()
+            transport.results = [.failed(reason: "服务端返回 502"), .failed(reason: "服务端返回 502")]
+            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil },
+                                          retryDelay: 0)
+            var config = RemoteChannelConfig()
+            config.topicOrURL = "topic"
+            let policy = RemoteNotifyPolicy(masterEnabled: true, throttleSeconds: 600)
+            let inputs = RemoteNotifier.Inputs(agentName: "Dim", kind: .attention, seconds: 1)
+            let out = try awaitOnMain {
+                await notifier.deliver(inputs: inputs, kind: .ntfy, config: config, policy: policy)
+            }
+            try expectEqual(out, .failed(reason: "服务端返回 502"))
+            try expectEqual(notifier.recentAttempts.first?.shortText,
+                            "失败：服务端返回 502；重试 1 次仍未送达")
+            // 节流占位必须在重试之后才回滚：还堵着的话，用户离开机器前的这 600 秒里
+            // 这个 Agent 再完成一次也发不出去
+            transport.results = [.delivered]
+            let again = try awaitOnMain {
+                await notifier.deliver(inputs: inputs, kind: .ntfy, config: config, policy: policy)
+            }
+            try expectEqual(again, .delivered, "失败后同键必须能立刻重试，不被节流窗口挡住")
+            try expectEqual(transport.requests.count, 3)
+        }
+
+        TestKit.test("重试边界: 被策略挡下与未配置不重试，「发送测试」失败也只试一次") {
+            let transport = RecordingTransport()
+            transport.result = .failed(reason: "服务端返回 502")
+            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil },
+                                          retryDelay: 0)
+            let inputs = RemoteNotifier.Inputs(agentName: "Dim", kind: .completed, seconds: 1)
+            // 未配置：根本没走到 transport，谈不上重试
+            let broken = RemoteChannelConfig()
+            _ = try awaitOnMain {
+                await notifier.deliver(inputs: inputs, kind: .ntfy, config: broken,
+                                       policy: RemoteNotifyPolicy(masterEnabled: true))
+            }
+            try expectTrue(transport.requests.isEmpty, "未配置不该碰网络")
+            // 被开关挡下：同理
+            _ = try awaitOnMain {
+                await notifier.deliver(inputs: inputs, kind: .ntfy, config: RemoteChannelConfig(),
+                                       policy: RemoteNotifyPolicy(masterEnabled: false))
+            }
+            try expectTrue(transport.requests.isEmpty, "总开关关着时连一次都不该发")
+            // 「发送测试」是用户盯着界面等答案的：立刻如实，而不是多耗一轮重试
+            var ok = RemoteChannelConfig()
+            ok.topicOrURL = "topic"
+            let tested = try awaitOnMain {
+                await notifier.testDeliver(kind: .ntfy, config: ok,
+                                           policy: RemoteNotifyPolicy(masterEnabled: true))
+            }
+            try expectEqual(tested, .failed(reason: "服务端返回 502"))
+            try expectEqual(transport.requests.count, 1, "测试按钮不该触发重试")
+            try expectEqual(notifier.recentAttempts.first?.shortText, "失败：服务端返回 502",
+                            "没重试就不该标注重试次数")
+        }
+
         TestKit.test("结果记账: 最近外发结果有界可查，供设置页显示成败") {
             let transport = RecordingTransport()
             transport.result = .failed(reason: "服务端返回 429")
             var config = RemoteChannelConfig()
             config.topicOrURL = "t"
-            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil })
+            // retryDelay 0：这条要跑 41 次投递验历史上界，真等重试间隔会拖到几分钟
+            let notifier = RemoteNotifier(transport: transport, secretReader: { _ in nil },
+                                          retryDelay: 0)
             _ = try awaitOnMain {
                 await notifier.deliver(inputs: .init(agentName: "Dim", kind: .completed, seconds: 1),
                                    kind: .ntfy, config: config,
                                    policy: RemoteNotifyPolicy(masterEnabled: true))
             }
             try expectEqual(notifier.recentAttempts.count, 1)
-            try expectEqual(notifier.recentAttempts.first?.shortText, "失败：服务端返回 429")
+            try expectEqual(notifier.recentAttempts.first?.shortText,
+                            "失败：服务端返回 429；重试 1 次仍未送达",
+                            "重试过就要在记账里看得见，否则设置页显示的是「一次都没试明白」")
             try expectEqual(notifier.recentAttempts.first?.title, "Dim · 任务完成")
 
             for i in 0..<40 {
