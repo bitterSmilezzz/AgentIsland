@@ -55,7 +55,7 @@ struct TokenAnalyticsView: View {
 
     @ViewBuilder
     private var budgetProgressCard: some View {
-        let budget = UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
+        let budget = DailyBudget.read()
         if budget > 0 {
             let used = engine.grandTotal.tokens24h
             let ratio = min(1.0, Double(used) / Double(budget))
@@ -125,7 +125,7 @@ struct TokenAnalyticsView: View {
 
     @ViewBuilder
     private var forecastCard: some View {
-        let budget = UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
+        let budget = DailyBudget.read()
         let report = TokenForecastEvaluator.evaluate(
             tokens24h: engine.grandTotal.tokens24h,
             cost24h: engine.grandTotal.cost24h,

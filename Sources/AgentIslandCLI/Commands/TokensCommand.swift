@@ -11,31 +11,22 @@ public enum TokensCommand {
         while i < args.count {
             let arg = args[i]
             if (arg == "--budget" || arg == "-b") && i + 1 < args.count {
-                let text = args[i + 1].lowercased().trimmingCharacters(in: .whitespaces)
-                let multiplier: Double
-                let digits: String
-                if text.hasSuffix("m") {
-                    multiplier = 1_000_000; digits = String(text.dropLast())
-                } else if text.hasSuffix("k") {
-                    multiplier = 1_000; digits = String(text.dropLast())
-                } else {
-                    multiplier = 1; digits = text
-                }
-                // 必须走饱和/可失败路径：`Int(1e308)` 与 `Int(Double.nan)` 是运行时 trap，
-                // 实测 `tokens --budget 1e308m` 以 SIGTRAP(133) 退出且不留任何诊断
-                guard let parsed = Double(digits), parsed.isFinite, parsed >= 0,
-                      parsed * multiplier <= Double(Int.max) else {
+                // 解析与钳制都在 Core 的 DailyBudget 里（那里有测试）：
+                // 这段逻辑原先写在这里，实测 `--budget 9000000000000000000` 能通过
+                // 「<= Double(Int.max)」这道检查，再往下 `dailyBudget * 当月天数`
+                // 就 SIGTRAP 退出且零输出——CLI 参数面不该有能让进程崩掉的路径
+                guard let budget = DailyBudget.parseArgument(args[i + 1]) else {
                     CLIExit.fail("无效的预算值: \(args[i + 1])（需要非负数字，可带 k/m 后缀）",
                                  code: CLIExit.badUsage)
                 }
-                explicitBudget = Int(parsed * multiplier)
+                explicitBudget = budget
                 i += 2
                 continue
             }
             i += 1
         }
 
-        let dailyBudget = explicitBudget ?? UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
+        let dailyBudget = explicitBudget ?? DailyBudget.read()
 
         let monitor = TokenUsageMonitor()
         monitor.refresh()

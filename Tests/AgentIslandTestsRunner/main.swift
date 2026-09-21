@@ -25,6 +25,7 @@ func runAllTests() -> Int32 {
     BlindSpotTests.register()
     QoderTrackingTests.register()
     RemoteNotifyTests.register()
+    DebtPayoffTests.register()
     CleanerTests.register()
     VisibilityTests.register()
     ConfigTests.register()

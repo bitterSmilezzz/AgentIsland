@@ -311,12 +311,37 @@ public struct ProcessMatcher: @unchecked Sendable {
             || y.hasPrefix(x + " ") || y.hasPrefix(x + "-")
     }
 
-    /// 路径子串匹配（Electron 应用主进程都叫 "Electron"，靠应用路径区分）
-    /// profile 配 pathContains "trae"，则 /Applications/TRAE SOLO CN.app/.../Electron 命中
-    /// - Parameter pathLower: 已小写的路径（用 `Entry.pathLower`，避免每 profile 重算）
+    /// 路径约束匹配（Electron 应用主进程都叫 "Electron"，靠应用路径区分）
+    ///
+    /// 裸子串匹配会把**用户自己的程序**认成 Agent：profile 配 `trae` 时，
+    /// 用户在 `~/code/trae-sandbox/` 里跑的 `npx electron .` 路径含 "trae" →
+    /// 命中 TRAE 档案 → 出现在列表里并可被一键终止。这不是理论风险，
+    /// 是 v0.0.97 复核记在案的已知缺陷。
+    ///
+    /// 改成按**路径段**判定，规则分两类：
+    /// - 含 "/" 的（`/applications/qoder.app`、`.workbuddy/`）：仍是子串，但 needle 自带
+    ///   目录锚，本来就不会误伤；
+    /// - 不含 "/" 的（`trae`、`antigravity`）：必须整段相等、整段等于 `<needle>.app`，
+    ///   或以 `<needle> ` 开头且以 `.app` 结尾（`TRAE SOLO CN.app` 这类带空格的
+    ///   应用包名）。也就是说：**只有应用包或同名目录段能命中**，
+    ///   `trae-sandbox`、`mytraetool` 这类都不算。
     static func matchesPathContains(_ pathContains: Set<String>, pathLower: String) -> Bool {
         guard !pathLower.isEmpty else { return false }
-        return pathContains.contains { pathLower.contains($0) }
+        // 段只在出现裸 needle 时才需要切，切一次的成本摊到「有裸 needle 的 profile」上
+        var components: [String]? = nil
+        return pathContains.contains { needle in
+            if needle.isEmpty { return false }
+            if needle.contains("/") { return pathLower.contains(needle) }
+            if needle.contains(" ") || needle.contains(".") { return pathLower.contains(needle) }
+            if components == nil {
+                components = pathLower.split(separator: "/", omittingEmptySubsequences: true)
+                    .map(String.init)
+            }
+            let parts = components ?? []
+            return parts.contains(needle)
+                || parts.contains(needle + ".app")
+                || parts.contains { $0.hasPrefix(needle + " ") && $0.hasSuffix(".app") }
+        }
     }
 
     /// 单个进程条目是否匹配 profile（进程名前缀 + 路径子串约束 + 路径排除 + 非系统路径 + 非黑名单）

@@ -14,6 +14,7 @@ public enum URLSchemeCommand: Equatable {
     case agent(id: String)
     case analytics
     case toolbox
+    case settings(tab: String?)
     case clean
     case export
     case notify(agentId: String, type: String, message: String?, detail: String?)
@@ -75,6 +76,10 @@ public enum URLSchemeParser {
             return .analytics
         case "toolbox", "workbench", "cleaner":
             return .toolbox
+        case "settings", "config", "preferences":
+            // `?tab=` 与既有的 analytics/toolbox 同一思路：深链可以直接落到某个界面，
+            // 而不必先开窗口再让人手动点。也是自动化脚本与 UI 自检的入口
+            return .settings(tab: queryDict["tab"] ?? queryDict["pane"])
         case "clean", "kill-orphans":
             return .clean
         case "export", "report":

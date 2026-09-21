@@ -26,10 +26,13 @@ public enum LiveSampler {
         let registry = AgentRegistry.fullRegistry(installedCLIs: installedApps.installedCLIs(),
                                                   installedBundles: installedApps.installedBundleIDs(),
                                                   defaults: defaults)
-        // 启停集与组合根同一套解析（含存档损坏时只读降级，绝不覆写用户选择）
+        // 启停集与组合根同一套解析，但**只读**：一次性进程没有资格把注册表快照写回
+        // 用户的选择（那是设置页归属的配置），否则跑一次 status 就可能覆盖并发的开关改动
         return Context(installedApps: installedApps,
                        registry: registry,
-                       enabledIDs: EnabledAgentStore.resolvedEnabled(registry: registry, defaults: defaults))
+                       enabledIDs: EnabledAgentStore.resolvedEnabled(registry: registry,
+                                                                     defaults: defaults,
+                                                                     readOnly: true))
     }
 
     /// 构造一次性实况引擎。调用方自己决定采几拍。

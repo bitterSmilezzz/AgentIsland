@@ -524,6 +524,32 @@ enum EngineTests {
                             "探测结果透传到快照")
         }
 
+        TestKit.test("进程: pathContains 只认应用包或同名目录段，用户自己的目录不算") {
+            // 已知缺陷（v0.0.97 记档）：裸子串匹配下 `trae` 命中
+            // ~/code/trae-sandbox 里跑的 electron——用户自己的程序被认成 TRAE 并可被一键终止
+            let 沙箱 = "/users/dev/code/trae-sandbox/node_modules/electron/dist/electron.app/contents/macos/electron"
+            try expectFalse(ProcessMatcher.matchesPathContains(["trae"], pathLower: 沙箱),
+                            "trae-sandbox 不该命中 trae")
+            try expectFalse(ProcessMatcher.matchesPathContains(["trae"], pathLower: "/opt/mytraetool/bin/electron"),
+                            "词内包含（mytraetool）也不该命中")
+            // 三种真实形态必须继续命中，否则就是识别率倒退
+            try expectTrue(ProcessMatcher.matchesPathContains(["trae"],
+                           pathLower: "/applications/trae.app/contents/macos/trae"), "应用包名等于 needle")
+            try expectTrue(ProcessMatcher.matchesPathContains(["trae"],
+                           pathLower: "/applications/trae solo cn.app/contents/macos/electron"),
+                           "带空格的应用包名（TRAE SOLO CN.app）")
+            try expectTrue(ProcessMatcher.matchesPathContains(["openviking"],
+                           pathLower: "/users/dev/.local/share/uv/tools/openviking/bin/python"),
+                           "工具目录段等于 needle")
+            // 自带目录锚或含点/空格的 needle 保持子串语义（它们本身已是精确片段）
+            try expectTrue(ProcessMatcher.matchesPathContains(["/applications/qoder.app"],
+                           pathLower: "/applications/qoder.app/contents/macos/qoder"))
+            try expectTrue(ProcessMatcher.matchesPathContains([".workbuddy/"],
+                           pathLower: "/users/dev/.workbuddy/bin/wb"))
+            try expectTrue(ProcessMatcher.matchesPathContains(["workbuddy ai.app"],
+                           pathLower: "/applications/workbuddy ai.app/contents/macos/electron"))
+        }
+
         TestKit.test("进程: 前缀族冲突双向判定（新增自定义校验与匹配器同口径）") {
             // R22：SettingsView 新增校验与 ProcessMatcher 匹配共用同一判定——
             // codex + codex-helper 双向都拦（匹配器会把 codex-helper 同时算给两个 profile）

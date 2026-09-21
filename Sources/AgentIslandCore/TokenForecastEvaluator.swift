@@ -53,7 +53,7 @@ public enum TokenForecastEvaluator {
         let dailyTokens = max(0, tokens24h)
         let dailyCost = max(0, cost24h)
 
-        let projectedMonthEndTokens = dailyTokens * totalDays
+        let projectedMonthEndTokens = SafeNumber.product(dailyTokens, totalDays)
         let projectedMonthEndCost = dailyCost * Double(totalDays)
 
         var exhaustionDay: Int? = nil
@@ -62,7 +62,7 @@ public enum TokenForecastEvaluator {
         if dailyTokens <= 0 {
             summary = "近期暂无活跃消耗，月末预估平稳"
         } else if dailyBudget > 0 {
-            let monthlyBudget = dailyBudget * totalDays
+            let monthlyBudget = SafeNumber.product(dailyBudget, totalDays)
             if dailyTokens > dailyBudget {
                 // 超出日均预算，推算何时耗尽月度总池
                 let days = max(1, monthlyBudget / max(1, dailyTokens))

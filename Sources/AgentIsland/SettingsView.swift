@@ -35,6 +35,32 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - 设置页的选中分类（深链与侧边栏共用）
+
+/// 单例：设置窗口只有一个，深链要能在窗口已开时改它显示的页。
+/// 用 ObservableObject 而不是通知：SwiftUI 侧需要跟着重绘，通知做不到
+@MainActor
+final class SettingsSelection: ObservableObject {
+    static let shared = SettingsSelection()
+    @Published var tab: SettingsTab = .general
+
+    /// 深链里的 `?tab=` 取值。认不出来的值保持当前页而不是跳回第一页——
+    /// 打错一个字就把用户从他正在看的页面上拽走，比什么都不做更糟
+    func select(raw: String?) {
+        guard let raw else { return }
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let exact = SettingsTab(rawValue: key) { tab = exact; return }
+        switch key {
+        case "general", "appearance", "外观": tab = .general
+        case "agents", "agent", "监控": tab = .agents
+        case "remote", "notify", "notification", "通知": tab = .remote
+        case "engine", "performance", "性能": tab = .engine
+        case "about", "info": tab = .about
+        default: break
+        }
+    }
+}
+
 // MARK: - 设置卡片容器（Apple Inset-Grouped Style）
 
 struct SettingsCard<Content: View>: View {
@@ -155,7 +181,10 @@ struct SettingsView: View {
         return found
     }
 
-    @State private var selectedTab: SettingsTab = .general
+    /// 侧边栏选中页放在共享模型里而不是 @State：`agentisland://settings?tab=remote`
+    /// 要在窗口已经开着的情况下切页，@State 只有这个视图能读，深链就无从下手
+    @ObservedObject private var selection = SettingsSelection.shared
+    private var selectedTab: SettingsTab { selection.tab }
     @State private var enabledAgents: Set<String> = []
     /// 自启动设置失败提示（SMAppService 未签名/非 /Applications 时 register 抛错）
     @State private var launchError: String?
@@ -197,7 +226,7 @@ struct SettingsView: View {
     // MARK: 左侧导航栏
 
     private var sidebarView: some View {
-        List(SettingsTab.allCases, selection: $selectedTab) { tab in
+        List(SettingsTab.allCases, selection: $selection.tab) { tab in
             Label(tab.title, systemImage: tab.icon)
                 .font(Theme.bodyFont(13, weight: .medium))
                 .tag(tab)
@@ -653,6 +682,11 @@ struct SettingsView: View {
                         .buttonStyle(.plain)
                     }
 
+                    if let notice = customAgentsNotice {
+                        Text(notice)
+                            .font(Theme.bodyFont(11))
+                            .foregroundColor(Theme.dangerRed)
+                    }
                     if customProfiles.isEmpty {
                         Text("没有自定义条目。可添加内部脚本或自研 agent。")
                             .font(Theme.bodyFont(11))
@@ -1111,9 +1145,22 @@ struct SettingsView: View {
 
     // MARK: - 自定义增删
 
+    /// 自定义档案写入被拒时的说明（显示在列表下方）
+    @State private var customAgentsNotice: String?
+
     private func addCustom(_ profile: AgentProfile) {
-        customProfiles.append(profile)
-        AgentRegistry.saveCustomProfiles(customProfiles)
+        var candidate = customProfiles
+        candidate.append(profile)
+        // 先落盘、成功才改界面状态：反过来会出现「列表里有、重启就没」的假成功，
+        // 而用户已经按新档案去配启停了
+        switch AgentRegistry.saveCustomProfiles(candidate) {
+        case .saved: break
+        case .refused(let reason):
+            customAgentsNotice = "未添加：\(reason)"
+            return
+        }
+        customAgentsNotice = nil
+        customProfiles = candidate
         engine.addCustomProfile(profile)
         enabledAgents.insert(profile.id)
         saveEnabled()
@@ -1123,12 +1170,21 @@ struct SettingsView: View {
     }
 
     private func removeCustom(_ profile: AgentProfile) {
-        customProfiles.removeAll { $0.id == profile.id }
-        AgentRegistry.saveCustomProfiles(customProfiles)
+        var candidate = customProfiles
+        candidate.removeAll { $0.id == profile.id }
+        switch AgentRegistry.saveCustomProfiles(candidate) {
+        case .saved: break
+        case .refused(let reason):
+            customAgentsNotice = "未删除：\(reason)"
+            return
+        }
+        customAgentsNotice = nil
+        customProfiles = candidate
         engine.removeCustomProfile(profile.id)
         enabledAgents.remove(profile.id)
         saveEnabled()
     }
+
 }
 
 // MARK: - 自定义 Agent 行

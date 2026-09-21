@@ -28,6 +28,8 @@ public enum SettingKey {
     public static let islandAppearance = "islandAppearance"
     public static let notificationPolicy = "notificationPolicy"
     public static let customAgents = "customAgents"
+    /// 顶层损坏时的原件备份键（只由 saveCustomProfiles 写入，不参与注册表解码）
+    public static let customAgentsCorruptBackup = "customAgents.corrupt-backup"
     public static let launchAtLogin = "launchAtLogin"
     public static let dockEdge = "dockEdge"
     public static let dockAnchorX = "dockAnchorX"
@@ -140,6 +142,61 @@ public enum MenuBarBadgeMode: String, CaseIterable, Identifiable {
 public enum SettingLimits {
     /// 自动收起延迟：下限 0.2s 防鼠标掠过即收、上限 5s 防脏值让面板久驻
     public static let collapseDelayRange: ClosedRange<Double> = 0.2...5.0
+
+    /// 每日 token 预算区间。上限 10 亿/天已经远超任何真实用量（设置页最大档是 1000 万），
+    /// 存在的理由不是「让人设大预算」而是**让脏值进不来算术**：
+    /// 月度预估要算 `dailyBudget * 当月天数`，Int 溢出是 trap——
+    /// 实测 `agentisland tokens --budget 9000000000000000000` 以 SIGTRAP(133) 退出且零输出
+    public static let dailyTokenBudgetRange: ClosedRange<Int> = 0...1_000_000_000
+}
+
+/// 每日 token 预算的唯一读法与唯一解析入口。
+///
+/// 之前有三处 `UserDefaults.integer(forKey:)` 裸读（引擎、分析页两处、CLI），
+/// 与设置页的 Picker 档位没有共同口径：任何一处都能把越界值喂进算术，
+/// 而 `dailyBudget * totalDays` 溢出是崩溃而不是显示异常。
+/// 收敛到这里之后，「读」与「解析命令行参数」共用同一个区间。
+public enum DailyBudget {
+    /// 从持久化里读并钳进区间。0 表示未设预算（各消费方都以 `> 0` 判断是否启用）
+    public static func read(defaults: UserDefaults = .standard) -> Int {
+        clamp(defaults.integer(forKey: SettingKey.dailyTokenBudget))
+    }
+
+    public static func clamp(_ value: Int) -> Int {
+        min(max(value, SettingLimits.dailyTokenBudgetRange.lowerBound),
+            SettingLimits.dailyTokenBudgetRange.upperBound)
+    }
+
+    /// 解析 `--budget` 的原始字符串（数字 + 可选 k/m 后缀）。
+    /// 返回 nil 表示该拒绝并给用法错误；越界不拒绝而是钳制——
+    /// 「1e308 这种值直接崩掉且不留诊断」正是这条入口原来的行为
+    public static func parseArgument(_ text: String) -> Int? {
+        var digits = text.lowercased()
+        var multiplier = 1.0
+        if digits.hasSuffix("m") {
+            multiplier = 1_000_000
+            digits = String(digits.dropLast())
+        } else if digits.hasSuffix("k") {
+            multiplier = 1_000
+            digits = String(digits.dropLast())
+        }
+        let trimmed = digits.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 先按 Int 精确解析（避免 1e9 这类值在 Double 上丢精度），但倍数照样要乘：
+        // 这一版最初写成「Int 成功就直接返回」，于是 500k 变成 500——测试抓到才补上
+        if let exact = Int(trimmed) {
+            guard exact >= 0 else { return nil }
+            let (scaledInt, overflow) = exact.multipliedReportingOverflow(
+                by: multiplier == 0 ? 1 : Int(multiplier))
+            if !overflow { return clamp(scaledInt) }
+            return SettingLimits.dailyTokenBudgetRange.upperBound
+        }
+        guard let asDouble = Double(trimmed), asDouble.isFinite, asDouble >= 0 else { return nil }
+        let scaled = asDouble * multiplier
+        guard scaled >= 0 else { return nil }
+        // 连 Double(Int.max) 都不到说明它远超可用区间，钳到上限即可，不要再乘出 inf
+        guard scaled < Double(Int.max) else { return SettingLimits.dailyTokenBudgetRange.upperBound }
+        return clamp(Int(scaled))
+    }
 }
 
 /// 启停集合持久化：key/编解码/空数组语义单点持有。
@@ -215,10 +272,20 @@ public enum EnabledAgentStore {
     /// - 首次运行（load 为 nil）：按 registry.filter(\.defaultEnabled) 全量初始化并固化
     /// - 用户全关（load 为 []）：严格尊重用户全关意图，保持空集不强行覆写
     /// - 存量迁移/版本升级：找出所有在已知集之外且 defaultEnabled 的新增 Agent，自动合并补齐并写回
+    /// - Parameter readOnly: 只求解不写回。CLI 与所有一次性工具都该传 true：
+    ///   「读 → 算 → 整体写回」没有版本号，写的是**此刻的注册表快照**。
+    ///   应用侧在同一窗口里改了某个 Agent 的开关，会被 CLI 的旧快照覆盖掉（反向同理），
+    ///   而用户看到的症状是「我明明关掉了它，跑了一次 status 又回来了」。
+    ///   这份配置的归属者是设置页，只有它能写
     public static func resolvedEnabled(
         registry: [AgentProfile],
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        readOnly: Bool = false
     ) -> Set<String> {
+        func commit(_ write: () -> Void) {
+            guard !readOnly else { return }
+            write()
+        }
         let allRegistryIDs = Set(registry.map(\.id))
         let loaded = loadDetailed(from: defaults)
         guard var currentEnabled = loaded.ids else {
@@ -230,8 +297,10 @@ public enum EnabledAgentStore {
             }
             // 首次安装：初始化为默认开启集
             let defaultsEnabled = Set(registry.filter(\.defaultEnabled).map(\.id))
-            save(defaultsEnabled, to: defaults)
-            saveKnownAgents(allRegistryIDs, to: defaults)
+            commit {
+                save(defaultsEnabled, to: defaults)
+                saveKnownAgents(allRegistryIDs, to: defaults)
+            }
             return defaultsEnabled
         }
 
@@ -239,7 +308,7 @@ public enum EnabledAgentStore {
         // 保留 registry 外的历史 known 项（与下方非空分支一致），避免口径漂移
         if currentEnabled.isEmpty {
             let known = loadKnownAgents(from: defaults) ?? legacyKnownAgentIDs
-            saveKnownAgents(known.union(allRegistryIDs), to: defaults)
+            commit { saveKnownAgents(known.union(allRegistryIDs), to: defaults) }
             return []
         }
 
@@ -255,12 +324,12 @@ public enum EnabledAgentStore {
             for profile in newlyAddedProfiles {
                 currentEnabled.insert(profile.id)
             }
-            save(currentEnabled, to: defaults)
+            commit { save(currentEnabled, to: defaults) }
         }
 
         // 将当前全量 ID 集合更新进 knownAgents
         let updatedKnown = known.union(allRegistryIDs)
-        saveKnownAgents(updatedKnown, to: defaults)
+        commit { saveKnownAgents(updatedKnown, to: defaults) }
 
         return currentEnabled
     }

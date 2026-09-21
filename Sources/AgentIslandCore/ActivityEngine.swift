@@ -902,7 +902,7 @@ public final class ActivityEngine: ObservableObject {
 
         // Token 预算预警与超额告警
         let budgetEnabled = SettingBool.read(SettingKey.budgetAlertEnabled, default: true)
-        let dailyBudget = UserDefaults.standard.integer(forKey: SettingKey.dailyTokenBudget)
+        let dailyBudget = DailyBudget.read()
         if budgetEnabled && dailyBudget > 0 {
             let eval = budgetTracker.evaluate(used24h: grandTotal.tokens24h, budget: dailyBudget, now: now)
             DispatchQueue.main.async { [weak self] in

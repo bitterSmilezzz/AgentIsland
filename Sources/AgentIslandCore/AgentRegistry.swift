@@ -431,10 +431,68 @@ public enum AgentRegistry {
         return list
     }
 
-    public static func saveCustomProfiles(_ profiles: [AgentProfile], defaults: UserDefaults = .standard) {
-        if let data = try? JSONEncoder().encode(profiles) {
-            defaults.set(data, forKey: SettingKey.customAgents)
+    /// 存档顶层状态。「没这个键」与「有但读不懂」必须分开：
+    /// 把后者当成前者，下一次增删就会以空基线覆写，用户剩下的自定义档案静默消失
+    public enum CustomArchiveState: Equatable {
+        case absent
+        case ok
+        /// 顶层解析失败或非对象数组，附原始字节数（不附内容：日志里不落用户数据）
+        case corrupt
+    }
+
+    public static func customArchiveState(defaults: UserDefaults = .standard) -> CustomArchiveState {
+        guard let data = defaults.data(forKey: SettingKey.customAgents) else { return .absent }
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              object is [[String: Any]] else {
+            let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return (text.isEmpty || text == "[]") ? .ok : .corrupt
         }
+        return .ok
+    }
+
+    /// 自定义档案数量上限。真实用量是个位数，这个上限只防「存档被脚本写爆」
+    /// 之后每次启动都解码几千条（fullRegistry 在采样路径上）
+    public static let maxCustomAgents = 64
+
+    public enum CustomWriteResult: Equatable {
+        case saved(Int)
+        /// 没写。原因要能显示给用户——静默丢弃用户的档案是更坏的结果
+        case refused(reason: String)
+    }
+
+    /// 写入闸门：校验 + 去重 + 损坏存档留证。所有写路径都必须经过这里
+    /// （设置页的增/删以前是直接 encode+set，等于绕过一切检查）
+    @discardableResult
+    public static func saveCustomProfiles(_ profiles: [AgentProfile],
+                                          defaults: UserDefaults = .standard) -> CustomWriteResult {
+        var seen = Set<String>()
+        var clean: [AgentProfile] = []
+        for profile in profiles {
+            let id = profile.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty else { continue }
+            guard !seen.contains(id) else { continue }
+            seen.insert(id)
+            clean.append(profile)
+        }
+        if clean.count > maxCustomAgents {
+            return .refused(reason: "自定义档案 \(clean.count) 条，超过上限 \(maxCustomAgents) 条；未写入")
+        }
+        if profiles.count != clean.count {
+            AppLog.warn("customAgents 写入前修掉 \(profiles.count - clean.count) 条空 id 或重复 id 的档案")
+        }
+        // 顶层损坏时先把原始字节挪到备份键：覆写不可避免（用户正在增删），
+        // 但留着原件才有手工恢复的可能
+        if customArchiveState(defaults: defaults) == .corrupt {
+            if let data = defaults.data(forKey: SettingKey.customAgents) {
+                defaults.set(data, forKey: SettingKey.customAgentsCorruptBackup)
+            }
+            AppLog.error("customAgents 原存档损坏，已另存到 \(SettingKey.customAgentsCorruptBackup) 以便手工恢复")
+        }
+        guard let data = try? JSONEncoder().encode(clean) else {
+            return .refused(reason: "编码失败，未写入（原存档保持不变）")
+        }
+        defaults.set(data, forKey: SettingKey.customAgents)
+        return .saved(clean.count)
     }
 
     /// 完整注册表：内置 + 自动发现 CLI（按传入已安装集）+ 自定义。

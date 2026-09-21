@@ -305,6 +305,16 @@ enum SafeNumber {
         }
     }
 
+    /// 饱和乘：两个可能来自外部数据的 Int 相乘，溢出时取 Int.max 而不是 trap。
+    /// Swift 的 `*` 在 Int 溢出时是运行时崩溃（实测 `tokens --budget 9e18` 走到
+    /// `dailyBudget * 当月天数` 即 SIGTRAP，且不留任何诊断输出）
+    static func product(_ lhs: Int, _ rhs: Int) -> Int {
+        let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        guard overflow else { return value }
+        // 溢出时按符号钳到两端，正负由操作数决定
+        return (lhs < 0) != (rhs < 0) ? Int.min : Int.max
+    }
+
     /// 金额上限（美元）：同为「不可能触及」的量级。
     static let costCeiling = 1_000_000_000.0
 

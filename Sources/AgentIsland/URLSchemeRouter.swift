@@ -45,6 +45,10 @@ public enum URLSchemeRouter {
             controller.expand()
             controller.navigateToToolbox()
 
+        case .settings(let tab):
+            // 设置窗口是独立 scene，不经过岛内路由；岛保持当前形态
+            SettingsOpener.open(tab: tab)
+
         case .clean:
             controller.expand()
             controller.navigateToToolbox()

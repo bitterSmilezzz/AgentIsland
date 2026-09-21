@@ -215,11 +215,11 @@ struct RemoteNotifySettingsView: View {
                     Text(k.label).tag(k)
                 }
             }
+            // 纵向单选：横向排布下「自定义 HTTP（微信 Server酱 / …）」会折成三行，
+            // 把第三个选项挤到中间高度，看起来像漏了一个控件
             .pickerStyle(.radioGroup)
-            .horizontalRadioGroupLayout()
             .disabled(!model.policy.masterEnabled)
         }
-        .opacity(model.policy.masterEnabled ? 1 : 0.55)
     }
 
     // MARK: 通道字段
@@ -272,7 +272,6 @@ struct RemoteNotifySettingsView: View {
                     .foregroundColor(Theme.dangerRed)
             }
         }
-        .opacity(model.policy.masterEnabled ? 1 : 0.55)
     }
 
     /// 端口用字符串编辑再转 Int：`TextField(value:)` 在非数字输入下会把 0 静默写回配置，
@@ -316,7 +315,6 @@ struct RemoteNotifySettingsView: View {
             }
             help("密钥不进配置文件：UserDefaults 是明文 plist，会被备份与同步带走。")
         }
-        .opacity(model.policy.masterEnabled ? 1 : 0.55)
     }
 
     // MARK: 何时发
@@ -368,7 +366,6 @@ struct RemoteNotifySettingsView: View {
             help("静默时段与「岛内通知策略」互相独立：这里管的是送不送出去，"
                  + "完全静默岛内时外发照常。写坏的时段会整段作废（宁可多发也不全天吞掉）。")
         }
-        .opacity(model.policy.masterEnabled ? 1 : 0.55)
     }
 
     /// 当前判定的一行说明。取不到输入时长要说破——那种情况下这条开关只能靠锁屏/熄屏，
@@ -452,7 +449,6 @@ struct RemoteNotifySettingsView: View {
                  + "还是「对端明确拒绝，重试无用」。\n"
                  + "「发送测试」不重试：它给的就是这一次的真实结果。")
         }
-        .opacity(model.policy.masterEnabled ? 1 : 0.55)
     }
 
     // MARK: 小部件

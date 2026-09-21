@@ -406,8 +406,7 @@ struct MenuBarPopoverView: View {
 
             // 设置
             Button {
-                NSApp.activate(ignoringOtherApps: true)
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                SettingsOpener.open()
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 11))
@@ -588,3 +587,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         completionHandler([.banner, .list])
     }
 }
+
+// MARK: - 打开设置窗口的唯一出口
+
+/// 齿轮按钮与 `agentisland://settings` 深链共用这一处。
+/// 两处各写一遍 `sendAction(Selector(("showSettingsWindow:")))` 的话，
+/// 系统改名（macOS 13/14 在 `showPreferencesWindow:` 与 `showSettingsWindow:` 之间
+/// 来回过）时就只有一处会坏，症状还是「点了没反应」这种最难报的问题
+enum SettingsOpener {
+    /// `tab` 来自 `agentisland://settings?tab=remote`；nil 表示只开窗不动当前页
+    @MainActor
+    static func open(tab: String? = nil) {
+        SettingsSelection.shared.select(raw: tab)
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+}
+

@@ -236,8 +236,22 @@ public struct AgentProfile: Identifiable, Codable, Equatable {
         pathContains = try c.decodeIfPresent([String].self, forKey: .pathContains) ?? []
         pathExcludes = try c.decodeIfPresent([String].self, forKey: .pathExcludes) ?? []
         hostBundleIDs = try c.decodeIfPresent([String].self, forKey: .hostBundleIDs) ?? []
-        cpuWorkingThreshold = try c.decodeIfPresent(Double.self, forKey: .cpuWorkingThreshold)
-        tokenAlertFloor = try c.decodeIfPresent(Int.self, forKey: .tokenAlertFloor)
+        // 阈值字段来自可被手改的存档：`1e999` 会被解成 Infinity，
+        // 而 `max(cpu, inf)` 恒为 inf——症状是「阈值设了却永远不触发」，
+        // 看起来像没生效而不是像坏了。这里统一钳回可用区间（NaN 也一并落到 nil）
+        // 每个字段各自 `try?`：`1e999` 这种数在 JSONDecoder 眼里是「解不出来」而不是
+        // 「解成 Infinity」，用 `try` 会让整条档案解码失败并被上层当损坏元素丢弃
+        var cpuThreshold: Double?
+        if let raw = (try? c.decodeIfPresent(Double.self, forKey: .cpuWorkingThreshold)) ?? nil,
+           raw.isFinite {
+            cpuThreshold = min(max(raw, 0), 1_000)
+        }
+        cpuWorkingThreshold = cpuThreshold
+        var tokenFloor: Int?
+        if let raw = (try? c.decodeIfPresent(Int.self, forKey: .tokenAlertFloor)) ?? nil, raw >= 0 {
+            tokenFloor = min(raw, 100_000_000)
+        }
+        tokenAlertFloor = tokenFloor
         sessionDirs = try c.decodeIfPresent([String].self, forKey: .sessionDirs) ?? []
         tokenRoots = try c.decodeIfPresent([String].self, forKey: .tokenRoots) ?? []
         emoji = try c.decodeIfPresent(String.self, forKey: .emoji) ?? "🤖"
