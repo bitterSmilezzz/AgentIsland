@@ -143,8 +143,7 @@ final class RemoteNotifyModel: ObservableObject {
         Task { @MainActor in
             let outcome = await notifier.testDeliver(kind: kind, config: config, policy: policy)
             self.testing = false
-            self.history = notifier.recentAttempts
-        self.presenceNow = ScreenPresence.signals
+            self.refresh()
             switch outcome {
             case .delivered:
                 self.testResult = "已送达（对方服务器已接受）"
@@ -170,6 +169,11 @@ final class RemoteNotifyModel: ObservableObject {
 struct RemoteNotifySettingsView: View {
     @StateObject private var model: RemoteNotifyModel
 
+    /// 定时器**只构造一次**。写在 `body` 里会每次求值都新建一个 publisher，
+    /// 于是 5 秒计时在每次重绘时归零——用户一边改地址栏一边看「当前判定」时它永远
+    /// 走不到 5 秒：页面看着是实时的，实际冻在最后一次空闲刷新上。
+    private static let refreshTicker = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+
     init(notifier: RemoteNotifier) {
         _model = StateObject(wrappedValue: RemoteNotifyModel(notifier: notifier))
     }
@@ -185,7 +189,7 @@ struct RemoteNotifySettingsView: View {
         .onAppear { model.refresh() }
         // 岛内每拍都可能往外发并写历史，而那份记账不是 ObservableObject 的 @Published：
         // 页面开着时定时拉一次，否则用户要动一下字段才看得到新记录
-        .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in
+        .onReceive(Self.refreshTicker) { _ in
             model.refresh()
         }
     }

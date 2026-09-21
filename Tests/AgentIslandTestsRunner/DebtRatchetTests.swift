@@ -102,6 +102,27 @@ enum DebtRatchetTests {
                            + "；色阶只在 Theme.swift 的 lightText/lightFill/lightBorder 定义，"
                            + "调用点只保留自己的外观分支与透明度。")
         }
+
+        TestKit.test("债务棘轮: UI 不得在 body 里就地构造 onReceive 的 publisher") {
+            // onReceive 的第一个实参在每次 body 求值时都会重新求值。就地写
+            // `Timer.publish(...).autoconnect()` 等于每次重绘新建一个计时器并重新订阅，
+            // 于是「每 5 秒刷新」在界面持续变化时（用户在输入框里逐字改地址就是这种）
+            // 永远走不满 5 秒——看着实时，其实冻在上一次空闲刷新上。
+            // publisher 必须是只构造一次的存储属性（static let / 实例常量）。
+            guard let sources = repoSourcesDirectory() else { return }
+            var offenders: [String] = []
+            for url in swiftFiles(in: sources.appendingPathComponent("AgentIsland")) {
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                // 去掉全部空白再匹配：跨行写的就地构造（onReceive( 换行 Timer.publish…）也算
+                let dense = text.components(separatedBy: .whitespacesAndNewlines).joined()
+                if dense.contains(".onReceive(Timer.publish(") {
+                    offenders.append(url.lastPathComponent)
+                }
+            }
+            try expectTrue(offenders.isEmpty,
+                           "onReceive 里就地构造了 publisher（每次重绘都重置计时，定时刷新会长期不触发）："
+                           + offenders.joined(separator: "、"))
+        }
     }
 
     /// 取 `enum Ramp { … }` 块内出现过的 6 位十六进制基色（小写、去掉 `0x` 前缀）
