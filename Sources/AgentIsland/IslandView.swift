@@ -439,6 +439,7 @@ struct IslandView: View {
                         .topBarChip()
                 }
                 .buttonStyle(.plain)
+                .hitTargetHeight()
                 .help(controller.isSearchActive ? "关闭即时过滤 (Esc)" : "即时搜索过滤 (快捷键 /)")
                 .accessibilityLabel("搜索过滤智能体")
 
@@ -479,6 +480,7 @@ struct IslandView: View {
                         .topBarChip()
                 }
                 .buttonStyle(.plain)
+                .hitTargetHeight()
                 .help("智能体维护工作台：扫描清理孤儿进程、死锁与内存泄露")
                 .accessibilityLabel("智能体维护工作台")
 
@@ -493,6 +495,7 @@ struct IslandView: View {
                         .topBarChip()
                 }
                 .buttonStyle(.plain)
+                .hitTargetHeight()
                 .popover(isPresented: $showingHistoryPopover, arrowEdge: controller.dockEdge == .top ? .bottom : .leading) {
                     EventHistoryPopoverView(engine: engine, controller: controller)
                 }
@@ -510,6 +513,7 @@ struct IslandView: View {
                         .topBarChip()
                 }
                 .buttonStyle(.plain)
+                .hitTargetHeight()
                 .help("收起灵动岛（或光标移出卡片自动收起）")
                 .accessibilityLabel("收起灵动岛")
             }
@@ -711,6 +715,7 @@ struct IslandView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .hitTargetHeight()
                 .accessibilityLabel("清空搜索关键词")
             }
         }

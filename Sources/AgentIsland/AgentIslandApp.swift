@@ -422,6 +422,7 @@ struct MenuBarPopoverView: View {
                     )
             }
             .buttonStyle(.plain)
+            .hitTargetHeight()
             .help("设置…")
             .accessibilityLabel("打开偏好设置")
 
@@ -443,6 +444,7 @@ struct MenuBarPopoverView: View {
                     )
             }
             .buttonStyle(.plain)
+            .hitTargetHeight()
             .help("退出 AgentIsland")
             .accessibilityLabel("退出 AgentIsland")
         }

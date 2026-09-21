@@ -186,6 +186,7 @@ struct LiveLogStreamView: View {
                     .background(Circle().fill(Theme.chipFill))
             }
             .buttonStyle(.plain)
+            .hitTargetHeight()
             .help("立即刷新事件流水")
             .accessibilityLabel("立即刷新事件流水")
         }

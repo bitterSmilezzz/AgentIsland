@@ -181,6 +181,7 @@ struct AgentRowView: View {
                                     )
                             }
                             .buttonStyle(.plain)
+                            .hitTargetHeight()
                             .help("一键终止逃生舱：关闭该正在运行的 Agent 及其子任务")
                             .accessibilityLabel("终止 \(snapshot.profile.name)")
                         }
@@ -199,6 +200,7 @@ struct AgentRowView: View {
                                 )
                         }
                         .buttonStyle(.plain)
+                        .hitTargetHeight()
                         .help("查看 \(snapshot.profile.name) 实时事件与输出流水")
                         .accessibilityLabel("查看 \(snapshot.profile.name) 实时流水")
 
@@ -222,6 +224,7 @@ struct AgentRowView: View {
                                 )
                         }
                         .buttonStyle(.plain)
+                        .hitTargetHeight()
                         .help(activateFailed ? "未找到可激活的窗口（CLI 经 ssh/tmux 启动时无窗口可带）" : "置顶并激活该智能体窗口/终端")
                         .accessibilityLabel("直达 \(snapshot.profile.name) 窗口")
                     }

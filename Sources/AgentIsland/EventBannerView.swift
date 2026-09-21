@@ -88,6 +88,7 @@ struct EventBannerView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .hitTargetHeight()
                 .help("关闭提醒")
                 .accessibilityLabel("关闭提醒")
             }
