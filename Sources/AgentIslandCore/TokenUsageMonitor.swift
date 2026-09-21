@@ -675,7 +675,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             succeeded = true
         }
         if structuredIndex.isEnabled {
-            let structured = structuredIndex.snapshot()
+            let structured = structuredIndex.snapshot(now: now)
             let structuredUsage = structured.usage(now: now)
             for agentId in structuredIndex.configuredToolIds {
                 updated[agentId] = structuredUsage[agentId]
@@ -865,7 +865,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 )
             }
 
-            let structured = structuredIndex.snapshot()
+            let structured = structuredIndex.snapshot(now: now)
             var availableSourceIds = structured.availableToolIds
             if FileManager.default.fileExists(atPath: dimAgentDB) { availableSourceIds.insert("dim") }
             if FileManager.default.fileExists(atPath: openCodeDB) { availableSourceIds.insert("opencode") }

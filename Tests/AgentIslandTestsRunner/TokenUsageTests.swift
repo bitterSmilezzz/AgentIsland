@@ -857,33 +857,33 @@ enum TokenUsageTests {
             try (Self.codexLine("r1", 5) + "\n" + Self.codexLine("r1", 5) + "\n")
                 .write(to: rollout, atomically: true, encoding: .utf8)
 
-            let base = Self.structuredSignature(index.snapshot())
+            let base = Self.structuredSignature(index.snapshot(now: Self.structuredClock))
             try expectTrue(base.contains("n=1"), "一条去重后的记录，实际 \(base)")
 
             // 1) 同一棵树里新增无关文件、改动无关文件：聚合数字必须逐字不变
             try Data("readme".utf8).write(to: logs.appendingPathComponent("README.md"))
-            try expectEqual(Self.structuredSignature(index.snapshot()), base, "同目录非 jsonl 文件不得影响聚合")
+            try expectEqual(Self.structuredSignature(index.snapshot(now: Self.structuredClock)), base, "同目录非 jsonl 文件不得影响聚合")
             // 2) 另一个 root 里新增 jsonl 之外的一堆目录/文件（戳集合不变）
             let other = root.appendingPathComponent("noise/deep/dir")
             try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
             try Data("x".utf8).write(to: other.appendingPathComponent("scratch.txt"))
-            try expectEqual(Self.structuredSignature(index.snapshot()), base, "监控根之外的变动不得影响聚合")
+            try expectEqual(Self.structuredSignature(index.snapshot(now: Self.structuredClock)), base, "监控根之外的变动不得影响聚合")
             // 3) 追加新响应到已有日志（同 inode 增量分支）：必须立刻出现在聚合里
             let handle = try FileHandle(forWritingTo: rollout)
             try handle.seekToEnd()
             try handle.write(contentsOf: Data((Self.codexLine("r2", 3, input: 300, cached: 100, output: 20)
                 + "\n" + Self.codexLine("r3", 2, input: 40, cached: 0, output: 6) + "\n").utf8))
             try handle.close()
-            let appended = Self.structuredSignature(index.snapshot())
+            let appended = Self.structuredSignature(index.snapshot(now: Self.structuredClock))
             try expectTrue(appended != base, "追加新响应必须重算")
             try expectTrue(appended.contains("n=3"), "r1 去重后共 3 条，实际 \(appended)")
             // 4) 新增日志文件：必须计入
             let extra = logs.appendingPathComponent("rollout2.jsonl")
             try (Self.codexLine("r4", 1, input: 10, cached: 0, output: 1) + "\n").write(to: extra, atomically: true, encoding: .utf8)
-            try expectTrue(Self.structuredSignature(index.snapshot()).contains("n=4"), "新文件的响应不得被备忘录吞掉")
+            try expectTrue(Self.structuredSignature(index.snapshot(now: Self.structuredClock)).contains("n=4"), "新文件的响应不得被备忘录吞掉")
             // 5) 删除日志文件：必须退出（备忘录不得把已消失的来源继续算进去）
             try FileManager.default.removeItem(at: extra)
-            try expectTrue(Self.structuredSignature(index.snapshot()).contains("n=3"), "删除文件后必须回退")
+            try expectTrue(Self.structuredSignature(index.snapshot(now: Self.structuredClock)).contains("n=3"), "删除文件后必须回退")
         }
 
         TestKit.test("结构化Token索引: 段尾截在半行既不重复计数，也不得触发整文件重解析") {
@@ -899,7 +899,7 @@ enum TokenUsageTests {
             ])
             let rollout = logs.appendingPathComponent("rollout.jsonl")
             try (Self.codexLine("r1", 5) + "\n").write(to: rollout, atomically: true, encoding: .utf8)
-            let base = Self.structuredSignature(index.snapshot())
+            let base = Self.structuredSignature(index.snapshot(now: Self.structuredClock))
             try expectTrue(base.contains("n=1"), "前置：一条记录，实际 \(base)")
 
             // 写一半（没有结尾换行）——正在被第三方追加的行不得计入
@@ -907,7 +907,7 @@ enum TokenUsageTests {
             try appending.seekToEnd()
             try appending.write(contentsOf: Data(Self.codexLine("r2", 3).utf8))
             try appending.close()
-            let partial = Self.structuredSignature(index.snapshot())
+            let partial = Self.structuredSignature(index.snapshot(now: Self.structuredClock))
             try expectEqual(partial, base, "未写完的一行不该出现在聚合里")
 
             // 补齐换行：必须恰好 +1，且那半行不被重复计入
@@ -915,11 +915,243 @@ enum TokenUsageTests {
             try closing.seekToEnd()
             try closing.write(contentsOf: Data("\n".utf8))
             try closing.close()
-            let done = Self.structuredSignature(index.snapshot())
+            let done = Self.structuredSignature(index.snapshot(now: Self.structuredClock))
             try expectTrue(done.contains("n=2"), "补完整行后必须计入一条，实际 \(done)")
             // 反复采样数字必须稳定（重复计数或重解析回退都会在这里露出来）
-            try expectEqual(Self.structuredSignature(index.snapshot()), done, "第二轮采样数字漂移")
-            try expectEqual(Self.structuredSignature(index.snapshot()), done, "第三轮采样数字漂移")
+            try expectEqual(Self.structuredSignature(index.snapshot(now: Self.structuredClock)), done, "第二轮采样数字漂移")
+            try expectEqual(Self.structuredSignature(index.snapshot(now: Self.structuredClock)), done, "第三轮采样数字漂移")
+        }
+
+        TestKit.test("结构化Token索引: 掉出保留窗口的明细折进合计，累计一个数都不变") {
+            // 保留窗口的全部意义在于这一条不变式：**明细可以少，累计不能变**。
+            // 少了这行断言，「按窗口裁剪」就会被写成「按窗口丢数据」——面板上的累计
+            // 会静默下降，而那是用户唯一能看到的历史总量。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            // 三条响应：2 小时前、45 天前、400 天前。净 token = (input - cached) + output
+            // 净 token = (input - cached) + output ⇒ 120 / 240 / 480
+            try [
+                Self.codexLine("fresh", 120, input: 100, cached: 0, output: 20),
+                Self.codexLine("mid", 45 * 24 * 60, input: 240, cached: 0, output: 0),
+                Self.codexLine("ancient", 400 * 24 * 60, input: 480, cached: 0, output: 0),
+            ].map { $0 + "\n" }.joined()
+                .write(toFile: dir.appendingPathComponent("r.jsonl").path,
+                       atomically: true, encoding: .utf8)
+
+            let snap = index.snapshot(now: Self.structuredClock)
+            try expectEqual(snap.records.count, 1, "只有窗口内的 1 条留在明细里")
+            try expectEqual(snap.records.first?.tokens, 120, "留在明细里的必须是 2 小时前那条")
+            try expectEqual(snap.rolledUpTokens["codex"], 720, "45 天与 400 天前的折进合计")
+            try expectEqual(snap.rolledUpCount["codex"], 2, "折入条数要如实，不能只留一个总额")
+            let usage = snap.usage(now: Self.structuredClock)
+            try expectEqual(usage["codex"]?.tokensTotal, 840, "累计 = 明细 + 折入，一个数都不能少")
+            try expectEqual(usage["codex"]?.tokens24h, 120, "24h 只看窗口内的，折入不得掺进来")
+        }
+
+        TestKit.test("结构化Token索引: 只剩折入历史的工具照样在册，累计不为零") {
+            // 全量折入后 records 为空。若桶只从 records 派生，这个工具会整体从面板上
+            // 消失——「没看到」被写成「没有」，正是本仓库最忌讳的那类错。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            try (Self.codexLine("old", 60 * 24 * 60, input: 300, cached: 100, output: 0) + "\n")
+                .write(toFile: dir.appendingPathComponent("r.jsonl").path, atomically: true, encoding: .utf8)
+
+            let snap = index.snapshot(now: Self.structuredClock)
+            try expectTrue(snap.records.isEmpty, "60 天前的响应不该留在明细里")
+            let usage = snap.usage(now: Self.structuredClock)
+            try expectEqual(usage["codex"]?.tokensTotal, 200, "折入的累计必须照样发布")
+            try expectEqual(usage["codex"]?.tokens24h, 0, "24h 口径不受折入影响")
+            try expectTrue(snap.availableToolIds.contains("codex"), "工具活性与明细留存无关")
+        }
+
+        TestKit.test("结构化Token索引: 同一文件里抄了两遍的旧响应，折入后仍只计一次") {
+            // fork/恢复会把父会话整段抄进新文件；旧的那一段一旦掉出窗口就再也不进 records，
+            // 折入路径若在文件内去过重之前就把两份都加进合计，累计会凭空翻倍。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            let dup = Self.codexLine("same", 50 * 24 * 60, input: 100, cached: 60, output: 10)
+            try [dup, dup].map { $0 + "\n" }.joined()
+                .write(toFile: dir.appendingPathComponent("r.jsonl").path, atomically: true, encoding: .utf8)
+
+            let snap = index.snapshot(now: Self.structuredClock)
+            try expectEqual(snap.rolledUpTokens["codex"], 50, "同一 response_id 两份只算一次")
+            try expectEqual(snap.rolledUpCount["codex"], 1, "折入条数同样要去重")
+            try expectEqual(snap.usage(now: Self.structuredClock)["codex"]?.tokensTotal, 50, "累计")
+        }
+
+        TestKit.test("结构化Token索引: 折入之后再追加新响应，不得把已折入的历史再折一遍") {
+            // 增量路径只该折「本轮新读到的这一段」。若把旧合计连同旧明细一起从头重算，
+            // 已折入的响应会在合计里出现第二份——而且文件每追加一次就多算一次（线性膨胀）。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            let file = dir.appendingPathComponent("r.jsonl")
+            let old = Self.codexLine("old", 45 * 24 * 60, input: 240, cached: 0, output: 0)
+            try (old + "\n").write(toFile: file.path, atomically: true, encoding: .utf8)
+            let first = index.snapshot(now: Self.structuredClock)
+            try expectEqual(first.rolledUpTokens["codex"], 240, "前置：旧响应已折入")
+            try expectTrue(first.records.isEmpty, "前置：明细为空")
+
+            // 追加一条窗口内的新响应，并连采三轮
+            let handle = try FileHandle(forWritingTo: file)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(
+                (Self.codexLine("new", 60, input: 100, cached: 0, output: 0) + "\n").utf8))
+            try handle.close()
+            for round in 1...3 {
+                let snap = index.snapshot(now: Self.structuredClock.addingTimeInterval(Double(round) * 60))
+                try expectEqual(snap.rolledUpTokens["codex"], 240, "第 \(round) 轮：折入合计必须原地不动")
+                try expectEqual(snap.rolledUpCount["codex"], 1, "第 \(round) 轮：折入条数")
+                try expectEqual(snap.records.count, 1, "第 \(round) 轮：新响应留在明细里")
+                try expectEqual(snap.usage(now: Self.structuredClock)["codex"]?.tokensTotal, 340,
+                                "第 \(round) 轮：累计 = 240 + 100")
+            }
+        }
+
+        TestKit.test("结构化Token索引: 已折入的响应又被追加一遍，同一文件内仍只能算一次") {
+            // 折入去重必须看得见「已经折掉的那些键」。增量路径只带着留下的明细，
+            // 于是老会话被重新追加（resume 一个 40 天前的 rollout 文件）时，被折过的
+            // 响应会在新尾段里出现第二份：累计凭空多一条，而且这条落在 24h 里。
+            // 改动前的实现是全摊平 + 全局去重，这条断言钉住那份语义。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            let file = dir.appendingPathComponent("r.jsonl")
+            let aged = Self.codexLine("r1", 45 * 24 * 60, input: 240, cached: 0, output: 0)
+            try (aged + "\n").write(toFile: file.path, atomically: true, encoding: .utf8)
+            let first = index.snapshot(now: Self.structuredClock)
+            try expectEqual(first.rolledUpTokens["codex"], 240, "前置：45 天前的响应已折入")
+            try expectEqual(first.usage(now: Self.structuredClock)["codex"]?.tokensTotal, 240, "前置：累计")
+
+            // 同一 response_id 再被写一遍，这次的时间戳在窗口内（重放/恢复的真实形状）
+            let handle = try FileHandle(forWritingTo: file)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(
+                (Self.codexLine("r1", 60, input: 240, cached: 0, output: 0) + "\n").utf8))
+            try handle.close()
+            let second = index.snapshot(now: Self.structuredClock)
+            try expectEqual(second.usage(now: Self.structuredClock)["codex"]?.tokensTotal, 240,
+                            "同一响应的两份拷贝只能算一次（全局去重的语义不能因折入而丢）")
+            try expectEqual(second.usage(now: Self.structuredClock)["codex"]?.tokens24h, 0,
+                            "先到先得的是 45 天前那条，24h 不该多出这一笔")
+        }
+
+        TestKit.test("结构化Token索引: 同路径换 inode 后从零重算，合计不重复累加") {
+            // 整份重解析（!canAppend）看得见整个文件 ⇒ 折入必须整体重算而不是往上叠。
+            // 同名文件被替换是备份恢复/迁移的常态，这里数字必须与第一趟逐字相同。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            let file = dir.appendingPathComponent("r.jsonl")
+            func signature(_ snap: StructuredTokenUsageSnapshot) -> String {
+                "n=\(snap.records.count) rolled=\(snap.rolledUpTokens["codex"] ?? 0)"
+                    + "/\(snap.rolledUpCount["codex"] ?? 0) total="
+                    + "\(snap.usage(now: Self.structuredClock)["codex"]?.tokensTotal ?? -1)"
+            }
+            let body = [Self.codexLine("a", 45 * 24 * 60, input: 240, cached: 0, output: 0),
+                        Self.codexLine("b", 10, input: 100, cached: 0, output: 0)].map { $0 + "\n" }.joined()
+            try body.write(toFile: file.path, atomically: true, encoding: .utf8)
+            let base = signature(index.snapshot(now: Self.structuredClock))
+            try expectEqual(base, "n=1 rolled=240/1 total=340", "前置签名")
+
+            // 换 inode 重写同一路径（内容逐字相同）
+            try FileManager.default.removeItem(at: file)
+            try body.write(toFile: file.path, atomically: true, encoding: .utf8)
+            try expectEqual(signature(index.snapshot(now: Self.structuredClock)), base,
+                            "整份重解析不得让折入历史翻倍")
+        }
+
+        TestKit.test("结构化Token索引: 时钟推进把整份文件折掉时，备忘录不得继续吐旧明细") {
+            // 这一条同时钉两件事：① 长期不动的会话能被回收（戳未变也折）；
+            // ② 备忘录命中不能把刚回收的那份快照再吐回来（否则数组永远释不掉）。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            try (Self.codexLine("a", 60, input: 240, cached: 0, output: 0) + "\n")
+                .write(toFile: dir.appendingPathComponent("r.jsonl").path, atomically: true, encoding: .utf8)
+            let inWindow = index.snapshot(now: Self.structuredClock)
+            try expectEqual(inWindow.records.count, 1, "前置：1 小时前的响应在明细里")
+
+            // 此后磁盘一个字节没变，只是时钟走过了 40 天
+            let later = index.snapshot(now: Self.structuredClock.addingTimeInterval(41 * 86_400))
+            try expectTrue(later.records.isEmpty, "整份明细已掉出窗口，必须折掉")
+            try expectEqual(later.rolledUpTokens["codex"], 240, "折入合计")
+            try expectEqual(inWindow.usage(now: Self.structuredClock)["codex"]?.tokensTotal,
+                            240, "折入前")
+            try expectEqual(later.usage(now: Self.structuredClock)["codex"]?.tokensTotal,
+                            240, "折入后累计不变")
+        }
+
+        TestKit.test("结构化Token索引: 单文件明细上限只裁明细，不裁累计") {
+            // 第二道保险。触顶时折掉**最早**的那一段，而不是丢掉：累计照样成立。
+            // 比上限多做 3 条就够——再多只是把同一个分支跑得慢一点。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let index = StructuredTokenUsageIndex(sources: [
+                StructuredTokenSource(agentId: "codex", roots: [dir.path], format: .codex)
+            ])
+            let over = StructuredTokenUsageIndex.maxDetailEventsPerFile + 3
+            var lines = ""
+            lines.reserveCapacity(over * 190)
+            for i in 0..<over {
+                // 每条净 token = 1（input 1），时间都在窗口内且互不相同
+                lines += Self.codexLine("cap-\(i)", i, input: 1, cached: 0, output: 0) + "\n"
+            }
+            try lines.write(toFile: dir.appendingPathComponent("big.jsonl").path,
+                            atomically: true, encoding: .utf8)
+
+            let snap = index.snapshot(now: Self.structuredClock)
+            try expectEqual(snap.records.count, StructuredTokenUsageIndex.maxDetailEventsPerFile,
+                            "明细被裁到上限")
+            try expectEqual(snap.rolledUpCount["codex"], 3, "裁掉的 3 条是折入，不是丢弃")
+            try expectEqual(snap.usage(now: Self.structuredClock)["codex"]?.tokensTotal, over,
+                            "累计一条都不能少")
+            // 裁掉的必须是**最早**那 3 条：留在明细里的最早一条 = 第 20_000 新（19_999 分钟前）
+            let oldestKept = try XCTUnwrap(snap.records.map(\.time).min())
+            try expectTrue(abs(oldestKept.timeIntervalSince(
+                Self.structuredClock.addingTimeInterval(-19_999 * 60))) < 1.0,
+                "裁的必须是最早的那一段，实际最早=\(oldestKept.timeIntervalSince1970)")
+
+            // 被上限裁掉的那些 id 也得留在折入去重的视野里：把它们之中的一个再追加一遍
+            // （时间戳是新的），数字一个都不能动。做不到就得让这类文件走整份重读——
+            // 上限裁的是**窗口内**的明细，比按时间折出更常见，这个洞更好踩到。
+            let big = dir.appendingPathComponent("big.jsonl")
+            let handle = try FileHandle(forWritingTo: big)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(
+                (Self.codexLine("cap-0", 1, input: 1, cached: 0, output: 0) + "\n").utf8))
+            try handle.close()
+            let after = index.snapshot(now: Self.structuredClock)
+            try expectEqual(after.usage(now: Self.structuredClock)["codex"]?.tokensTotal, over,
+                            "重复的 cap-0 只能算一次（累计不能因为多一条重复而涨）")
+            try expectEqual(after.rolledUpCount["codex"], 3, "折入条数不变")
+            try expectEqual(after.records.count, StructuredTokenUsageIndex.maxDetailEventsPerFile,
+                            "明细条数不变")
         }
 
         TestKit.test("ReadonlyDB: 同路径被外部替换（新 inode）当拍即弃用旧连接") {
@@ -956,6 +1188,11 @@ enum TokenUsageTests {
         }.joined(separator: ";")
         return "tools=\(snap.availableToolIds.sorted()) n=\(snap.records.count) [\(body)] [\(tail)]"
     }
+
+    /// 结构化夹具的基准时钟：`codexLine` 的时间戳都从它往前推。索引的保留窗口按 `now`
+    /// 定位，所以直连 `snapshot` 的用例必须显式带上它，否则明细会被当成 40 天前的历史折掉。
+    @MainActor
+    static let structuredClock = Date(timeIntervalSince1970: 1_700_000_000)
 
     /// Codex rollout 的一行 `token_usage_record`（基准时间固定，签名才可跨次比对）
     @MainActor

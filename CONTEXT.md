@@ -71,6 +71,13 @@ _Avoid_: 会话结果缓存（并不缓存信号本身）
 **Token 数据覆盖（Token source availability）**:
 工具本地明细源是否被发现，与“当前范围用量为 0”是两个不同状态。分析页必须逐工具表达该差异，不得把未接入或缺失数据伪装成零用量。
 
+**明细保留窗口（detail retention）**:
+结构化 JSONL 索引只为最近 40 天保留逐条明细，更早的响应**折进**按工具的合计而不是丢弃：累计口径照含，24h 与按天图表本来也看不到它们。窗口与单文件条数上限都不是设置项。
+_Avoid_: 缓存过期、历史清理（听着像同一件事，但那种实现会让累计静默变小而界面上毫无痕迹）
+
+**折入（rollup）**:
+掉出保留窗口的明细被压成的那份按工具合计（`rolledUpTokens` / `rolledUpCount`）。它只服务累计口径，不参与 24h。折入是保和的：同一份文件里被抄了两遍的响应只折一次。见 `docs/adr/0007-token-detail-retention-folds-not-drops.md`。
+
 **Token 用量下钻（Token source detail navigation）**:
 本地明细可读且工具具备详情能力时，分析页允许进入用量详情；这条导航不依赖实时快照。实时 Agent 列表仍遵守宿主/内嵌组件去重，避免 ChatGPT 与内嵌 Codex 重复显示。
 
