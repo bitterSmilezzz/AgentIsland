@@ -37,6 +37,8 @@ struct ToolboxView: View {
     /// 清理失败提示（terminate 无权限/进程已消失时不能说「已清理」）
     @State private var cleanFeedback: String?
     @State private var copiedReport = false
+    /// 导出失败要留在界面上：只写进 AppLog 的话，面板关掉就像成功了
+    @State private var exportFailure: String?
     @Environment(\.colorScheme) private var colorScheme
 
     private var filteredAnomalies: [AgentAnomaly] {
@@ -72,6 +74,9 @@ struct ToolboxView: View {
 
                         if let cleanFeedback {
                             failureBanner(cleanFeedback)
+                        }
+                        if let exportFailure {
+                            failureBanner("报表导出失败：\(exportFailure)")
                         }
 
                         if isScanning {
@@ -230,6 +235,7 @@ struct ToolboxView: View {
                 content = AuditReportExporter.generateMarkdown(
                     snapshots: engine.snapshots,
                     history: engine.eventHistory,
+                    grandTotal: engine.grandTotal,
                     now: Date()
                 )
             case .csv:
@@ -238,7 +244,15 @@ struct ToolboxView: View {
                     now: Date()
                 )
             }
-            try? content.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try content.write(to: url, atomically: true, encoding: .utf8)
+                exportFailure = nil
+            } catch {
+                // 此前是 `try?`：面板关掉、看起来像导出成功，而文件根本不在——
+                // 用户是在要发给别人的时候才发现没有
+                AppLog.error("报表导出失败 \(url.path): \(error.localizedDescription)")
+                exportFailure = error.localizedDescription
+            }
         }
     }
 

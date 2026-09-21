@@ -57,6 +57,29 @@ enum DebtPayoffTests {
             try expectTrue(dirty.projectedMonthEndCost.isFinite, "绝不能是 Inf")
         }
 
+        TestKit.test("审计报告: 头条数字与面板汇总栏同源，两份口径都摆出来") {
+            // 逐条相加只覆盖在册条目：离线但仍有 24h 用量的工具、与宿主合并的内嵌组件
+            // 都不在那份列表里。报告与面板对不上，用户怀疑的是面板。
+            let profile = AgentRegistry.builtin.first { $0.id == "dim" }!
+            let snap = AgentSnapshot(profile: profile, level: .working, processRunning: true,
+                                     cpuPercent: 1, installed: true, activeSessions: 1,
+                                     lastActivityAgo: nil, lastActivityText: "—",
+                                     tokenUsage: TokenUsage(tokens24h: 200, tokensTotal: 900,
+                                                            cost24h: 0, costTotal: 0))
+            let md = AuditReportExporter.generateMarkdown(
+                snapshots: [snap],
+                grandTotal: TokenUsage(tokens24h: 5_000, tokensTotal: 9_000, cost24h: 0, costTotal: 0),
+                now: Date(timeIntervalSince1970: 1_800_000_000))
+            try expectTrue(md.contains(TokenUsage.compact(5_000)), "头条必须是跨源总量 5,000")
+            try expectTrue(md.contains(TokenUsage.compact(200)), "逐条之和也要写出来（口径差异可见）")
+            try expectTrue(md.contains("离线但仍有用量记录"), "差额来源要说明，不是留个谜")
+            // 不给 grandTotal 时行为不变（CLI 之外的老调用方仍可只用列表）
+            let legacy = AuditReportExporter.generateMarkdown(
+                snapshots: [snap], now: Date(timeIntervalSince1970: 1_800_000_000))
+            try expectTrue(legacy.contains(TokenUsage.compact(200)), "缺省回落逐条相加")
+            try expectFalse(legacy.contains("离线但仍有用量记录"), "没有差额就不该写口径说明")
+        }
+
         TestKit.test("算术: SafeNumber.costProduct 把脏 cost 钳在上限而不是放大成 Inf") {
             try expectEqual(SafeNumber.costProduct(2.5, 30), 75.0)
             try expectEqual(SafeNumber.costProduct(1e308, 31), SafeNumber.costCeiling,

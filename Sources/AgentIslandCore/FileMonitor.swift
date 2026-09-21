@@ -283,13 +283,13 @@ public final class FileActivityMonitor: FileActivityProviding {
             // 信号面终态语义（R33/F3）：
             // - 扫描成功且有信号文件 → 记入 fresh（写回替换，允许自然变旧）
             // - 扫描成功但无信号文件（产物清理/全被过滤）→ 活动清零
-            // - 目录缺失/不可枚举（root stat 失败）→ 保留旧值 + 连续缺失计数
+            // - 目录缺失（root stat 失败）**或整棵没看完**（枚举器失败）→ 保留旧值 + 连续缺失计数
             //   （连续 ≥3 趟仍缺失 → 终态清零；阈值吸收原子替换/迁移的瞬时空窗）
             if let d = r.newest {
                 fresh[dir] = d
                 if let file = r.newestFile { freshFiles[dir] = file }
                 missingStreaks[dir] = 0
-            } else if rootDate == nil {
+            } else if rootDate == nil || r.scanFailed {
                 missingStreaks[dir, default: 0] += 1
             } else {
                 clearedDirs.insert(dir)
@@ -347,11 +347,18 @@ public final class FileActivityMonitor: FileActivityProviding {
         public let newest: Date?
         public let activeSessions: Int
         public let newestFile: URL?
+        /// 这棵树**没能看完**（枚举器建不起来：权限、卷在扫描中途被弹掉…）。
+        /// 与「看完了但一个信号文件都没有」必须分开：后者才该把活动清零，
+        /// 前者按上面那份终态语义走「保留旧值 + 连续缺失计数」——否则一个正在写文件的
+        /// Agent 会因为一次读不了目录而被判成待机，而岛上的措辞是「没在干活」。
+        public let scanFailed: Bool
 
-        public init(newest: Date?, activeSessions: Int, newestFile: URL? = nil) {
+        public init(newest: Date?, activeSessions: Int, newestFile: URL? = nil,
+                    scanFailed: Bool = false) {
             self.newest = newest
             self.activeSessions = activeSessions
             self.newestFile = newestFile
+            self.scanFailed = scanFailed
         }
     }
 
@@ -375,10 +382,20 @@ public final class FileActivityMonitor: FileActivityProviding {
         var currentTop: String? = nil   // 当前所属顶层目录路径
 
         let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey, .isSymbolicLinkKey]
+        // 枚举中途失败（根目录没有读权限、子目录被弹掉…）**不会**让 `enumerator(...)` 返回
+        // nil：它照样给你一个枚举器，只是第一个对象都拿不到，错误被咽进返回值里。
+        // 于是「读不了」在调用方看来与「这个目录里一个产物都没有」完全同形——正在写文件的
+        // Agent 被判成待机。必须挂 errorHandler 才收得到。
+        var enumerationFailed = false
         guard let en = fm.enumerator(at: url,
                                      includingPropertiesForKeys: keys,
-                                     options: []) else {
-            return DirScanResult(newest: newest, activeSessions: 0, newestFile: newestFile)
+                                     options: [],
+                                     errorHandler: { _, _ in
+                                         enumerationFailed = true
+                                         return true      // 继续走完，能看到的还是要看
+                                     }) else {
+            return DirScanResult(newest: newest, activeSessions: 0, newestFile: newestFile,
+                                 scanFailed: true)
         }
         while let item = en.nextObject() as? URL {
             guard en.level <= maxDepth else {
@@ -448,7 +465,8 @@ public final class FileActivityMonitor: FileActivityProviding {
                 en.skipDescendants()
             }
         }
-        return DirScanResult(newest: newest, activeSessions: activeTops.count, newestFile: newestFile)
+        return DirScanResult(newest: newest, activeSessions: activeTops.count,
+                             newestFile: newestFile, scanFailed: enumerationFailed)
     }
 
     /// 目录树内最近写入时间（测试/Selftest 兼容入口，基于单趟 scanTree）

@@ -13,6 +13,7 @@ enum DiagnosticsSnapshot {
     static func markdown(from engine: ActivityEngine, now: Date = Date()) -> String {
         AuditReportExporter.generateMarkdown(snapshots: engine.snapshots,
                                              history: engine.eventHistory,
+                                             grandTotal: engine.grandTotal,
                                              now: now)
     }
 

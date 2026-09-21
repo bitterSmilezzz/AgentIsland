@@ -33,9 +33,13 @@ public enum AuditReportExporter {
     }
 
     /// 生成结构化 Markdown 审计报告
+    /// - Parameter grandTotal: 面板汇总栏那份跨源总量。**给了就必须用它做头条数字**：
+    ///   `snapshots` 只覆盖当前在册条目（离线但仍有用量的工具、被宿主去重掉的档案都不在
+    ///   那份列表里），逐条相加会比面板少一大截。用户拿着报告对不上岛，怀疑的是面板。
     public static func generateMarkdown(
         snapshots: [AgentSnapshot],
         history: [AgentTaskEvent] = [],
+        grandTotal: TokenUsage? = nil,
         now: Date = Date()
     ) -> String {
         var md = ""
@@ -45,15 +49,25 @@ public enum AuditReportExporter {
 
         let runningCount = snapshots.filter { $0.processRunning }.count
         let workingCount = snapshots.filter { $0.level == .working }.count
-        let totalTokens24h = snapshots.reduce(0) { $0 + ($1.tokenUsage?.tokens24h ?? 0) }
-        let totalCost24h = snapshots.reduce(0.0) { $0 + ($1.tokenUsage?.cost24h ?? 0.0) }
+        let listedTokens24h = snapshots.reduce(0) { $0 + ($1.tokenUsage?.tokens24h ?? 0) }
+        let listedCost24h = snapshots.reduce(0.0) { $0 + ($1.tokenUsage?.cost24h ?? 0.0) }
+        let totalTokens24h = grandTotal?.tokens24h ?? listedTokens24h
+        let totalCost24h = grandTotal?.cost24h ?? listedCost24h
 
         md += "- **在线运行中**：\(runningCount) 个 (其中 \(workingCount) 个工作中)\n"
         md += "- **24h Token 消耗**：\(TokenUsage.compact(totalTokens24h)) tokens"
         if totalCost24h > 0 {
             md += " (\(TokenUsage.cost(totalCost24h)))"
         }
-        md += "\n\n---\n\n"
+        md += "\n"
+        // 两份口径都摆出来，而不是悄悄选一个：跨源总量与逐条列表之和不等时，
+        // 差额是「离线但有历史」「被宿主去重」这类在册范围差异，读报告的人需要知道
+        if let grandTotal, grandTotal.tokens24h != listedTokens24h {
+            md += "  ·  口径：全部数据源总量（与面板汇总栏同源）；"
+                + "下表逐条相加为 \(TokenUsage.compact(listedTokens24h)) tokens，"
+                + "差额来自离线但仍有用量记录、以及与宿主合并的内嵌组件\n"
+        }
+        md += "\n---\n\n"
 
         // 1. 智能体健康与资源状态
         md += "## 1. 智能体健康与系统负载\n\n"

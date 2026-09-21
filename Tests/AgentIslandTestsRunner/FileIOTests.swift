@@ -4,6 +4,67 @@ import Foundation
 @MainActor
 enum FileIOTests {
     static func register() {
+        TestKit.test("目录扫描: 整棵没看完 ≠ 看完了但没有信号文件") {
+            // 清零的语义是「这个目录里的产物被清理了」；枚举器建不起来是「没看到」。
+            // 两者混同的现场：一个正在写文件的 Agent 因为一次读不了目录被判成待机。
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                           ofItemAtPath: root.path)
+                    try? FileManager.default.removeItem(at: root) }
+            let now = Date()
+            try Data("x".utf8).write(to: root.appendingPathComponent("session.jsonl"))
+            let readable = FileActivityMonitor.scanTree(in: root.path, maxDepth: 4,
+                                                        window: 60, now: now)
+            try expectFalse(readable.scanFailed, "可读目录不该报扫描失败")
+            try expectNotNil(readable.newest, "可读目录该看到写入信号")
+
+            // 只给执行位：目录能 stat（父级要遍历）却不能枚举 ⇒ 枚举器建不起来
+            try FileManager.default.setAttributes([.posixPermissions: 0o100],
+                                                  ofItemAtPath: root.path)
+            let blocked = FileActivityMonitor.scanTree(in: root.path, maxDepth: 4,
+                                                       window: 60, now: now)
+            try expectTrue(blocked.scanFailed, "没有读权限的目录必须回吐「整棵没看完」")
+            try expectNil(blocked.newest, "没看完就是没有结论")
+
+            try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                  ofItemAtPath: root.path)
+            let empty = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: empty) }
+            let scannedEmpty = FileActivityMonitor.scanTree(in: empty.path, maxDepth: 4,
+                                                            window: 60, now: now)
+            try expectFalse(scannedEmpty.scanFailed,
+                            "扫完但没有信号文件是正常终态，不该被算成失败")
+        }
+
+        TestKit.test("目录扫描: 读不到的目录保留上一份活动，不清零") {
+            // scanTree 回吐 scanFailed 只是前半段；调用方必须据此走「缺失宽限」而不是
+            // 「扫完了没信号」的清零分支——否则岛上的措辞从「工作中」变成「待机」。
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                           ofItemAtPath: root.path)
+                    try? FileManager.default.removeItem(at: root) }
+            let session = root.appendingPathComponent("s1")
+            try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: session.appendingPathComponent("transcript.jsonl"))
+
+            let monitor = FileActivityMonitor(maxDepth: 4, scanMinInterval: 0)
+            monitor.setWorkingWindow(60)
+            monitor.watch(dirs: [root.path])
+            monitor.scanSync()
+            let before = monitor.lastWriteDates(for: [root.path])[root.path]
+            try expectNotNil(before, "前置：首扫要看到写入信号")
+
+            try FileManager.default.setAttributes([.posixPermissions: 0o100],
+                                                  ofItemAtPath: root.path)
+            monitor.scanSync()
+            let after = monitor.lastWriteDates(for: [root.path])[root.path]
+            try expectEqual(after, before,
+                            "整棵没看完时不得把活动清零（那是「没看到」，不是「没在干活」）")
+        }
+
         TestKit.test("尾读: 打不开的文件回吐 unreadable，空文件回吐「真的没有」") {
             // 两者都回 [] 的话，岛显示待机 + doctor 说「结论可信」，而文件明明在那里读不出
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

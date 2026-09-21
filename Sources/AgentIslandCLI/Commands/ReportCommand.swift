@@ -28,7 +28,9 @@ public enum ReportCommand {
             i += 1
         }
 
-        let snapshots = LiveSampler.makeEngine(restrictToEnabled: false, refreshUsage: true).sample()   // 审计报告覆盖全部支持项
+        // 审计报告覆盖全部支持项；engine 要留着，头条数字与面板汇总栏必须同源
+        let engine = LiveSampler.makeEngine(restrictToEnabled: false, refreshUsage: true)
+        let snapshots = engine.sample()
 
         let content: String
         switch format {
@@ -49,6 +51,7 @@ public enum ReportCommand {
             content = AuditReportExporter.generateMarkdown(
                 snapshots: snapshots,
                 history: [],
+                grandTotal: engine.grandTotal,
                 now: Date()
             )
         }
