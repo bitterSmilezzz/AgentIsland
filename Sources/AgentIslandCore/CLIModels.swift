@@ -160,23 +160,28 @@ public struct CLIAnomalyDTO: Codable, Sendable {
 
 public struct CLICleanResultDTO: Codable, Sendable {
     public let success: Bool
+    /// 复核确认已退出的 pid（不是「发过信号」的 pid）
     public let killedPids: [Int32]
     public let freedMemoryBytes: UInt64
     public let freedMemoryFormatted: String
     public let dryRun: Bool
+    /// 发出信号但复核仍在运行的 pid：忽略终止信号的进程。脚本据此才知道还要人工处理
+    public let unconfirmedPids: [Int32]
 
     public init(
         success: Bool,
         killedPids: [Int32],
         freedMemoryBytes: UInt64,
         freedMemoryFormatted: String,
-        dryRun: Bool
+        dryRun: Bool,
+        unconfirmedPids: [Int32] = []
     ) {
         self.success = success
         self.killedPids = killedPids
         self.freedMemoryBytes = freedMemoryBytes
         self.freedMemoryFormatted = freedMemoryFormatted
         self.dryRun = dryRun
+        self.unconfirmedPids = unconfirmedPids
     }
 }
 

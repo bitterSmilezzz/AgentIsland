@@ -765,8 +765,49 @@ enum EngineTests {
             )
             let res = engine.cleanAnomalies([anomaly])
             try expectTrue(res.terminatedCount == 1, "可终止的进程应计为 1，实际 \(res.terminatedCount)")
+            // 发完信号当场不许有结论：那一刻我们只知道「信号发出去了」，而忽略 SIGTERM 的
+            // 进程还在跑。结论由复核给（下面那段），与单条终止路径同口径
+            try expectTrue(engine.latestEvent?.message?.contains("已安全清理") != true,
+                           "复核之前不得宣布已安全清理，实际: \(engine.latestEvent?.message ?? "nil")")
+            sleeper.waitUntilExit()   // SIGTERM 已发出；不 wait 会停在僵尸态
+            let verdict = engine.verifyClean([anomaly])
+            try expectEqual(verdict.confirmedPids, [sleeper.processIdentifier], "真实退出的进程应被复核确认")
+            try expectTrue(verdict.stillRunningPids.isEmpty, "复核不应把已退出者算成仍在运行：\(verdict.stillRunningPids)")
             try expectEqual(engine.latestEvent?.eventType, .completed)
             try expectTrue(engine.latestEvent?.message?.contains("已安全清理") == true)
+        }
+
+        TestKit.test("工作台维护: 批量清理的内存只算确认退出的，部分失败不得报完成") {
+            // 「收到信号又杀不掉」用真进程造不出来（SIGKILL 兜底一定带走），所以走探针注入
+            func anomaly(_ pid: Int32, _ mem: UInt64) -> AgentAnomaly {
+                AgentAnomaly(id: "hung-\(pid)", pid: pid, ppid: 1, agentName: "假死体", profileId: "dim",
+                             commandPath: "/opt/fake/bin/sleep", cpuPercent: 90, memoryBytes: mem,
+                             anomalyType: .hung, reason: "持续过载")
+            }
+            let pair = [anomaly(4001, 300_000_000), anomaly(4002, 700_000_000)]
+            let engine = makeEngine(processNames: ["DimAgent"], writes: [:])
+            _ = engine.sample(now: Date())
+
+            engine.terminationProbe = { _, _ in false }   // 全部确认退出
+            let allGone = engine.verifyClean(pair)
+            try expectTrue(allGone.allGone)
+            try expectEqual(allGone.reclaimedMemoryBytes, 1_000_000_000, "确认退出者的内存合计")
+            try expectEqual(engine.latestEvent?.eventType, .completed)
+            try expectTrue(engine.latestEvent?.message?.contains("已安全清理 2 个") == true,
+                           "全部退出才配得上「已安全清理 2 个」，实际: \(engine.latestEvent?.message ?? "nil")")
+
+            engine.terminationProbe = { pid, _ in pid == 4002 }   // 一个杀不掉
+            let partial = engine.verifyClean(pair)
+            try expectEqual(partial.confirmedPids, [4001])
+            try expectEqual(partial.stillRunningPids, [4002])
+            try expectEqual(partial.reclaimedMemoryBytes, 300_000_000,
+                            "仍在运行的进程内存不得计进「回收」——那是必然偏大的数")
+            try expectEqual(engine.latestEvent?.eventType, .attention,
+                            "部分失败必须报 attention，而不是又发一条完成横幅")
+            try expectTrue(engine.latestEvent?.message?.contains("1 个进程未能终止") == true,
+                           "实际: \(engine.latestEvent?.message ?? "nil")")
+            try expectTrue(engine.latestEvent?.detail?.contains("没有宣称全部清理完成") == true,
+                           "实际: \(engine.latestEvent?.detail ?? "nil")")
         }
 
         TestKit.test("实时流水: AgentLogStreamer 事件流模型与解析") {

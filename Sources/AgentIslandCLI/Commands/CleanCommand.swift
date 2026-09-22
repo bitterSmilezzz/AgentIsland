@@ -118,25 +118,45 @@ public enum CleanCommand {
 
         // 真实清理
         let result = cleaner.clean(anomalies: targets)
+        let signaled = targets.filter { result.terminatedPids.contains($0.pid) }
+        // 复核：`clean` 只知道「信号发出去了」。忽略 SIGTERM/SIGKILL 的死锁进程还在跑，
+        // 当场报「已终止 / 已释放内存」等于让脚本与人都以为异常已清零。CLI 本来就是阻塞式
+        // 工具，这里直接等同一个复核窗口（与灵动岛横幅同一口径，见 TerminationRecheck）。
+        var verdict = CleanVerification(confirmedPids: [], stillRunningPids: [],
+                                        reclaimedMemoryBytes: 0)
+        if !signaled.isEmpty {
+            Thread.sleep(forTimeInterval: TerminationRecheck.delay)
+            verdict = cleaner.verifyTermination(of: signaled)
+        }
 
         if isJson {
             let res = CLICleanResultDTO(
-                success: !result.terminatedPids.isEmpty,
-                killedPids: result.terminatedPids,
-                freedMemoryBytes: result.reclaimedMemoryBytes,
-                freedMemoryFormatted: result.reclaimedMemoryText,
-                dryRun: false
+                success: !verdict.confirmedPids.isEmpty,
+                killedPids: verdict.confirmedPids,
+                freedMemoryBytes: verdict.reclaimedMemoryBytes,
+                freedMemoryFormatted: verdict.reclaimedMemoryText,
+                dryRun: false,
+                unconfirmedPids: verdict.stillRunningPids
             )
             printJSON(res)
         } else {
-            guard !result.terminatedPids.isEmpty else {
+            guard !verdict.confirmedPids.isEmpty else {
                 // 一个都没杀掉（身份不符 / EPERM / 已退出）不能报「清理完成」
-                CLIExit.fail("未能终止任何目标进程（\(targets.count) 个候选全部跳过或失败）")
+                let why = signaled.isEmpty
+                    ? "\(targets.count) 个候选全部跳过或失败"
+                    : "向 \(signaled.count) 个进程发出信号，复核后仍在运行"
+                CLIExit.fail("未能终止任何目标进程（\(why)）")
             }
-            print("\n" + CLIColor.bold("🧹 智能体异常进程清理完成"))
+            print("\n" + CLIColor.bold("🧹 智能体异常进程清理复核"))
             print(CLIColor.dim("──────────────────────────────────────────"))
-            print("  已终止进程: " + CLIColor.green("\(result.terminatedPids.count) 个"))
-            print("  已释放内存: " + CLIColor.green(result.reclaimedMemoryText))
+            print("  已确认退出: " + CLIColor.green("\(verdict.confirmedPids.count) 个"))
+            if !verdict.stillRunningPids.isEmpty {
+                print("  仍在运行: " + CLIColor.yellow(
+                    "\(verdict.stillRunningPids.count) 个（PID \(verdict.stillRunningPids.map(String.init).joined(separator: ", "))"
+                    + "，忽略终止信号，需手动处理）"))
+            }
+            print("  回收内存: " + CLIColor.green(verdict.reclaimedMemoryText)
+                    + CLIColor.dim("（只统计确认退出的进程）"))
             noteSkipped(orphans: orphans, declined: declinedOrphans, force: isForce)
             print("")
         }

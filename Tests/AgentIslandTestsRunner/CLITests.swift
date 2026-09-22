@@ -103,14 +103,18 @@ enum CLITests {
                 killedPids: [100],
                 freedMemoryBytes: 500_000_000,
                 freedMemoryFormatted: "476M",
-                dryRun: false
+                dryRun: false,
+                unconfirmedPids: [200]
             )
             let data = try JSONEncoder().encode(cleanResult)
             let decodedResult = try JSONDecoder().decode(CLICleanResultDTO.self, from: data)
             try expectEqual(decodedResult.killedPids, [100], "Killed PIDs 往返一致")
             try expectFalse(decodedResult.dryRun, "dryRun 标志一致")
+            // killedPids 的语义是「复核确认退出」，发出信号但仍在跑的走 unconfirmedPids：
+            // 脚本只看 success/killedPids 时，绝不能把「发了信号」当成「已经杀掉」
+            try expectEqual(decodedResult.unconfirmedPids, [200], "仍在运行的 pid 往返一致")
             let json = String(data: data, encoding: .utf8) ?? ""
-            for key in ["\"killedPids\"", "\"dryRun\""] {
+            for key in ["\"killedPids\"", "\"dryRun\"", "\"unconfirmedPids\""] {
                 try expectTrue(json.contains(key), "清理结果 JSON 键名漂移：缺 \(key)")
             }
         }

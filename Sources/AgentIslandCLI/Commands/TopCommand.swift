@@ -210,7 +210,17 @@ public enum TopCommand {
                                 let confirmed = readKeyBlocking() == UInt8(ascii: "y")
                                 if confirmed {
                                     let result = cleaner.clean(anomalies: anomalies)
-                                    lastCleanMessage = "已终止 \(result.terminatedPids.count)/\(anomalies.count) 个"
+                                    let signaled = anomalies.filter { result.terminatedPids.contains($0.pid) }
+                                    // 「已终止」要由探活复核说，不是由 kill() 返回 0 说
+                                    var verdict = CleanVerification(confirmedPids: [], stillRunningPids: [],
+                                                                    reclaimedMemoryBytes: 0)
+                                    if !signaled.isEmpty {
+                                        Thread.sleep(forTimeInterval: TerminationRecheck.delay)
+                                        verdict = cleaner.verifyTermination(of: signaled)
+                                    }
+                                    lastCleanMessage = verdict.stillRunningPids.isEmpty
+                                        ? "已确认退出 \(verdict.confirmedPids.count)/\(anomalies.count) 个"
+                                        : "退出 \(verdict.confirmedPids.count) 个，\(verdict.stillRunningPids.count) 个仍在运行（忽略终止信号）"
                                 } else {
                                     lastCleanMessage = "已取消"
                                 }

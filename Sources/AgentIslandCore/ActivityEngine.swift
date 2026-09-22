@@ -1013,7 +1013,8 @@ public final class ActivityEngine: ObservableObject {
         // 结论要等复核，不在发完信号就宣布「资源已释放」：忽略 SIGTERM 的死锁进程收到信号
         // 也不会消失，而异常列表变空**不算**复核（清理会顺手清掉判定证据，1.2s 后重扫条目
         // 必然消失）。唯一口径是 kill(pid,0) 探活 + 路径校验，见 ProcessTerminator.isAlive。
-        // 批量清理那条路早就这么做了（工作台按 isAlive 统计失败项），这里补齐单条路径。
+        // 批量清理那条路此前当场宣布「已安全清理…系统资源已就绪」，与工作台 1.2s 后的
+        // 复核结论互相矛盾——现在两条路都走同一个复核（见 verifyClean）。
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.terminationRecheckDelay) { [weak self] in
             self?.verifyTermination(agentId: agentId, pid: pid, path: verifiedPath)
         }
@@ -1023,8 +1024,9 @@ public final class ActivityEngine: ObservableObject {
         return true
     }
 
-    /// 终止后的复核窗口。SIGTERM 有 300ms 优雅期 + SIGKILL 兜底，取 0.8s 让两者都落地。
-    static let terminationRecheckDelay: TimeInterval = 0.8
+    /// 终止后的复核窗口。数值与 CLI 的清理复核同源（见 `TerminationRecheck`）：
+    /// 两处各写一遍，迟早有一处忘了跟着改
+    static let terminationRecheckDelay: TimeInterval = TerminationRecheck.delay
 
     /// 注入点：默认探活 + 路径校验。测试必须能注入，因为「收到信号又杀不掉」这一支
     /// 用真进程造不出来——SIGKILL 兜底一定会带走它。
@@ -1064,8 +1066,9 @@ public final class ActivityEngine: ObservableObject {
         return true
     }
 
-    /// 智能体工作台一键清理：安全清理指定的异常/孤儿进程并展示清理横幅
-    /// - Returns: 清理结果（终止数与回收内存），供 UI 判断成败。
+    /// 智能体工作台一键清理：安全清理指定的异常/孤儿进程。
+    /// - Returns: 发信号阶段的结果（`terminatedPids` = 真正发出过信号的 pid）。
+    ///   **结论不在这里**：成功/失败的横幅由 `verifyClean` 在复核后发布，与单条终止同口径。
     @discardableResult
     public func cleanAnomalies(_ anomalies: [AgentAnomaly]) -> CleanResult {
         guard !anomalies.isEmpty else { return CleanResult(terminatedCount: 0, reclaimedMemoryBytes: 0) }
@@ -1073,10 +1076,10 @@ public final class ActivityEngine: ObservableObject {
         for a in anomalies {
             resetTracking(for: a.profileId)
         }
-        // 一个都没杀掉 ≠ 清理成功：进程可能已退出、可能无权限、PID 可能已被复用。
-        // 此前无论结果如何都宣告「已安全清理 N 个…系统资源已就绪」，用户看到条目消失
-        // 便以为已处置，而目标进程其实还在。失败时改用 attention 如实反馈。
-        if res.terminatedCount == 0 {
+        let signaled = anomalies.filter { res.terminatedPids.contains($0.pid) }
+        if signaled.isEmpty {
+            // 一个都没杀掉 ≠ 清理成功：进程可能已退出、可能无权限、PID 可能已被复用。
+            // 这一支不需要复核——「没发信号」是我们自己知道的既成事实。
             publish(AgentTaskEvent(
                 agentId: "workbench-cleaner",
                 agentName: "工作台维护",
@@ -1088,6 +1091,24 @@ public final class ActivityEngine: ObservableObject {
                 detail: "扫描到 \(anomalies.count) 个异常进程，但未能向其中任何一个发送终止信号。可能原因：进程已自行退出、当前权限不足，或 PID 已被系统回收复用。请重新扫描确认当前状态。"
             ))
         } else {
+            // 发了信号 ≠ 进程没了。此前这里当场宣布「已安全清理 N 个…系统资源已就绪」，
+            // 而工作台自己 1.2s 后的复核会说「有 N 个进程未能终止」——同一次操作两条
+            // 互相矛盾的结论，且 louder 的那条（横幅 + 提示音）在说谎。
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.terminationRecheckDelay) { [weak self] in
+                self?.verifyClean(signaled)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.sampleInBackground()
+        }
+        return res
+    }
+
+    /// 按复核结果发布清理结论。公开是为了让测试同步驱动（真实路径由定时器排程）。
+    @discardableResult
+    public func verifyClean(_ signaled: [AgentAnomaly]) -> CleanVerification {
+        let verdict = cleaner.verifyTermination(of: signaled, probe: terminationProbe)
+        if verdict.stillRunningPids.isEmpty {
             publish(AgentTaskEvent(
                 agentId: "workbench-cleaner",
                 agentName: "工作台维护",
@@ -1095,14 +1116,24 @@ public final class ActivityEngine: ObservableObject {
                 duration: 0,
                 timestamp: Date(),
                 pid: nil,
-                message: "已安全清理 \(res.terminatedCount) 个异常进程",
-                detail: "工作台已成功释放 \(res.terminatedCount) 个孤儿/假死智能体进程，预估回收 \(res.reclaimedMemoryText) 物理内存，系统资源已就绪。"
+                message: "已安全清理 \(verdict.confirmedPids.count) 个异常进程",
+                detail: "探活复核确认 \(verdict.confirmedPids.count) 个进程已退出，回收内存约 \(verdict.reclaimedMemoryText)（只统计确认退出者）。"
+            ))
+        } else {
+            publish(AgentTaskEvent(
+                agentId: "workbench-cleaner",
+                agentName: "工作台维护",
+                eventType: .attention,
+                duration: 0,
+                timestamp: Date(),
+                pid: nil,
+                message: "\(verdict.stillRunningPids.count) 个进程未能终止",
+                detail: "已确认退出 \(verdict.confirmedPids.count) 个；"
+                    + "\(verdict.stillRunningPids.count) 个（PID \(verdict.stillRunningPids.map(String.init).joined(separator: ", "))）"
+                    + "收到 SIGTERM/SIGKILL 后探活仍在运行（死锁进程常忽略终止信号）。本次没有宣称全部清理完成，请在活动监视器中处理。"
             ))
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.sampleInBackground()
-        }
-        return res
+        return verdict
     }
 
     private func recordTaskCompleted(profile: AgentProfile, since: Date, now: Date, pid: Int32?) {

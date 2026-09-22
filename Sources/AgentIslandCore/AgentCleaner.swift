@@ -79,6 +79,28 @@ public struct CleanResult: Equatable {
     }
 }
 
+/// 复核后的结论：与 `CleanResult` 分开，因为「发了信号」和「进程真没了」是两件事。
+public struct CleanVerification: Equatable {
+    public let confirmedPids: [Int32]
+    public let stillRunningPids: [Int32]
+    /// 只统计确认退出的那些——把仍在运行的进程内存也算进「回收」，等于报一个必然偏大的数
+    public let reclaimedMemoryBytes: UInt64
+
+    public init(confirmedPids: [Int32], stillRunningPids: [Int32], reclaimedMemoryBytes: UInt64) {
+        self.confirmedPids = confirmedPids
+        self.stillRunningPids = stillRunningPids
+        self.reclaimedMemoryBytes = reclaimedMemoryBytes
+    }
+
+    public var reclaimedMemoryText: String { MemoryFormat.text(reclaimedMemoryBytes) }
+    public var allGone: Bool { stillRunningPids.isEmpty }
+}
+
+/// 终止后等多久再复核。SIGTERM 有 300ms 优雅期 + SIGKILL 兜底，0.8s 让两者都落地。
+public enum TerminationRecheck {
+    public static let delay: TimeInterval = 0.8
+}
+
 public final class AgentCleaner {
     private let processMonitor: ProcessProviding
 
@@ -194,5 +216,27 @@ public final class AgentCleaner {
 
         return CleanResult(terminatedCount: killed.count,
                            reclaimedMemoryBytes: reclaimed, terminatedPids: killed)
+    }
+
+    /// 复核批量清理的结论。`probe` 是注入点：默认走真实探活 + 路径校验，
+    /// 而「收到信号又杀不掉」那一支用真进程造不出来（SIGKILL 兜底一定带走），
+    /// 所以调用方（引擎/CLI）必须能替换它。
+    public func verifyTermination(of signaled: [AgentAnomaly],
+                                  probe: (Int32, String) -> Bool = { pid, path in
+                                      ProcessTerminator.isAlive(pid: pid, expectedPath: path)
+                                  }) -> CleanVerification {
+        var gone: [Int32] = []
+        var stuck: [Int32] = []
+        var reclaimed: UInt64 = 0
+        for a in signaled where a.pid > 1 {
+            if probe(a.pid, a.commandPath) {
+                stuck.append(a.pid)
+            } else {
+                gone.append(a.pid)
+                reclaimed += a.memoryBytes
+            }
+        }
+        return CleanVerification(confirmedPids: gone, stillRunningPids: stuck,
+                                 reclaimedMemoryBytes: reclaimed)
     }
 }
