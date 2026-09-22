@@ -121,14 +121,12 @@ enum AttentionTests {
         }
 
         TestKit.test("通知路由: 系统通知写入 agentId 且点击回调激活目标窗口") {
-            let root = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-            let notificationFile = root.appendingPathComponent("Sources/AgentIsland/CompletionNotification.swift")
-            let appFile = root.appendingPathComponent("Sources/AgentIsland/AgentIslandApp.swift")
-            guard let notificationSource = try? String(contentsOf: notificationFile, encoding: .utf8),
-                  let appSource = try? String(contentsOf: appFile, encoding: .utf8) else { return }
+            // 按路径读并在读不到时抛：原先 guard-else-return 会把「源码树布局变了」
+            // 报成通过，而这条断言守的正是通知点击能不能唤起对应窗口
+            let notificationSource = try SourceTree.text(
+                relativePath: "Sources/AgentIsland/CompletionNotification.swift")
+            let appSource = try SourceTree.text(
+                relativePath: "Sources/AgentIsland/AgentIslandApp.swift")
             try expectTrue(notificationSource.contains("content.userInfo = AgentNotificationRoute.userInfo"),
                            "通知必须携带 Agent 路由")
             try expectTrue(appSource.contains("UNUserNotificationCenter.current().delegate = self"),

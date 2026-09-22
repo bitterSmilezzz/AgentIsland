@@ -194,12 +194,10 @@ enum PanelPresentationTests {
         return sizes
     }
 
+    /// 读 UI 源码，且只保留代码行（整行 `//` 注释被剔除）。
+    /// 这一族断言全是「正文里有没有这段字符串」，留着注释会让两种失败互相伪装：
+    /// 「不许再出现 X」被一句解释 X 的注释冤枉，「必须有 X」被一条写着 X 的注释蒙过
     private static func readSource(_ name: String) throws -> String {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        return try String(contentsOf: root.appendingPathComponent("Sources/AgentIsland/\(name)"),
-                         encoding: .utf8)
+        SourceTree.codeOnly(try SourceTree.text(relativePath: "Sources/AgentIsland/\(name)"))
     }
 }

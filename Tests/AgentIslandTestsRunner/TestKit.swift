@@ -253,4 +253,60 @@ enum SourceTree {
         }
         return text
     }
+
+    /// (文件名, 正文) 清单，供「扫全树」型结构断言使用。
+    /// 任一文件读不出即抛：静默少读一个文件，会让「这个 pattern 在源码里出现 0 次」
+    /// 变成对着一份残缺清单得出的结论。
+    static func requireSourceTexts(under subpath: String = "",
+                                   atLeast minimum: Int = 20) throws -> [(name: String, text: String)] {
+        try requireSwiftFiles(under: subpath, atLeast: minimum).map { url in
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                throw TestError(message: "读不到 \(url.path)：结构断言不能建立在缺文件的清单上")
+            }
+            return (url.lastPathComponent, text)
+        }
+    }
+
+    /// 去掉整行 `//` 注释后的正文。结构断言用「正文里有没有这段字符串」来判定，
+    /// 匹配面必须只有代码：注释里写一句 `// 这里不要再加 .accessibilityLabel(`
+    /// 既能骗过「必须存在」的断言，也能冤枉「不许存在」的断言。
+    static func codeOnly(_ text: String) -> String {
+        let stripped = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        // 全注释文件剥完就空了：断言会因此报「模式不存在」，而真因是「一条代码都没读到」。
+        // 空正文一律不剥，让这两种失败分道
+        return stripped.isEmpty ? text : stripped
+    }
+}
+
+// MARK: - Antigravity brain 会话夹具
+
+/// 造一份真实磁盘布局的 Antigravity 会话：`<根>/brain/<任务>/.system_generated/logs/transcript.jsonl`。
+/// 会话定位缓存按 brain 路径为键，所以每个夹具都用独立临时目录，用例之间不会互相命中。
+enum AntigravityBrainFixture {
+    struct Fixture {
+        /// 放进 profile.sessionDirs 的目录（探测要求末级名为 "brain"）
+        let brain: URL
+        let transcript: URL
+        /// 本次独立创建的临时根，调用方 defer 删除
+        let root: URL
+    }
+
+    /// 写入 transcript 并把 mtime 设为 `now - mtimeAgo`
+    static func make(lines: [String], mtimeAgo: TimeInterval,
+                     now: Date = Date()) throws -> Fixture {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("ag-brain-\(UUID().uuidString)", isDirectory: true)
+        let brain = root.appendingPathComponent("brain", isDirectory: true)
+        let transcript = brain.appendingPathComponent(
+            "task-1/.system_generated/logs/transcript.jsonl", isDirectory: false)
+        try FileManager.default.createDirectory(at: transcript.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try (lines.joined(separator: "\n") + "\n").write(to: transcript, atomically: true,
+                                                         encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-mtimeAgo)],
+                                              ofItemAtPath: transcript.path)
+        return Fixture(brain: brain, transcript: transcript, root: root)
+    }
 }

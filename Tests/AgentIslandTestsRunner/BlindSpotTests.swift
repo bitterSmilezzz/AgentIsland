@@ -107,7 +107,7 @@ enum BlindSpotTests {
             // 少一次 .escaped 就是注入面或语法崩面；内部生成的 ISO 时间戳也一并要求
             // （对无引号的值是恒等操作，换来的是这条规则不需要例外清单）
             var offenders: [String] = []
-            for (name, text) in repoSwiftSources() {
+            for (name, text) in try SourceTree.requireSourceTexts() {
                 for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                     let trimmed = line.trimmingCharacters(in: .whitespaces)
                     if trimmed.hasPrefix("//") { continue }
@@ -145,16 +145,16 @@ enum BlindSpotTests {
         TestKit.test("结构: 视图不得无谓观察整个引擎，也不得在渲染里重复同一份筛选") {
             // AgentRowView / AgentHoverTooltip 的 body 不读 engine 任何 @Published 状态，
             // 观察它等于每拍让整行重新求值一次（正落在展开弹簧期）
-            let all = repoSwiftSources()
+            let all = try SourceTree.requireSourceTexts()
             var observed = 0
             for (_, text) in all where text.contains("@ObservedObject var engine: ActivityEngine") {
                 observed += 1
             }
             try expectTrue(observed <= 9,
-                           "@ObservedObject var engine 从 9 处涨到 \(observed)：新视图请只观察它真正读取的状态")
+                           "观察整个引擎的文件从 9 个涨到 \(observed) 个：新视图请只观察它真正读取的状态")
 
-            guard let entry = all.first(where: { $0.name == "LiveLogStreamView.swift" }) else { return }
-            let stream = entry.text
+            // 直接按路径读：清单里「没扫到这个文件」曾经是这条断言静默通过的形态
+            let stream = try SourceTree.text(relativePath: "Sources/AgentIsland/LiveLogStreamView.swift")
             let refilters = stream.components(separatedBy: "events.filter {").count - 1
             // 合法的两处：① 当前筛选的列表（body 顶部 hoist 成一次）；
             // ② counts(for:) 里一次算齐所有口径。再多的就是「每个 chip 各扫一遍」回潮
@@ -234,7 +234,7 @@ enum BlindSpotTests {
             // 通用规则（不写死键名）：凡 @AppStorage 里默认 true 的 SettingKey，
             // 任何地方都不准再用 bool(forKey:) 裸读——那会把「没拨过开关」读成「用户关了」
             var trueDefaults = Set<String>()
-            for (_, text) in try requireSources() {
+            for (_, text) in try SourceTree.requireSourceTexts() {
                 for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
                     let s = String(line)
                     guard s.contains("@AppStorage(SettingKey."), s.hasSuffix("= true") else { continue }
@@ -244,7 +244,7 @@ enum BlindSpotTests {
             try expectTrue(trueDefaults.contains("budgetAlertEnabled"),
                            "夹具前提变了：@AppStorage 默认 true 的键集合里应有 budgetAlertEnabled")
             var offenders: [String] = []
-            for (name, text) in try requireSources() {
+            for (name, text) in try SourceTree.requireSourceTexts() {
                 for (i, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                     let s = String(line)
                     if s.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
@@ -283,26 +283,5 @@ enum BlindSpotTests {
             try expectFalse(ProcessTerminator.isAlive(pid: deadPid), "已退出的子进程仍被判存活")
         }
 
-    }
-
-    /// 源码清单；扫不到就抛——结构断言在「扫了个空」时静默通过等于给自己发假绿证
-    private static func requireSources() throws -> [(name: String, text: String)] {
-        let found = repoSwiftSources()
-        try expectTrue(found.count > 20,
-                       "未能定位仓库 Sources 目录（只扫到 \(found.count) 个文件），本测试的「通过」没有意义")
-        return found
-    }
-
-    private static func repoSwiftSources() -> [(name: String, text: String)] {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Sources")
-        guard let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return [] }
-        return en.compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" }
-            .compactMap { url in
-                guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-                return (url.lastPathComponent, text)
-            }
     }
 }

@@ -83,7 +83,7 @@ enum HardeningTests {
         TestKit.test("结构: 任何 shell / AppleScript 出口都必须过 ShellQuoting") {
             // 两处 sink 的成因都是「只转义了双引号」。新增第三处时这条会拦住裸插值
             var offenders: [String] = []
-            for (name, text) in try requireSources() {
+            for (name, text) in try SourceTree.requireSourceTexts() {
                 for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                     let trimmed = line.trimmingCharacters(in: .whitespaces)
                     guard trimmed.contains("do script") || trimmed.contains("do shell script") else { continue }
@@ -119,7 +119,7 @@ enum HardeningTests {
             // 传 nil（= SQLITE_STATIC）时 SQLite 不复制：Swift 桥出的 C 缓冲区只在 bind
             // 那一行有效，而 step 在其后——读到的是已回收内存，轻则查错会话重则崩溃
             var offenders: [String] = []
-            for (name, text) in try requireSources() {
+            for (name, text) in try SourceTree.requireSourceTexts() {
                 for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                     let trimmed = line.trimmingCharacters(in: .whitespaces)
                     guard trimmed.contains("sqlite3_bind_text("), !trimmed.hasPrefix("//") else { continue }
@@ -211,10 +211,8 @@ enum HardeningTests {
         TestKit.test("结构: 后台队列不得走跨 SQL 持锁的缓存连接") {
             // withConnection 的锁跨整段 SQL 持有（不可重入，且保证 invalidate 不关正在用的句柄）。
             // 实时流水在后台队列刷新，若共用它，一次 500 行扫描就能堵住主线程那一拍
-            let all = try requireSources()
-            guard let (_, text) = all.first(where: { $0.name == "AgentLogStreamer.swift" }) else {
-                throw TestError(message: "没扫到 AgentLogStreamer.swift，断言无从执行")
-            }
+            let text = try SourceTree.text(
+                relativePath: "Sources/AgentIslandCore/AgentLogStreamer.swift")
             let cached = text.components(separatedBy: "ReadonlyDB.withConnection(").count - 1
             try expectEqual(cached, 0,
                             "流水页（后台队列）又用回了缓存连接：与主线程采样共用一把跨 SQL 的锁")
@@ -223,29 +221,4 @@ enum HardeningTests {
         }
     }
 
-    // MARK: - 源码扫描（与「债务棘轮」同一手法：从测试文件位置回溯到 Sources）
-
-    /// 源码清单。取不到就抛——结构类断言在「扫了个空」时静默通过，等于给自己发假绿证
-    private static func requireSources() throws -> [(name: String, text: String)] {
-        let found = repoSwiftSources()
-        try expectTrue(found.count > 20,
-                       "未能定位仓库 Sources 目录（只扫到 \(found.count) 个文件），"
-                       + "本测试的「通过」没有意义")
-        return found
-    }
-
-    private static func repoSwiftSources() -> [(name: String, text: String)] {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // Tests/AgentIslandTestsRunner
-            .deletingLastPathComponent()   // Tests
-            .deletingLastPathComponent()   // repo root
-            .appendingPathComponent("Sources")
-        guard let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return [] }
-        return en.compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" }
-            .compactMap { url in
-                guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-                return (url.lastPathComponent, text)
-            }
-    }
 }

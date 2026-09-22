@@ -1137,7 +1137,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 // MARK: - 测试用假实现（MainActor 内使用；记录轮询面调用序列，零 I/O）
 
 public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying {
-    /// 轮询面调用序列："start" / "stop" / "pause"
+    /// 调用序列。轮询面为裸名（"start" / "stop" / "pause" / "refreshAsync"），
+    /// 查询面带上实参（"timeline:week"、"sessions:dim/gpt-5"），否则透传测试只能证明「调过」
     public private(set) var calls: [String] = []
     public var usage: [String: TokenUsage] = [:]
     public var grandTotal = TokenUsage()
@@ -1154,18 +1155,20 @@ public final class FakeTokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying 
     public func refreshAsync() { calls.append("refreshAsync") }
 
     public func modelBreakdown(agentId: String, completion: @escaping @MainActor ([ModelUsage]) -> Void) {
-        calls.append("modelBreakdown")   // 同步记录：调用即刻可断言；回调异步送达
+        calls.append("modelBreakdown:\(agentId)")   // 同步记录：调用即刻可断言；回调异步送达
         Task { @MainActor in completion([]) }
     }
 
     public func sessions(agentId: String, modelId: String, completion: @escaping @MainActor ([SessionUsage]) -> Void) {
-        calls.append("sessions")   // 同步记录：调用即刻可断言；回调异步送达
+        calls.append("sessions:\(agentId)/\(modelId)")   // 同步记录：调用即刻可断言；回调异步送达
         Task { @MainActor in completion([]) }
     }
 
     public func timeline(range: TokenTimeRange, now: Date,
                          completion: @escaping @MainActor (TokenUsageTimeline) -> Void) {
-        calls.append("timeline")
+        // now 只记「是否显式传入」不够，但时间基准每拍都在动；这里记 range，
+        // 引擎侧的 seam 测试要防的是「范围被换掉/写死」而不是时钟
+        calls.append("timeline:\(range.rawValue)")
         Task { @MainActor in completion(.empty(for: range, now: now)) }
     }
 }

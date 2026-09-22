@@ -114,16 +114,42 @@ enum VisibilityTests {
                            "离线但 24h 内有量也不得进看板")
         }
 
-        TestKit.test("可见口径: 始终是快照总集的子集（口径不外溢）") {
-            let made = makeEngine(processRunning: true, writeAgo: 5,
-                                  usage: TokenUsage(tokens24h: 10, tokensTotal: 10, cost24h: 0, costTotal: 0))
-            sample(made)
-            let visible = Set(made.engine.visibleSnapshots.map(\.id))
-            let shelf = Set(made.engine.ringShelfSnapshots.map(\.id))
-            let all = Set(made.engine.snapshots.map(\.id))
-            try expectTrue(visible.isSubset(of: all), "可见集必须是总集子集")
-            try expectTrue(shelf.isSubset(of: visible), "看板集必须是可见集子集")
-            try expectEqual(all.count, 1, "注入单 profile 时总集只有一条（实际 \(all.count)）")
+        TestKit.test("可见口径: 看板 ⊂ 可见 ⊂ 总集，而且每一层真的在收窄") {
+            // 单 profile 时「子集」判定恒成立（只有一个元素可比较），上一版因此从未失败过。
+            // 这里同时给出一条离线但有近期写入且有 24h 用量的 Agent：它必须在总集里、
+            // 在可见集外——子集关系这才真的被检验了一次
+            let now = Date()
+            func prof(_ id: String) -> AgentProfile {
+                AgentProfile(id: id, name: id, icon: "terminal", bundleIDs: [],
+                             processNames: [id], sessionDirs: ["/tmp/agentisland-vis-\(id)"])
+            }
+            let token = FakeTokenUsageMonitor()
+            token.usage["vis-a"] = TokenUsage(tokens24h: 10, tokensTotal: 10, cost24h: 0, costTotal: 0)
+            token.usage["vis-c"] = TokenUsage(tokens24h: 10, tokensTotal: 10, cost24h: 0, costTotal: 0)
+            let engine = ActivityEngine(
+                profiles: [prof("vis-a"), prof("vis-b"), prof("vis-c")],
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: FakeProcessProvider(processNames: ["vis-a", "vis-b"], bundleIDs: []),
+                fileMonitor: FakeFileActivityProvider(writes: [
+                    "/tmp/agentisland-vis-a": now.addingTimeInterval(-5),
+                    "/tmp/agentisland-vis-b": now.addingTimeInterval(-5),
+                    "/tmp/agentisland-vis-c": now.addingTimeInterval(-5),
+                ]),
+                tokenMonitor: token,
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
+            )
+            _ = engine.sample(now: now)
+
+            let all = Set(engine.snapshots.map(\.id))
+            let visible = Set(engine.visibleSnapshots.map(\.id))
+            let shelf = Set(engine.ringShelfSnapshots.map(\.id))
+            try expectEqual(all, ["vis-a", "vis-b", "vis-c"], "总集不挑状态")
+            try expectEqual(visible, ["vis-a", "vis-b"], "离线者即使 24h 内有写入有用量也不可见")
+            try expectEqual(shelf, ["vis-a"], "看板只要 24h 内有用量的可见 Agent")
+            try expectTrue(visible.isSubset(of: all) && visible.count < all.count,
+                           "可见集必须是总集的真子集（实得 visible=\(visible) all=\(all)）")
+            try expectTrue(shelf.isSubset(of: visible) && shelf.count < visible.count,
+                           "看板集必须是可见集的真子集（实得 shelf=\(shelf) visible=\(visible)）")
         }
     }
 }

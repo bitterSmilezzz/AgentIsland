@@ -166,7 +166,7 @@ enum SettingsTests {
              try expectEqual(names.count, 3, "无关进程不得误拦")
          }
  
-         TestKit.test("设置: DockEdge 四边枚举、方向语义与持久化键值") {
+         TestKit.test("设置: DockEdge 四边枚举与方向语义") {
              try expectEqual(DockEdge.top.rawValue, "top")
              try expectEqual(DockEdge.right.rawValue, "right")
              try expectEqual(DockEdge.bottom.rawValue, "bottom")
@@ -180,20 +180,80 @@ enum SettingsTests {
              try expectTrue(DockEdge.bottom.isHorizontal, "底部沿 X 轴保存锚点")
              try expectFalse(DockEdge.left.isHorizontal, "左侧沿 Y 轴保存锚点")
              try expectFalse(DockEdge.right.isHorizontal, "右侧沿 Y 轴保存锚点")
- 
-            let suite = TestDefaults.suite("settings-7")
+            // 原来的「持久化」部分是 suite.set(x) 后 suite.get == x：那是 UserDefaults 的自证，
+            // 生产代码一行都没参与。磁盘契约（键名与 rawValue 的字面量）改由
+            // 「设置: 落盘键名与枚举 rawValue 是磁盘契约」统一守
+        }
 
-            suite.set(DockEdge.top.rawValue, forKey: SettingKey.dockEdge)
-            suite.set(120.5, forKey: SettingKey.dockAnchorX)
-            suite.set(450.0, forKey: SettingKey.dockAnchorY)
+        TestKit.test("设置: 落盘键名与枚举 rawValue 属于磁盘契约") {
+            // 这些字符串已经写在用户机器的 ~/Library/Preferences 里。改一个键名或 case 的
+            // rawValue 不会有任何编译错误，只会让老用户的该项设置读不到、然后静默回到默认。
+            // 「持久化读写」那类自证断言守不住这件事（它测的是 UserDefaults），字面量才能
+            let keys: [(name: String, actual: String, onDisk: String)] = [
+                ("sampleInterval", SettingKey.sampleInterval, "sampleInterval"),
+                ("idleSampleInterval", SettingKey.idleSampleInterval, "idleSampleInterval"),
+                ("workingWindow", SettingKey.workingWindow, "workingWindow"),
+                ("cpuThreshold", SettingKey.cpuThreshold, "cpuThreshold"),
+                ("activeSessionWindow", SettingKey.activeSessionWindow, "activeSessionWindow"),
+                ("collapseDelay", SettingKey.collapseDelay, "collapseDelay"),
+                ("enabledAgents", SettingKey.enabledAgents, "enabledAgents"),
+                ("islandAppearance", SettingKey.islandAppearance, "islandAppearance"),
+                ("notificationPolicy", SettingKey.notificationPolicy, "notificationPolicy"),
+                ("customAgents", SettingKey.customAgents, "customAgents"),
+                ("customAgentsCorruptBackup", SettingKey.customAgentsCorruptBackup, "customAgents.corrupt-backup"),
+                ("launchAtLogin", SettingKey.launchAtLogin, "launchAtLogin"),
+                ("dockEdge", SettingKey.dockEdge, "dockEdge"),
+                ("dockAnchorX", SettingKey.dockAnchorX, "dockAnchorX"),
+                ("dockAnchorY", SettingKey.dockAnchorY, "dockAnchorY"),
+                ("playCompletionSound", SettingKey.playCompletionSound, "playCompletionSound"),
+                ("tokenAlertEnabled", SettingKey.tokenAlertEnabled, "tokenAlertEnabled"),
+                ("tokenAlertThreshold", SettingKey.tokenAlertThreshold, "tokenAlertThreshold"),
+                ("runawayCpuAlert", SettingKey.runawayCpuAlert, "runawayCpuAlert"),
+                ("knownAgents", SettingKey.knownAgents, "knownAgents"),
+                ("hideDockedSliver", SettingKey.hideDockedSliver, "hideDockedSliver"),
+                ("dailyTokenBudget", SettingKey.dailyTokenBudget, "dailyTokenBudget"),
+                ("budgetAlertEnabled", SettingKey.budgetAlertEnabled, "budgetAlertEnabled"),
+                ("compactView", SettingKey.compactView, "compactView"),
+                ("globalHotKeyEnabled", SettingKey.globalHotKeyEnabled, "globalHotKeyEnabled"),
+                ("menuBarBadgeMode", SettingKey.menuBarBadgeMode, "menuBarBadgeMode"),
+                ("screenFollowMode", SettingKey.screenFollowMode, "screenFollowMode"),
+                ("completionSoundOption", SettingKey.completionSoundOption, "completionSoundOption"),
+                ("alertSoundOption", SettingKey.alertSoundOption, "alertSoundOption"),
+                ("hapticFeedbackEnabled", SettingKey.hapticFeedbackEnabled, "hapticFeedbackEnabled"),
+                ("batterySaverEnabled", SettingKey.batterySaverEnabled, "batterySaverEnabled"),
+                ("autoAnomaliesAlertEnabled", SettingKey.autoAnomaliesAlertEnabled, "autoAnomaliesAlertEnabled"),
+            ]
+            for entry in keys {
+                try expectEqual(entry.actual, entry.onDisk,
+                                "SettingKey.\(entry.name) 的落盘名从 \(entry.onDisk) 变了：老用户这项设置会被当成从没设过")
+            }
+            // 上面这份清单必须与 SettingKey 的全部键一一对应：只靠「别忘了补一项」的自觉
+            // 迟早漏，漏掉的那项就再也没有磁盘契约
+            let declared = try declaredSettingKeys()
+            let unpinned = declared.subtracting(keys.map(\.name))
+            let stale = Set(keys.map(\.name)).subtracting(declared)
+            try expectTrue(unpinned.isEmpty && stale.isEmpty,
+                            "SettingKey 与磁盘契约清单不一致（新增未钉住：\(unpinned.sorted())；"
+                            + "清单里已不存在：\(stale.sorted())）")
 
-            let savedEdge = suite.string(forKey: SettingKey.dockEdge).flatMap(DockEdge.init)
-            let savedX = suite.double(forKey: SettingKey.dockAnchorX)
-            let savedY = suite.double(forKey: SettingKey.dockAnchorY)
-
-            try expectEqual(savedEdge, .top, "DockEdge 应正确持久化与读取")
-            try expectEqual(savedX, 120.5, "dockAnchorX 应正确持久化")
-            try expectEqual(savedY, 450.0, "dockAnchorY 应正确持久化")
+            let enums: [(name: String, actual: Set<String>, onDisk: Set<String>)] = [
+                ("DockEdge", Set(DockEdge.allCases.map(\.rawValue)), ["right", "top", "bottom", "left"]),
+                ("IslandAppearance", Set(IslandAppearance.allCases.map(\.rawValue)), ["system", "light", "dark"]),
+                ("NotificationPolicy", Set(NotificationPolicy.allCases.map(\.rawValue)), ["standard", "focus", "silent"]),
+                ("ScreenFollowMode", Set(ScreenFollowMode.allCases.map(\.rawValue)),
+                 ["followMouse", "mainScreen", "builtInScreen", "externalScreen"]),
+                ("CompletionSoundOption", Set(CompletionSoundOption.allCases.map(\.rawValue)),
+                 ["Glass", "Pop", "Ping", "Blow", "mute"]),
+                ("AlertSoundOption", Set(AlertSoundOption.allCases.map(\.rawValue)),
+                 ["Sosumi", "Basso", "Funk", "mute"]),
+                ("MenuBarBadgeMode", Set(MenuBarBadgeMode.allCases.map(\.rawValue)),
+                 ["iconOnly", "activeCount", "tokenUsage"]),
+            ]
+            for entry in enums {
+                try expectEqual(entry.actual, entry.onDisk,
+                                "\(entry.name) 的 rawValue 集合变了：改名会让已落盘值解不出来，"
+                                + "新增要同时确认设置页选项与解码回退")
+            }
         }
 
         TestKit.test("面板交互: 状态栏宿主窗口不得阻止自动收起") {
@@ -250,13 +310,6 @@ enum SettingsTests {
             try expectEqual(IslandAppearance.system.next(), .light)
             try expectEqual(IslandAppearance.light.next(), .dark)
             try expectEqual(IslandAppearance.dark.next(), .system)
-
-            // 持久化测试
-            let suite = TestDefaults.suite("settings-8")
-
-            suite.set(IslandAppearance.dark.rawValue, forKey: SettingKey.islandAppearance)
-            let loaded = suite.string(forKey: SettingKey.islandAppearance).flatMap(IslandAppearance.init)
-            try expectEqual(loaded, .dark, "IslandAppearance 应正确持久化并读取")
         }
 
         TestKit.test("设置: NotificationPolicy 分级策略、微窥判定与声音判定及持久化") {
@@ -304,13 +357,6 @@ enum SettingsTests {
             // 静默模式：全部事件均不发声
             try expectFalse(NotificationPolicy.silent.shouldPlaySound(for: .completed, soundEnabled: true), "主开关开: 静默模式 completed 不发声")
             try expectFalse(NotificationPolicy.silent.shouldPlaySound(for: .costSpike, soundEnabled: true), "主开关开: 静默模式 costSpike 不发声")
-
-            // 3. 持久化测试
-            let suite = TestDefaults.suite("settings-9")
-
-            suite.set(NotificationPolicy.focus.rawValue, forKey: SettingKey.notificationPolicy)
-            let loaded = suite.string(forKey: SettingKey.notificationPolicy).flatMap(NotificationPolicy.init)
-            try expectEqual(loaded, .focus, "NotificationPolicy 应正确持久化并读取")
         }
 
         TestKit.test("存档损坏只读降级：不覆写、不丢原数据（LoadState.corrupt）") {
@@ -335,5 +381,23 @@ enum SettingsTests {
             try expectTrue(known?.contains("custom-historical") == true,
                             "registry 外历史 known 项不得被空集分支丢弃")
         }
+    }
+
+    /// SettingKey 里声明的全部键名（读生产源码，不依赖反射）
+    private static func declaredSettingKeys() throws -> Set<String> {
+        let text = try SourceTree.text(relativePath: "Sources/AgentIslandCore/SettingsStore.swift")
+        guard let start = text.range(of: "public enum SettingKey {") else {
+            throw TestError(message: "找不到 SettingKey 声明：磁盘契约清单无从比对")
+        }
+        let body = text[start.upperBound...]
+        let end = body.range(of: "\n}").map { body[..<$0.lowerBound] } ?? body
+        var names: Set<String> = []
+        for line in end.split(separator: "\n") {
+            guard let range = line.range(of: "public static let ") else { continue }
+            let rest = line[range.upperBound...]
+            let name = rest.prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+            names.insert(String(name))
+        }
+        return names
     }
 }

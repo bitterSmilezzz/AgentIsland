@@ -89,9 +89,8 @@ enum DebtPayoffTests {
                 count: TokenUsageMonitor.sessionDrilldownLimit)
             try expectTrue(full.contains("还有更多未列出"), "取满必须承认截断，实际 \(full)")
             // 标题口径与 SQL 里的 LIMIT 必须同一个数：两处各写一遍迟早漂移
-            guard let text = try? String(
-                contentsOfFile: "Sources/AgentIslandCore/TokenUsageMonitor.swift",
-                encoding: .utf8) else { return }
+            let text = try SourceTree.text(
+                relativePath: "Sources/AgentIslandCore/TokenUsageMonitor.swift")
             let bare = text.components(separatedBy: "\n").filter {
                 $0.contains("LIMIT 200") && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//")
             }

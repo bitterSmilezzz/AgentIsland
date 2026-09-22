@@ -105,31 +105,45 @@ enum MultiAgentAdvancedTests {
             try expectEqual(tb.totalTokens, 2870)
         }
 
-        TestKit.test("AgentSnapshot: 挂载后台任务与子智能体数据结构") {
-            let profile = AgentRegistry.builtin.first { $0.id == "antigravity" }!
-            let bgTask = AgentBackgroundTask(id: "task-1", action: "swift build")
-            let subagent = AgentSubagentInfo(conversationId: "conv-1", role: "Search Agent", model: "flash")
-            let tb = AgentTokenBreakdown(promptTokens: 100, completionTokens: 50, totalTokens: 150)
+        TestKit.test("在途上下文落进快照: 有信号才挂载，信号消失即整块丢弃") {
+            // 此前这条断言是「建一个 AgentSnapshot，再读回它自己的字段」——纯构造器往返，
+            // 永远不会失败。真正会坏的是 ActivityEngine 里那行 `sessionSignal == nil ? [] : ctx…`：
+            // 解析器在交出信号之前已经把上下文交了出来（contextSink 无条件调用），
+            // 卡片一旦留着上一轮的 🤖1子任务，待机看起来就像还在跑
+            let now = Date()
+            let lineInvoke = #"{"step_index":200,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"TypeName":"research","Role":"Codebase Researcher","Model":"pro"}]}}]}"#
+            let lineCreated = #"{"step_index":201,"source":"TOOL","type":"GENERIC","status":"DONE","content":"Created the following subagents: conv-sub-888"}"#
+            let lineUsage = #"{"step_index":202,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"调研完成。","usageMetadata":{"promptTokenCount":1500,"candidatesTokenCount":320,"totalTokenCount":1820}}"#
+            let fx = try AntigravityBrainFixture.make(lines: [lineInvoke, lineCreated, lineUsage],
+                                                      mtimeAgo: 60, now: now)
+            defer { try? FileManager.default.removeItem(at: fx.root) }
 
-            let snap = AgentSnapshot(
-                profile: profile,
-                level: .working,
-                processRunning: true,
-                cpuPercent: 5.0,
-                installed: true,
-                activeSessions: 1,
-                lastActivityAgo: 2,
-                lastActivityText: "刚刚",
-                backgroundTasks: [bgTask],
-                subagents: [subagent],
-                tokenBreakdown: tb
+            let profile = AgentProfile(id: "ag-snap", name: "AG Snap", icon: "terminal",
+                                       bundleIDs: [], processNames: ["agsnap"],
+                                       sessionDirs: [fx.brain.path],
+                                       sessionDialect: .antigravityBrain)
+            let engine = ActivityEngine(
+                profiles: [profile],
+                config: EngineConfig(workingWindow: 20),
+                processMonitor: FakeProcessProvider(processNames: ["agsnap"], bundleIDs: []),
+                fileMonitor: FakeFileActivityProvider(writes: [fx.brain.path: now.addingTimeInterval(-60)],
+                                                      files: [fx.brain.path: fx.transcript]),
+                installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] })
             )
 
-            try expectEqual(snap.backgroundTasks.count, 1)
-            try expectEqual(snap.backgroundTasks.first?.action, "swift build")
-            try expectEqual(snap.subagents.count, 1)
-            try expectEqual(snap.subagents.first?.role, "Search Agent")
-            try expectEqual(snap.tokenBreakdown?.totalTokens, 150)
+            // 1. 轮次刚完成（15 分钟内）：completed 信号仍在，上下文必须完整可见
+            let whileValid = engine.sample(now: now).first { $0.id == "ag-snap" }
+            try expectEqual(whileValid?.subagents.count, 1, "在途子智能体应挂到快照")
+            try expectEqual(whileValid?.subagents.first?.role, "Codebase Researcher")
+            try expectEqual(whileValid?.tokenBreakdown?.totalTokens, 1_820, "Token 细分应挂到快照")
+
+            // 2. 保质期过后：探测仍读得到同一份文件、解析器仍交出上下文，但信号已消失
+            //    —— 快照必须清空，否则卡片会永远挂着上一轮的「1子任务」
+            let afterExpiry = engine.sample(now: now.addingTimeInterval(60 + 901)).first { $0.id == "ag-snap" }
+            try expectEqual(afterExpiry?.level, .idle, "前置：完成信号过期且无新写入应落回待机")
+            try expectTrue(afterExpiry?.subagents.isEmpty == true,
+                           "信号消失后不得继续挂载上一轮解析出的子智能体")
+            try expectNil(afterExpiry?.tokenBreakdown, "信号消失后不得继续挂载上一轮的 Token 细分")
         }
 
         TestKit.test("用户中断撤销在途命令: 不得把 Agent 永久钉在 working") {

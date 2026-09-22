@@ -238,9 +238,7 @@ enum IslandMetricsTests {
         }
 
         TestKit.test("岛几何: 测试镜像的 CardRoute 与真实源码一致（漂移哨兵）") {
-            guard let real = realCardRouteCases() else {
-                return   // 非仓库布局运行（源码不可达）时跳过，不误报
-            }
+            let real = try realCardRouteCases()
             let mirror: Set<String> = ["list", "tokenAnalytics", "agentDetail", "sessions", "toolbox", "liveStream"]
             try expectEqual(real, mirror,
                             "Sources/AgentIsland/IslandView.swift 的 CardRoute 已变化，需同步 Tests/IslandMetricsKit/CardRoute.swift 并补路由高度覆盖")
@@ -251,14 +249,10 @@ enum IslandMetricsTests {
         TestKit.test("岛几何: 展开态高度签名的输入项与 expandedHeight 对齐（漂移哨兵）") {
             // R08 的签名去重依赖「签名组成 == expandedHeight 的输入依赖」。
             // 布局改动新增输入但漏改签名 → 高度冻结不更新（静默缺陷）——源级清单断言
-            let root = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()   // Tests/AgentIslandTestsRunner
-                .deletingLastPathComponent()   // Tests
-                .deletingLastPathComponent()   // 仓库根
-            let panelFile = root.appendingPathComponent("Sources/AgentIsland/IslandPanel.swift")
-            guard let text = try? String(contentsOf: panelFile, encoding: .utf8),
-                  let sigStart = text.range(of: "private func expandedHeightSignature() -> String {") else {
-                return   // 源码不可达时跳过（非仓库布局）
+            let text = try SourceTree.text(relativePath: "Sources/AgentIsland/IslandPanel.swift")
+            // 签名函数被改名/删掉正是这条哨兵要防的形态之一，不能算「源码不可达」后跳过
+            guard let sigStart = text.range(of: "private func expandedHeightSignature() -> String {") else {
+                throw TestError(message: "找不到 expandedHeightSignature()：漂移哨兵无从执行")
             }
             guard let sigEnd = text.range(of: "\n    }", range: sigStart.upperBound..<text.endIndex) else {
                 throw TestError(message: "签名函数结构异常")
@@ -282,16 +276,15 @@ enum IslandMetricsTests {
         }
     }
 
-    /// 读取真实 UI 源码里的 CardRoute case 集合（编译期 #filePath，不依赖工作目录）
-    private static func realCardRouteCases() -> Set<String>? {
-        let root = URL(fileURLWithPath: #filePath)          // Tests/AgentIslandTestsRunner/IslandMetricsTests.swift
-            .deletingLastPathComponent()                    // Tests/AgentIslandTestsRunner
-            .deletingLastPathComponent()                    // Tests
-            .deletingLastPathComponent()                    // 仓库根
-        let file = root.appendingPathComponent("Sources/AgentIsland/IslandView.swift")
-        guard let text = try? String(contentsOf: file, encoding: .utf8),
-              let start = text.range(of: "enum CardRoute"),
-              let end = text.range(of: "\n}", range: start.upperBound..<text.endIndex) else { return nil }
+    /// 读取真实 UI 源码里的 CardRoute case 集合。
+    /// 「读不到 / 一个 case 也没解析出来」一律抛：静默跳过会让这条哨兵在路由改名那天起
+    /// 就永远绿灯
+    private static func realCardRouteCases() throws -> Set<String> {
+        let text = try SourceTree.text(relativePath: "Sources/AgentIsland/IslandView.swift")
+        guard let start = text.range(of: "enum CardRoute"),
+              let end = text.range(of: "\n}", range: start.upperBound..<text.endIndex) else {
+            throw TestError(message: "解析不到 enum CardRoute：漂移哨兵无从执行")
+        }
         var cases: Set<String> = []
         for raw in text[start.upperBound..<end.lowerBound].split(separator: "\n") {
             let line = raw.trimmingCharacters(in: .whitespaces)
@@ -299,6 +292,7 @@ enum IslandMetricsTests {
             let name = line.dropFirst("case ".count).prefix { $0.isLetter || $0.isNumber || $0 == "_" }
             if !name.isEmpty { cases.insert(String(name)) }
         }
-        return cases.isEmpty ? nil : cases
+        try expectFalse(cases.isEmpty, "CardRoute 一个 case 都没解析出来：解析写法已随源码失效")
+        return cases
     }
 }

@@ -189,21 +189,4 @@ enum DebtRatchetTests {
         }
         return out
     }
-
-    /// 从测试源文件位置回溯到仓库的 Sources 目录（与「版本单一来源」测试同一手法）
-    @available(*, deprecated, message: "改用 SourceTree.requireSwiftFiles()：扫不到源码树必须失败，不能静默跳过")
-    private static func repoSourcesDirectory() -> URL? {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()   // Tests/AgentIslandTestsRunner
-            .deletingLastPathComponent()   // Tests
-            .deletingLastPathComponent()   // repo root
-            .appendingPathComponent("Sources")
-        return FileManager.default.fileExists(atPath: root.path) ? root : nil
-    }
-
-    private static func swiftFiles(in dir: URL) -> [URL] {
-        let fm = FileManager.default
-        guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { return [] }
-        return en.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
-    }
 }

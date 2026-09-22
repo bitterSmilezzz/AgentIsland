@@ -56,37 +56,56 @@ enum AntigravityTrackingTests {
             }
         }
 
-        TestKit.test("Antigravity会话探测: 统一入口 probe 优先分派至 Antigravity 专有探测器，防止通用检测器误报") {
-            let antigravity = AgentRegistry.builtin.first { $0.id == "antigravity" }!
-            let brainDir = URL(fileURLWithPath: antigravity.sessionDirs[0])
-            let subdirs = (try? FileManager.default.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])) ?? []
-
-            var files: [URL] = []
-            for sub in subdirs {
-                let logFile = sub.appendingPathComponent(".system_generated/logs/transcript.jsonl")
-                if FileManager.default.fileExists(atPath: logFile.path) {
-                    files.append(logFile)
-                }
+        TestKit.test("统一入口分派: antigravityBrain 方言由专有解析器定性，通用尾读轨产出不了它") {
+            // 此前的写法是拿 profile.sessionDirs 里**用户真实**的会话，把同一个函数按
+            // 3s 定位缓存的前后各调一次相比：Antigravity 没装就两个 .none 零断言通过，
+            // 装了也只是「缓存与直读一致」，标题里的「防通用检测器误报」根本没被执行
+            let now = Date()
+            let lineView = #"{"step_index":201,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"view_file","args":{"toolAction":"Viewing SettingsView.swift"}}]}"#
+            let lineOut = #"{"step_index":202,"source":"MODEL","type":"GENERIC","status":"DONE","content":"file contents..."}"#
+            let fx = try AntigravityBrainFixture.make(lines: [lineView, lineOut], mtimeAgo: 2, now: now)
+            defer { try? FileManager.default.removeItem(at: fx.root) }
+            func profile(dialect: AgentSessionDialect, brain: URL) -> AgentProfile {
+                AgentProfile(id: "ag-fixture", name: "AG Fixture", icon: "terminal",
+                             bundleIDs: [], processNames: ["agfixture"],
+                             sessionDirs: [brain.path], sessionDialect: dialect)
             }
 
-            let now = Date()
-            let signalInspect = AgentSessionInspector.probe(profile: antigravity, activityFiles: files, now: now).signal
-            // 会话定位有 3s TTL 缓存：晚于 TTL 的一拍重新定位，才能独立校验两条入口
-            let signalDedicated = AgentSessionInspector.probeAntigravitySession(
-                dirs: antigravity.sessionDirs, now: now.addingTimeInterval(4)).signal
+            // 专有轨不消费 FileMonitor 的产出（自行按 brain 布局定位会话），
+            // 所以 activityFiles 传空仍然必须探到——这条同时证明了分派走的是方言而非文件列表
+            let dedicated = AgentSessionInspector.probe(profile: profile(dialect: .antigravityBrain, brain: fx.brain),
+                                                        activityFiles: [], now: now)
+            guard case let .active(fingerprint, action)? = dedicated.signal else {
+                throw TestError(message: "专有轨必须返回 active，实得 \(String(describing: dedicated.signal))")
+            }
+            try expectEqual(fingerprint, "antigravity-step-202")
+            try expectEqual(action, "查看: SettingsView.swift (处理中)")
 
-            // inspect 必须与专有解析器行为完全一致，且绝不得出现虚假的 attention 误报
-            switch (signalInspect, signalDedicated) {
-            case (.none, .none):
-                break
-            case let (.active(f1, _), .active(f2, _)):
-                try expectEqual(f1, f2, "inspect 与专有探测器的活跃指纹必须一致")
-            case let (.completed(f1), .completed(f2)):
-                try expectEqual(f1, f2, "inspect 与专有探测器的完成指纹必须一致")
-            case let (.attention(r1), .attention(r2)):
-                try expectEqual(r1.fingerprint, r2.fingerprint, "inspect 与专有探测器的提问指纹必须一致")
-            default:
-                throw TestError(message: "inspect 派发结果 (\(String(describing: signalInspect))) 与专有解析器 (\(String(describing: signalDedicated))) 不一致")
+            // 同一份文件、同一个入口，只把方言换成通用尾读
+            let generic = AgentSessionInspector.probe(profile: profile(dialect: .genericTail, brain: fx.brain),
+                                                      activityFiles: [fx.transcript], now: now)
+            try expectNil(generic.signal,
+                          "通用轨对 Antigravity 日志的判定变了：它一旦产出 attention，"
+                          + "岛就会把「正在读文件」报成「等你确认」——分派的价值正在于此")
+
+            // 反证「brain 里有文件就出信号」：超过 24h 的会话属于上一次工作，不再采信。
+            // 这条必须用**未答复的提问**来测——解析器对 ask_question 本身不设年龄上限
+            // （等待确认可以持续很久），probe 里那行 24h 是唯一天花板；换成其他内容，
+            // 解析器自己的 15 分钟保质期会先把它抹掉，测的就不是这行了
+            let lineAsk = #"{"step_index":300,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"ask_question","args":{"questions":"[{\"question\":\"要保留旧实现吗？\"}]"}}]}"#
+            let stale = try AntigravityBrainFixture.make(lines: [lineAsk], mtimeAgo: 25 * 3_600, now: now)
+            defer { try? FileManager.default.removeItem(at: stale.root) }
+            try expectNil(AgentSessionInspector.probe(profile: profile(dialect: .antigravityBrain,
+                                                                       brain: stale.brain),
+                                                      activityFiles: [], now: now).signal,
+                          "25 小时未答的提问仍被当作当前状态：岛会一直停在「等你确认」")
+            // 同一份内容在 24h 之内仍然采信（证明上面那条 nil 来自时限，不是内容解析不出来）
+            let freshAsk = try AntigravityBrainFixture.make(lines: [lineAsk], mtimeAgo: 23 * 3_600, now: now)
+            defer { try? FileManager.default.removeItem(at: freshAsk.root) }
+            guard case .attention? = AgentSessionInspector.probe(
+                profile: profile(dialect: .antigravityBrain, brain: freshAsk.brain),
+                activityFiles: [], now: now).signal else {
+                throw TestError(message: "23 小时的未答提问仍应采信，否则 24h 时限的断言没有对照")
             }
         }
 

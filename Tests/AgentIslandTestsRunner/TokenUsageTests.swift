@@ -191,11 +191,20 @@ enum TokenUsageTests {
             try expectEqual(TokenTimeRange.day.bucketCount, 24)
             try expectEqual(TokenTimeRange.week.bucketCount, 28)
             try expectEqual(TokenTimeRange.month.bucketCount, 30)
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let bucketSeconds: [TokenTimeRange: Int] = [.day: 3_600, .week: 6 * 3_600, .month: 86_400]
             for range in TokenTimeRange.allCases {
-                let empty = TokenUsageTimeline.empty(for: range,
-                                                     now: Date(timeIntervalSince1970: 1_700_000_000))
+                let empty = TokenUsageTimeline.empty(for: range, now: now)
                 try expectEqual(empty.points.count, range.bucketCount)
                 try expectTrue(empty.sources.isEmpty)
+                // 空时间线也要铺满整个窗口：横轴是按 points 画的，起点或桶宽错了
+                // 就是「报表少画半天」，而 sources 为空时这条以前一句断言都没有
+                try expectEqual(Int(now.timeIntervalSince(empty.points[0].start).rounded()),
+                                Int(range.duration),
+                                "\(range) 首桶应从窗口起点开始")
+                try expectEqual(Int(empty.points[1].start.timeIntervalSince(empty.points[0].start).rounded()),
+                                bucketSeconds[range]!,
+                                "\(range) 桶宽与 label 说法不符")
             }
         }
 

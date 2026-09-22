@@ -1865,12 +1865,13 @@ enum EngineTests {
             fake.grandTotal = TokenUsage(tokens24h: 10, tokensTotal: 100, cost24h: 0.1, costTotal: 1.0)
             let engine = makeEngine(processNames: [], writes: [:], tokenMonitor: fake)
             try expectEqual(engine.grandTotal, fake.grandTotal, "grandTotal 经引擎透出")
+            // 参数必须原样透传：只记「调了哪个方法」的话，agentId 被写死成别的值、
+            // 时间范围被换成默认 .day，这些都仍然全绿
             engine.modelBreakdown(agentId: "dim") { _ in }
-            engine.sessions(agentId: "dim", modelId: "m") { _ in }
+            engine.sessions(agentId: "dim", modelId: "gpt-5") { _ in }
             engine.tokenTimeline(range: .week) { _ in }
-            try expectTrue(fake.calls.contains("modelBreakdown"), "下钻查询经引擎转发")
-            try expectTrue(fake.calls.contains("sessions"), "会话查询经引擎转发")
-            try expectTrue(fake.calls.contains("timeline"), "时间线查询经引擎转发")
+            try expectEqual(fake.calls, ["modelBreakdown:dim", "sessions:dim/gpt-5", "timeline:week"],
+                            "下钻查询按参数原样转发到 token 侧")
         }
 
         TestKit.test("引擎: 安装缓存首刷完成后重放启用集，自动发现项恢复监控") {

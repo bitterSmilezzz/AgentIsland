@@ -229,16 +229,11 @@ enum ConfigTests {
 
         TestKit.test("哨兵: CHANGELOG/build-app.sh/README 三处版本一致") {
             // 文档数字哨兵：三处版本漂移曾导致关于页/Info.plist/README 各说各话。
-            // 文件缺失（非常规 cwd 运行）时显式跳过，不作断言
-            guard FileManager.default.fileExists(atPath: "CHANGELOG.md"),
-                  FileManager.default.fileExists(atPath: "scripts/build-app.sh"),
-                  FileManager.default.fileExists(atPath: "README.md") else {
-                print("   [skip] 非仓库根目录，跳过版本哨兵")
-                return
-            }
-            let changelog = try String(contentsOfFile: "CHANGELOG.md", encoding: .utf8)
-            let script = try String(contentsOfFile: "scripts/build-app.sh", encoding: .utf8)
-            let readme = try String(contentsOfFile: "README.md", encoding: .utf8)
+            // 哨兵守的是「CHANGELOG/README/AppVersion 三处版本必须一致」——发版脚本正是靠它
+            // 拦下漏改。按 cwd 相对路径读、读不到就 skip，等于从别的目录跑测试时这道闸自动抬起
+            let changelog = try SourceTree.text(relativePath: "CHANGELOG.md")
+            let script = try SourceTree.text(relativePath: "scripts/build-app.sh")
+            let readme = try SourceTree.text(relativePath: "README.md")
             let semver = "[0-9]+\\.[0-9]+\\.[0-9]+"
             guard let m1 = changelog.range(of: "## \\[" + semver + "]", options: .regularExpression),
                   let m2 = readme.range(of: "本文档描述 \\*\\*v" + semver + "\\*\\*",
