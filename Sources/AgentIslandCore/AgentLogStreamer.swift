@@ -120,8 +120,6 @@ public enum AgentLogStreamer {
             events = fetchDimEvents(limit: limit)
         case "claude":
             events = fetchClaudeEvents(limit: limit)
-        case "opencode":
-            events = fetchOpenCodeEvents(limit: limit)
         case "zcode":
             events = fetchZCodeEvents(limit: limit)
         case "workbuddy":
@@ -131,7 +129,14 @@ public enum AgentLogStreamer {
         case "hermes":
             events = fetchHermesEvents(limit: limit)
         default:
-            events = []
+            // OpenCode 方言家族（OpenCode 本体与同表结构的 fork，如小米 MiMo Code）按档案
+            // 声明的 schema 路由：漏加 id 的表现是「流水一片空白」，所以不按 id 逐个列
+            if let profile = AgentRegistry.profile(id: agentId),
+               profile.sessionDatabase?.schema == .openCode {
+                events = fetchOpenCodeEvents(agentId: agentId, limit: limit)
+            } else {
+                events = []
+            }
         }
         return deduplicateIds(events)
     }
@@ -410,10 +415,10 @@ public enum AgentLogStreamer {
         return []
     }
 
-    // MARK: - 5. OpenCode 日志流 (opencode.db)
+    // MARK: - 5. OpenCode 方言日志流 (opencode.db / mimocode.db)
 
-    public static func fetchOpenCodeEvents(limit: Int = 20) -> [AgentLogEvent] {
-        guard let dbPath = AgentRegistry.databasePath(for: "opencode") else { return [] }
+    public static func fetchOpenCodeEvents(agentId: String = "opencode", limit: Int = 20) -> [AgentLogEvent] {
+        guard let dbPath = AgentRegistry.databasePath(for: agentId) else { return [] }
         // 本文件所有流水源都在后台队列刷新：走 withDedicatedConnection，不与主线程采样抢那把跨 SQL 的锁。
         // 打开失败返回 nil → 空流水
         return ReadonlyDB.withDedicatedConnection(dbPath) { db -> [AgentLogEvent] in
@@ -427,7 +432,7 @@ public enum AgentLogStreamer {
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let dataStr = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
                 let timeCreatedMs = sqlite3_column_int64(stmt, 1)
-                let date = SafeNumber.date(fromEpochMillis: timeCreatedMs, source: "opencode.part.time") ?? Date()
+                let date = SafeNumber.date(fromEpochMillis: timeCreatedMs, source: "\(agentId).part.time") ?? Date()
 
                 if let data = dataStr.data(using: .utf8),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -451,7 +456,7 @@ public enum AgentLogStreamer {
                         kind: kind,
                         title: title,
                         detail: dataStr,
-                        agentId: "opencode"
+                        agentId: agentId
                     ))
                 }
             }

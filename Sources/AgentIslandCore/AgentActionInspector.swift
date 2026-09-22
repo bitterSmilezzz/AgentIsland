@@ -17,7 +17,14 @@ public enum AgentActionInspector {
             }
         }
 
-        // 2. 根据各 Agent 的专用会话数据库/日志提取最近动作
+        // 2. OpenCode 方言家族（OpenCode 本体，以及沿用同一套 session/message/part 表结构的
+        //    fork，如小米 MiMo Code）：按档案声明的 schema 路由，而不是按 id 逐个列——
+        //    再接一个 fork 只改注册表，动作探测不会静默变成「没有当前动作」
+        if profile.sessionDatabase?.schema == .openCode {
+            return inspectOpenCodeAction(agentId: profile.id)
+        }
+
+        // 3. 其余按各 Agent 的专用会话数据库/日志提取最近动作
         switch profile.id {
         case "dim":
             return inspectDimAction(agentId: "dim")
@@ -33,8 +40,6 @@ public enum AgentActionInspector {
             return inspectWorkBuddyAction(agentId: "workbuddy")
         case "workbuddy-ai":
             return inspectWorkBuddyAction(agentId: "workbuddy-ai")
-        case "opencode":
-            return inspectOpenCodeAction(agentId: "opencode")
         case "dsh":
             return inspectDSHAction(pid: pid, snapshot: snapshot)
         case "hermes":

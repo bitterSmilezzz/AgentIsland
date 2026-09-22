@@ -4,6 +4,29 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.115] - 2026-09-22
+
+### 📡 新增 Xiaomi MiMo（MiMo Code）识别，并把 OpenCode 方言改成按档案声明路由
+
+- 注册表新增 `mimocode` 档案：bundle id `com.xiaomi.mimo.desktop`、进程名 `Xiaomi MiMo` 与
+  `mimocode`（引擎进程，CPU 跨条目求和，漏掉会表现为「在跑任务却一路 0%」）、Electron 的
+  GPU/渲染/网络 helper 与 crashpad 按路径排除，会话数据根只监控 `~/.local/share/mimocode`
+  ——`Library/Application Support/Xiaomi MiMo` 是 Chromium 用户数据目录，空闲也在写，
+  进监控就把「开着窗」报成「在干活」（Antigravity 的 R37 同一课）。
+- **动作探测与实时流水不再按 agent id 硬列 `opencode`**：改为看档案声明的
+  `sessionDatabase.schema == .openCode`。MiMo Code 的库与 OpenCode 同形
+  （`session` / `message` / `part`，`part.data` 存 JSON part），复用即可；按 id 列的话
+  接一个 fork 就会漏掉一两处，症状是「卡片在、当前动作空、流水一片空白」且没有任何报错。
+  `fetchOpenCodeEvents` 随之参数化 `agentId`，事件归属不再写死。
+- 本机实测：新卡片 📡 Xiaomi MiMo 命中主进程 pid、待机、CPU 0%；doctor 给的是
+  「无本地明细：读不到会话与用量」——库里确实 0 条会话，不是探测瞎了。
+- **用量明细刻意还没接**：Token 侧现在是一个 `openCodeDB` 单点，接第二个同方言的库要把它
+  改成按档案列表；而 MiMo 的 `part.data` usage 字段形状在本机还没有一次真实编码会话可核对。
+  先不猜（README 的 Token 口径一节明确写了「状态已接、用量未跑通」）。
+- 测试：档案契约（bundle id、数据根、方言、库路径）、进程匹配（主进程 + 引擎进程进、四条
+  helper 出）、以及「不许再按 id 硬分派」的结构哨兵。四处变异逐条确认新断言会红
+  （删 `mimocode` 进程名、把方言换成 `statusIndex`、把流水路由改回按 id）。425 个用例全绿。
+
 ## [0.0.114] - 2026-09-22
 
 ### 🔬 测试可信度：把七处「永远绿的灯」换成真的会亮的

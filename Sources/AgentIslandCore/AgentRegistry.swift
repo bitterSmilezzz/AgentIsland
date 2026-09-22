@@ -230,6 +230,33 @@ public enum AgentRegistry {
             sessionDatabase: AgentSessionDatabase(path: home(".local/share/opencode/opencode.db"), schema: .openCode),
         ),
         AgentProfile(
+            id: "mimocode",
+            name: "Xiaomi MiMo",
+            icon: "antenna.radiowaves.left.and.right",
+            bundleIDs: ["com.xiaomi.mimo.desktop"],
+            // 桌面主进程 + 引擎进程。注册表里的 asar 线索（~/.local/state/mimocode、
+            // ~/.config/mimocode、mimocode-cli）表明编码引擎是独立进程而非渲染器内跑；
+            // 引擎进程的 CPU 才是真干活的那份——主进程只按 desktopCPUFloor 会长期显示 0%。
+            // 「mimocode」这一条按 CLI 命名习惯推的，真实进程名待跑过一次编码会话核对
+            processNames: ["Xiaomi MiMo", "mimocode"],
+            // 不写 pathContains：桌面版走 bundle/主进程名已经够收敛，而 CLI 单独跑时
+            // 可执行路径里并不含 "xiaomi mimo"，加了白名单反而把那种形态排除掉
+            // Electron 派生进程（GPU/渲染/网络/崩溃上报）与宿主是同一个程序：CPU 会跨条目
+            // 求和，把渲染器的空闲抖动累成「高负载工作中」，因此按路径排除
+            pathExcludes: ["frameworks", "helper"],
+            cpuWorkingThreshold: desktopCPUFloor,
+            // 引擎数据根（会话库 + 心跳日志）。`Library/Application Support/Xiaomi MiMo`
+            // 是 Electron 用户数据目录（Chromium 缓存、账号状态、更新器），空闲时也在写，
+            // 不进监控——同 Antigravity 那条 R37 的教训
+            sessionDirs: [home(".local/share/mimocode")],
+            category: .assistant,
+            emoji: "📡",
+            // 表结构与 OpenCode 同形（session / message / part，part.data 存 JSON part），
+            // 所以复用 .openCode 方言：状态、当前动作、实时流水三处都按 schema 路由，
+            // 再接同类 fork 只改这张表
+            sessionDatabase: AgentSessionDatabase(path: home(".local/share/mimocode/mimocode.db"), schema: .openCode),
+        ),
+        AgentProfile(
             id: "hermes",
             name: "Hermes Agent",
             icon: "wand.and.stars",

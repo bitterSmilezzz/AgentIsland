@@ -279,12 +279,67 @@ enum RegistryTests {
                             "声明了 tokenRoots 的档案集合与用量页读取的集合不一致")
 
             // 落 SQLite 的 Agent：库位置必须是档案里的绝对路径
-            for id in ["dim", "opencode", "zcode", "workbuddy", "workbuddy-ai"] {
+            for id in ["dim", "opencode", "mimocode", "zcode", "workbuddy", "workbuddy-ai"] {
                 let profile = AgentRegistry.builtin.first { $0.id == id }
                 try expectTrue(profile != nil, "内置档案 \(id) 不能删")
                 try expectTrue(profile?.sessionDatabase != nil, "\(id) 依赖会话库，档案必须声明 sessionDatabase")
                 try expectTrue(profile?.sessionDatabase?.path.hasPrefix("/") == true,
                                "\(id) 的会话库必须是绝对路径")
+            }
+        }
+
+        TestKit.test("注册表: Xiaomi MiMo 按 OpenCode 方言的 fork 登记") {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let mimo = AgentRegistry.builtin.first { $0.id == "mimocode" }
+            try expectNotNil(mimo, "Xiaomi MiMo（MiMo Code）必须在内置档案里")
+            try expectEqual(mimo?.name, "Xiaomi MiMo")
+            try expectEqual(mimo?.bundleIDs, ["com.xiaomi.mimo.desktop"], "安装探测与运行判定都按 bundle id")
+            try expectTrue(mimo?.processNames.contains("Xiaomi MiMo") == true, "主进程名")
+            try expectEqual(mimo?.sessionDirs, [home + "/.local/share/mimocode"],
+                            "只监控引擎数据根；Electron 用户数据目录空闲时也在写，会把「开着窗」报成「在干活」")
+            try expectEqual(mimo?.sessionDatabase?.path, home + "/.local/share/mimocode/mimocode.db")
+            try expectEqual(mimo?.sessionDatabase?.schema, .openCode,
+                            "表结构与 OpenCode 同形（session/message/part），状态与动作都靠这条声明复用")
+        }
+
+        TestKit.test("进程匹配: Xiaomi MiMo 记主进程与引擎进程，Electron helper 与崩溃上报除外") {
+            // 前四条就是本机实测的进程树（主进程 + GPU + 渲染 + crashpad）；第五条是按
+            // 注册表线索放的引擎进程形态——CPU 跨条目求和，所以「该算进来的」漏了会
+            // 表现为「明明在跑任务，岛上一路 0% CPU」
+            let entries = [
+                ProcessSnapshot.Entry(pid: 26_762,
+                                      path: "/Applications/Xiaomi MiMo.app/Contents/MacOS/Xiaomi MiMo",
+                                      basename: "xiaomi mimo", cpuPercent: 3.2, rssBytes: 400_000_000),
+                ProcessSnapshot.Entry(pid: 26_868,
+                                      path: "/Applications/Xiaomi MiMo.app/Contents/Frameworks/Xiaomi MiMo Helper.app/Contents/MacOS/Xiaomi MiMo Helper",
+                                      basename: "xiaomi mimo helper", cpuPercent: 22.0, rssBytes: 180_000_000),
+                ProcessSnapshot.Entry(pid: 26_890,
+                                      path: "/Applications/Xiaomi MiMo.app/Contents/Frameworks/Xiaomi MiMo Helper (Renderer).app/Contents/MacOS/Xiaomi MiMo Helper (Renderer)",
+                                      basename: "xiaomi mimo helper (renderer)", cpuPercent: 31.0, rssBytes: 260_000_000),
+                ProcessSnapshot.Entry(pid: 26_864,
+                                      path: "/Applications/Xiaomi MiMo.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler",
+                                      basename: "chrome_crashpad_handler", cpuPercent: 0.0, rssBytes: 12_000_000),
+                ProcessSnapshot.Entry(pid: 27_001,
+                                      path: "/Applications/Xiaomi MiMo.app/Contents/Resources/mimocode/bin/mimocode",
+                                      basename: "mimocode", cpuPercent: 40.0, rssBytes: 220_000_000, ppid: 26_762),
+            ]
+            let matcher = ProcessMatcher(snapshot: ProcessSnapshot(entries: entries),
+                                         runningBundleIDs: ["com.xiaomi.mimo.desktop"])
+            let matched = matcher.matchingEntries(for: AgentRegistry.builtin.first { $0.id == "mimocode" }!)
+            try expectEqual(Set(matched.map(\.pid)), [26_762, 27_001],
+                            "主进程与引擎进程各记一次；helper 与 crashpad 不得进（实得 \(matched.map(\.pid))）")
+        }
+
+        TestKit.test("结构: OpenCode 方言的 Agent 按档案 schema 路由，不再按 id 逐个列") {
+            // 状态、动作、实时流水三处以前各自按 id 列一遍；接一个同表结构的 fork（小米 MiMo）
+            // 就会漏掉其中几处，表现为「有这个卡片但没有当前动作、流水一片空白」而没有任何报错
+            for path in ["Sources/AgentIslandCore/AgentActionInspector.swift",
+                         "Sources/AgentIslandCore/AgentLogStreamer.swift"] {
+                let text = SourceTree.codeOnly(try SourceTree.text(relativePath: path))
+                try expectFalse(text.contains("case \"opencode\""),
+                                "\(path) 又回到按 id 硬分派：新的 OpenCode 方言 fork 会静默没有动作/流水")
+                try expectTrue(text.contains("schema == .openCode"),
+                               "\(path) 的 OpenCode 方言路由必须建立在档案声明的 schema 上")
             }
         }
     }

@@ -1,8 +1,8 @@
 # AgentIsland — Agent 会话灵动岛监控器
 
-监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
+监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.114** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.115** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 能看见什么
 
@@ -88,6 +88,7 @@
 - **OpenCode**：`opencode.db` 消息表（token + 花费 $）
 - **Codex / Claude / WorkBuddy / WorkBuddy AI**：只读解析本机会话 JSONL 的结构化 usage 字段，不保留对话正文
 - **Antigravity**：Prompt / Completion / Cache / Thoughts 细分
+- **Xiaomi MiMo（MiMo Code）**：会话状态、当前动作与实时流水按 OpenCode 方言读 `~/.local/share/mimocode/mimocode.db`（同一套 `session` / `message` / `part` 表）；用量明细尚未接入，用量列显示 `—` 而不是估算值
 - **Qoder：用量列显示 `—`，它的 token 消耗确认监控不了**——实测 1,033 条 usage 记录里四个 token 字段全为 0，真值只有 `credits`；接入采集会让用量页冷跑从约 2.05s 涨到 2.9–4.0s 却拿不到数据，所以宁可显示「没取到」。
 - 行内徽标显示 24h 用量；卡片底部汇总栏双口径（跨工具 24h / 累计 + 花费）；点击汇总条进入 24h / 7 天 / 30 天分析（趋势、环比、按工具占比与成本）。内嵌的 Codex 即使不单独显示为运行项，也不会失去用量入口。
 - 分工具列表始终说明数据覆盖状态：「未发现本地明细」与「真实零用量」不混为一谈；无明细的图表区间显式提示，而不是画一整排全零格子；环形图静默丢弃的模型改为可见的「其余 N 个 · xx%」。
@@ -197,7 +198,7 @@ AgentIsland/
 ## 已知限制
 
 - 已适配结构化确认/完成事件的 Agent 能区分待确认与已完成；未知或改版后的日志格式会安全降级到「进程 + 文件写入/CPU」三态近似。
-- Token 统计当前适配 DimAgent、OpenCode、Codex、Claude、WorkBuddy、WorkBuddy AI 与 Antigravity；不提供稳定本地 usage 明细的工具（如 Qoder 只有 `credits`）会在分析页明确标为未接入而不估算。
+- Token 统计当前适配 DimAgent、OpenCode、Codex、Claude、WorkBuddy、WorkBuddy AI 与 Antigravity；不提供稳定本地 usage 明细的工具（如 Qoder 只有 `credits`）会在分析页明确标为未接入而不估算。Xiaomi MiMo 属于「状态已接、用量未接」：它的表结构与 OpenCode 同形，但本机库里还没有一次真实编码会话可核对 usage 字段，因此不猜。
 - 闲置降频 5s 时，Agent 开始工作的检测最多延迟一个采样周期（可调「闲置降频间隔」）。
 - 多显示器跟随鼠标所在屏的右缘（`NSScreen.screens`）。
 - **浅色小字号按 AA 正文档校准**：8–10pt 文字已 ≥4.5:1，但热力图 / 环图一类**纯图形**仍按 3:1 的图形线取值，不追求正文档。
