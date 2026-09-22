@@ -874,10 +874,10 @@ struct SettingsView: View {
 
                     Toggle(isOn: $budgetAlertEnabled) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("每日 Token 消费预算预警与封顶")
+                            Text("Token 消费预算预警与封顶（滚动 24 小时）")
                                 .font(Theme.bodyFont(13))
                                 .foregroundColor(Theme.ink)
-                            Text("设定每日消耗预算上限，用量达 80% 触发黄色预警，达 100% 触发红色超额告警")
+                            Text("预算度量的是「最近 24 小时用量」，与卡片上的 24H 同一个数：不按自然日清零，跨过午夜不会重新告警一次。达 80% 触发黄色预警，达 100% 触发红色超额告警；回落到 75% 以下才会重新武装。")
                                 .font(Theme.bodyFont(10))
                                 .foregroundColor(Theme.inkMuted48)
                         }
@@ -886,15 +886,15 @@ struct SettingsView: View {
                     .tint(Theme.actionBlue)
 
                     if budgetAlertEnabled {
-                        Picker("每日消费预算上限", selection: $dailyTokenBudget) {
+                        Picker("消费预算上限（最近 24 小时）", selection: $dailyTokenBudget) {
                             Text("不设限额").tag(0)
-                            Text("100k tokens / 天").tag(100_000)
-                            Text("200k tokens / 天").tag(200_000)
-                            Text("500k tokens / 天").tag(500_000)
-                            Text("1.0M tokens / 天").tag(1_000_000)
-                            Text("2.0M tokens / 天").tag(2_000_000)
-                            Text("5.0M tokens / 天").tag(5_000_000)
-                            Text("10.0M tokens / 天").tag(10_000_000)
+                            Text("100k tokens / 24h").tag(100_000)
+                            Text("200k tokens / 24h").tag(200_000)
+                            Text("500k tokens / 24h").tag(500_000)
+                            Text("1.0M tokens / 24h").tag(1_000_000)
+                            Text("2.0M tokens / 24h").tag(2_000_000)
+                            Text("5.0M tokens / 24h").tag(5_000_000)
+                            Text("10.0M tokens / 24h").tag(10_000_000)
                         }
                         .font(Theme.bodyFont(12))
                     }

@@ -192,20 +192,94 @@ enum TokenUsageTests {
             try expectEqual(TokenTimeRange.week.bucketCount, 28)
             try expectEqual(TokenTimeRange.month.bucketCount, 30)
             let now = Date(timeIntervalSince1970: 1_700_000_000)
-            let bucketSeconds: [TokenTimeRange: Int] = [.day: 3_600, .week: 6 * 3_600, .month: 86_400]
+            let calendar = Calendar.current
             for range in TokenTimeRange.allCases {
                 let empty = TokenUsageTimeline.empty(for: range, now: now)
                 try expectEqual(empty.points.count, range.bucketCount)
                 try expectTrue(empty.sources.isEmpty)
-                // 空时间线也要铺满整个窗口：横轴是按 points 画的，起点或桶宽错了
-                // 就是「报表少画半天」，而 sources 为空时这条以前一句断言都没有
-                try expectEqual(Int(now.timeIntervalSince(empty.points[0].start).rounded()),
-                                Int(range.duration),
+                // 空时间线也要铺满整个窗口：横轴是按 points 画的，起点错了就是「报表少画半天」
+                try expectEqual(empty.points[0].start, range.windowStart(now: now),
                                 "\(range) 首桶应从窗口起点开始")
-                try expectEqual(Int(empty.points[1].start.timeIntervalSince(empty.points[0].start).rounded()),
-                                bucketSeconds[range]!,
-                                "\(range) 桶宽与 label 说法不符")
+                for index in 1..<empty.points.count {
+                    try expectTrue(empty.points[index].start > empty.points[index - 1].start,
+                                   "\(range) 第 \(index) 个桶的起点没有更晚")
+                }
             }
+            // 24h 档保持滚动（它的刻度带时分，滚动不说谎）；周/月按日历日切
+            try expectEqual(TokenTimeRange.day.windowStart(now: now),
+                            now.addingTimeInterval(-TokenTimeRange.day.duration),
+                            "24h 档必须仍是滚动窗口，与卡片上的 24H 同一个口径")
+            for range in [TokenTimeRange.week, TokenTimeRange.month] {
+                let starts = TokenUsageTimeline.empty(for: range, now: now).points.map(\.start)
+                let byDay = Dictionary(grouping: starts) { calendar.startOfDay(for: $0) }
+                try expectEqual(byDay.count, range.alignedDays,
+                                "\(range) 应覆盖 \(range.alignedDays) 个日历天（实得 \(byDay.count)）")
+                for (day, items) in byDay {
+                    try expectEqual(items.count, range.bucketsPerDay,
+                                    "\(range) 在 \(day) 上切了 \(items.count) 格，每格不得跨日历日")
+                }
+            }
+            // 月档一格就是一天，刻度写 M/d，所以起点必须是当地零点
+            let monthStarts = TokenUsageTimeline.empty(for: .month, now: now).points.map(\.start)
+            for start in monthStarts {
+                try expectEqual(start, calendar.startOfDay(for: start),
+                                "月档桶起点不在当地 00:00：标签 M/d 会说谎")
+            }
+        }
+
+        TestKit.test("分析页分桶: 跨午夜的相邻两笔不得挤进同一根柱子") {
+            // 旧口径从「此刻」往回推 duration，桶边界落在钟点上：一根标着 9/18 的柱子实际
+            // 覆盖 9/17 21:37 → 9/18 03:37，昨天深夜的用量被算进今天那一格
+            let calendar = Calendar.current
+            let today = calendar.startOfDay(for: Date())
+            let now = today.addingTimeInterval(12 * 3_600)          // 今天正午
+            func at(_ dayOffset: Int, _ seconds: TimeInterval) -> Date {
+                calendar.date(byAdding: .day, value: dayOffset, to: today)!.addingTimeInterval(seconds)
+            }
+            let records = [
+                TokenUsageRecord(agentId: "dim", time: at(-1, 23 * 3_600 + 50 * 60), tokens: 100, cost: 1),
+                TokenUsageRecord(agentId: "dim", time: at(0, 10 * 60), tokens: 250, cost: 2),
+            ]
+            let month = TokenTimelineBuilder.build(records: records, range: .month, now: now)
+            let filled = month.points.filter { $0.tokens > 0 }
+            try expectEqual(filled.count, 2, "昨天 23:50 与今天 00:10 必须分属两根柱子")
+            try expectEqual(filled.map(\.tokens), [100, 250], "按时间先后对应各自的量")
+            try expectEqual(filled.map { calendar.startOfDay(for: $0.start) }, [at(-1, 0), at(0, 0)],
+                            "每根柱子的起点就是它标签上的那一天")
+            try expectEqual(month.tokens, 350, "本期合计")
+            try expectEqual(month.previousTokens, 0, "两笔都在本期，环比分母不得把它们算进去")
+
+            // 周档同理，只是每天切 4 格：昨天深夜那一格不能与今天凌晨共用
+            let week = TokenTimelineBuilder.build(records: records, range: .week, now: now)
+            let weekFilled = week.points.filter { $0.tokens > 0 }
+            try expectEqual(weekFilled.count, 2)
+            try expectEqual(weekFilled.map(\.tokens), [100, 250])
+        }
+
+        TestKit.test("预算告警: 跨午夜不得对同一段滚动窗口重复告警") {
+            // 预算度量的是 tokens24h（滚动 24 小时）。旧实现额外按自然日把告警级别归零，
+            // 于是 23:50 报过的越线，00:10 同一段用量会再报一次，天天午夜响一遍
+            let calendar = Calendar.current
+            let midnight = calendar.startOfDay(for: Date())
+            let beforeMidnight = midnight.addingTimeInterval(23 * 3_600 + 50 * 60)
+            let afterMidnight = beforeMidnight.addingTimeInterval(20 * 60)   // 次日 00:10
+            try expectTrue(calendar.component(.day, from: beforeMidnight)
+                            != calendar.component(.day, from: afterMidnight),
+                           "夹具前提：两个时刻必须跨日历日")
+
+            let tracker = TokenBudgetTracker()
+            try expectNotNil(tracker.evaluate(used24h: 110_000, budget: 100_000,
+                                              now: beforeMidnight).alertMessage,
+                             "首次越线必须告警")
+            try expectNil(tracker.evaluate(used24h: 110_000, budget: 100_000,
+                                           now: afterMidnight).alertMessage,
+                          "跨日历日不是新的越线，同一段滚动窗口不得重复告警")
+            // 真正回落到滞回线以下，才允许下一次越线重新告警
+            _ = tracker.evaluate(used24h: 40_000, budget: 100_000,
+                                 now: afterMidnight.addingTimeInterval(60))
+            try expectNotNil(tracker.evaluate(used24h: 110_000, budget: 100_000,
+                                              now: afterMidnight.addingTimeInterval(120)).alertMessage,
+                             "回落后再次越线必须重新告警（去重不能变成永不告警）")
         }
 
         TestKit.test("TokenUsageMonitor 双源汇总（fixture 库）") {

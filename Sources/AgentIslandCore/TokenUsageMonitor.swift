@@ -107,6 +107,61 @@ public enum TokenTimeRange: String, CaseIterable, Identifiable, Equatable {
         case .month: return "最近 30 天 (30d)"
         }
     }
+
+    /// 对齐到日历日的档位覆盖几个日历天（`.day` 是滚动小时，不走对齐）
+    var alignedDays: Int { Int(duration / 86_400) }
+
+    /// 横轴标签是日历日（`M/d`）的档位必须按日历日切桶：一根标着「9/18」的柱子若从
+    /// 「此刻的钟点」往前推，实际覆盖的是「9/17 21:37 → 9/18 03:37」，昨天深夜的用量
+    /// 会被算进今天这一格。`.day` 的标签带时分，滚动窗口本来就没说谎，保持原样。
+    var isCalendarAligned: Bool { self != .day }
+
+    /// 每个日历天切成几块（week = 4 块 × 6h，month = 1 整天）
+    var bucketsPerDay: Int { max(1, bucketCount / max(alignedDays, 1)) }
+
+    /// 窗口起点（含时区/DST 安全的日历日回退）
+    public func windowStart(now: Date, calendar: Calendar = .current) -> Date {
+        guard isCalendarAligned else { return now.addingTimeInterval(-duration) }
+        return calendar.date(byAdding: .day, value: -(alignedDays - 1),
+                             to: calendar.startOfDay(for: now))
+            ?? now.addingTimeInterval(-duration)
+    }
+
+    /// 上一等长周期的起点（环比分母）。与 `windowStart` 同源，否则「本期 vs 上期」
+    /// 会一个按日历日、一个按滚动窗口，跨午夜时凭空多算或少算一天
+    public func previousWindowStart(now: Date, calendar: Calendar = .current) -> Date {
+        let start = windowStart(now: now, calendar: calendar)
+        guard isCalendarAligned else { return start.addingTimeInterval(-duration) }
+        return calendar.date(byAdding: .day, value: -alignedDays, to: start)
+            ?? start.addingTimeInterval(-duration)
+    }
+
+    /// 第 index 个桶的起点（空态与聚合共用，两处各算一遍迟早漂移）
+    public func bucketStart(index: Int, now: Date, calendar: Calendar = .current) -> Date {
+        let start = windowStart(now: now, calendar: calendar)
+        guard isCalendarAligned else {
+            return start.addingTimeInterval(Double(index) * (duration / Double(bucketCount)))
+        }
+        let perDay = bucketsPerDay
+        let dayIndex = index / perDay
+        let block = index % perDay
+        let dayStart = calendar.date(byAdding: .day, value: dayIndex, to: start)
+            ?? start.addingTimeInterval(Double(dayIndex) * 86_400)
+        return dayStart.addingTimeInterval(Double(block) * (86_400.0 / Double(perDay)))
+    }
+
+    /// 某时刻落在第几个桶（未钳制；调用方按 [0, bucketCount) 收敛）
+    public func bucketIndex(for date: Date, now: Date, calendar: Calendar = .current) -> Int {
+        let start = windowStart(now: now, calendar: calendar)
+        guard isCalendarAligned else {
+            return Int(date.timeIntervalSince(start) / (duration / Double(bucketCount)))
+        }
+        let perDay = bucketsPerDay
+        let dayOffset = calendar.dateComponents([.day], from: start, to: date).day ?? 0
+        let blockHours = max(1, 24 / perDay)
+        let block = min(max((calendar.component(.hour, from: date)) / blockHours, 0), perDay - 1)
+        return dayOffset * perDay + block
+    }
 }
 
 public struct TokenUsagePoint: Identifiable, Equatable {
@@ -149,12 +204,10 @@ public struct TokenUsageTimeline: Equatable {
     public let previousCost: Double
 
     public static func empty(for range: TokenTimeRange, now: Date = Date()) -> TokenUsageTimeline {
-        let step = range.duration / Double(range.bucketCount)
-        let start = now.addingTimeInterval(-range.duration)
         return TokenUsageTimeline(
             range: range,
             points: (0..<range.bucketCount).map {
-                TokenUsagePoint(start: start.addingTimeInterval(Double($0) * step), tokens: 0, cost: 0)
+                TokenUsagePoint(start: range.bucketStart(index: $0, now: now), tokens: 0, cost: 0)
             },
             sources: [], tokens: 0, cost: 0, previousTokens: 0, previousCost: 0
         )
@@ -174,10 +227,10 @@ enum TokenTimelineBuilder {
                       now: Date,
                       supportedSourceIds: [String] = [],
                       availableSourceIds: Set<String> = []) -> TokenUsageTimeline {
-        let duration = range.duration
-        let currentStart = now.addingTimeInterval(-duration)
-        let previousStart = now.addingTimeInterval(-2 * duration)
-        let step = duration / Double(range.bucketCount)
+        // 窗口边界与横轴刻度共用 `TokenTimeRange` 的同一套算法：周/月按日历日切桶，
+        // 24h 档保持滚动（见 windowStart）
+        let currentStart = range.windowStart(now: now)
+        let previousStart = range.previousWindowStart(now: now)
         var tokenBuckets = Array(repeating: 0, count: range.bucketCount)
         var costBuckets = Array(repeating: 0.0, count: range.bucketCount)
         var sources: [String: (tokens: Int, cost: Double)] = [:]
@@ -193,7 +246,7 @@ enum TokenTimelineBuilder {
                 continue
             }
 
-            let rawIndex = Int(record.time.timeIntervalSince(currentStart) / step)
+            let rawIndex = range.bucketIndex(for: record.time, now: now)
             let index = min(max(rawIndex, 0), range.bucketCount - 1)
             tokenBuckets[index] = safeTokenSum(tokenBuckets[index], tokens)
             costBuckets[index] = safeCostSum(costBuckets[index], cost)
@@ -203,7 +256,7 @@ enum TokenTimelineBuilder {
 
         let points = (0..<range.bucketCount).map { index in
             TokenUsagePoint(
-                start: currentStart.addingTimeInterval(Double(index) * step),
+                start: range.bucketStart(index: index, now: now),
                 tokens: tokenBuckets[index],
                 cost: costBuckets[index]
             )
@@ -839,7 +892,9 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     public func timeline(range: TokenTimeRange, now: Date = Date(),
                          completion: @escaping @MainActor (TokenUsageTimeline) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            let previousStart = now.addingTimeInterval(-2 * range.duration)
+            // 读取下界与分桶窗口同源（环比 = 上一个等长周期）：这里再写一遍 `2 × duration`
+            // 就是第二套口径，日历日对齐后两者会错开最多一天
+            let previousStart = range.previousWindowStart(now: now)
             let lowerISO = Self.isoFormatter.string(from: previousStart)
             let upperISO = Self.isoFormatter.string(from: now)
             let dimRowTokens = """

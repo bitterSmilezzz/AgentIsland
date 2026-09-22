@@ -27,21 +27,21 @@ public enum TokenBudgetStatus: Equatable {
 }
 
 /// 负责 Token 预算超额与预警判定的状态机（防止每次采样都重复弹窗/响铃）
+///
+/// 口径：预算度量的是 `tokens24h`——**滚动 24 小时**，与卡片、汇总栏、分析页的 24h 同一个数。
+/// 因此这里不按自然日重置告警级别（见 evaluate）。
 public final class TokenBudgetTracker {
     private var lastNotifiedLevel: Int = 0 // 0: normal, 1: warning(80%), 2: exceeded(100%)
-    private var lastCheckedDay: Int = -1
 
     public init() {}
 
     /// 评估当前用量并返回是否需要触发告警（仅在阈值升级跨越时触发一次）
+    ///
+    /// 曾经这里还有一条「跨日历日把级别归零」的重置，看起来配得上「每日预算」这个名字，
+    /// 实际与滚动口径矛盾：23:50 已经报过 90%，00:05 归零后同一段 24 小时窗口还没滚动掉
+    /// 任何用量，于是**同一个越线再报一次**，每天午夜重复一次，只要用量一直压在线上。
+    /// 重新武装只由回落给（<75% 的滞回），告警次数因此与「越线次数」而不是「日历翻页」对齐。
     public func evaluate(used24h: Int, budget: Int, now: Date = Date()) -> (status: TokenBudgetStatus, alertMessage: String?) {
-        let calendar = Calendar.current
-        let currentDay = calendar.component(.day, from: now)
-        if currentDay != lastCheckedDay {
-            lastCheckedDay = currentDay
-            lastNotifiedLevel = 0
-        }
-
         guard budget > 0 else {
             lastNotifiedLevel = 0
             return (.disabled, nil)
