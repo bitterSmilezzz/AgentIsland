@@ -1346,6 +1346,43 @@ enum TokenUsageTests {
             try expectEqual(Self.readFirstValueViaCache(target), "第二份", "同路径换 inode 后不得再吃旧连接")
         }
 
+        TestKit.test("Token 多方言库: 两个同构库各算各的，缺失判定也各自独立") {
+            // OpenCode 方言不止 OpenCode：小米 MiMo Code 用同一套 message 表。
+            // 单源时代的写法（一个 openCodeDB 字段 + 一份戳）接第二个产品时，
+            // 要么把 MiMo 的量挂到 opencode 名下，要么让两个源共用「源已消失」计数
+            let now = Date(timeIntervalSince1970: 1_700_000_000)
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let oc = dir.appendingPathComponent("opencode.db").path
+            let mimo = dir.appendingPathComponent("mimocode.db").path
+            @MainActor func insert(_ path: String, tokens: Int, cost: Double) throws {
+                try TokenFixture.exec(path, [
+                    "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
+                    "INSERT INTO message VALUES ('s1', '{\"role\":\"assistant\",\"tokens\":{\"input\":\(tokens),\"output\":0,\"reasoning\":0},\"cost\":\(cost)}', \(TokenFixture.ms(now.addingTimeInterval(-60))))"
+                ])
+            }
+            try insert(oc, tokens: 100, cost: 0.5)
+            try insert(mimo, tokens: 42_900, cost: 0)
+
+            let m = TokenUsageMonitor(dimAgentDB: dir.appendingPathComponent("none.db").path,
+                                      openCodeSources: [(agentId: "opencode", path: oc),
+                                                        (agentId: "mimocode", path: mimo)],
+                                      structuredSources: [])
+            m.refresh(now: now)
+            try expectEqual(m.usage["opencode"]?.tokens24h, 100, "第一个源")
+            try expectEqual(m.usage["mimocode"]?.tokens24h, 42_900, "第二个源要挂在自己的 id 下")
+            try expectEqual(m.grandTotal.tokens24h, 43_000, "汇总等于两源之和")
+
+            // 删掉第二个库并连刷 sourceMissingLimit 拍：只允许清掉它自己
+            try FileManager.default.removeItem(atPath: mimo)
+            for offset in stride(from: 100.0, through: 400.0, by: 100.0) {
+                m.refresh(now: now.addingTimeInterval(offset))
+            }
+            try expectEqual(m.usage["mimocode"], nil, "消失的源要清空，否则面板永久显示陈旧数字")
+            try expectEqual(m.usage["opencode"]?.tokens24h, 100, "另一个源不受影响")
+        }
+
         // MARK: 等待辅助：主线程轮询 RunLoop（避免信号量死锁 MainActor）
     }
 
@@ -1420,6 +1457,7 @@ enum TokenUsageTests {
             rows.append(sqlite3_column_text(stmt, column).map { String(cString: $0) } ?? "")
         }
         return rows
+
     }
 
     /// 进程常驻内存（MB）：用于泄漏用例的前后对比

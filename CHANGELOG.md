@@ -4,7 +4,34 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.118] - 2026-09-22
+
+### 📡 Xiaomi MiMo 接上真实数据，并补回 OpenCode 这一族从没拿到的结构化状态
+
+上一版留的「等真实会话再核对」现在有数据了（本机 `mimocode.db`：2 会话 / 4 消息 / 10 片段）。
+逐字段核对结论：`message.data` 与 OpenCode 同形——assistant 行带
+`tokens{input,output,reasoning,cache}`、`cost`、`time{created,completed}`、`finish`。
+
+- **用量明细接入**：`TokenUsageMonitor` 的 OpenCode 侧原先是**单点**（一个 `openCodeDB` 字段、
+  一份戳、一份「源已消失」计数）。现在改成按注册表档案声明的**方言库列表**，每个源各自记戳、
+  各自判缺失、各自用自己的档案 id 记账——否则第二个产品的量会在分工具占比里挂到
+  `opencode` 名下。下钻查询（按模型、按会话）也不再按 id 硬列，改由档案解析。
+  实测：`agentisland tokens` 出现 `mimocode 42.9k / 累计 42.9k`，正是真库里那条会话的 42,851。
+- **这一族从没拿到的状态语义**：`inspectOpenCodeDatabase` 原先只把 `part.data` 丢给通用 JSONL
+  检测器，而 part 是 `text` / `reasoning` / `step-start` / `step-finish` 这类**内容片段**，
+  没有 message 信封——于是 OpenCode 与 MiMo 的「工作中 / 已完成」一直只是 mtime 与 CPU 近似。
+  现在终态从 `message` 表读：assistant 行有 `time.completed` = 本轮封口（15 分钟内算已完成），
+  只有 `time.created` = 正在生成（5 分钟保质期），最新一条是 user = 等模型开口。
+  `part` 尾窗检测降为回落路径。崩溃留下的未完成行不会把岛永久钉在工作态（保质期就是为它设的）。
+- **没做的部分说清楚**：这一族的「等你确认」在 `permission` 表里，本机 0 行、形状无从核对，
+  所以不猜、不接。MiMo 目前跑的是 `step-5-preview`（provider `dimagent-stepfun`），
+  库里 `cost` 为 0，费用列如实显示 `$0.00`。
+- 测试：+3（方言状态纯函数、真表形状经 probe 走通、两个同构库各算各的且缺失判定独立）。
+  五处变异逐条确认会红：不查 message 表、放宽完成保质期、放宽在途保质期、只遍历第一个源、
+  以及把源循环截断。431 个用例全绿。
+
 ## [0.0.117] - 2026-09-22
+
 
 ### 📅 两处「同一个数两套算法」对齐：周/月柱子按日历日切桶，预算明确是滚动 24 小时
 

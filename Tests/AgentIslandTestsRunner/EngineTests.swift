@@ -1225,6 +1225,70 @@ enum EngineTests {
             try expectNil(off?.sessionProbeHealth, "探测健康须随每-Agent 状态一起回收，不得长期占坑")
         }
 
+        TestKit.test("OpenCode 方言状态: 终态由 message.time.completed 给，崩溃残留不得钉住工作态") {
+            // 本机真值（小米 MiMo Code 的 mimocode.db）：assistant 行
+            //   {"role":"assistant","time":{"created":…,"completed":…},"finish":"stop","tokens":{…}}
+            // 未收尾的那条只有 created。此前这一族从没拿到过结构化状态——part 里全是
+            // text/reasoning/step-finish 片段，通用检测器认不出信封，于是只剩 mtime 近似。
+            let now = Date()
+            func ms(_ date: Date) -> Int { Int((date.timeIntervalSince1970 * 1000).rounded()) }
+            func rows(_ id: String, _ secondsAgo: TimeInterval, completed: TimeInterval?) -> [(id: String, json: String)] {
+                let time = completed.map { "\"created\":\(ms(now.addingTimeInterval(-secondsAgo))),\"completed\":\(ms(now.addingTimeInterval(-$0)))" }
+                    ?? "\"created\":\(ms(now.addingTimeInterval(-secondsAgo)))"
+                return [(id, "{\"role\":\"assistant\",\"time\":{\(time)}}")]
+            }
+            guard case let .completed(fingerprint)? = AgentSessionInspector.openCodeSignal(
+                rows: rows("m2", 90, completed: 60), agentId: "mimocode", now: now) else {
+                throw TestError(message: "已封口的 assistant 行应判 completed")
+            }
+            try expectEqual(fingerprint, "mimocode-msg-m2", "指纹要带自己的 agentId 与消息 id")
+
+            try expectNil(AgentSessionInspector.openCodeSignal(rows: rows("m2", 901, completed: 901),
+                                                               agentId: "mimocode", now: now),
+                          "完成态过保质期应回到待机")
+            guard case let .active(_, action)? = AgentSessionInspector.openCodeSignal(
+                rows: rows("m3", 20, completed: nil), agentId: "mimocode", now: now) else {
+                throw TestError(message: "没有 completed 的 assistant 行应在途")
+            }
+            try expectEqual(action, "正在生成回复")
+            try expectNil(AgentSessionInspector.openCodeSignal(rows: rows("m4", 360, completed: nil),
+                                                               agentId: "mimocode", now: now),
+                          "崩溃留下的未完成行没有保质期会把岛永久钉在工作态")
+            guard case let .active(_, userAction)? = AgentSessionInspector.openCodeSignal(
+                rows: [("m5", "{\"role\":\"user\",\"time\":{\"created\":\(ms(now.addingTimeInterval(-5)))}}")],
+                agentId: "mimocode", now: now) else {
+                throw TestError(message: "最新一条是 user 时应判在途")
+            }
+            try expectEqual(userAction, "思考规划中")
+            try expectNil(AgentSessionInspector.openCodeSignal(rows: [], agentId: "mimocode", now: now),
+                          "空结果不得凭空造出状态")
+        }
+
+        TestKit.test("OpenCode 方言状态: 真表形状经 probe 走通（session + message 双表）") {
+            let dir = NSTemporaryDirectory() + "oc-probe-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let dbPath = dir + "/mimocode.db"
+            let now = Date()
+            func ms(_ date: Date) -> Int { Int((date.timeIntervalSince1970 * 1000).rounded()) }
+            try TokenFixture.exec(dbPath, [
+                "CREATE TABLE session (id TEXT PRIMARY KEY, time_updated INTEGER)",
+                "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT, time_created INTEGER)",
+                "CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, data TEXT)",
+                "INSERT INTO session VALUES ('s1', \(ms(now)))",
+                "INSERT INTO message VALUES ('m1','s1','{\"role\":\"assistant\",\"time\":{\"created\":\(ms(now.addingTimeInterval(-70))),\"completed\":\(ms(now.addingTimeInterval(-40)))}}',\(ms(now.addingTimeInterval(-70))))",
+            ])
+            let profile = AgentProfile(id: "mimocode", name: "Xiaomi MiMo", icon: "terminal",
+                                       bundleIDs: [], processNames: ["mimocode"], sessionDirs: [dir],
+                                       sessionDatabase: AgentSessionDatabase(path: dbPath, schema: .openCode))
+            let probe = AgentSessionInspector.probe(profile: profile, activityFiles: [], now: now)
+            guard case let .completed(fingerprint)? = probe.signal else {
+                throw TestError(message: "已封口会话应探到 completed，实得 \(String(describing: probe.signal))")
+            }
+            try expectEqual(fingerprint, "mimocode-msg-m1")
+            try expectNil(probe.health, "读得到就不该留下故障证据")
+        }
+
         TestKit.test("会话探测健康: 查询被写锁挡住 → stepFailed（不是「库里没有确认请求」）") {
             // 对方正在写库的那一拍最容易撞上 SQLITE_BUSY。此前 step 的错误码被当成
             // 「没有行」，于是等确认的卡片显示成待机，且一条证据都不留。

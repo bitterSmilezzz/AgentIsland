@@ -66,7 +66,7 @@ _Avoid_: 会话结果缓存（并不缓存信号本身）
 ### Token 用量
 
 **Token 用量（TokenUsage）**:
-24h 与累计两组 token 数与成本；总体跨 DimAgent、OpenCode、Codex、Claude、WorkBuddy 与 WorkBuddy AI 合并。口径为净消耗（prompt+completion / input+output），不含 cache.read，避免多轮会话重复计费虚高。
+24h 与累计两组 token 数与成本；总体跨 DimAgent、OpenCode 方言族（OpenCode 与同表结构的 fork，如 Xiaomi MiMo）、Codex、Claude、WorkBuddy 与 WorkBuddy AI 合并。口径为净消耗（prompt+completion / input+output），不含 cache.read，避免多轮会话重复计费虚高。
 
 **Token 数据覆盖（Token source availability）**:
 工具本地明细源是否被发现，与“当前范围用量为 0”是两个不同状态。分析页必须逐工具表达该差异，不得把未接入或缺失数据伪装成零用量。

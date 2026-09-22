@@ -523,9 +523,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     /// 串行化整次刷新，避免并发查询交错发布旧结果。
     private let refreshLock = NSLock()
     private var lastDimRefresh: Date?
-    private var lastOpenCodeRefresh: Date?
     private var lastDimStamp = ""
-    private var lastOpenCodeStamp = ""
     private var timer: Timer?
     /// 刷新完成后的主线程回调（引擎用它触发重采样，让卡片高度/徽标及时跟上）。
     /// 后台刷新线程读、主线程写，故与其余可变状态一样纳入 lock（读写都在锁内取值，
@@ -548,21 +546,39 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
     }
 
     private let dimAgentDB: String
-    private let openCodeDB: String
+    /// OpenCode 方言的会话库源。**一个方言可以有多个产品**：OpenCode 本体，以及沿用同一套
+    /// `session`/`message`/`part` 表结构的 fork（小米 MiMo Code）。库位置一律取自注册表档案，
+    /// 每个源各自记戳/各自判缺失——否则第二个产品接进来时，第一个的「源已消失」计数会被共用。
+    private struct OpenCodeSource {
+        let agentId: String
+        let path: String
+        var stamp = ""
+        var refreshedAt: Date?
+        var missingStreak = 0
+    }
+    private var openCodeSources: [OpenCodeSource]
     private let structuredIndex: StructuredTokenUsageIndex
     /// 当前能提供稳定本地 Token 明细的工具；时间页始终列出，缺源时明确标注。
-    static let supportedToolIds = ["dim", "codex", "claude", "workbuddy", "workbuddy-ai", "opencode"]
+    /// OpenCode 方言那一族随注册表走（新增 fork 只改注册表，这里不写死 id）
+    static var supportedToolIds: [String] {
+        ["dim", "codex", "claude", "workbuddy", "workbuddy-ai"] + openCodeDialectAgentIds
+    }
+    static var openCodeDialectAgentIds: [String] {
+        AgentRegistry.builtin.compactMap {
+            $0.sessionDatabase?.schema == .openCode ? $0.id : nil
+        }
+    }
     private var configuredToolIds: [String] {
         let structuredIds = structuredIndex.configuredToolIds
+        let dialectIds = Set(openCodeSources.map(\.agentId))
         return Self.supportedToolIds.filter {
-            $0 == "dim" || $0 == "opencode" || structuredIds.contains($0)
+            $0 == "dim" || dialectIds.contains($0) || structuredIds.contains($0)
         }
     }
     /// isFresh 宽限（R25）：略大于轮询间隔，吸收定时器抖动
     static let stampGrace: TimeInterval = 5
     /// 数据源主库连续缺失计数（R9：达到阈值视为「源已消失」并置空该源）
     private var dimMissingStreak = 0
-    private var openCodeMissingStreak = 0
     /// 连续缺失阈值：60s 轮询下约 3 分钟——瞬时空窗（原子替换/迁移）不触发
     static let sourceMissingLimit = 3
 
@@ -583,9 +599,15 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         // 采集根取自档案的 `tokenRoots`：它与 sessionDirs 分开声明，因为 WorkBuddy 一类的
         // 明细目录与心跳目录不在同一子树
         func tokenRoots(_ id: String) -> [String] { AgentRegistry.profile(id)?.tokenRoots ?? [] }
+        // OpenCode 方言的库位置全部取自档案声明：这里再写一遍路径，档案换目录时
+        // 只有一半会生效（同一个坑在 dimcode.sqlite 与 WorkBuddy 的 projects/ 上踩过）
+        let dialectDBs: [(agentId: String, path: String)] = AgentRegistry.builtin.compactMap { profile in
+            guard let db = profile.sessionDatabase, db.schema == .openCode else { return nil }
+            return (profile.id, db.path)
+        }
         self.init(
             dimAgentDB: database("dim"),
-            openCodeDB: database("opencode"),
+            openCodeSources: dialectDBs,
             structuredSources: [
                 StructuredTokenSource(agentId: "codex", roots: tokenRoots("codex"), format: .codex),
                 StructuredTokenSource(agentId: "claude", roots: tokenRoots("claude"), format: .anthropic),
@@ -606,9 +628,17 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         self.init(dimAgentDB: dimAgentDB, openCodeDB: openCodeDB, structuredSources: [])
     }
 
-    init(dimAgentDB: String, openCodeDB: String, structuredSources: [StructuredTokenSource]) {
+    /// 单方言库的老写法（测试夹具与「只有 OpenCode 一个产品」的场景）
+    convenience init(dimAgentDB: String, openCodeDB: String, structuredSources: [StructuredTokenSource]) {
+        self.init(dimAgentDB: dimAgentDB,
+                  openCodeSources: [(agentId: "opencode", path: openCodeDB)],
+                  structuredSources: structuredSources)
+    }
+
+    init(dimAgentDB: String, openCodeSources: [(agentId: String, path: String)],
+         structuredSources: [StructuredTokenSource]) {
         self.dimAgentDB = dimAgentDB
-        self.openCodeDB = openCodeDB
+        self.openCodeSources = openCodeSources.map { OpenCodeSource(agentId: $0.agentId, path: $0.path) }
         self.structuredIndex = StructuredTokenUsageIndex(sources: structuredSources)
     }
 
@@ -685,7 +715,6 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         refreshLock.lock()
         defer { refreshLock.unlock() }
         let dimStamp = fileStamp(dimAgentDB)
-        let openCodeStamp = fileStamp(openCodeDB)
         func isFresh(_ date: Date?) -> Bool {
             guard let date else { return false }
             let age = now.timeIntervalSince(date)
@@ -695,8 +724,14 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             return age >= 0 && age < TokenUsagePollingDefaults.interval + Self.stampGrace
         }
         let refreshDim = lastDimStamp != dimStamp || !isFresh(lastDimRefresh)
-        let refreshOpenCode = lastOpenCodeStamp != openCodeStamp || !isFresh(lastOpenCodeRefresh)
-        guard refreshDim || refreshOpenCode || structuredIndex.isEnabled else { return }
+        // 每个方言库各自算「要不要重查」：MiMo 在写不该让 OpenCode 的库跟着重扫，反之亦然
+        var dialectNeedsQuery = [Bool](repeating: false, count: openCodeSources.count)
+        for index in openCodeSources.indices {
+            let stamp = fileStamp(openCodeSources[index].path)
+            dialectNeedsQuery[index] = openCodeSources[index].stamp != stamp
+                || !isFresh(openCodeSources[index].refreshedAt)
+        }
+        guard refreshDim || dialectNeedsQuery.contains(true) || structuredIndex.isEnabled else { return }
 
         var updated = usage
         var succeeded = false
@@ -715,14 +750,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         }
         let dimGone = noteMissing(FileManager.default.fileExists(atPath: dimAgentDB),
                                   counter: &dimMissingStreak)
-        let openCodeGone = noteMissing(FileManager.default.fileExists(atPath: openCodeDB),
-                                       counter: &openCodeMissingStreak)
         if dimGone {
             updated["dim"] = nil
-            succeeded = true
-        }
-        if openCodeGone {
-            updated["opencode"] = nil
             succeeded = true
         }
         if refreshDim, let value = queryDimAgent(cutoffISO: Self.iso24hAgo(now: now)) {
@@ -734,11 +763,20 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         // 时间戳同样可能是脏值（now 由调用方注入，测试可传任意 Date）：饱和后再转 Int64
         let cutoffSeconds = now.addingTimeInterval(-86_400).timeIntervalSince1970
         let cutoffMs = Int64(SafeNumber.saturatingInt(cutoffSeconds * 1000, source: "opencode.cutoff"))
-        if refreshOpenCode,
-           let value = queryOpenCode(cutoffMs: cutoffMs) {
-            updated["opencode"] = value
-            lastOpenCodeStamp = openCodeStamp
-            lastOpenCodeRefresh = now
+        for index in openCodeSources.indices {
+            let source = openCodeSources[index]
+            let exists = FileManager.default.fileExists(atPath: source.path)
+            if noteMissing(exists, counter: &openCodeSources[index].missingStreak) {
+                updated[source.agentId] = nil
+                succeeded = true
+                continue
+            }
+            guard dialectNeedsQuery[index],
+                  let value = queryOpenCode(cutoffMs: cutoffMs, dbPath: source.path,
+                                            agentId: source.agentId) else { continue }
+            updated[source.agentId] = value
+            openCodeSources[index].stamp = fileStamp(source.path)
+            openCodeSources[index].refreshedAt = now
             succeeded = true
         }
         if structuredIndex.isEnabled {
@@ -803,7 +841,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                                tokens: SafeNumber.parseInt($0[2], source: "dim.model.tokens"),
                                cost: SafeNumber.parseCost($0[3], source: "dim.model.cost"))
                 }
-            case "opencode":
+            default:
+                guard let dbPath = openCodeDBPath(for: agentId) else { break }
                 let sql = """
                 SELECT json_extract(data,'$.modelID'), COUNT(*),
                        COALESCE(SUM(json_extract(data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0),
@@ -811,14 +850,12 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 FROM message WHERE json_extract(data,'$.role')='assistant'
                 GROUP BY 1 ORDER BY 3 DESC
                 """
-                rows = rawRows(sql, dbPath: openCodeDB, cols: 4).map {
+                rows = rawRows(sql, dbPath: dbPath, cols: 4).map {
                     ModelUsage(modelId: $0[0],
-                               messages: SafeNumber.parseInt($0[1], source: "opencode.model.messages"),
-                               tokens: SafeNumber.parseInt($0[2], source: "opencode.model.tokens"),
-                               cost: SafeNumber.parseCost($0[3], source: "opencode.model.cost"))
+                               messages: SafeNumber.parseInt($0[1], source: "\(agentId).model.messages"),
+                               tokens: SafeNumber.parseInt($0[2], source: "\(agentId).model.tokens"),
+                               cost: SafeNumber.parseCost($0[3], source: "\(agentId).model.cost"))
                 }
-            default:
-                rows = []
             }
             Task { @MainActor in completion(rows) }
         }
@@ -859,7 +896,8 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                                         cost: SafeNumber.parseCost(r[3], source: "dim.session.cost"),
                                         lastTime: Self.parseISO(r[4]))
                 }
-            case "opencode":
+            default:
+                guard let dbPath = openCodeDBPath(for: agentId) else { break }
                 let sql = """
                 SELECT m.session_id, COUNT(*),
                        COALESCE(SUM(json_extract(m.data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.reasoning')),0),
@@ -869,19 +907,17 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 WHERE json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.modelID')='\(modelId.escaped)'
                 GROUP BY m.session_id ORDER BY 5 DESC LIMIT \(Self.sessionDrilldownLimit)
                 """
-                rows = rawRows(sql, dbPath: openCodeDB, cols: 6).map { r in
+                rows = rawRows(sql, dbPath: dbPath, cols: 6).map { r in
                     // 与 dim 对齐：目录已删除则置 nil（点击不再显示文件夹图标）
                     let rawDir = r[5]
                     let dir = (!rawDir.isEmpty && FileManager.default.fileExists(atPath: rawDir)) ? rawDir : nil
                     return SessionUsage(sessionId: r[0],
                                         directory: dir,
-                                        messages: SafeNumber.parseInt(r[1], source: "opencode.session.messages"),
-                                        tokens: SafeNumber.parseInt(r[2], source: "opencode.session.tokens"),
-                                        cost: SafeNumber.parseCost(r[3], source: "opencode.session.cost"),
-                                        lastTime: SafeNumber.date(fromMillisText: r[4], source: "opencode.session.lastTime"))
+                                        messages: SafeNumber.parseInt(r[1], source: "\(agentId).session.messages"),
+                                        tokens: SafeNumber.parseInt(r[2], source: "\(agentId).session.tokens"),
+                                        cost: SafeNumber.parseCost(r[3], source: "\(agentId).session.cost"),
+                                        lastTime: SafeNumber.date(fromMillisText: r[4], source: "\(agentId).session.lastTime"))
                 }
-            default:
-                rows = []
             }
             Task { @MainActor in completion(rows) }
         }
@@ -934,24 +970,30 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
               AND time_created >= \(lowerMs) AND time_created <= \(upperMs)
             ORDER BY time_created
             """
-            let openCodeRecords = rawRows(openCodeSQL, dbPath: openCodeDB, cols: 3).compactMap { row -> TokenUsageRecord? in
-                guard let time = SafeNumber.date(fromMillisText: row[0], source: "opencode.timeline.time") else {
-                    return nil
-                }
-                return TokenUsageRecord(
-                    agentId: "opencode", time: time,
-                    tokens: SafeNumber.parseInt(row[1], source: "opencode.timeline.tokens"),
-                    cost: SafeNumber.parseCost(row[2], source: "opencode.timeline.cost")
-                )
-            }
-
             let structured = structuredIndex.snapshot(now: now)
+            // 每个 OpenCode 方言库各出一份流水记录，agentId 用自己的档案 id：
+            // 全塞成 "opencode" 会让 MiMo 的量在分工具占比里挂到 OpenCode 名下
+            var dialectRecords: [TokenUsageRecord] = []
             var availableSourceIds = structured.availableToolIds
+            for source in openCodeSources {
+                if FileManager.default.fileExists(atPath: source.path) {
+                    availableSourceIds.insert(source.agentId)
+                }
+                dialectRecords.append(contentsOf: rawRows(openCodeSQL, dbPath: source.path, cols: 3).compactMap { row -> TokenUsageRecord? in
+                    guard let time = SafeNumber.date(fromMillisText: row[0], source: "\(source.agentId).timeline.time") else {
+                        return nil
+                    }
+                    return TokenUsageRecord(
+                        agentId: source.agentId, time: time,
+                        tokens: SafeNumber.parseInt(row[1], source: "\(source.agentId).timeline.tokens"),
+                        cost: SafeNumber.parseCost(row[2], source: "\(source.agentId).timeline.cost")
+                    )
+                })
+            }
             if FileManager.default.fileExists(atPath: dimAgentDB) { availableSourceIds.insert("dim") }
-            if FileManager.default.fileExists(atPath: openCodeDB) { availableSourceIds.insert("opencode") }
 
             let result = TokenTimelineBuilder.build(
-                records: dimRecords + openCodeRecords + structured.records,
+                records: dimRecords + dialectRecords + structured.records,
                 range: range,
                 now: now,
                 supportedSourceIds: configuredToolIds,
@@ -1002,7 +1044,13 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                           costTotal: Self.costColumn(row[1], source: "dim.total.cost"))
     }
 
-    private func queryOpenCode(cutoffMs: Int64) -> TokenUsage? {
+    /// 该 agentId 是否走 OpenCode 方言库（OpenCode 本体与同表结构的 fork，如小米 MiMo Code）。
+    /// 下钻查询按这个解析，而不是把 id 一个个列进 switch——漏一个的表现是「明细页空白」。
+    private func openCodeDBPath(for agentId: String) -> String? {
+        openCodeSources.first { $0.agentId == agentId }?.path
+    }
+
+    private func queryOpenCode(cutoffMs: Int64, dbPath: String, agentId: String) -> TokenUsage? {
         // 与 dim 同构：单趟出两个口径。role 过滤后逐行 json_extract(data) 三次，
         // 两条查询等于把这些 JSON 解两遍。实测（本机 opencode.db 缺失，故用与
         // TokenFixture 同 schema 的夹具库对拍：数值逐项一致，见用例
@@ -1024,11 +1072,11 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             WHERE json_extract(data,'$.role')='assistant'
         )
         """
-        guard let row = rawRows(sql, dbPath: openCodeDB, cols: 4).first else { return nil }
-        return TokenUsage(tokens24h: Self.tokenColumn(row[2], source: "opencode.24h.tokens"),
-                          tokensTotal: Self.tokenColumn(row[0], source: "opencode.total.tokens"),
-                          cost24h: Self.costColumn(row[3], source: "opencode.24h.cost"),
-                          costTotal: Self.costColumn(row[1], source: "opencode.total.cost"))
+        guard let row = rawRows(sql, dbPath: dbPath, cols: 4).first else { return nil }
+        return TokenUsage(tokens24h: Self.tokenColumn(row[2], source: "\(agentId).24h.tokens"),
+                          tokensTotal: Self.tokenColumn(row[0], source: "\(agentId).total.tokens"),
+                          cost24h: Self.costColumn(row[3], source: "\(agentId).24h.cost"),
+                          costTotal: Self.costColumn(row[1], source: "\(agentId).total.cost"))
     }
 
     // MARK: - SQLite 底层

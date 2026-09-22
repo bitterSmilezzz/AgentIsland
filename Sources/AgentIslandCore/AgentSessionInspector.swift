@@ -757,7 +757,7 @@ public enum AgentSessionInspector {
             guard let sql = database.statusSQL else { return nil }
             return inspectStatusDatabase(path: database.path, sql: sql, now: now, report: report)
         case .openCode:
-            return inspectOpenCodeDatabase(path: database.path, now: now, report: report)
+            return inspectOpenCodeDatabase(agentId: profile.id, path: database.path, now: now, report: report)
         }
     }
 
@@ -860,10 +860,19 @@ public enum AgentSessionInspector {
         }
     }
 
-    private static func inspectOpenCodeDatabase(path: String, now: Date,
+    private static func inspectOpenCodeDatabase(agentId: String, path: String, now: Date,
                                                 report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
         return withDB(path, report: report) { db, report in
+            // 1. 终态语义在 `message` 表：这一族（OpenCode 本体与同表结构的 fork，如小米
+            //    MiMo Code）把每回合的收尾写进 assistant 行的 `time.completed`。
+            if let signal = openCodeMessageSignal(agentId: agentId, db: db, path: path, now: now,
+                                                  report: report) {
+                return signal
+            }
+            // 2. 回落到内容片段尾窗检测。`part.data` 是 text/reasoning/step-start/step-finish
+            //    这类片段，没有 message 信封，通用检测器多半什么都探不到——留着只为不改坏
+            //    任何已有形状，不作为本方言的主信号源。
             let sql = """
             SELECT data FROM part
             WHERE session_id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1)
@@ -887,6 +896,65 @@ public enum AgentSessionInspector {
             }
             if case .completed = signal, fileAge(path, now: now) > 15 * 60 { return nil }
             return signal
+        }
+    }
+
+    /// 读最新几条 `message` 行推导语义状态。表不存在（老库/别的 fork）时返回 nil 让调用方
+    /// 回落，不报 prepareFailed——那不是一个坏了的源，只是这一族没有这张表。
+    private static func openCodeMessageSignal(agentId: String, db: OpaquePointer, path: String,
+                                              now: Date,
+                                              report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
+        let sql = """
+        SELECT id, data FROM message
+        WHERE session_id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1)
+        ORDER BY rowid DESC LIMIT 8;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        var rows: [(id: String, json: String)] = []
+        let stepped = Self.stepAll(stmt) {
+            guard let id = sqlite3_column_text(stmt, 0).map({ String(cString: $0) }),
+                  let data = sqlite3_column_text(stmt, 1).map({ String(cString: $0) }),
+                  !data.isEmpty else { return }
+            rows.append((id, data))
+        }
+        if !stepped, rows.isEmpty {
+            report(SessionProbeHealth(failure: .stepFailed, path: path))
+        }
+        return openCodeSignal(rows: rows, agentId: agentId, now: now)
+    }
+
+    /// 纯函数版（可测，形状与真机一致）：`rows` 按 rowid 降序，第一条就是最新一条。
+    /// assistant 有 `time.completed` = 本轮封口（15 分钟内算「已完成」，之后回到待机）；
+    /// 只有 `time.created` = 还在生成；user 行最新 = 等模型开口。
+    /// 在途判定给 5 分钟上限：崩溃留下的未完成行不该把岛永久钉在工作态（与其它方言同一取舍）。
+    static func openCodeSignal(rows: [(id: String, json: String)], agentId: String,
+                               now: Date) -> AgentSessionSignal? {
+        guard let newest = rows.first,
+              let data = newest.json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        let time = object["time"] as? [String: Any]
+        func moment(_ key: String) -> Date? {
+            guard let ms = SafeNumber.jsonInt(time?[key]) else { return nil }
+            return SafeNumber.date(fromEpochMillis: Int64(ms), source: "\(agentId).message.\(key)")
+        }
+        let fingerprint = "\(agentId)-msg-\(newest.id)"
+        switch object["role"] as? String ?? "" {
+        case "assistant":
+            if let completed = moment("completed") {
+                guard now.timeIntervalSince(completed) <= 15 * 60 else { return nil }
+                return .completed(fingerprint: fingerprint)
+            }
+            guard let created = moment("created"), now.timeIntervalSince(created) <= 300 else { return nil }
+            return .active(fingerprint: fingerprint, action: "正在生成回复")
+        case "user":
+            guard let created = moment("created"), now.timeIntervalSince(created) <= 300 else { return nil }
+            return .active(fingerprint: fingerprint, action: "思考规划中")
+        default:
+            return nil
         }
     }
 
