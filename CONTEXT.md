@@ -15,7 +15,7 @@ _Avoid_: 助手、机器人、目标进程
 _Avoid_: 配置、agent 定义
 
 **会话方言（session dialect）**:
-一个 Agent 的会话记录存放格式：`genericTail`（通用 JSONL 尾读）、`antigravityBrain`、`dshProjection`、`clineTasks`。解析器按**格式**分派而非按 agent id 分派——格式数量远少于 Agent 数量（Cline 与 Roo Code 同源），新增复用既有格式的 Agent 只改注册表。
+一个 Agent 的会话记录存放格式：`genericTail`（通用 JSONL 尾读）、`antigravityBrain`、`dshProjection`、`clineTasks`、`qoderTranscript`。解析器按**格式**分派而非按 agent id 分派——格式数量远少于 Agent 数量（Cline 与 Roo Code 同源），新增复用既有格式的 Agent 只改注册表。
 
 **只读会话库（session database）**:
 会话只写进 SQLite 的 Agent，其库文件位置与查询 schema（`dimTasks` / `statusIndex` / `openCode`）随档案声明。FileMonitor 对这类目录只能定位到二进制库本身，强语义须由末条索引查询给出。

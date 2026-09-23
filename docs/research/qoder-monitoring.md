@@ -76,7 +76,8 @@ assistant 发出 tool_use(name=AskUserQuestion, id=tu-9)     ← 还没有 id=tu
 实测跑通（Qoder 正在跑本会话时）：
 
 ```
-🟢 工作中  🖥️ Qoder   514  0.0%  984M  3  —  —  运行: cd /Users/fangshoufanji/workspace/Agent…  20s前
+<!-- 本机实况粘贴，主目录与工程名保持占位：真路径属于个人身份，不入库 -->
+🟢 工作中  🖥️ Qoder   514  0.0%  984M  3  —  —  运行: cd /Users/<用户>/workspace/<工程>…  20s前
 🖥️ Qoder  工作中  结论可信  本轮读到了会话强语义（工作中）      ← doctor
 ```
 

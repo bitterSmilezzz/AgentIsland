@@ -16,9 +16,14 @@ public enum CleanCommand {
         // 孤儿与死锁进程。此前这里只看 AgentRegistry.builtin，于是 check 列出某个
         // cli-* Agent 的异常并提示「运行 agentisland clean 可一键终止」，
         // 而 clean（含 --dry-run）看不见它并回答「未发现需要清理的异常进程」
-        let profiles = LiveSampler.context().registry
-        let cleaner = AgentCleaner(processMonitor: ProcessProvider())
-        let anomalies = cleaner.scanAnomalies(profiles: profiles)
+        let ctx = LiveSampler.context()
+        // 清理端与排查端必须同口径，否则 `check` 列出的孤儿在这里会被重新判一遍：
+        // 少了活动佐证闸门，一个仍在写会话的 launchd 常驻服务在 clean 的候选列表里
+        // 依然是一条孤儿（而 check 不会报它）。
+        let engine = LiveSampler.makeEngine(from: ctx, restrictToEnabled: false)
+        let gates = AnomalyScanGates(snapshots: engine.sample(), sustainedObservation: false)
+        let cleaner = AgentCleaner.warmedForOneShot()
+        let anomalies = cleaner.scanAnomalies(profiles: ctx.registry, gates: gates)
 
         let batch = anomalies.filter(\.batchCleanable)
         let orphans = anomalies.filter { !$0.batchCleanable }
@@ -59,6 +64,10 @@ public enum CleanCommand {
                 printJSON(res)
             } else {
                 print("\n" + CLIColor.green("✨ 未发现需要清理的异常进程。"))
+                // 与 `check` 同一句话：孤儿与内存项确实扫了，死锁这一维一次性扫描扫不到
+                if !gates.canJudgeHung {
+                    print(CLIColor.dim("  " + AnomalyScanGates.hungNotEvaluatedNote(config: engine.config)))
+                }
                 // 有异常但都被闸门挡住时，必须说清「为什么看起来一切正常」：
                 // 只报「没有异常」会让用户以为孤儿不存在
                 if !orphans.isEmpty {

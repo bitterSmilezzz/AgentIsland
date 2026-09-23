@@ -101,8 +101,76 @@ public enum TerminationRecheck {
     public static let delay: TimeInterval = 0.8
 }
 
+/// 异常扫描的两道前置闸门：死锁集与孤儿佐证集。
+///
+/// 这两份集合的算法原先只写在灵动岛工作台里，CLI 的 `check` / `clean` / `top` 三个入口
+/// 一处都没传（走参数默认值 = 空集），结果是死锁分支永不成立、孤儿佐证永不生效，
+/// 而 `check` 照旧印「未检测到任何死锁」。UI 与 CLI 现在共用这一份实现。
+public struct AnomalyScanGates {
+    /// 孤儿佐证窗口：10 分钟内仍有会话写入的 profile 算「还活着」。
+    /// LaunchAgent 托管的常驻服务与「终端关闭的遗孤」从 ppid 上分不开（都是 1），
+    /// 但前者必有活动佐证——孤儿判定宁可漏报，不可误杀。
+    public static let orphanEvidenceWindow: TimeInterval = 600
+
+    public let hungAgentIDs: Set<String>
+    public let recentlyActiveProfileIDs: Set<String>
+    /// 本轮快照**有没有资格**判死锁。
+    ///
+    /// `isHung` 是「连续高负载超过阈值（默认 5 分钟）」的时间性判定，只有持续采样的引擎
+    /// 攒得出那段时长；一次性进程哪怕双采也只覆盖 1.5 秒，此时 `isHung` 全 false 的含义是
+    /// 「没测」而不是「没有」。调用方必须据此改口，不许把「没测」播报成「未检测到死锁」。
+    public let canJudgeHung: Bool
+
+    /// - Parameter sustainedObservation: 快照来自持续采样的引擎（灵动岛、`top`）时传
+    ///   `true`；一次性采样（`check` / `clean`）传 `false`。
+    public init(snapshots: [AgentSnapshot], sustainedObservation: Bool) {
+        self.init(hungAgentIDs: sustainedObservation
+                    ? Set(snapshots.filter(\.isHung).map { $0.profile.id }) : [],
+                  recentlyActiveProfileIDs: AnomalyScanGates.recentlyActiveProfileIDs(in: snapshots),
+                  canJudgeHung: sustainedObservation)
+    }
+
+    public init(hungAgentIDs: Set<String>,
+                recentlyActiveProfileIDs: Set<String>,
+                canJudgeHung: Bool = true) {
+        self.hungAgentIDs = hungAgentIDs
+        self.recentlyActiveProfileIDs = recentlyActiveProfileIDs
+        self.canJudgeHung = canJudgeHung
+    }
+
+    /// 佐证集单独拆出来：测试与调用方都要能在「本轮不判死锁」时照样算活动佐证。
+    public static func recentlyActiveProfileIDs(in snapshots: [AgentSnapshot],
+                                                window: TimeInterval = orphanEvidenceWindow) -> Set<String> {
+        Set(snapshots.compactMap { snap -> String? in
+            guard let ago = snap.lastActivityAgo, ago < window else { return nil }
+            return snap.profile.id
+        })
+    }
+
+    /// 「本轮没判死锁」这句话的唯一措辞——`check` 与 `clean` 必须同口径，
+    /// 否则用户在两个入口看到两份真相。阈值取自传入的配置，不写死。
+    public static func hungNotEvaluatedNote(config: EngineConfig) -> String {
+        let minutes = max(1, Int(config.runawayDurationThreshold / 60))
+        return "死锁/僵死：本次未评估——判定要求 CPU 连续 \(Int(config.runawayCpuThreshold))% 以上"
+            + "达 \(minutes) 分钟，一次性扫描覆盖不到这段时长。"
+            + "持续观测请用灵动岛工作台或 `agentisland top`。"
+    }
+}
+
 public final class AgentCleaner {
     private let processMonitor: ProcessProviding
+
+    /// 一次性扫描专用：先把 CPU 差分基线热起来再交给扫描。
+    ///
+    /// CPU% 是两次 `snapshot()` 之间的差分量，冷启动第一拍恒 0——而死锁规则要求
+    /// `cpuPercent > 10`，用没预热的提供者去扫，等于把死锁行全部静默漏掉
+    /// （灵动岛工作台为此预热两拍，见 `ToolboxView.scannerWarm`）。
+    public static func warmedForOneShot(settleInterval: TimeInterval = 0.35) -> AgentCleaner {
+        let provider = ProcessProvider()
+        _ = provider.snapshot()
+        Thread.sleep(forTimeInterval: settleInterval)
+        return AgentCleaner(processMonitor: provider)
+    }
 
     public init(processMonitor: ProcessProviding) {
         self.processMonitor = processMonitor
@@ -112,12 +180,11 @@ public final class AgentCleaner {
     /// - Parameters:
     ///   - runningBundleIDs: 已由主线程抓取的 bundle 集合（NSWorkspace 不可跨线程）；
     ///     为 nil 时现场抓取（仅供主线程调用方）。
-    ///   - recentlyActiveProfileIDs: 会话目录近期有写入的 profile 集合（由调用方从
-    ///     引擎快照的 lastActivityAgo 汇总）。孤儿判定需要它做佐证：ppid==1 但仍在
-    ///     产出会话写入的 Agent 是活着的（很可能由 LaunchAgent 刻意托管），绝不能报成孤儿。
-    public func scanAnomalies(profiles: [AgentProfile], hungAgentIDs: Set<String> = [],
-                              runningBundleIDs: Set<String>? = nil,
-                              recentlyActiveProfileIDs: Set<String> = []) -> [AgentAnomaly] {
+    ///   - gates: 死锁集与孤儿佐证集。**没有默认值是有意的**——这两道闸门缺任一个，
+    ///     症状都不是崩溃而是「扫不出死锁 / 把活进程报成孤儿」。拿不准就用
+    ///     `AnomalyScanGates(snapshots:sustainedObservation:)`，UI 与 CLI 同一条口径。
+    public func scanAnomalies(profiles: [AgentProfile], gates: AnomalyScanGates,
+                              runningBundleIDs: Set<String>? = nil) -> [AgentAnomaly] {
         let snapshot = processMonitor.snapshot()
         let bundleIDs = runningBundleIDs ?? processMonitor.runningBundleIDs()
         let matcher = ProcessMatcher(snapshot: snapshot, runningBundleIDs: bundleIDs, profiles: profiles)
@@ -137,7 +204,7 @@ public final class AgentCleaner {
                 // 死锁是「整个 Agent 持续过载」的判定（engine 侧基于 profile 聚合 CPU），
                 // 因此这里也必须排除 GUI 主进程：聚合高负载时单个子进程 >10% 属正常现象，
                 // 按单条判定会把正常渲染进程也列成「疑似死锁」。
-                if hungAgentIDs.contains(profile.id), entry.cpuPercent > 10.0, !isStandardAppBundle {
+                if gates.hungAgentIDs.contains(profile.id), entry.cpuPercent > 10.0, !isStandardAppBundle {
                     anomalies.append(AgentAnomaly(
                         id: AgentAnomaly.identifier(profileId: profile.id, type: .hung, pid: entry.pid),
                         pid: entry.pid,
@@ -159,7 +226,7 @@ public final class AgentCleaner {
                 // 常驻服务与「终端关闭的遗孤」无法从 ppid 区分，但前者必有活动佐证），直接跳过；
                 // 其余孤儿仍列出（原因文案如实说明），但只允许逐条手动清理。
                 if entry.ppid == 1 && !isStandardAppBundle && !profile.processNames.isEmpty {
-                    guard !recentlyActiveProfileIDs.contains(profile.id) else { continue }
+                    guard !gates.recentlyActiveProfileIDs.contains(profile.id) else { continue }
                     anomalies.append(AgentAnomaly(
                         id: AgentAnomaly.identifier(profileId: profile.id, type: .orphan, pid: entry.pid),
                         pid: entry.pid,

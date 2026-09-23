@@ -554,14 +554,9 @@ struct ToolboxView: View {
     ///   否则用户看不到「条目是否真的消失」，等于用 loading 掩盖清理结果。
     private func scan(showSpinner: Bool, completion: (([AgentAnomaly]) -> Void)? = nil) {
         if showSpinner { isScanning = true }
-        let hungIDs = Set(engine.snapshots.filter { $0.isHung }.map { $0.profile.id })
-        // 孤儿佐证集：近期仍有会话写入的 Agent 是活进程在干活（LaunchAgent 托管的
-        // 常驻服务与「终端关闭的遗孤」从 ppid 无法区分，但前者必有活动）。
-        // 窗口放宽到 10 分钟——孤儿判定宁可漏报，不可误杀。
-        let activeIDs = Set(engine.snapshots.compactMap { snap -> String? in
-            guard let ago = snap.lastActivityAgo, ago < 600 else { return nil }
-            return snap.profile.id
-        })
+        // 两道闸门的算法在 Core 里（`AnomalyScanGates`），CLI 的 check/clean/top 走同一条：
+        // 此前这段逻辑只在这里，三个 CLI 入口拿默认空集，死锁扫不出、活进程被报成孤儿
+        let gates = AnomalyScanGates(snapshots: engine.snapshots, sustainedObservation: true)
         let profiles = engine.allProfiles
         // 独立扫描源（不共用 engine.cleaner）：工作台扫描与引擎采样若共用同一
         // ProcessProvider，差分缓存被互相消费——工作台扫描紧跟引擎采样会把引擎
@@ -574,9 +569,8 @@ struct ToolboxView: View {
         let bundleIDs = ProcessProvider().runningBundleIDs()
         DispatchQueue.global(qos: .userInitiated).async {
             _ = Self.scannerWarm   // 首次访问时在后台线程预热（350ms）
-            let found = cleaner.scanAnomalies(profiles: profiles, hungAgentIDs: hungIDs,
-                                               runningBundleIDs: bundleIDs,
-                                               recentlyActiveProfileIDs: activeIDs)
+            let found = cleaner.scanAnomalies(profiles: profiles, gates: gates,
+                                              runningBundleIDs: bundleIDs)
             DispatchQueue.main.async {
                 self.anomalies = found
                 self.isScanning = false

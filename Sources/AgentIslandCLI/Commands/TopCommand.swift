@@ -195,8 +195,15 @@ public enum TopCommand {
                             // ProcessTerminator 路径（带身份复核）。
                             // 此前是单键裸发 SIGTERM：绕过复核、不杀进程树、
                             // 且无论 kill 成败都印「已清理 N 个」
-                            let cleaner = AgentCleaner(processMonitor: ProcessProvider())
-                            let anomalies = cleaner.scanAnomalies(profiles: engine.allProfiles)
+                            // 看板是持续采样方，`isHung` 在这里到得了阈值 ⇒ 两道闸门都按实况传。
+                            // 此前不传：`[c]` 的候选列表里永远没有死锁项，而这偏偏是最容易让人
+                            // 以为「终端这条链路也扫过了」的入口。provider 单独预热一拍，
+                            // 冷启动第一拍 CPU 恒 0 会把死锁行（规则要求 >10%）全部静默漏掉。
+                            let cleaner = AgentCleaner.warmedForOneShot()
+                            let anomalies = cleaner.scanAnomalies(
+                                profiles: engine.allProfiles,
+                                gates: AnomalyScanGates(snapshots: snapshots,
+                                                        sustainedObservation: true))
                                 .filter { $0.batchCleanable }
                             if anomalies.isEmpty {
                                 lastCleanMessage = "没有可批量清理的异常进程"

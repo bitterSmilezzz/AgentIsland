@@ -286,5 +286,41 @@ enum DebtPayoffTests {
             try expectFalse(clean.contains("targets = anomalies"),
                             "--force 又变成「连孤儿一起杀」了")
         }
+
+        // MARK: README 的文体：功能说明，不是更新记录
+
+        TestKit.test("结构: README 不许长成更新日志") {
+            // README 的分工是「这个工具是什么、能做什么」，逐版记录归 CHANGELOG。
+            // 这条不是洁癖：README 一旦开始记流水，就会长出重复小节与过期下载链接
+            // （曾经真长出过 5 组重复标题），而读者拿它当现状说明书。
+            let readme = try XCTRequire(try? String(contentsOf: SourceTree.repoRoot
+                .appendingPathComponent("README.md"), encoding: .utf8), "读不到 README.md")
+            let lines = readme.components(separatedBy: "\n")
+            var offenses: [String] = []
+            for (idx, raw) in lines.enumerated() {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                guard !line.isEmpty, !line.hasPrefix("#"), !line.hasPrefix("```") else { continue }
+                // 版本行是唯一被允许的显式版本引用（build-app.sh 靠它校验文档跟没跟上）
+                if line.contains("本文档描述") { continue }
+                // 交付链路那一节里的示例命令与产物名，不是逐版记录
+                if line.contains("scripts/release.sh") || line.contains("AgentIsland-") { continue }
+                if line.range(of: #"v0\.0\.\d+"#, options: .regularExpression) != nil {
+                    offenses.append("\(idx + 1): 出现具体版本号 → \(line.prefix(50))")
+                }
+                // 只收「回归叙事」的固定搭配。单个「这次」不列：中文里它更常指
+                // 「本次请求/这一轮」，把正常句子判成跑题的断言活不过第二周
+                for marker in ["此前", "原先", "曾经", "上一版", "本次改造", "不再", "新增了"] {
+                    if line.contains(marker) {
+                        offenses.append("\(idx + 1): 回归叙事「\(marker)」→ \(line.prefix(50))")
+                    }
+                }
+                if line.contains("实测") {
+                    offenses.append("\(idx + 1): 带着测量数字的解释属于 CHANGELOG → \(line.prefix(50))")
+                }
+            }
+            try expectTrue(offenses.isEmpty,
+                           "README 里出现逐版叙事（读者没法分辨哪句还作数）：\n    "
+                            + offenses.joined(separator: "\n    "))
+        }
     }
 }

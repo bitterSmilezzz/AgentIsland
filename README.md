@@ -2,14 +2,14 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.118** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.119** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 能看见什么
 
 - **五态**：`working` 运行中 / `attention` 等待你确认 / `completed` 已完成 / `idle` 待机 / `offline` 离线，各有独立语义与颜色；异常高负载再叠一层橙/红告警。
 - **正在做什么**：子进程命令实时提取（`git diff`、`swift build`、`npm run build`…）与会话日志里的动作上下文（`正在修改: IslandView.swift`、`正在执行: pytest`）。后台任务与子智能体以 `⚡ 后台N`、`🤖 N子任务` 微胶囊呈现。
 - **等待确认**：识别 Agent 的结构化确认、权限申请与用户输入请求。多个 Agent 同时在等也不会漏报，每个请求只提醒一次。
-- **成本**：24h 与累计 Token、按模型拆分、花费，以及月末消耗与预算枯竭预测。预算与 24h 用量同为滚动 24 小时口径（不按自然日清零），周/月趋势图的每根柱子对应一个日历天。预算有区间与唯一读法，异常值不会再让 CLI 崩掉。
+- **成本**：24h 与累计 Token、按模型拆分、花费，以及月末消耗与预算枯竭预测。预算与 24h 用量同为滚动 24 小时口径（不按自然日清零），周/月趋势图的每根柱子对应一个日历天。异常大的数值会被饱和到上限并说明，不会把报表算成 `inf`。
 - **异常**：Token 暴涨、长耗时死循环、孤儿后台与内存激增；实时流水里的 429 限流、编译报错、Git 冲突与鉴权失败会被特征分析出来并给一键复制摘要。
 - **监控可信度自查**：岛内与维护工作台都列得清「这个 Agent 是真闲着，还是我根本没看到它」——会话源读不到 / 本地无明细 / 未接入明细源分别是三种不同结论。判定与 `doctor` 共用同一份实现，不会出现「终端说不可信、岛上说正常」。
 
@@ -31,7 +31,7 @@
 ## 状态判定与误报防护
 
 - **判定优先级**：结构化会话事件优先识别 `attention` 与 `completed`；无强语义时按双信号降级——`working` = 进程在 且（60s 内有文件写入 **或** CPU ≥ 6%，桌面类档案用 20%/35% 下限），`idle` = 进程在但两者皆不满足，`offline` = 进程不在。
-- **只在「有写入证据」时宣布完成**：纯 CPU 高负载（桌面应用空闲抖动、启动尖峰）、只打开应用不做任何操作、浏览器内核缓存与账号状态写入、SQLite `-shm` 空转触碰、睡眠/合盖唤醒均不算任务完成。Ctrl-C 留下的僵尸 `tool_use` 会立即撤销在途命令，不再把 Agent 永久钉在工作态。
+- **只在「有写入证据」时宣布完成**：纯 CPU 高负载（桌面应用空闲抖动、启动尖峰）、只打开应用不做任何操作、浏览器内核缓存与账号状态写入、SQLite `-shm` 空转触碰、睡眠/合盖唤醒均不算任务完成。Ctrl-C 留下的僵尸 `tool_use` 会立即撤销在途命令，Agent 不会被钉在工作态不放。
 - **在途命令全周期拦截**：Claude Code（`Bash`）、Codex（`exec_command`）、Cline / Roo Code（`ask/say command`）、Antigravity 异步任务与定时器期间，严格保持工作态，不放完成横幅与提示音。
 - **可见口径**：主列表、菜单摘要与顶部环只显示进程仍在的 Agent；离线项即使有近期活动或 Token 记录也隐藏，避免「昨天的事」冒充「现在的状态」。
 - **误报防护**：按完整路径匹配（非 basename），排除系统目录前缀（`/System/`、`/usr/libexec` 等）与已知噪声（`CursorUIViewService`、`ssh-agent` 等）；扫描跳过依赖树与配置目录。
@@ -43,7 +43,7 @@
 
 - **三档策略**：标准模式 / 专注免打扰（默认推荐：普通完成静默更新，待确认与严重告警仍即时通知并出声）/ 完全静默。
 - **Peek 微弹窗**：收起态下按策略滑出约 3.5 秒短提示，光标移入转为常驻展开。
-- **严重告警保护**：30 秒内不会被其他 Agent 的完成事件顶掉，留出处置时间；熔断横幅可展开详情与排查说明，dismiss 一个 Agent 不再顺手解除另一个 Agent 的保护。
+- **严重告警保护**：30 秒内不会被其他 Agent 的完成事件顶掉，留出处置时间；熔断横幅可展开详情与排查说明，收起某个 Agent 的横幅只收起它自己。
 - **声音**：完成用 Glass，成本激增与死循环用警示音；由应用内发声，不依赖通知权限。
 - **一键终止带身份复核**：横幅与列表行的「终止」都要两段确认（首击进入确认态、3 秒自动复位）；终止前按 pid + 可执行路径复核身份，pid 已被系统回收复用给别的程序时拒绝执行。
 
@@ -70,7 +70,7 @@
 | `top` | 类 htop 的全屏看板，`q` 退出、`r` 刷新、`c` 一键清理 |
 | `tokens` | 24h 用量明细、成本与月末预测；`--budget` 打印终端进度条 |
 | `doctor` | 一次性自查：这个 Agent 是真闲着，还是我根本没看到它（结论带依据，支持 `--json`、`--quiet`，`--agent` 可写 id 或名称） |
-| `check` / `clean` | 排查死锁、孤儿后台与内存异常 / 一键释放，`-n` 只预览不终止、`-f` 连孤儿后台一起清 |
+| `check` / `clean` | 排查孤儿与内存异常 / 一键释放，`-n` 只预览不终止、`-f` 连孤儿后台一起清 |
 | `selftest` | 用假数据断言核心判定逻辑，验证构建本身而非本机状态 |
 | `open` | 从终端控制灵动岛展开、折叠、直达指定 Agent 或看板 |
 | `notify` | 主动投递完成 / 待确认 / 告警事件（岛内会标为「外部投递」） |
@@ -81,6 +81,8 @@
 - **退出码**：1 = 失败，2 = 用法错。写盘失败不会静默 exit 0。
 - **深链**：`agentisland://` 支持 `toggle`、`expand`、`collapse`、`agent?id=<id>`、`analytics`、`toolbox`、`clean`、`export`、`notify`。投递目标必须解析到已知档案，否则拒绝。
 - **本地 Webhook**：`127.0.0.1:41999` 的 `POST /notify` 与 `/event`，供 CI 或脚本毫秒级直推事件。**无鉴权**，只靠「仅监听回环」限制来源。
+- **一次性扫描不判死锁**：`check` / `clean` 只看当下这一拍，覆盖不了「CPU 连续 70% 以上达 5 分钟」那段时长，所以明说「本次未评估」，不报「无死锁」。要死锁结论得用持续观测的入口（灵动岛工作台、`top`）。
+- **孤儿判定要证据**：`ppid == 1` 分不清「终端关掉的遗孤」和「launchd 刻意托管的常驻服务」，两者进程表长得一样。规则是会话目录 10 分钟内仍有写入就算活着、不报孤儿；宁漏不错杀。这条与上一条在 UI 与 CLI 之间共用同一份实现。
 
 ## Token 用量口径
 
@@ -88,8 +90,8 @@
 - **OpenCode**：`opencode.db` 消息表（token + 花费 $）
 - **Codex / Claude / WorkBuddy / WorkBuddy AI**：只读解析本机会话 JSONL 的结构化 usage 字段，不保留对话正文
 - **Antigravity**：Prompt / Completion / Cache / Thoughts 细分
-- **Xiaomi MiMo（MiMo Code）**：与 OpenCode 同一套 `session` / `message` / `part` 表，用量、状态、当前动作、实时流水都按 OpenCode 方言读 `~/.local/share/mimocode/mimocode.db`（本机实测一条会话 42.9k tokens 已计入分工具占比）
-- **Qoder：用量列显示 `—`，它的 token 消耗确认监控不了**——实测 1,033 条 usage 记录里四个 token 字段全为 0，真值只有 `credits`；接入采集会让用量页冷跑从约 2.05s 涨到 2.9–4.0s 却拿不到数据，所以宁可显示「没取到」。
+- **Xiaomi MiMo（MiMo Code）**：与 OpenCode 同一套 `session` / `message` / `part` 表，用量、状态、当前动作、实时流水都按 OpenCode 方言读 `~/.local/share/mimocode/mimocode.db`
+- **Qoder：用量列显示 `—`，它的 token 消耗监控不了**——会话库里四个 token 字段恒为 0，真值只有 `credits`；接进去会让用量页明显变慢却仍然拿不到 token，所以宁可显示「没取到」，不拿 credits 折算成一个看起来像真的数字。
 - 行内徽标显示 24h 用量；卡片底部汇总栏双口径（跨工具 24h / 累计 + 花费）；点击汇总条进入 24h / 7 天 / 30 天分析（趋势、环比、按工具占比与成本）。内嵌的 Codex 即使不单独显示为运行项，也不会失去用量入口。
 - 分工具列表始终说明数据覆盖状态：「未发现本地明细」与「真实零用量」不混为一谈；无明细的图表区间显式提示，而不是画一整排全零格子；环形图静默丢弃的模型改为可见的「其余 N 个 · xx%」。
 - 60s 后台轮询；SQLite 只读打开，JSONL 按文件指纹缓存并增量解析，不锁库、不碰凭证。
@@ -128,6 +130,16 @@ AGENTISLAND_DEBUG=1 open dist/AgentIsland.app && tail -f /tmp/agentisland.log
 # log show --predicate 'subsystem == "com.agentisland.app"' --last 10m
 ```
 
+交付链路（新克隆先装钩子）：
+
+```bash
+./scripts/install-git-hooks.sh              # pre-commit 挂上脱敏扫描
+./scripts/scan-secrets.sh --release         # 手动扫一遍：工作区 + 全部 git 对象
+./scripts/release.sh 0.0.119 "这一版的一句话"  # 扫描 → 打包 → 提交 → tag → 推送 → GitHub Release
+```
+
+发版要求三处版本一致（CHANGELOG 首条、`AppVersion.string`、本文件的版本行），任一处漂移 `release.sh` 与 `build-app.sh` 都会拒绝。**本文件只讲这个工具是什么、能做什么；逐版改了什么一律写进 [CHANGELOG.md](CHANGELOG.md)。**
+
 套件覆盖五态状态机、会话语义、通知路由、标题可读性、事件唤醒、进程树熔断、外观主题、命令清洗、token 时间统计、深链与 CLI、远程外发协议与策略。多数断言做过**变异验证**（把被测逻辑改坏、确认对应测试变红），抓不到的缺口在 CHANGELOG 里如实列出。另有**债务棘轮**：Theme 外硬编码色值与 `UserDefaults.standard` 直读处数钉成基线，新增即测试失败并说明该用什么替代。开发约定见 [AGENTS.md](AGENTS.md)，设计依据见 `docs/research/`（含远程通知与 Qoder 监控两份调研）。
 
 ## 目录结构
@@ -137,7 +149,11 @@ AGENTISLAND_DEBUG=1 open dist/AgentIsland.app && tail -f /tmp/agentisland.log
 ```
 AgentIsland/
 ├── Package.swift                     # 5 target：Core 库 + App + CLI + IslandMetricsKit + 测试 runner
-├── scripts/build-app.sh              # .app 打包（无 Xcode 环境）
+├── scripts/
+│   ├── build-app.sh                  # .app 打包（无 Xcode 环境）
+│   ├── scan-secrets.sh               # 提交/发版前的密钥与个人信息门禁（棘轮式 baseline）
+│   ├── release.sh                    # 扫描 → 打包 → 提交 → tag → 推送 → GitHub Release
+│   └── install-git-hooks.sh          # 把扫描挂到 pre-commit
 ├── Sources/
 │   ├── AgentIslandCore/              # 核心库（可被测试 import，不依赖 UI）
 │   │   ├── Models.swift              # ActivityLevel / AgentProfile / AgentSnapshot / EngineConfig
@@ -200,9 +216,9 @@ AgentIsland/
 - 已适配结构化确认/完成事件的 Agent 能区分待确认与已完成；未知或改版后的日志格式会安全降级到「进程 + 文件写入/CPU」三态近似。
 - Token 统计当前适配 DimAgent、OpenCode、Xiaomi MiMo、Codex、Claude、WorkBuddy、WorkBuddy AI 与 Antigravity；不提供稳定本地 usage 明细的工具（如 Qoder 只有 `credits`）会在分析页明确标为未接入而不估算
 - 闲置降频 5s 时，Agent 开始工作的检测最多延迟一个采样周期（可调「闲置降频间隔」）。
-- 多显示器跟随鼠标所在屏的右缘（`NSScreen.screens`）。
+- 多显示器跟随光标所在的那块屏（`NSScreen.screens` 按鼠标位置选），贴哪条边由吸附设置决定，四边都行。
 - **浅色小字号按 AA 正文档校准**：8–10pt 文字已 ≥4.5:1，但热力图 / 环图一类**纯图形**仍按 3:1 的图形线取值，不追求正文档。
-- **部分命中区仍小于 24×24**：顶栏三个快捷图标约 19×19pt、详情页两个图标按钮约 13×12pt。补上的是「能不能被按到」（`AXPress` 与 label），不是点击面积——扩到 24pt 会改变圆底尺寸与行高，属可见布局改动，留待目视确认。
+- **命中区补的是高度不是画出来的尺寸**：顶栏与详情页的图标按钮统一走 `hitTargetHeight()`（`minHeight: 24` + `contentShape`），按得到也点得到；视觉圆底仍是 19×19 一类的小图形，横向命中区跟着图形走。扩成 24×24 要改圆底与行高，属可见布局改动。
 - **在场判定的「无输入时长」在测试里构造不出来**（需要真实 GUI 会话）。判定逻辑与调用点传参都有断言，但取信号那一层只能靠设置页的实时判定行当场核对。
-- Token 明细索引按「磁盘上存在的 jsonl」累积，重度使用数月后单次重建成本线性上升（本机 5,778 条时稳态 2.7ms）；未按分析窗口裁剪。
+- Token 明细只留近 70 天（分析页最宽 30 天，另需同长的上一周期做对比）；更早的折成按工具的合计，累计口径不变但按天铺不开。索引仍按磁盘上存在的 jsonl 数量线性重建（本机 5,778 条时稳态 2.7ms），全库未变化时走戳备忘录直接复用。
 - `/notify` 无鉴权，仅靠「只监听回环」限制来源；macOS 13 无法限定，会在启动时告警。

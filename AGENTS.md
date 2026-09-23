@@ -16,16 +16,45 @@ pkill -x AgentIsland; sleep 0.6; open dist/AgentIsland.app
 - 旧实例不存在时 `pkill` 返回非零，忽略即可，继续 `open`
 - 重启后简短汇报，不要写成长篇操作说明
 
-### 自动化提交与发版
+### 自动化提交与发版（每轮改造的收尾）
 
-- 改造完成后，只要测试通过，就自动提交到远端，然后执行发版并更新文档
+一轮改造 = 优化实现 → 测试全绿 → 脱敏扫描 → 提交 → tag → GitHub Release → 文档同步，**不必逐步征求同意**，用一条命令收尾：
 
-### 数据脱敏红线（交付给第三方工具前必读）
+```sh
+scripts/release.sh <X.Y.Z> "<CHANGELOG 首条那句话>"
+```
 
-本项目对外交付前必须保证工作区不含个人数据。约定见 `docs/agent/desensitization.md`：
-- 本项目**不存储任何凭据**（源码零硬编码 secret）；如未来需要凭据，一律走环境变量注入，禁止写进任何文件
+- 顺序是钉死的：**扫描先于 commit**（`release.sh` 内置），因为一旦提交，泄漏的内容就进了 git 对象，删掉文件也拿不回来
+- 发版前三处版本必须一致：CHANGELOG 首条、`AppVersion.string`、README 的版本行；漂移即拒绝（脚本与 `build-app.sh` 都查）
+- tag 与 release 是**必须发生的步骤**。历史上出现过 38 个版本只推了 commit、没建 tag 也没发 release（v0.0.81..v0.0.118），所以这条不再靠记忆
+- 版本号取 `git tag --sort=-v:refname | head -1` 的下一号；CHANGELOG 条目按既有风格写「改了什么 + 为什么 + 没做什么」
+
+### 文档分工（README 不是更新日志）
+
+| 文件 | 只写 | 绝不写 |
+| :--- | :--- | :--- |
+| `README.md` | 这个工具是什么、有什么功能、怎么装怎么用、哪些限制今天还成立 | 「新增/不再/此前/上一版/实测数字」这类逐版叙事 |
+| `CHANGELOG.md` | 每个版本改了什么、为什么、代价与被否决的方案 | 功能全景（会长成第二份 README） |
+| `CONTEXT.md` / `docs/adr/` | 口径、术语、长期决策 | 版本历史 |
+
+README 里出现「此前」「不再」「v0.0.x」「本机实测 N 条」即为跑题；写功能，不写流水。已知限制条目必须**逐条对着代码核实**再留着——过期的限制比没有限制更误导人。
+
+### 数据脱敏红线（提交与发版前必查）
+
+本项目对外发布，任何 commit 之前都要过门禁：
+
+```sh
+scripts/scan-secrets.sh            # 工作区（git 认得的全部文件）
+scripts/scan-secrets.sh --release  # 工作区 + 全部 git 对象（release.sh 自动跑这条）
+scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
+```
+
+- 规则是**棘轮**：命中的 (规则, 文件, 行) 要在 `scripts/secrets-baseline.txt` 里备过案，新增即失败。假凭据、假邮箱可以备案；`cred_prefix`/`private_key` 两类**绝对零命中**，不许进 baseline
+- 豁免用行内 `nosec: <理由>`，理由必须写在被豁免的那一行上；全局禁用开关是 `SKIP_SCAN=1`，只用于本地试跑
+- 本项目**不存储任何凭据**（源码零硬编码 secret）；如需要凭据一律环境变量或钥匙串注入，禁止写进任何文件
+- 密钥值永不出现在输出里：扫描器自己就做打码，agent 也不 `cat`/`echo` 凭据文件
 - `.scratch/`、`artifacts/`、`dist/`、`.build/`、根目录 `*.zip` 均不入库、不交付（屏幕截图可能含个人会话内容）
-- 交付第三方收集数据的工具前，先删上述本地目录再用 `docs/agent/desensitization.md` 的复扫清单过一遍
+- 交付第三方收集数据的工具前，先删上述本地目录再跑 `scripts/scan-secrets.sh --release`；细节见 `docs/agent/desensitization.md`
 
 ## Agent skills
 
