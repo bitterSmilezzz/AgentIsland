@@ -271,6 +271,54 @@ enum CLITests {
             try expectTrue(raycast.contains("agentisland://agent?id=dim"), "Raycast 清单包含 agent 直达协议")
         }
 
+        TestKit.test("报表: 没取到的用量不许印成 0（与 status --json 同一条口径）") {
+            func snap(_ name: String, usage: TokenUsage?) -> AgentSnapshot {
+                AgentSnapshot(profile: AgentProfile(id: name, name: name, icon: "terminal",
+                                                    bundleIDs: [], processNames: [name], sessionDirs: []),
+                              level: .idle, processRunning: true, cpuPercent: 5, installed: true,
+                              activeSessions: 0, lastActivityAgo: 10, lastActivityText: "10秒前",
+                              tokenUsage: usage, pid: 1, memoryBytes: 1_000_000, isHung: false)
+            }
+            // 24h 与累计取**不同**值、cost 取非零：两列接错、成本漏印都必须变红
+            let measured = snap("measured", usage: TokenUsage(tokens24h: 1234, tokensTotal: 98765,
+                                                             cost24h: 0.25, costTotal: 1.5))
+            // 取到了、确实是零：这一行不能整行 `—`，否则「没花钱」和「没查」又混了
+            let zeroCost = snap("zerocost", usage: TokenUsage(tokens24h: 7, tokensTotal: 7,
+                                                             cost24h: 0, costTotal: 0))
+            let blind = snap("blind", usage: nil)
+            let alsoBlind = snap("alsoblind", usage: nil)
+
+            let md = AuditReportExporter.generateMarkdown(
+                snapshots: [measured, zeroCost, blind, alsoBlind], now: Date())
+            // 只在第 2 节（Token 表）里找行：第 1 节的行同样以「| 名字 |」开头，
+            // 不限定就会拿到健康评分那一行（第一版就栽在这里）
+            let tokenSection = md.components(separatedBy: "## 2.").last ?? ""
+            func mdRow(_ name: String) -> String {
+                tokenSection.split(separator: "\n").first { $0.hasPrefix("| \(name) |") }
+                    .map(String.init) ?? ""
+            }
+            try expectEqual(String(mdRow("blind")), "| blind | — | — | — | — |",
+                            "没取到的整行都是 `—`，一个 0 都不许出现")
+            try expectEqual(mdRow("measured"),
+                            "| measured | \(TokenUsage.compact(1234)) | \(TokenUsage.cost(0.25)) | "
+                            + "\(TokenUsage.compact(98765)) | \(TokenUsage.cost(1.5)) |",
+                            "取到了就照实印，非零成本也要印出来")
+            try expectEqual(mdRow("zerocost"),
+                            "| zerocost | \(TokenUsage.compact(7)) | — | \(TokenUsage.compact(7)) | — |",
+                            "测到的零成本印 `—`，用量列仍是数字——整行 `—` 才是没取到")
+            try expectTrue(md.contains("2 个智能体") && md.contains("没取到用量"),
+                           "合计旁边要说清有几个源没计入：\(md.split(separator: "\n").prefix(8).joined(separator: " ⏎ "))")
+
+            let csv = AuditReportExporter.generateCSV(snapshots: [measured, blind])
+            func fields(_ name: String) -> [String] {
+                csv.split(separator: "\n").first { $0.contains("\(name),") }?.components(separatedBy: ",") ?? []
+            }
+            try expectEqual(Array(fields("measured")[9...12]), ["1234", "0.2500", "98765", "1.5000"],
+                            "实测值按列落位")
+            try expectEqual(Array(fields("blind")[9...12]), ["", "", "", ""],
+                            "CSV 里没取到是空，不是 0（与同一行的 PID/CPU 列同口径）")
+        }
+
         TestKit.test("可观测性: 四类结论互斥，且「读不到」绝不与「闲着」混为一谈") {
             let profile = AgentRegistry.builtin[0]
             func snap(processRunning: Bool, installed: Bool, sessions: Int = 0,

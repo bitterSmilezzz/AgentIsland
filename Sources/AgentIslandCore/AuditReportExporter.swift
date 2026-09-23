@@ -53,6 +53,8 @@ public enum AuditReportExporter {
         let listedCost24h = snapshots.reduce(0.0) { $0 + ($1.tokenUsage?.cost24h ?? 0.0) }
         let totalTokens24h = grandTotal?.tokens24h ?? listedTokens24h
         let totalCost24h = grandTotal?.cost24h ?? listedCost24h
+        // 合计只覆盖「取到的那些源」——没取到的必须当场说出来，否则一个总量读起来像全机真相
+        let unmeasured = snapshots.filter { $0.tokenUsage == nil }
 
         md += "- **在线运行中**：\(runningCount) 个 (其中 \(workingCount) 个工作中)\n"
         md += "- **24h Token 消耗**：\(TokenUsage.compact(totalTokens24h)) tokens"
@@ -60,6 +62,10 @@ public enum AuditReportExporter {
             md += " (\(TokenUsage.cost(totalCost24h)))"
         }
         md += "\n"
+        if !unmeasured.isEmpty {
+            md += "  ·  其中 \(unmeasured.count) 个智能体**本轮没取到用量**（不计入上面的合计，"
+                + "表里标 `—`；`—` 是「没查」，`0` 才是「查了、确实是零」）\n"
+        }
         // 两份口径都摆出来，而不是悄悄选一个：跨源总量与逐条列表之和不等时，
         // 差额是「离线但有历史」「被宿主去重」这类在册范围差异，读报告的人需要知道
         if let grandTotal, grandTotal.tokens24h != listedTokens24h {
@@ -103,13 +109,18 @@ public enum AuditReportExporter {
         md += "| :--- | :--- | :--- | :--- | :--- |\n"
 
         for snap in snapshots {
-            let u = snap.tokenUsage
-            let tok24 = u.map { TokenUsage.compact($0.tokens24h) } ?? "0"
-            let cost24 = (u?.cost24h ?? 0) > 0 ? TokenUsage.cost(u!.cost24h) : "—"
-            let tokTot = u.map { TokenUsage.compact($0.tokensTotal) } ?? "0"
-            let costTot = (u?.costTotal ?? 0) > 0 ? TokenUsage.cost(u!.costTotal) : "—"
-
-            md += "| \(cell(snap.profile.name)) | \(tok24) | \(cost24) | \(tokTot) | \(costTot) |\n"
+            // 整行 `—` = 这个源本轮没取到用量；`0` = 取到了、确实是零。
+            // 此前 nil 印成 0：一份运维报告把「这个工具的 token 我监控不了」写成
+            // 「这个工具没花钱」，而同一个快照在 `status --json` 里是 null——
+            // 同一份数据两份结论，读报告的人无从核对。
+            guard let u = snap.tokenUsage else {
+                md += "| \(cell(snap.profile.name)) | — | — | — | — |\n"
+                continue
+            }
+            let cost24 = u.cost24h > 0 ? TokenUsage.cost(u.cost24h) : "—"
+            let costTot = u.costTotal > 0 ? TokenUsage.cost(u.costTotal) : "—"
+            md += "| \(cell(snap.profile.name)) | \(TokenUsage.compact(u.tokens24h)) | \(cost24) "
+                + "| \(TokenUsage.compact(u.tokensTotal)) | \(costTot) |\n"
         }
         md += "\n"
 
@@ -160,10 +171,12 @@ public enum AuditReportExporter {
                 String(snap.memoryBytes),
                 String(report.score),
                 escapeCSV(report.grade.rawValue),
-                String(u?.tokens24h ?? 0),
-                String(format: "%.4f", u?.cost24h ?? 0.0),
-                String(u?.tokensTotal ?? 0),
-                String(format: "%.4f", u?.costTotal ?? 0.0),
+                // 空 = 没取到（与同一行的 PID/CPU 列同口径），0 = 取到了确实是零。
+                // 折成 0 会让电子表格把「监控不了」求和成「没花钱」。
+                u.map { String($0.tokens24h) } ?? "",
+                u.map { String(format: "%.4f", $0.cost24h) } ?? "",
+                u.map { String($0.tokensTotal) } ?? "",
+                u.map { String(format: "%.4f", $0.costTotal) } ?? "",
                 escapeCSV(verdict.code.rawValue),
                 escapeCSV(verdict.evidence.first ?? "")
             ].joined(separator: ",")

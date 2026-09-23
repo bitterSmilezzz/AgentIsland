@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.122** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.123** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 能看见什么
 
@@ -77,7 +77,7 @@
 | `report` | 生成 Markdown / CSV / JSON 运维报告，`-c` 复制剪贴板、`-o` 写文件 |
 | `raycast` | 导出 Raycast 命令清单 |
 
-- **「没取到」不印成 `0`**：`status` 默认用量列是 `—`，`--usage` 才同步取数（约 5s）；JSON 里 `tokens24h` / `cost24h` 可空，`nil` 是没查、`0` 是查了确实为零。
+- **「没取到」不印成 `0`**：`status` 默认用量列是 `—`，`--usage` 才同步取数（约 5s）；JSON 里 `tokens24h` / `cost24h` 可空，`nil` 是没查、`0` 是查了确实为零。审计报表同一口径：Markdown 里没查到的**整行**都是 `—`、CSV 里是空字段（与 PID/CPU 列一致），合计那一行会写出有几个源没计入。
 - **CPU 要有窗口才谈得上测到**：利用率是两次采样之间的进程时间差分量，所以只采一拍的入口（`status` / `report`）根本没有窗口，那一列印 `—`、JSON 里是 `null`，不是 `0.0%`。要真实 CPU 用 `doctor`（双采）或 `top`（持续观测）。只按 bundle 命中的档案同样算「没测」——占位条目的 0 是「没看着这个进程」。
 - **退出码**：1 = 失败，2 = 用法错。写盘失败不会静默 exit 0。
 - **深链**：`agentisland://` 支持 `toggle`、`expand`、`collapse`、`agent?id=<id>`、`analytics`、`toolbox`、`clean`、`export`、`notify`。投递目标必须解析到已知档案，否则拒绝。
