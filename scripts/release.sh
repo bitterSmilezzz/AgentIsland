@@ -96,4 +96,17 @@ sleep 0.6
 open dist/AgentIsland.app
 
 printf '\n\033[32m✓ v%s 已发布：提交已推送、tag 已打、release 已建\033[0m\n' "$VERSION"
-gh release view "v$VERSION" --json tagName,assets -q '"    " + .tagName + "  附件: " + ([.assets[].name] | join(", "))'
+# 附件复核。注意 `releases/tags/…` 这个端点会短暂返回空 assets（实测刚传完读到 0，
+# 按 id 读是 1），所以只重试着读、不做「读不到就重传」——重传会撞 already exists，
+# 反而把一次正常发版报成失败。读不到只打警告，人去看一眼比脚本猜更靠得住
+for _ in 1 2 3 4 5; do
+    ASSETS=$(gh release view "v$VERSION" --json assets -q '[.assets[].name] | join(", ")' 2>/dev/null || true)
+    [[ -n "$ASSETS" ]] && break
+    sleep 2
+done
+if [[ -n "$ASSETS" ]]; then
+    echo "    v$VERSION  附件: $ASSETS"
+else
+    echo "⚠ 附件复核没读到（GitHub 的 tag 端点有短暂一致性问题）。手工确认：" >&2
+    echo "  gh api repos/\$(gh repo view --json owner -q .owner.login)/AgentIsland/releases/tags/v$VERSION -q '.assets[].name'" >&2
+fi
