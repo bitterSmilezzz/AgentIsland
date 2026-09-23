@@ -384,7 +384,11 @@ public struct AgentSnapshot: Identifiable, Equatable {
     public let pid: Int32?                     // 匹配到的进程 PID（若运行中）
     public let currentAction: String?          // 实时动作透传（执行的命令/修改的文件/思考等）
     public let memoryBytes: UInt64             // 物理内存占用（RSS 字节数）
-    public let isHung: Bool                    // 进程是否疑似死锁/僵死卡顿
+    /// 死锁/僵死判定的**三态**结果：`true` 持续高负载已达阈值；`false` 观测窗口够长、
+    /// 判过且清白；`nil` 本轮结构上判不出（对该进程的连续观测不足 `runawayDurationThreshold`，
+    /// 一次性 CLI 必然如此）。
+    /// 默认 nil 是有意的：漏传只能得到「没测」，不能得到一个假的「没有」。
+    public let isHung: Bool?
     public let backgroundTasks: [AgentBackgroundTask] // 正在运行的后台命令/任务
     public let subagents: [AgentSubagentInfo]   // 正在运行/关联的子智能体列表
     public let tokenBreakdown: AgentTokenBreakdown?   // Token 细分耗损指标
@@ -403,7 +407,7 @@ public struct AgentSnapshot: Identifiable, Equatable {
                 cpuPercent: Double, installed: Bool, activeSessions: Int,
                 lastActivityAgo: TimeInterval?, lastActivityText: String,
                 tokenUsage: TokenUsage? = nil, pid: Int32? = nil, currentAction: String? = nil,
-                memoryBytes: UInt64 = 0, isHung: Bool = false,
+                memoryBytes: UInt64 = 0, isHung: Bool? = nil,
                 backgroundTasks: [AgentBackgroundTask] = [],
                 subagents: [AgentSubagentInfo] = [],
                 tokenBreakdown: AgentTokenBreakdown? = nil,

@@ -11,7 +11,10 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
     public let memoryBytes: UInt64
     public let memoryFormatted: String
     public let activeSessions: Int
-    public let isHung: Bool
+    /// 三态：`true` 判定卡死、`false` 观测窗口够长且清白、`null` 本轮判不出。
+    /// 一次性 `status` / `report` 结构性地给不出那段观测窗口，所以它们输出 null 而不是 false
+    /// ——与 `tokens24h` 用 nil 表示「没取」同一条口径（CONTEXT.md：源缺失不得当作零活动）
+    public let isHung: Bool?
     /// nil = 本轮没有去取用量（一次性进程默认不付同步刷新的开销）；
     /// 0 = 取到了、确实是 0。两者混成一谈就违反 CONTEXT.md 的「源缺失不得当作零活动」
     public let tokens24h: Int?
@@ -194,6 +197,9 @@ public struct CLIAgentDoctorDTO: Codable, Sendable {
     public let installed: Bool
     public let activeSessions: Int
     public let healthScore: Int
+    /// 只有分数不够：一次性 doctor 的 100 分里死锁那一维是「没测」，
+    /// 评级（观测不全）才是让脚本分辨得出「清白」与「没查」的那一位
+    public let healthGrade: String
     /// observed / blindSessionSource / noLocalData / sourceNotWired / notInstalled
     public let observability: String
     public let evidence: [String]
@@ -205,7 +211,9 @@ public struct CLIAgentDoctorDTO: Codable, Sendable {
         self.processRunning = snapshot.processRunning
         self.installed = snapshot.installed
         self.activeSessions = snapshot.activeSessions
-        self.healthScore = AgentHealthEvaluator.evaluate(snapshot: snapshot).score
+        let health = AgentHealthEvaluator.evaluate(snapshot: snapshot)
+        self.healthScore = health.score
+        self.healthGrade = health.grade.rawValue
         let verdict = AgentObservability.evaluate(snapshot: snapshot)
         self.observability = verdict.code.rawValue
         self.evidence = verdict.evidence

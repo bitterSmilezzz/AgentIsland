@@ -193,6 +193,9 @@ public final class ActivityEngine: ObservableObject {
     static let tokenSpikeConfirmations = 3
     /// 持续高负载时间追踪（agentId → 开始高负载的时间戳），用于判定真正的死循环
     private var highCpuSince: [String: Date] = [:]
+    /// 进程连续在跑的时间起点（agentId → 时间戳）：决定本轮**有没有资格**判死锁，
+    /// 与 `highCpuSince`（判成什么）分开。凑不满 `runawayDurationThreshold` 就是没测。
+    private(set) var observedRunningSince: [String: Date] = [:]
     /// 上次高负载告警时间（agentId → 告警时间），防止每个采样周期重复轰炸
     private var lastRunawayAlertedAt: [String: Date] = [:]
     /// 会话探测的失败原因（agentId → 最近一次为什么没读到会话源）。
@@ -367,6 +370,7 @@ public final class ActivityEngine: ObservableObject {
         }
         lastSignalAt[agentId] = nil
         highCpuSince[agentId] = nil
+        observedRunningSince[agentId] = nil
         lastRunawayAlertedAt[agentId] = nil
         tokenSpikeStreak[agentId] = nil
         tokenSpikeAlerted.remove(agentId)
@@ -385,6 +389,10 @@ public final class ActivityEngine: ObservableObject {
         workingPeriodHadWrite.removeAll()
         lastSignalAt.removeAll()
         highCpuSince.removeAll()
+        // 观测资格一起作废：跨睡眠的墙钟差值证明不了「CPU 连续超阈值」这段窗口真的被
+        // 观测过。留着它会让醒后的第一拍拿到资格，而 highCpuSince 已被清空 ⇒ 用 0 秒
+        // 窗口判出一句「不卡死」——正是本轮要消灭的那类谎报。
+        observedRunningSince.removeAll()
         lastRunawayAlertedAt.removeAll()
         tokenSpikeStreak.removeAll()
         tokenSpikeAlerted.removeAll()
@@ -403,6 +411,7 @@ public final class ActivityEngine: ObservableObject {
         handledCompletionFingerprints = handledCompletionFingerprints.filter { activeIDs.contains($0.key) }
         lastSignalAt = lastSignalAt.filter { activeIDs.contains($0.key) }
         highCpuSince = highCpuSince.filter { activeIDs.contains($0.key) }
+        observedRunningSince = observedRunningSince.filter { activeIDs.contains($0.key) }
         lastRunawayAlertedAt = lastRunawayAlertedAt.filter { activeIDs.contains($0.key) }
         tokenSpikeStreak = tokenSpikeStreak.filter { activeIDs.contains($0.key) }
         tokenSpikeAlerted = tokenSpikeAlerted.filter { activeIDs.contains($0) }
@@ -516,6 +525,7 @@ public final class ActivityEngine: ObservableObject {
             if let t = workingSince[profile.id], t > now { workingSince[profile.id] = now }
             if let t = lastSignalAt[profile.id], t > now { lastSignalAt[profile.id] = now }
             if let t = highCpuSince[profile.id], t > now { highCpuSince[profile.id] = now }
+            if let t = observedRunningSince[profile.id], t > now { observedRunningSince[profile.id] = now }
             if let t = lastRunawayAlertedAt[profile.id], t > now { lastRunawayAlertedAt[profile.id] = now }
 
             // 每 profile 只调一次 matchingEntries（isRunning+cpuPercent 各遍历一遍
@@ -734,8 +744,22 @@ public final class ActivityEngine: ObservableObject {
                 }
             }
 
+            // 连续观测起点（进程在跑的每一拍续上，进程消失由 resetTracking 作废）。
+            // 死锁是「CPU 连续超阈值达 N 分钟」的时间性判定，而它的前提是这段窗口
+            // **确实被观测过**：一次性 CLI 进程活不到 5 分钟，其每一拍都凑不出窗口，
+            // 此时 isHung=false 的含义是「没测」而不是「没有」。资格写在数据里而不是
+            // 让调用方自报，是因为上一版让调用方传 sustainedObservation，漏传一处的
+            // 症状是静默谎报（v0.0.119 的异常扫描就是这个坑）。
+            if running, observedRunningSince[profile.id] == nil {
+                observedRunningSince[profile.id] = now
+            }
+
             // 用当拍采集后的值判定，比此前「读上一拍残留」更及时
-            let isHung = (highCpuSince[profile.id].map { now.timeIntervalSince($0) >= config.runawayDurationThreshold } ?? false)
+            let isHung: Bool? = {
+                guard let since = observedRunningSince[profile.id],
+                      now.timeIntervalSince(since) >= config.runawayDurationThreshold else { return nil }
+                return highCpuSince[profile.id].map { now.timeIntervalSince($0) >= config.runawayDurationThreshold } ?? false
+            }()
 
             // 会话源健康的对外口径：
             // · 离线一律不报——进程都不在，本就没有「应该去读会话」这回事，报出来是假警报

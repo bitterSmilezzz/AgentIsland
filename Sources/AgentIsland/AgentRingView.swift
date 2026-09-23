@@ -45,7 +45,7 @@ struct AgentRingView: View {
         case .working:
             // 熔断语义（isHung = 疑似死锁/死循环）：环呈极光红，与细条/横幅的
             // 告警红一致——此前 ringRed 从未接线，四级色标实际只有三级
-            if snapshot.isHung {
+            if snapshot.isHung == true {
                 return Palette.ringRed
             }
             if snapshot.cpuPercent >= 80 {

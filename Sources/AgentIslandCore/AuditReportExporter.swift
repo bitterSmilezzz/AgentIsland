@@ -79,14 +79,9 @@ public enum AuditReportExporter {
             let pidStr = snap.pid.map { String($0) } ?? "—"
             let cpuStr = String(format: "%.1f%%", snap.cpuPercent)
             let memStr = snap.memoryBytes > 0 ? snap.memoryText : "—"
-            let gradeStr: String = {
-                switch report.grade {
-                case .healthy: return "健康"
-                case .attention: return "需关注"
-                case .warning: return "预警"
-                case .critical: return "危急"
-                }
-            }()
+            // 评级直接用 HealthGrade 的措辞：这里曾自己 switch 出「需关注 / 预警」，
+            // 而 status --json 与详情卡说「需留意 / 异常」——同一个评级两份话。
+            let gradeStr = report.grade.rawValue
 
             md += "| \(cell(snap.profile.name)) | \(snap.level.label) | \(pidStr) | \(cpuStr) | \(memStr) | \(report.score) | \(gradeStr) | \(cell(report.suggestion)) |\n"
         }

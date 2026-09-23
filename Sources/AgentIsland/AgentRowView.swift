@@ -249,7 +249,7 @@ struct AgentRowView: View {
                                 .help("物理内存驻留集 (RSS): \(snapshot.memoryText)")
                         }
 
-                        if snapshot.isHung {
+                        if snapshot.isHung == true {
                             HStack(spacing: 2) {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .font(Theme.badgeFont())
@@ -420,7 +420,7 @@ struct AgentRowView: View {
                 Label("复制 Agent 名称", systemImage: "doc.on.doc")
             }
 
-            if snapshot.level == .working || snapshot.isHung {
+            if snapshot.level == .working || snapshot.isHung == true {
                 Divider()
                 Button(role: .destructive) {
                     confirmingKill = true

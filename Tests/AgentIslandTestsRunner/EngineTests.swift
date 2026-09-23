@@ -103,6 +103,78 @@ enum EngineTests {
             try expectTrue(reportHung.suggestion.contains("逃生舱") || reportHung.suggestion.contains("死锁"), "remedy suggestion")
         }
 
+        TestKit.test("AgentHealthEvaluator: 「死锁没测」不能算成「不卡死」") {
+            let profile = dim
+            func snap(_ hung: Bool?, cpu: Double = 5, mem: UInt64 = 100 * 1024 * 1024) -> AgentSnapshot {
+                AgentSnapshot(profile: profile, level: .working, processRunning: true,
+                              cpuPercent: cpu, installed: true, activeSessions: 1,
+                              lastActivityAgo: 1, lastActivityText: "1秒前",
+                              tokenUsage: nil, pid: 1234, currentAction: "编译",
+                              memoryBytes: mem, isHung: hung)
+            }
+
+            // 判过且清白才配「健康」——守住降级只针对 nil，别把真清白也报成可疑
+            let cleared = AgentHealthEvaluator.evaluate(snapshot: snap(false))
+            try expectEqual(cleared.grade, .healthy, "判过清白应当是健康")
+
+            // 没测：不凭空扣分，但也不许宣布全清
+            let blind = AgentHealthEvaluator.evaluate(snapshot: snap(nil))
+            try expectEqual(blind.grade, .partial, "死锁维度未评估时不能定级为健康")
+            try expectEqual(blind.score, 100, "没测不等于有病，扣分要有证据")
+            try expectTrue(!blind.summary.contains("平稳"), "概要不许说「运行平稳正常」：\(blind.summary)")
+            try expectTrue(blind.suggestion.contains("不足以") || blind.suggestion.contains("未评估"),
+                           "建议必须点出这一维没测：\(blind.suggestion)")
+            // 阈值口径只有一处（AnomalyScanGates 从配置读），这里再写一遍数字就会漂移
+            try expectTrue(!blind.suggestion.contains("分钟"), "措辞不得另立一份阈值：\(blind.suggestion)")
+
+            // 其余维度已经喊话时不降级：严重度不能被「观测不全」盖掉
+            let alsoHeavy = AgentHealthEvaluator.evaluate(snapshot: snap(nil, cpu: 85))
+            try expectEqual(alsoHeavy.grade, .attention, "CPU 已扣分时不许改口成观测不全")
+            try expectTrue(alsoHeavy.issues.contains { $0.contains("CPU") }, "高 CPU 的病症不能丢")
+        }
+
+        TestKit.test("ActivityEngine 死锁资格：观测窗口不足时 isHung 只能是「没测」") {
+            let start = Date(timeIntervalSince1970: 1_800_000_000)
+            // 90% CPU 远高于死锁阈值 70%：任何一拍「看起来都像」卡死，恰恰最容易谎报
+            let provider = MutableProcessProvider(names: ["dimagent"], cpu: 90)
+            let engine = makeEngine(processNames: [], writes: [:], processMonitor: provider)
+            let hung: (TimeInterval) -> Bool? = { step in
+                engine.sample(now: start.addingTimeInterval(step)).first { $0.id == "dim" }?.isHung
+            }
+
+            try expectEqual(hung(0), nil, "首拍连 CPU 差分都没有，不许说「不卡死」")
+            for step in [60.0, 120.0, 180.0, 240.0] {
+                try expectEqual(hung(step), nil, "连续观测 \(Int(step))s 不足阈值时长，仍不该有结论")
+            }
+            try expectEqual(hung(300), true, "CPU 压着阈值满窗口，这一拍才判得出死锁")
+
+            // 进程中途退出 → 资格作废：否则新起的进程会继承旧的 5 分钟窗口
+            //（每步都留在 resumeGapThreshold=120s 以内，跨断点由下面那条断言专测）
+            provider.names = []
+            try expectEqual(hung(360), nil, "进程都不在了，不留「卡死」结论")
+            provider.names = ["dimagent"]
+            try expectEqual(hung(420), nil, "重新起的进程要重新攒满观测窗口")
+            _ = hung(540)
+            _ = hung(660)
+            try expectEqual(hung(780), true, "攒满之后照旧判得出来（资格没被永久烧掉）")
+
+            // 跨睡眠/挂起断点：墙钟在走而没在采样，那段不能算观测过。
+            // 少这一条，醒来的第一拍会拿着旧资格 + 刚被清空的 highCpuSince 判出一句「不卡死」
+            try expectEqual(hung(3300), nil, "断点醒来后不许凭旧的窗口给结论")
+            _ = hung(3420)
+            _ = hung(3540)
+            try expectEqual(hung(3660), true, "断点后重新攒满窗口仍能判死锁")
+
+            // 满窗口 + CPU 一直在阈值下 → 这才是判过的 false，与 nil 是两件事
+            let quiet = makeEngine(processNames: [], writes: [:],
+                                   processMonitor: MutableProcessProvider(names: ["dimagent"], cpu: 5))
+            _ = quiet.sample(now: start)
+            _ = quiet.sample(now: start.addingTimeInterval(100))
+            _ = quiet.sample(now: start.addingTimeInterval(200))
+            let cleared = quiet.sample(now: start.addingTimeInterval(300)).first { $0.id == "dim" }
+            try expectEqual(cleared?.isHung, false, "观测满窗口且始终低于阈值：判过的「不卡死」")
+        }
+
         TestKit.test("ActivityEngine eventHistory 历史事件时间线与有界队列限制") {
             let engine = makeEngine(processNames: [], writes: [:])
             try expectTrue(engine.eventHistory.isEmpty, "initial empty history")

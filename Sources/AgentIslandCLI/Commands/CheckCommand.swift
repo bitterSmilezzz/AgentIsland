@@ -15,7 +15,7 @@ public enum CheckCommand {
         // restrictToEnabled=false：扫描覆盖完整注册表，佐证集也就必须覆盖它，
         // 否则被关掉监控的档案拿不到活动证据，会被成批误报成孤儿。
         let engine = LiveSampler.makeEngine(from: ctx, restrictToEnabled: false)
-        let gates = AnomalyScanGates(snapshots: engine.sample(), sustainedObservation: false)
+        let gates = AnomalyScanGates(snapshots: engine.sample())
         let anomalies = AgentCleaner.warmedForOneShot()
             .scanAnomalies(profiles: ctx.registry, gates: gates)
         let hungNote = gates.canJudgeHung ? nil : AnomalyScanGates.hungNotEvaluatedNote(config: engine.config)

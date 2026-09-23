@@ -490,6 +490,7 @@ struct AgentDetailView: View {
         let gradeColor: Color = {
             switch report.grade {
             case .healthy: return Theme.sydedockEmerald
+            case .partial: return Theme.onDarkFaint
             case .attention: return Theme.sydedockCyan
             case .warning: return Theme.warningOrange
             case .critical: return Theme.dangerRed
@@ -536,7 +537,7 @@ struct AgentDetailView: View {
                     .font(Theme.bodyFont(10, weight: .semibold))
                     .foregroundColor(Theme.onDarkFaint)
                 Spacer()
-                if s.isHung {
+                if s.isHung == true {
                     Text("疑似卡死")
                         .font(Theme.bodyFont(9, weight: .bold))
                         .foregroundColor(Theme.dangerRed)

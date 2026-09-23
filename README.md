@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.119** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.120** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 能看见什么
 
@@ -81,7 +81,7 @@
 - **退出码**：1 = 失败，2 = 用法错。写盘失败不会静默 exit 0。
 - **深链**：`agentisland://` 支持 `toggle`、`expand`、`collapse`、`agent?id=<id>`、`analytics`、`toolbox`、`clean`、`export`、`notify`。投递目标必须解析到已知档案，否则拒绝。
 - **本地 Webhook**：`127.0.0.1:41999` 的 `POST /notify` 与 `/event`，供 CI 或脚本毫秒级直推事件。**无鉴权**，只靠「仅监听回环」限制来源。
-- **一次性扫描不判死锁**：`check` / `clean` 只看当下这一拍，覆盖不了「CPU 连续 70% 以上达 5 分钟」那段时长，所以明说「本次未评估」，不报「无死锁」。要死锁结论得用持续观测的入口（灵动岛工作台、`top`）。
+- **死锁判定是三态，不是两态**：`isHung` 有「卡死 / 不卡死 / 本轮判不出」三种。判据是「CPU 连续 70% 以上达 5 分钟」，所以资格取决于**对这个进程连续观测了多久**——由引擎写在快照里，不给调用方自报的余地。`check` / `clean` / `status` / `report` / `doctor` 这些一次性入口因此一律是「判不出」：明说「本次未评估」，评级给「观测不全」，JSON 里 `isHung` 为 `null`（不是 `false`）。要死锁结论只能用持续观测的入口（灵动岛工作台、`top`）。
 - **孤儿判定要证据**：`ppid == 1` 分不清「终端关掉的遗孤」和「launchd 刻意托管的常驻服务」，两者进程表长得一样。规则是会话目录 10 分钟内仍有写入就算活着、不报孤儿；宁漏不错杀。这条与上一条在 UI 与 CLI 之间共用同一份实现。
 
 ## Token 用量口径

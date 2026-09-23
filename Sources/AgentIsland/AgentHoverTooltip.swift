@@ -107,7 +107,7 @@ struct AgentHoverTooltipCard: View {
 
             Spacer(minLength: 4)
 
-            if snapshot.isHung {
+            if snapshot.isHung == true {
                 Text("卡死告警")
                     .font(Theme.bodyFont(9, weight: .bold))
                     .foregroundColor(colorScheme == .light ? Ramp.red700 : Theme.dangerRed)

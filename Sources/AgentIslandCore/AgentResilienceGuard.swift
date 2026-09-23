@@ -44,7 +44,7 @@ public final class AgentResilienceGuard {
             var st = states[snap.id] ?? AgentGuardState()
 
             // 1. 持续死锁检测
-            if snap.isHung {
+            if snap.isHung == true {
                 let start = st.hungStartTime ?? now
                 st.hungStartTime = start
                 let elapsed = now.timeIntervalSince(start)

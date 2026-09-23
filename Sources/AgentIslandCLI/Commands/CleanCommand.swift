@@ -21,7 +21,7 @@ public enum CleanCommand {
         // 少了活动佐证闸门，一个仍在写会话的 launchd 常驻服务在 clean 的候选列表里
         // 依然是一条孤儿（而 check 不会报它）。
         let engine = LiveSampler.makeEngine(from: ctx, restrictToEnabled: false)
-        let gates = AnomalyScanGates(snapshots: engine.sample(), sustainedObservation: false)
+        let gates = AnomalyScanGates(snapshots: engine.sample())
         let cleaner = AgentCleaner.warmedForOneShot()
         let anomalies = cleaner.scanAnomalies(profiles: ctx.registry, gates: gates)
 

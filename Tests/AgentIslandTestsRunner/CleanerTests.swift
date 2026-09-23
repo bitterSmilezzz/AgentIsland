@@ -38,12 +38,13 @@ enum CleanerTests {
         "/Applications/FakeApp.app/Contents/MacOS/\(name)"
     }
 
-    /// 闸门只读 `profile.id` / `lastActivityAgo` / `isHung`，其余字段给合法的占位值
-    private static func snap(_ id: String, ago: TimeInterval?, hung: Bool = false) -> AgentSnapshot {
+    /// 闸门只读 `profile.id` / `lastActivityAgo` / `isHung`，其余字段给合法的占位值。
+    /// `hung` 传 nil 即「本轮判不出」——一次性采样的真实形状，与 false（判过且清白）不同。
+    private static func snap(_ id: String, ago: TimeInterval?, hung: Bool? = false) -> AgentSnapshot {
         AgentSnapshot(profile: AgentProfile(id: id, name: id, icon: "terminal",
                                             bundleIDs: [], processNames: [id], sessionDirs: []),
-                      level: hung ? .working : .idle, processRunning: true,
-                      cpuPercent: hung ? 80 : 0, installed: true, activeSessions: 1,
+                      level: hung == true ? .working : .idle, processRunning: true,
+                      cpuPercent: hung == true ? 80 : 0, installed: true, activeSessions: 1,
                       lastActivityAgo: ago, lastActivityText: "", isHung: hung)
     }
 
@@ -236,19 +237,23 @@ enum CleanerTests {
 
         // MARK: - 两道闸门（UI 与 CLI 共用的那份实现）
 
-        TestKit.test("闸门: 一次性扫描不得把「没测到」继承成「没有死锁」") {
-            let snaps = [snap("fixture-agent", ago: 30, hung: true)]
-            // 持续采样的引擎（灵动岛 / top）：isHung 到得了阈值，照实传下去
-            let live = AnomalyScanGates(snapshots: snaps, sustainedObservation: true)
-            try expectEqual(live.hungAgentIDs, ["fixture-agent"], "持续观测下死锁集要非空")
-            try expectTrue(live.canJudgeHung, "持续观测本轮有资格判死锁")
+        TestKit.test("闸门: 「没测到死锁」与「没有死锁」必须分得开") {
+            // 判成死锁 → 进集，且有值本身就说明本轮观测窗口够长
+            let live = AnomalyScanGates(snapshots: [snap(profileId, ago: 30, hung: true)])
+            try expectEqual(live.hungAgentIDs, [profileId], "持续观测下死锁集要非空")
+            try expectTrue(live.canJudgeHung, "isHung 有值 ⇒ 本轮有资格判死锁")
 
-            // 一次性进程里 isHung 恒 false，含义是「覆盖不到那段时长」而不是「查过且没有」：
-            // 集合必须显式作废，并由 canJudgeHung 逼调用方改口
-            let oneShot = AnomalyScanGates(snapshots: snaps, sustainedObservation: false)
-            try expectTrue(oneShot.hungAgentIDs.isEmpty, "一次性扫描不得带死锁结论进扫描器")
+            // 判过且清白 vs 根本没判：两者都是「死锁集为空」，区别全在 canJudgeHung 一位上
+            let clear = AnomalyScanGates(snapshots: [snap(profileId, ago: 30, hung: false)])
+            try expectTrue(clear.hungAgentIDs.isEmpty, "清白不进集")
+            try expectTrue(clear.canJudgeHung, "false 是判过的结论，不是没测")
+
+            // 一次性进程拿不到那段连续观测，快照里的 isHung 是 nil：
+            // 集合为空但必须显式作废，由 canJudgeHung 逼调用方改口
+            let oneShot = AnomalyScanGates(snapshots: [snap(profileId, ago: 30, hung: nil)])
+            try expectTrue(oneShot.hungAgentIDs.isEmpty, "没测时死锁集必须为空")
             try expectTrue(!oneShot.canJudgeHung, "一次性扫描本轮无资格判死锁")
-            try expectEqual(oneShot.recentlyActiveProfileIDs, ["fixture-agent"],
+            try expectEqual(oneShot.recentlyActiveProfileIDs, [profileId],
                             "佐证集与死锁资格无关，一次性扫描照样要有")
         }
 
@@ -265,16 +270,14 @@ enum CleanerTests {
             // 此前 check/clean/top 连闸门都不传，走默认空集 ⇒ 这条 ppid=1 的活服务
             // 被报成孤儿（还提示用户去杀），而工作台不会。
             let entries = [entry(pid: 4242, ppid: 1, cpu: 80, rss: 4096)]
-            let gates = AnomalyScanGates(snapshots: [snap(profileId, ago: 30)],
-                                         sustainedObservation: false)
+            let gates = AnomalyScanGates(snapshots: [snap(profileId, ago: 30, hung: nil)])
             let provider = FixtureProcessProvider(entries: entries)
             let live = AgentCleaner(processMonitor: provider)
                 .scanAnomalies(profiles: [profile], gates: gates)
             try expectTrue(live.isEmpty, "近期仍在写会话的 ppid=1 进程不得进清理候选：\(live.map(\.reason))")
 
             // 同一份快照、佐证过期后仍要报出来（闸门不是「把孤儿全关掉」）
-            let staleGates = AnomalyScanGates(snapshots: [snap(profileId, ago: 700)],
-                                              sustainedObservation: false)
+            let staleGates = AnomalyScanGates(snapshots: [snap(profileId, ago: 700, hung: nil)])
             let orphan = AgentCleaner(processMonitor: provider)
                 .scanAnomalies(profiles: [profile], gates: staleGates)
             try expectEqual(orphan.map(\.anomalyType), [.orphan], "无活动佐证的 ppid=1 仍报孤儿")
@@ -289,14 +292,18 @@ enum CleanerTests {
             try expectTrue(note.contains("未评估"), "必须说「没测」，不许说「没有」：\(note)")
         }
 
-        TestKit.test("结构: 异常扫描的每个调用点都必须显式交代观测资格") {
+        TestKit.test("结构: 异常扫描的观测资格不许由调用方自报") {
             // `scanAnomalies` 的两道闸门原先带默认值，漏传即静默失效（症状是「扫不出死锁」
-            // 而不是崩溃）。现在默认值已删，再加一层语义断言：
-            // 一次性入口不许冒充持续观测，持续入口不许自废为一次性。
+            // 而不是崩溃），上一版改成调用方声明 sustainedObservation——那还是一个可以说谎的
+            // 参数：新加的一次性入口传 true 就编译得过、跑得起来照样谎报。现在资格只从快照的
+            // 三态 isHung 推出来，所以这里的棘轮是「源码里不许再出现那个参数」。
             let files = try SourceTree.requireSourceTexts()
             var callSites = 0
             for (name, text) in files {
-                let lines = SourceTree.codeOnly(text).components(separatedBy: "\n")
+                let code = SourceTree.codeOnly(text)
+                try expectTrue(!code.contains("sustainedObservation"),
+                               "\(name): 观测资格又变成调用方自报的了")
+                let lines = code.components(separatedBy: "\n")
                 for (idx, line) in lines.enumerated() where line.contains("scanAnomalies(") {
                     callSites += 1
                     // 调用是跨行的实参列表，只看命中那一行会冤枉正确的写法
@@ -306,18 +313,6 @@ enum CleanerTests {
                 }
             }
             try expectTrue(callSites >= 4, "只扫到 \(callSites) 处调用点，断言没有意义")
-            let oneShot = ["CheckCommand.swift", "CleanCommand.swift"]
-            for file in oneShot {
-                let text = try SourceTree.text(relativePath: "Sources/AgentIslandCLI/Commands/\(file)")
-                try expectTrue(text.contains("sustainedObservation: false"),
-                               "\(file) 是一次性采样，冒充持续观测就会印出假的「无死锁」")
-            }
-            for file in ["Sources/AgentIsland/ToolboxView.swift",
-                         "Sources/AgentIslandCLI/Commands/TopCommand.swift"] {
-                let text = try SourceTree.text(relativePath: file)
-                try expectTrue(text.contains("sustainedObservation: true"),
-                               "\(file) 是持续采样方，自废成一次性等于把死锁检测关掉")
-            }
         }
     }
 }

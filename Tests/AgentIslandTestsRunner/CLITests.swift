@@ -78,6 +78,46 @@ enum CLITests {
             }
         }
 
+        TestKit.test("CLI: 「死锁没测」在对外 JSON 里必须是 null/缺失，不许是 false") {
+            let base = AgentRegistry.builtin[0]
+            func snap(hung: Bool?) -> AgentSnapshot {
+                AgentSnapshot(profile: base, level: .working, processRunning: true,
+                              cpuPercent: 3, installed: true, activeSessions: 1,
+                              lastActivityAgo: 5, lastActivityText: "5秒前",
+                              tokenUsage: nil, pid: 7, currentAction: nil,
+                              memoryBytes: 80_000_000, isHung: hung)
+            }
+            func dto(hung: Bool?) -> CLIAgentStatusDTO { CLIAgentStatusDTO(from: snap(hung: hung)) }
+            let clearText = String(data: try JSONEncoder().encode(dto(hung: false)), encoding: .utf8) ?? ""
+            let blind = try JSONEncoder().encode(dto(hung: nil))
+            let blindText = String(data: blind, encoding: .utf8) ?? ""
+
+            // false 只留给「判过且清白」；没测走键缺失（与 tokens24h 同一条口径，
+            // JSONDecoder 读回 nil、jq 读到 null），一次性 status/report 因此说不出「没有卡死」
+            try expectTrue(clearText.contains("\"isHung\" : false") || clearText.contains("\"isHung\":false"),
+                           "判过清白要印 false：\(clearText)")
+            try expectTrue(!blindText.contains("\"isHung\""), "没测不许印 false：\(blindText)")
+            try expectTrue(try JSONDecoder().decode(CLIAgentStatusDTO.self, from: blind).isHung == nil,
+                           "往返后仍是「没测」")
+            try expectEqual(dto(hung: nil).healthGrade, "观测不全", "脚本读到的评级不许是「健康」")
+            try expectEqual(dto(hung: false).healthGrade, "健康", "判过清白仍应是健康")
+            // doctor 是排障入口，只给分数就等于把「没测」讲成「100 分」：必须带评级
+            let doctor = CLIAgentDoctorDTO(from: snap(hung: nil))
+            try expectEqual(doctor.healthGrade, "观测不全", "doctor --json 要分辨得出没查")
+        }
+
+        TestKit.test("结构: 健康评级只有一处措辞（审计报告不许自己再译一份）") {
+            // 报告原先自己 switch 出「需关注 / 预警」，而 status --json 与详情卡说
+            // 「需留意 / 异常」——同一个 grade 两份话，读两份输出的人无法核对。
+            let code = SourceTree.codeOnly(
+                try SourceTree.text(relativePath: "Sources/AgentIslandCore/AuditReportExporter.swift"))
+            for word in ["需关注", "预警"] {
+                try expectTrue(!code.contains("\"\(word)\""),
+                               "报告里另译了一份「\(word)」，与 HealthGrade 的措辞分叉")
+            }
+            try expectTrue(code.contains("report.grade.rawValue"), "评级要直接用枚举措辞")
+        }
+
         TestKit.test("CLI: 异常诊断与清理 DTO 往返") {
             let anomaly = AgentAnomaly(
                 id: "dim-hung-100",

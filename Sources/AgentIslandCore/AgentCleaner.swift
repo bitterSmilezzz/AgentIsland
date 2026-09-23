@@ -116,18 +116,15 @@ public struct AnomalyScanGates {
     public let recentlyActiveProfileIDs: Set<String>
     /// 本轮快照**有没有资格**判死锁。
     ///
-    /// `isHung` 是「连续高负载超过阈值（默认 5 分钟）」的时间性判定，只有持续采样的引擎
-    /// 攒得出那段时长；一次性进程哪怕双采也只覆盖 1.5 秒，此时 `isHung` 全 false 的含义是
-    /// 「没测」而不是「没有」。调用方必须据此改口，不许把「没测」播报成「未检测到死锁」。
+    /// `isHung` 是三态：`nil` 表示引擎对该进程的连续观测不足阈值时长，此时「全 false」
+    /// 的含义是「没测」而不是「没有」。资格从快照里读而不是让调用方自报——上一版
+    /// `sustainedObservation:` 由调用方声明，漏传一处的症状是静默谎报。
     public let canJudgeHung: Bool
 
-    /// - Parameter sustainedObservation: 快照来自持续采样的引擎（灵动岛、`top`）时传
-    ///   `true`；一次性采样（`check` / `clean`）传 `false`。
-    public init(snapshots: [AgentSnapshot], sustainedObservation: Bool) {
-        self.init(hungAgentIDs: sustainedObservation
-                    ? Set(snapshots.filter(\.isHung).map { $0.profile.id }) : [],
+    public init(snapshots: [AgentSnapshot]) {
+        self.init(hungAgentIDs: Set(snapshots.filter { $0.isHung == true }.map { $0.profile.id }),
                   recentlyActiveProfileIDs: AnomalyScanGates.recentlyActiveProfileIDs(in: snapshots),
-                  canJudgeHung: sustainedObservation)
+                  canJudgeHung: snapshots.contains { $0.isHung != nil })
     }
 
     public init(hungAgentIDs: Set<String>,
@@ -152,7 +149,8 @@ public struct AnomalyScanGates {
     public static func hungNotEvaluatedNote(config: EngineConfig) -> String {
         let minutes = max(1, Int(config.runawayDurationThreshold / 60))
         return "死锁/僵死：本次未评估——判定要求 CPU 连续 \(Int(config.runawayCpuThreshold))% 以上"
-            + "达 \(minutes) 分钟，一次性扫描覆盖不到这段时长。"
+            + "达 \(minutes) 分钟，本轮对该进程的连续观测不足这段时长"
+            + "（一次性扫描必然如此，刚启动的引擎也要等满）。"
             + "持续观测请用灵动岛工作台或 `agentisland top`。"
     }
 }
@@ -181,8 +179,8 @@ public final class AgentCleaner {
     ///   - runningBundleIDs: 已由主线程抓取的 bundle 集合（NSWorkspace 不可跨线程）；
     ///     为 nil 时现场抓取（仅供主线程调用方）。
     ///   - gates: 死锁集与孤儿佐证集。**没有默认值是有意的**——这两道闸门缺任一个，
-    ///     症状都不是崩溃而是「扫不出死锁 / 把活进程报成孤儿」。拿不准就用
-    ///     `AnomalyScanGates(snapshots:sustainedObservation:)`，UI 与 CLI 同一条口径。
+    ///     症状都不是崩溃而是「扫不出死锁 / 把活进程报成孤儿」。用
+    ///     `AnomalyScanGates(snapshots:)`，UI 与 CLI 同一条口径，观测资格由引擎给出的三态决定。
     public func scanAnomalies(profiles: [AgentProfile], gates: AnomalyScanGates,
                               runningBundleIDs: Set<String>? = nil) -> [AgentAnomaly] {
         let snapshot = processMonitor.snapshot()

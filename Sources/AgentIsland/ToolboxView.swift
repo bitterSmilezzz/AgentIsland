@@ -556,7 +556,7 @@ struct ToolboxView: View {
         if showSpinner { isScanning = true }
         // 两道闸门的算法在 Core 里（`AnomalyScanGates`），CLI 的 check/clean/top 走同一条：
         // 此前这段逻辑只在这里，三个 CLI 入口拿默认空集，死锁扫不出、活进程被报成孤儿
-        let gates = AnomalyScanGates(snapshots: engine.snapshots, sustainedObservation: true)
+        let gates = AnomalyScanGates(snapshots: engine.snapshots)
         let profiles = engine.allProfiles
         // 独立扫描源（不共用 engine.cleaner）：工作台扫描与引擎采样若共用同一
         // ProcessProvider，差分缓存被互相消费——工作台扫描紧跟引擎采样会把引擎
