@@ -280,22 +280,29 @@ public final class FileActivityMonitor: FileActivityProviding {
                 }
             }
             let r = Self.scanTree(in: dir, maxDepth: maxDepth, window: window, now: now)
-            // 信号面终态语义（R33/F3）：
-            // - 扫描成功且有信号文件 → 记入 fresh（写回替换，允许自然变旧）
-            // - 扫描成功但无信号文件（产物清理/全被过滤）→ 活动清零
+            // 这一趟到底看没看到东西（R33/F3）：
+            // - 看到信号文件 → 记入 fresh（写回替换，允许自然变旧）
+            // - 扫完了但没信号文件（产物清理/全被过滤）→ 活动清零
             // - 目录缺失（root stat 失败）**或整棵没看完**（枚举器失败）→ 保留旧值 + 连续缺失计数
             //   （连续 ≥3 趟仍缺失 → 终态清零；阈值吸收原子替换/迁移的瞬时空窗）
+            let unseen = r.newest == nil && (rootDate == nil || r.scanFailed)
             if let d = r.newest {
                 fresh[dir] = d
                 if let file = r.newestFile { freshFiles[dir] = file }
                 missingStreaks[dir] = 0
-            } else if rootDate == nil || r.scanFailed {
+            } else if unseen {
                 missingStreaks[dir, default: 0] += 1
             } else {
                 clearedDirs.insert(dir)
                 missingStreaks[dir] = 0
             }
-            freshCounts[dir] = r.activeSessions
+            // 会话数跟着活动日期走**同一条分支**。此前它无条件取 r.activeSessions，
+            // 而失败时那个值恒 0 —— 于是同一次读不到让日期保留着「刚刚还在写」，
+            // 会话数却变成 0，两个字段在同一份快照里互相打脸。0 不只是难看：
+            // AgentObservability 拿 activeSessions==0 判「无本地明细」，`status`/`doctor`
+            // 的 JSON 跟着印 0，岛上的「会话」行消失。
+            // 注意「扫完但没信号文件」仍要照实取计数：一个空着的会话目录照样算活跃会话。
+            freshCounts[dir] = unseen ? (cachedCount ?? 0) : r.activeSessions
             freshRoots[dir] = rootDate ?? Date.distantPast
             freshFullScans[dir] = now
         }
@@ -328,15 +335,22 @@ public final class FileActivityMonitor: FileActivityProviding {
         }
         // 目录缺失终态（R33/F3）：连续 ≥3 趟仍缺失 → 清零缓存与快跳过键
         // （阈值吸收原子替换/迁移的瞬时空窗；目录重建后下一扫自动恢复）
+        var terminalCleared: Set<String> = []
         for (dir, streak) in missingStreaks where current.contains(dir) && streak >= 3 {
             cache[dir] = nil
             latestFiles[dir] = nil
             lastRootDates[dir] = nil
             lastFullScans[dir] = nil
             missingStreaks[dir] = 0
+            terminalCleared.insert(dir)
         }
         missingStreaks = missingStreaks.filter { current.contains($0.key) }
         sessionCounts = freshCounts.filter { current.contains($0.key) }
+        // 会话数的终态清零必须排在整表替换**之后**：宽限期里 freshCounts 带的是
+        // 保留下来的旧值，先清就会被这一步原样写回去，等于永远清不掉。
+        // 保留不能永久冻住——到终态时「没看到」已经攒成「永远看不到」，
+        // 再挂着旧的会话数就是谎报了。
+        for dir in terminalCleared { sessionCounts[dir] = nil }
         isScanning = false
         lastScanAt = Date()   // 记录完成时间（节流基准）
         lastScanGeneration = generation   // 完成代际（R33/F4 节流豁免的判定基准）

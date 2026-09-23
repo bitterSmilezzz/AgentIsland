@@ -56,6 +56,8 @@ enum FileIOTests {
             monitor.scanSync()
             let before = monitor.lastWriteDates(for: [root.path])[root.path]
             try expectNotNil(before, "前置：首扫要看到写入信号")
+            let countBefore = monitor.activeSessionCounts(for: [root.path])[root.path]
+            try expectEqual(countBefore, 1, "前置：s1 里刚写过 ⇒ 活跃会话数 1")
 
             // 关键一步：必须让第二拍**真的去做深层扫描**。根 mtime 没变 + 目录不在
             // runningDirs 里 ⇒ 走「跳过深层递归」那条快路，缓存被原样返回，这条用例
@@ -69,6 +71,42 @@ enum FileIOTests {
             let after = monitor.lastWriteDates(for: [root.path])[root.path]
             try expectEqual(after, before,
                             "整棵没看完时不得把活动清零（那是「没看到」，不是「没在干活」）")
+            // 同一份快照里的两个字段必须同口径。此前日期走「保留」、计数走「清零」，
+            // 于是「刚刚还在写」与「0 个会话」同时成立，而 activeSessions==0 会被
+            // AgentObservability 翻成「无本地明细」，`status` / `doctor` 的 JSON 跟着印 0。
+            let countAfter = monitor.activeSessionCounts(for: [root.path])[root.path]
+            try expectEqual(countAfter, countBefore,
+                            "会话数不许比活动日期更武断：没看到就是没看到")
+        }
+
+        TestKit.test("目录扫描: 连续缺失到终态时，宽限保留的会话数也要收尾") {
+            // 上一条修的是「读不到就清零」；这条守另一端：保留不能永久冻住。
+            // 目录真的没了（连续 3 趟 stat 失败），活动与计数必须一起退场，
+            // 否则岛上会永远挂着最后一次看到的会话数——那时「没看到」已经攒成「永远看不到」。
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let session = root.appendingPathComponent("s1")
+            try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: session.appendingPathComponent("transcript.jsonl"))
+
+            let monitor = FileActivityMonitor(maxDepth: 4, scanMinInterval: 0)
+            monitor.setWorkingWindow(60)
+            monitor.watch(dirs: [root.path])
+            monitor.setRunningDirs([root.path])
+            monitor.scanSync()
+            try expectEqual(monitor.activeSessionCounts(for: [root.path])[root.path], 1,
+                            "前置：首扫看到 1 个活跃会话")
+
+            try FileManager.default.removeItem(at: root)
+            monitor.scanSync()
+            monitor.scanSync()
+            try expectEqual(monitor.activeSessionCounts(for: [root.path])[root.path], 1,
+                            "第 1、2 趟缺失仍在宽限期内，不许提前清零")
+            monitor.scanSync()
+            try expectNil(monitor.lastWriteDates(for: [root.path])[root.path], "终态：活动清零")
+            try expectNil(monitor.activeSessionCounts(for: [root.path])[root.path],
+                          "终态：会话数跟着活动一起清零，不是留在旧值上")
         }
 
         TestKit.test("尾读: 打不开的文件回吐 unreadable，空文件回吐「真的没有」") {
