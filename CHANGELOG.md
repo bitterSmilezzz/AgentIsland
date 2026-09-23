@@ -4,6 +4,50 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.126] - 2026-09-23
+
+### 🩹 更正上一版的错误排除：Qoder / Cursor / Trae / Cline 都有公开文档的 hooks 面
+
+v0.0.125 把四家记成「本轮排除，理由：拿不到可引用正文、也没有本机实样」。**那句理由是错的**，
+而且错在一个很具体的地方：我把「本机 `~/.qoder/settings.json` 里只有 `enabledPlugins`」
+当成了「Qoder 没有可配置的 hooks 面」。`本机没配` 与 `官方没有` 是两个命题，
+我拿前者证了后者——四家里三家（Qoder / Cursor / Trae）其实有完整正文，Cline 有入口。
+
+- **逐家抓正文复核后的结论**（出处都写进 `docs/research/agent-lifecycle-hooks.md`）：
+  - **Qoder**：`docs.qoder.com/cli/hooks` 给了 schema、**23 个事件**、stdin JSON 字段清单
+    （`session_id` / `transcript_path` / `cwd` / `hook_event_name` / `permission_mode` /
+    `agent_id` / `agent_type`）与 env（`QODER_PROJECT_DIR` 等）。
+    最有价值的一条是 **`type: "http"`**：hook 输入以 JSON POST 到 URL，`headers` 支持
+    `${ENV_VAR}` 插值并受 `allowedEnvVars` 白名单约束 ⇒ **Qoder 不需要桥接脚本**，
+    一条配置就能打进 §3 的 `/session`。P0 的顺序因此重排（原首选是 Claude Code）。
+  - **Cursor**：`~/.cursor/hooks.json` + `"version": 1`，事件名是 **camelCase**
+    （`sessionStart` / `stop` / `preToolUse`…），与 Claude/Codex/Qoder 的 PascalCase 不同构
+    ⇒ 桥接层要单独一张映射表，不能复用。
+  - **Trae**：官方正文原句 **"TraeCode supports reading hook configurations from Claude Code"**
+    ⇒ 可蹭 Claude 那份配置，P3 铺开时几乎不是新增工作量。但它的 `Notification` 一个事件同时
+    覆盖「工具等确认」与「任务完成」⇒ **定 state 必须读载荷**，只看事件名会误报。
+  - **Cline**：只核到入口（`--hooks-dir`、`CLINE_HOOKS_DIR`、项目级 `.cline/hooks/` 的
+    "Lifecycle hooks"）。事件名与 stdin/stdout 契约在别的页、本轮没逐字复核 ⇒ 记「有面、
+    细节待核」，**不给接入片段**——这条是刻意留白的，宁可少给一家也不写没核到的键名。
+  - **Roo Code**：上一版的排除**站住了**，而且这次是我自己复核的：抓 `docs.roocode.com/sitemap.xml`，
+    **510 条 URL 里 "hook" 出现 0 次** ⇒ 这是全部家里唯一一条有依据的「按现行官方文档无此能力」。
+- **对设计新增一条约束**：既然 Qoder 走 http hook 直连，`/session` 就必须能直接吃
+  **hook 形状的事件 JSON**（字段名与 stdin 那套一致），否则「配置即接入」这条最省的路用不上。
+  这条已写进 02 号票的接口约束。
+- **文档开头加了核实纪律**：`本机没配 ≠ 官方没有`；两者都不许直接进实现，
+  每条结论必须落到「抓到的正文原句」或「本机实样」，两者都没有的写「未证实」。
+  文档末尾的「复现这些结论的命令」补了 Roo 那条的自证命令（两条 curl）。
+- **代价**：一次纯更正的发布，代码零改动；spec 第 6 节的决策表重排（Qoder 升到 P0 最省、
+  Cursor/Trae 进 P1、Cline 待核、Roo 不做）。被否决的写法：只在 `.scratch` 的票里改注释、
+  让已发布的 `docs/research/` 继续错着——那份文档是入库、对外、会被实现引用的，
+  错着比缺失更有害。
+- **没做与遗留**：Cline 的事件名与 stdin 契约未核；`claude -p` / `codex exec` /
+  Qoder headless 下 hooks 是否触发三条仍未证实；Cursor「cloud agents 用不了 `~/.cursor/` 那份」
+  是二手转述、本轮正文只确认到「跑仓库里的 command hooks」。
+- **验证方式（本轮无代码，故无变异测试）**：每条新结论都由我**自己**抓正文复核，
+  不再采信子代理摘要——上一版的错正是信了自己没复核的东西；Roo 那条给了可原地重跑的命令。
+  全量测试 450 条不变、0 失败；脱敏扫描 18 条命中全部已备案、无新增。
+
 ## [0.0.125] - 2026-09-23
 
 ### 🔧 各家 hook 面核实落进正文：Codex 的 notify 是 legacy，OpenCode 给的是 session.idle

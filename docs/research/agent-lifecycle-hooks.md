@@ -10,11 +10,20 @@
 
 ## 一句话结论
 
-**三家可用，且比 spec 原先假设的更好**：Claude Code 与 Codex 共用**同一套 hook 事件词汇**
-（`SessionStart` / `Notification` / `Stop` / `PermissionRequest` / …），一份桥接脚本两家通吃；
-Codex 的 `notify` 已经是 **legacy**（载荷走 argv、stdin 被置空），按它设计会订错接口；
-OpenCode 不给 hooks 而给 plugin 的**事件总线**，其中有 `session.idle` 与 `session.error`——
-这是唯一一处「终态不依赖模型自觉」的载体，正好满足 spec 判断 ①。
+**五家有可用的生命周期载体**（Claude Code、Codex、Qoder、Trae、OpenCode），且比 spec 原先
+假设的更好：Claude Code / Codex / Qoder 共用**同一套 PascalCase 事件词汇**
+（`SessionStart` / `Notification` / `Stop` / `PermissionRequest` / …），一份桥接脚本三家通吃；
+**Qoder 还有 `type: "http"` 的 hook**，事件 JSON 直接 POST 到 URL ⇒ 它连桥接脚本都不需要，
+配一条 http hook 就能打进 §3 的 `/session`；Codex 的 `notify` 已是 **legacy**（载荷走 argv、
+stdin 被置空），照它设计会订错接口；OpenCode 的 plugin 事件总线里有 `session.idle` 与
+`session.error`——唯一「终态不依赖模型自觉」的载体，满足 spec 判断 ①。
+Cursor 也有完整 hooks，但事件名是 **camelCase**，得走映射表；Trae 原文写着它**直接读 Claude
+Code 的配置**；Roo Code 是唯一一条「按现行官方文档无此能力」。
+
+> **本文的核实纪律**（第一版在这里栽过一次）：`本机没有配置文件` 与 `官方没有这个能力`
+> 是两个命题。第一版把前者当成后者，把 Qoder / Cursor / Trae / Cline 全记成「排除」，
+> 而它们都有公开正文。现在每家都必须落到「抓到的正文原句」或「本机实样」上，
+> 两者都没有的才写「未证实」，并且不许进实现。
 
 ## 为什么「载体是什么」比「有没有埋点」重要
 
@@ -114,25 +123,102 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
   在这里是现成的，不需要模型配合。
 - **MCP**：`~/.config/opencode/opencode.json` 顶层键含 `mcp`、`permission`（本机实样）。
 
-## 本轮排除的几家（以及为什么是「排除」而不是「没有」）
+## Qoder —— 有公开文档的完整 hooks 面（上一版把它误判为排除）
 
-排除的理由不是「它们没有这个能力」，而是**拿不到可引用的正文、也没有本机实样**。
-按 `docs/adr/0006` 的教训，没有出处就不许往实现里写字段名，所以本轮不给这几家写接入片段：
+出处：`docs.qoder.com/cli/hooks` 与 `docs.qoder.com/extensions/hooks`（2026-09-23 抓取正文）。
 
-- **Qoder**：本机 `~/.qoder/settings.json` 只有 `enabledPlugins` 一个键，没有 hooks 配置面。
-  本会话的运行时确实提到 hooks（能拦工具调用、有 `<user-prompt-submit-hook>` 这类事件），
-  但那是**运行环境自述、不是公开文档正文**，字段名与配置文件落点无从引用 ⇒ 排除。
-  要接的话，向 Qoder 官方文档拿到键名再开票。
-- **Cursor / Trae / Cline / Roo**：本机 `~/.cursor/` 只有 `skills/`，没有 hook/notify 配置；
-  其余三家本机未安装 ⇒ 无实样。官方文档本轮未取到可引用正文 ⇒ 排除，P3 之前不动。
-- **DimAgent / WorkBuddy**：本机有 `~/.dimcode`、`~/.workbuddy`，两者都**没有** hook/notify
-  配置面（`find` 无命中）。它们是自有工具，加不加自报字段是**产品决策**，不走第三方核实
-  这条路径；需要时另开票与作者协商。
+- **配置文件**（原文列举）：`~/.qoder/settings.json`（用户级）、`${project}/.qoder/settings.json`
+  （项目级，可提交给团队共享）、`${project}/.qoder/settings.local.json`（本地，建议进 .gitignore）。
+- **键形状**（原文示例）：`hooks.<EventName>[] = {matcher, hooks: [{type, command, timeout}]}`，
+  `type: "command"` 那层还支持 `args: [...]`（exec 形式，不过 shell）与 `env: {…}`（额外环境变量）。
+- **事件名 23 个**（CLI 全集，原文照抄）：`SessionStart`、`SessionEnd`、`UserPromptSubmit`、
+  `PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`PermissionRequest`、`PermissionDenied`、
+  `Stop`、`StopFailure`、`SubagentStart`、`SubagentStop`、`PreCompact`、`PostCompact`、
+  `Notification`、`InstructionsLoaded`、`ConfigChange`、`CwdChanged`、`FileChanged`、
+  `WorktreeCreate`、`WorktreeRemove`、`Elicitation`、`ElicitationResult`。
+  IDE 侧只有其中 12 个，文档原文说明配置在 IDE 与 CLI 之间共享，但**每个入口只跑自己支持的事件**
+  ⇒ 同一份配置在两边行为不同，自报接入要按入口分别验。
+- **载荷**：stdin JSON，公共字段 `session_id`、`transcript_path`、`cwd`、`hook_event_name`、
+  `permission_mode`、`agent_id`、`agent_type`；env 有 `QODER_PROJECT_DIR`、`QODER_PLUGIN_ROOT`、
+  `QODER_PLUGIN_DATA`。
+- **`type: "http"` 是本轮最有用的一条**：文档说明 hook 输入会以 JSON POST 到指定 URL，
+  并期待一个 JSON 响应；`headers` 的值支持 `${ENV_VAR}` 插值，且由 `allowedEnvVars` 白名单约束。
+  ⇒ 对 §3 的设计意味着：**Qoder 不需要桥接脚本**，一条 http hook 直接打到
+  `127.0.0.1:41999/session`，令牌用 header 插值带进去。这是五家里唯一「配置即接入」的一家。
+- **本机实样**：`~/.qoder/settings.json` 只有 `enabledPlugins` 一个键 ⇒ 机制存在、本机未配置。
+  （上一版把这条观察写成了「Qoder 无可配置面」，那是错的：本机没配 ≠ 官方没有。）
+- **无头模式**：文档未提 headless 下是否触发 ⇒ 未证实。
+
+## Cursor —— 有，但事件词汇与 Claude 家不同构
+
+出处：`cursor.com/docs/hooks`（2026-09-23 抓取正文）。
+
+- **配置文件**（原文）：`~/.cursor/hooks.json`、`<project-root>/.cursor/hooks.json`，
+  企业分发 `/Library/Application Support/Cursor/hooks.json`、`/etc/cursor/hooks.json`、
+  `C:\\ProgramData\\Cursor\\hooks.json`。
+- **键形状**：根上要有 `"version": 1` 与 `"hooks": {}`，内层数组每项至少给 `command`。
+- **事件名是 camelCase**（原文列举）：`sessionStart`、`sessionEnd`、`preToolUse`、`postToolUse`、
+  `postToolUseFailure`、`subagentStart`、`subagentStop`、`beforeShellExecution`、
+  `afterShellExecution`、`beforeMCPExecution`、`afterMCPExecution`、`beforeReadFile`、
+  `afterFileEdit`、`beforeSubmitPrompt`、`preCompact`、`stop`、`afterAgentResponse`、
+  `afterAgentThought`、`beforeTabFileRead`、`afterTabFileEdit`、`workspaceOpen`。
+  ⇒ **别家都是 `PascalCase`，Cursor 是 `camelCase`**：共用桥接脚本时事件名要过一张映射表，
+  不能像 Claude/Codex/Qoder 那样直接复用。
+- **载荷**：原文"receive JSON input via stdin"；env 含 `CURSOR_PROJECT_DIR`、`CURSOR_VERSION`、
+  `CURSOR_USER_EMAIL`、`CURSOR_TRANSCRIPT_PATH`、`CURSOR_CODE_REMOTE`，还兼容 `CLAUDE_PROJECT_DIR`。
+- **云端**：调研记录称仓库里的 `.cursor/hooks.json` 会被 cloud agents 执行、而 `~/.cursor/` 那份
+  不可用；本轮抓取的正文只确认到「cloud agents 跑仓库里的 command hooks」那一句 ⇒ 后半句记为二手。
+- **无头模式**：`agent -p`（Headless/CI 页）正文未出现 hooks ⇒ 未证实。
+
+## Trae —— 直接读 Claude Code 的配置
+
+出处：`docs.trae.ai/ide/automate-actions-with-hooks`（2026-09-23 抓取正文）。
+
+- 原文：**"TraeCode supports reading hook configurations from Claude Code."**
+  ⇒ 已为 Claude Code 写好的那份 hooks 配置可能被 Trae 直接吃下，接入成本近乎零。
+- 六个事件与触发时机（原文）：`SessionStart`（"After creating a session, before initiating the
+  first chat"）、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`（"When the agent
+  completes output and prepares to end the current query"）、`Notification`。
+  `Notification` 原文注明"triggered asynchronously and does not block the main process"，
+  触发条件是「工具调用等确认」或「任务完成」——**一个事件同时覆盖 attention 与 completed**，
+  桥接时不能只按事件名定 state，得读载荷。
+- 该页未列 stdin 契约与 matcher 适用范围（另有 configuration reference 页）⇒ 本轮未逐字核实。
+
+## Cline —— 有 lifecycle hooks 入口，细节本轮没核完
+
+出处：`docs.cline.bot/cli/cli-reference`（2026-09-23 抓取）。正文确认的只有：CLI 的
+`--hooks-dir <path>`、环境变量 `CLINE_HOOKS_DIR`（默认 `~/.cline/hooks`）、项目级
+`.cline/hooks/` 的 "Lifecycle hooks"。**事件名、stdin/stdout 契约、`--yolo` 下是否禁用**
+都在别的页（后台调研指向 `cline/sdk/examples/hooks/README.md`），本轮没逐字复核 ⇒
+记为「有面、细节待核」，不给接入片段。
+
+## Roo Code —— 唯一一条真正的「无文档证据」
+
+我自己抓了 `docs.roocode.com/sitemap.xml`：**510 条 URL，全文出现 "hook" 0 次**。
+（后台调研另记：官方文档仓库 grep 只命中 webhook / React hook / git pre-push；
+GitHub issue #10834 标题提到过 `PreToolUse`/`PostToolUse` hooks，属历史痕迹、无现行文档。）
+⇒ 结论是「按现行官方文档无此能力」，这一条可以写进实现的不覆盖面。
+
+## DimAgent / WorkBuddy
+
+本机有 `~/.dimcode`、`~/.workbuddy`，两者都**没有** hook/notify 配置面（`find` 无命中）。
+它们是自有工具，加不加自报字段是**产品决策**，不走第三方核实这条路径；需要时另开票与作者协商。
 
 ## 对 P0 的直接影响
 
-1. **桥接脚本按 Claude Code 的 stdin JSON 形状写，Codex 复用同一份**——两家事件名同构，
-   这是本轮最省的一笔：原 spec 以为要各订一套。
+1. **桥接脚本按 Claude Code 的 stdin JSON 形状写，Codex 与 Qoder 复用同一份**——三家事件名
+   同构（PascalCase），这是本轮最省的一笔：原 spec 以为要各订一套。
+1b. **Qoder 走 http hook，不写脚本**：`{"type":"http","url":"http://127.0.0.1:41999/session",
+   "headers":{"X-AgentIsland-Token":"${AGENTISLAND_TOKEN}"}}` 一条配置即接入；
+   `allowedEnvVars` 白名单是它自己文档里的约束，实现侧要按它给的方式取令牌。
+   ⇒ §3 的 `/session` 必须能直接吃 hook 形状的事件 JSON（字段名与 stdin 那套一致），
+   否则「配置即接入」这条最省的路要用不上。
+1c. **Cursor 单独一张事件名映射表**（camelCase：`sessionStart` / `stop` / `preToolUse`…），
+   别指望复用 PascalCase 那份。
+1d. **Trae 可以蹭 Claude Code 的配置格式**（官方正文原句），所以 P3 铺开时它不是新增工作量，
+   但它的 `Notification` 一个事件同时覆盖「等确认」与「任务完成」⇒ 定 `state` 要读载荷，
+   不能只看事件名。
+1e. **Roo Code 进不覆盖面**：510 条文档 URL 里 "hook" 出现 0 次，本轮唯一一条有依据的「无此能力」。
 2. **Codex 的 `notify` 不进 P0**：它是 legacy、载荷走 argv、stdin 被置空，与新一代不同形。
    真要在托管环境之外兜底，P3 再单独适配。
 3. **`session.idle` 改变 OpenCode 的接入方式**：不是「装一个 hook 命令」而是「装一个 plugin」，
@@ -148,6 +234,12 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
 # Claude Code / Codex 的键形状与本机实样
 python3 -c "import json,pathlib;print(json.dumps(json.loads(pathlib.Path.home().joinpath('.claude/settings.json').read_text())['hooks'],indent=1)[:400])"
 head -3 ~/.codex/config.toml && ls -l ~/.codex/hooks.json
+# Qoder / Cursor / Trae 的正文（要人工看，无本地实样）
+#   https://docs.qoder.com/cli/hooks      https://cursor.com/docs/hooks
+#   https://docs.trae.ai/ide/automate-actions-with-hooks
+# Roo Code「无文档证据」的自证：抓 sitemap 数 hook 出现次数（本轮结果：510 条 URL / 0 次）
+curl -sL https://docs.roocode.com/sitemap.xml | grep -o "<loc>" | wc -l
+curl -sL https://docs.roocode.com/sitemap.xml | grep -oi hook | wc -l
 # OpenCode 的接口与事件名（键名原文，不含任何值）
 sed -n '173,215p' ~/.config/opencode/node_modules/@opencode-ai/plugin/dist/index.d.ts
 grep -ohE '"session\\.[a-z.]+"' ~/.config/opencode/node_modules/@opencode-ai/sdk/dist/gen/types.gen.d.ts | sort -u
