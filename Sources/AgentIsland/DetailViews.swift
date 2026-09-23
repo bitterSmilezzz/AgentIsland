@@ -557,13 +557,15 @@ struct AgentDetailView: View {
             }
 
             let cpuColor: Color = {
-                if s.cpuPercent >= 80 { return Theme.dangerRed }
-                if s.cpuPercent >= 30 { return Theme.sydedockAmber }
+                // 没有差分窗口时用暗色 + 「—」：把「没测」画成 0% 的绿字是谎报
+                guard let cpu = s.cpuPercent else { return Theme.onDarkFaint }
+                if cpu >= 80 { return Theme.dangerRed }
+                if cpu >= 30 { return Theme.sydedockAmber }
                 return Theme.onDark
             }()
 
             HStack(spacing: 0) {
-                overviewCell("CPU", s.cpuPercent > 0 ? String(format: "%.1f%%", s.cpuPercent) : "0%", cost: nil, valueColor: cpuColor)
+                overviewCell("CPU", s.cpuPercent.map { $0 > 0 ? String(format: "%.1f%%", $0) : "0%" } ?? "—", cost: nil, valueColor: cpuColor)
                 Rectangle().fill(Theme.onDark.opacity(0.10)).frame(width: 1, height: 26)
                 overviewCell("内存 (RSS)", s.memoryText, cost: nil)
                     .help(s.memoryBytes > 0 ? "\(s.memoryBytes.formatted()) 字节" : "暂无内存数据")
@@ -754,7 +756,7 @@ struct AgentDetailView: View {
                 infoRow("状态", s.level.label)
                 infoRow("活动", s.lastActivityText)
                 if s.activeSessions > 0 { infoRow("会话", "\(s.activeSessions) 个活跃") }
-                if s.cpuPercent > 0.1 { infoRow("CPU", String(format: "%.1f%%", s.cpuPercent)) }
+                if let cpu = s.cpuPercent, cpu > 0.1 { infoRow("CPU", String(format: "%.1f%%", cpu)) }
                 if s.memoryBytes > 0 { infoRow("内存", s.memoryText) }
                 if let pid = s.pid { infoRow("PID", "\(pid)") }
                 infoRow("Token", "暂无本地 token 数据")

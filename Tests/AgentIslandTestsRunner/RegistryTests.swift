@@ -129,7 +129,7 @@ enum RegistryTests {
             try expectTrue(resolved.isEmpty, "全关时求解结果仍为空，不得被 defaultEnabled 复活")
         }
 
-        TestKit.test("引擎: bundle 命中但进程名未匹配 → 标记运行且 CPU=0（[pid:-1] 占位）") {
+        TestKit.test("引擎: bundle 命中但进程名未匹配 → 标记运行且 CPU 未测（[pid:-1] 占位）") {
             // 回归：sampleCore 单趟 matchingEntries 后 running/cpu 语义等价性
             //（测试缺口）——bundleHit 无名字匹配应返回占位条目
             let provider = FakeProcessProvider(processNames: ["some-other-app"],
@@ -142,7 +142,10 @@ enum RegistryTests {
             let snaps = engine.sample(now: Date())
             let dim = snaps.first { $0.id == "dim" }
             try expectTrue(dim?.processRunning == true, "bundle 运行即 processRunning=true")
-            try expectEqual(dim?.cpuPercent ?? -1, 0, "无进程名匹配时 CPU 合计为 0")
+            // 占位条目的 0 是「没看着这个进程」，不是「这个进程不占 CPU」，所以不公布成实测值。
+            // 第二拍才有 CPU 差分窗口——用它排除「首拍未测」这一层，钉住的就是占位这一条
+            let second = engine.sample(now: Date().addingTimeInterval(2)).first { $0.id == "dim" }
+            try expectEqual(second?.cpuPercent, nil, "无进程名匹配时 CPU 是「没测」而不是 0")
         }
 
         TestKit.test("注册表: 自定义档案解码容错（坏 JSON/空数据回落空集）") {

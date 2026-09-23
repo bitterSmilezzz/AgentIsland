@@ -92,7 +92,8 @@ struct AgentHoverTooltipCard: View {
                     )
 
                 if let pid = snapshot.pid, snapshot.processRunning {
-                    let cpuStr = snapshot.cpuPercent > 0 ? String(format: "%.1f%%", snapshot.cpuPercent) : "0%"
+                    // nil = 本拍没有 CPU 差分窗口，「—」而不是 0%
+                    let cpuStr = snapshot.cpuPercent.map { $0 > 0 ? String(format: "%.1f%%", $0) : "0%" } ?? "—"
                     let memStr = snapshot.memoryBytes > 0 ? " · \(snapshot.memoryText)" : ""
                     Text("PID: \(pid) · \(cpuStr)\(memStr)")
                         .font(Theme.monoFont(9))

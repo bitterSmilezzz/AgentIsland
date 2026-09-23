@@ -18,7 +18,8 @@ public enum StatusCommand {
         // 档案集走共享采样器的 fullRegistry 口径：此前 status 只遍历内置集，
         // 用户自定义与自动发现的 Agent 在 status / status --json 里根本不存在，
         // 而 report 能看到——同一份数据两个口径，脚本侧尤其容易被误导。
-        // 单拍即可：本命令要快（Raycast / 脚本调用），CPU% 首拍恒 0 的语义保持不变
+        // 单拍即可：本命令要快（Raycast / 脚本调用）。代价是 CPU 这一列根本没差分窗口，
+        // 所以它印 `—` 而不是 0.0%；要真实利用率用 `doctor`（双采）或 `top`（持续观测）
         let engine = LiveSampler.makeEngine(restrictToEnabled: !showAll, refreshUsage: wantUsage)
         let snapshots = engine.sample()
 
@@ -82,7 +83,13 @@ public enum StatusCommand {
             let icon = s.profile.emoji
             let nameText = "\(icon) \(s.profile.name)"
             let pidText = s.pid.map { "\($0)" } ?? CLIColor.dim("-")
-            let cpuText = s.processRunning ? String(format: "%.1f%%", s.cpuPercent) : CLIColor.dim("-")
+            // 「没测」不印成 0.0%：CPU% 是差分量，本命令只采一拍，根本没有窗口。
+            // 与用量列同一条口径（`—` = 没查，数字 = 查出来的值）
+            let cpuText: String = {
+                if !s.processRunning { return CLIColor.dim("-") }
+                guard let cpu = s.cpuPercent else { return CLIColor.dim("—") }
+                return String(format: "%.1f%%", cpu)
+            }()
             let memText = s.processRunning ? MemoryFormat.text(s.memoryBytes) : CLIColor.dim("-")
             let sessionsText = s.activeSessions > 0 ? "\(s.activeSessions)" : CLIColor.dim("0")
             let tokensText: String

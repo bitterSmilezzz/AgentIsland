@@ -133,6 +133,52 @@ enum EngineTests {
             try expectTrue(alsoHeavy.issues.contains { $0.contains("CPU") }, "高 CPU 的病症不能丢")
         }
 
+        TestKit.test("ActivityEngine CPU 差分窗口：没有前一拍就不许公布利用率") {
+            let start = Date(timeIntervalSince1970: 1_700_000_000)
+            let provider = MutableProcessProvider(names: ["dimagent"], cpu: 42)
+            let engine = makeEngine(processNames: [], writes: [:], processMonitor: provider)
+            let dimOf = { (snaps: [AgentSnapshot]) in snaps.first { $0.id == "dim" } }
+
+            // CPU% 是「本拍进程时间 − 上一拍」÷ 墙钟差。第一拍没有上一拍，
+            // 印出来的 0.0% 从来不是测量值——一次性 status / report 每行都是这个形状
+            try expectEqual(dimOf(engine.sample(now: start))?.cpuPercent, nil, "首拍是「没测」，不是 0.0%")
+            try expectEqual(dimOf(engine.sample(now: start.addingTimeInterval(2)))?.cpuPercent, 42.0,
+                            "有了前一拍才谈得上利用率")
+            // 进程消失后同样没有实测：一条都没有时 0 会被读成「空闲」
+            provider.names = []
+            try expectEqual(dimOf(engine.sample(now: start.addingTimeInterval(4)))?.cpuPercent, nil,
+                            "进程不在时不给一个假的 0%")
+        }
+
+        TestKit.test("AgentHealthEvaluator: CPU 没测不扣分，也不许当成「CPU 不高」") {
+            let profile = dim
+            func snap(cpu: Double?, hung: Bool?, mem: UInt64 = 100 * 1024 * 1024) -> AgentSnapshot {
+                AgentSnapshot(profile: profile, level: .working, processRunning: true,
+                              cpuPercent: cpu, installed: true, activeSessions: 1,
+                              lastActivityAgo: 1, lastActivityText: "1秒前",
+                              pid: 1234, currentAction: "编译", memoryBytes: mem, isHung: hung)
+            }
+
+            let blind = AgentHealthEvaluator.evaluate(snapshot: snap(cpu: nil, hung: false))
+            try expectEqual(blind.score, 100, "没测不等于有病，不凭空扣分")
+            try expectEqual(blind.grade, .partial, "CPU 维度未评估时不许宣布健康")
+            try expectTrue(blind.summary.contains("CPU"), "要说清是哪一维没测：\(blind.summary)")
+
+            // 两维都没测 → 一起点名，而不是只报死锁那一维
+            let bothBlind = AgentHealthEvaluator.evaluate(snapshot: snap(cpu: nil, hung: nil))
+            try expectTrue(bothBlind.summary.contains("CPU") && bothBlind.summary.contains("死锁"),
+                           "未评估的维度不能漏报：\(bothBlind.summary)")
+
+            // 已有更严重的病症时不降级：严重度不能被「观测不全」盖掉
+            let mem2_2GB = UInt64(2200) * 1024 * 1024
+            let heavy = AgentHealthEvaluator.evaluate(snapshot: snap(cpu: nil, hung: false, mem: mem2_2GB))
+            try expectEqual(heavy.grade, .attention, "内存已扣分时不许改口")
+            // 实测到的负荷照常扣分（这条守住 nil 不是「一律不扣分」）
+            let hot = AgentHealthEvaluator.evaluate(snapshot: snap(cpu: 85, hung: false))
+            try expectEqual(hot.grade, .attention, "实测高 CPU 必须扣分")
+            try expectTrue(hot.issues.contains { $0.contains("85.0") }, "扣分支要说出实测值：\(hot.issues)")
+        }
+
         TestKit.test("ActivityEngine 死锁资格：观测窗口不足时 isHung 只能是「没测」") {
             let start = Date(timeIntervalSince1970: 1_800_000_000)
             // 90% CPU 远高于死锁阈值 70%：任何一拍「看起来都像」卡死，恰恰最容易谎报

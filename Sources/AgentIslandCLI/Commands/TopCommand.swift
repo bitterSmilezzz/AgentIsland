@@ -89,7 +89,9 @@ public enum TopCommand {
 
             // 统计指标
             let workingCount = snapshots.filter { $0.level == .working }.count
-            let totalCPU = snapshots.reduce(0.0) { $0 + $1.cpuPercent }
+            // 合计只在「至少有一条实测」时才成立：全没窗口时印 0.0% 等于把没测播报成空闲
+            let totalCPU: Double? = snapshots.contains { $0.cpuPercent != nil }
+                ? snapshots.reduce(0.0) { $0 + ($1.cpuPercent ?? 0) } : nil
             let totalTokens24h = snapshots.reduce(0) { $0 + ($1.tokenUsage?.tokens24h ?? 0) }
             let totalCost24h = snapshots.reduce(0.0) { $0 + ($1.tokenUsage?.cost24h ?? 0.0) }
 
@@ -102,7 +104,7 @@ public enum TopCommand {
             output += "  " + CLIColor.cyan("刷新: \(String(format: "%.1f", intervalSeconds))s")
             output += "  " + CLIColor.dim("[q]退出 [r]刷新 [c]一键清理") + "\n"
 
-            let cpuStr = String(format: "%.1f%%", totalCPU)
+            let cpuStr = totalCPU.map { String(format: "%.1f%%", $0) } ?? "—"
             let tokenStr = TokenUsage.compact(totalTokens24h)
             let costStr = totalCost24h > 0 ? TokenUsage.cost(totalCost24h) : "$0.00"
             output += "  活跃: \(CLIColor.green("\(workingCount)")) / \(snapshots.count) 项"
@@ -150,7 +152,7 @@ public enum TopCommand {
                 }
 
                 let pidStr = s.pid != nil ? "\(s.pid!)" : "-"
-                let cpuStr = s.processRunning ? String(format: "%.1f%%", s.cpuPercent) : "-"
+                let cpuStr = s.processRunning ? (s.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "—") : "-"
                 let memStr = s.processRunning ? s.memoryText : "-"
                 // nil 是「本轮没取到用量」，0 是「取到了、确实是 0」——两者不能同形
                 let tokenStr = s.tokenUsage.map { TokenUsage.compact($0.tokens24h) } ?? "—"

@@ -375,7 +375,11 @@ public struct AgentSnapshot: Identifiable, Equatable {
     public let profile: AgentProfile
     public let level: ActivityLevel
     public let processRunning: Bool
-    public let cpuPercent: Double
+    /// CPU 利用率的**两态**：有值是「本拍确有差分窗口」测出来的利用率，`nil` 是根本没测。
+    /// CPU% 是两次采样之间的进程时间差分量，所以第一拍（没有前一拍）结构性地测不出来，
+    /// 只按 bundle 命中的占位条目同样给不出。把它们印成 `0.0%` 等于向用户宣布
+    /// 「这个进程没在烧 CPU」，而事实是「这一拍还没来得及知道」——与死锁维度同一类谎报。
+    public let cpuPercent: Double?
     public let installed: Bool                 // 检测到安装（bundle/CLI 存在）
     public let activeSessions: Int             // 会话目录下的活跃会话数（子目录数）
     public let lastActivityAgo: TimeInterval?  // 距最近一次文件活动的时间（nil=从未）
@@ -404,7 +408,7 @@ public struct AgentSnapshot: Identifiable, Equatable {
     }
 
     public init(profile: AgentProfile, level: ActivityLevel, processRunning: Bool,
-                cpuPercent: Double, installed: Bool, activeSessions: Int,
+                cpuPercent: Double?, installed: Bool, activeSessions: Int,
                 lastActivityAgo: TimeInterval?, lastActivityText: String,
                 tokenUsage: TokenUsage? = nil, pid: Int32? = nil, currentAction: String? = nil,
                 memoryBytes: UInt64 = 0, isHung: Bool? = nil,

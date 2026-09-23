@@ -19,7 +19,7 @@ public enum Probe {
         for s in snaps {
             print(pad(s.profile.name, 12)
                   + pad(s.isHung == true ? "HUNG" : (s.isHung == nil ? "HUNG?" : s.level.rawValue.uppercased()), 9)
-                  + pad(String(format: "%.1f", s.cpuPercent), 6)
+                  + pad(s.cpuPercent.map { String(format: "%.1f", $0) } ?? "—", 6)
                   + pad(s.memoryText, 7)
                   + pad(s.processRunning ? "YES" : "no", 5)
                   + pad(s.installed ? "yes" : "no", 5)

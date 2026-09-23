@@ -21,7 +21,8 @@ struct AgentRingView: View {
         switch snapshot.level {
         case .working:
             // 工作中根据 CPU 与近期活动计算活跃度（保底 0.35 弧长，随 CPU 增高）
-            let cpuFrac = min(CGFloat(snapshot.cpuPercent) / 100.0, 1.0)
+            // 没有差分窗口时按 0 折算：弧长回落到保底的 0.35，不谎报「CPU 空闲」
+            let cpuFrac = min(snapshot.cpuPercent.map { CGFloat($0) / 100.0 } ?? 0, 1.0)
             return max(0.35, min(0.35 + cpuFrac * 0.65, 1.0))
         case .attention:
             return 0.78
@@ -48,7 +49,7 @@ struct AgentRingView: View {
             if snapshot.isHung == true {
                 return Palette.ringRed
             }
-            if snapshot.cpuPercent >= 80 {
+            if (snapshot.cpuPercent ?? 0) >= 80 {
                 return Palette.ringOrange
             } else {
                 return Palette.ringGreen

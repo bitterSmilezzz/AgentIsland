@@ -77,7 +77,7 @@ public enum AuditReportExporter {
         for snap in snapshots {
             let report = AgentHealthEvaluator.evaluate(snapshot: snap)
             let pidStr = snap.pid.map { String($0) } ?? "—"
-            let cpuStr = String(format: "%.1f%%", snap.cpuPercent)
+            let cpuStr = snap.cpuPercent.map { String(format: "%.1f%%", $0) } ?? "—（本拍无差分窗口）"
             let memStr = snap.memoryBytes > 0 ? snap.memoryText : "—"
             // 评级直接用 HealthGrade 的措辞：这里曾自己 switch 出「需关注 / 预警」，
             // 而 status --json 与详情卡说「需留意 / 异常」——同一个评级两份话。
@@ -156,7 +156,7 @@ public enum AuditReportExporter {
                 escapeCSV(snap.profile.name),
                 escapeCSV(snap.level.rawValue),
                 pidStr,
-                String(format: "%.1f", snap.cpuPercent),
+                snap.cpuPercent.map { String(format: "%.1f", $0) } ?? "",
                 String(snap.memoryBytes),
                 String(report.score),
                 escapeCSV(report.grade.rawValue),

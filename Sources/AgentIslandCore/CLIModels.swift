@@ -7,7 +7,9 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
     public let name: String
     public let status: String
     public let pid: Int32?
-    public let cpuPercent: Double
+    /// nil = 本拍没有 CPU 差分窗口（一次性 `status` / `report` 的第一拍必然如此）。
+    /// 与 `0.0` 分开写：后者是「测了，确实空闲」，前者是「还没来得及知道」
+    public let cpuPercent: Double?
     public let memoryBytes: UInt64
     public let memoryFormatted: String
     public let activeSessions: Int

@@ -64,13 +64,13 @@ public enum AgentHealthEvaluator {
             break
         }
 
-        // 2. CPU 激增与死循环倾向
-        if snapshot.cpuPercent >= 80 {
+        // 2. CPU 激增与死循环倾向。nil = 本拍没有差分窗口，不扣分也不许当成「CPU 不高」
+        if let cpu = snapshot.cpuPercent, cpu >= 80 {
             deduction += 25
-            issues.append("CPU 持续占用高达 \(String(format: "%.1f", snapshot.cpuPercent))%")
-        } else if snapshot.cpuPercent >= 50 {
+            issues.append("CPU 持续占用高达 \(String(format: "%.1f", cpu))%")
+        } else if let cpu = snapshot.cpuPercent, cpu >= 50 {
             deduction += 10
-            issues.append("CPU 负荷较高 (\(String(format: "%.1f", snapshot.cpuPercent))%)")
+            issues.append("CPU 负荷较高 (\(String(format: "%.1f", cpu))%)")
         }
 
         // 3. 内存驻留集 (RSS) 溢出与泄露倾向
@@ -92,16 +92,19 @@ public enum AgentHealthEvaluator {
             return .critical
         }()
 
-        // 「健康」是一条全清结论，而这一维判不出时它并不全清：一次性采样的每个入口
-        // （`status` / `report` / `--probe`）都会拿到 nil，把「没测」播报成「没有卡死」。
-        // 只在其余维度都干净时降级——CPU/内存已经扣分时那两级正在喊话，
-        // 换成「观测不全」反而盖掉了真实的严重度。
-        if snapshot.isHung == nil, grade == .healthy { grade = .partial }
+        // 本轮判不出的维度。扣分只针对测到的东西，但「健康」是一条全清结论——
+        // 有维度没测就不许宣布全清。只在其余维度都干净时降级：内存/CPU 已经扣分时
+        // 那两级正在喊话，换成「观测不全」反而盖掉了真实的严重度。
+        var unevaluated: [String] = []
+        if snapshot.isHung == nil { unevaluated.append("死锁/僵卡") }
+        if snapshot.cpuPercent == nil { unevaluated.append("CPU 持续负荷") }
+        if !unevaluated.isEmpty, grade == .healthy { grade = .partial }
+        let unevaluatedText = unevaluated.joined(separator: " 与 ")
 
         let summary: String = {
             switch grade {
             case .healthy: return "运行平稳正常"
-            case .partial: return "已测维度无异常，死锁维度本轮未评估"
+            case .partial: return "已测维度无异常，\(unevaluatedText)本轮未评估"
             case .attention: return "资源占用略高"
             case .warning: return "负载异常，建议关注"
             case .critical: return "严重异常，需紧急介入"
@@ -115,13 +118,13 @@ public enum AgentHealthEvaluator {
             if snapshot.memoryBytes >= twoGB {
                 return "长会话存在内存泄露隐患，建议在新会话中重新开始"
             }
-            if snapshot.cpuPercent >= 80 {
+            if let cpu = snapshot.cpuPercent, cpu >= 80 {
                 return "任务可能陷入重度计算或死循环，请检查终端日志"
             }
             // 措辞刻意不带阈值数字：那段时长只有一个来源（AnomalyScanGates.hungNotEvaluatedNote
             // 从配置里读），这里再写一遍就是同一结论两份措辞，漂移只是时间问题
-            if snapshot.isHung == nil {
-                return "本轮观测窗口不足以判定死锁/僵卡，此处不构成「没有卡死」的结论；"
+            if !unevaluated.isEmpty {
+                return "\(unevaluatedText)本轮未评估，这一档分数不等于全清；"
                     + "持续观测请用灵动岛工作台或 `agentisland top`"
             }
             if grade == .attention {

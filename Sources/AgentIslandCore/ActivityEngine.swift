@@ -482,6 +482,10 @@ public final class ActivityEngine: ObservableObject {
         // 「信号早已消失 + 距上次工作很久」——按常规逻辑会补发一条
         // 「任务完成 (480分0秒)」并弹系统通知，而 Agent 其实只是被挂起了。
         // 检测到断点就跳过完成事件，并把工作区间起点顺延到本拍（视为重新开始）。
+        // 本拍有没有 CPU 差分窗口：CPU% 是「本拍进程时间 − 上一拍」÷ 墙钟差，没有上一拍
+        // 就没有窗口。一次性入口（status / report）只采一拍，它们印出来的 0.0% 从来不是
+        // 测量值，而是「还没来得及知道」——所以这一拍对外给 nil，内部判定照旧用 0。
+        let hasCPUBaseline = lastSampleAt != nil
         let isResumeGap: Bool = {
             guard let last = lastSampleAt else { return false }
             return now.timeIntervalSince(last) > resumeGapThreshold
@@ -535,6 +539,15 @@ public final class ActivityEngine: ObservableObject {
             let running = !entries.isEmpty
             let matchedPID = entries.first(where: { $0.pid > 0 })?.pid
             let cpu = entries.reduce(0) { $0 + $1.cpuPercent }
+            // 对外公布的 CPU 只算真测到的条目：bundle 命中却没匹配到进程名时
+            // matcher 给的是 pid = -1 的占位条目，它的 0 是「没看着这个进程」，
+            // 不是「这个进程不占 CPU」
+            let publishedCPU: Double? = {
+                guard hasCPUBaseline, running else { return nil }
+                let measured = entries.filter { $0.pid > 0 }
+                guard !measured.isEmpty else { return nil }
+                return measured.reduce(0) { $0 + $1.cpuPercent }
+            }()
 
             // 最近写入时间直读 FileMonitor 缓存：**扫描成功的目录直接替换缓存**（允许自然
             // 变旧，否则一次历史写入会永久判成 working），只有扫描失败/目录暂缺才保留旧值；
@@ -781,7 +794,7 @@ public final class ActivityEngine: ObservableObject {
                 profile: profile,
                 level: level,
                 processRunning: running,
-                cpuPercent: cpu,
+                cpuPercent: publishedCPU,
                 installed: installedApps.isInstalled(profile),
                 activeSessions: sessionCount(for: profile, running: running),
                 lastActivityAgo: newestAgo,

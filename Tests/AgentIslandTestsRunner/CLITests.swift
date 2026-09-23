@@ -106,6 +106,24 @@ enum CLITests {
             try expectEqual(doctor.healthGrade, "观测不全", "doctor --json 要分辨得出没查")
         }
 
+        TestKit.test("CLI: CPU 没有差分窗口时是 null，不是 0") {
+            let base = AgentRegistry.builtin[0]
+            func snap(cpu: Double?) -> AgentSnapshot {
+                AgentSnapshot(profile: base, level: .working, processRunning: true,
+                              cpuPercent: cpu, installed: true, activeSessions: 1,
+                              lastActivityAgo: 5, lastActivityText: "5秒前",
+                              pid: 7, memoryBytes: 80_000_000, isHung: false)
+            }
+            // 一次性 `status` / `report` 只采一拍，CPU 结构性地测不出来；
+            // 印 0.0% 等于对着一台正在烧 CPU 的机器说「空闲」
+            let blindText = String(data: try JSONEncoder().encode(
+                CLIAgentStatusDTO(from: snap(cpu: nil))), encoding: .utf8) ?? ""
+            let measuredText = String(data: try JSONEncoder().encode(
+                CLIAgentStatusDTO(from: snap(cpu: 42))), encoding: .utf8) ?? ""
+            try expectTrue(!blindText.contains("\"cpuPercent\""), "没测不许印 0：\(blindText)")
+            try expectTrue(measuredText.contains("42"), "测到了就要如实印出来：\(measuredText)")
+        }
+
         TestKit.test("结构: 健康评级只有一处措辞（审计报告不许自己再译一份）") {
             // 报告原先自己 switch 出「需关注 / 预警」，而 status --json 与详情卡说
             // 「需留意 / 异常」——同一个 grade 两份话，读两份输出的人无法核对。
@@ -116,6 +134,23 @@ enum CLITests {
                                "报告里另译了一份「\(word)」，与 HealthGrade 的措辞分叉")
             }
             try expectTrue(code.contains("report.grade.rawValue"), "评级要直接用枚举措辞")
+        }
+
+        TestKit.test("结构: 展示 CPU 的入口不许把「没测」格式化出来") {
+            // `String(format: "%.1f%", s.cpuPercent)` 这种写法在 cpuPercent 变成 Double? 之后
+            // 编译不过，但 `?? 0` 一句就能把它接回去——症状正是「正在烧 CPU 的机器印 0.0%」。
+            // 所以这里禁的是「拿快照的 cpuPercent 直接喂格式化」这个形状本身。
+            let pattern = #"format: "[^"]*%[0-9.]*f[^"]*",\s*[A-Za-z_]\w*\.cpuPercent(\s*\?\?\s*0)?\s*[\),]"#
+            let regex = try NSRegularExpression(pattern: pattern)
+            for file in ["Sources/AgentIslandCLI/Commands/StatusCommand.swift",
+                         "Sources/AgentIslandCLI/Commands/TopCommand.swift",
+                         "Sources/AgentIslandCore/Probe.swift",
+                         "Sources/AgentIslandCore/AuditReportExporter.swift"] {
+                let code = SourceTree.codeOnly(try SourceTree.text(relativePath: file))
+                let hits = regex.matches(in: code, range: NSRange(code.startIndex..., in: code))
+                try expectTrue(hits.isEmpty,
+                               "\(file) 直接格式化了快照的 cpuPercent，nil 分支迟早变成 0：\(hits.count) 处")
+            }
         }
 
         TestKit.test("CLI: 异常诊断与清理 DTO 往返") {
