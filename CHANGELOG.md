@@ -4,6 +4,52 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.125] - 2026-09-23
+
+### 🔧 各家 hook 面核实落进正文：Codex 的 notify 是 legacy，OpenCode 给的是 session.idle
+
+本轮不改代码，做 `.scratch/agent-selfreport` 的 01 号研究票——它挡着后面 6 张票，
+而 spec 第 6 节整节写着「待核实」。产出是入库的 `docs/research/agent-lifecycle-hooks.md`。
+
+- **为什么要单独一轮**：`docs/adr/0006` 的教训是「没核实到正文就预置字段名」，症状是
+  「界面显示已送达、其实没送」。自报通道正是同一类风险：照猜的键名写完，配上去不响，
+  而岛只会显示「没配」——用户分不清「没配」和「配了但不生效」。
+- **三家有结论**（每条都要求二选一：官方正文原句，或本机配置文件实样）：
+  - **Claude Code**：`~/.claude/settings.json` 的 `hooks.<Event>[].hooks[] = {type, command}`，
+    命令从 **stdin 收 JSON**（含 `session_id`、`cwd`），`CLAUDE_PROJECT_DIR` 可读。
+    本机实样交叉验证过（第三方 codegraph 2026-08-28 写入的 `UserPromptSubmit` 条目形状一致）。
+  - **Codex**：**spec 原先写错了载体**。`notify` 已是 legacy——载荷**追加为最后一个 argv**、
+    **stdin 被显式置空**（`legacy_notify.rs` 注释与 `Stdio::null()`）；新一代是
+    `~/.codex/hooks.json`，事件名 `HOOK_EVENT_NAMES` 12 个，**与 Claude Code 同一套词汇**
+    ⇒ 桥接脚本两家共用，比原计划省一套接口。另记一条坑：`HOOK_EVENT_NAMES_WITH_MATCHERS`
+    只含 9 个，`Stop` / `Interrupt` 的 matcher 被忽略，别拿 matcher 过滤终态。
+  - **OpenCode**：不给 hooks 而给 plugin 的 `event({event})` 总线，事件名里有
+    `session.idle` 与 `session.error`——判断 ①（生命周期不能交给模型自觉）要的东西
+    在这里是现成的，运行时确定发出。接入形态与 03 号票的夹具都得为此分一支。
+- **一处新风险，直接改测量口径**：Codex 管理员可在 `requirements.toml` 设
+  `allow_managed_hooks_only = true`，忽略用户/项目/会话层 hooks ⇒ 企业机器上自报可能
+  一条都不到。已写进票里：08 号对照测量必须把「配了自报但没收到」单独计一类，
+  不能算成推断错误——否则会把托管环境读成「推断不准」。
+- **排除的几家给的是排除结论，不是猜测**：Qoder（本机 `~/.qoder/settings.json` 只有
+  `enabledPlugins`；本会话运行时自述有 hooks，但那是**运行环境自述、不是公开文档正文**）、
+  Cursor / Trae / Cline / Roo（本机无实样、官方正文本轮未取到）、DimAgent / WorkBuddy
+  （自有工具，属产品决策）。「拿不到出处」与「确认无此能力」在文档里分得很清——
+  前者写排除，后者才写「无此能力」。
+- **代价与被否决的写法**：被否决 ① 把常见的 hook 词汇表当结论写进去（省一轮抓取，
+  但正是 ADR-0006 那个坑）；② 把详细证据留在 `.scratch/` 的 spec 里——`git check-ignore`
+  确认 `.scratch/` 不入库，那样的「产出」发不出去也查不到，所以正文进 `docs/research/`、
+  spec 只留决策表并指向它（同一份事实写两处必然漂移）；③ 为凑「本轮有测试」写一条
+  断言文档字符串的假测试——本轮没有代码改动，没有可变异的东西，硬造断言只会多一条
+  永远绿的噪声。
+- **没做与遗留**：`claude -p` 与 `codex exec` 下 hooks 是否**逐事件**触发仍未证实，
+  文档里标成「不许当已知」，P0 打通当天真机测；Cursor / Trae / Cline / Roo 的官方正文
+  本轮没取到，P3 之前不动；02 号票（`/session` 协议 + 令牌 + TTL）仍未实现——它现在
+  有了明确的接口形状，但那是另一轮的事。
+- **验证方式（本轮无代码，故无变异测试）**：每条结论两个独立来源交叉——官方正文/已安装
+  SDK 类型定义 **加** 本机配置文件实样；文档末尾附「复现这些结论的命令」，读者可原地重跑
+  而不是信我。全量测试 450 条不变、0 失败；脱敏扫描工作区 18 条命中全部已备案、无新增
+  （新文档不含个人路径与任何凭据）。
+
 ## [0.0.124] - 2026-09-23
 
 ### 🔒 成本的「什么算零」收成一个出口，`—` 从此只表示没查
