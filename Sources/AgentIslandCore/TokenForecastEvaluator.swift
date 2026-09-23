@@ -15,8 +15,7 @@ public struct TokenForecastReport: Equatable, Sendable {
     }
 
     public var formattedMonthlyCost: String {
-        if projectedMonthEndCost <= 0.001 { return "$0.00" }
-        return TokenUsage.cost(projectedMonthEndCost)
+        return TokenUsage.costText(projectedMonthEndCost, zero: "$0.00")
     }
 
     public init(

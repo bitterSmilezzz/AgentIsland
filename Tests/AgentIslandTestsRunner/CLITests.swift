@@ -304,8 +304,8 @@ enum CLITests {
                             + "\(TokenUsage.compact(98765)) | \(TokenUsage.cost(1.5)) |",
                             "取到了就照实印，非零成本也要印出来")
             try expectEqual(mdRow("zerocost"),
-                            "| zerocost | \(TokenUsage.compact(7)) | — | \(TokenUsage.compact(7)) | — |",
-                            "测到的零成本印 `—`，用量列仍是数字——整行 `—` 才是没取到")
+                            "| zerocost | \(TokenUsage.compact(7)) | $0.00 | \(TokenUsage.compact(7)) | $0.00 |",
+                            "测到的零成本写 `$0.00`：`—` 只留给没查，一个记号不能同时表示两件事")
             try expectTrue(md.contains("2 个智能体") && md.contains("没取到用量"),
                            "合计旁边要说清有几个源没计入：\(md.split(separator: "\n").prefix(8).joined(separator: " ⏎ "))")
 
@@ -317,6 +317,47 @@ enum CLITests {
                             "实测值按列落位")
             try expectEqual(Array(fields("blind")[9...12]), ["", "", "", ""],
                             "CSV 里没取到是空，不是 0（与同一行的 PID/CPU 列同口径）")
+        }
+
+        TestKit.test("一致性: 同一个成本数字在月末预测与审计报表里同形") {
+            func forecastCost(_ c: Double) -> String {
+                TokenForecastReport(projectedMonthEndTokens: 1000, projectedMonthEndCost: c,
+                                    daysRemainingInMonth: 3, totalDaysInMonth: 30,
+                                    budgetExhaustionDay: nil, forecastSummary: "").formattedMonthlyCost
+            }
+            func reportRow(_ c: Double) -> String {
+                let snap = AgentSnapshot(profile: AgentRegistry.builtin[0], level: .working,
+                                         processRunning: true, cpuPercent: 5, installed: true,
+                                         activeSessions: 1, lastActivityAgo: 5, lastActivityText: "5秒前",
+                                         tokenUsage: TokenUsage(tokens24h: 10, tokensTotal: 10,
+                                                               cost24h: c, costTotal: c),
+                                         pid: 1, memoryBytes: 1_000_000, isHung: false)
+                let md = AuditReportExporter.generateMarkdown(snapshots: [snap], now: Date())
+                let prefix = "| \(AgentRegistry.builtin[0].name) |"
+                return (md.components(separatedBy: "## 2.").last ?? "")
+                    .split(separator: "\n").first { $0.hasPrefix(prefix) }
+                    .map(String.init) ?? ""
+            }
+            // 收敛前有两个零阈值：预测用 `<= 0.001`、其余用 `> 0`，同一个 $0.0005
+            // 一处说「$0.00」一处说「<$0.01」——读两份输出的人会以为差了一笔钱
+            try expectEqual(forecastCost(0), "$0.00", "零在预测里写 $0.00")
+            try expectEqual(forecastCost(0.0005), "<$0.01", "不足一分不是零")
+            try expectTrue(reportRow(0.0005).contains("<$0.01"), "报表同档必须同形：\(reportRow(0.0005))")
+            try expectTrue(reportRow(0).contains("$0.00"), "零在报表里也是 $0.00：\(reportRow(0))")
+        }
+
+        TestKit.test("结构: 零怎么写可以随出口变，但「什么算零」只许有一处") {
+            // `> 0 ? TokenUsage.cost(x) : "$0.00"` 这个形状此前抄了 8 遍，零的写法有三种
+            // （`$0.00` / `—` / 整条省略），还多出一个 `<= 0.001` 的第二阈值。
+            // 现在全部走 TokenUsage.costText，这些散写法的字面形状就是回归的痕迹。
+            let banned = ["> 0 ? TokenUsage.cost(", "<= 0.001",
+                          "!res.text.isEmpty", "!totalCostResolved.text.isEmpty"]
+            var offenses: [String] = []
+            for (name, text) in try SourceTree.requireSourceTexts() {
+                let code = SourceTree.codeOnly(text)
+                for b in banned where code.contains(b) { offenses.append("\(name): \(b)") }
+            }
+            try expectTrue(offenses.isEmpty, "成本显示又长出第二份口径：\(offenses)")
         }
 
         TestKit.test("可观测性: 四类结论互斥，且「读不到」绝不与「闲着」混为一谈") {

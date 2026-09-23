@@ -117,8 +117,8 @@ public enum AuditReportExporter {
                 md += "| \(cell(snap.profile.name)) | — | — | — | — |\n"
                 continue
             }
-            let cost24 = u.cost24h > 0 ? TokenUsage.cost(u.cost24h) : "—"
-            let costTot = u.costTotal > 0 ? TokenUsage.cost(u.costTotal) : "—"
+            let cost24 = TokenUsage.costText(u.cost24h, zero: "$0.00")
+            let costTot = TokenUsage.costText(u.costTotal, zero: "$0.00")
             md += "| \(cell(snap.profile.name)) | \(TokenUsage.compact(u.tokens24h)) | \(cost24) "
                 + "| \(TokenUsage.compact(u.tokensTotal)) | \(costTot) |\n"
         }

@@ -17,7 +17,7 @@ public enum TokenReportExporter {
 
         let totalTokensText = TokenUsage.compact(timeline.tokens)
         let totalCostResolved = TokenCostEstimator.resolveCost(actual: timeline.cost, tokens: timeline.tokens)
-        let costDisplay = !totalCostResolved.text.isEmpty ? totalCostResolved.text : "$0.00"
+        let costDisplay = TokenUsage.costText(totalCostResolved.text, zero: "$0.00")
 
         var md = """
         # AgentIsland Token 消费与用量分析报表
@@ -39,7 +39,10 @@ public enum TokenReportExporter {
         let sortedSources = timeline.sources.sorted { $0.tokens > $1.tokens }
         for s in sortedSources {
             let res = TokenCostEstimator.resolveCost(actual: s.cost, modelId: s.agentId, tokens: s.tokens)
-            let fee = !res.text.isEmpty ? res.text : "—"
+            // 零成本写 `$0.00` 而不是 `—`：这一行右边已经有「已连接/未发现」那一列专门
+            // 表达「这个源到底查没查到」，费用格再兼一个意思，同一份导出的 Markdown 与
+            // CSV 就会对同一个零各说各话（CSV 那侧本来就是 $0.00）。
+            let fee = TokenUsage.costText(res.text, zero: "$0.00")
             let status = s.isAvailable ? "已连接" : "未发现"
             md += "| `\(s.agentId)` | \(TokenUsage.compact(s.tokens)) | \(fee) | \(status) |\n"
         }
@@ -64,7 +67,7 @@ public enum TokenReportExporter {
         let sortedSources = timeline.sources.sorted { $0.tokens > $1.tokens }
         for s in sortedSources {
             let res = TokenCostEstimator.resolveCost(actual: s.cost, modelId: s.agentId, tokens: s.tokens)
-            let fee = !res.text.isEmpty ? res.text : "$0.00"
+            let fee = TokenUsage.costText(res.text, zero: "$0.00")
             let status = s.isAvailable ? "已连接" : "未发现"
             csv += "\"\(dateStr)\",\"\(range.label)\",\"\(s.agentId)\",\(s.tokens),\"\(fee)\",\"\(status)\"\n"
         }

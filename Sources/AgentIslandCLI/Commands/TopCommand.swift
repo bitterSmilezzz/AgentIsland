@@ -106,7 +106,7 @@ public enum TopCommand {
 
             let cpuStr = totalCPU.map { String(format: "%.1f%%", $0) } ?? "—"
             let tokenStr = TokenUsage.compact(totalTokens24h)
-            let costStr = totalCost24h > 0 ? TokenUsage.cost(totalCost24h) : "$0.00"
+            let costStr = TokenUsage.costText(totalCost24h, zero: "$0.00")
             output += "  活跃: \(CLIColor.green("\(workingCount)")) / \(snapshots.count) 项"
             output += "   总 CPU: \(CLIColor.cyan(cpuStr))"
             output += "   24h Tokens: \(CLIColor.yellow(tokenStr))"

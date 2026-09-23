@@ -79,6 +79,14 @@ enum TokenUsageTests {
             try expectTrue(csv.hasPrefix("\u{FEFF}")) // UTF-8 BOM
             try expectTrue(csv.contains("报表时间,周期,Agent,Tokens,费用,状态"))
             try expectTrue(csv.contains("claude-3-7-sonnet"))
+
+            // 零成本在两份导出里必须同形。此前 Markdown 写 `—`、CSV 写 `$0.00`，
+            // 而「这个源查没查到」本来就由「已连接/未发现」那一列单独负责
+            let dimRow = md.split(separator: "\n").first { $0.contains("`dim`") } ?? ""
+            try expectEqual(String(dimRow), "| `dim` | 50.0k | $0.00 | 已连接 |",
+                            "Markdown 里的零成本该是 $0.00：\(dimRow)")
+            try expectTrue(csv.contains("dim\",50000,\"$0.00\",\"已连接\""),
+                           "CSV 与 Markdown 对同一个零说法一致：\(csv.split(separator: "\n").first { $0.contains("dim") } ?? "")")
         }
 
         TestKit.test("TokenBudgetTracker 预算阈值与预警状态机") {

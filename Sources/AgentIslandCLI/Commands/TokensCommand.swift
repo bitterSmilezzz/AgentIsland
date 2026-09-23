@@ -90,9 +90,9 @@ public enum TokensCommand {
         print(CLIColor.dim("──────────────────────────────────────────"))
 
         let tokens24hStr = CLIColor.cyan(TokenUsage.compact(grandTotal.tokens24h))
-        let cost24hStr = CLIColor.green(grandTotal.cost24h > 0 ? TokenUsage.cost(grandTotal.cost24h) : "$0.00")
+        let cost24hStr = CLIColor.green(TokenUsage.costText(grandTotal.cost24h, zero: "$0.00"))
         let tokensTotalStr = CLIColor.white(TokenUsage.compact(grandTotal.tokensTotal))
-        let costTotalStr = CLIColor.white(grandTotal.costTotal > 0 ? TokenUsage.cost(grandTotal.costTotal) : "$0.00")
+        let costTotalStr = CLIColor.white(TokenUsage.costText(grandTotal.costTotal, zero: "$0.00"))
 
         print("  最近 24h 消耗:   \(tokens24hStr) tokens  |  \(cost24hStr)")
         print("  历史总计消耗:    \(tokensTotalStr) tokens  |  \(costTotalStr)")
@@ -140,9 +140,9 @@ public enum TokensCommand {
                 table.addRow([
                     id,
                     TokenUsage.compact(u.tokens24h),
-                    u.cost24h > 0 ? TokenUsage.cost(u.cost24h) : "$0.00",
+                    TokenUsage.costText(u.cost24h, zero: "$0.00"),
                     TokenUsage.compact(u.tokensTotal),
-                    u.costTotal > 0 ? TokenUsage.cost(u.costTotal) : "$0.00"
+                    TokenUsage.costText(u.costTotal, zero: "$0.00")
                 ])
             }
             print(table.render())

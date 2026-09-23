@@ -52,6 +52,23 @@ public struct TokenUsage: Equatable {
         if c < 0.01 { return "<$0.01" }
         return String(format: "$%.2f", c)
     }
+
+    /// 成本 → 展示文本的**唯一出口**。空串按 `cost()` 的约定表示「没有成本可报」，
+    /// 此时写调用方给的 `zero`——零怎么写确实是各出口的排版差异（表里要占位 `$0.00`、
+    /// 报表里整行 `—` 才是没查、卡上干脆省略），但**什么算零**只能有一条线。
+    /// 此前这个决定散在 9 处、给出三种答案，还有两个不同的零阈值（`> 0` 与 `<= 0.001`）：
+    /// 同一份数据在 `tokens` 与 `report` 里对同一个零说法不一。
+    /// `zero:` 不给默认值——漏写就会编译不过，而默认值会让报表悄悄把「没查」写成「没花钱」。
+    public static func costText(_ c: Double, zero: String) -> String {
+        costText(cost(c), zero: zero)
+    }
+
+    /// 已排版那一版：给 `TokenCostEstimator.resolveCost` 的 `text` 用。
+    /// 它可能带估算标记（`~$0.42`），这类文本**原样透传**——按数字重排会把 `~` 弄丢，
+    /// 而 `~` 是「这个数是估的」唯一的痕迹。
+    public static func costText(_ text: String, zero: String) -> String {
+        text.isEmpty ? zero : text
+    }
 }
 
 // MARK: - 详情页数据行

@@ -96,7 +96,8 @@ public enum StatusCommand {
             let costText: String
             if let usage = s.tokenUsage {
                 tokensText = usage.tokens24h > 0 ? TokenUsage.compact(usage.tokens24h) : CLIColor.dim("0")
-                costText = usage.cost24h > 0 ? TokenUsage.cost(usage.cost24h) : CLIColor.dim("$0.00")
+                let costStr = TokenUsage.costText(usage.cost24h, zero: "$0.00")
+                costText = usage.cost24h > 0 ? costStr : CLIColor.dim(costStr)
             } else {
                 // 没取数就明说，别印 0 —— 用户无法分辨「没用」和「没查」
                 tokensText = CLIColor.dim("—")

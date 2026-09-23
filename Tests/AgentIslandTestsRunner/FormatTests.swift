@@ -35,6 +35,18 @@ enum FormatTests {
             try expectEqual(TokenUsage.cost(1_000), "$1000.00", "大额不加分隔符")
         }
 
+        TestKit.test("格式化: costText 把「什么算零」收在一处，零怎么写交给出口") {
+            try expectEqual(TokenUsage.costText(1.234, zero: "$0.00"), "$1.23", "非零照排")
+            try expectEqual(TokenUsage.costText(0.005, zero: "$0.00"), "<$0.01",
+                            "不足一分不是零——月末预测此前用 <=0.001 当零，那是第二条线")
+            try expectEqual(TokenUsage.costText(0, zero: "$0.00"), "$0.00", "零写调用方给的占位")
+            try expectEqual(TokenUsage.costText(-3, zero: "—"), "—", "负数同样走零，占位随出口")
+            // 已排版那一版：估算标记必须原样透传
+            try expectEqual(TokenUsage.costText("~$0.42", zero: "$0.00"), "~$0.42",
+                            "「~」是这数是估的唯一痕迹，不能被按数字重排弄丢")
+            try expectEqual(TokenUsage.costText("", zero: "$0.00"), "$0.00", "空串按约定就是零")
+        }
+
         TestKit.test("格式化: formatAgo 相对时间分档（4.4/5/59.6/60/3599/3600/负/nil）") {
             try expectEqual(ActivityEngine.formatAgo(nil), "—", "从未活跃")
             try expectEqual(ActivityEngine.formatAgo(-10), "刚刚", "负数（时钟回拨）也按刚刚处理，不出现负值")
