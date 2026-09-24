@@ -61,6 +61,19 @@ public enum AgentSessionInspector {
     // 而「新会话出现」由下面的根目录 mtime 令牌即时捕获。
     private static let locateTTL: TimeInterval = 10
 
+    /// Qoder 专用的一格备忘录：「这个会话文件最近一次由**真人**起头的那一轮是哪个 promptId」。
+    /// 每个会话根只留**一条**（覆盖式），所以它不随会话数增长；换会话文件即作废。
+    /// 为什么要有它：一轮的首行才带 `humanInput`/`isMeta` 标记，而尾窗只有 60 行——
+    /// 任务跑到后半程时首行早就滑出去了，那一刻正是要发完成事件的那一刻。
+    private static var qoderHumanTurnCache: [String: (file: String, turnID: String)] = [:]
+
+    /// 测试用：把这格备忘清空，避免用例之间互相继承上一格的值
+    static func resetQoderHumanTurnCache() {
+        locateLock.lock()
+        defer { locateLock.unlock() }
+        qoderHumanTurnCache.removeAll()
+    }
+
     /// 读取（必要时重算）指定会话树的定位结果。
     /// - Parameters:
     ///   - key: 缓存键，须同时区分 Agent 与根目录（测试会注入临时目录）
@@ -472,7 +485,8 @@ public enum AgentSessionInspector {
     public static func inspectQoderTranscript(dirs: [String], now: Date,
                                               report: (SessionProbeHealth) -> Void = { _ in }) -> AgentSessionSignal? {
         let root = dirs.first.map { URL(fileURLWithPath: $0) }
-        guard let found = locatedSession(key: "qoder|\(dirs.joined(separator: ","))",
+        let key = "qoder|\(dirs.joined(separator: ","))"
+        guard let found = locatedSession(key: key,
                                          rootDir: root, now: now,
                                          locate: { walkQoderSessions(dirs: dirs) }) else { return nil }
         let age = max(0, now.timeIntervalSince(found.mtime))
@@ -484,7 +498,17 @@ public enum AgentSessionInspector {
             report(SessionProbeHealth(failure: .unreadableFile, path: found.file.path))
         }
         guard !tail.lines.isEmpty else { return nil }
-        return detectQoder(lines: tail.lines, fileAge: age)
+        // 先把「本轮是不是真人起的头」记下来，再交给判定：完成事件的指纹要认得这件事，
+        // 而等它真要发的那一刻，首行往往已经不在尾窗里了
+        locateLock.lock()
+        let carried = qoderHumanTurnCache[key].flatMap { $0.file == found.file.path ? $0.turnID : nil }
+        if let seen = qoderHumanTurnID(inLines: tail.lines) {
+            qoderHumanTurnCache[key] = (file: found.file.path, turnID: seen)
+        }
+        locateLock.unlock()
+        return detectQoder(lines: tail.lines, fileAge: age, lastHumanTurn: carried,
+                           // 会话文件的名字就是这一份会话的稳定身份（uuid.jsonl）
+                           sessionKey: found.file.deletingPathExtension().lastPathComponent)
     }
 
     /// 遍历 projects/<slug>/*.jsonl 取最近修改的一个。
@@ -516,13 +540,38 @@ public enum AgentSessionInspector {
         "askuserquestion", "ask_question", "exitplanmode", "exit_plan_mode",
     ]
 
-    public static func detectQoder(lines: [String], fileAge: TimeInterval) -> AgentSessionSignal? {
+    /// 尾窗里**最近一条真人敲的** user 行属于哪一轮（它的 promptId）；整窗都没有就 nil。
+    /// 一轮的首行才带 `humanInput`（真人）或 `isMeta`（系统注入），后面的 tool_result 行
+    /// 只带 promptId——所以「这一轮是谁起的头」只能在首行还留在尾窗里的那几拍看到。
+    static func qoderHumanTurnID(in rows: [(promptID: String, isHumanInput: Bool)]) -> String? {
+        rows.last(where: { $0.isHumanInput && !$0.promptID.isEmpty })?.promptID
+    }
+
+    /// 同一件事的行级版本：给 `inspectQoderTranscript` 更新「最近一次人类轮次」那一格缓存用。
+    static func qoderHumanTurnID(inLines lines: [String]) -> String? {
+        var hit: String?
+        for raw in lines {
+            guard let data = raw.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  (obj["message"] as? [String: Any])?["role"] as? String == "user",
+                  obj["humanInput"] != nil,
+                  let pid = obj["promptId"] as? String, !pid.isEmpty else { continue }
+            hit = pid
+        }
+        return hit
+    }
+
+    public static func detectQoder(lines: [String], fileAge: TimeInterval,
+                                   lastHumanTurn: String? = nil,
+                                   sessionKey: String? = nil) -> AgentSessionSignal? {
         struct Row {
             let id: String
             let role: String
             let stopReason: String
             let uses: [(name: String, id: String, hint: String)]
             let results: [String]
+            let promptID: String
+            let isHumanInput: Bool
         }
         var rows: [Row] = []
         rows.reserveCapacity(lines.count)
@@ -547,7 +596,9 @@ public enum AgentSessionInspector {
             }
             rows.append(Row(id: (message["id"] as? String) ?? "", role: role,
                             stopReason: (message["stop_reason"] as? String) ?? "",
-                            uses: uses, results: results))
+                            uses: uses, results: results,
+                            promptID: (obj["promptId"] as? String) ?? "",
+                            isHumanInput: obj["humanInput"] != nil))
         }
         guard let first = rows.first else { return nil }
         var answered = Set<String>()
@@ -555,6 +606,37 @@ public enum AgentSessionInspector {
         _ = first
 
         guard let lastAssistant = rows.last(where: { $0.role == "assistant" }) else { return nil }
+
+        // 「谁起的头」：promptId 只挂在 user 行上，而一轮的**首行**才带 humanInput（真人敲的）
+        // 或 isMeta（系统注入：后台任务通知、并发会话消息）。本机实测 27 个 promptId 全部二选一。
+        // 完成态必须按这个区分：真人派的活干完了该响一声；系统自己续跑的续命不该再响第二遍。
+        let turnID = rows.last(where: { !$0.promptID.isEmpty })?.promptID
+        // 继承是这条修复的**全部**机制：续命轮的 promptId 是新的，只有沿用上一个人类轮的
+        // 身份才能让它「不响第二遍」。代价写在这里也写在 README 的已知限制里——
+        // 万一某一轮的首行在两拍采样之间就滑出了尾窗（大 payload 时字节上限会先于 60 行到点），
+        // 这一轮的来源就永久认不出，它的完成会挂在上一轮那个指纹上、**不再响铃**。
+        // 方向选「少响一次」而不是「多响一次」，因为用户报的正是后者。
+        let humanTurnID = qoderHumanTurnID(in: rows.map { ($0.promptID, $0.isHumanInput) })
+            ?? lastHumanTurn
+        // 这一轮完成事件的指纹：**最近一次人类指令的身份**，不是那条 assistant 的 id。
+        // 原先按 assistant 消息 id 记，而 Qoder 每次模型调用都换 id——一个长任务里模型会
+        // end_turn 很多次（等后台构建、等并发会话回话、被通知唤醒后续跑），
+        // 于是「同一件活」每续跑一轮就再弹一次「任务完成」。用户 2026-09-25 报的就是这个。
+        // 一层都认不出时（岛刚重启、备忘是空的、首行早已滑出尾窗）退到 `sessionKey`
+        // ——**会话文件**的身份，而不是当前轮次 id：按轮次退会让每一次续跑都换个新指纹，
+        // 等于把这条修复要治的病原地复发（外部 review 报出的那条 P2）。
+        // 退到会话身份的效果：重启后第一次完成照响（宁可响一声），之后的续跑沿用同一指纹不再响；
+        // 而用户真敲了新指令时首行会进尾窗、备忘更新 ⇒ 指纹变成新轮次，该响的还是响。
+        let completionFingerprint = "qoder-\(humanTurnID ?? sessionKey ?? turnID ?? lastAssistant.id)"
+
+        // 真人刚敲完、模型一个字都还没回：尾窗里最新的消息行是带 humanInput 的 user 行。
+        // 这时最后一条 assistant 还是**上一轮**的 end_turn——按它判就是「你一发出指令，
+        // 岛就说上一件事完成了」，而它等的正是这条新指令。
+        if let lastRow = rows.last, lastRow.role == "user", lastRow.isHumanInput {
+            return .active(fingerprint: "qoder-turn-\(turnID ?? lastRow.id)",
+                           action: "正在处理你的新指令")
+        }
+
         let pending = lastAssistant.uses.filter { !$0.id.isEmpty && !answered.contains($0.id) }
 
         if let ask = pending.first(where: { qoderRequestTools.contains($0.name.lowercased()) }) {
@@ -570,7 +652,7 @@ public enum AgentSessionInspector {
         if lastAssistant.stopReason == "end_turn" || lastAssistant.stopReason == "stop_sequence" {
             // 完成态只保留一小段时间，之后自然回到「待机」——与其他方言同口径
             guard fileAge <= 15 * 60 else { return nil }
-            return .completed(fingerprint: "qoder-\(lastAssistant.id)")
+            return .completed(fingerprint: completionFingerprint)
         }
         return .active(fingerprint: "qoder-cont-\(lastAssistant.id)", action: "继续处理中")
     }

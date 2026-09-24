@@ -57,6 +57,45 @@ cwd(124) gitBranch(124) message(117) requestTokenAnchor(78) toolUseResult(38) pr
 
 `stop_reason` 分布（一个 10MB 会话）：`tool_use` 1004 次、`end_turn` 10 次。
 
+### 一轮对话的身份：`promptId` 与它的起头标记（实测）
+
+「谁起的头」这个事实不在 `stop_reason` 里，而在 **user 行的顶层键**上：
+
+| 键 | 出现在 | 含义（本机实测） |
+| :--- | :--- | :--- |
+| `promptId` | 每条 `user` 行（`tool_result` 行也带） | **一整轮共享同一个值**：实测一个 promptId 覆盖 48~250 条 user 行 |
+| `humanInput` | 一轮的**首行** | 真人敲的（同时带 `origin`、`permissionMode`） |
+| `isMeta` | 一轮的**首行** | 系统注入的：后台任务通知、并发会话消息等（`blocks` 也是 `text`） |
+
+一个正在跑的会话里实测 **27 个 promptId，18 个以 `humanInput` 起头、9 个以 `isMeta` 起头，
+两者互斥且覆盖全部 27 个**（本轮样本就是这一个会话，其他 Qoder 版本未取样本）。
+`assistant` 行**不带** `promptId`，而它的 `message.id`（`chatcmpl-<hash>`）每次模型调用都换，
+同一次调用的 `thinking` 行与 `tool_use` 行共享同一个 id。
+
+取证（只看结构与计数，不读正文）：
+
+```
+python3 - <<'PY'   # 在 ~/.qoder/projects/<项目 slug>/ 下
+import json,glob,os,collections
+f=max(glob.glob('*.jsonl'), key=os.path.getmtime)
+first={}; cnt=collections.Counter()
+for l in open(f,encoding='utf8'):
+    r=json.loads(l); m=r.get('message')
+    if not isinstance(m,dict) or m.get('role')!='user': continue
+    p=r.get('promptId')
+    if not p: continue
+    cnt[p]+=1
+    if p not in first:
+        first[p]=('human' if 'humanInput' in r else 'meta' if r.get('isMeta') else '?')
+print(len(first), collections.Counter(first.values()), cnt.most_common(3))
+PY
+```
+
+**这条事实为什么值得单独记**：`end_turn` 只说明「模型这一轮说完了」，它既可能是**这件活干完了**，
+也可能是**模型在等一个后台任务的通知**（几秒后同一个会话自己续跑）。两者在 assistant 消息 id 上
+完全无法区分（每次都换），在 promptId 的起头标记上可以区分——所以岛把「任务完成」这件事
+记在**最近一次 `humanInput` 那一轮的身份**上，而不是记在最后一条 assistant 上。
+
 ### 状态是怎么推出来的（关键设计）
 
 「等待用户」不是一个字段，而是一个**结构事实**：
