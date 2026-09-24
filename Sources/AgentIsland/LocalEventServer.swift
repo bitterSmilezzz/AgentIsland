@@ -31,6 +31,19 @@ public final class LocalEventServer: @unchecked Sendable {
 
     public func start(port: UInt16 = defaultPort) {
         guard listener == nil else { return }
+        // 令牌在「即将开始接受自报」这一刻生成，而不是等到第一个请求：接入命令
+        // （06 号票的设置页）要能立刻把值带出来。生成走引擎那一份 store——
+        // 两处各开一个文件句柄，就会有「一份看得到、一份看不到」的那天
+        if let engine = engine {
+            // nil 不是「令牌不匹配」而是「这台机器上拿不到可信通道」：不写一行日志，
+            // 现象就是所有接入方长期收到 noToken，而没有任何地方指向目录或磁盘
+            Task { @MainActor in
+                if engine.selfReportTokens.ensure() == nil {
+                    NSLog("[LocalEventServer] 可信自报令牌不可用（目录建不出来或写不进），"
+                          + "/session 只会返回 noToken")
+                }
+            }
+        }
 
         do {
             let parameters = NWParameters.tcp
@@ -170,7 +183,8 @@ public final class LocalEventServer: @unchecked Sendable {
         }
 
         let method = tokens[0].uppercased()
-        let path = tokens[1]
+        let fullPath = tokens[1]
+        let path = String(fullPath.prefix { $0 != "?" })
 
         // 跨域预检与健康检查
         if method == "OPTIONS" {
@@ -180,6 +194,13 @@ public final class LocalEventServer: @unchecked Sendable {
 
         if (path == "/health" || path == "/ping") && method == "GET" {
             sendResponse(connection: connection, statusCode: 200, body: #"{"status":"ok","service":"agentisland"}"#)
+            return
+        }
+
+        if path == "/session" {
+            handleSession(method: method, headerPart: headerPart, body: bodyPart,
+                          query: SelfReportQuery.parse(from: fullPath),
+                          connection: connection)
             return
         }
 
@@ -230,8 +251,140 @@ public final class LocalEventServer: @unchecked Sendable {
         sendResponse(connection: connection, statusCode: 200, body: responseString)
     }
 
+    // MARK: - 可信自报入口（02 号票 / spec 第 3 节）
+    //
+    // 这里**只做 HTTP 形状**：路由、取值、状态码。所有判定（令牌、pid 绑定、TTL、
+    // 未知档案、撤销成没成）都留在 ActivityEngine 与 SelfReportBinder 里——一旦在这里再判一次
+    // 「这条可信吗」，就有了第二个答案，而两边对不上的那天就是用户看到的谎。
+    // 令牌在这里只以一枚 `SelfReportCredential?` 的形式存在：那个类型的 init 是 internal，
+    // 本 target 构造不出「已授权」，也写不出 `tokenAccepted: true` 这种拼写。
+
+    private func handleSession(method: String, headerPart: String, body: String,
+                               query: SelfReportQuery, connection: NWConnection) {
+        guard method == "POST" || method == "DELETE" else {
+            send(connection: connection, status: 405, text: json(
+                CLISessionResultDTO(bound: false, reason: .badMethod,
+                                    message: "/session 只接受 POST（声明/续报）与 DELETE（撤销）")))
+            return
+        }
+        let providedToken = SelfReportHeaders.value(headerPart, name: SelfReportTokenStore.headerName)
+        let bodyData = Data(body.utf8)
+        // 注册表、令牌、绑定判定都在引擎那一侧（@MainActor），所以整条处理走一次跳转：
+        // 若把令牌校验留在本队列上先判，就得让服务端自己持有第二份令牌文件句柄
+        Task { @MainActor in
+            guard let engine = self.engine else {
+                // 引擎没就绪是**服务端**的状态，不该报成调用方的请求有问题（503 而不是 400）
+                self.send(connection: connection, status: 503, text: self.json(CLISessionResultDTO(
+                    bound: false, reason: .noEngine, message: "引擎尚未就绪，本条未被记录")))
+                return
+            }
+            let credential = engine.authorizeSelfReport(providedToken)
+            let ids = Set(engine.allProfiles.map { $0.id })
+            if method == "DELETE" {
+                // 没带凭证就**先不解析正文**：否则 400/`unknownAgent` 与 200/`noToken`
+                // 的差集就是「这台机器装了哪些 Agent」的免费清单（POST 那边同理，见下）
+                guard let credential else {
+                    self.send(connection: connection, status: 200, text: self.json(
+                        CLISessionRevokeDTO(revoked: false, reason: .noToken)))
+                    return
+                }
+                // 撤销不该被迫重发一遍 state
+                switch SelfReportPayload.identity(bodyData, knownAgentIDs: ids, queryAgent: query.agent) {
+                case .failure(let rejection):
+                    // 走到这里必然带凭证（上面那条 guard 已经把无凭据的 DELETE 答完了），
+                    // 所以载荷为什么被拒可以照实说
+                    self.send(connection: connection,
+                              status: SelfReportWire.status(for: rejection.reason, trusted: true),
+                              text: self.json(CLISessionRevokeDTO(
+                                revoked: false,
+                                reason: SelfReportWire.reason(for: rejection.reason, trusted: true))))
+                case .success(let id):
+                    switch engine.revokeSelfReport(agentID: id.agentID, sessionID: id.sessionID,
+                                                   credential: credential) {
+                    case .notFound:
+                        // 「没有这条记录」进枚举，人话另给：脚本 switch reason，读 message 的是人
+                        self.send(connection: connection, status: 200, text: self.json(
+                            CLISessionRevokeDTO(revoked: false, reason: .notFound,
+                                                message: "没有这条申报（可能从来没有，也可能已被容量/保质期收走）")))
+                    case .revoked:
+                        self.send(connection: connection, status: 200, text: self.json(
+                            CLISessionRevokeDTO(revoked: true)))
+                    }
+                }
+                return
+            }
+            let parsed = SelfReportPayload.parse(bodyData, knownAgentIDs: ids, queryAgent: query.agent)
+            guard let credential else {
+                // §3：无令牌不是「丢掉」，而是**落回**既有的无鉴权事件通道；
+                // 而响应的形状（reason / 状态码）不取决于载荷——这两条都由 SelfReportWire 说，
+                // 因为它是要被测试的那类口径，不是路由细节
+                var message = "没有有效令牌，本条未记录、也不改变状态来源。"
+                if case .accepted(let submission) = parsed {
+                    // 悄悄丢弃是最坏结果（接入方看到 200 会以为通了）；反过来，
+                    // 把「没投递」讲成「已投递」同样是谎 ⇒ 分叉的依据是 `post` 的返回值
+                    message = SelfReportWire.untrustedMessage(
+                        posted: SelfReportFallback.post(submission, to: engine),
+                        state: submission.state)
+                } else if case .rejected = parsed {
+                    message += "带上有效令牌才会回具体原因（无凭据的请求一律只报 noToken，"
+                        + "免得注册表被当字典查）。落回通道也因此没走。"
+                }
+                self.send(connection: connection, status: 200, text: self.json(
+                    CLISessionResultDTO(bound: false, reason: .noToken, message: message)))
+                return
+            }
+            guard case .accepted(let submission) = parsed else {
+                // 解析与档案判定**先于**可信度：指向不存在档案的申报，配什么令牌都不该收
+                //（§3「未知 agent id 直接 400，绝不自动建档」）
+                if case .rejected(let reason, let detail) = parsed {
+                    self.send(connection: connection,
+                              status: SelfReportWire.status(for: reason, trusted: true),
+                              text: self.json(CLISessionResultDTO(
+                                bound: false,
+                                reason: SelfReportWire.reason(for: reason, trusted: true),
+                                message: detail)))
+                }
+                return
+            }
+            // 凭证到这里必然存在（上面那条 `guard let credential else` 已经把没带的请求
+            // 连同落回通道一起答完了），而 `bindSelfReport` 要的就是非可选的它：
+            // 不存在「带错令牌却走进绑定」的那条路
+            switch engine.bindSelfReport(submission, credential: credential) {
+            case .bound:
+                // 拿**这条申报**的到期时刻，不是「该 Agent 最晚过期的那条」
+                let record = engine.selfReportRecord(agentID: submission.agentID,
+                                                     sessionID: submission.sessionID)
+                self.send(connection: connection, status: 200, text: self.json(CLISessionResultDTO(
+                    bound: true, expiresAt: record.map { $0.expiresAt.timeIntervalSince1970 })))
+            case .pidMismatch(let why):
+                self.send(connection: connection, status: 200, text: self.json(
+                    CLISessionResultDTO(bound: false, reason: .pidMismatch, message: why)))
+            case .profileGone(let why):
+                self.send(connection: connection, status: 400, text: self.json(
+                    CLISessionResultDTO(bound: false, reason: .profileGone, message: why)))
+            }
+        }
+    }
+
+    private func send(connection: NWConnection, status: Int, text: String) {
+        sendResponse(connection: connection, statusCode: status, body: text)
+    }
+
+    private func json<T: Encodable>(_ dto: T) -> String {
+        String(data: (try? JSONEncoder().encode(dto)) ?? Data(), encoding: .utf8) ?? "{}"
+    }
+
+
     private func sendResponse(connection: NWConnection, statusCode: Int, body: String) {
-        let statusText = statusCode == 200 ? "OK" : (statusCode == 404 ? "Not Found" : "Bad Request")
+        // 逐码给文案：405 报成 "Bad Request" 会让接入方以为是自己 body 写错了
+        let statusText: String
+        switch statusCode {
+        case 200: statusText = "OK"
+        case 404: statusText = "Not Found"
+        case 405: statusText = "Method Not Allowed"
+        case 503: statusText = "Service Unavailable"
+        default: statusText = "Bad Request"
+        }
         let bodyData = body.data(using: .utf8) ?? Data()
         let headers = [
             "HTTP/1.1 \(statusCode) \(statusText)",
@@ -251,3 +404,8 @@ public final class LocalEventServer: @unchecked Sendable {
         })
     }
 }
+
+// MARK: - `/session` 的 URL 参数与 header 取值
+//
+// 这两个纯函数住在 `AgentIslandCore.SelfReportQuery` / `SelfReportHeaders`：本 target 是
+// executable，测试 runner 链接不到它，留在原地就等于「票的 Done-when 那一面零守卫」。

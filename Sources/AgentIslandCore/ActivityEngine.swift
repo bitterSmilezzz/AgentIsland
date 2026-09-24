@@ -85,13 +85,17 @@ public final class ActivityEngine: ObservableObject {
          fileMonitor: FileActivityProviding = FileActivityMonitor(),
          tokenMonitor: any TokenUsagePolling & TokenUsageQuerying = TokenUsageMonitor(),
          installedApps: InstalledAppsCache,
-         enabledIDs: Set<String>? = nil) {
+         enabledIDs: Set<String>? = nil,
+         selfReportTokens: SelfReportTokenStore = SelfReportTokenStore(),
+         selfReportProbe: SelfReportProcessProbe = SelfReportProcessProbe()) {
         self.profiles = profiles
         self.config = config
         self.processMonitor = processMonitor
         self.fileMonitor = fileMonitor
         self.tokenMonitor = tokenMonitor
         self.installedApps = installedApps
+        self.selfReportTokens = selfReportTokens
+        self.selfReportProbe = selfReportProbe
         self.cleaner = AgentCleaner(processMonitor: processMonitor)
         // 启用集记录（组合根传持久化集；nil 则按当前 profiles 推导）——首刷完成后重放用
         self.lastEnabledIDs = enabledIDs ?? Set(profiles.map(\.id))
@@ -201,6 +205,20 @@ public final class ActivityEngine: ObservableObject {
     /// 会话探测的失败原因（agentId → 最近一次为什么没读到会话源）。
     /// 「读不到源」与「源里确实没活动」必须可区分，否则解析器坏了就等于永久显示待机。
     private var sessionProbeHealth: [String: SessionProbeHealth] = [:]
+
+    // MARK: - 可信自报（02 号票）
+
+    /// 自报登记表。**刻意不并进上面那 12 个推断计时器的清理入口**：那些描述的是
+    /// 「引擎自己看到的」，进程消失就该清零；而自报是**外部声明过什么**——终止一个 Agent
+    /// 不会让「它三分钟前说它在等确认」这条证据失效，spec 第 4 节要的正是拿它去和进程表
+    /// 对撞出 `conflict`。档案被删除/停用时才回收（见 `retainTracking`）。
+    public private(set) var selfReports = SelfReportStore()
+    /// 自报令牌。整个进程只由引擎持有这一份：读它的地方（`/session`、设置页的接入命令、
+    /// CLI）都从这里拿，避免出现「一份看得到、一份看不到」
+    public let selfReportTokens: SelfReportTokenStore
+    /// pid 绑定的探针。默认走 libproc（与 `ProcessTerminator` 同一个出口），
+    /// 测试注入字典——安全判定必须可在无进程的环境里被穷举。
+    private let selfReportProbe: SelfReportProcessProbe
 
     public func start() {
         guard !running else { return }
@@ -314,6 +332,13 @@ public final class ActivityEngine: ObservableObject {
     /// 移除自定义 profile
     public func removeCustomProfile(_ id: String) {
         profiles.removeAll { $0.id == id && $0.isCustom }
+        // 档案被**删除**才回收自报：这是唯一不可逆的那一步。刻意**不**挂在
+        // `retainTracking`（那条路径由 `setEnabled` 驱动，而设置页开关是可逆的，
+        // 应用扫描的自动重放也会走到）——实测第一版挂在它上面时，「把 claude 关掉再打开」
+        // 就永久删掉了 24 小时保质期内的自报证据，而那正是第 3 条口径要留下的东西。
+        // 内存上界本来由 `SelfReportStore` 的 capacity + evidenceRetention 完整给出，
+        // 这里删一行不会让它失控
+        selfReports.dropAgent(id)
         refreshWatchedDirs()
         sampleInBackground()
     }
@@ -418,10 +443,66 @@ public final class ActivityEngine: ObservableObject {
         tokenRateBaseline = tokenRateBaseline.filter { activeIDs.contains($0.key) }
         alertProtectedUntil = alertProtectedUntil.filter { activeIDs.contains($0.key) }
         sessionProbeHealth = sessionProbeHealth.filter { activeIDs.contains($0.key) }
+        // 自报**不在**这里清：这 13 个字典都是「每 Agent 的推断计时器」，档案不在视野里
+        // 就该清零；而自报是外部声明的证据，`setEnabled` 的可逆开关与安装扫描的自动重放
+        // 都会走到本函数，挂着它等于「关掉再打开就把昨天那条『它说它在等确认』抹掉」。
+        // 回收只在真正不可逆的那一步（`removeCustomProfile` → `dropAgent`）
     }
 
+    // MARK: - 可信自报的受理（02 号票）
+
+    /// 受理一条已归一化的申报。**这是唯一能让 `selfReports` 写入的入口**：
+    /// 03 号票要钉的「可信自报必须经过令牌校验」钉的就是这条路径，
+    /// 所以任何新调用方都不许绕过它自己去 `ingest`——那会造出第二个「什么算可信」的出口。
+    /// `credential` 的 init 是 internal，`AgentIsland` 那个 target 里构造不出来，
+    /// 所以「传个 true」这一类改动现在是编译错误而不是靠 grep 挡的拼写。
+    /// 返回的绑定结果直接就是 `/session` 的响应体，两侧不各写一份判定。
+    @discardableResult
+    public func bindSelfReport(_ submission: SelfReportSubmission, credential: SelfReportCredential,
+                               now: Date = Date()) -> SelfReportBinding {
+        let binding = SelfReportBinder.bind(
+            submission, credential: credential,
+            profile: profiles.first { $0.id == submission.agentID },
+            probe: selfReportProbe)
+        if case .bound = binding { selfReports.ingest(submission, now: now) }
+        return binding
+    }
+
+    /// 令牌校验的**唯一**出口。服务端拿到的是能力（`SelfReportCredential?`）而不是判定结果
+    /// （`Bool`）——拿到 Bool 的那一层下一步就会自己发明可信度
+    public func authorizeSelfReport(_ providedToken: String?) -> SelfReportCredential? {
+        selfReportTokens.authorize(providedToken)
+    }
+
+    /// 撤销（`DELETE /session`）。`credential` **非可选**：没带有效令牌就根本调不动这条
+    /// 路径，于是「无鉴权的撤销入口」不是一种会被写错的分支，而是一句编译错误。
+    /// 返回 `.notFound` 就是「没有这条记录」——不谎报「已撤销」
+    public func revokeSelfReport(agentID: String, sessionID: String,
+                                 credential: SelfReportCredential) -> SelfReportRevokeOutcome {
+        selfReports.revoke(agentID: agentID, sessionID: sessionID) ? .revoked : .notFound
+    }
+
+    /// 按会话精确取一条（响应体用它，才不会把另一条会话的到期时刻回给调用方）
+    public func selfReportRecord(agentID: String, sessionID: String,
+                                 now: Date = Date()) -> SelfReportRecord? {
+        selfReports.record(agentID: agentID, sessionID: sessionID, now: now)
+    }
+
+    /// 当前仍可信的那条自报。04 号票的 `provenance` 维度读这里；
+    /// 今天还没有任何 UI 消费它（见 CHANGELOG「本轮没做」）。
+    public func believableSelfReport(agentID: String, now: Date = Date()) -> SelfReportRecord? {
+        selfReports.believable(agentID: agentID, now: now)
+    }
+
+    /// TTL 到期的盖章。**不清空、不消失**：过期只是「不再采信」，不是「没说过」。
+    /// 放在采样里而不是另开定时器：到期与否只取决于墙钟，采样本来每拍就在读同一个 `now`。
+    @discardableResult
+    public func sweepSelfReports(now: Date) -> [SelfReportRecord] {
+        selfReports.sweepExpired(now: now)
+    }
+
+    // 全量替换：当前启用的 profile 目录集合（移除自定义 agent 后其目录停止扫描）
     private func refreshWatchedDirs() {
-        // 全量替换：当前启用的 profile 目录集合（移除自定义 agent 后其目录停止扫描）
         fileMonitor.replaceWatchedDirs(profiles.flatMap(\.sessionDirs))
         // M5：清理已移除 profile 的滞回状态，防止长期累积
         retainTracking(for: Set(profiles.map(\.id)))
@@ -520,6 +601,11 @@ public final class ActivityEngine: ObservableObject {
         var anyWork = false
         /// 本拍每 profile 的 CPU 与 PID，供告警链路复用
         var sampleInfo: [String: SampleInfo] = [:]
+
+        // 自报的 TTL 走墙钟，所以回拨防护与盖章都挂在本拍：`sweepSelfReports` 只在
+        // 真的跨过到期时刻那一拍返回东西，重复扫描不记账（见 SelfReportStore）
+        selfReports.reanchorIfClockRewound(now: now)
+        _ = sweepSelfReports(now: now)
 
         for profile in profiles {
             // 时钟回拨重锚（防御）：系统时钟被回拨（NTP 阶跃 / 手动调整 / 虚拟机恢复快照）

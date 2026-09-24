@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AgentIsland — 把 AI Agent 的状态与花费钉在屏幕边缘</title>
-<meta name="description" content="macOS 灵动岛应用：监控本机所有 AI 编码智能体的运行状态、等待确认、Token 消耗与花费。五态实时感知、一键直达现场、跨工具一本账，可选把通知送出本机。">
+<title>AgentIsland — 一眼看清 AI Agent 正在做什么</title>
+<meta name="description" content="macOS 灵动岛风格的 AI 编码 Agent 监控工具。查看运行状态、待确认请求与 Token 用量，需要时一键回到 Agent 窗口。">
 <meta property="og:type" content="website">
-<meta property="og:title" content="AgentIsland — 把 AI Agent 的状态与花费钉在屏幕边缘">
-<meta property="og:description" content="谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。macOS 灵动岛风格，零第三方依赖。">
+<meta property="og:title" content="AgentIsland — 一眼看清 AI Agent 正在做什么">
+<meta property="og:description" content="在屏幕边缘查看 Agent 状态、待确认请求与用量，需要时一键回到工作现场。">
 <meta property="og:image" content="https://bitterSmilezzz.github.io/AgentIsland/assets/screens/list-dark.webp">
 <meta property="og:url" content="https://bitterSmilezzz.github.io/AgentIsland/">
 <meta name="theme-color" content="#0c0d14">
@@ -42,9 +42,9 @@
       <span>AgentIsland</span>
     </a>
     <nav class="nav" aria-label="页面导航">
-      <a href="#states">五态</a>
-      <a href="#island">岛内界面</a>
-      <a href="#insight">正在做什么</a>
+      <a href="#states">状态</a>
+      <a href="#island">界面</a>
+      <a href="#insight">用量与提醒</a>
       <a href="#cli">命令行</a>
       <a href="#agents">支持工具</a>
       <a href="#privacy">隐私边界</a>
@@ -66,31 +66,31 @@
   <div class="hero-bg" aria-hidden="true"></div>
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow"><span class="eyebrow-dot"></span>macOS · 灵动岛风格 · 零第三方依赖</p>
-      <h1>把 AI Agent 的<br>状态与花费<br><span class="hl">钉在屏幕边缘</span></h1>
-      <p class="lede">一台 Mac 上同时开着五六个智能体：谁在跑、谁在等你回去确认、这一轮烧掉多少 Token——不用切窗口，抬头看一眼岛就够了。</p>
+      <p class="eyebrow"><span class="eyebrow-dot"></span>macOS · 灵动岛风格 · 本机只读监控</p>
+      <h1>多个 AI Agent<br>同时工作，<br><span class="hl">状态一眼看清</span></h1>
+      <p class="lede">同时使用 Claude Code、Codex、Cursor 等工具时，在屏幕边缘查看谁在工作、谁需要你确认，以及用量变化；需要处理时，直接回到对应窗口。</p>
       <div class="cta-row">
-        <a class="btn btn-solid btn-lg" href="https://github.com/bitterSmilezzz/AgentIsland/releases">下载 Release</a>
-        <a class="btn btn-line btn-lg" href="#install">自己构建</a>
+        <a class="btn btn-solid btn-lg" href="https://github.com/bitterSmilezzz/AgentIsland/releases">下载 macOS 版</a>
+        <a class="btn btn-line btn-lg" href="#install">安装与上手</a>
       </div>
       <dl class="hero-stats">
-        <div><dt>内置 Agent 档案</dt><dd>25 个</dd></div>
-        <div><dt>状态口径</dt><dd>5 态</dd></div>
-        <div><dt>贴边收起 CPU</dt><dd>0.0–0.1%</dd></div>
+        <div><dt>内置工具档案</dt><dd>25 个</dd></div>
+        <div><dt>运行状态</dt><dd>5 种</dd></div>
         <div><dt>会话数据</dt><dd>只读</dd></div>
+        <div><dt>远程通知</dt><dd>默认关闭</dd></div>
       </dl>
     </div>
 
     <figure class="device reveal">
       <div class="device-screen" id="island-demo" tabindex="0" role="button"
-           aria-label="演示：光标碰到屏幕边缘的细条，灵动岛向下展开">
+           aria-label="演示：光标移到屏幕边缘的细条，灵动岛展开">
         <div class="desk desk-a" aria-hidden="true"></div>
         <div class="desk desk-b" aria-hidden="true"></div>
         <div class="screen-edge" aria-hidden="true"><span class="sliver"><i></i></span></div>
         <img class="shot shot-dark" src="assets/screens/list-dark.webp" width="660" height="876" alt="灵动岛展开态：顶部显示「2 个 Agent 正在工作」，下方列出 DimAgent、Qoder、WorkBuddy、WorkBuddy AI、Antigravity、ChatGPT，每行带 24 小时用量与状态徽标">
         <img class="shot shot-light" loading="lazy" src="assets/screens/list-light.webp" width="660" height="876" alt="浅色外观下的灵动岛展开态，同样的 Agent 列表与状态徽标">
       </div>
-      <figcaption>收起时只是屏幕边缘一条 6pt 细线，光标碰触即弹出。</figcaption>
+      <figcaption>平时收在屏幕边缘，移到细线即可展开查看 Agent 列表。</figcaption>
     </figure>
   </div>
 </section>
@@ -98,37 +98,37 @@
 <section class="section" id="states">
   <div class="wrap">
     <div class="section-head reveal">
-      <h2>五种状态，五种颜色，五种语义</h2>
-      <p>不是「进程在不在」的二值判断。<code>working</code> 要求进程在、且 60 秒内有文件写入或 CPU 越过阈值；只打开应用不动它、桌面抖动、浏览器缓存写入都不算任务完成。</p>
+      <h2>一眼分清 Agent 正在做什么</h2>
+      <p>AgentIsland 综合进程、文件活动和会话事件判断状态。单纯打开应用不会被当成正在工作；缺少完成证据时，也不会直接报为已完成。</p>
     </div>
     <ul class="states">
-      <li class="state reveal"><i class="orb orb-working"></i><b>working 运行中</b><span>进程在，且有写入证据或持续算力消耗；旋转微弧跟着呼吸。</span></li>
-      <li class="state reveal"><i class="orb orb-attention"></i><b>attention 等待确认</b><span>识别结构化确认、权限申请与用户输入请求；多个 Agent 同时在等也不会漏报。</span></li>
-      <li class="state reveal"><i class="orb orb-completed"></i><b>completed 已完成</b><span>只在有写入证据时宣布完成，并给出这一轮的耗时与用量。</span></li>
-      <li class="state reveal"><i class="orb orb-idle"></i><b>idle 待机</b><span>进程在，但既不写入也不消耗算力——真的闲着。</span></li>
-      <li class="state reveal"><i class="orb orb-offline"></i><b>offline 离线</b><span>进程已退出。即使昨天有活动记录也不冒充「现在的状态」。</span></li>
+      <li class="state reveal"><i class="orb orb-working"></i><b>运行中</b><span>发现近期任务活动或持续算力使用。</span></li>
+      <li class="state reveal"><i class="orb orb-attention"></i><b>等待确认</b><span>Agent 请求你确认操作、授权或补充输入。</span></li>
+      <li class="state reveal"><i class="orb orb-completed"></i><b>已完成</b><span>检测到本轮完成迹象，并显示耗时与可读取的用量。</span></li>
+      <li class="state reveal"><i class="orb orb-idle"></i><b>待机</b><span>进程仍在，但暂时没有检测到任务活动。</span></li>
+      <li class="state reveal"><i class="orb orb-offline"></i><b>离线</b><span>Agent 进程已退出。</span></li>
     </ul>
-    <p class="note reveal">异常高负载会在五态之上再叠一层橙/红告警：Token 暴涨、长耗时死循环、孤儿后台、内存激增。</p>
+    <p class="note reveal">Token 用量突增、长时间高负载、异常后台进程或内存激增时，还会显示额外告警。</p>
   </div>
 </section>
 
 <section class="section" id="island">
   <div class="wrap split">
     <div class="split-copy reveal">
-      <h2>它是一条岛，不又一个窗口</h2>
-      <p>顶栏按住可自由拖拽，松手按最近距离吸附到上、右、下、左任一边，并持久化该边锚点。收起态与屏幕物理边框之间用三次 Bézier 反向倒角平滑过渡，而不是悬空一块矩形。</p>
+      <h2>在屏幕边缘查看，需要时直达现场</h2>
+      <p>展开卡片可查看 Agent 列表与详情，也能跳回对应的图形界面或终端。卡片可拖到屏幕四边，多屏和全屏空间也会跟随使用中的屏幕。</p>
       <ul class="ticks">
-        <li>环形微仪表盘：5 态水位环 + 工作态旋转微弧，顶部并列活跃 Agent 迷你环，点击秒切</li>
-        <li>悬停透视卡：实时命令、正在修改的文件、PID、24h / 累计 Token 与花费，带几何指向小尾巴</li>
-        <li>卡内三级导航：主列表 → Agent 详情 → 模型会话列表</li>
-        <li>键盘流：<kbd>1</kbd>–<kbd>3</kbd> 切视图、<kbd>j</kbd>/<kbd>k</kbd> 移动焦点、<kbd>Enter</kbd> 下钻、<kbd>/</kbd> 搜索、<kbd>Esc</kbd> 逐级返回、<kbd>?</kbd> 速查</li>
-        <li>全屏 Space 跟随、多屏跟随鼠标所在屏、外接屏拔出平滑重定位</li>
+        <li>状态环与活跃 Agent 指示，点击即可切换查看</li>
+        <li>悬停查看当前命令、活动文件、进程与用量</li>
+        <li>从 Agent 详情继续查看各模型会话和费用</li>
+        <li>快捷键支持搜索、切换视图与返回；按 <kbd>?</kbd> 查看完整列表</li>
+        <li>可吸附到屏幕四边，并适配多屏与全屏空间</li>
       </ul>
     </div>
     <figure class="shot-card reveal">
       <img class="shot shot-dark" loading="lazy" src="assets/screens/attention-dark.webp" width="660" height="920" alt="深色外观：顶部琥珀色横幅提示「需要确认：是否允许执行 swift test」，带「直达」按钮，下方 Agent 列表显示 24 小时与累计 Token">
       <img class="shot shot-light" loading="lazy" src="assets/screens/attention-light.webp" width="660" height="920" alt="浅色外观：同一条等待确认横幅与 Agent 列表">
-      <figcaption>等待确认时，横幅 30 秒内不会被别的 Agent 的完成事件顶掉。</figcaption>
+      <figcaption>待确认提醒会优先保留，方便你看清请求并返回处理。</figcaption>
     </figure>
   </div>
 </section>
@@ -136,8 +136,8 @@
 <section class="section alt" id="insight">
   <div class="wrap">
     <div class="section-head reveal">
-      <h2>正在做什么，花了多少，查得准不准</h2>
-      <p>三块面板把「我离开这一会儿发生了什么」讲清楚：动作上下文、成本账、以及监控自身的可信度。</p>
+      <h2>任务进展、用量和提醒，都有清楚去处</h2>
+      <p>查看 Agent 最近在做什么、用量如何，以及当前监控数据是否完整。</p>
     </div>
     <div class="cards">
       <article class="card reveal">
@@ -146,9 +146,9 @@
           <img class="shot shot-light" src="assets/screens/analytics-light.webp" width="660" height="1662" loading="lazy" alt="浅色外观下的 Token 用量面板">
         </div>
         <div class="card-body">
-          <h3>跨工具一本账</h3>
-          <p>24h 与累计 Token、按模型拆分、花费，以及月末消耗与预算枯竭预测。预算与 24h 用量同为滚动 24 小时口径，趋势图的每根柱子对应一个日历天。</p>
-          <p class="fine">异常大的数值会被饱和到上限并说明，不会把报表算成 <code>inf</code>。</p>
+          <h3>查看 Token 与费用</h3>
+          <p>按工具和模型查看用量、费用、近期趋势与预算进度，也可查看月末用量预测。</p>
+          <p class="fine">各工具可读取的数据不同；没有明细时会明确标出，不用估算值填补。</p>
         </div>
       </article>
 
@@ -158,9 +158,9 @@
           <img class="shot shot-light" src="assets/screens/workbench-light.webp" width="660" height="756" loading="lazy" alt="浅色外观下的维护工作台：所有智能体运行健康">
         </div>
         <div class="card-body">
-          <h3>「真闲着」还是「没看到」</h3>
-          <p>岛内与 <code>doctor</code> 共用同一份实现，把「会话源读不到 / 本地无明细 / 未接入明细源」分成三种不同结论——不会出现终端说不可信、岛上说正常。</p>
-          <p class="fine">孤儿判定要证据：<code>ppid == 1</code> 分不清遗孤与 launchd 托管的常驻服务，宁漏不错杀。</p>
+          <h3>知道监控数据是否完整</h3>
+          <p>工作台会说明会话来源是否可读、是否找到本地用量明细，以及哪些工具尚未接入明细。</p>
+          <p class="fine">也可运行 <code>agentisland doctor</code> 查看判断依据。</p>
         </div>
       </article>
 
@@ -170,9 +170,9 @@
           <img class="shot shot-light" src="assets/screens/settings-light.webp" width="1240" height="1120" loading="lazy" alt="浅色外观下的远程通知设置页">
         </div>
         <div class="card-body">
-          <h3>人不在 Mac 前也能收到</h3>
-          <p>远程桌面连着 Mac 时，通知只画在 Mac 屏幕上——传的是像素不是事件。三个通道把提醒送出本机：ntfy 订阅、自定义 HTTP 模板（Server酱 / 企微 / 钉钉 / 飞书）、邮箱 SMTP。</p>
-          <p class="fine">默认只送「哪个 Agent + 什么状态」；命令内容、文件路径、消息原文必须显式勾选才会送出。</p>
+          <h3>按需接收远程提醒</h3>
+          <p>可通过 ntfy、自定义 HTTP 模板或邮箱，把完成、待确认和异常提醒发到其他设备。</p>
+          <p class="fine">远程通知默认关闭。命令、文件路径等活动详情只有在你明确启用后才会发送。</p>
         </div>
       </article>
     </div>
@@ -182,13 +182,12 @@
 <section class="section" id="cli">
   <div class="wrap split">
     <div class="split-copy reveal">
-      <h2>岛能做的，终端也能做</h2>
-      <p><code>agentisland</code> 随包附带（也装在 <code>.app</code> 的 <code>Contents/Helpers/</code>）。CI、脚本、SSH 里都能取到同一份状态：类 htop 的全屏看板、一次性自查、Markdown / CSV / JSON 运维报告、导出 Raycast 命令清单。</p>
+      <h2>需要脚本或终端时，也能查看与管理</h2>
+      <p><code>agentisland</code> 命令行工具随应用提供，可在终端或脚本中查看状态、排查监控、汇总用量和生成报告。</p>
       <ul class="ticks">
-        <li><b>「没取到」不印成 <code>0</code></b>：用量列是 <code>—</code>，JSON 里是 <code>null</code>；查了确实是零才写 <code>0</code></li>
-        <li><b>死锁判定是三态</b>：卡死 / 不卡死 / 本轮判不出。一次性入口一律「本次未评估」，要结论得用持续观测的入口</li>
-        <li><b>深链</b>：<code>agentisland://expand</code>、<code>agent?id=</code>、<code>analytics</code>、<code>toolbox</code>、<code>notify</code></li>
-        <li><b>本地 Webhook</b>：<code>127.0.0.1:41999</code> 的 <code>POST /notify</code>，只监听回环</li>
+        <li>未读取到的用量会显示为「—」，不会混同为零</li>
+        <li>一次性检查不会伪称已评估长时间运行或卡死状态</li>
+        <li>支持从终端控制灵动岛，也提供本机 Webhook 供脚本投递事件</li>
       </ul>
     </div>
     <div class="split-copy cli-table reveal">
@@ -196,15 +195,15 @@
       <table class="cmd">
         <caption class="sr-only">agentisland 子命令清单</caption>
         <tbody>
-          <tr><th><code>status</code></th><td>所有 Agent 的运行态快照，<code>-w</code> 动态监控、<code>--json</code> 供脚本调用</td></tr>
+          <tr><th><code>status</code></th><td>查看 Agent 状态；<code>-w</code> 持续监控，<code>--json</code> 供脚本使用</td></tr>
           <tr><th><code>top</code></th><td>类 htop 的全屏看板，<code>q</code> 退出、<code>r</code> 刷新、<code>c</code> 一键清理</td></tr>
-          <tr><th><code>tokens</code></th><td>24h 用量明细、成本与月末预测；<code>--budget</code> 打印终端进度条</td></tr>
-          <tr><th><code>doctor</code></th><td>一次性自查：是真闲着还是没看到它，结论带依据</td></tr>
-          <tr><th><code>check</code> / <code>clean</code></th><td>排查孤儿与内存异常 / 一键释放，<code>-n</code> 只预览不终止</td></tr>
-          <tr><th><code>open</code></th><td>从终端控制岛展开、折叠、直达指定 Agent 或看板</td></tr>
-          <tr><th><code>notify</code></th><td>主动投递完成 / 待确认 / 告警事件（岛内标为「外部投递」）</td></tr>
+          <tr><th><code>tokens</code></th><td>查看近期用量、费用和预算进度</td></tr>
+          <tr><th><code>doctor</code></th><td>检查 Agent 监控数据并查看判断依据</td></tr>
+          <tr><th><code>check</code> / <code>clean</code></th><td>检查异常进程；清理前可用 <code>-n</code> 预览</td></tr>
+          <tr><th><code>open</code></th><td>展开灵动岛，或打开指定 Agent 与看板</td></tr>
+          <tr><th><code>notify</code></th><td>向灵动岛投递完成、待确认或告警事件</td></tr>
           <tr><th><code>report</code></th><td>生成 Markdown / CSV / JSON 运维报告</td></tr>
-          <tr><th><code>selftest</code></th><td>用假数据断言核心判定逻辑，验证构建本身</td></tr>
+          <tr><th><code>selftest</code></th><td>运行内置检查，验证核心判定逻辑</td></tr>
         </tbody>
       </table>
     </div>
@@ -229,8 +228,8 @@
 <section class="section alt" id="agents">
   <div class="wrap">
     <div class="section-head reveal">
-      <h2>25 个内置档案，还能自己加</h2>
-      <p>启动时扫描 <code>/Applications</code> 与 PATH 自动补充 CLI；会话方言与库路径由注册表唯一声明，新增复用既有格式的 Agent 只改一处。设置里可按「进程名 + 会话目录」添加自定义 Agent。</p>
+      <h2>覆盖常用 Agent，也支持自定义工具</h2>
+      <p>内置 25 个工具档案，并会发现已安装的应用和命令行工具。你也可以在设置中按进程名和会话目录添加自定义 Agent。</p>
     </div>
     <ul class="chips reveal">
       <li>DimAgent</li><li>Claude Code</li><li>Qoder</li><li>Codex</li><li>Cursor</li><li>Trae</li>
@@ -239,34 +238,34 @@
       <li>DeepSeek Harness</li><li>Ego Browser</li><li>Vibe Usage</li><li>OpenViking</li><li>Windsurf</li>
       <li>Aider</li><li>Cline</li><li>Roo Code</li><li>Goose</li>
     </ul>
-    <p class="note reveal">只读：仅尾读本轮命中的会话文件并解析结构化字段，不展示确认问题与回答正文，不修改 Agent 数据，也不需要辅助功能 / 完全磁盘访问权限。</p>
+    <p class="note reveal">运行状态和 Token 明细的覆盖范围不同，具体取决于工具提供的本地数据。AgentIsland 只读解析所需字段，不展示对话正文或修改会话数据，也不需要辅助功能或完全磁盘访问权限。</p>
   </div>
 </section>
 
 <section class="section" id="privacy">
   <div class="wrap">
     <div class="section-head reveal">
-      <h2>隐私边界，以及现在还成立的限制</h2>
-      <p>一个盯着你所有会话的工具，必须把「什么会离开这台机器」说清楚——包括它做不到的部分。</p>
+      <h2>数据留在本机，是否外发由你决定</h2>
+      <p>AgentIsland 在本机只读查看进程和会话数据。远程通知默认关闭；开启后也可预览实际发送内容。</p>
     </div>
     <div class="grid-2">
       <div class="panel reveal">
-        <h3>留在本机的</h3>
+        <h3>本机数据与通知</h3>
         <ul class="ticks">
-          <li>凭据只进 macOS 钥匙串，由你自己录入；界面与日志只显示掩码，UserDefaults 里零密钥</li>
-          <li>命令内容、文件路径、消息原文默认不外送，必须显式勾选「附带最后一条动作」</li>
-          <li>「发送预览」显示实际会离开本机的原文</li>
-          <li>深链与 <code>/notify</code> 产生的事件一律不外送——那是本机任意进程都能写的入口</li>
-          <li>截图、构建产物、本地草稿一律不入库；提交前过一道棘轮式脱敏门禁</li>
+          <li>会话文件以只读方式解析，不显示确认问题或回答正文</li>
+          <li>远程通知默认关闭；凭据保存在 macOS 钥匙串</li>
+          <li>命令和文件路径默认不外发，需在设置中主动选择附带活动详情</li>
+          <li>发送预览可检查将要离开本机的内容</li>
+          <li>由深链或本地 Webhook 触发的事件不会转发到远程通知</li>
         </ul>
       </div>
       <div class="panel reveal">
-        <h3>它确实做不到</h3>
+        <h3>已知限制</h3>
         <ul class="crosses">
-          <li><b>Qoder 的 Token 消耗监控不了</b>：会话库里四个 token 字段恒为 0，真值只有 <code>credits</code>。宁可显示 <code>—</code>，也不拿 credits 折算成一个看起来像真的数字</li>
-          <li><b>邮箱只支持 465（隐式 TLS）</b>：<code>Network.framework</code> 没有「在已建立的 TCP 上原地升级 TLS」的能力，25/587 会在配置层被拦住并说明原因</li>
-          <li><b>本地 Webhook 无鉴权</b>：只靠「仅监听回环」限制来源，岛内会把这类事件标为「外部投递」</li>
-          <li><b>未公证（ad-hoc 签名）</b>：首次打开需右键 → 打开</li>
+          <li><b>Qoder 暂无 Token 明细</b>：不会把 credits 换算成估算用量</li>
+          <li><b>邮箱通知仅支持端口 465</b></li>
+          <li><b>本地 Webhook 没有鉴权</b>，仅监听本机回环地址</li>
+          <li><b>应用未公证</b>：首次打开时需在 Finder 中右键选择「打开」</li>
         </ul>
       </div>
     </div>
@@ -276,33 +275,25 @@
 <section class="section" id="install">
   <div class="wrap split">
     <div class="split-copy reveal">
-      <h2>安装</h2>
-      <p>从 Releases 下载最新的 <code>AgentIsland-*.zip</code>，解压后拖入「应用程序」或直接运行。</p>
-      <pre class="code"><code>unzip AgentIsland-0.0.129.zip
-mv AgentIsland.app /Applications
-open AgentIsland.app        # 首次需右键 → 打开</code></pre>
+      <h2>下载并开始使用</h2>
+      <p>从 Releases 下载最新压缩包，解压后将 AgentIsland.app 拖到「应用程序」。首次打开时，在 Finder 中右键应用并选择「打开」。</p>
+      <a class="btn btn-solid" href="https://github.com/bitterSmilezzz/AgentIsland/releases">前往下载</a>
       <h3 class="sub">从源码构建</h3>
-      <p>无需 Xcode，SwiftPM + CommandLineTools 构建，手工组装 <code>.app</code>；测试是自己写的 runner，零依赖。</p>
-      <pre class="code"><code>export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
-
-swift build &amp;&amp; swift build --build-tests
-.build/debug/AgentIslandTestsRunner      # 自建测试套件
-./scripts/build-app.sh                   # 打包：测试门禁 + 图标 + ad-hoc 签名
-open dist/AgentIsland.app</code></pre>
+      <p>项目使用 SwiftPM 构建，无需 Xcode。构建命令、环境要求和开发说明见 README。</p>
+      <a class="btn btn-line" href="https://github.com/bitterSmilezzz/AgentIsland/blob/main/README.md">查看构建说明</a>
     </div>
     <div class="split-copy reveal">
-      <h3 class="sub">跑起来之后</h3>
+      <h3 class="sub">首次打开后</h3>
       <ul class="ticks">
-        <li>光标碰到屏幕边缘那条 6pt 细线，岛就弹出来</li>
-        <li>按 <kbd>?</kbd> 看快捷键，按 <kbd>1</kbd>–<kbd>3</kbd> 在主列表 / 详情 / 用量之间切</li>
-        <li>设置里五个分栏：通用与外观、Agent 监控、远程通知、引擎与性能、关于</li>
-        <li>启停开关、熔断阈值、采样间隔、收起延迟、贴边位置与外观都实时生效，不需重启</li>
+        <li>将光标移到屏幕边缘的细线，展开 AgentIsland</li>
+        <li>按 <kbd>?</kbd> 查看快捷键，按 <kbd>1</kbd>–<kbd>3</kbd> 切换视图</li>
+        <li>在设置中管理 Agent、外观、提醒和采样方式</li>
+        <li>远程通知可在设置中按需开启，首次使用前录入对应服务信息</li>
       </ul>
       <div class="link-row">
         <a class="btn btn-line" href="https://github.com/bitterSmilezzz/AgentIsland/releases">Releases</a>
         <a class="btn btn-line" href="https://github.com/bitterSmilezzz/AgentIsland/blob/main/README.md">README</a>
-        <a class="btn btn-line" href="https://github.com/bitterSmilezzz/AgentIsland/blob/main/CHANGELOG.md">CHANGELOG</a>
-        <a class="btn btn-line" href="https://github.com/bitterSmilezzz/AgentIsland/tree/main/docs/adr">设计决策 ADR</a>
+        <a class="btn btn-line" href="https://github.com/bitterSmilezzz/AgentIsland">查看源码</a>
       </div>
     </div>
   </div>

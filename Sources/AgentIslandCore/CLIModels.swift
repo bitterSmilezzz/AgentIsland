@@ -123,6 +123,65 @@ public struct CLINotifyResultDTO: Codable, Sendable {
     }
 }
 
+/// `/session` 的响应（spec 第 3 节的契约形状）。
+/// 三态不能压成一个 Bool：「没令牌」「pid 对不上」「没收到」是三种完全不同的下一步。
+/// `message` 只在被拒时带**为什么**——`reason` 是给脚本读的枚举，人读的是这句话；
+/// 缺一个就会出现「得回查代码才知道错在哪」。`expiresAt` 让接入方不必同步自己的时钟
+/// 就知道还剩多久（服务端已经把 ttl 钳进 [15,600]，回给它实际生效的那个值）。
+/// `/session` 响应里 `reason` 那一格的**全部**合法取值。它是要给脚本 `switch` 的枚举，
+/// 所以这里一律不填人话（人话在 `message`）——上一轮同一格混装过 `"noToken"` 与「没有这条记录」，
+/// 于是 `reason == "noToken"` 之外还得写字符串相等。
+/// 超出 spec §3 那三个值的部分都写在注释里，03 号票的契约测试按这张表写。
+public enum SelfReportReason: String, Codable, Sendable, CaseIterable {
+    /// 正文不是 JSON 对象，或缺 agent/session，或 pid 给了却读不出
+    case malformed
+    /// 注册表里没有这个档案（绝不自动建档）。只在**带令牌**时才回，否则与 `malformed`
+    /// 收敛成同一个 `noToken`，免得 `/session` 成为「这台机器装了哪些 Agent」的免费枚举口
+    case unknownAgent
+    /// state/hook_event_name 不在该档案已知的取值里
+    case unknownState
+    case pidMismatch
+    /// 没有令牌或令牌不对：不采信，申报落回 `externallyDelivered` 那条无鉴权通道
+    case noToken
+    /// 档案已经不在了（与 pid 无关，所以不复用 `pidMismatch`）
+    case profileGone
+    /// DELETE 指向的 (agent, session) 没有记录
+    case notFound
+    /// `/session` 只认 POST 与 DELETE
+    case badMethod
+    /// 引擎没就绪：这是**服务端**的状态，不该报成调用方的请求有问题（HTTP 503）
+    case noEngine
+}
+
+public struct CLISessionResultDTO: Codable, Sendable {
+    public let bound: Bool
+    public let reason: SelfReportReason?
+    public let message: String?
+    public let expiresAt: TimeInterval?
+
+    public init(bound: Bool, reason: SelfReportReason? = nil, message: String? = nil,
+                expiresAt: TimeInterval? = nil) {
+        self.bound = bound
+        self.reason = reason
+        self.message = message
+        self.expiresAt = expiresAt
+    }
+}
+
+/// `DELETE /session` 的响应。撤销与声明是两件事：它不写入状态，只把之前声明的收回去。
+/// 与 bind 共用一个 DTO 会让 `bound:false` 同时表示「没绑上」和「已撤销」。
+public struct CLISessionRevokeDTO: Codable, Sendable {
+    public let revoked: Bool
+    public let reason: SelfReportReason?
+    public let message: String?
+
+    public init(revoked: Bool, reason: SelfReportReason? = nil, message: String? = nil) {
+        self.revoked = revoked
+        self.reason = reason
+        self.message = message
+    }
+}
+
 public struct CLIAgentTokenDTO: Codable, Sendable {
     public let tokens24h: Int
     public let cost24h: Double

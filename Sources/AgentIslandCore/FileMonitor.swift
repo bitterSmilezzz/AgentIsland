@@ -521,6 +521,12 @@ public final class FileActivityMonitor: FileActivityProviding {
         if lower.hasSuffix(".db-shm") {
             return true
         }
+        // Antigravity 的 conversations 目录下会周期性触碰 SQLite WAL，应用空闲时也会
+        // 更新这些会话库；brain/transcript 才是任务执行态的语义来源。只在该目录过滤，
+        // 其他 Agent 的 WAL 仍作为有效写入信号。
+        if lower.hasSuffix(".db-wal"), Self.isAntigravityConversationWAL(url) {
+            return true
+        }
         // 5. 浏览器内核（Chromium/Electron）用户数据根目录里的状态文件：
         // 空闲时也会被后台刷新（账号、偏好、缓存索引、崩溃与指标残留），
         // 与 Agent 任务无关。实测 Antigravity 仅被打开，20 分钟内有 36 次写入
@@ -529,6 +535,19 @@ public final class FileActivityMonitor: FileActivityProviding {
             return true
         }
         return Self.chromiumNoiseFilePrefixes.contains { lower.hasPrefix($0) }
+    }
+
+    private static func isAntigravityConversationWAL(_ url: URL) -> Bool {
+        let components = url.standardizedFileURL.pathComponents.map { $0.lowercased() }
+        guard components.count >= 3 else { return false }
+        for index in 0...(components.count - 3) {
+            if components[index] == ".gemini",
+               components[index + 1] == "antigravity",
+               components[index + 2] == "conversations" {
+                return true
+            }
+        }
+        return false
     }
 
     /// Chromium/Electron 用户数据根目录内的状态文件名（小写精确匹配）。

@@ -420,6 +420,38 @@ enum FileIOTests {
                 try expectTrue(!FileActivityMonitor.isHeartbeatOrNoiseFile(url),
                                 "\(name) 是任务产物，不得判为噪声")
             }
+
+            let antigravityWAL = URL(fileURLWithPath:
+                "/Users/test/.gemini/antigravity/conversations/session.db-wal")
+            try expectTrue(FileActivityMonitor.isHeartbeatOrNoiseFile(antigravityWAL),
+                           "Antigravity conversations 的 WAL 空闲触碰必须过滤")
+            let otherAgentWAL = URL(fileURLWithPath: "/Users/test/.qoder/projects/session.db-wal")
+            try expectTrue(!FileActivityMonitor.isHeartbeatOrNoiseFile(otherAgentWAL),
+                           "其他 Agent 的 WAL 仍是有效活动信号")
+        }
+
+        TestKit.test("文件监控: Antigravity conversations 的 WAL 空闲触碰不得顶起 newest") {
+            let fm = FileManager.default
+            let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? fm.removeItem(at: base) }
+            let conversations = base
+                .appendingPathComponent(".gemini")
+                .appendingPathComponent("antigravity")
+                .appendingPathComponent("conversations")
+            try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
+            let old = Date().addingTimeInterval(-7200)
+            let transcript = conversations.appendingPathComponent("transcript.jsonl")
+            let wal = conversations.appendingPathComponent("session.db-wal")
+            try Data("{}".utf8).write(to: transcript)
+            try Data("{}".utf8).write(to: wal)
+            try fm.setAttributes([.modificationDate: old], ofItemAtPath: transcript.path)
+            try fm.setAttributes([.modificationDate: Date()], ofItemAtPath: wal.path)
+
+            let result = FileActivityMonitor.scanTree(
+                in: conversations.path, maxDepth: 4, window: 60, now: Date())
+            try expectTrue(result.newest != nil, "旧 transcript 应保留为最近的真实任务产物")
+            try expectTrue(Date().timeIntervalSince(result.newest!) > 3600,
+                           "空闲 WAL 的新 mtime 不得覆盖 transcript 的旧 mtime")
         }
 
         TestKit.test("文件监控: -shm 触碰与浏览器缓存子树不得顶起 newest（R37）") {

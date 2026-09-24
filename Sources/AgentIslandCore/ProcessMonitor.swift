@@ -307,7 +307,11 @@ public struct ProcessMatcher: @unchecked Sendable {
     /// dimagentmalware 之类不会误命中（要求词边界：空格/连字符/精确相等）
     /// - Parameter basename: 必须已是小写。Entry 构造时统一 lowercased()（见 snapshot），
     ///   本函数位于「entries × profiles」每拍 ~8.7k 次调用的热路径，不再逐次分配小写副本
-    static func matchesProcessNames(_ names: Set<String>, basename: String) -> Bool {
+    ///
+    /// 公开的原因：可信自报的 pid 绑定问的是同一个问题（「这个进程是不是它声称的那个
+    /// Agent」）。那里再写一份 `hasPrefix` 就会有两套答案，而且朴素前缀会把 `claude`
+    /// 认成 `claudex`——词边界这条规则正是为了不这么干才存在的。
+    public static func matchesProcessNames(_ names: Set<String>, basename: String) -> Bool {
         guard !basename.isEmpty else { return false }
         let b = basename
         return names.contains { name in
@@ -634,6 +638,15 @@ public enum ProcessTerminator {
         return buffer.withUnsafeBytes { raw in
             String(decoding: raw[..<Int(len)], as: UTF8.self)
         }
+    }
+
+    /// 进程可执行文件名的小写 basename；取不到（已退出 / 无权限）返回 nil。
+    /// 公开它是因为「可信自报的 pid 必须真的是它声称的那个 Agent」也要按档案匹配 pid，
+    /// 而那必须与 `ProcessMatcher` 同一个口径、同一个 libproc 出口——
+    /// 再抄一份 `proc_pidpath` 就会有两套「这个进程是谁」的答案。
+    public static func executableName(of pid: Int32) -> String? {
+        guard let path = currentExecutablePath(of: pid) else { return nil }
+        return (path as NSString).lastPathComponent.lowercased()
     }
 
     /// 获取进程及其所有子进程 PID 列表。
