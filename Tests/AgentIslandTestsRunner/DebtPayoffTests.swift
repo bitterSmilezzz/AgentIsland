@@ -287,6 +287,45 @@ enum DebtPayoffTests {
                             "--force 又变成「连孤儿一起杀」了")
         }
 
+        // MARK: 研究文档的待核实清单：编号成对、状态可判定
+
+        TestKit.test("结构: 研究文档的「待核实」必须编号且可判定") {
+            // v0.0.126 的 review 指出：未完成项以散文散在正文里，没编号、没状态、没复核方式，
+            // 于是「这条到底核完没有」要通读全文才能判断——重复劳动已经发生过一次
+            // （v0.0.125 把有公开正文的四家误判成「排除」）。这条断言把约定钉住：
+            // 正文引用的编号 ↔ 清单里的编号一一对应，状态只许三种，
+            // 且不许再用笼统的「未证实」把三种不同的「还不知道」混成一个词。
+            let text = try SourceTree.text(relativePath: "docs/research/agent-lifecycle-hooks.md")
+            let parts = text.components(separatedBy: "## 待核实清单")
+            try expectEqual(parts.count, 2, "「## 待核实清单」必须恰好出现一次")
+            let body = parts[0], checklist = parts[1]
+
+            // 取 **V#** 里的编号。用切分而不是正则：这条断言守的是文档约定，
+            // 值不得因为一个字面量转义写错而整栋编译不过
+            func ids(_ s: String) -> Set<String> {
+                Set(s.components(separatedBy: "**").filter { tok in
+                    guard tok.hasPrefix("V"), tok.count >= 2 else { return false }
+                    return tok.dropFirst().allSatisfy { $0.isNumber || $0 == "a" || $0 == "b" }
+                })
+            }
+            let bodyIDs = ids(body), tableIDs = ids(checklist)
+            try expectTrue(!tableIDs.isEmpty, "清单不能是空的")
+            let noRow = bodyIDs.subtracting(tableIDs)
+            try expectTrue(noRow.isEmpty, "正文引用了清单里没有的编号：\(noRow.sorted())")
+            let orphan = tableIDs.subtracting(bodyIDs)
+            try expectTrue(orphan.isEmpty, "清单里有正文从未引用的编号（等于没人会去核）：\(orphan.sorted())")
+
+            let rows = checklist.split(separator: "\n").filter { $0.hasPrefix("| **V") }
+            try expectEqual(rows.count, tableIDs.count, "每个编号恰好一行")
+            let allowed = ["未找到出处", "待逐字复核", "待真机实测"]
+            for row in rows {
+                try expectTrue(allowed.contains(where: { row.contains($0) }),
+                               "状态必须是三分类之一（每种都写着怎么往下走）：\(row.prefix(90))")
+            }
+            try expectTrue(!body.contains("未证实"),
+                           "「未证实」这个笼统说法回来了——它把「没找到出处」「没逐字复核」「没实测」混成一件事")
+        }
+
         // MARK: README 的文体：功能说明，不是更新记录
 
         TestKit.test("结构: README 不许长成更新日志") {

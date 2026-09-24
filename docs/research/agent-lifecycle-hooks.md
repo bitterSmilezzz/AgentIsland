@@ -23,7 +23,8 @@ Code 的配置**；Roo Code 是唯一一条「按现行官方文档无此能力�
 > **本文的核实纪律**（第一版在这里栽过一次）：`本机没有配置文件` 与 `官方没有这个能力`
 > 是两个命题。第一版把前者当成后者，把 Qoder / Cursor / Trae / Cline 全记成「排除」，
 > 而它们都有公开正文。现在每家都必须落到「抓到的正文原句」或「本机实样」上，
-> 两者都没有的才写「未证实」，并且不许进实现。
+> 两者都没有的，进文末「待核实清单」并标状态（`未找到出处` / `待逐字复核` / `待真机实测`），
+> 不许进实现，也不许用一个笼统的词糊过去。
 
 ## 为什么「载体是什么」比「有没有埋点」重要
 
@@ -56,8 +57,7 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
 - **本机实样（交叉验证）**：`~/.claude/settings.json` 里确有
   `hooks.UserPromptSubmit[].hooks[] = {type: "command", command: "codegraph prompt-hook"}`
   （第三方工具 codegraph 于 2026-08-28 写入）⇒ 与文档形状一致，不是只信了文档。
-- **无头模式**：文档摘要称 `claude -p` 下 hooks 会执行，但**逐事件是否都触发没有逐条出处**。
-  实现时按「未证实」处理，P0 打通当天用真机测一遍再定。
+- **无头模式**：文档摘要称 `claude -p` 下 hooks 会执行，但**逐事件是否都触发没有逐条出处** ⇒ **V2**（待真机实测）。
 - **接入片段**（`~/.claude/settings.json`，桥到 spec §3 的 `/session`）：
 
   ```json
@@ -103,7 +103,7 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
 - **本机实样**：`~/.codex/hooks.json` 存在（2026-09-06，同为 codegraph 写入，形状与
   Claude Code 一致）；`~/.codex/config.toml` 首行即 `notify = […​, "turn-ended", …]`；
   MCP 面在 `[mcp_servers.*]`。
-- **无头模式**：`codex exec` 下 hooks 是否触发**未找到正文依据**，按未证实处理。
+- **无头模式**：`codex exec` 下 hooks 是否触发**未找到正文依据** ⇒ **V3**。
 
 ## OpenCode —— 唯一给到「确定终态」的一家
 
@@ -147,7 +147,7 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
   `127.0.0.1:41999/session`，令牌用 header 插值带进去。这是五家里唯一「配置即接入」的一家。
 - **本机实样**：`~/.qoder/settings.json` 只有 `enabledPlugins` 一个键 ⇒ 机制存在、本机未配置。
   （上一版把这条观察写成了「Qoder 无可配置面」，那是错的：本机没配 ≠ 官方没有。）
-- **无头模式**：文档未提 headless 下是否触发 ⇒ 未证实。
+- **无头模式**：文档未提 headless 下是否触发 ⇒ **V4**（未找到出处）。
 
 ## Cursor —— 有，但事件词汇与 Claude 家不同构
 
@@ -167,8 +167,9 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
 - **载荷**：原文"receive JSON input via stdin"；env 含 `CURSOR_PROJECT_DIR`、`CURSOR_VERSION`、
   `CURSOR_USER_EMAIL`、`CURSOR_TRANSCRIPT_PATH`、`CURSOR_CODE_REMOTE`，还兼容 `CLAUDE_PROJECT_DIR`。
 - **云端**：调研记录称仓库里的 `.cursor/hooks.json` 会被 cloud agents 执行、而 `~/.cursor/` 那份
-  不可用；本轮抓取的正文只确认到「cloud agents 跑仓库里的 command hooks」那一句 ⇒ 后半句记为二手。
-- **无头模式**：`agent -p`（Headless/CI 页）正文未出现 hooks ⇒ 未证实。
+  不可用；本轮抓取的正文只确认到「cloud agents 跑仓库里的 command hooks」那一句
+  ⇒ 后半句是二手转述，**V5b**（待逐字复核）。
+- **无头模式**：`agent -p`（Headless/CI 页）正文未出现 hooks ⇒ **V5a**（未找到出处）。
 
 ## Trae —— 直接读 Claude Code 的配置
 
@@ -182,15 +183,15 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
   `Notification` 原文注明"triggered asynchronously and does not block the main process"，
   触发条件是「工具调用等确认」或「任务完成」——**一个事件同时覆盖 attention 与 completed**，
   桥接时不能只按事件名定 state，得读载荷。
-- 该页未列 stdin 契约与 matcher 适用范围（另有 configuration reference 页）⇒ 本轮未逐字核实。
+- 该页未列 stdin 契约与 matcher 适用范围（另有 configuration reference 页）⇒ **V6**（待逐字复核）。
 
 ## Cline —— 有 lifecycle hooks 入口，细节本轮没核完
 
 出处：`docs.cline.bot/cli/cli-reference`（2026-09-23 抓取）。正文确认的只有：CLI 的
 `--hooks-dir <path>`、环境变量 `CLINE_HOOKS_DIR`（默认 `~/.cline/hooks`）、项目级
 `.cline/hooks/` 的 "Lifecycle hooks"。**事件名、stdin/stdout 契约、`--yolo` 下是否禁用**
-都在别的页（后台调研指向 `cline/sdk/examples/hooks/README.md`），本轮没逐字复核 ⇒
-记为「有面、细节待核」，不给接入片段。
+都在别的页（后台调研指向 `cline/sdk/examples/hooks/README.md`），本轮没逐字复核 ⇒ **V7**
+（待逐字复核），不给接入片段。
 
 ## Roo Code —— 唯一一条真正的「无文档证据」
 
@@ -208,9 +209,23 @@ GitHub issue #10834 标题提到过 `PreToolUse`/`PostToolUse` hooks，属历史
 
 1. **桥接脚本按 Claude Code 的 stdin JSON 形状写，Codex 与 Qoder 复用同一份**——三家事件名
    同构（PascalCase），这是本轮最省的一笔：原 spec 以为要各订一套。
-1b. **Qoder 走 http hook，不写脚本**：`{"type":"http","url":"http://127.0.0.1:41999/session",
-   "headers":{"X-AgentIsland-Token":"${AGENTISLAND_TOKEN}"}}` 一条配置即接入；
-   `allowedEnvVars` 白名单是它自己文档里的约束，实现侧要按它给的方式取令牌。
+1b. **Qoder 走 http hook，不写脚本**。字段形状按正文逐项核过：
+   `url` 是**唯一必填**（表格原文 `| url | Yes | URL that receives the POST |`
+   ⇒ **方法固定 POST，正文里没有 `method` 这个参数**），`headers` 与 `timeout` 可选；
+   `allowedEnvVars` 与 `type`/`url` **同层**、值是环境变量名数组、可省略，
+   而省略的行为原文明确写着 **"all are allowed if omitted"**。
+
+   ```json
+   {"type": "http", "url": "http://127.0.0.1:41999/session",
+    "headers": {"X-AgentIsland-Token": "${AGENTISLAND_TOKEN}"},
+    "allowedEnvVars": ["AGENTISLAND_TOKEN"], "timeout": 10}
+   ```
+
+   ⇒ **白名单必须显式写**：默认「全允许」意味着 `headers` 里任何 `${VAR}` 都能把任意环境
+   变量插值出去，而这条配置的作用恰恰是「往一个端口送令牌」。少写这一个字段不是少一层
+   保险，是把令牌面的最小权限直接关掉。
+   反过来，**不在白名单里的变量会怎样**（丢 header / 置空 / 整条拒绝）正文没说 ⇒ **V1**，
+   P0 当天实测，别按「应该会拒绝」来设计。
    ⇒ §3 的 `/session` 必须能直接吃 hook 形状的事件 JSON（字段名与 stdin 那套一致），
    否则「配置即接入」这条最省的路要用不上。
 1c. **Cursor 单独一张事件名映射表**（camelCase：`sessionStart` / `stop` / `preToolUse`…），
@@ -225,8 +240,31 @@ GitHub issue #10834 标题提到过 `PreToolUse`/`PostToolUse` hooks，属历史
    工作项与 03 号契约测试的夹具都要按这个分。
 4. **托管环境要有「自报可能一条都不到」的预期**：Codex 的 `allow_managed_hooks_only` 会让
    用户/项目/会话层 hooks 全被忽略 ⇒ 岛的推断链路不能因为「配了自报」而变弱（判断 ②）。
-5. **仍未证实的两件事**（P0 当天实测，不许当已知）：Claude Code 在 `claude -p` 下逐事件是否
-   触发；Codex 在 `codex exec` 下 hooks 是否触发。
+5. **所有未完成项集中在文末的「待核实清单」**（V1–V7），带状态与复核方式。
+   正文里不再出现那个笼统的说法——三种不同的「还不知道」各有各的名字与出路。
+
+## 待核实清单
+
+上一版的三条未完成项只以散文散在正文里，没编号、没状态、没复核方式——结果是「Cline 那条
+到底核完没有」必须通读全文才能判断，而重复劳动已经发生过一次（v0.0.125 把有正文的四家
+误判成排除）。所以这里给每条一个编号，并**把「未证实」拆成三种状态**：
+`未找到出处`（搜过、没有）· `待逐字复核`（有出处线索、本轮没打开原文）· `待真机实测`
+（文档说了但没逐事件/逐入口验证，或行为只能实测）。
+
+| 编号 | 待核实 | 状态 | 复核方式 |
+| :--- | :--- | :--- | :--- |
+| **V1** | Qoder http hook：`${VAR}` 不在 `allowedEnvVars` 白名单里时的行为（丢 header / 置空 / 整条拒绝） | 未找到出处（正文只写了「省略即全允许」） | 配一条 http hook 指向本机回显端口，比对 header 实际到达值 |
+| **V2** | Claude Code 在 `claude -p` 下**逐事件**是否触发 | 待真机实测（文档摘要称会执行，未逐条列） | 配 `Notification` + `Stop` 两条 hook 写文件，跑 `claude -p` 数落盘 |
+| **V3** | Codex 在 `codex exec` 下 hooks 是否触发 | 未找到出处 | 同 V2 的办法，跑 `codex exec "<prompt>"` |
+| **V4** | Qoder headless / 脚本模式（`docs.qoder.com/cli/run-in-scripts`）下是否触发 | 未找到出处 | 真机跑一次无头任务 |
+| **V5a** | Cursor `agent -p`（Headless/CI）下是否触发 | 未找到出处（该页正文未出现 hooks） | 抓正文 + 真机各一次 |
+| **V5b** | Cursor cloud agents 是否读 `~/.cursor/hooks.json` | 待逐字复核（现为二手转述） | 抓 cursor cloud agents 页原文，确认「不可用」那句是否存在 |
+| **V6** | Trae 的 stdin 契约与 matcher 适用范围 | 待逐字复核（在 hook-configuration-reference 页） | 抓 `docs.trae.ai/ide/hook-configuration-reference` |
+| **V7** | Cline 的事件名、stdin/stdout 契约、`--yolo` 是否禁用 hooks | 待逐字复核（在别的页与仓库 README） | 抓 `docs.cline.bot` hooks 相关页 + `cline/sdk/examples/hooks/README.md` |
+
+**归属**：V1–V4 在 02 号票（`/session` 协议）打通当天一起测——那时正好有真实的接收端；
+V5–V7 属于 P3 铺开范围，不阻断 P0。**清单与正文的关系**：正文里写 `⇒ **V#**` 的地方就是
+本表对应行，任何一条核完要**同时**改正文状态与本表，否则等于没改。
 
 ## 复现这些结论的命令
 
