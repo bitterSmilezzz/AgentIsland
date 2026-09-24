@@ -190,8 +190,8 @@ public enum SelfReportPayload {
             }
             return .accepted(SelfReportSubmission(
                 agentID: id.agentID, sessionID: id.sessionID, pid: pid, state: resolved,
-                detail: clamped(name(json["detail"]), SelfReportSubmission.detailLimit),
-                ask: clamped(name(json["ask"]), SelfReportSubmission.askLimit),
+                detail: clamped(text(json["detail"]), SelfReportSubmission.detailLimit),
+                ask: clamped(text(json["ask"]), SelfReportSubmission.askLimit),
                 ttl: clampedTTL((json["ttl"] as? NSNumber)?.doubleValue
                                     ?? (json["ttl"] as? String).flatMap(Double.init))))
         }
@@ -264,6 +264,14 @@ public enum SelfReportPayload {
         guard let s else { return nil }
         return s.count <= limit ? s : String(s.prefix(limit))
     }
+
+    /// 用户可见文本的读法：**只认字符串，不动内容**。
+    /// 与 `name()` 分开是刻意的——那个的语义是「标识符」（trim + 空串按没给），
+    /// 套到 `detail`/`ask` 上就会静默改写要显示的句子（`"  在等确认  "` 变成 `"在等确认"`，
+    /// 纯空白的 detail 整条消失）。标识符要归一化，正文不许。
+    /// 「全空白算不算一句话」不在这儿判：那是显示层的事，见 `SelfReportFallback.displayText`
+    static func text(_ raw: Any?) -> String? { raw as? String }
+
     static func clampedTTL(_ raw: Double?) -> TimeInterval {
         guard let raw else { return SelfReportSubmission.defaultTTL }
         guard raw > 0 else { return SelfReportSubmission.defaultTTL }
@@ -422,7 +430,9 @@ public struct SelfReportTokenStore {
         matches(provided) ? SelfReportCredential() : nil
     }
 
-    /// 任何要显示给用户的东西只能用它：前 4 后 4，中间打码
+    /// 令牌要显示给人看时**只能**用它：前 4 后 4，中间打码。
+    /// 今天还没有生产调用方——第一个是 06 号票的「复制接入命令」那段文案；
+    /// `ensure()` 换令牌时写进日志的是 defect 名字，不是令牌值
     public func masked() -> String {
         guard let t = read() else { return "（尚未生成）" }
         return SelfReportTokenStore.mask(t)
@@ -728,13 +738,23 @@ public enum SelfReportHeaders {
 // 写在 executable target 里就等于没有守卫（测试 runner 链接不到它），所以搬到能测的地方。
 
 public enum SelfReportWire {
+    /// 未鉴权那条回脸的固定状态码（POST 与 DELETE 两条路径共用）。
+    /// **「没令牌 ⇒ 200 + noToken」这句话在整仓只许写这一次**：服务端原先自己写死
+    /// `status: 200, reason: .noToken`，值与表相同却是第二处书写——改一处、另一处就悄悄不一致了。
+    /// 下面 `status(for:)` 已**不再**表示未鉴权那条：那条只由这个常量回答（服务端两条 guard 先答完）
+    public static let untrustedStatus = 200
+    public static let untrustedReason: SelfReportReason = .noToken
+    /// 「这条申报没被接受」的状态码，全仓只写这一次。
+    /// 服务端连绑定结果（`profileGone`）也取它，否则「400 代表什么」会有第二处书写
+    public static let rejectionStatus = 400
+
     /// 载荷被拒时回给调用方的 `reason`。
     /// 唯一的非显然规则：**没带凭证时一律 `noToken`**——否则依次试 `{"agent":"claude"}`
     /// 与 `{"agent":"zzz"}` 就能拿到一份「这台机器装了哪些编码 Agent」的清单，
     /// 而 macOS 13 那条构建路径下这个探测还能从局域网做。
     /// §3 的「未知 id ⇒ 400」仍然成立，只是它现在只对**带令牌**的请求说
     public static func reason(for rejection: SelfReportRejection, trusted: Bool) -> SelfReportReason {
-        guard trusted else { return .noToken }
+        guard trusted else { return untrustedReason }
         switch rejection {
         case .malformed: return .malformed
         case .unknownAgent: return .unknownAgent
@@ -742,16 +762,20 @@ public enum SelfReportWire {
         }
     }
 
-    /// 与 `reason` 同一条规则的状态码面：未鉴权时不是「你的请求有问题」（400），
-    /// 而是「我收下但不采信」（200 + 落回通道）
-    public static func status(for rejection: SelfReportRejection, trusted: Bool) -> Int {
-        trusted ? 400 : 200
+    /// 载荷被拒时的状态码：**400，且整个仓库只有这一处书写**。
+    /// 这一版原先是 `status(for:trusted:)` 返回 `trusted ? 400 : untrustedStatus`，
+    /// 那个未鉴权分支**生产不可达**（服务端两条 guard 先把无凭证的请求答完了），
+    /// 于是它成了一份只有测试在读的副本——把 `untrustedStatus` 改成别的值它也不会跟着改，
+    /// 而「200 只写一次」这句话当场就不成立（第 3 轮 review 的 P2-1）。
+    /// 与其加一条抓字面量的断言，不如把这个不存在的分支删掉：没有第二条路，就没有第二处书写
+    public static func status(for rejection: SelfReportRejection) -> Int {
+        rejectionStatus
     }
 
     /// 未采信那条申报给接入方看的话。分叉的唯一依据是 `post` 的**返回值**：
     /// 上一轮这里不分叉，于是 `state:"working"`（持续状态，本来就不转事件）
     /// 得到的回复是「已按未采信事件投递」——把「没送」讲成「送了」，
-    /// 而接入方据此会认为通道在работает
+    /// 而接入方据此会认为这条通道在正常工作
     public static func untrustedMessage(posted: Bool, state: SelfReportState) -> String {
         posted
             ? "没有有效令牌：本条已按未采信事件投递（不改变状态来源）。"
@@ -787,9 +811,19 @@ public enum SelfReportFallback {
             duration: 0,
             timestamp: Date(),
             pid: submission.pid,
-            message: submission.ask ?? submission.detail,
-            detail: submission.detail,
+            message: displayText(submission.ask) ?? displayText(submission.detail),
+            detail: displayText(submission.detail),
             externallyDelivered: true))
         return true
+    }
+
+    /// 显示层「有没有一句话可说」的判据：**全空白按没说**，非空白的内容原样交给事件。
+    /// 这条不放进 `SelfReportPayload.text()`，因为那边要保真（不许静默改写收到的句子），
+    /// 而这边是显示对象的门口。少了这一道，`{"ask":"   ","detail":"在等确认"}` 会拿一行空白
+    /// 顶掉真正有内容的那句——`message: ask ?? detail` 是 nil 合并，空串与非空串一样「有值」；
+    /// 岛的 `summaryText` 只挡 `isEmpty`，于是一行空白就成了横幅正文
+    static func displayText(_ s: String?) -> String? {
+        guard let s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return s
     }
 }

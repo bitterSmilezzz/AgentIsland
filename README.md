@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.130** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.131** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 
@@ -235,6 +235,7 @@ AgentIsland/
   这验的是**形态不是来源**——同一个用户先写一串形态合格的十六进制仍然挡不住，
   要不可伪造就得进钥匙串，代价是用户看不见令牌、也就没法把它抄进第三方 Agent 的配置。
   pid 只能否掉一条申报，永远不能建立可信度。
-- 自报今天**不参与显示**：`/session` 收到的状态会登记、会按 TTL 过期，但岛与 CLI 还都只看
-  推断出来的那条。同时显示两者、以及「自报说 X 而进程表说 Y」的冲突双显还没做。
-  一张卡片不会因为自报而多出一个状态词。
+- 自报的**状态**今天不参与显示：`/session` 收到的状态会登记、会按 TTL 过期，但岛与 CLI 显示的
+  仍然只是推断出来的那条。双显与「自报说 X 而进程表说 Y」的冲突提示还没做。
+  今天自报正文唯一会露脸的路径是**没令牌而降级的那条**：它按本机无鉴权入口处理，
+  正文会进岛内横幅与系统通知（带「外部投递」标记），但它不建立任何可信状态。

@@ -297,6 +297,37 @@ enum SelfReportTests {
             try expectEqual(s.detail?.count, SelfReportSubmission.detailLimit, "超长要截断而不是灌进来")
         }
 
+        TestKit.test("自报: detail/ask 是要显示的句子，不许被标识符那套归一化改写") {
+            // `name()` 的语义是「标识符」：trim + 纯空白按没给。把它套到正文上，
+            // 用户可见的句子就被静默动过——`"  在等确认  "` 少了两个空格没人看得出来。
+            // 这两栏**是有 UI 消费的**：未鉴权的申报会经 `SelfReportFallback.post` 变成
+            // `AgentTaskEvent.message`/`.detail`，也就是岛横幅那行字与系统通知的正文
+            //（第 3 轮 review 报出我上一版把这里写成「没有 UI 消费」，而正因这个错前提，
+            //  「全空白顶掉另一栏」没人测——见下面「落回: 全空白不算一句话」那条）
+            func accepted(_ fields: [String: Any]) throws -> SelfReportSubmission {
+                let out = SelfReportPayload.parse(payload(fields), knownAgentIDs: ["claude"])
+                guard case .accepted(let s) = out else { throw TestError(message: "该收下：\(fields)") }
+                return s
+            }
+            let kept = try accepted(["agent": "claude", "session": "s", "state": "working",
+                                     "detail": "  在等确认  ", "ask": " 要不要跑测试？ "])
+            try expectEqual(kept.detail, "  在等确认  ", "首尾空白是内容的一部分（缩进、换行式对齐）")
+            try expectEqual(kept.ask, " 要不要跑测试？ ")
+            let blank = try accepted(["agent": "claude", "session": "s", "state": "working",
+                                      "detail": "   ", "ask": "\u{00a0}"])
+            try expectEqual(blank.detail, "   ", "纯空白该原样留着，不该被当成「没给」")
+            try expectEqual(blank.ask, "\u{00a0}")
+            // 非字符串仍然按没给：那是形状问题，不是内容问题
+            let wrong = try accepted(["agent": "claude", "session": "s", "state": "working",
+                                      "detail": 42, "ask": ["a"]])
+            try expectNil(wrong.detail)
+            try expectNil(wrong.ask)
+            // 截断照旧生效（与 trim 是两件事）
+            let long = try accepted(["agent": "claude", "session": "s", "state": "working",
+                                     "detail": String(repeating: "字", count: 300)])
+            try expectEqual(long.detail?.count, SelfReportSubmission.detailLimit)
+        }
+
         TestKit.test("自报: URL 的 ?agent= 让 hook 形状接得进来，但不放松任何要求") {
             let hookBody = json(#"{"session_id":"h77","hook_event_name":"PostToolUse","cwd":"/tmp"}"#)
             guard case .accepted(let s) = SelfReportPayload.parse(hookBody, knownAgentIDs: ["qoder"],
@@ -568,7 +599,6 @@ enum SelfReportTests {
         }
 
         // MARK: 协议形状（搬进 Core 才被测得到）
-        // MARK: 协议形状（搬进 Core 才被测得到）
         //
         // 票 02 的 Done-when 是「curl 三条命令分别得到 accepted / pidMismatch / noToken」——
         // 那一面原先全在 executable target 里，测试 runner 链接不到，等于零守卫。
@@ -630,10 +660,11 @@ enum SelfReportTests {
             // 回一句「已按未采信事件投递」就是把没送讲成送了
             for r in [SelfReportRejection.malformed, .unknownAgent, .unknownState] {
                 try expectEqual(SelfReportWire.reason(for: r, trusted: false), .noToken, "\(r)")
-                try expectEqual(SelfReportWire.status(for: r, trusted: false), 200, "\(r)")
+                // 未鉴权那条只许有 200 这一个来源：常量。表里不再另设一个「未鉴权分支」
+                try expectEqual(SelfReportWire.untrustedStatus, 200, "\(r)")
                 try expectEqual(SelfReportWire.reason(for: r, trusted: true),
                                 SelfReportReason(rawValue: r.rawValue))
-                try expectEqual(SelfReportWire.status(for: r, trusted: true), 400)
+                try expectEqual(SelfReportWire.status(for: r), 400)
             }
             try expectTrue(SelfReportWire.untrustedMessage(posted: true, state: .attention)
                             .contains("已按未采信事件投递"))
@@ -724,6 +755,30 @@ enum SelfReportTests {
                             "落回的事件必须带未采信标记，否则远程外发的闸门就白设了")
         }
 
+        TestKit.test("落回: 全空白不算一句话，但有内容就不许动它一个字") {
+            // 上一轮把 `detail`/`ask` 从 `name()`（trim + 纯空白按没给）换成只认字符串的 `text()`，
+            // 于是 `{"ask":"   "}` 从「没给」变成「给了一行空白」。而落回时 `message` 是
+            // `ask ?? detail` 这条 **nil 合并**链——空串与非空串一样「有值」，于是那一行空白
+            // 顶掉了真正有内容的 `detail`；岛的 `summaryText` 只挡 `isEmpty`，
+            // 系统通知更是 `message ?? ...` 直连。结果：未鉴权的一条申报能把横幅与通知刷成空白
+            let e = engine([claude], probe: probe(alive: [:]))
+            try expectTrue(SelfReportFallback.post(
+                sub(state: .attention, detail: "在等确认", ask: "   "), to: e))
+            try expectEqual(e.eventHistory.first?.message, "在等确认",
+                            "全空白的 ask 不许顶掉有内容的 detail")
+            try expectTrue(SelfReportFallback.post(
+                sub(session: "s2", state: .completed, detail: "  \n  "), to: e))
+            try expectNil(e.eventHistory.first?.message, "全是空白 ⇒ 没有这句话，让默认文案顶上")
+            try expectNil(e.eventHistory.first?.detail, "「原因」展开器不许展开成一片空白")
+            // 反过来：只要有一点点内容，就一个字都不许多动
+            try expectTrue(SelfReportFallback.post(
+                sub(session: "s3", state: .attention, detail: "  在等确认  ",
+                    ask: " 要不要跑测试？ "), to: e))
+            try expectEqual(e.eventHistory.first?.message, " 要不要跑测试？ ",
+                            "保真：显示层只判「有没有话说」，不改写要说的话")
+            try expectEqual(e.eventHistory.first?.detail, "  在等确认  ")
+        }
+
         // MARK: 结构棘轮
         //
         // 只钉**类型挡不住**的那几条：可信度判定的位置、清理入口的边界、既有通道不许被换掉。
@@ -768,6 +823,22 @@ enum SelfReportTests {
                            "未采信响应的话术必须出自 Core 那个分叉函数，不许在服务端现写")
             try expectTrue(serverText.contains("SelfReportWire.reason(for:"),
                            "reason 的翻译只许走那张表")
+            // 未鉴权那条回脸原先在服务端写死 `status: 200` + `reason: .noToken`，与表值相同
+            // 却是第二处书写——改表的人看不见它，两边就此悄悄分叉。
+            // 断言要**数得出两侧**：只断言「出现过一次」等于放开 DELETE 那一侧
+            // （实测把 DELETE 改回 `status: 200` 而 reason 仍走常量时，`contains` 仍然绿）
+            try expectEqual(serverText.components(separatedBy: "SelfReportWire.untrustedStatus").count - 1, 2,
+                            "未鉴权的状态码只能由 SelfReportWire 那一个常量给出，且 POST/DELETE 两侧都走它")
+            try expectEqual(serverText.components(separatedBy: "SelfReportWire.untrustedReason").count - 1, 2,
+                            "noToken 要出自 SelfReportWire.untrustedReason，两侧都是")
+            // 这一条比 `reason: .noToken` 更狠：`SelfReportReason.noToken`、换行的写法、
+            // 服务端自己再开一个 `let mine = SelfReportReason.noToken` 都照样命中
+            try expectFalse(serverText.contains(".noToken"),
+                            "服务端不许出现 noToken 这个标识符——它只在 Core 那张表里写一次")
+            // 400 也不许在服务端落地：绑定结果（profileGone）与载荷被拒共用 `rejectionStatus`，
+            // 少这一条就会留下「改表的人看不见服务端那处 400」
+            try expectFalse(serverText.contains("status: 400"),
+                            "「不采信 ⇒ 400」只许写一次，服务端取 SelfReportWire.rejectionStatus")
             try expectFalse(serverText.contains("reason: .unknownAgent"),
                             "服务端不许自己把 unknownAgent 塞进响应——它只在表里翻译一次")
             try expectTrue(serverText.contains("SelfReportFallback.post(submission, to: engine)"),
@@ -807,9 +878,10 @@ private func payload(_ fields: [String: Any]) -> Data {
 }
 
 private func sub(agent: String = "claude", session: String = "s1", pid: Int32? = nil,
-                 state: SelfReportState = .working, ttl: TimeInterval = 90) -> SelfReportSubmission {
+                 state: SelfReportState = .working, ttl: TimeInterval = 90,
+                 detail: String? = nil, ask: String? = nil) -> SelfReportSubmission {
     SelfReportSubmission(agentID: agent, sessionID: session, pid: pid, state: state,
-                         detail: nil, ask: nil, ttl: ttl)
+                         detail: detail, ask: ask, ttl: ttl)
 }
 
 private func probe(alive: [Int32: String]) -> SelfReportProcessProbe {

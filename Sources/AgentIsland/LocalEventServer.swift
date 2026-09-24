@@ -284,8 +284,8 @@ public final class LocalEventServer: @unchecked Sendable {
                 // 没带凭证就**先不解析正文**：否则 400/`unknownAgent` 与 200/`noToken`
                 // 的差集就是「这台机器装了哪些 Agent」的免费清单（POST 那边同理，见下）
                 guard let credential else {
-                    self.send(connection: connection, status: 200, text: self.json(
-                        CLISessionRevokeDTO(revoked: false, reason: .noToken)))
+                    self.send(connection: connection, status: SelfReportWire.untrustedStatus, text: self.json(
+                        CLISessionRevokeDTO(revoked: false, reason: SelfReportWire.untrustedReason)))
                     return
                 }
                 // 撤销不该被迫重发一遍 state
@@ -294,7 +294,7 @@ public final class LocalEventServer: @unchecked Sendable {
                     // 走到这里必然带凭证（上面那条 guard 已经把无凭据的 DELETE 答完了），
                     // 所以载荷为什么被拒可以照实说
                     self.send(connection: connection,
-                              status: SelfReportWire.status(for: rejection.reason, trusted: true),
+                              status: SelfReportWire.status(for: rejection.reason),
                               text: self.json(CLISessionRevokeDTO(
                                 revoked: false,
                                 reason: SelfReportWire.reason(for: rejection.reason, trusted: true))))
@@ -329,8 +329,9 @@ public final class LocalEventServer: @unchecked Sendable {
                     message += "带上有效令牌才会回具体原因（无凭据的请求一律只报 noToken，"
                         + "免得注册表被当字典查）。落回通道也因此没走。"
                 }
-                self.send(connection: connection, status: 200, text: self.json(
-                    CLISessionResultDTO(bound: false, reason: .noToken, message: message)))
+                self.send(connection: connection, status: SelfReportWire.untrustedStatus, text: self.json(
+                    CLISessionResultDTO(bound: false, reason: SelfReportWire.untrustedReason,
+                                        message: message)))
                 return
             }
             guard case .accepted(let submission) = parsed else {
@@ -338,7 +339,7 @@ public final class LocalEventServer: @unchecked Sendable {
                 //（§3「未知 agent id 直接 400，绝不自动建档」）
                 if case .rejected(let reason, let detail) = parsed {
                     self.send(connection: connection,
-                              status: SelfReportWire.status(for: reason, trusted: true),
+                              status: SelfReportWire.status(for: reason),
                               text: self.json(CLISessionResultDTO(
                                 bound: false,
                                 reason: SelfReportWire.reason(for: reason, trusted: true),
@@ -360,7 +361,7 @@ public final class LocalEventServer: @unchecked Sendable {
                 self.send(connection: connection, status: 200, text: self.json(
                     CLISessionResultDTO(bound: false, reason: .pidMismatch, message: why)))
             case .profileGone(let why):
-                self.send(connection: connection, status: 400, text: self.json(
+                self.send(connection: connection, status: SelfReportWire.rejectionStatus, text: self.json(
                     CLISessionResultDTO(bound: false, reason: .profileGone, message: why)))
             }
         }
