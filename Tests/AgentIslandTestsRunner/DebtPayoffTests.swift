@@ -291,117 +291,70 @@ enum DebtPayoffTests {
 
         TestKit.test("结构: 研究文档的「待核实」必须编号且可判定") {
             // 这条断言守的是「未完成项必须有编号、状态与复核方式」，起因见 v0.0.126/127 两份 review。
-            // 它自己被审出来过三个静默失效面，所以现在的形状是：
+            // 它自己被审出来过五个静默失效面，每一个都比上一条更隐蔽，所以形状是钉出来的：
             // ① 编号识别有**行形下界**——清单每个数据行的编号格必须严格写成 `**V<数字>[单个字母]**`，
             //    写成 `v4`、裸 `V9`、少一个空格都会红。只放开字符集是不够的：字符集再宽一格，
             //    「两侧同时隐身」的触发条件只是从「用了 c」换成「用了小写」，而后者在 markdown
             //    表格里更容易发生（从别的表复制一行、重排列宽，样式就掉了）。
-            // ② 列索引从**表头**推，不硬编码 cells[3]/cells[4]：插一列会让硬索引静默改指别的列。
-            // ③ 状态词的合法区 = 表格数据行 ∪ 显式声明的定义块。原先靠「标题之后」划豁免区，
-            //    于是标题之后的任何小节都是免检区，而文档里恰有归属段与复现命令两节在那儿。
-            let text = try SourceTree.text(relativePath: "docs/research/agent-lifecycle-hooks.md")
-            let allowed = ["未找到出处", "待逐字复核", "待真机实测"]
-            let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            func cells(_ line: String) -> [String] {
-                line.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-            }
-            func tokenID(_ tok: String) -> String? {
-                let s = Substring(tok)
-                guard s.first == "V", s.count >= 2 else { return nil }
-                let rest = s.dropFirst()
-                let digits = rest.prefix(while: { $0.isNumber })
-                guard !digits.isEmpty else { return nil }
-                let tail = rest.dropFirst(digits.count)
-                guard tail.count <= 1, tail.allSatisfy({ $0.isASCII && $0.isLetter }) else { return nil }
-                return tok
-            }
-            func boldID(_ cell: String) -> String? {
-                guard cell.hasPrefix("**"), cell.hasSuffix("**"), cell.count >= 5 else { return nil }
-                return tokenID(String(cell.dropFirst(2).dropLast(2)))
-            }
-            func boldIDs(_ s: String) -> Set<String> {
-                var out = Set<String>()
-                for tok in s.components(separatedBy: "**") {
-                    if let id = tokenID(tok) { out.insert(id) }
+            // ② 列索引一律从表头推。上一版的定位条件是「表头以 `| 编号 |` 开头」，那等于把
+            //    「编号必须是第一列」写死，于是 `cells[1]` 与 `idx("编号")` 恒等——注释说
+            //    「插一列会误诊」实测**不成立**（旧代码先红在定位条件，报的还是正确那句）。
+            //    本轮改成认「含编号与状态两列」的表头：列序不再有意义，注释那句话第一次变成真话；
+            //    四列齐不齐是下一步的事——少一列报「缺哪一列」，不和「根本没建表」混成同一条消息。
+            // ③ 状态词的合法区 = 表格数据行 ∪ **对应那一类词**的显式声明块。原先靠「标题之后」
+            //    划豁免区（标题之后任何小节都是免检区），改成声明块之后又漏在「块里写什么、写多长
+            //    都不查」——那是一把万能钥匙，本轮给块本身加了下界（review P1-1）。
+            // ④ 判定说法整篇扫，不按行也不按段：行级能被「挪到下一行」绕过（v0.0.128 review），
+            //    段级能被「隔一个空行」绕过（v0.0.129 review P1-5）——单位换成文档，两类藏身处一起没。
+            //    代价是名单必须窄：只有「对我们自己核没核」下结论的词进名单，
+            //    「该页未列 hooks」这种对**别家正文**的陈述是发现不是定性，另档处理。
+            // ⑤ 覆盖面是整个 `docs/research/` 而不是一份文件（`.scratch/audit-42`）：
+            //    原先硬编码 `agent-lifecycle-hooks.md`，换一份研究文档用散文写未完成项不会有任何东西红
+            //    ——而「散文的未完成项」正是 v0.0.125/126 付过学费的那个坑。
+            // 只校验**确实欠着东西**的文档，不逼每份研究文档都建一张表：
+            // 为了断言而扭曲内容，v0.0.127 的 review 已经批评过一次。
+            // 触发原先只有一个出口 `contains("待核实")`，而那恰好是清单的列名——把列名改成
+            // 「未决项」整份文档就静默进 skipped（review P1-6）。现在四个出口任一即校验。
+            // 「本文档暂无待核实项」这种**否定陈述**不算欠项：把它判红的话，最省事的修法
+            // 恰恰是把触发词删掉，而那才是让守卫对该文档永久失效的动作——激励方向必须对。
+            func owesChecklist(_ raw: String) -> Bool {
+                var t = raw
+                for neg in ["暂无待核实", "无待核实", "没有待核实", "没有新的待核实"] {
+                    t = t.replacingOccurrences(of: neg, with: "")
                 }
-                return out
+                if t.contains("待核实") || t.contains("<!-- 状态词表 -->") { return true }
+                // 有表就一定命中上一条（清单的列名本身就叫「待核实」），所以这里只补
+                // 「编号被引用但整份文档没提待核实」这一种。锚在行首的写法要不得：
+                // `String.range(of:options:.regularExpression)` 不认多行锚，`^` 只匹配整个字符串的开头
+                return t.range(of: #"\*\*V[0-9]"#, options: .regularExpression) != nil
             }
-
-            // ── 表格：从表头定位，列名 → 索引 ─────────────────────────────
-            let headerAt = lines.firstIndex { $0.hasPrefix("| 编号 |") }
-            try expectTrue(headerAt != nil,
-                           "清单表头必须是以「| 编号 |」开头的一行（列名是断言定位表格的唯一依据）")
-            var dataRows: [(n: Int, line: String, cells: [String])] = []
-            if let h = headerAt {
-                let headerCells = cells(lines[h])
-                for name in ["编号", "待核实", "状态", "复核方式"] {
-                    try expectTrue(headerCells.contains(name), "清单表头缺「\(name)」列")
-                }
-                let colCount = headerCells.count
-                let idx = { (name: String) -> Int in headerCells.firstIndex(of: name) ?? -1 }
-                var i = h + 2   // 跳过表头与 :--- 对齐行
-                while i < lines.count, lines[i].hasPrefix("|") {
-                    dataRows.append((i + 1, lines[i], cells(lines[i])))
-                    i += 1
-                }
-                try expectTrue(!dataRows.isEmpty, "清单表头下面一行数据都没有")
-                for row in dataRows {
-                    try expectEqual(row.cells.count, colCount,
-                                    "第 \(row.n) 行列数与表头不符（表头 \(colCount) 列，本行 \(row.cells.count) 列）：\(row.line.prefix(70))")
-                    // ① 行形下界
-                    let id = boldID(row.cells[idx("编号")])
-                    try expectTrue(id != nil,
-                                   "第 \(row.n) 行的编号格必须写成 **V<数字>[单个字母]**（小写、裸文本、少空格一律不认）：\(row.cells[idx("编号")])")
-                    // ③ 状态格：cell 级校验，不是整行 contains
-                    let state = row.cells[idx("状态")]
-                    try expectTrue(allowed.contains(where: { state.hasPrefix($0) }),
-                                   "第 \(row.n) 行「状态」格必须以三分类之一开头：\(state.prefix(40))")
-                    // 复核方式：非空、非占位符、且真写了动作
-                    let how = row.cells[idx("复核方式")]
-                    let placeholders = ["-", "—", "–", "待补", "TBD", "N/A", "见正文", "同上", ""]
-                    try expectTrue(!placeholders.contains(how),
-                                   "第 \(row.n) 行的「复核方式」是占位符（\(how.prefix(10))）——没有它，这条永远不会被核")
-                    try expectTrue(["抓", "跑", "配", "比对", "数", "看"].contains(where: { how.contains($0) }),
-                                   "第 \(row.n) 行的「复核方式」没写动作（抓/跑/配/比对/数/看）：\(how.prefix(40))")
-                }
+            // 下限留一格给新建的研究文档（今天 3 份）：写死 3 会让「合并掉一份文档」这种
+            // 正当改动变红，而这一格不会放过「目录被清空」
+            let docs = try SourceTree.markdownTexts(under: "docs/research", atLeast: 2)
+            var checked: [String] = [], skipped: [String] = []
+            var perDoc: [(path: String, bad: [String])] = []
+            for doc in docs {
+                guard owesChecklist(doc.text) else { skipped.append(doc.relativePath); continue }
+                checked.append(doc.relativePath)
+                let bad = checklistViolations(doc.text)
+                if !bad.isEmpty { perDoc.append((doc.relativePath, bad)) }
             }
-            let tableIDs = Set(dataRows.compactMap { boldID($0.cells[1]) })
-
-            // ── 配对：正文引用的编号 ↔ 表格里的编号 ────────────────────────
-            let tableLines = Set(dataRows.map { $0.line })
-            let nonTable = lines.enumerated().filter { row in
-                !tableLines.contains(row.element) && !row.element.hasPrefix("| 编号 |")
-                    && !row.element.contains(":---")
-            }.map { $0.element }.joined(separator: "\n")
-            let bodyIDs = boldIDs(nonTable)
-            let noRow = bodyIDs.subtracting(tableIDs)
-            try expectTrue(noRow.isEmpty, "正文引用了清单里没有的编号：\(noRow.sorted())")
-            let orphan = tableIDs.subtracting(bodyIDs)
-            try expectTrue(orphan.isEmpty, "清单里有正文从未引用的编号（等于没人会去核）：\(orphan.sorted())")
-
-            // ── ③ 状态词的合法区：表格数据行 ∪ 显式声明的定义块 ─────────────
-            let openMark = "<!-- 状态词表 -->", closeMark = "<!-- /状态词表 -->"
-            var inDef = false, defOpened = false
-            var illegal: [String] = []
-            for (n, line) in lines.enumerated() {
-                let t = line.trimmingCharacters(in: .whitespaces)
-                if t == openMark { defOpened = true; inDef = true; continue }
-                if t == closeMark { inDef = false; continue }
-                if tableLines.contains(line) || inDef { continue }
-                for w in allowed where line.contains(w) { illegal.append("\(n + 1): \(w)") }
-                if line.contains("未证实") { illegal.append("\(n + 1): 未证实") }
-                // 上一轮就是栽在这里：括号里的状态词删了，括号外换成「本轮没逐字复核」
-                // 「未找到正文依据」这类同义说法，只数三个词的断言照样绿。
-                // 所以同义说法也禁——但只禁在**含编号引用的行**上，别处的正常中文不误伤。
-                let paraphrase = ["没逐字复核", "未找到正文依据", "正文未出现", "没有逐条出处",
-                                  "正文没说", "文档未提", "该页未列", "二手转述"]
-                if line.contains("**V") {
-                    for m in paraphrase where line.contains(m) { illegal.append("\(n + 1): \(m)") }
-                }
-            }
-            try expectTrue(defOpened, "三种状态名的词汇定义必须包在 \(openMark) 块里——放行靠声明，不靠小节位置")
-            try expectTrue(illegal.isEmpty,
-                           "状态词出现了第二个出口（合法区=表格数据行 ∪ 声明块）：\(illegal.prefix(5))")
+            // 「一份都没校验」必须是失败：否则⑤的扩围可以靠匹配条件写错退化成空跑
+            try expectTrue(!checked.isEmpty,
+                           "`docs/research/` 下没有任何一份文档被这份守卫校验（扫到 \(docs.count) 份）"
+                           + "——要么约定变了要么触发条件写错了，绿在这里没有意义")
+            let total = perDoc.reduce(0) { $0 + $1.bad.count }
+            // 按文档分组再截：全局 `prefix(10)` 会被第一份文档的噪声挤满，
+            // 第二份文档一条违规都读不到（review P2）
+            let shown = perDoc.map { d in
+                "\(d.path)（\(d.bad.count) 条）：\n      "
+                    + d.bad.prefix(3).joined(separator: "\n      ")
+                    + (d.bad.count > 3 ? "\n      …另有 \(d.bad.count - 3) 条" : "")
+            }.joined(separator: "\n")
+            try expectTrue(perDoc.isEmpty,
+                           "研究文档的「待核实」没有编号、没有状态或没有复核方式"
+                           + "（共 \(total) 条／校验 \(checked.count) 份：\(checked)／跳过 \(skipped.count) 份：\(skipped)）\n    "
+                           + shown)
         }
 
         // MARK: README 的文体：功能说明，不是更新记录
@@ -440,4 +393,225 @@ enum DebtPayoffTests {
                             + offenses.joined(separator: "\n    "))
         }
     }
+}
+
+// MARK: - 「待核实清单」的逐文档校验器
+//
+// 从断言里抽出来、并且返回违规清单而不是直接 expect：这条守卫现在要跑遍整个 `docs/research/`，
+// 内联的话第一份文档的第一处失败就抛，剩下几份是合规还是没看过，读者完全读不出来。
+private func checklistViolations(_ text: String) -> [String] {
+    let allowed = ["未找到出处", "待逐字复核", "待真机实测"]
+    // 两类「没核完」的说法，作用域不同：
+    // · 判定类（对**我们**核没核下结论）整篇禁——它出现在正文就是状态的第二出口；
+    // · 证据类（对**别人的正文**下结论，如「该页未列 hooks」）是研究文档该有的措辞，
+    //   只在清单小节内禁，区外误伤会把作者推向「换个更含糊的说法」，那比第二出口更糟。
+    let verdictWords = ["没逐字复核", "未找到正文依据", "没有逐条出处", "二手转述", "正文没说"]
+    let evidenceWords = ["正文未出现", "文档未提", "该页未列"]
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    // 一律按 trim 后的形态比对：表头与声明块标记常写在列表项的缩进里，
+    // 按原文精确匹配会把一份合规文档判成「你没建表 / 你没声明」（review P2）
+    let trimmed = lines.map { $0.trimmingCharacters(in: .whitespaces) }
+    var bad: [String] = []
+
+    func cells(_ line: String) -> [String] {
+        line.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+    func tokenID(_ tok: String) -> String? {
+        let s = Substring(tok)
+        guard s.first == "V", s.count >= 2 else { return nil }
+        let rest = s.dropFirst()
+        let digits = rest.prefix(while: { $0.isASCII && $0.isNumber })
+        guard !digits.isEmpty else { return nil }
+        let tail = rest.dropFirst(digits.count)
+        guard tail.count <= 1, tail.allSatisfy({ $0.isASCII && $0.isLetter }) else { return nil }
+        return tok
+    }
+    func boldID(_ cell: String) -> String? {
+        guard cell.hasPrefix("**"), cell.hasSuffix("**"), cell.count >= 5 else { return nil }
+        return tokenID(String(cell.dropFirst(2).dropLast(2)))
+    }
+    func boldIDs(_ s: String) -> Set<String> {
+        var out = Set<String>()
+        for tok in s.components(separatedBy: "**") {
+            if let id = tokenID(tok) { out.insert(id) }
+        }
+        return out
+    }
+
+    // ── 表格：先按**列名**定位表头，列索引一律从表头推 ──────────────────────
+    // 定位原先是 `hasPrefix("| 编号 |")`——那等于把「编号必须是第一列」写进约定，
+    // 于是 `cells[1]` 与 `idx("编号")` 恒等，注释里「一律从表头推」是句空话（review P1-7）。
+    // 现在认「编号 + 状态」两列即认定它是清单表，列序不再有含义；
+    // 四列齐不齐是**下一步**的事：少一列要报「缺哪一列」，不能和「根本没建表」混成同一条消息。
+    let required = ["编号", "待核实", "状态", "复核方式"]
+    var headerAt: Int?
+    for (n, t) in trimmed.enumerated() where t.hasPrefix("|") {
+        let c = cells(t)
+        if c.contains("编号"), c.contains("状态") { headerAt = n; break }
+    }
+    guard let h = headerAt else {
+        return ["没有清单表：正文写了「待核实」就必须给一张带表头的清单"
+                + "（列名是断言定位表格的唯一依据，也是「哪条还没核」的唯一出口）"]
+    }
+    let headerCells = cells(lines[h])
+    let missing = required.filter { !headerCells.contains($0) }
+    if !missing.isEmpty {
+        // 缺列就直接收工：逐行校验会把它放大成每行两条下游噪声，把真因埋掉（review P2）
+        return ["清单表头缺列：\(missing)——「编号/待核实/状态/复核方式」四列齐备，逐行校验才有意义"]
+    }
+    let idx = { (name: String) -> Int in headerCells.firstIndex(of: name) ?? -1 }
+    // 取不到列返回 nil 而不是下标越界：崩掉整个 runner 比一条失败消息糟得多，
+    // 断言不能靠崩溃来表达意见
+    func column(_ row: [String], _ name: String) -> String? {
+        let i = idx(name)
+        return (i >= 0 && i < row.count) ? row[i] : nil
+    }
+
+    // ── 对齐行：不假设它存在，也不跳过第一行数据 ────────────────────────────
+    // 上一版写死 `headerAt + 2`：表头下一行若不是 `| :--- |`，第一条数据行既不进逐行校验、
+    // 也不进任何一侧的编号集合——一条清单项彻底隐形（review P1-4）。
+    var dataStart = h + 1
+    if h + 1 < lines.count {
+        let next = trimmed[h + 1]
+        if next.contains("-"), next.allSatisfy({ "|:- ".contains($0) }) { dataStart = h + 2 }
+        else { bad.append("表头下一行不是 `| :--- |` 对齐行，按第一条数据行处理：\(next.prefix(50))") }
+    }
+
+    var dataRows: [(n: Int, cells: [String])] = []
+    var rowCursor = dataStart
+    while rowCursor < lines.count, trimmed[rowCursor].hasPrefix("|") {
+        let row = cells(lines[rowCursor])
+        if row.count != headerCells.count {
+            bad.append("第 \(rowCursor + 1) 行列数与表头不符（表头 \(headerCells.count) 列，本行 \(row.count) 列）："
+                        + "\(lines[rowCursor].prefix(70))")
+        } else {
+            dataRows.append((rowCursor + 1, row))
+        }
+        rowCursor += 1
+    }
+    if dataRows.isEmpty { bad.append("清单表头下面一行数据都没有") }
+
+    let placeholders = ["-", "—", "–", "待补", "TBD", "N/A", "见正文", "同上", ""]
+    var idCount: [String: Int] = [:]
+    for row in dataRows {
+        let at = "第 \(row.n) 行"
+        let idCell = column(row.cells, "编号") ?? ""
+        // ① 行形下界
+        if let id = boldID(idCell) { idCount[id, default: 0] += 1 }
+        else { bad.append("\(at) 的编号格必须写成 **V<数字>[单个字母]**（小写、裸文本、少空格一律不认）：\(idCell)") }
+        // 状态格：cell 级校验，不是整行 contains
+        let state = column(row.cells, "状态") ?? ""
+        if !allowed.contains(where: { state.hasPrefix($0) }) {
+            bad.append("\(at)「状态」格必须以三分类之一开头：\(state.prefix(40))")
+        }
+        // 「问哪件事」这一列原先只查列名不查格子：八行描述全清空而另三列合规，
+        // 这张表依然能过——可它恰恰没写明「这条到底在问什么」（review P1-2）
+        let what = column(row.cells, "待核实") ?? ""
+        if placeholders.contains(what) || what.count < 6 {
+            bad.append("\(at)「待核实」格没写这条在问什么（空、占位符或少于 6 字）：\(what.prefix(30))")
+        }
+        // 复核方式：非空、非占位符、且真写了动作
+        let how = column(row.cells, "复核方式") ?? ""
+        if placeholders.contains(how) {
+            bad.append("\(at) 的「复核方式」是占位符（\(how.prefix(10))）——没有它，这条永远不会被核")
+        }
+        if !["抓", "跑", "配", "比对", "数", "看"].contains(where: { how.contains($0) }) {
+            bad.append("\(at) 的「复核方式」没写动作（抓/跑/配/比对/数/看）：\(how.prefix(40))")
+        }
+    }
+    // ② 编号必须唯一：`tableIDs` 是 Set，复制一行会被静默折叠，
+    //    于是「8 条待核」实际欠 9 条，而两侧配对看不出来（review P1-3）
+    let dup = idCount.filter { $0.value > 1 }.keys.sorted()
+    if !dup.isEmpty {
+        bad.append("有编号占了多行（Set 会把重复折叠掉，条目数读不出来）：\(dup)——一条待核事项一行")
+    }
+    let tableIDs = Set(idCount.keys)
+
+    // ── 声明块：一块只管一类词，且块本身要被审 ─────────────────────────────
+    // 上一版是一把不校验内容的万能钥匙：把任何带状态词与判定说法的正文包进
+    // `<!-- 状态词表 -->` 就全绿，块里空无一字也算声明（review P1-1）。
+    // 放行靠声明是对的，但声明必须真是那份词汇定义，而且只放行它定义的那一类词。
+    func declaredBlock(_ label: String, requires: [String], maxLines: Int, allowsVerdicts: Bool) -> Set<Int> {
+        let openMark = "<!-- \(label) -->", closeMark = "<!-- /\(label) -->"
+        guard let o = trimmed.firstIndex(of: openMark) else {
+            if requires.isEmpty == false {
+                bad.append("三种状态名的词汇定义必须包在 \(openMark) 块里——放行靠声明，不靠小节位置")
+            }
+            return []
+        }
+        guard let c = trimmed.firstIndex(of: closeMark), c > o else {
+            bad.append("\(openMark) 没有配对的 \(closeMark)——划不出范围，等于把后文整段划成免检区")
+            return []
+        }
+        let inner = Array((o + 1)..<c)
+        if inner.allSatisfy({ trimmed[$0].isEmpty }) {
+            bad.append("\(openMark) 是空块——空豁免键不算词汇定义"); return Set(inner)
+        }
+        if inner.count > maxLines {
+            bad.append("\(openMark) 块有 \(inner.count) 行（上限 \(maxLines)）——声明块是给词汇定义用的，"
+                        + "写这么长是在给整节开免检区")
+        }
+        let body = inner.map { lines[$0] }.joined(separator: "\n")
+        if !boldIDs(body).isEmpty {
+            bad.append("\(openMark) 块里出现了编号引用——条目定性只能写在清单表的状态列")
+        }
+        // 认**带反引号**的形态：声明块的要务是「定义这个词」，不是「用它说句话」。
+        // 不这么窄的话，把任意一段带三个状态词的散文包进块里就全绿（review P1-1）
+        for w in requires where !body.contains("`\(w)`") {
+            bad.append("\(openMark) 块里没有以 `\(w)` 的形式定义这个词——豁免键必须就是那份定义本身")
+        }
+        if !allowsVerdicts {
+            for m in verdictWords where body.contains(m) {
+                bad.append("\(openMark) 块里用「\(m)」下了判定——定义块只放行词汇，不放行结论")
+            }
+        }
+        return Set(inner)
+    }
+    let statusZone = declaredBlock("状态词表", requires: allowed, maxLines: 4, allowsVerdicts: false)
+    let quoteZone = declaredBlock("禁词说明", requires: [], maxLines: 6, allowsVerdicts: true)
+
+    // 合法区按**行号**而不是行内容划：同形表行若按内容豁免，会在文档之间互相放行。
+    let tableRegion = Set(h..<max(h + 1, rowCursor))
+    func isLegal(_ n: Int, zone: Set<Int>) -> Bool { tableRegion.contains(n) || zone.contains(n) }
+
+    // ── 配对：正文引用的编号 ↔ 表格里的编号 ────────────────────────────────
+    let body = lines.enumerated().filter { !isLegal($0.offset, zone: statusZone.union(quoteZone)) }
+        .map(\.element).joined(separator: "\n")
+    let bodyIDs = boldIDs(body)
+    let noRow = bodyIDs.subtracting(tableIDs)
+    if !noRow.isEmpty { bad.append("正文引用了清单里没有的编号：\(noRow.sorted())") }
+    let orphan = tableIDs.subtracting(bodyIDs)
+    if !orphan.isEmpty { bad.append("清单里有正文从未引用的编号（等于没人会去核）：\(orphan.sorted())") }
+
+    // ── 第二出口：状态词整篇只许出现在状态列；判定说法整篇禁，证据说法只在清单小节内禁 ──
+    // 清单小节的边界按 `## ` 标题切：上一版的禁词单位是**行**，把判定挪到下一行就看不见；
+    // 改成段之后仍然隔一个空行就绕（review P1-5）。所以这里干脆不按段——判定类整篇扫。
+    let secStart = trimmed.firstIndex { $0.hasPrefix("## ") && $0.contains("待核实") }
+    let sectionRange: Range<Int>
+    if let s = secStart {
+        // 下一个 `## ` 才是终点——原先写成 `trimmed.firstIndex{…}` 会找到全文**第一个**二级标题，
+        // 那个通常在清单之前，于是作用域算空，证据类词形同没禁
+        let e = ((s + 1)..<max(s + 1, lines.count)).first { trimmed[$0].hasPrefix("## ") } ?? lines.count
+        sectionRange = (s + 1)..<max(s + 1, e)
+    } else {
+        sectionRange = 0..<0
+    }
+
+    for (n, line) in lines.enumerated() {
+        if isLegal(n, zone: statusZone) { continue }
+        for w in allowed where line.contains(w) { bad.append("第 \(n + 1) 行又写了状态词「\(w)」") }
+        if quoteZone.contains(n) { continue }
+        if line.contains("未证实") { bad.append("第 \(n + 1) 行：「未证实」这个笼统说法回来了") }
+        for m in verdictWords where line.contains(m) {
+            bad.append("第 \(n + 1) 行用判定说法「\(m)」下了个状态——状态只写在清单表的状态列："
+                        + "\(line.prefix(60))")
+        }
+        if sectionRange.contains(n) {
+            for m in evidenceWords where line.contains(m) {
+                bad.append("清单小节里第 \(n + 1) 行出现「\(m)」——它是对**我们**的定性，"
+                            + "对别家正文的陈述请写在厂商那一节")
+            }
+        }
+    }
+    return bad
 }
