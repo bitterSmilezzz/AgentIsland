@@ -72,15 +72,9 @@ public enum URLSchemeRouter {
                 return false
             }
             let agentId = profile.id
-            let eventType: AgentTaskEvent.EventType
-            switch type.lowercased() {
-            case "attention", "wait", "confirm":
-                eventType = .attention
-            case "costspike", "cost", "budget", "alert":
-                eventType = .costSpike
-            default:
-                eventType = .completed
-            }
+            // 与 `POST /notify` 共用同一张表：此前两边各写一份，今天抄得一样，
+            // 但下一格只改一边就是「同一个 type 在深链里红着叫、在 curl 里绿着收」
+            let eventType = AgentTaskEvent.externalType(from: type)
             let event = AgentTaskEvent(
                 agentId: agentId,
                 agentName: profile.name,

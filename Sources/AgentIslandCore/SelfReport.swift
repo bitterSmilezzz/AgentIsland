@@ -747,6 +747,11 @@ public enum SelfReportWire {
     /// 「这条申报没被接受」的状态码，全仓只写这一次。
     /// 服务端连绑定结果（`profileGone`）也取它，否则「400 代表什么」会有第二处书写
     public static let rejectionStatus = 400
+    /// 方法不对（`/session` 只收 POST/DELETE）。写在 Core 是因为它是对外契约的一格，
+    /// 而 `LocalEventHTTP.route` 与服务端都要用它——两处各写一个 405 迟早对不上
+    public static let badMethodStatus = 405
+    /// 引擎还没就绪：服务端自己的状态，不是调用方的错（所以不是 400）
+    public static let noEngineStatus = 503
 
     /// 载荷被拒时回给调用方的 `reason`。
     /// 唯一的非显然规则：**没带凭证时一律 `noToken`**——否则依次试 `{"agent":"claude"}`

@@ -459,6 +459,21 @@ public struct AgentTaskEvent: Identifiable, Equatable {
         case costSpike  // 消耗突增/死循环熔断告警
     }
 
+    /// 外部入口（深链 `agentisland://notify` 与 `POST /notify`）的 `type` → 事件类型。
+    /// 这张表此前有**两份**：深链一份、HTTP 一份，今天两格恰好抄得一样——
+    /// 而「一样」不是不重复的理由：下一格只改一边，就是同一个 `type=alert` 在
+    /// 深链里红着叫、在 curl 里绿着收。判定只许有一个出口。
+    public static func externalType(from raw: String) -> EventType {
+        switch raw.lowercased() {
+        case "attention", "confirm", "wait":
+            return .attention
+        case "costspike", "cost", "budget", "alert":
+            return .costSpike
+        default:
+            return .completed
+        }
+    }
+
     public init(id: UUID = UUID(), agentId: String, agentName: String, eventType: EventType, duration: TimeInterval, timestamp: Date = Date(), pid: Int32? = nil, message: String? = nil, detail: String? = nil, externallyDelivered: Bool = false) {
         self.id = id
         self.agentId = agentId

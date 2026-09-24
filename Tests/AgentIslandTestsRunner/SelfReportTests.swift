@@ -844,8 +844,12 @@ enum SelfReportTests {
             try expectTrue(serverText.contains("SelfReportFallback.post(submission, to: engine)"),
                            "落回要带**这条**申报，不是另造一条空事件")
             // 既有通道一字不改：/notify 与 /event 的分支还在，且仍带未采信标记
-            try expectTrue(serverText.contains(#"path == "/notify" || path == "/event""#),
-                           "/session 是加上去的，不是把 /notify 换掉的")
+            // 路由表本轮下沉到 Core（`LocalEventHTTP.route`），所以这条断言跟着改查那份文件——
+            // 含义没变：`/session` 是加上去的，`/notify` 与 `/event` 的分支还在
+            let httpText = SourceTree.codeOnly(
+                try SourceTree.text(relativePath: "Sources/AgentIslandCore/LocalEventHTTP.swift"))
+            try expectTrue(httpText.contains(#"case ("POST", "/notify"), ("POST", "/event"):"#),
+                           "/session 是加上去的，不是把 /notify 换掉的（路由表现在在 Core）")
             try expectTrue(serverText.contains("externallyDelivered: true"))
             // resetTracking / resetAllTracking / retainTracking 是「推断计时器」的清理入口。
             // 自报被卷进去的那天，用户会发现终止或**停用**一个 Agent 同时也抹掉了

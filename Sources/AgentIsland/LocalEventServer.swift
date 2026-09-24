@@ -23,6 +23,10 @@ public final class LocalEventServer: @unchecked Sendable {
     private let maxLiveConnections = 16
     private let connectionsLock = NSLock()
     private var liveConnections: [ObjectIdentifier: NWConnection] = [:]
+    /// 分块到达的请求按连接累在这里。生命周期跟着 `liveConnections` 走：
+    /// 答完、被回收、超时取消都会清掉（`dismiss` 与 `clearBuffer`），
+    /// 上限由 `LocalEventHTTP.maxRequestBytes` 在解析前判——不然内存跟着对端的手速涨
+    private var buffers: [ObjectIdentifier: Data] = [:]
     private weak var engine: ActivityEngine?
 
     public init(engine: ActivityEngine?) {
@@ -134,6 +138,8 @@ public final class LocalEventServer: @unchecked Sendable {
     private func dismiss(_ connection: NWConnection) {
         connectionsLock.lock(); defer { connectionsLock.unlock() }
         liveConnections[ObjectIdentifier(connection)] = nil
+        // 缓冲跟着连接走：漏一处就是「每条被超时回收的连接都留着一块内存」
+        buffers[ObjectIdentifier(connection)] = nil
     }
 
     private func receiveNext(_ connection: NWConnection) {
@@ -142,98 +148,86 @@ public final class LocalEventServer: @unchecked Sendable {
                 connection.cancel()
                 return
             }
-
-            if let data = data, !data.isEmpty {
-                self.processHTTPPayload(data, connection: connection)
-                self.dismiss(connection)   // processHTTPPayload 各分支都以 cancel 收尾
+            let streamEnded = isComplete || error != nil
+            if let data, !data.isEmpty { self.append(data, to: connection) }
+            let buffer = self.buffer(for: connection)
+            if buffer.isEmpty {
+                // 一条字节都没收到就断开的连接：今天也是直接回收，不回 400——
+                // 对端已经走了，回它只会多一次无意义的写
+                connection.cancel()
+                self.dismiss(connection)
                 return
             }
-
-            if isComplete || error != nil {
-                connection.cancel()
+            if buffer.count > LocalEventHTTP.maxRequestBytes {
+                self.answer(.tooLargeReply, connection: connection)
+                return
+            }
+            switch LocalEventHTTP.parse(buffer, streamEnded: streamEnded) {
+            case .needMoreData:
+                // 分块到达：接着收。上一版在这里回 400「Malformed HTTP request」，
+                // 等于把「TCP 把一条 POST 拆成几段」当成客户端发错了
+                self.receiveNext(connection)
+            case .tooLarge:
+                self.answer(.tooLargeReply, connection: connection)
+            case let .reply(status, body):
+                self.send(connection: connection, status: status, text: body)
+            case let .session(request):
+                self.clearBuffer(connection)
+                self.handleSession(request, connection: connection)
+            case let .notify(request, payload, eventType):
+                self.clearBuffer(connection)
+                self.handleNotify(request, payload: payload, eventType: eventType, connection: connection)
             }
         }
     }
 
-    private func processHTTPPayload(_ data: Data, connection: NWConnection) {
-        guard let text = String(data: data, encoding: .utf8) else {
-            sendResponse(connection: connection, statusCode: 400, body: #"{"success":false,"message":"Invalid encoding"}"#)
-            return
+    /// 把一条请求的字节累到这条连接的缓冲上（上限由调用方判）
+    private func append(_ data: Data, to connection: NWConnection) {
+        connectionsLock.lock(); defer { connectionsLock.unlock() }
+        buffers[ObjectIdentifier(connection), default: Data()].append(data)
+    }
+
+    private func buffer(for connection: NWConnection) -> Data {
+        connectionsLock.lock(); defer { connectionsLock.unlock() }
+        return buffers[ObjectIdentifier(connection)] ?? Data()
+    }
+
+    private func clearBuffer(_ connection: NWConnection) {
+        connectionsLock.lock(); defer { connectionsLock.unlock() }
+        buffers[ObjectIdentifier(connection)] = nil
+    }
+
+    /// 通用端点（含错误回脸）的统一出口：答完就收尾，缓冲跟着连接一起丢
+    private func answer(_ outcome: LocalEventHTTP.Outcome, connection: NWConnection) {
+        switch outcome {
+        case let .reply(status, body):
+            send(connection: connection, status: status, text: body)
+        case .tooLarge:
+            // 413 那句话只在 Core 里写一次，这里只负责把它发出去
+            answer(.tooLargeReply, connection: connection)
+        case .needMoreData:
+            // 调用方说「还没收完」却又要直接作答：这条路径在生产里不存在，
+            // 真走到了按超时回收连接（名额与缓冲一起还）
+            connection.cancel()
+            dismiss(connection)
+        case let .session(request):
+            handleSession(request, connection: connection)
+        case let .notify(request, payload, eventType):
+            handleNotify(request, payload: payload, eventType: eventType, connection: connection)
         }
+    }
 
-        // 简易 HTTP 协议切分
-        let parts = text.components(separatedBy: "\r\n\r\n")
-        guard parts.count >= 2 else {
-            sendResponse(connection: connection, statusCode: 400, body: #"{"success":false,"message":"Malformed HTTP request"}"#)
-            return
-        }
-
-        let headerPart = parts[0]
-        let bodyPart = parts[1...].joined(separator: "\r\n\r\n")
-        let requestLines = headerPart.components(separatedBy: "\r\n")
-        guard let requestLine = requestLines.first else {
-            sendResponse(connection: connection, statusCode: 400, body: #"{"success":false,"message":"Empty request line"}"#)
-            return
-        }
-
-        let tokens = requestLine.components(separatedBy: " ")
-        guard tokens.count >= 2 else {
-            sendResponse(connection: connection, statusCode: 400, body: #"{"success":false,"message":"Invalid request line"}"#)
-            return
-        }
-
-        let method = tokens[0].uppercased()
-        let fullPath = tokens[1]
-        let path = String(fullPath.prefix { $0 != "?" })
-
-        // 跨域预检与健康检查
-        if method == "OPTIONS" {
-            sendResponse(connection: connection, statusCode: 200, body: "OK")
-            return
-        }
-
-        if (path == "/health" || path == "/ping") && method == "GET" {
-            sendResponse(connection: connection, statusCode: 200, body: #"{"status":"ok","service":"agentisland"}"#)
-            return
-        }
-
-        if path == "/session" {
-            handleSession(method: method, headerPart: headerPart, body: bodyPart,
-                          query: SelfReportQuery.parse(from: fullPath),
-                          connection: connection)
-            return
-        }
-
-        guard method == "POST" && (path == "/notify" || path == "/event") else {
-            sendResponse(connection: connection, statusCode: 404, body: #"{"success":false,"message":"Not Found"}"#)
-            return
-        }
-
-        guard let bodyData = bodyPart.data(using: .utf8),
-              let req = try? JSONDecoder().decode(CLINotifyRequestDTO.self, from: bodyData) else {
-            sendResponse(connection: connection, statusCode: 400, body: #"{"success":false,"message":"Invalid JSON payload. Expected CLINotifyRequestDTO"}"#)
-            return
-        }
-
-        let eventType: AgentTaskEvent.EventType
-        switch req.type.lowercased() {
-        case "attention", "confirm", "wait":
-            eventType = .attention
-        case "costspike", "cost", "budget", "alert":
-            eventType = .costSpike
-        default:
-            eventType = .completed
-        }
-
+    private func handleNotify(_ request: LocalEventHTTP.Request, payload: CLINotifyRequestDTO,
+                              eventType: AgentTaskEvent.EventType, connection: NWConnection) {
         let event = AgentTaskEvent(
-            agentId: req.agent,
-            agentName: req.agent,
+            agentId: payload.agent,
+            agentName: payload.agent,
             eventType: eventType,
             duration: 0,
             timestamp: Date(),
             pid: nil,
-            message: req.message,
-            detail: req.detail,
+            message: payload.message,
+            detail: payload.detail,
             // 这条路径与深链一样是「本机任意进程都能写」的入口：不带标记的话，
             // 岛内看不出是伪造的，远程外发的「外部投递一律不转发」闸门也会失效
             // （外发没有 shouldPeek 那类分级，直接就把文字送出去了）
@@ -245,10 +239,7 @@ public final class LocalEventServer: @unchecked Sendable {
         }
 
         let resultDTO = CLINotifyResultDTO(success: true, eventId: event.id.uuidString, message: "Event accepted")
-        let responseData = (try? JSONEncoder().encode(resultDTO)) ?? Data()
-        let responseString = String(data: responseData, encoding: .utf8) ?? #"{"success":true}"#
-
-        sendResponse(connection: connection, statusCode: 200, body: responseString)
+        send(connection: connection, status: 200, text: LocalEventHTTP.json(resultDTO))
     }
 
     // MARK: - 可信自报入口（02 号票 / spec 第 3 节）
@@ -259,23 +250,19 @@ public final class LocalEventServer: @unchecked Sendable {
     // 令牌在这里只以一枚 `SelfReportCredential?` 的形式存在：那个类型的 init 是 internal，
     // 本 target 构造不出「已授权」，也写不出 `tokenAccepted: true` 这种拼写。
 
-    private func handleSession(method: String, headerPart: String, body: String,
-                               query: SelfReportQuery, connection: NWConnection) {
-        guard method == "POST" || method == "DELETE" else {
-            send(connection: connection, status: 405, text: json(
-                CLISessionResultDTO(bound: false, reason: .badMethod,
-                                    message: "/session 只接受 POST（声明/续报）与 DELETE（撤销）")))
-            return
-        }
-        let providedToken = SelfReportHeaders.value(headerPart, name: SelfReportTokenStore.headerName)
-        let bodyData = Data(body.utf8)
+    private func handleSession(_ request: LocalEventHTTP.Request, connection: NWConnection) {
+        // 方法白名单在 `LocalEventHTTP.route` 里判（那里回 405），走到这里必然是 POST/DELETE
+        let method = request.method
+        let providedToken = SelfReportHeaders.value(request.headerPart,
+                                                    name: SelfReportTokenStore.headerName)
+        let bodyData = Data(request.body.utf8)
+        let query = SelfReportQuery.parse(from: request.fullPath)
         // 注册表、令牌、绑定判定都在引擎那一侧（@MainActor），所以整条处理走一次跳转：
         // 若把令牌校验留在本队列上先判，就得让服务端自己持有第二份令牌文件句柄
         Task { @MainActor in
             guard let engine = self.engine else {
                 // 引擎没就绪是**服务端**的状态，不该报成调用方的请求有问题（503 而不是 400）
-                self.send(connection: connection, status: 503, text: self.json(CLISessionResultDTO(
-                    bound: false, reason: .noEngine, message: "引擎尚未就绪，本条未被记录")))
+                self.answer(.noEngineReply, connection: connection)
                 return
             }
             let credential = engine.authorizeSelfReport(providedToken)
@@ -284,7 +271,7 @@ public final class LocalEventServer: @unchecked Sendable {
                 // 没带凭证就**先不解析正文**：否则 400/`unknownAgent` 与 200/`noToken`
                 // 的差集就是「这台机器装了哪些 Agent」的免费清单（POST 那边同理，见下）
                 guard let credential else {
-                    self.send(connection: connection, status: SelfReportWire.untrustedStatus, text: self.json(
+                    self.send(connection: connection, status: SelfReportWire.untrustedStatus, text: LocalEventHTTP.json(
                         CLISessionRevokeDTO(revoked: false, reason: SelfReportWire.untrustedReason)))
                     return
                 }
@@ -295,7 +282,7 @@ public final class LocalEventServer: @unchecked Sendable {
                     // 所以载荷为什么被拒可以照实说
                     self.send(connection: connection,
                               status: SelfReportWire.status(for: rejection.reason),
-                              text: self.json(CLISessionRevokeDTO(
+                              text: LocalEventHTTP.json(CLISessionRevokeDTO(
                                 revoked: false,
                                 reason: SelfReportWire.reason(for: rejection.reason, trusted: true))))
                 case .success(let id):
@@ -303,11 +290,11 @@ public final class LocalEventServer: @unchecked Sendable {
                                                    credential: credential) {
                     case .notFound:
                         // 「没有这条记录」进枚举，人话另给：脚本 switch reason，读 message 的是人
-                        self.send(connection: connection, status: 200, text: self.json(
+                        self.send(connection: connection, status: 200, text: LocalEventHTTP.json(
                             CLISessionRevokeDTO(revoked: false, reason: .notFound,
                                                 message: "没有这条申报（可能从来没有，也可能已被容量/保质期收走）")))
                     case .revoked:
-                        self.send(connection: connection, status: 200, text: self.json(
+                        self.send(connection: connection, status: 200, text: LocalEventHTTP.json(
                             CLISessionRevokeDTO(revoked: true)))
                     }
                 }
@@ -329,7 +316,7 @@ public final class LocalEventServer: @unchecked Sendable {
                     message += "带上有效令牌才会回具体原因（无凭据的请求一律只报 noToken，"
                         + "免得注册表被当字典查）。落回通道也因此没走。"
                 }
-                self.send(connection: connection, status: SelfReportWire.untrustedStatus, text: self.json(
+                self.send(connection: connection, status: SelfReportWire.untrustedStatus, text: LocalEventHTTP.json(
                     CLISessionResultDTO(bound: false, reason: SelfReportWire.untrustedReason,
                                         message: message)))
                 return
@@ -340,7 +327,7 @@ public final class LocalEventServer: @unchecked Sendable {
                 if case .rejected(let reason, let detail) = parsed {
                     self.send(connection: connection,
                               status: SelfReportWire.status(for: reason),
-                              text: self.json(CLISessionResultDTO(
+                              text: LocalEventHTTP.json(CLISessionResultDTO(
                                 bound: false,
                                 reason: SelfReportWire.reason(for: reason, trusted: true),
                                 message: detail)))
@@ -355,37 +342,32 @@ public final class LocalEventServer: @unchecked Sendable {
                 // 拿**这条申报**的到期时刻，不是「该 Agent 最晚过期的那条」
                 let record = engine.selfReportRecord(agentID: submission.agentID,
                                                      sessionID: submission.sessionID)
-                self.send(connection: connection, status: 200, text: self.json(CLISessionResultDTO(
+                self.send(connection: connection, status: 200, text: LocalEventHTTP.json(CLISessionResultDTO(
                     bound: true, expiresAt: record.map { $0.expiresAt.timeIntervalSince1970 })))
             case .pidMismatch(let why):
-                self.send(connection: connection, status: 200, text: self.json(
+                self.send(connection: connection, status: 200, text: LocalEventHTTP.json(
                     CLISessionResultDTO(bound: false, reason: .pidMismatch, message: why)))
             case .profileGone(let why):
-                self.send(connection: connection, status: SelfReportWire.rejectionStatus, text: self.json(
+                self.send(connection: connection, status: SelfReportWire.rejectionStatus, text: LocalEventHTTP.json(
                     CLISessionResultDTO(bound: false, reason: .profileGone, message: why)))
             }
         }
     }
 
     private func send(connection: NWConnection, status: Int, text: String) {
+        // 答出去就等于这条连接用完了：**先腾出名额再写**。
+        // `maxLiveConnections` 只有 16，漏一处回收就是「服务用满 16 条之后把所有 notify 关在门外」——
+        // 上一版靠调用方在 processHTTPPayload 之后统一 dismiss，改成异步分支后那条兜底没了，
+        // 所以清理必须挂在唯一的出口上，而不是挂在每个调用点
+        dismiss(connection)
         sendResponse(connection: connection, statusCode: status, body: text)
-    }
-
-    private func json<T: Encodable>(_ dto: T) -> String {
-        String(data: (try? JSONEncoder().encode(dto)) ?? Data(), encoding: .utf8) ?? "{}"
     }
 
 
     private func sendResponse(connection: NWConnection, statusCode: Int, body: String) {
-        // 逐码给文案：405 报成 "Bad Request" 会让接入方以为是自己 body 写错了
-        let statusText: String
-        switch statusCode {
-        case 200: statusText = "OK"
-        case 404: statusText = "Not Found"
-        case 405: statusText = "Method Not Allowed"
-        case 503: statusText = "Service Unavailable"
-        default: statusText = "Bad Request"
-        }
+        // 原因短语的表在 Core（`LocalEventHTTP.statusText`）：状态码是对外契约的一格，
+        // 写在这份链接不到测试的 target 里，新增一格就会静默降级成 "Bad Request"
+        let statusText = LocalEventHTTP.statusText(for: statusCode)
         let bodyData = body.data(using: .utf8) ?? Data()
         let headers = [
             "HTTP/1.1 \(statusCode) \(statusText)",

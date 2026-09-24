@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.132** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.133** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 
@@ -86,6 +86,7 @@
 - **本地 Webhook**：`127.0.0.1:41999`。
   - `POST /notify`、`/event`：供 CI 或脚本毫秒级直推事件。**无鉴权**，只靠「仅监听回环」限制来源，岛内标为「外部投递」，不外送。
   - `POST /session`、`DELETE /session`：给智能体自己上报生命周期（working / idle / attention / completed）并带 TTL。要出示令牌 `X-AgentIsland-Token`，值在 `~/Library/Application Support/AgentIsland/report.token`（`0600`，同机用户可读得懂的文件形态都会被打回）。TTL 钳在 15–600 秒（默认 90），到期只盖章不删除——之后那个会话的状态重新由进程表推断。没有令牌的申报不丢：落回上面那条无鉴权通道，带「未采信」标记。可声明的状态只有四种，认不出就 400，绝不猜。
+  - 请求形状：单条请求上限 64KB，越过回 413 并说明上限；分块到达的正文按 `Content-Length` 收齐再判，没收齐不作答（连接断了才回 400）。`type` 的取值深链与 HTTP 共用同一张表：`attention`/`confirm`/`wait` 是待确认，`costspike`/`cost`/`budget`/`alert` 是告警，其余按完成。
 - **死锁判定是三态，不是两态**：`isHung` 有「卡死 / 不卡死 / 本轮判不出」三种。判据是「CPU 连续 70% 以上达 5 分钟」，所以资格取决于**对这个进程连续观测了多久**——由引擎写在快照里，不给调用方自报的余地。`check` / `clean` / `status` / `report` / `doctor` 这些一次性入口因此一律是「判不出」：明说「本次未评估」，评级给「观测不全」，JSON 里 `isHung` 为 `null`（不是 `false`）。要死锁结论只能用持续观测的入口（灵动岛工作台、`top`）。
 - **孤儿判定要证据**：`ppid == 1` 分不清「终端关掉的遗孤」和「launchd 刻意托管的常驻服务」，两者进程表长得一样。规则是会话目录 10 分钟内仍有写入就算活着、不报孤儿；宁漏不错杀。这条与上一条在 UI 与 CLI 之间共用同一份实现。
 

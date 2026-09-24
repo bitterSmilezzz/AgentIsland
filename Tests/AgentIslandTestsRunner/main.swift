@@ -27,6 +27,7 @@ func runAllTests() -> Int32 {
     RemoteNotifyTests.register()
     DebtPayoffTests.register()
     SelfReportTests.register()
+    LocalEventHTTPTests.register()
     CleanerTests.register()
     VisibilityTests.register()
     ConfigTests.register()
