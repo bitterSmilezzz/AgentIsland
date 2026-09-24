@@ -75,6 +75,16 @@
   按两处一起替换（m47b）就红了。教训：**变异脚本必须报锚点命中数**，命中多于 1 处的锚点
   要么全替、要么拆成两条独立变异——否则会把「我没改到」误报成「这条断言是假的」。
 
+- **真机验收（发版后当场跑，套件做不到——被测的胶水在 executable target 里）**：
+  对 `127.0.0.1:41999` 用 Python 直写 socket，五条：
+  ① 请求**切在头部中间**分两块发 ⇒ `200 OK` + `Event accepted`（这一条在修之前是
+  `400 Malformed HTTP request`）；② 切在**正文中间且落在一个汉字里** ⇒ 同样 `200`
+  （修之前是 `400 Invalid encoding`）；③ 一次发完作对照 ⇒ `200`；
+  ④ 70KB 的请求 ⇒ `HTTP/1.1 413 Payload Too Large` 与那句带上限的说明
+  （原因短语这一格是新加的，`default` 会把它降级成 `Bad Request`）；
+  ⑤ **连发 30 条 `/health` 全部 200** —— 这一条验的就是外部 review 报的那个名额泄漏：
+  不回收 `liveConnections` 的话第 17 条开始就会被 `maxLiveConnections` 挡在门外。
+
 - **外部 review：Codex CLI（`codex review --uncommitted`），连续第 2 轮非退化路径。**
   报出 **1 条 P2、无 P0/P1/P3**：终态响应不回收按连接存的缓冲与 `liveConnections` 名额
   （比内存更紧的后果是 16 条之后本机端点自己关门）。**本轮已修**，且是两条独立路径同时指向它——
