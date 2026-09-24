@@ -3,6 +3,8 @@
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
 > 本文档描述 **v0.0.129** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+>
+> 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 
 ## 能看见什么
 
@@ -150,6 +152,9 @@ AGENTISLAND_DEBUG=1 open dist/AgentIsland.app && tail -f /tmp/agentisland.log
 ```
 AgentIsland/
 ├── Package.swift                     # 5 target：Core 库 + App + CLI + IslandMetricsKit + 测试 runner
+├── site/                             # GitHub Pages 主页（纯静态，Actions 从 site/ 部署）
+│   ├── index.html                    # 功能导览与截图（深浅两套外观）
+│   └── assets/screens/               # 逐张核对过不含个人路径与会话正文的截图
 ├── scripts/
 │   ├── build-app.sh                  # .app 打包（无 Xcode 环境）
 │   ├── scan-secrets.sh               # 提交/发版前的密钥与个人信息门禁（棘轮式 baseline）

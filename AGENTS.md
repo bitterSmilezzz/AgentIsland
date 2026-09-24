@@ -38,6 +38,7 @@ scripts/release.sh <X.Y.Z> "<CHANGELOG 首条那句话>"
 | `CONTEXT.md` / `docs/adr/` | 口径、术语、长期决策 | 版本历史 |
 | `docs/research/` | 一手核实记录：正文原句或本机实样 + 取证命令 | 没出处的推断（写成推断要标出来） |
 | `docs/code-review/` | 每轮改动的独立 review：`YYYY-MM-DD-HHMM-v<版本>-<审查者>.md`，随该轮一起入库 | 事后改写已提交的报告（它是时间点证据） |
+| `site/` | 对外主页：功能导览 + 截图（GitHub Pages，Actions 从 `site/` 部署） | 逐版流水（那是 CHANGELOG）、没逐张核对过内容的屏幕截图 |
 
 README 里出现「此前」「不再」「v0.0.x」「本机实测 N 条」即为跑题；写功能，不写流水。已知限制条目必须**逐条对着代码核实**再留着——过期的限制比没有限制更误导人。
 
