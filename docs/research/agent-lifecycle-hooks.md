@@ -23,7 +23,7 @@ Code 的配置**；Roo Code 是唯一一条「按现行官方文档无此能力�
 > **本文的核实纪律**（第一版在这里栽过一次）：`本机没有配置文件` 与 `官方没有这个能力`
 > 是两个命题。第一版把前者当成后者，把 Qoder / Cursor / Trae / Cline 全记成「排除」，
 > 而它们都有公开正文。现在每家都必须落到「抓到的正文原句」或「本机实样」上，
-> 两者都没有的，进文末「待核实清单」并标状态（`未找到出处` / `待逐字复核` / `待真机实测`），
+> 两者都没有的，进文末「待核实清单」领一个编号并标状态（状态的分类与出路见那张表），
 > 不许进实现，也不许用一个笼统的词糊过去。
 
 ## 为什么「载体是什么」比「有没有埋点」重要
@@ -57,7 +57,7 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
 - **本机实样（交叉验证）**：`~/.claude/settings.json` 里确有
   `hooks.UserPromptSubmit[].hooks[] = {type: "command", command: "codegraph prompt-hook"}`
   （第三方工具 codegraph 于 2026-08-28 写入）⇒ 与文档形状一致，不是只信了文档。
-- **无头模式**：文档摘要称 `claude -p` 下 hooks 会执行，但**逐事件是否都触发没有逐条出处** ⇒ **V2**（待真机实测）。
+- **无头模式**：`claude -p` 下是否逐事件触发 ⇒ **V2**。
 - **接入片段**（`~/.claude/settings.json`，桥到 spec §3 的 `/session`）：
 
   ```json
@@ -103,7 +103,7 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
 - **本机实样**：`~/.codex/hooks.json` 存在（2026-09-06，同为 codegraph 写入，形状与
   Claude Code 一致）；`~/.codex/config.toml` 首行即 `notify = […​, "turn-ended", …]`；
   MCP 面在 `[mcp_servers.*]`。
-- **无头模式**：`codex exec` 下 hooks 是否触发**未找到正文依据** ⇒ **V3**。
+- **无头模式**：`codex exec` 下是否触发 ⇒ **V3**。
 
 ## OpenCode —— 唯一给到「确定终态」的一家
 
@@ -147,7 +147,7 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
   `127.0.0.1:41999/session`，令牌用 header 插值带进去。这是五家里唯一「配置即接入」的一家。
 - **本机实样**：`~/.qoder/settings.json` 只有 `enabledPlugins` 一个键 ⇒ 机制存在、本机未配置。
   （上一版把这条观察写成了「Qoder 无可配置面」，那是错的：本机没配 ≠ 官方没有。）
-- **无头模式**：文档未提 headless 下是否触发 ⇒ **V4**（未找到出处）。
+- **无头模式**：headless / 脚本模式下是否触发 ⇒ **V4**。
 
 ## Cursor —— 有，但事件词汇与 Claude 家不同构
 
@@ -168,8 +168,8 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
   `CURSOR_USER_EMAIL`、`CURSOR_TRANSCRIPT_PATH`、`CURSOR_CODE_REMOTE`，还兼容 `CLAUDE_PROJECT_DIR`。
 - **云端**：调研记录称仓库里的 `.cursor/hooks.json` 会被 cloud agents 执行、而 `~/.cursor/` 那份
   不可用；本轮抓取的正文只确认到「cloud agents 跑仓库里的 command hooks」那一句
-  ⇒ 后半句是二手转述，**V5b**（待逐字复核）。
-- **无头模式**：`agent -p`（Headless/CI 页）正文未出现 hooks ⇒ **V5a**（未找到出处）。
+  ⇒ 后半句的原文位置见 **V5b**。
+- **无头模式**：`agent -p`（Headless/CI）下是否触发 ⇒ **V5a**。
 
 ## Trae —— 直接读 Claude Code 的配置
 
@@ -183,15 +183,14 @@ spec 判断 ①：生命周期不能交给 MCP 工具调用，因为调不调是
   `Notification` 原文注明"triggered asynchronously and does not block the main process"，
   触发条件是「工具调用等确认」或「任务完成」——**一个事件同时覆盖 attention 与 completed**，
   桥接时不能只按事件名定 state，得读载荷。
-- 该页未列 stdin 契约与 matcher 适用范围（另有 configuration reference 页）⇒ **V6**（待逐字复核）。
+- **stdin 契约与 matcher 适用范围** ⇒ **V6**（在 configuration reference 页）。
 
 ## Cline —— 有 lifecycle hooks 入口，细节本轮没核完
 
 出处：`docs.cline.bot/cli/cli-reference`（2026-09-23 抓取）。正文确认的只有：CLI 的
 `--hooks-dir <path>`、环境变量 `CLINE_HOOKS_DIR`（默认 `~/.cline/hooks`）、项目级
 `.cline/hooks/` 的 "Lifecycle hooks"。**事件名、stdin/stdout 契约、`--yolo` 下是否禁用**
-都在别的页（后台调研指向 `cline/sdk/examples/hooks/README.md`），本轮没逐字复核 ⇒ **V7**
-（待逐字复核），不给接入片段。
+都在别的页（后台调研指向 `cline/sdk/examples/hooks/README.md`）⇒ **V7**，本轮不给接入片段。
 
 ## Roo Code —— 唯一一条真正的「无文档证据」
 
@@ -224,8 +223,8 @@ GitHub issue #10834 标题提到过 `PreToolUse`/`PostToolUse` hooks，属历史
    ⇒ **白名单必须显式写**：默认「全允许」意味着 `headers` 里任何 `${VAR}` 都能把任意环境
    变量插值出去，而这条配置的作用恰恰是「往一个端口送令牌」。少写这一个字段不是少一层
    保险，是把令牌面的最小权限直接关掉。
-   反过来，**不在白名单里的变量会怎样**（丢 header / 置空 / 整条拒绝）正文没说 ⇒ **V1**，
-   P0 当天实测，别按「应该会拒绝」来设计。
+   反过来，**不在白名单里的变量会怎样**（丢 header / 置空 / 整条拒绝）⇒ **V1**，
+   别按「应该会拒绝」来设计。
    ⇒ §3 的 `/session` 必须能直接吃 hook 形状的事件 JSON（字段名与 stdin 那套一致），
    否则「配置即接入」这条最省的路要用不上。
 1c. **Cursor 单独一张事件名映射表**（camelCase：`sessionStart` / `stop` / `preToolUse`…），
@@ -247,9 +246,13 @@ GitHub issue #10834 标题提到过 `PreToolUse`/`PostToolUse` hooks，属历史
 
 上一版的三条未完成项只以散文散在正文里，没编号、没状态、没复核方式——结果是「Cline 那条
 到底核完没有」必须通读全文才能判断，而重复劳动已经发生过一次（v0.0.125 把有正文的四家
-误判成排除）。所以这里给每条一个编号，并**把「未证实」拆成三种状态**：
+误判成排除）。所以这里给每条一个编号，并把那个笼统的说法拆成三种状态：
+<!-- 状态词表 -->
 `未找到出处`（搜过、没有）· `待逐字复核`（有出处线索、本轮没打开原文）· `待真机实测`
 （文档说了但没逐事件/逐入口验证，或行为只能实测）。
+<!-- /状态词表 -->
+这个块是断言唯一放行的正文侧状态词出口：**靠声明放行，不靠小节位置**——定义搬到哪儿都合法，
+标记丢了会红。
 
 | 编号 | 待核实 | 状态 | 复核方式 |
 | :--- | :--- | :--- | :--- |
@@ -263,8 +266,12 @@ GitHub issue #10834 标题提到过 `PreToolUse`/`PostToolUse` hooks，属历史
 | **V7** | Cline 的事件名、stdin/stdout 契约、`--yolo` 是否禁用 hooks | 待逐字复核（在别的页与仓库 README） | 抓 `docs.cline.bot` hooks 相关页 + `cline/sdk/examples/hooks/README.md` |
 
 **归属**：V1–V4 在 02 号票（`/session` 协议）打通当天一起测——那时正好有真实的接收端；
-V5–V7 属于 P3 铺开范围，不阻断 P0。**清单与正文的关系**：正文里写 `⇒ **V#**` 的地方就是
-本表对应行，任何一条核完要**同时**改正文状态与本表，否则等于没改。
+V5–V7 属于 P3 铺开范围，不阻断 P0。
+**清单是状态的唯一出口**：正文只写「问哪件事 + `⇒ **V#**`」，证据与状态一律在表里。
+上一版删掉了 6 处括号里的状态词，却把同一个判断留在括号外（「本轮没逐字复核」「未找到正文依据」），
+而断言只数那三个词的字面量——它绿着，第二出口还在。**改写不等于拆掉**。
+**收口动作**：核完一条就删掉那一行，并把结论与日期写进对应的票与 CHANGELOG。表里三个状态
+都是「未完成」态，没有「已核实」可填，所以删行是唯一合法收口——别往状态格里自造第四种词。
 
 ## 复现这些结论的命令
 
