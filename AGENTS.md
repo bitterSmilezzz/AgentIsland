@@ -37,10 +37,18 @@ scripts/release.sh <X.Y.Z> "<CHANGELOG 首条那句话>"
 | `CHANGELOG.md` | 每个版本改了什么、为什么、代价与被否决的方案 | 功能全景（会长成第二份 README） |
 | `CONTEXT.md` / `docs/adr/` | 口径、术语、长期决策 | 版本历史 |
 | `docs/research/` | 一手核实记录：正文原句或本机实样 + 取证命令 | 没出处的推断（写成推断要标出来） |
+| `docs/research/ui/` | 外部动效案例库：手法 + 可迁移规则 + 一手证据 + 应用建议，四节写全 | 待办清单（那是 issue tracker）、已定案的长期口径（该进 CONTEXT 或 ADR） |
 | `docs/code-review/` | 每轮改动的独立 review：`YYYY-MM-DD-HHMM-v<版本>-<审查者>.md`，随该轮一起入库 | 事后改写已提交的报告（它是时间点证据） |
 | `site/` | 对外主页：功能导览 + 截图（GitHub Pages，Actions 从 `site/` 部署） | 逐版流水（那是 CHANGELOG）、没逐张核对过内容的屏幕截图 |
+| `docs/workbench/` | 一次大改造的现状/目标/方案/计划四件套，随改造推进更新 | 逐版流水（那是 CHANGELOG）、已定案的长期口径（该进 CONTEXT 或 ADR） |
 
 README 里出现「此前」「不再」「v0.0.x」「本机实测 N 条」即为跑题；写功能，不写流水。已知限制条目必须**逐条对着代码核实**再留着——过期的限制比没有限制更误导人。
+
+`docs/workbench/` 是**进行中的大改造**的作战文档，四件套分工：`01` 现状（全部核实过）、`02` 目标与非目标、`03` 技术方案、`04` 分 Phase 计划。改造定案的结论要往 `CONTEXT.md` / `docs/adr/` 沉淀，不要让 workbench 长成第二份长期口径。
+
+`docs/research/ui/` 是**外部动效案例库**（索引见其 README）：每篇固定四节——技术手法与源码级细节、可迁移的决策规则、一手证据/本地验证结果、应用建议清单。它记录"看见了什么、能搬什么"，**不排期**；要做哪条就开 issue，别把案例库读成待办板。
+
+正在进行的改造（跨平台工作台：双形态 + CC Switch + ToDos）见 [docs/workbench/README.md](docs/workbench/README.md)。
 
 ### 数据脱敏红线（提交与发版前必查）
 

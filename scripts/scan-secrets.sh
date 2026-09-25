@@ -13,8 +13,14 @@
 #   scripts/scan-secrets.sh --release    # 工作区 + 全部 git 对象（发版前）
 #   scripts/scan-secrets.sh --history    # 只扫 git 对象
 #   scripts/scan-secrets.sh --rebaseline # 人工核对后重写 baseline
+#
+# ── 铁律：这个脚本只能「真的扫完了」才说通过 ────────────────────────────────
+# 曾经有两处失败是静默的，症状都是「什么都没扫，却打印 ✓」：
+#   1. `cd` 与 `git` 失败后 file_list 输出空列表，下游把空列表当「无待扫文件」放行；
+#   2. 中间文件（HITS / 文件列表）的写入失败没人接，空文件被读成「零命中」。
+# 两者都由 put / load_file_list 兜住：任何一步失败就 exit 3，绝不放行。
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "✗ 进不了仓库根目录" >&2; exit 3; }
 
 MODE="${1:-worktree}"
 case "$MODE" in
@@ -53,6 +59,16 @@ is_hard() { local r; for r in "${HARD[@]}"; do [[ "$r" == "$1" ]] && return 0; d
 # 命中内容不回显原文：截断 + 打码，密钥不会因此进到终端或 CI 日志里
 redact() { LC_ALL=C sed -E 's/[A-Za-z0-9_./+=~-]{9,}/«masked»/g' | cut -c1-100; }
 
+# 所有中间文件的写入出口：先写临时文件再改名，且每一步失败都必须让脚本失败。
+# 空文件在这里是「扫描没跑完」的信号，不是「零命中」的信号——下游分不清这两者。
+put() {
+    local dest="$1"; shift
+    local tmpf="${dest}.new"
+    : > "$tmpf" 2>/dev/null || { echo "✗ 建不了临时文件 $tmpf" >&2; exit 3; }
+    "$@" > "$tmpf"   || { echo "✗ 生成 $tmpf 失败（$*）" >&2; rm -f "$tmpf"; exit 3; }
+    mv -f "$tmpf" "$dest" || { echo "✗ 替换 $dest 失败" >&2; rm -f "$tmpf"; exit 3; }
+}
+
 file_list() {
     if [[ "$1" == staged ]]; then
         git diff --cached --name-only --diff-filter=ACM
@@ -63,9 +79,28 @@ file_list() {
     fi
 }
 
+# 取待扫文件列表。git 自己失败或列表为空都必须失败——「没扫到文件」不是「没有敏感内容」。
+load_file_list() {
+    local mode="$1" raw rc
+    raw=/tmp/scan-secrets-files.raw
+    file_list "$mode" > "$raw"
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+        echo "✗ 取文件列表失败（git 退出码 $rc）。目录不对还是仓库坏了？门禁不放行。" >&2
+        exit 3
+    fi
+    # 只保留还存在于工作区的条目：git 跟踪但文件已删的（submodule 未初始化等）不是扫描失败
+    put /tmp/scan-secrets-files.txt awk 'NF && (system("test -e \"" $0 "\"") == 0)' "$raw"
+    if [[ ! -s /tmp/scan-secrets-files.txt ]]; then
+        echo "✗ 待扫文件列表为空：这个仓库里一个存在且被 git 认得的文件都没有。" >&2
+        echo "  这不是「没有敏感内容」，而是「什么都没扫」——门禁不放行。" >&2
+        exit 3
+    fi
+}
+
 scan_worktree() {
-    : > "$HITS"
-    local idx rule pat f content ln
+    : > "$HITS" 2>/dev/null || { echo "✗ 初始化 $HITS 失败" >&2; exit 3; }
+    local idx rule pat f content ln row
     for idx in "${!RULE_IDS[@]}"; do
         rule="${RULE_IDS[$idx]}"; pat="${RULE_PAT[$idx]}"
         while IFS= read -r f; do
@@ -73,20 +108,30 @@ scan_worktree() {
             while IFS= read -r match; do
                 ln="${match%%:*}"; content="${match#*:}"
                 [[ "$content" == *"nosec:"* ]] && continue   # 就地豁免，理由必须写在同一行
-                printf '%s|%s|%s|%s\n' "$rule" "$f" \
+                # 掩码放在写盘前：HITS 里永远不出现密钥原文
+                row=$(printf '%s|%s|%s|%s\n' "$rule" "$f" \
                     "$(printf '%s' "$content" | cksum | cut -d' ' -f1)" \
-                    "$(printf '%s' "$content" | redact)" >> "$HITS"
+                    "$(printf '%s' "$content" | redact)" | tr '\n' ' ') || exit 3
+                printf '%s\n' "${row% }" >> "$HITS" || { echo "✗ 追加 $f:$ln 命中失败" >&2; exit 3; }
             done < <(LC_ALL=C grep -InE -- "$pat" "$f" 2>/dev/null)
         done < /tmp/scan-secrets-files.txt
-        sort -u "$HITS" -o "$HITS"
+        # 去重走临时文件再改名：对同一文件 in-place sort 是曾经静默产出空文件的那一步
+        put "$HITS" sort -u "$HITS"
     done
 }
 
 report_worktree() {
     local new hard_new baseline
     baseline=/tmp/scan-secrets-baseline.txt
-    grep -v '^#' "$BASELINE" 2>/dev/null | cut -d'|' -f1-3 | sort -u > "$baseline" || : > "$baseline"
-    new=$(comm -23 <(cut -d'|' -f1-3 "$HITS" | sort -u) "$baseline")
+    put "$baseline" grep -v '^#' "$BASELINE" 2>/dev/null || : > /dev/null
+    # 允许基线文件不存在（等价于「一条都没备过案」），但不存在时不许当成零命中
+    if [[ ! -e "$BASELINE" ]]; then
+        echo "✗ 找不到基线 $BASELINE——没有基线就无法判断「新增」，门禁不放行。" >&2
+        return 1
+    fi
+    local baseline_tmp=/tmp/scan-secrets-baseline.txt
+    grep -v '^#' "$BASELINE" 2>/dev/null | cut -d'|' -f1-3 | sort -u > "$baseline_tmp"
+    new=$(comm -23 <(cut -d'|' -f1-3 "$HITS" | sort -u) "$baseline_tmp")
     if [[ -z "$new" ]]; then
         echo "✓ 工作区：$(wc -l < "$HITS" | tr -d ' ') 条命中全部已备案，无新增"
         return 0
@@ -109,13 +154,11 @@ report_worktree() {
 blob_stream() {
     [[ -s "$BLOBSTREAM" && -s /tmp/scan-secrets-shas.txt && -s /tmp/scan-secrets-paths.txt ]] && return 0
     rm -f "$BLOBSTREAM"
-    git rev-list --objects --all | awk '{print $1}' | sort -u \
-        | git cat-file --batch-check 2>/dev/null | awk '$2=="blob"{print $1}' > /tmp/scan-secrets-shas.txt
+    put /tmp/scan-secrets-shas.txt bash -c 'git rev-list --objects --all | awk "{print \$1}" | sort -u | git cat-file --batch-check 2>/dev/null | awk "\$2==\"blob\"{print \$1}"'
     # sha → 路径（重命名会让同一 blob 对应多个路径，全部保留）
-    git rev-list --objects --all | awk 'NF>=2{print $1"\t"$2}' | sort -u > /tmp/scan-secrets-paths.txt
+    put /tmp/scan-secrets-paths.txt bash -c 'git rev-list --objects --all | awk "NF>=2{print \$1\"\t\"\$2}" | sort -u'
     # 一次性流式导出全部 blob，命中行前缀所属 blob 的 sha
-    git cat-file --batch < /tmp/scan-secrets-shas.txt 2>/dev/null \
-        | awk '/^[0-9a-f]{40} blob [0-9]+$/{sha=$1; next} {print sha"\t"$0}' > "$BLOBSTREAM"
+    put "$BLOBSTREAM" bash -c 'git cat-file --batch < /tmp/scan-secrets-shas.txt 2>/dev/null | awk "/^[0-9a-f]{40} blob [0-9]+\$/{sha=\$1; next} {print sha\"\t\"\$0}"'
 }
 
 report_history() {
@@ -161,17 +204,19 @@ report_history() {
 rc=0
 case "$MODE" in
     rebaseline)
-        file_list worktree > /tmp/scan-secrets-files.txt
+        load_file_list worktree
         scan_worktree
-        { echo "# 由 scripts/scan-secrets.sh --rebaseline 生成：rule|path|行内容校验和"
-          echo "# 只为「人核对过的假值」存在。加一行之前先问：这条要是真的，谁负责？"
-          cut -d'|' -f1-3 "$HITS"; } > "$BASELINE"
+        put "$BASELINE" cat <<EOF
+# 由 scripts/scan-secrets.sh --rebaseline 生成：rule|path|行内容校验和
+# 只为「人核对过的假值」存在。加一行之前先问：这条要是真的，谁负责？
+$(cut -d'|' -f1-3 "$HITS")
+EOF
+        [[ $? -eq 0 ]] || { echo "✗ 重写 $BASELINE 失败" >&2; exit 3; }
         echo "✓ 已重写 $BASELINE（$(wc -l < "$HITS" | tr -d ' ') 条）"
         exit 0
         ;;
     worktree|staged)
-        file_list "$MODE" > /tmp/scan-secrets-files.txt
-        [[ -s /tmp/scan-secrets-files.txt ]] || { echo "✓ 无待扫文件"; exit 0; }
+        load_file_list "$MODE"
         scan_worktree
         report_worktree || rc=1
         ;;
@@ -179,7 +224,7 @@ case "$MODE" in
         report_history || rc=1
         ;;
     release)
-        file_list worktree > /tmp/scan-secrets-files.txt
+        load_file_list worktree
         scan_worktree
         report_worktree || rc=1
         report_history || rc=1
