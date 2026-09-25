@@ -4,6 +4,41 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.140] - 2026-09-26
+
+### 案例库收 Morphing Dropdown：形态列表范式的第二个独立样本
+
+Kopp（[@koppkev](https://x.com/koppkev)，瑞士，build [@details_so](https://x.com/details_so)）的
+"morphing dropdown ✨ available in the vault."——846 赞 / 39,659 浏览 / **975 收藏**。
+收藏高于点赞是"想照着做"的信号，比点赞更值钱。新增
+[`13-kopp-morphing-dropdown.md`](docs/research/ui/13-kopp-morphing-dropdown.md)。
+
+- **一手证据：9.17 秒视频完整下载并逐帧分析**（1152×720@60fps，原始 1920×1200）。
+  `ffmpeg select='gt(scene,0.02)'` 零命中，确认是一段连续操作而非拼接；抽 30 帧，内容全由 OCR 逐字读出。
+- **它是什么**：Details.so 的 Vault 页面里演示一个 hero 导航下拉。同一段视频里，
+  面板在**四种内容形态**之间反复变形——
+  `Explore` 一时给**两栏图文**（`Guided Tours` / `Private Expeditions` + 描述），
+  一时给**四格图文**（`Canyons` / `Forests` / `Mountains` / `Coastlines` 各配一句描述）；
+  `Experiences` 一时给**纯文字洲际列表**（`North America` / `South America` / `Africa` / `Asia Pacific`），
+  一时又给两栏图文。导航项的高亮指示器跟着内容同步换（OCR 在展开项后读到 `^` 残影）。
+- **最该抄的一条**：这不是四个下拉菜单，是**一个面板的几个状态**。
+  如果做成四个独立下拉，就有四套开合状态、四份定位逻辑、四倍测试面；
+  做成一个面板换内容，只有一份。判据是**内容形态是否共享同一个容器几何**。
+- 这与 [12 篇](docs/research/ui/12-halogen-recorder-capsule-states.md) 是同一取向的**第二个独立样本**，
+  于是「形态列表」从个人风格升级为可当收敛结论用的范式：12 篇讲一个控件的四种高度（内容只增减行），
+  本篇讲同一个面板整体换形（图文 ↔ 纯列表，容器不动）。已写成共识第 21 条。
+- 另记两条：**收起要真的回到初始态**（d8.8 帧面板消失、hero 与导航完全恢复首帧构图，
+  无残留半透明层、无残留高度）；**纯文字列表与图文网格是同一面板的两种内容密度**——
+  轻内容不需要另做一个简版菜单。
+
+**没核实的（已在篇内单列）**：Vault 里该 snippet 的**源码没拿到**（需登录，本篇未注册），
+所以"同一个容器"是从画面判定而非代码确认；高度变化的具体数值与曲线未做像素测量；
+是否用了 spring 及其参数未推测；**同一导航项在不同时刻为何给出不同内容，触发条件未读到**
+（可能是依次演示预设，未确认）。站点 Vault 首屏抓到的 8 条 snippet 标题**不含**本条
+（Parallax Images / Reveal Navigation 2.0 / Morphing Carousel 等），说明它在需登录的部分。
+
+Swift 侧无改动，测试基数仍为 544 条。
+
 ## [0.0.139] - 2026-09-26
 
 ### 案例库收 Plasma UI：第一次拿到完整视频，逐帧抓到一次熔断-重连

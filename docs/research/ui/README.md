@@ -37,8 +37,9 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 | [10](10-swiftui-craft-invite-card-spring.md) | [@withAnimationUI](https://x.com/withAnimationUI)「craft is still the moat」 | SwiftUI 邀请码胶囊卡片在两态间切换 | **状态切换让尺寸参与**（spring 换位 + 纵向 squash & stretch，而非只改颜色/文字） |
 | [11](11-plasma-ui-liquid-glass-panels.md) | [CruxGarden/plasma-ui](https://github.com/CruxGarden/plasma-ui) | 液态玻璃面板：融合、折射、SDF 材质 | **把效果状态做成可读计数器**（`5 panels, 4 joined`），于是熔断-重连能被 0.2s 帧抓住；**且"全关装饰只留透镜"是一个合法配置而不是 fork** |
 | [12](12-halogen-recorder-capsule-states.md) | [@sashabirukoff](https://x.com/sashabirukoff)「Halogen case study otw」 | 常驻录屏小部件的四种形态：闭合 / 展开 / 录制单行 / 回落 | **它不是四个控件，是一个控件的四种高度**；不可用的选项让它在场外而不是置灰 |
+| [13](13-kopp-morphing-dropdown.md) | [@koppkev](https://x.com/koppkev)「morphing dropdown」 | Details.so Vault 的导航下拉在四种内容形态间反复变形 | **先问「这是几个菜单，还是一个菜单的几个状态」**——四种内容共享同一个容器几何，就只有一份开合逻辑 |
 
-> 编号说明：01–07、11、12 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的
+> 编号说明：01–07、11、12、13 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的
 > 同源案例（素材与分析均为一手实样，见各篇「素材文件」与「取证命令」）。
 > 分开编号是为了让人一眼看出哪些是指定素材、哪些是沿链发现的。
 
@@ -125,6 +126,11 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
    多余的行走"图标+文字一起变暗 → 消失"，计时数字**等塌缩完成后才出现**；全程没有 scaleY 压缩。
    → 与 [10](10-swiftui-craft-invite-card-spring.md)「切换让尺寸参与」看着对立，判据其实是
    **按形态层级决定切换强度**：同层内换内容可以让尺寸夸张，跨层增减内容要安静。
+21. **「形态列表」已是两个独立样本，可以当收敛结论用。** [12](12-halogen-recorder-capsule-states.md)
+   是一个控件的四种高度（内容只增减行）；[13](13-kopp-morphing-dropdown.md) 更进一步：
+   同一个面板在**图文四格 / 纯文字列表 / 两栏图文**之间整体换形，容器几何不动。
+   → 动手前先问一句：**这是几个控件，还是一个控件的几个状态？** 内容形态共享同一个容器几何时，
+   答案永远是后者——四套开合状态、四份定位逻辑、四倍测试面，都是自找的。
 
 ## 新增一篇要做什么
 
