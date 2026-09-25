@@ -4,6 +4,62 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.144] - 2026-09-26
+
+### 收两个竞品一手调研（MonoCode / DeepChat），并据此修正方案三处
+
+用户给了两个仓库：[hardbeat920/monocode](https://github.com/hardbeat920/monocode)（1303 star / MIT）
+与 [ThinkInAIXYZ/deepchat](https://github.com/ThinkInAIXYZ/deepchat)（6343 star / Apache-2.0）。
+它们不是动效案例（不进 `docs/research/ui/`），是**竞品与路线参照**，按 `05-magpie-research.md`
+那类一手调研的规矩落进 `docs/workbench/`：
+
+- **[12-monocode-competitor-audit.md](docs/workbench/12-monocode-competitor-audit.md)（573 行）**——
+  **最近的同形态竞品**：同样 Tauri v2 + Rust 后端 + TS 前端，同样给 coding agents 做桌面 GUI，同样管 10 家。
+  它最值得我们抄的不是任何功能，是三件工程纪律：
+  **① Rust 侧与前端同级配的测试量**（逐文件实测 `#[test]` ≥ 333：`fs.rs` 112、`session_store.rs` 43、
+  `harness.rs` 40、`skills.rs` 20；前端 327 个 `.test.ts`；CI 三平台矩阵 7 条命令含 `clippy -D warnings`），
+  而且**它把协议层做成纯函数，于是没装 agent CLI 也能测 Codex 解析**；
+  **② 凭据零落盘**——`account_identity.rs:12-17` 只返回 `{email,name,plan,organization}` 四字段的显式 DTO，
+  多账号靠 `CLAUDE_CONFIG_DIR` + `CLAUDE_SECURESTORAGE_CONFIG_DIR` / `CODEX_HOME` 指向各自 profile 目录
+  并 `env_remove` 掉 API key 变量（`harness.rs:634-638`），连钥匙串条目都随 profile 分家；
+  读钥匙串只为拿 usage，注释原话 "no token is sent anywhere"；
+  **③ `capabilities/default.json` 用 `"windows": ["*"]`**（本轮已亲自核实）——不用逐个列窗口名。
+  harness 三层抽象（core 纯函数 / providers 各管协议 / Rust 只 spawn）与
+  「可选能力成员 + `canXxx()` 查询、UI 因此零 `if (harness === ...)` 分支」也记了，
+  但**明确判定不抄**：它一家一个 37KB 协议文件、protocol 层总量 20 万字节级，靠测试硬撑；
+  我们只有 Codex 一家，引入 adapter 层是自找负担。
+- **[11-deepchat-another-route.md](docs/workbench/11-deepchat-another-route.md)**——**另一条路线**
+  （当 agent 的前端：跑 agent、喂 agent、显示完整会话）。文末那张「两条路线边界表」是防方案写偏用的：
+  它每个功能都要问「agent 协议支持吗」，我们每个功能只问「磁盘上读得到吗」，成本差一个数量级。
+  一条具体警戒：**不要因为它有 Tape & Trace 就给自己加「可回放诊断日志」**——它的 Tape 是它自己启动的
+  agent 的结构化记录，天然完整；我们的会话尾是读别人写的日志，格式会变、字段会缺、还可能读不到。
+  **同样的功能名，我们的版本只能是降级的，且必须说出降级了多少。**
+  另记两条与我们直接相关的：它的 remote control 已有 **`/pending`** 命令（在消息应用里回答待确认的
+  权限请求）与 `/pair` 配对——证明「待确认」是一个值得成为一等概念的交互件；
+  它的 Skills 支持**按会话启用**与**跨工具互导**，比我们现在的全局安装更细更安全。
+
+**据此修正了 [10-replan](docs/workbench/10-replan-2026-09-26.md) §5A 三处**：
+
+1. **Phase 0 的 capabilities 修法改了**：原来打算把不存在的 `"main"` 从 `windows` 数组里删掉；
+   现在采用 MonoCode 的写法 `"windows": ["*"]` + 按平台拆 conf。理由不只是修 bug——
+   Phase 1 要新增 `sidebar` 窗口，每次加窗口都要回来改一次，`"*"` 让这件事不再发生。
+2. **Phase 0 的 Rust 测试有了标尺**：`provider.rs` 的合并逻辑必须按纯函数写
+   （这是它能被测试的前提），优先测纯函数模块而非需要 spawn 的路径。
+3. **Phase 2 补两个凭据坑**（我们原本完全没意识到，都直接适用于只做 Codex 的方案）：
+   ① 档位目录用 `CODEX_HOME` 指向外，**还必须 `env_remove` 掉 `OPENAI_API_KEY` /
+   `CODEX_API_KEY` / `CODEX_ACCESS_TOKEN`**——否则环境里的 key 会盖过档位里的，
+   用户以为切了其实没切；② **删档位必须真删钥匙串条目**（ MonoCode 按
+   `SHA256(NFC(绝对路径))[:8]` 定位 service 条目，先 `security delete-generic-password` 再删目录），
+   否则留孤儿凭据。这一条要配一条反向断言测试。
+
+`docs/workbench/README.md` 文档表补 11/12 两行。
+
+**本轮没做**：一行代码都没改。两份调研都是**只读**——MonoCode 读了 `harness.rs`（39KB）、
+`account_identity.rs`、`rate_limits.rs`、`registry.ts`、`types.ts`、`providerAccounts.ts`、
+`capabilities/default.json` 等核心文件与全量文件树；DeepChat **只读了 README 与 GitHub API，
+源码一行未读**（已在篇末声明）。我们自己的代码一字未动。
+Swift 侧无改动，测试基数仍为 544 条。
+
 ## [0.0.143] - 2026-09-26
 
 上一轮把六个问题留给用户拍板，本轮已定。同时用户补了一句关键范围：「**我用 codex 但我不用 claude**」，
