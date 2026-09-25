@@ -4,6 +4,47 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.143] - 2026-09-26
+
+上一轮把六个问题留给用户拍板，本轮已定。同时用户补了一句关键范围：「**我用 codex 但我不用 claude**」，
+于是 Phase 2 从「Claude Code + Codex 两家」收窄为**只做 Codex 一家**。
+
+**六项拍板**（全部记入 [10-replan-2026-09-26.md](docs/workbench/10-replan-2026-09-26.md) §7）：
+
+1. **装 Rust 工具链让 `app/` 构建成功**（不改走 SwiftUI 侧边栏、不暂停）
+2. **Phase 0 不发版**，推进到 Phase 1 完成后一起发
+3. **档位元数据明文 + 凭据进钥匙串**——与 `CONTEXT.md` 凭据口径一致；
+   代价照原样接受（`.bak` 备份必然含完整 key，靠 gitignore + `0600` + 不进 DTO 三重兜）。
+   **这条推翻 CC Switch 可抄性的一半**（它全明文 SQLite + JSON）
+4. **Codex 用原生 profile-v2**
+5. **reduce-motion 与彩色存量维持 Phase 4**，本轮只保证侧边栏新建部分接唯一真源
+6. **「Codex 需重启」只读检测 + 明确提示**，复用现成五态信号；kill 用户进程的选项明确排除
+
+**范围收窄为只做 Codex 一家**，理由有两条且都硬：
+- 用户不用 Claude Code；
+- 本机 `~/.claude/settings.json` 顶层只有 `permissions` 与 `hooks`，**没有 `env` 块**——
+  即没有 API key / base_url / model 的落点。**在一个没有 env 块的机器上，「切 Provider」没有可切的东西。**
+- 附带好处：`provider.rs` 不必处理「两家配置格式不同 + 生效语义不同」的组合，只需吃透 Codex 一套。
+- 连带改写：产品名从「Provider 切换」改为「**Codex 配置档位**」；「暂只支持 2 家」这类表述全部消失
+  （没有「暂」，本来就只有一家要做）；界面必须写清「此档需 `codex --profile <name>` 启动」与
+  「切档对已在跑的进程无效」两件事。
+
+**顺带补了一条本机实况，它纠正了方案里的一处表述**（10 号 §7.0 / 问题A4）：
+
+`codex --help` 的原文是 `-p, --profile <CONFIG_PROFILE_V2>` ——
+**Layer `$CODEX_HOME/<name>.config.toml` on top of the base user config**。
+关键在 **"on top of"**：profile-v2 **不是替代 base config，而是叠在它之上的一层**。
+所以「用 profile」与「改 base」不是二选一——base 一直在底层，profile 只是覆盖它想覆盖的键。
+本机 Codex 版本 `0.155.0-alpha.16.4`（比方案假设的 0.134+ 更新），
+当前无任何独立 profile 文件、`CODEX_HOME` 未设 → Phase 2 是从零建档，不是迁移。
+`model` / `model_reasoning_effort` / `service_tier` 这些要切的键目前都在 `config.toml` 顶层。
+
+`docs/workbench/README.md` 同步：进展表 Phase 0' 改为「待开工（已拍板不发版，第一件事 `rustup default stable`）」、
+Phase 2 行改为「Codex 配置档位（只做 Codex 一家）」、新增「v0.0.142 六项已拍板」一节。
+
+Swift 侧无改动，测试基数仍为 544 条。
+
+
 ## [0.0.142] - 2026-09-26
 
 ### 四路调研后重划改造方案：三个前置阻塞与 9 条被推翻的地基断言

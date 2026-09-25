@@ -10,7 +10,7 @@ import Foundation
 /// - 测试 `版本单一来源` 用同一口径再守一遍（防止有人绕过脚本手工构建）。
 public enum AppVersion {
     /// 语义化版本号，与 CHANGELOG 首条 `## [x.y.z]` 必须一致
-    public static let string = "0.0.142"
+    public static let string = "0.0.143"
 
     /// 运行期可见的版本：从 .app 的 Info.plist 取（打包产物由 build-app.sh 写入同一值），
     /// 独立运行的 CLI 没有 bundle 信息时回落到上面的常量。

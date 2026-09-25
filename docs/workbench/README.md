@@ -53,6 +53,11 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
    capabilities 引用不存在的 `main` 窗口、`placement.rs` macOS 分支硬编码 1440×900、本机无默认 rustc。
    **让 `app/` 构建成功是 Phase 1 的前置门，不是已完成事实。**）
 
+**v0.0.142 六项已拍板**（详见 [10 号](10-replan-2026-09-26.md) §7）：① 装 Rust 工具链让 `app/` 构建成功
+② Phase 0 不发版、与 Phase 1 一起发 ③ 档位元数据明文 + 凭据进钥匙串 ④ Codex 用原生 profile-v2
+⑤ reduce-motion 与彩色存量维持 Phase 4 ⑥「Codex 需重启」只读检测 + 提示，不 kill 进程。
+另**范围收窄：Phase 2 只做 Codex 一家，不做 Claude Code**（用户不用；且本机其 `settings.json` 无 `env` 块）。
+
 ## 尚待拍板
 
 ~~**「模型/Provider 切换」做多深。**~~ **已定：先只做配置切换，之后评估与 Magpie 共存。**
@@ -72,8 +77,8 @@ key/账号**，跨厂商模型这条路走不通。这一点要写进用户可�
 | Phase | 内容 | 状态 |
 | :--- | :--- | :--- |
 | 0 | 修脱敏闸门假绿（`scan-secrets.sh`）+ 补 7 条守卫测试 | ⚠️ 部分完成：扫描器修复已交付，但**测试托管与检出能力没完成**（见 10 号 §2 阻塞三） |
-| 0' | 建可信地基：`test-scan-secrets.sh` 入库 + Rust 测试基建 + `app/` 能构建打包 + `dist/` 产物扫描 | 未开始（[10 号](10-replan-2026-09-26.md) 新增，是 Phase 1 的前置门） |
+| 0' | 建可信地基：`test-scan-secrets.sh` 入库 + Rust 测试基建 + `app/` 能构建打包 + `dist/` 产物扫描 | **待开工**（用户已拍板：不发版，Phase 1 完成后一起发。第一件事 `rustup default stable`） |
 | 1 | `shell_mode` 设置项 + 侧边栏壳 + 双形态并存 | 未开始，**前置条件见 10 号 §5** |
-| 2 | 知道 agent 状态的配置切换器（Provider 档位读写/切换） | 未开始，方案已按 CC Switch 一层「通用配置片段」重写 |
+| 2 | **Codex 配置档位**（v0.0.142 收窄：只做 Codex 一家，不做 Claude Code） | 未开始，方案已按 CC Switch 一层「通用配置片段」重写；生效语义按「Codex 需重启进程」设计 |
 | 3 | ToDos 模块 | 未开始 |
 | 4 | 文档同步 + ADR + 脱敏扫描 + 发版 | 未开始 |
