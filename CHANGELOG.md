@@ -4,6 +4,88 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.142] - 2026-09-26
+
+### 四路调研后重划改造方案：三个前置阻塞与 9 条被推翻的地基断言
+
+用户要求「根据所有收集到的信息重新规划方案，可以多 agent 分方向、由一个 agent 汇总」。
+起了 5 个 agent：四路分头调研（代码资产 / 14 篇 UI 案例提炼 / 风险与验收 / 竞品与边界），
+第五个做汇总。产出 [`docs/workbench/10-replan-2026-09-26.md`](docs/workbench/10-replan-2026-09-26.md)（403 行）。
+四份原始报告在本机 `/tmp/uibatch/`（不入库）：`asset-audit.md` 476 行、`design-spec-draft.md` 654 行、
+`risk-and-acceptance.md` 828 行、`competitor-boundary.md` 652 行。
+
+**被推翻的 9 条 workbench 断言**（完整表在 10 号 §1，每条带证据），最重的三条：
+
+1. **「`app/` 已跑通」不成立**——写完了没构建过。无 `app/src-tauri/target/`、无 `gen/schemas/`；
+   `capabilities/default.json:5` 声明 `windows: ["island","main"]` 而 `tauri.conf.json:13`
+   只定义 `island`（`main` 其实是 `main.rs:356` 的**托盘图标 id**，被误当成窗口）；
+   `placement.rs:57-62` 的 macOS 分支返回写死的 `(0,0,1440,900,1)`，
+   侧边栏「贴左/右」在 3024×1964 屏上位置全错；`bundle.targets` 只有 `nsis`（无 macOS 打包目标）；
+   本机无默认 rustc 工具链。→ **Phase 1 的第一步不是写 `sidebar.css`，是让 `cargo tauri build` 成功一次。**
+2. **「Rust 核心 2670 行几乎零改动复用」不成立**——2670 这个数字对，判断错。
+   `engine.rs:1-7` 七条 `use crate::` 全指自家模块，它是**与 Swift 并列的第二份独立实现**：
+   registry Rust 12 个档案 vs Swift 26 个（只重叠 8 个 id）、会话方言 Rust 4 种 vs Swift 5 种、
+   `engine.rs:445-452` 的 `--demo` 播 6 个 id 而 5 个不在自己 registry 里。
+   三端（Swift / WPF / Rust）之间**零一致性守卫**。
+3. **「Phase 0 已完成」要降级**——扫描器修复是真的，托管是假的：
+   `scripts/test-scan-secrets.sh` 在磁盘上存在但被 `.gitignore:38` 的 `*secrets*` 挡在库外，
+   `git log --all -- <path>` 为空。而 `.gitignore:41-43` 给 `scan-secrets.sh` 与 baseline 开过三条例外，
+   **没给它的测试开**。
+
+另 6 条：`01-current-state.md:148` 的「293 个 git 文件」实测 **324**、「12 模块」实为 10 个 `mod`；
+「保留注释与缩进」的自由归因一半错（确凿来自 **Magpie 官网**，CC Switch 的 Claude JSON 侧反而
+按键名排序重排，只有 Codex TOML 侧用 `toml_edit` 保住）；「Codex config.toml 含 `[model_providers]`」
+本机实扫已无该 section；「既有 544 项测试」对侧边栏**不构成任何保护**（544 项全部
+`@testable import AgentIslandCore`，Rust 侧 `#[test]` / `#[cfg(test)]` / `tests/` 实测 0）；
+「CC Switch 是主要借鉴对象」定位要改（它 v3.20.4 / 136,819 star / 管 10 工具，provider 档位这块
+已被完全占据，最危险的相邻产品其实是 QuotaBar）。
+
+**三个前置阻塞**（不解决就无法开始对应 Phase）：① `app/` 构建不通 → Phase 1 无从开始；
+② Rust 端零测试 → 21 条验收大部分悬空；③ 扫描器对真 key 零命中，而 Phase 2 就要碰真 key。
+
+第三条我自己复验过（不只是引用 agent 结论）：`scripts/scan-secrets.sh:45` 的 `cred_prefix` 要求
+`sk-` 后紧跟 16 位字母数字，所以 **`sk-proj-`（OpenAI）与 `sk-ant-api03-`（Anthropic）的实际前缀
+都因连字符断开而漏报**，只有 `AKIA`（AWS）命中；`apiKey = "..."`（camelCase、值带引号）也不命中
+`secret_assign`（它只认 `password|passwd|api_key|access_token|auth_token|secret` 这些下划线形态）。
+**一个反向事实**：万一真 key 长得标准，命中的是 `cred_prefix`——这一条是绝对零命中、不许进 baseline
+（`scan-secrets.sh:56-57`），`release.sh` 是 `set -euo pipefail`，所以最坏是**发版时炸**而不是发出去后道歉。
+对策按优先级：掩码做成**类型**而非函数（`ProviderSecret(String)` + crate-private `init` + 手写
+`impl Serialize`，让「忘加掩码」编译不过）；`log_line` / `log_from_ui` 统一出口脱敏；`dist/*.zip` 进扫描范围。
+扩规则降级为可选——它会立即产生新增命中要 `--rebaseline`，且不解决「只看内容不看数据流」这个根本缺口。
+
+**竞品那一路挖到两个决定方案形状的事实**：
+- **「切换是否真生效」按工具不对称**：Claude Code 的 `env` 块**热生效**（官方原话
+  "A running session applies new and changed values to its environment when you save the file"，
+  但有「只能加不能删」的语义坑）；**Codex 的 `Config` 启动时一次性构造**，
+  `codex-rs` 全仓 grep `reload` / `watch` **零命中**，官方 issue #3860 正是这个缺口 →
+  **Codex 切档必须重启进程**。→ Phase 2 的验收核心改成「这两件事在界面上必须是不同的可读状态」。
+- **`provider.rs` 要从「档位整份覆盖」升级为「档位 + 通用配置片段」两层**：CC Switch 有一个专门修
+  「切走就丢插件/hook」的设计（`json_deep_merge` / `merge_toml_table_like` + 切走前重新提取）。
+  我们原来的 `payload = 整份配置片段`意味着用户每次切档，他新装的 MCP、改的 hook 会被**静默冲掉**。
+  这不是将来的优化项，是 13.6w star 的同类产品踩过并专门修过的坑。
+  另：**还原不能是「写旧字节」**——`auth.json` 含 `refresh_token` + `last_refresh`，
+  写旧字节会把 codex 已刷新的新令牌退回旧的；Codex 档位改用原生 profile-v2
+  （`${CODEX_HOME}/<name>.config.toml` + `--profile`），自造格式会把用户锁在我们 app 里。
+
+**设计侧**：14 篇案例提炼成七层规范草案（动效准入门槛 / 形状容器 / 颜色配额 / 状态呈现口径 /
+过渡曲线 / 可达性降级 / 声音），每条带篇目出处，README 23 条共识里 3 组张力已裁决
+（总裁决规则：**按形态层级决定切换强度**）。明确排除项（gooey/metaball、液态玻璃折射 shader、
+玻璃拟态卡片、光标入镜示能、React 特效库、SVG morph 数学）各附不适用的理由。
+另核实出一条真缺口：`accessibilityReduceMotion` 只覆盖 3 个 View（6 处），
+另有 2 处 AppKit 动画（`IslandPanelPositioning` 的 `NSAnimationContext`）**天然读不到 SwiftUI 环境值**，
+Web/Windows 端零覆盖，且已接的三处各自读自己的、**没有唯一真源**。
+
+**`docs/workbench/README.md` 已同步**：入口从 07 改为 10 号（07 的技术断言已被推翻，产品定位仍有效），
+文档表补 10 号一行，进展表把 Phase 0 从「已完成」降级为「部分完成」并新增 Phase 0'「建可信地基」，
+两处过期括注（「`app/` 已跑通」「Rust 2670 零改动复用」）改为带出处的更正而不是删掉。
+
+**本轮没做**：一行代码都没改，六个前置问题全部留给用户拍板（都在 10 号 §7，各带推荐答案与代价）：
+① `app/` 构建阻塞怎么解（推荐装 Rust 工具链让它构建成功）② Phase 0 是否单独发版（推荐不发）
+③ provider 档存哪（推荐元数据明文 + 凭据进钥匙串，与现有凭据口径冲突需拍板）
+④ Codex 档位是否接受用户带 `--profile` 启动（推荐接受）⑤ reduce-motion / 彩色存量是否提前（推荐维持 Phase 4）
+⑥ 「Codex 需重启」要不要主动检测（推荐只读检测 + 提示，不要 kill 用户进程）。
+Swift 侧无改动，测试基数仍为 544 条。
+
 ## [0.0.141] - 2026-09-26
 
 ### 案例库收 Progressive Payment Reveal：数字是数出来的，不是跳出来的
