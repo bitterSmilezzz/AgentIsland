@@ -4,6 +4,57 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.147] - 2026-09-26
+
+### 收 Omarchy 调研：Linux 侧对应物，并核实本仓两块整块缺失
+
+[omacom/omarchy](https://github.com/omacom/omarchy)（43140 star / Shell / MIT，DHH 的
+"beautiful, fun and agentic Linux distribution"）——它不是一个库或竞品，是**一套完整的桌面环境配置**
+（Hyprland 加 Quickshell）。readme 只 1KB，实质全在 `manual/` 34 篇里。
+新增 [`15-omarchy-agents-panel-and-toggles.md`](docs/workbench/15-omarchy-agents-panel-and-toggles.md)，
+读了其中五篇原文（AI / toggles-idle-screensaver / notices / reminders / top-bar）。
+
+**它与我们的关系是"同一件事的 Linux 侧实现"**：它的 agents panel（顶栏一个图标，
+点开是套餐、5 小时与每周限额已用百分比、按天按模型的 token）就是我们在 macOS 上做的东西。
+四条可直接搬的判据：
+
+1. **静默通知必须进历史，且静默状态要有常驻记号**（manual 原文：
+   "A silenced notification is written straight into your notification history, which is exactly
+   the record you want when you come back and wonder what you missed"，外加一个划线铃铛
+   "remind you why the desktop has gone quiet"）。这一条补的是我们产品语义的缺口：
+   远程外发策略分级与岛内分级都在，但"静默期间的事件去哪了"没有对应设计。
+2. **indicators 的可见性默认值**：`Inactive indicators are hidden. Hover ... they fade in dimmed,
+   so you can click one to turn it on without knowing its hotkey.`
+   ——"默认隐藏加 hover 淡入"这个**中间档**是案例库 14 篇没给过的答案，
+   比"全常亮"更符合"克制是默认项"。
+3. **toggles 是模式，不是设置**：manual 原话 "a lot of what you change day to day isn't really a
+   setting. It's a mode you flip on for an hour and off again"。实现也干净：
+   **每个 toggle 就是一个 flag 文件**，热键 / 菜单 / 命令三个入口打同一个开关，
+   flag 按关态命名，另给 `omarchy-toggle-enabled` 返回退出码给脚本用。
+4. **skill 分发**：它把一份 skill 软链到**六家** harness 的 skills 目录
+   （Claude Code / Codex / Pi / Antigravity / Hermes 加 generic `~/.agents/skills`），
+   比我们 AGENTS.md 里记的（`.agents/` 加 `.claude/` 两条）完整——那张目录映射表可直接补进来。
+
+**顺带核实出本仓两块整块缺失**（不是"补一半"，是从零没有）：
+
+- **没有任何勿扰/静默开关**：`grep -rn -i '勿扰|muteAll|silenceAll' Sources/` 只命中两处
+  `AgentCleaner.swift:164` 与 `TopCommand.swift:204` 里"静默漏掉报警"的注释，与通知无关
+- **`shell_mode` 一行实现都没有**：`grep -rn 'shell_mode|shellMode' Sources/ app/` 结果为 0，
+  只活在 CONTEXT 与 CHANGELOG 里（与 [10 号方案](10-replan-2026-09-26.md) 已记的一致）
+- 另：`TokenAnalyticsView.swift:418` 那个 `percent` 是**与上一周期比的增减百分比**，
+  不是"配额已用百分之几"——两者回答不同问题，后者今天没有
+
+**一个最值得追的问题单列了**：**它的 agents panel 怎么读到 5 小时与每周限额？**
+我们从会话日志反推，它可能有 provider 的直读路径。若真有，我们的口径可能要改。
+**未核实**（只读了 manual 五篇，没读 `omarchy` CLI 源码）。
+
+**没核实的**：manual 34 篇只读 5 篇；它的任何 shell 脚本实现未读；"面板秒开""theme 同步到 agent"
+是文档说法未验证；4555 open issues 对 43k star 偏高，未判断是否规模常态；
+Hyprland/Quickshell 是 Wayland 专有，**与我们 macOS SwiftUI 无技术可复用性**——
+本文全部可迁移项都是设计判据，不是代码。
+
+Swift 侧无改动，测试基数仍为 548 条。
+
 ## [0.0.146] - 2026-09-26
 
 ### 收 Semantica 调研：一份"基本不重叠"的诚实记录，含两条可借纪律
