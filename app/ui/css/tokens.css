@@ -1,0 +1,130 @@
+/* 设计令牌 — 与 macOS 端 Theme.swift / Windows 端 Theme.cs 同源
+   深色 = 黑曜石荧光；浅色 = 白瓷工控（对比度按 WCAG AA 校准） */
+
+:root {
+  /* Ramp (Tailwind steps) */
+  --slate-50: #f8fafc;
+  --slate-100: #f1f5f9;
+  --slate-200: #e2e8f0;
+  --slate-300: #cbd5e1;
+  --slate-400: #94a3b8;
+  --slate-500: #64748b;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --emerald-50: #ecfdf5;
+  --emerald-200: #a7f3d0;
+  --emerald-700: #047857;
+  --amber-50: #fffbeb;
+  --amber-200: #fde68a;
+  --amber-700: #b45309;
+  --amber-900: #78350f;
+  --sky-800: #075985;
+  --ink-green: #157f3c;
+  --ink-amber: #8f6a00;
+
+  /* 几何（IslandMetrics） */
+  --notch-inset: 10px;
+  --card-width: 330px;
+  --radius-sm: 8px;
+  --radius-md: 11px;
+  --radius-lg: 18px;
+  --page-margin: 14px;
+
+  --font-text: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "SF Mono", monospace;
+  --font-icon: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+}
+
+/* ---- 深色（黑曜石） ---- */
+.theme-dark {
+  --glass-top: rgba(13, 14, 20, 0.94);
+  --glass-bottom: rgba(5, 6, 10, 0.97);
+  --specular-top: rgba(255, 255, 255, 0.40);
+  --specular-bottom: rgba(255, 255, 255, 0.10);
+
+  --card-fill: rgba(255, 255, 255, 0.07);
+  --card-hover-fill: rgba(255, 255, 255, 0.13);
+  --card-border: rgba(255, 255, 255, 0.14);
+  --card-border-hover: rgba(255, 255, 255, 0.28);
+  --hairline: rgba(255, 255, 255, 0.14);
+  --pill: rgba(255, 255, 255, 0.09);
+  --chip-fill: rgba(255, 255, 255, 0.08);
+  --hover-fill: rgba(255, 255, 255, 0.12);
+  --row-hover: rgba(255, 255, 255, 0.18);
+
+  --text: #f8fafc;
+  --text-muted: #cfd4dc;
+  --text-faint: #94a3b8;
+
+  --cyan: #00e1ff;
+  --blue: #38bdf8;
+  --amber: #ffd60a;
+  --emerald: #30d158;
+
+  --working: #30d158;
+  --idle: #ffd60a;
+  --offline: #8e8e93;
+  --warning: #ff9500;
+  --danger: #ff3b30;
+
+  --ring-track: #22222a;
+  --ring-green: #28e07b;
+  --ring-yellow: #e3c567;
+  --ring-orange: #ff6b35;
+  --ring-red: #ff3b30;
+
+  --sliver-fill: rgba(8, 8, 12, 0.70);
+  --sliver-fill-working: rgba(8, 8, 12, 0.82);
+  --sliver-stroke: rgba(255, 255, 255, 0.25);
+
+  --row-bg: rgba(255, 255, 255, 0.045);
+  --row-border: rgba(255, 255, 255, 0.08);
+
+  --banner-tint: 26;       /* 横幅底色 alpha */
+}
+
+/* ---- 浅色（白瓷工控） ---- */
+.theme-light {
+  --glass-top: rgba(246, 248, 251, 0.97);
+  --glass-bottom: rgba(235, 238, 243, 0.985);
+  --specular-top: rgba(255, 255, 255, 0.96);
+  --specular-bottom: rgba(0, 0, 0, 0.08);
+
+  --card-fill: rgba(255, 255, 255, 0.94);
+  --card-hover-fill: rgba(255, 255, 255, 1);
+  --card-border: rgba(226, 232, 240, 0.85);
+  --card-border-hover: rgba(203, 213, 225, 0.95);
+  --hairline: rgba(226, 232, 240, 0.9);
+  --pill: rgba(241, 245, 249, 0.95);
+  --chip-fill: rgba(241, 245, 249, 0.9);
+  --hover-fill: rgba(255, 255, 255, 0.96);
+  --row-hover: rgba(255, 255, 255, 0.92);
+
+  --text: #0f172a;
+  --text-muted: #334155;
+  --text-faint: #475569;
+
+  --cyan: #075985;
+  --blue: #1d4ed8;
+  --amber: #78350f;
+  --emerald: #15803d;
+
+  --working: #157f3c;
+  --idle: #8f6a00;
+  --offline: #5c5c61;
+  --warning: #b45309;
+  --danger: #d32f2f;
+
+  --ring-track: #e2e8f0;
+  --ring-green: #157f3c;
+  --ring-yellow: #8f6a00;
+  --ring-orange: #c23a00;
+  --ring-red: #c62828;
+
+  --sliver-fill: rgba(255, 255, 255, 0.90);
+  --sliver-fill-working: rgba(255, 255, 255, 0.95);
+  --sliver-stroke: rgba(203, 213, 225, 0.8);
+
+  --row-bg: rgba(255, 255, 255, 0.92);
+  --row-border: rgba(203, 213, 225, 0.75);
+}
