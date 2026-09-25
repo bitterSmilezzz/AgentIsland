@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.135** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.136** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 
@@ -148,6 +148,8 @@ AGENTISLAND_DEBUG=1 open dist/AgentIsland.app && tail -f /tmp/agentisland.log
 ```
 
 发版要求三处版本一致（CHANGELOG 首条、`AppVersion.string`、本文件的版本行），任一处漂移 `release.sh` 与 `build-app.sh` 都会拒绝。**本文件只讲这个工具是什么、能做什么；逐版改了什么一律写进 [CHANGELOG.md](CHANGELOG.md)。**
+
+协同开发的 agent 可以装第三方 skill（管理与写法见 [AGENTS.md](AGENTS.md)）：skill 放 `.agents/skills/<名称>/`，`.claude/skills/<名称>` 指过去的软链供 Claude Code 读取。当前装有 `libraries-dev`（Libraries.dev 的配套 skill，含 7 个 React 视觉特效库的取舍规则），它对 SwiftUI/macOS 没有可调用组件，本项目不依赖它构建。
 
 套件覆盖五态状态机、会话语义、通知路由、标题可读性、事件唤醒、进程树熔断、外观主题、命令清洗、token 时间统计、深链与 CLI、远程外发协议与策略。多数断言做过**变异验证**（把被测逻辑改坏、确认对应测试变红），抓不到的缺口在 CHANGELOG 里如实列出。另有**债务棘轮**：Theme 外硬编码色值与 `UserDefaults.standard` 直读处数钉成基线，新增即测试失败并说明该用什么替代。开发约定见 [AGENTS.md](AGENTS.md)，设计依据见 `docs/research/`（含远程通知与 Qoder 监控两份调研）。
 

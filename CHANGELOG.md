@@ -4,6 +4,36 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.136] - 2026-09-25
+
+### 给本项目装上 `libraries-dev` skill，并钉死它的安装方式（本回合唯一的改动）
+
+起因是一条外部推文（Jakub Antalik 的 [libraries-dev skill](https://x.com/Jakubantalik/status/2103145432390262954)）：
+它把「动效该加在界面的哪个位置、该用到什么程度」写成 agent 能读的知识。skill 本体是
+[Libraries.dev](https://github.com/Jakubantalik/Libraries.dev)（7 个 React 视觉特效库）的配套，
+规则全部面向 Web 界面——对 AgentIsland 这种 SwiftUI/macOS 项目**没有可直接调用的组件**，
+它的价值在决策规则本身：按等待时长定效果（<2s 不加、≥2s 上 thinking 指示、>3s 才允许加边框光）、
+同一屏不叠两种特效、效果必须匹配明暗主题。这套判断与我们自己写灵动岛等待态时的取舍是同源的。
+
+- **装了什么**：`.agents/skills/libraries-dev/`（SKILL.md + `references/01..07` 七个库的参考文档，共约 1,900 行），
+  `skills-lock.json` 记来源（`Jakubantalik/Libraries.dev`）与 hash。`.claude/skills/libraries-dev`
+  是指向它的**相对软链**，Claude Code 直接读得到。
+- **收敛成单份**：官方 CLI 的 `--agent '*'` 是 `--all` 的别名，会往项目里写 17 个 agent 目录
+  （Antigravity、Cursor、Copilot、Goose、Junie、Qwen、ZCode…），每份都是同一批文件的**完整副本**——
+  装了 10 个，共 1.2MB 重复。全部删掉，只留 `.agents/` 一份源 + `.claude/` 一条软链。
+  安装命令连同这个坑写进了 `AGENTS.md` 的「Agent skills / Installed skills」小节，免得下次再铺一遍。
+- **`skills-lock.json` 的 `skillPath` 已修正**：安装器写的是 `skills/libraries-dev/SKILL.md`
+  （它自己创建的那一层），删掉副本后 lock 会指向一个不存在的路径。改成 `.agents/skills/libraries-dev/SKILL.md`，
+  `npx skills list` 复验通过，认得这个项目级 skill。
+- **`.gitignore` 未加豁免**：`.agents/` 不在任何忽略规则下，但 `*secrets*` 与 `*credentials*`
+  这类模式将来有可能误伤 skill 文件，届时按需补 `!` 例外。
+- **脱敏**：`scripts/scan-secrets.sh` 全绿，18 条命中全部在既有 baseline 内，无新增。
+
+**本轮没做**：① 没有把它当代码库用——它不提供 SwiftUI 组件，本项目不会
+`npm install thinking-orbs` 或 `border-beam`；② 没有顺势改造灵动岛的等待态动效（那要单独一轮，
+且要先定「等待多长才值得加动效」的口径）；③ 没有装 Pro skill（`npx libraries-dev skill --pro`），
+免费版对本项目已经够读；④ 没有改任何 Swift 源码，测试基数与 v0.0.135 相同（544 条）。
+
 ## [0.0.135] - 2026-09-25
 
 ### 🔌 CLI 终于读得到 App 里的自报：`GET /state` 与 `agentisland state`（11 号票）

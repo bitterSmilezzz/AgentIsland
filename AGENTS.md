@@ -61,6 +61,13 @@ scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
 
 ## Agent skills
 
+### Installed skills
+
+本项目用 `npx skills` 管理 agent skills。单份源放在 `.agents/skills/<name>/`，`.claude/skills/<name>` 是指向它的相对软链，`skills-lock.json` 记录来源与 hash。
+
+- `libraries-dev`（来自 `Jakubantalik/Libraries.dev`）：教你 agent 在**哪里**、**用什么程度**给界面加动效。领域是 React/Web 界面，对本项目（SwiftUI/macOS）没有可套用的组件，价值在于它的**决策规则**（按等待时长定效果、不叠特效、匹配明暗主题）——改界面时可以参考这套思路，但不要尝试 `npm install`。
+- 安装/更新/卸载：`npx skills add Jakubantalik/Libraries.dev --skill '*' --copy -y`。**不要**用它默认的 `--agent '*'`：那是 `--all` 的别名，会往项目里写 17 个 agent 目录（Antigravity、Cursor、Copilot、Goose、Junie…），每个都是同一份内容的副本。
+
 ### Issue tracker
 
 单人开发：issues 走本地 markdown（`.scratch/<feature>/`，spec.md + issues/NN-*.md）。See `docs/agents/issue-tracker.md`.
