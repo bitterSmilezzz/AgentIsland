@@ -4,6 +4,77 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.149] - 2026-09-26
+
+### 收 codenotch 调研：最直接的形态竞品，以及一条我们自己都没意识到的口径矛盾
+
+[vinzdg/codenotch](https://github.com/vinzdg/codenotch)（GitHub API 2026-09-26：
+**2493 star / 383 fork / Swift / MIT / 创建于 2026-09-05（三周新仓库）/ 53 open issues**），
+自述 "A macOS app that pins usage limits from Claude Code, Cursor, Codex, and Antigravity
+to a screen edge." 新增 [`17-codenotch-direct-competitor-audit.md`](docs/workbench/17-codenotch-direct-competitor-audit.md)（469 行）。
+
+**这是前几篇里唯一正面对上的竞品**：同样 Swift、同样 macOS、同样把"屏幕边缘小条"做成常驻 UI，
+做的功能（usage limits、working/done/waiting 三态）与我们的灵动岛高度重叠。
+
+**A｜形态真相**：不是"小条"，是 **26×210pt 的黑 pill**（`Sources/Notch/NotchLayout.swift:46-48`），
+但 hover 卡有 600 个设计 px，比我们的 372 卡更宽——"小"只是静止态。
+**17 家 provider**（10 纯官方 + 3 混合 + 2 derived + 2 本地运行时），其中 12 家"借机器上已有工具的登录态"。
+手机端 wire 协议完整（v2→v3 自我否证），但 `Sources/PhoneLink/PhoneLinkServer.swift:13` 的
+`isAvailable = false`——**主仓当前不监听**。
+
+**B｜三个正面判断**：
+
+1. **它的 notch 更聚焦：是，但代价是只答一个问题。** 静止态只答"还剩多少额度"，
+   并**刻意让 working 取白色**，免得被误读成额度标尺（`Sources/Sessions/ActivitySummary.swift:62-70`）。
+   我们答的是"agent 在干什么"。真正该问的不是谁更聚焦，而是：
+   **它对"不许出现编出来的数字"有一整套保证，我们的"不可信"不在读数在判定**——
+   同一 agent 两个形态状态不一致，正是 replan 风险 4。
+2. **形态哲学不是大小，是三种密度**：静态一瞥 / 悬停展开 / 菜单栏常驻。
+   它后来自己也加了菜单栏项——**这正面支持我们的 `shell_mode` 双形态**。
+   差别在它的 notch 永不受键盘焦点。最值得抄的是 `Sources/Notch/NotchPlacement.swift` 的
+   **一维 stack space + 唯一映射点**（所有布局在两个坐标系里算，只有一处知道"哪条边"），
+   以及 `Sources/Notch/NotchPanel.swift` 用 `sendEvent` 接点击（可直接对照我们的
+   `Sources/AgentIsland/IslandPanelInteraction.swift`）。
+3. **它做对了我们没做的**：卖的是**一个恒等式**而不是一个品类集——
+   README 原话 "Claude's ring shows the same current session window Claude Code's own /usage
+   leads with, so the two **never disagree**"，且它真的为这句话建了**三级回退 + 一个 snapshot
+   唯一出口**（`ClaudeOAuthProvider.swift:263-278` 注释原话："窗口顺序或 headline 在 endpoint 上改了，
+   不能偷偷地和 CLI 的或 Desktop 的不一样"）。
+   另有 `Design.scale = 44/117` 一个锚点定全局、**每 commit 出可装产物** + 18 天 16 个正式 release。
+
+**「never disagree」的三级回退**（可直接对照我们的配额口径）：
+① Claude Desktop 的 HTTP 缓存文件（零子进程、零 keychain、零网络；快照 > 30 分钟即弃用）；
+② 起 `claude /usage`（一个子进程，5 分钟缓存一次，非零退出读作"它没登录"）；
+③ keychain OAuth token 打 `api.anthropic.com/api/oauth/usage`。
+`ClaudeDesktopUsageCache.swift:14-24` 的注释是模范文档，原话：
+"No token, no cookie, no keychain, no request to Anthropic, no subprocess, and no write of any kind."
+它还解决了我们一个潜在问题——**数字有多旧**（`capturedAt` + `isFresh(within:)`），
+与我们的「读不到 ≠ 闲着」同类。
+
+**C｜跟进 3 件 / 不跟 2 件**：跟进 `ProcessLiveness` 的 pid 起时比对（直击"进程崩了会话文件还在说 busy"）、
+一维栈空间布局（Phase 1 顺手做，侧边栏贴左/右复用同一套数学）、
+"无会话即隐藏 + 失败态必须可命名"（后者提醒我们：侧边栏若出现"未知/异常"这种笼统文案，
+应至少拆成未安装/未登录/已登出被清/无配额可计/被限流五类）。
+不跟：17 家 provider 覆盖（用户不用 Claude Code，且 CC Switch 已占据 provider 面）、
+手机端/局域网 HTTP 面（我们的远程外发是另一条路）。
+
+**D｜一条我们本来没意识到的口径矛盾（本文最有价值的副产品）**：
+任务书要求显式提出"官方直读配额是否冲突"，但拆开三级后发现**冲突范围小得多**
+（第一级读文件不碰网络，第二级半个冲突，第三级正面冲突）。
+顺手逐条核实才发现：**本仓「不持有密钥」这条口径今天就已经有两处自相矛盾**——
+`CONTEXT.md:167` 明写 SMTP 授权码/ntfi token/webhook key **本来就在钥匙串里**且远程外发本身
+**主动出网**，而 `CONTEXT.md:196` 又写「不碰网络、不转发流量、不持有密钥」；
+加上 Phase 2 档位文件会出现 key。所以问题不是"要不要为接配额破例"，
+而是**「凭据在本机的边界到底画在哪」**——这条边界今天已经模糊，接配额只是把它推到台前。
+三个候选 (a) 只读既有登录态用于展示 / (b) 借机器上已有 CLI 的登录态（只读）/ (c) 自己持钥打端点，
+已在文档里列成表，留待拍板。
+
+**没核实的**：`TASKS.md` 未读；12 家 monitor 只细读了 Claude 一家；
+`NotchViewModel` 的动效与 reduce-motion 覆盖未看；**我们的 `ProcessMonitor` 是否已做起时比对未逐行读**
+（这决定跟进项 1 是新增还是补测试）；codenotch 的 Tests 未读（它有 `ActivitySummaryTests.swift`）。
+
+Swift 侧无改动，测试基数仍为 548 条。
+
 ## [0.0.148] - 2026-09-26
 
 ### 收 mattpocock/skills 元规范，并补掉 AGENTS.md 一处实缺
