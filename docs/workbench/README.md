@@ -6,8 +6,9 @@
 
 ## 先读这一份
 
-[**07-synthesis.md · 综合方案**](07-synthesis.md) —— 把用户先后给的五类输入
-（形态预期、CC Switch、Magpie、OpenSquilla、陈大黄的边缘架构推文）收敛成一个产品方案：
+[**07-synthesis.md · 综合方案**](07-synthesis.md) —— 把用户先后给的多类输入
+（形态预期、CC Switch、Magpie、OpenSquilla、陈大黄的边缘架构推文、Emil Kowalski 的
+「让 AI 搞坏它」）收敛成一个产品方案：
 **AgentIsland 是一款跨 Agent 的本机管理工作台——不做 Agent、不架网关、不用 ML 路由。**
 定位、能力面、界面、技术路线、拿不到什么、三个开源项目各贡献了什么，都在那份里。
 
@@ -22,6 +23,7 @@
 | [05-magpie-research.md](05-magpie-research.md) | Magpie（LLM 网关）一手调研：它是什么、与我们已有能力的重叠与冲突、三条可选路径的代价 | 决定「模型切换」这块做多深之前必读 |
 | [06-opensquilla-research.md](06-opensquilla-research.md) | OpenSquilla 一手调研：harness-native 路由思想 + 四条可搬的经验（诊断回放/权限降权/一代模式名/分享前脱敏） | 补强 `LocalEventServer` 安全、实现 `shell_mode`、或评审降频/缓存类改动前读 |
 | [08-chendahuang-cloudflare-research.md](08-chendahuang-cloudflare-research.md) | 陈大黄（@realchendahuang）「独立产品后端全部交给 Cloudflare 边缘」推文：原文 + 它对「脉冲式容量」的处理，以及为什么**我们只借思想、不上云** | 讨论容量/成本/是否自建守护进程类取舍前读 |
+| [09-emilkowalski-let-ai-break-it.md](09-emilkowalski-let-ai-break-it.md) | Emil Kowalski「让 AI 尝试搞坏你做的东西」推文：原文 + 视频逐帧核对（1284 条 / 超长姓名 / 异常邮箱 / 布局被撑坏但零报错），以及我们手里比他的 demo 更真实的极端输入 | **写测试或定验收标准前读**——尤其决定要不要给侧边栏/灵动岛做最坏情况压测时 |
 
 ## 一句话
 

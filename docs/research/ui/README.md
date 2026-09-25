@@ -35,6 +35,7 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 | [08](08-farhan-video-dashboard-info-partition.md) | Farhan「Video Editing Dashboard」静态稿 | 一个深色大面板如何同时容纳四类信息而不显得吵 | **进度分三档**：徽标 / 行级 / 汇总，三者回答不同问题，不要用一个组件的三种尺寸糊过去 |
 | [09](09-farhan-filenns-refining-details.md) | Farhan「Refining the details」侧边栏 + 用量卡 | 侧边栏主导航与用量卡怎么做才不土 | **彩虹渐变只给唯一的行动召唤**——全图唯一的彩色渐变成为唯一 CTA |
 | [10](10-swiftui-craft-invite-card-spring.md) | [@withAnimationUI](https://x.com/withAnimationUI)「craft is still the moat」 | SwiftUI 邀请码胶囊卡片在两态间切换 | **状态切换让尺寸参与**（spring 换位 + 纵向 squash & stretch，而非只改颜色/文字） |
+| [11](11-plasma-ui-liquid-glass-panels.md) | [CruxGarden/plasma-ui](https://github.com/CruxGarden/plasma-ui) | 液态玻璃面板：融合、折射、SDF 材质 | **把效果状态做成可读计数器**（`5 panels, 4 joined`），于是熔断-重连能被 0.2s 帧抓住；**且"全关装饰只留透镜"是一个合法配置而不是 fork** |
 
 > 编号说明：01–07 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的同源案例
 > （素材与分析均为一手实样，见各篇「素材文件」与「取证命令」）。分开编号是为了让人一眼看出哪些是指定素材。
@@ -100,6 +101,20 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 14. **胶囊是微型信息容器，不只是圆角按钮。** [07](07-ui-motion-tweet-sample.md) 的
    `Send to agent` 胶囊内用一条 1px 分隔线重新分层（图标 / 文字 / 次级图标）。
    → 灵动岛宽度极窄，只有"一胶囊多层信息"能塞进足够上下文。
+15. **把效果的状态做成可读的。** [11](11-plasma-ui-liquid-glass-panels.md) 的 playground 常驻显示
+   `N panels, M joined` 与 `24px grid`——那不是给用户的开关，是**让效果可被验证**。
+   → 与 `doctor` / 可信度自查同源：把"我看到的"和"实际是什么"分开显示。
+16. **"全关装饰"必须是一个合法配置。** [11](11-plasma-ui-liquid-glass-panels.md) 的 `Aqua` preset
+   把 rim / highlight / shimmer / glow / wash / grain 六个 sheen 全关，只留折射与色散，
+   上游原话 "the plasma is a plain lens"。playground 里直接写着 "Turn all four off... and the
+   plasma is a plain lens - the Aqua tab above."
+   → 任何材质系统都该能表达"只要功能不要装饰"，否则克制只是口号。
+17. **间距要么小于融合距离、要么大于它，别停在中间。** [11](11-plasma-ui-liquid-glass-panels.md)
+   上游原话：`Smaller gaps render as liquid bridging them.` 中间态是 bug 不是特性。
+   → 微细条与卡片、卡片与货架行之间的距离，将来若做任何光桥/融合效果，先按这个分档定。
+18. **视频拿不到，先怀疑自己没走代理。** [07](07-ui-motion-tweet-sample.md) 写"twimg mp4 下载失败，
+   拿不到逐帧"——那是**当时没走系统代理**。本机 `127.0.0.1:10808` 能完整下载 13.9MB / 36.2s 视频
+   （11 篇的 72 帧逐帧分析就是这么来的）。**证据不足时先审自己的取证路径，再归因于上游。**
 
 ## 新增一篇要做什么
 

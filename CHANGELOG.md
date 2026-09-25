@@ -4,6 +4,64 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.139] - 2026-09-26
+
+### 案例库收 Plasma UI：第一次拿到完整视频，逐帧抓到一次熔断-重连
+
+[CruxGarden/plasma-ui](https://github.com/CruxGarden/plasma-ui)（npm `@cruxgarden/plasma-ui`，MIT，
+v0.3.0）——液态玻璃面板库，`<Plasma>` 面板接触时因表面张力融合、背后一切可见物被折射、
+松手吸附网格。新增 [`11-plasma-ui-liquid-glass-panels.md`](docs/research/ui/11-plasma-ui-liquid-glass-panels.md)。
+
+- **这篇的一手证据比前面所有篇厚一档：视频完整下载并逐帧分析了。** 36.2 秒 / 1652×1080 /
+  60fps / 2173 帧，用 `ffmpeg select='gt(scene,0.02)'` 独立测出两处硬切点（22.75–22.79s
+  playground→landing，27.65–27.82s landing→GitHub 页），共抽 72 帧逐帧读。
+- **最硬的发现：它的 playground 把融合状态做成了可读计数器**（`N panels, M joined`）。
+  于是能用 0.2 秒间隔的帧抓到一次完整熔断-重连：**`4 joined → 0 joined`**，发生在 16.8s 与
+  17.0s 之间（< 200ms），重连在 17.6s 与 17.8s 之间。同段里 **blend distance 从 40px 调到 56px，
+  joined 上限从 3 升到 4**——参数与结果共变可读（共变是事实，因果标为推断）。
+  另意外佐证：GitHub 页那条提交 `Show a longer demo: panels tearing away and fusi…`
+  从字面就印证了这个熔断实验是库自己做的演示。
+- **两种融合形态分别记录，不许互换引用**：细颈（t16.5 帧，颈宽约面板宽 1/5–1/4，S 形中点收细）
+  与宽桥/团块（d17.8/f19 帧，Files 旋转后嵌进 Notes）。即使在 4 joined 时每个面板轮廓仍可辨，
+  "三颗珠子串在绳上"，没有溶解成无形团。
+- **上游亲手调好的 preset 表从 docs 站点源码提取**（README 只给参数不给组合）：Lumen / Studio /
+  Slate / Aqua / Neon / Entropy 六个预设各带原话与关键值，另有 Water/Gel/Honey/Solid 四档粘度。
+  其中 `Aqua` 是"透明如水，六个 sheen 全关只留透镜"。
+- **shader 注释本身就是设计规则**，逐条抄了：只在朝向不同处融合（转角/缝隙/台阶）、
+  法线由 2D 高度梯度求出、rim 要翻卷出"肩"而不是薄片、金属与云是行进出来不是画出来的
+  （Beer-Lambert + Henyey-Greenstein）、颗粒活在页面坐标所以面板缩放时颗粒不动。
+  谱系也记了：Blinn 1982 metaballs / IQ 的 SDF 与 smooth minimum / Fiedler 的定步长积分。
+- **最该抄的一条**：它的 playground 常驻显示 `N panels, M joined` 与 `24px grid`，
+  **那不是给用户的开关，是让效果可被验证**。与 `doctor` / 可信度自查同源——
+  把"我看到的"和"实际是什么"分开显示。
+- **第二条**：上游把"减去所有装饰"做成一个合法配置而不是 fork，playground 原话
+  "Turn all four off... and the plasma is a plain lens - the Aqua tab above."
+  → 任何材质系统都该能表达"只要功能不要装饰"，否则克制只是口号。
+
+**逐帧分析里如实留下的落差（这是本篇最该被读的部分）**：README 宣称
+"Each panel undulates like a Slinky when moving"、viscosity 0 水 1 糖浆可调，
+但 **36.2 秒里没有任何一帧能证明拖尾或粘度差异造成的运动形态差异**——d17.0/d17.4 两帧
+视觉读图明确写无泪滴、无彗尾、无拉长、无运动模糊。已写进「没能核实的」，
+本项目若要写"拖尾可调"须另找素材或标为未验证。另有 9 条未验证（shimmer 流动、
+dispersion 色散分裂、网格吸附、mood 生效、六材质对应、reduced-motion 等）与 4 条推断
+均已与事实分开列。
+
+**顺带修正上轮的一处取证失误**：07 篇写"twimg mp4 下载失败，拿不到逐帧"，
+并在文末声明"所有动效过程的判断都不存在"。那是**当时只试了直连和两三个代理网关，
+没试本机系统代理**——`127.0.0.1:10808` 是能完整下载的（本篇的 13.9MB 就是这么来的）。
+07 篇与该声明已加更正说明，并提炼成案例库共识：「**证据不足时先审自己的取证路径，
+再归因于上游。**」
+
+案例库另有 5 条新共识（15–18）：把效果状态做成可读的、"全关装饰"是合法配置、
+间距要么小于融合距离要么大于它别停中间、以及上面那条取证纪律。README 索引补 11 号一行。
+
+**本轮没做**：一行 Swift 都没改。**六个 shader demo 一个都没实跑**（playground 与 workspace
+example 未在浏览器里操作过），一手证据止于 README 全文（21.8KB）、docs 站点 HTML（264KB，
+含 preset 表与 shader 注释）与视频 72 帧。macOS 26 有系统 Liquid Glass 材质，
+**优先级高于把上游那套 WebGL 自绘搬过来**——可搬的是规则不是 shader。
+Swift 侧无改动，测试基数仍为 544 条。
+
+
 ## [0.0.138] - 2026-09-26
 
 ### 案例库从 4 篇扩到 10 篇：29 个外部 UI 素材逐个研究入库
