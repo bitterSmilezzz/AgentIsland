@@ -759,6 +759,14 @@ public enum SelfReportWire {
     /// 下面 `status(for:)` 已**不再**表示未鉴权那条：那条只由这个常量回答（服务端两条 guard 先答完）
     public static let untrustedStatus = 200
     public static let untrustedReason: SelfReportReason = .noToken
+    /// 本机那条回环端口的**唯一定义处**。`LocalEventServer` 监听它、`agentisland notify`
+    /// 与 `agentisland state` 打它——写第三份的那天，就是「App 在 41999、CLI 在敲 41998」
+    /// 而两边都觉得自己没错的那天。
+    public static let defaultPort: UInt16 = 41999
+    /// 读端点拒答（没令牌/令牌不对）。与 `untrustedStatus` 是两件事：
+    /// 写的那条路没令牌会**落回**成一条未采信事件（200），读的这一条没有可落回的东西，只能拒
+    public static let deniedStatus = 403
+
     /// 「这条申报没被接受」的状态码，全仓只写这一次。
     /// 服务端连绑定结果（`profileGone`）也取它，否则「400 代表什么」会有第二处书写
     public static let rejectionStatus = 400

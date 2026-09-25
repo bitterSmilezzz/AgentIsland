@@ -17,7 +17,7 @@ public enum NotifyCommand {
         var type = "completed"
         var message: String? = nil
         var detail: String? = nil
-        var port: UInt16 = 41999
+        var port: UInt16 = SelfReportWire.defaultPort
 
         var i = 0
         while i < args.count {
@@ -151,14 +151,14 @@ public enum NotifyCommand {
           -t, --type <type>      事件类型 (completed, attention, costSpike，默认: completed)
           -m, --message <text>   主消息内容
           -d, --detail <text>    次级详情说明
-              --port <port>      本地监听端口 (默认: 41999)
+              --port <port>      本地监听端口 (默认: \(SelfReportWire.defaultPort))
               --json             输出 JSON 格式结果
           -h, --help             显示帮助
 
         \(CLIColor.bold("示例:"))
           agentisland notify -a antigravity -m "编译与测试完成"
           agentisland notify -a cursor -t attention -m "等待代码审阅确认"
-          curl -X POST http://127.0.0.1:41999/notify -d '{"agent":"ci","type":"completed","message":"构建通过"}'
+          curl -X POST http://127.0.0.1:\(SelfReportWire.defaultPort)/notify -d '{"agent":"ci","type":"completed","message":"构建通过"}'
         """)
     }
 }

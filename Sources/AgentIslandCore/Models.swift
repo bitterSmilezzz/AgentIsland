@@ -19,6 +19,17 @@ public enum AgentProvenance: String, Codable, Equatable, CaseIterable {
         return " · \(badge)"
     }
 
+    /// 完整说法（CLI 的 `state` 与报表用）。短标签在岛里够用，脚本侧要的是
+    /// 「这句话凭什么」——所以观测/推断在这里**有**名字，岛内刻意没有
+    public var explainText: String {
+        switch self {
+        case .selfReported: return "自报（带令牌、TTL 内）"
+        case .conflict: return "自报冲突"
+        case .observed: return "观测（会话强语义）"
+        case .inferred: return "推断（CPU/写入兜底）"
+        }
+    }
+
     /// 副标题上那一格短标签。`nil` = 不额外标注：观测与推断是常态，
     /// 给它们都挂个标签等于把噪声当信息。
     public var badgeText: String? {

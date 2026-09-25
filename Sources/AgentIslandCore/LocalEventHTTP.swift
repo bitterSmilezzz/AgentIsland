@@ -41,6 +41,9 @@ public enum LocalEventHTTP {
         case session(Request)
         /// 交给 `/notify`：正文已经解得开，事件类型的映射也在这里定好了
         case notify(Request, CLINotifyRequestDTO, eventType: AgentTaskEvent.EventType)
+        /// 交给 `GET /state`：读的是 App 进程里的实时状态（11 号票）。
+        /// 令牌校验在引擎那一侧，这里只保证「只有 GET 进得来」
+        case state(Request)
 
         /// 引擎没就绪：那是**服务端**的状态，不该报成调用方的请求有问题（503 而不是 400）
         public static var noEngineReply: Outcome {
@@ -126,6 +129,13 @@ public enum LocalEventHTTP {
                                         message: "/session 只接受 POST（声明/续报）与 DELETE（撤销）")))
             }
             return .session(request)
+        case (_, "/state"):
+            guard request.method == "GET" else {
+                return .reply(status: SelfReportWire.badMethodStatus, body: json(
+                    CLINotifyResultDTO(success: false,
+                                       message: "/state 只接受 GET（读 App 侧实时状态）")))
+            }
+            return .state(request)
         case ("POST", "/notify"), ("POST", "/event"):
             guard let bodyData = request.body.data(using: .utf8),
                   let payload = try? JSONDecoder().decode(CLINotifyRequestDTO.self, from: bodyData) else {

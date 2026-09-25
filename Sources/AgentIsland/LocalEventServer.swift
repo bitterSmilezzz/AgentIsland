@@ -15,7 +15,9 @@ import AgentIslandCore
 // 可达，只 NSLog 一条警告——见 start/handleConnection，别把这里当成已经双向兜住了。
 
 public final class LocalEventServer: @unchecked Sendable {
-    public static let defaultPort: UInt16 = 41999
+    /// 端口只有一个定义处（Core）：这里再写一遍数字，就会有「App 监听一个口、
+    /// CLI 打另一个口」而两边都觉得自己没错的那天
+    public static let defaultPort = SelfReportWire.defaultPort
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "com.agentisland.eventserver", qos: .utility)
     /// 在飞连接上限：无鉴权端口上，一条「只连不发」的 TCP 就能永久占住一个 fd。
@@ -177,6 +179,9 @@ public final class LocalEventServer: @unchecked Sendable {
             case let .notify(request, payload, eventType):
                 self.clearBuffer(connection)
                 self.handleNotify(request, payload: payload, eventType: eventType, connection: connection)
+            case let .state(request):
+                self.clearBuffer(connection)
+                self.handleState(request, connection: connection)
             }
         }
     }
@@ -214,6 +219,29 @@ public final class LocalEventServer: @unchecked Sendable {
             handleSession(request, connection: connection)
         case let .notify(request, payload, eventType):
             handleNotify(request, payload: payload, eventType: eventType, connection: connection)
+        case let .state(request):
+            handleState(request, connection: connection)
+        }
+    }
+
+    /// 读端点（11 号票）：把 App 进程里的实时状态给出去。
+    /// 令牌与 `/session` 同一枚——那枚令牌的含义是「这个进程被允许参与自报」，
+    /// 而能参与自报的进程读到聚合状态是同一份信任；反过来，**没有令牌的进程一行状态都读不到**，
+    /// 因为「这台机器装了哪些 Agent、谁在跑」本身就是 02 号票要防的那类免费清单。
+    private func handleState(_ request: LocalEventHTTP.Request, connection: NWConnection) {
+        let provided = SelfReportHeaders.value(request.headerPart,
+                                               name: SelfReportTokenStore.headerName)
+        Task { @MainActor in
+            guard let engine = self.engine else {
+                self.answer(AgentStateEndpoint.noEngineReply, connection: connection)
+                return
+            }
+            guard engine.authorizeSelfReport(provided) != nil else {
+                self.answer(AgentStateEndpoint.deniedReply, connection: connection)
+                return
+            }
+            self.send(connection: connection, status: 200,
+                      text: AgentStateEndpoint.body(snapshots: engine.snapshots, now: Date()))
         }
     }
 

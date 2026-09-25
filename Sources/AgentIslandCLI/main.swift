@@ -35,6 +35,10 @@ struct AgentIslandCLI {
             let subArgs = Array(rawArgs.dropFirst())
             await TokensCommand.run(args: subArgs)
 
+        case "state":
+            let subArgs = Array(rawArgs.dropFirst())
+            await StateCommand.run(args: subArgs)
+
         case "doctor", "diagnose":
             let subArgs = Array(rawArgs.dropFirst())
             await DoctorCommand.run(args: subArgs)
@@ -98,6 +102,7 @@ macOS 智能体运行态监控与运维终端工具
   \(CLIColor.cyan("selftest"))  核心逻辑自检（假数据断言，验证构建本身；不读真实机器状态）
   \(CLIColor.cyan("open"))       通过深度链接呼出/联动桌面灵动岛
   \(CLIColor.cyan("notify"))     主动向灵动岛投递智能体完成、待确认或告警事件
+  \(CLIColor.cyan("state"))      读灵动岛进程里的实时状态（含自报来源与冲突双显；`status` 看不到自报）
   \(CLIColor.cyan("report"))     生成 Markdown / CSV / JSON 运维审计报告
   \(CLIColor.cyan("raycast"))    导出 Raycast Extension 命令清单配置
 
