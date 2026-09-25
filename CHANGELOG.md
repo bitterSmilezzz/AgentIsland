@@ -4,6 +4,81 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.138] - 2026-09-26
+
+### 案例库从 4 篇扩到 10 篇：29 个外部 UI 素材逐个研究入库
+
+用户一次给了 29 个链接（7 个素材站点 + 19 条动效推文 + liquid-taffy 与 morphicons 两个库）。
+`docs/research/ui/` 原来只有 3 篇，本轮补齐并修正了两处自己写错的结论。
+
+- **新增 7 篇指定素材**：
+  - [`04-ui-resource-sites.md`](docs/research/ui/04-ui-resource-sites.md)（610 行）：六个站点横向对比。
+    最关键的发现是 **Beautiful UI 与 BoardUI 两批互不相识的开发者收敛出了同一份 agent 界面词汇表**
+    （Thinking / Approval Card / Tool Chips / Task Rows ↔ `agent-thinking` / `questionnaire` /
+    `task-list` / `agent-progress`），其中 `questionnaire` 与 `04 Approval Card` 是同一个需求的两种实现。
+    另抄到 beUI `Dynamic Island` 源码（外壳动真实宽高不动 transform、`RADIUS = 32` 常量永不做动画、
+    出场比进场短一个量级且不加 blur）与 BoardUI `agent-log` 的五段时长（`height 0.38 <
+    opacity/filter/y 0.42 < mask 0.44`，容器先让位文字后到位）。
+  - [`05-morphicons-and-tools.md`](docs/research/ui/05-morphicons-and-tools.md)（342 行）：
+    旋转是**解出来的**不是声明出来的——2D Procrustes 闭式解 `θ*=atan2(S_xy−S_yx, S_xx+S_yy)`，
+    residual 驱动的分支（≈0 → 纯旋转）。附带一条对常驻 UI 重要的判断：它把图标 morph
+    划为 reduce-motion 下"一般可接受的 micro-transition"于是默认播放，把决定权做成显式 prop。
+  - [`06-liquid-taffy-goo-engine.md`](docs/research/ui/06-liquid-taffy-goo-engine.md)（703 行）：
+    本批最硬的一篇。**gooey 边框为什么不膨胀**——轮廓是两条 iso-alpha contour 之间的缝，
+    每个工作 blur 配自己的一对阈值（离线栅格化 32px 圆盘积分墨量解出），blur 与阈值同帧切换，
+    且 rim 遮罩必须用同一张表。另录：弹簧不用缓动曲线（两条物理弹簧采成 GSAP CustomEase）、
+    关节点光三条规则（一 body 一 lobe / 焊接是 latch 不是 test / lobe 大部分停在关节亮的半径外）、
+    以及 `motion.ts` "prefers-reduced-motion, asked in one place" 的可达性形态。
+  - [`07-ui-motion-tweet-sample.md`](docs/research/ui/07-ui-motion-tweet-sample.md)（246 行）：
+    19 条推文当作一次抽样。10 张视频封面全部逐张视觉分析（OCR 取文字 + 语义读图取画面）。
+    最硬的一条结论：**命名是作者的，特征是画面的**——`@arknow91` 自称 gooey toggle，
+    三次定向读图都确认该帧只有一个连续形状、无 blur、无 neck、无 second blob；
+    而 `@AlbiaHossain` 的 liquid glass 折射形变**确实在场**。20 张配图里最有参考价值的是
+    **@Griveau 的 Linear 组件**：胶囊是唯一形状语言、彩色只编码状态（绿 `+232` / 红 `-17` /
+    蓝紫对挑全部承载语义）、**单胶囊内用 1px 分隔线做多信息复合**。
+  - 另三篇为研究过程中 subagent 引申发现的同源案例（编号 08–10，README 已注明哪些是指定素材）：
+    [`08`](docs/research/ui/08-farhan-video-dashboard-info-partition.md) Farhan 视频工作台静态稿、
+    [`09`](docs/research/ui/09-farhan-filenns-refining-details.md) Farhan 侧边栏 + 用量卡、
+    [`10`](docs/research/ui/10-swiftui-craft-invite-card-spring.md) withAnimationUI 的 SwiftUI 邀请函。
+    三篇素材与分析均为一手实样（图/视频在本机 `.scratch/ui-material/`，不入库）。
+
+- **修正一处我上轮写错的结论（重要）**：v0.0.137 时为了回答"动画 WebP 无视 reduced-motion
+  对我们会怎样"，我 grep 了 `reducedMotion` / `prefersReduced`，**零命中**，于是写进 README
+  已知限制：「所有动效都不看 prefers-reduced-motion」。**那是错的**——这两个是 Web 侧拼法，
+  SwiftUI 的键名是 `accessibilityReduceMotion`。按正确键名核实：`DockedSliver`（2 处）、
+  `AgentRingView`（3 处）、`ActivityMatrixDots`（1 处）**已接**，其余 View 未接。
+  README 该条已重写为「只覆盖 3 个文件，不是全部」，01 篇与 06 篇里引用旧结论的位置同步更正，
+  并把"曾写错什么、为什么错"留在原地当反例。
+  **教训写进了案例库 README：跨语言搬结论前，先确认那个词在目标语境里叫什么。**
+
+- **收敛彩色配额的那个判断没有成真，如实改写**：07 篇从 Linear 那组推出"五态色应当是唯一
+  允许出现的彩色"，但一查本仓就发现做不到位——五态色确实是 `Theme.statusWorking` /
+  `statusIdle` / `statusOffline`（Theme.swift:171–173）这套语义名，但彩色不止五态在用：
+  `Theme.sydedockCyan` 64 处（详情页数据色，如「工作总耗时」）、`actionBlue` 31 处、`focusBlue` 9 处。
+  已从"照此宣布已达成"改成**待判问题**（数据色要不要让位给状态色）。
+
+- **脱敏闸拦下一条**：09 篇原稿引用了设计稿里作者**公开**的邮箱，`scripts/scan-secrets.sh`
+  新增 3 条未备案命中直接拒发。已脱敏——公开不等于该被本仓转载（转载会让下一次全文 grep 的
+  人把它当联系方式）。这条也写进了案例库规矩。
+
+- **并发 agent 的两处越界，已处理**：4 个 subagent 中两个自行引入了用户未给的素材
+  （withAnimationUI 与 Farhan 两篇、另下载了一个未使用的 emilkowalski 视频）。
+  素材与分析都是真实一手，经用户确认后**全部保留入库**，用 08–10 的编号与指定素材分开，
+  README 注明区分规则。`docs/workbench/09-emilkowalski-*.md` 与本次任务无关，**未纳入本次提交**。
+
+- **案例库 README 的规矩从 5 条加到 10 条**，新增的都是本轮真金白银换来的：
+  写完自查引用（行号回头 grep）、跨语言搬结论前先确认关键词、别把作者命名当画面事实、
+  未核实到的单列一节、素材不入库只放 `.scratch/`、外部读到的真实个人信息一律脱敏。
+
+**本轮没做**：一行 Swift 都没改。案例库里已经有十几条指向具体控件的建议
+（微细条呼吸灯改不对称速率、attention 态用 `Thinking...` 胶囊、Linear 三行结构重画、
+`offline` 用更暗的灰、动效与声音成对设计），但它们全部**未排期**——按案例库的定位，
+要做哪条就开 issue，不要把案例库读成待办板。九个 demo（morphicons playground、
+liquid-taffy `npm run dev`、ThreeUI 各模板）**都没有实跑**，一手证据止于源码、页面 HTML 与
+GitHub API 数字；视频类素材**没有拿到逐帧**（twimg mp4 下载失败），只分析了封面静态帧。
+Swift 侧无改动，测试基数仍为 544 条。
+
+
 ## [0.0.137] - 2026-09-25
 
 ### 建 `docs/research/ui/` 动效案例库，收三篇外部案例

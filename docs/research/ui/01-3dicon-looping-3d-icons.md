@@ -158,9 +158,12 @@ matte 阶段可以解出 `C = (F - (1-a)*BG) / a` 求真实前景，而不是估
 最后两条对我们有直接约束：灵动岛是常驻 UI，任何动画资产都要提供静态替代路径，
 且**不能在代码里再叠一层位移动画**——否则就是上游明说的 fidgeting。
 
-（核实：本项目**目前没有** `prefers-reduced-motion` 处理——`Sources/` 下搜不到
-`reducedMotion` / `prefersReduced`。所以这不是"已有口径"，而是一条**今天仍然成立的缺口**，
-记在这里而不是写成一致。）
+（核实更正，v0.0.137 时写错过一次）：本条初版写的是「本项目目前没有 reduce-motion 处理」，
+**那是错的**——当时按 Web 侧拼法 `reducedMotion` / `prefersReduced` grep，而 SwiftUI 的键名是
+`accessibilityReduceMotion`。按正确键名核实：`DockedSliver`（2 处）、`AgentRingView`（3 处）、
+`ActivityMatrixDots`（1 处）**已接**；`IslandView` / `IslandComponents` / `EventBannerView`
+与各列表图表 View **未接**。真实情况是"部分覆盖、两种行为并存"，不是"完全没有"。
+教训留在 [06 篇](06-liquid-taffy-goo-engine.md) 第 590 行附近。）
 
 抠像模型选型也给了实测（对将来做任何截图/素材处理有用）：
 

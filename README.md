@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.137** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.138** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 
@@ -243,7 +243,7 @@ AgentIsland/
 - **浅色小字号按 AA 正文档校准**：8–10pt 文字已 ≥4.5:1，但热力图 / 环图一类**纯图形**仍按 3:1 的图形线取值，不追求正文档。
 - **命中区补的是高度不是画出来的尺寸**：顶栏与详情页的图标按钮统一走 `hitTargetHeight()`（`minHeight: 24` + `contentShape`），按得到也点得到；视觉圆底仍是 19×19 一类的小图形，横向命中区跟着图形走。扩成 24×24 要改圆底与行高，属可见布局改动。
 - **在场判定的「无输入时长」在测试里构造不出来**（需要真实 GUI 会话）。判定逻辑与调用点传参都有断言，但取信号那一层只能靠设置页的实时判定行当场核对。
-- **所有动效都不看 `prefers-reduced-motion`**：`Sources/` 下没有 `reducedMotion` 处理，微细条呼吸灯、玻璃卡片过渡、贴边弹出都会照常动。设了「减少动态效果」的用户得不到静态替代。把常驻动效逐个接上这个开关是一件独立的事，不是改一处常量。
+- **动效减少只覆盖了 3 个文件，不是全部**：`accessibilityReduceMotion` 在 `DockedSliver`（2 处）、`AgentRingView`（3 处）、`ActivityMatrixDots`（1 处）**已接**；`IslandView` / `IslandComponents` / `EventBannerView` 与各列表图表 View **未接**。所以设了「减少动态效果」的用户会得到一部分静态替代、另一部分照常动，两种行为并存。补齐是逐个 View 的活，不是改一处常量。
 - Qoder 的「任务完成」按**哪一轮人类指令**记：同一轮里模型多次收尾（等后台构建、被通知唤醒后续跑）只响一次。若某一轮的首行在两次采样之间就滑出了尾窗（大 payload 时字节上限会先于行数到点），那一轮是谁起的头就认不出来：见过人类轮次时挂在最近那一轮上，一次都没见过时挂在**这份会话**的身份上——两种都是少响一次，不是不响。
 - Token 明细只留近 70 天（分析页最宽 30 天，另需同长的上一周期做对比）；更早的折成按工具的合计，累计口径不变但按天铺不开。索引仍按磁盘上存在的 jsonl 数量线性重建（本机 5,778 条时稳态 2.7ms），全库未变化时走戳备忘录直接复用。
 - `/notify` 无鉴权，仅靠「只监听回环」限制来源；macOS 13 无法限定，会在启动时告警。
