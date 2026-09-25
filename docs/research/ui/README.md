@@ -38,8 +38,9 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 | [11](11-plasma-ui-liquid-glass-panels.md) | [CruxGarden/plasma-ui](https://github.com/CruxGarden/plasma-ui) | 液态玻璃面板：融合、折射、SDF 材质 | **把效果状态做成可读计数器**（`5 panels, 4 joined`），于是熔断-重连能被 0.2s 帧抓住；**且"全关装饰只留透镜"是一个合法配置而不是 fork** |
 | [12](12-halogen-recorder-capsule-states.md) | [@sashabirukoff](https://x.com/sashabirukoff)「Halogen case study otw」 | 常驻录屏小部件的四种形态：闭合 / 展开 / 录制单行 / 回落 | **它不是四个控件，是一个控件的四种高度**；不可用的选项让它在场外而不是置灰 |
 | [13](13-kopp-morphing-dropdown.md) | [@koppkev](https://x.com/koppkev)「morphing dropdown」 | Details.so Vault 的导航下拉在四种内容形态间反复变形 | **先问「这是几个菜单，还是一个菜单的几个状态」**——四种内容共享同一个容器几何，就只有一份开合逻辑 |
+| [14](14-mide-progressive-payment-reveal.md) | [@mide_ajibade](https://x.com/mide_ajibade)「Progressive Payment Reveal」 | 分期付款界面：进度在三个 tab 间切换 | **数字会变时让它数上去，不要跳**——`0 → 47 → 50` 与 `0 → 50` 给用户的信息量不同 |
 
-> 编号说明：01–07、11、12、13 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的
+> 编号说明：01–07、11、12、13、14 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的
 > 同源案例（素材与分析均为一手实样，见各篇「素材文件」与「取证命令」）。
 > 分开编号是为了让人一眼看出哪些是指定素材、哪些是沿链发现的。
 
@@ -131,6 +132,15 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
    同一个面板在**图文四格 / 纯文字列表 / 两栏图文**之间整体换形，容器几何不动。
    → 动手前先问一句：**这是几个控件，还是一个控件的几个状态？** 内容形态共享同一个容器几何时，
    答案永远是后者——四套开合状态、四份定位逻辑、四倍测试面，都是自找的。
+22. **数字会变时，让它数上去，不要跳。** [14](14-mide-progressive-payment-reveal.md) 的
+   `0% paid` 用约半秒数到 `47%` 再落到 `50%`（三帧 OCR 逐字确认），而不是从 0 直接变 50。
+   → 判据：**这个变化用户需要知道过程吗？** token 消耗、耗时、进度都需要。
+   这与 [04](04-ui-resource-sites.md) 三家站点一致做的 elapsed time 是同一条规则的两半：
+   那半是"等了多久"，这半是"变成多少"。合起来是**给反馈 + 让过程可读**。
+23. **进度条与数字必须同源。** [14](14-mide-progressive-payment-reveal.md) 里填充比例与数字
+   在多个帧一致；两者不同步是这类控件最常见的 bug，而且**截图看不出来，只在动的时候暴露**。
+   → 与 [11](11-plasma-ui-liquid-glass-panels.md)「同一光学参数的两个消费者共用一份来源」
+   是同一条纪律在数据层的版本。
 
 ## 新增一篇要做什么
 
