@@ -36,9 +36,11 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 | [09](09-farhan-filenns-refining-details.md) | Farhan「Refining the details」侧边栏 + 用量卡 | 侧边栏主导航与用量卡怎么做才不土 | **彩虹渐变只给唯一的行动召唤**——全图唯一的彩色渐变成为唯一 CTA |
 | [10](10-swiftui-craft-invite-card-spring.md) | [@withAnimationUI](https://x.com/withAnimationUI)「craft is still the moat」 | SwiftUI 邀请码胶囊卡片在两态间切换 | **状态切换让尺寸参与**（spring 换位 + 纵向 squash & stretch，而非只改颜色/文字） |
 | [11](11-plasma-ui-liquid-glass-panels.md) | [CruxGarden/plasma-ui](https://github.com/CruxGarden/plasma-ui) | 液态玻璃面板：融合、折射、SDF 材质 | **把效果状态做成可读计数器**（`5 panels, 4 joined`），于是熔断-重连能被 0.2s 帧抓住；**且"全关装饰只留透镜"是一个合法配置而不是 fork** |
+| [12](12-halogen-recorder-capsule-states.md) | [@sashabirukoff](https://x.com/sashabirukoff)「Halogen case study otw」 | 常驻录屏小部件的四种形态：闭合 / 展开 / 录制单行 / 回落 | **它不是四个控件，是一个控件的四种高度**；不可用的选项让它在场外而不是置灰 |
 
-> 编号说明：01–07 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的同源案例
-> （素材与分析均为一手实样，见各篇「素材文件」与「取证命令」）。分开编号是为了让人一眼看出哪些是指定素材。
+> 编号说明：01–07、11、12 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的
+> 同源案例（素材与分析均为一手实样，见各篇「素材文件」与「取证命令」）。
+> 分开编号是为了让人一眼看出哪些是指定素材、哪些是沿链发现的。
 
 ## 当前已经跨案例共识的结论
 
@@ -115,6 +117,14 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 18. **视频拿不到，先怀疑自己没走代理。** [07](07-ui-motion-tweet-sample.md) 写"twimg mp4 下载失败，
    拿不到逐帧"——那是**当时没走系统代理**。本机 `127.0.0.1:10808` 能完整下载 13.9MB / 36.2s 视频
    （11 篇的 72 帧逐帧分析就是这么来的）。**证据不足时先审自己的取证路径，再归因于上游。**
+19. **同一个常驻控件应该是"一种形态列表"，不是多个控件。** [12](12-halogen-recorder-capsule-states.md)
+   的 Halogen 把 idle / 可选 / 录制中 / 收起做成同一条胶囊的四种高度，全程共用同一份点阵图标与同一套描边；
+   且录制中把不可用的 `Screenshot` **移出场外而不是置灰**。
+   → 这正是本仓 `shell_mode` 该有的实现口径：灵动岛与侧边栏是一个容器的两种高度，不是两套 UI。
+20. **塌缩用行淡出，不用整体缩放。** [12](12-halogen-recorder-capsule-states.md) 从三行菜单塌到单行胶囊时，
+   多余的行走"图标+文字一起变暗 → 消失"，计时数字**等塌缩完成后才出现**；全程没有 scaleY 压缩。
+   → 与 [10](10-swiftui-craft-invite-card-spring.md)「切换让尺寸参与」看着对立，判据其实是
+   **按形态层级决定切换强度**：同层内换内容可以让尺寸夸张，跨层增减内容要安静。
 
 ## 新增一篇要做什么
 

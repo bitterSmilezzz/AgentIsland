@@ -52,15 +52,33 @@ dispersion 色散分裂、网格吸附、mood 生效、六材质对应、reduced
 07 篇与该声明已加更正说明，并提炼成案例库共识：「**证据不足时先审自己的取证路径，
 再归因于上游。**」
 
-案例库另有 5 条新共识（15–18）：把效果状态做成可读的、"全关装饰"是合法配置、
+案例库另有 5 条新共识（15–18），Halogen 又补两条（19–20）：把效果状态做成可读的、"全关装饰"是合法配置、
 间距要么小于融合距离要么大于它别停中间、以及上面那条取证纪律。README 索引补 11 号一行。
 
-**本轮没做**：一行 Swift 都没改。**六个 shader demo 一个都没实跑**（playground 与 workspace
-example 未在浏览器里操作过），一手证据止于 README 全文（21.8KB）、docs 站点 HTML（264KB，
-含 preset 表与 shader 注释）与视频 72 帧。macOS 26 有系统 Liquid Glass 材质，
-**优先级高于把上游那套 WebGL 自绘搬过来**——可搬的是规则不是 shader。
-Swift 侧无改动，测试基数仍为 544 条。
+### 补收 Halogen 案例（v0.0.139 追加）
 
+研究过程中 subagent 又沿链发现一篇与 `shell_mode` 直接相关的素材：sasha birukoff
+（[@sashabirukoff](https://x.com/sashabirukoff)）的 **Halogen** 常驻录屏小部件
+（视频 11.5s / 1080×1080 / 30fps / 344 帧，素材在本机 `.scratch/ui-material/11-halogen.mp4` 不入库）。
+新增 [`12-halogen-recorder-capsule-states.md`](docs/research/ui/12-halogen-recorder-capsule-states.md)。
+
+- **它对我们最有价值的一条**：同一个常驻控件在 闭合 / 两行展开 / 录制单行 / 三行菜单 / 回落闭合
+  之间切换，**全程共用同一个容器、同一套点阵图标、同一套细描边**——变的只有高度、行数与显隐。
+  → 这正是 `shell_mode` 该有的口径：灵动岛与侧边栏是**一个容器的两种高度**，不是两套 UI。
+- **第二条**：录制中把不可用的 `Screenshot` **移出场外而不是置灰**——常驻 UI 上长期放一个点不动的
+  元素是负债。第三条：塌缩用**行淡出**（图标+文字一起变暗→消失，计时数字等塌缩完成后才出现），
+  全程没有 scaleY 压缩；计时数字是白字，红色只属于 Record 图标。
+- 与 [10 篇](docs/research/ui/10-swiftui-craft-invite-card-spring.md) 看着对立（那条讲切换要让尺寸
+  参与、要夸张；这条讲塌缩要安静），合起来的判据是**按形态层级决定切换强度**：同层内换内容可以夸张，
+  跨层增减内容要安静。
+- 一手证据：全时间轴 6fps 采样 69 帧 + 展开/塌缩两段 5 帧裁剪放大读图标。
+  已如实标注哪些是目视判定（点间距、是否 spring 及参数、计时出现的精确帧号）**未做像素级时序测量**。
+- 修掉这篇自己的三处断链（`06-farhan-*` 误引、workbench 相对路径少一层），全库相对链接已脚本验通。
+
+**本轮没做**：一行 Swift 都没改。两批素材（Plasma UI 与 Halogen）**共七个 demo/视频一个都没实跑**
+（playground、workspace example、Halogen 源项目都未在浏览器里操作），一手证据止于 README 全文、
+站点 HTML、推文元数据与抽帧。macOS 26 有系统 Liquid Glass 材质，**优先级高于把上游那套 WebGL
+自绘搬过来**——可搬的是规则不是 shader。Swift 侧无改动，测试基数仍为 544 条。
 
 ## [0.0.138] - 2026-09-26
 
