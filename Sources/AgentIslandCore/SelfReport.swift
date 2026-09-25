@@ -23,6 +23,21 @@ public enum SelfReportState: String, Codable, CaseIterable, Equatable {
     case attention
     case completed
     case idle
+
+    /// 与 `ActivityLevel.label` **逐字对齐**：双陈述那句是「自报说 X，进程表说 Y」，
+    /// 同一个状态两边叫法不一样（「干活中」vs「工作中」）会让人以为是两件事。
+    /// 对齐关系由 `level` 那一侧的用例钉住，不靠这里抄一遍。
+    public var label: String { level.label }
+
+    /// 一一对应：自报的四种状态就是卡片那四种（`offline` 不在其中——那是观测才有的结论）
+    public var level: ActivityLevel {
+        switch self {
+        case .working: return .working
+        case .attention: return .attention
+        case .completed: return .completed
+        case .idle: return .idle
+        }
+    }
 }
 
 // MARK: - 载荷：两套形状都收

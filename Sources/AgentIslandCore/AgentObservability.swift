@@ -61,6 +61,14 @@ public enum AgentObservability {
         // 活跃会话数为 0 被判成「无本地明细」，自相矛盾）。
         switch snapshot.level {
         case .attention, .completed, .working:
+            // 这一维现在有两种来路：会话强语义，或带令牌、TTL 内的自报。
+            // 把自报写成「本轮读到了会话强语义」是拿别人的证据给自己的结论背书——
+            // 而 `doctor` 与报表印的就是这句。第六类结论（自报）留给 05 号票改分类，
+            // 今天先把依据说真。
+            if snapshot.provenance == .selfReported {
+                evidence.append("状态由带令牌、TTL 内的自报确认")
+                return Verdict(code: .observed, evidence: evidence)
+            }
             evidence.append("本轮读到了会话强语义（\(snapshot.level.label)）")
             return Verdict(code: .observed, evidence: evidence)
         case .idle, .offline:

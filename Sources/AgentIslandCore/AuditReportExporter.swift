@@ -89,7 +89,9 @@ public enum AuditReportExporter {
             // 而 status --json 与详情卡说「需留意 / 异常」——同一个评级两份话。
             let gradeStr = report.grade.rawValue
 
-            md += "| \(cell(snap.profile.name)) | \(snap.level.label) | \(pidStr) | \(cpuStr) | \(memStr) | \(report.score) | \(gradeStr) | \(cell(report.suggestion)) |\n"
+            // 状态那一格也要带来源：报告里一片「工作中」而其中一条其实是带令牌的自报，
+            // 读报告的人无从分辨（同一个理由见 `AgentProvenance.badgeSuffix`）
+            md += "| \(cell(snap.profile.name)) | \(snap.level.label + AgentProvenance.badgeSuffix(snap.provenance)) | \(pidStr) | \(cpuStr) | \(memStr) | \(report.score) | \(gradeStr) | \(cell(report.suggestion)) |\n"
         }
         // 会话源不可读的 Agent 单独列出：健康评分只看进程/CPU/内存，读不到会话库时
         // 报告里只会是一片「待机」，等于把「解析器坏了」伪装成「智能体闲着」。

@@ -105,7 +105,11 @@ public enum StatusCommand {
             }
 
             var activityText = ""
-            if let act = s.currentAction, !act.isEmpty, s.level == .working {
+            if let conflict = s.conflictStatement {
+                // 终端里也要看见「自报说 X，进程表说 Y」：这条信息只出现在岛上，
+                // 就等于让脚本用户读到一份被替用户挑过一遍的状态
+                activityText = conflict
+            } else if let act = s.currentAction, !act.isEmpty, s.level == .working {
                 let agoStr = s.lastActivityAgo != nil ? formatAgoShort(s.lastActivityAgo!) : ""
                 activityText = "\(act) \(CLIColor.dim(agoStr))".trimmingCharacters(in: .whitespaces)
             } else if let ago = s.lastActivityAgo {

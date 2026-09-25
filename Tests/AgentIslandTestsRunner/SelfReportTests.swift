@@ -779,6 +779,248 @@ enum SelfReportTests {
             try expectEqual(e.eventHistory.first?.detail, "  在等确认  ")
         }
 
+        // MARK: 来源维度（04 号票 / spec 第 4 节）
+
+        func provEngine(names: Set<String>, alive: [Int32: String] = [:],
+                        tokens: SelfReportTokenStore) -> ActivityEngine {
+            ActivityEngine(profiles: [claude],
+                           processMonitor: FakeProcessProvider(processNames: names, bundleIDs: []),
+                           fileMonitor: FakeFileActivityProvider(writes: [:]),
+                           installedApps: InstalledAppsCache(scanCLIs: { [] }, scanBundles: { [] }),
+                           selfReportTokens: tokens,
+                           selfReportProbe: probe(alive: alive))
+        }
+
+        TestKit.test("来源: 没有可信自报时，读到强语义是 observed，只有兜底信号是 inferred") {
+            let store = tempTokenStore("prov-a")
+            let e = provEngine(names: ["claude"], tokens: store)
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_000))
+            try expectEqual(e.snapshots.first?.provenance, .inferred,
+                            "这一拍只有 CPU/写入兜底，卡片不该装作「观测到了什么」")
+            e.inspectSessionHook = { _, _, _ in .active(fingerprint: "f-1", action: "跑测试") }
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            try expectEqual(e.snapshots.first?.provenance, .observed,
+                            "读到会话强语义才是 observed")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("来源: 离线卡片不给来源——「它说了什么」这个问题在进程都不在时不成立") {
+            let store = tempTokenStore("prov-offline")
+            let e = provEngine(names: [], tokens: store)   // 进程表里没有 claude
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_000))
+            try expectEqual(e.snapshots.first?.level, .offline)
+            try expectNil(e.snapshots.first?.provenance,
+                          "硬套一个 .observed 等于给一次没发生过的对撞盖章")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("来源: 可信自报压过兜底推断 ⇒ 采信，卡片按自报的状态写") {
+            // 这是这条通道存在的理由：带令牌的那句话比「CPU 有点高」更有资格决定卡片写什么
+            let store = tempTokenStore("prov-believe")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: ["claude"], tokens: store)
+            _ = e.bindSelfReport(sub(state: .attention, detail: "在等确认"),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "有效令牌没产出凭证"),
+                                 now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            try expectEqual(e.snapshots.first?.provenance, .selfReported)
+            try expectEqual(e.snapshots.first?.level, .attention,
+                            "没有强语义反对时，状态按自报的来")
+            try expectEqual(e.snapshots.first?.currentAction, "在等确认",
+                            "自报带来的那句 detail 要能顶上副标题，别留空")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("来源: 自报与强语义对不上 ⇒ conflict，两句话都给，不许替用户挑") {
+            let store = tempTokenStore("prov-conflict")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: ["claude"], tokens: store)
+            e.inspectSessionHook = { _, _, _ in .active(fingerprint: "f-9", action: "跑测试") }
+            _ = e.bindSelfReport(sub(state: .idle, detail: "它说自己闲着"),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "没凭证"),
+                                 now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            let snap = try XCTRequire(e.snapshots.first, "没有快照")
+            try expectEqual(snap.provenance, .conflict)
+            try expectEqual(snap.level, .working,
+                            "状态仍按观测走：岛不该为一个自称闲着的会话挂上「待机」")
+            try expectEqual(snap.conflictStatement, "自报说待机，进程表说工作中")
+            // 动作行也不许被自报顶掉：副标题与动作条是两处，两处各替用户挑一次
+            // 就等于把「两条都给」这一维白做
+            try expectEqual(snap.currentAction, "跑测试", "冲突那一拍的动作行留给观测那侧")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("来源: 强语义与自报说的是同一件事 ⇒ selfReported，不是冲突") {
+            // 少了这条，「只要本轮读到强语义就报冲突」这种改法没人拦
+            let store = tempTokenStore("prov-agree")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: ["claude"], tokens: store)
+            e.inspectSessionHook = { _, _, _ in .active(fingerprint: "f-3", action: "跑测试") }
+            _ = e.bindSelfReport(sub(state: .working),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "没凭证"),
+                                 now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            let snap = try XCTRequire(e.snapshots.first, "没有快照")
+            try expectEqual(snap.provenance, .selfReported)
+            try expectEqual(snap.level, .working)
+            try expectNil(snap.conflictStatement, "两边说的是同一件事，不许造出一句冲突")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("来源: 自报说在干活而进程表说它不在 ⇒ conflict（Done-when 那一条）") {
+            let store = tempTokenStore("prov-gone")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: [], tokens: store)     // 进程表里没有 claude
+            _ = e.bindSelfReport(sub(state: .working, detail: "它说它在干活"),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "没凭证"),
+                                 now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            let snap = try XCTRequire(e.snapshots.first, "没有快照")
+            try expectEqual(snap.provenance, .conflict)
+            try expectEqual(snap.conflictStatement, "自报说工作中，进程表说离线")
+            // 观测那一侧这轮没给出任何动作，就**留空**：拿自报的句子去填动作行，
+            // 等于在副标题（「进程表说离线」）与动作条（「它说它在干活」）之间各替用户挑一次
+            try expectNil(snap.currentAction, "冲突且观测没有动作时，动作行不许被自报顶上")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("来源: TTL 到期后回到观测口径，但也不算冲突（过期只是不再采信）") {
+            let store = tempTokenStore("prov-expire")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: ["claude"], tokens: store)
+            let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+            _ = e.bindSelfReport(sub(state: .attention, ttl: 15),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "没凭证"),
+                                 now: t0)
+            _ = e.sample(now: t0.addingTimeInterval(2))
+            try expectEqual(e.snapshots.first?.provenance, .selfReported)
+            _ = e.sample(now: t0.addingTimeInterval(40))
+            try expectEqual(e.snapshots.first?.provenance, .inferred,
+                            "盖章之后不再采信，也不该永远挂着「自报冲突」")
+            try expectNil(e.snapshots.first?.conflictStatement)
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("措辞: 自报的四种状态与卡片那四种逐字对齐") {
+            // 双陈述那句是「自报说 X，进程表说 Y」——同一个状态两边叫法不一样
+            // （「干活中」vs「工作中」）会让人以为句子里说的是两件事
+            for state in SelfReportState.allCases {
+                try expectEqual(state.label, state.level.label, state.rawValue)
+            }
+            try expectEqual(Set(SelfReportState.allCases.map { $0.level }).count, 4,
+                            "四种自报状态要落在四种不同卡片状态上（offline 不在其中）")
+        }
+
+        TestKit.test("措辞: 短标签只在 Core 一处，且只挂在需要它的那两种来源上") {
+            try expectEqual(AgentProvenance.badgeSuffix(.selfReported), " · 自报")
+            try expectEqual(AgentProvenance.badgeSuffix(.conflict), " · 自报冲突")
+            try expectEqual(AgentProvenance.badgeSuffix(.observed), "",
+                            "观测是常态，挂个标签等于把噪声当信息")
+            try expectEqual(AgentProvenance.badgeSuffix(.inferred), "")
+            try expectEqual(AgentProvenance.badgeSuffix(nil), "", "没算过来源就不许标注")
+        }
+
+        TestKit.test("契约: provenance 与 conflictStatement 进对外 JSON") {
+            let store = tempTokenStore("prov-dto")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: [], tokens: store)
+            _ = e.bindSelfReport(sub(state: .working),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "没凭证"),
+                                 now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            let snap = try XCTRequire(e.snapshots.first, "没有快照")
+            let dto = CLIAgentStatusDTO(from: snap)
+            try expectEqual(dto.provenance, "conflict")
+            try expectEqual(dto.conflictStatement, "自报说工作中，进程表说离线",
+                            "只有岛上看得见冲突，等于让脚本用户读到一份被替他们挑过的状态")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("来源: 采信之后的引擎聚合位与可观测性依据要跟着改口（外部 review 的 P1/P2）") {
+            // ① `anyWorking` 此前只按**观测**算：卡片被自报顶成 working，而引擎说
+            //   「没人干活」——节电与扫描频率就按一个界面上不存在的结论决定。
+            // ② `doctor` 的依据句此前会写「本轮读到了会话强语义（工作中）」，
+            //   而这个「工作中」是自报给的，等于拿别人的证据给自己的结论背书。
+            let store = tempTokenStore("prov-agg")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: ["claude"], tokens: store)
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_000))
+            try expectFalse(e.anyWorking, "没有自报也没有写入时确实没人干活")
+            _ = e.bindSelfReport(sub(state: .working),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "没凭证"),
+                                 now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            let snap = try XCTRequire(e.snapshots.first, "没有快照")
+            try expectEqual(snap.level, .working)
+            try expectTrue(e.anyWorking, "卡片说它在干活，引擎就不许再说没人干活")
+            let verdict = AgentObservability.evaluate(snapshot: snap)
+            try expectTrue(verdict.evidence.contains { $0.contains("自报") },
+                           "依据要说清这句话是谁给的：\(verdict.evidence)")
+            try expectFalse(verdict.evidence.contains { $0.contains("会话强语义") },
+                            "自报来的状态不许冒领「读到了会话强语义」：\(verdict.evidence)")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("边界: 自报只改显示，不制造事件、不推送到手机") {
+            // 这条通道对本机任意进程开放（只要有令牌）。一个外部声明若能触发
+            // 「任务完成」横幅 + 远程外发，就等于把岛的提示音交给了网络对端。
+            let store = tempTokenStore("prov-noevent")
+            let token = try XCTRequire(store.ensure(), "没生成令牌")
+            let e = provEngine(names: ["claude"], tokens: store)
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.bindSelfReport(sub(state: .completed, detail: "它说自己完成了"),
+                                 credential: try XCTRequire(e.authorizeSelfReport(token), "没凭证"),
+                                 now: Date(timeIntervalSince1970: 1_700_000_000))
+            _ = e.sample(now: Date(timeIntervalSince1970: 1_700_000_002))
+            let snap = try XCTRequire(e.snapshots.first, "没有快照")
+            try expectEqual(snap.level, .completed, "显示这一侧确实采信了")
+            try expectTrue(e.eventHistory.isEmpty,
+                           "但一条外部声明不该制造任何事件：\(e.eventHistory.count)")
+            try expectNil(e.latestEvent, "也不该有横幅与提示音")
+            cleanup(dir: store.tokenURL.deletingLastPathComponent())
+        }
+
+        TestKit.test("报表: 状态那一格也带来源标签（读报告的人也要能分辨）") {
+            // 报告里一片「工作中」而其中一条其实是带令牌的自报，看 Markdown 的人无从分辨——
+            // 与货架、CLI 同一类问题，同一处出口
+            let plain = AgentSnapshot(profile: claude, level: .working, processRunning: true,
+                                      cpuPercent: nil, installed: true, activeSessions: 0,
+                                      lastActivityAgo: nil, lastActivityText: "—")
+            let reported = AgentSnapshot(profile: claude, level: .working, processRunning: true,
+                                         cpuPercent: nil, installed: true, activeSessions: 0,
+                                         lastActivityAgo: nil, lastActivityText: "—",
+                                         provenance: .selfReported)
+            func row(_ snap: AgentSnapshot) throws -> String {
+                let md = AuditReportExporter.generateMarkdown(snapshots: [snap])
+                return md.components(separatedBy: "\n").first { $0.contains(snap.profile.name) } ?? ""
+            }
+            try expectFalse(try row(plain).contains("自报"),
+                            "没算过来源就不许凭空多出一格：\(try row(plain))")
+            try expectTrue(try row(reported).contains("工作中 · 自报"), try row(reported))
+        }
+
+        TestKit.test("结构: 来源那句措辞只在 Core，四个显示出口都问它") {
+            let models = SourceTree.codeOnly(
+                try SourceTree.text(relativePath: "Sources/AgentIslandCore/Models.swift"))
+            try expectEqual(models.components(separatedBy: "自报说").count - 1, 1,
+                            "「自报说 X，进程表说 Y」只许写一次")
+            for (path, want) in [("Sources/AgentIsland/AgentRowView.swift", "AgentProvenance.badgeSuffix"),
+                                 ("Sources/AgentIsland/AgentHoverTooltip.swift", "AgentProvenance.badgeSuffix"),
+                                 ("Sources/AgentIsland/DetailViews.swift", "conflictStatement"),
+                                 ("Sources/AgentIsland/IslandView.swift", "conflictStatement"),
+                                 ("Sources/AgentIslandCLI/Commands/StatusCommand.swift", "conflictStatement"),
+                                 ("Sources/AgentIslandCore/AuditReportExporter.swift", "AgentProvenance.badgeSuffix")] {
+                let text = SourceTree.codeOnly(try SourceTree.text(relativePath: path))
+                try expectTrue(text.contains(want), "\(path) 必须调用 Core 那个出口（找 \(want) 找不到）")
+                try expectFalse(text.contains("\"自报"), "\(path) 不许自己拼「自报」——两处会有一边漏改")
+            }
+            // 灵动岛货架那条副标题：只挂冲突句不够，`.selfReported` 也得让人看出来
+            try expectTrue(SourceTree.codeOnly(try SourceTree.text(relativePath: "Sources/AgentIsland/IslandView.swift"))
+                            .contains("AgentProvenance.badgeSuffix"),
+                            "货架副标题也要带来源标签，否则「自报」只在展开列表里看得见")
+        }
+
         // MARK: 结构棘轮
         //
         // 只钉**类型挡不住**的那几条：可信度判定的位置、清理入口的边界、既有通道不许被换掉。

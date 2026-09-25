@@ -753,7 +753,8 @@ struct AgentDetailView: View {
     private var basicInfoCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let s = snapshot {
-                infoRow("状态", s.level.label)
+                infoRow("状态", s.level.label + AgentProvenance.badgeSuffix(s.provenance))
+                if let conflict = s.conflictStatement { infoRow("来源对撞", conflict) }
                 infoRow("活动", s.lastActivityText)
                 if s.activeSessions > 0 { infoRow("会话", "\(s.activeSessions) 个活跃") }
                 if let cpu = s.cpuPercent, cpu > 0.1 { infoRow("CPU", String(format: "%.1f%%", cpu)) }

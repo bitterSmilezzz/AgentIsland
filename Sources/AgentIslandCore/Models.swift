@@ -2,6 +2,34 @@ import Foundation
 
 // MARK: - 活动等级
 
+/// 这一拍的状态是**谁**说的（spec 第 4 节 / 04 号票）。
+/// 加这一维的理由不是「信息更全」，是**同一张卡片上会混着两种可信度**：
+/// 带令牌自报的「我在等确认」与 CPU/写入兜底猜出来的「看起来在干活」，
+/// 此前都印成同一行字，用户没法分辨那句是谁给的。
+public enum AgentProvenance: String, Codable, Equatable, CaseIterable {
+    case selfReported   // 带令牌、TTL 内的自报（状态直接采信）
+    case observed       // 进程 + 会话日志的强语义
+    case inferred       // CPU/写入双信号兜底
+    case conflict       // 自报与观测对不上 —— **两条都要显示**，不许悄悄选一个
+
+    /// 副标题后面那一小截后缀。**由 Core 给**：卡片、悬停、详情、CLI 各自拼一遍
+    /// 「 · 自报」，就会有一处改了另四处没改的那天。
+    public static func badgeSuffix(_ provenance: AgentProvenance?) -> String {
+        guard let badge = provenance?.badgeText else { return "" }
+        return " · \(badge)"
+    }
+
+    /// 副标题上那一格短标签。`nil` = 不额外标注：观测与推断是常态，
+    /// 给它们都挂个标签等于把噪声当信息。
+    public var badgeText: String? {
+        switch self {
+        case .selfReported: return "自报"
+        case .conflict: return "自报冲突"
+        case .observed, .inferred: return nil
+        }
+    }
+}
+
 public enum ActivityLevel: String, Codable, Equatable, Comparable {
     case offline
     case idle
@@ -399,6 +427,19 @@ public struct AgentSnapshot: Identifiable, Equatable {
     /// 会话探测最近一次失败的原因（nil 表示源可读或本轮未探测）。
     /// 有值时 level 的「待机」不可信——见 SessionProbeHealth。
     public let sessionProbeHealth: SessionProbeHealth?
+    /// 这一拍状态的来源。`nil` = 这一路没算过（一次性 CLI、离线卡片、测试手搓的快照）——
+    /// 与 `isHung` 同一个理由：**漏传只能得到「没说」，不能得到一个假的「观测」**。
+    public let provenance: AgentProvenance?
+    /// 卡片要说「自报说 X」时读的那条证据（可信窗口内的那条，取最晚过期的）。
+    public let selfReport: SelfReportRecord?
+
+    /// 「自报说 X，进程表说 Y」那句原文。**全仓只有这一个出口**：卡片、悬停、详情、CLI、
+    /// 报表各自拼一遍，就会出现「岛里说冲突、`status` 里一切正常」那种分叉——
+    /// 而冲突恰恰是最不能让两处不一致的那件事。
+    public var conflictStatement: String? {
+        guard provenance == .conflict, let selfReport else { return nil }
+        return "自报说\(selfReport.state.label)，进程表说\(level.label)"
+    }
 
     public var id: String { profile.id }
 
@@ -415,7 +456,9 @@ public struct AgentSnapshot: Identifiable, Equatable {
                 backgroundTasks: [AgentBackgroundTask] = [],
                 subagents: [AgentSubagentInfo] = [],
                 tokenBreakdown: AgentTokenBreakdown? = nil,
-                sessionProbeHealth: SessionProbeHealth? = nil) {
+                sessionProbeHealth: SessionProbeHealth? = nil,
+                provenance: AgentProvenance? = nil,
+                selfReport: SelfReportRecord? = nil) {
         self.profile = profile
         self.level = level
         self.processRunning = processRunning
@@ -433,6 +476,8 @@ public struct AgentSnapshot: Identifiable, Equatable {
         self.subagents = subagents
         self.tokenBreakdown = tokenBreakdown
         self.sessionProbeHealth = sessionProbeHealth
+        self.provenance = provenance
+        self.selfReport = selfReport
     }
 }
 

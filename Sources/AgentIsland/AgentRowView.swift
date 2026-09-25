@@ -266,7 +266,7 @@ struct AgentRowView: View {
                             )
                             .help("检测到进程持续异常高负荷且缺乏会话响应，疑似处于死循环或线程死锁状态")
                         } else {
-                            Text(snapshot.level.label)
+                            Text(snapshot.level.label + AgentProvenance.badgeSuffix(snapshot.provenance))
                                 .font(Theme.bodyFont(9.5, weight: .semibold))
                                 .foregroundColor(levelForegroundColor(snapshot.level))
                                 .padding(.horizontal, 6)

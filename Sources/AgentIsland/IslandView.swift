@@ -742,7 +742,10 @@ struct IslandView: View {
 
     /// 活动环微看板副标题（正文与 help 共用，避免两处口径漂移）
     private func shelfSubtitle(_ snap: AgentSnapshot) -> String {
-        if snap.level == .working { return "工作中" }
+        // 冲突那句优先：自报与进程表对不上时，副标题要同时给出两句话，
+        // 而不是替用户挑一个（措辞只在 Core 的 `conflictStatement` 里写一次）
+        if let conflict = snap.conflictStatement { return conflict }
+        if snap.level == .working { return "工作中" + AgentProvenance.badgeSuffix(snap.provenance) }
         if snap.level == .attention { return "等待你确认" }
         if snap.level == .completed { return "任务已完成" }
         if let usage = snap.tokenUsage, usage.tokens24h > 0 {

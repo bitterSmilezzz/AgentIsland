@@ -30,11 +30,19 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
     /// 脚本与 Raycast 读到的 JSON 会把「读不到」当成「闲着」
     public let observability: String
     public let observabilityEvidence: [String]
+    /// 这一拍的状态是谁说的（`selfReported` / `observed` / `inferred` / `conflict`）。
+    /// `null` 是「这一路没算过来源」，不是「没有来源」——与 `isHung` 同一个三态理由。
+    public let provenance: String?
+    /// 冲突那句原文（不冲突时为 null）。脚本侧要能看见「自报说 X，进程表说 Y」，
+    /// 否则只有开了岛的人才知道有对撞
+    public let conflictStatement: String?
 
     public init(from snapshot: AgentSnapshot) {
         self.id = snapshot.id
         self.name = snapshot.profile.name
         self.status = snapshot.level.rawValue
+        self.provenance = snapshot.provenance?.rawValue
+        self.conflictStatement = snapshot.conflictStatement
         self.pid = snapshot.pid
         self.cpuPercent = snapshot.cpuPercent
         self.memoryBytes = snapshot.memoryBytes

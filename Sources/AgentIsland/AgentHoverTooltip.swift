@@ -120,7 +120,7 @@ struct AgentHoverTooltipCard: View {
                             .overlay(Capsule().strokeBorder(colorScheme == .light ? Ramp.red200 : Color.clear, lineWidth: 0.5))
                     )
             } else {
-                Text(snapshot.level.label)
+                Text(snapshot.level.label + AgentProvenance.badgeSuffix(snapshot.provenance))
                     .font(Theme.bodyFont(9, weight: .semibold))
                     .foregroundColor(levelForegroundColor(snapshot.level))
                     .padding(.horizontal, 6)

@@ -876,9 +876,37 @@ public final class ActivityEngine: ObservableObject {
                 return stored
             }()
 
+            // 来源维度（spec §4 / 04 号票）：先取这一拍仍可信的那条自报，再与观测对撞。
+            // 三条规则，每条都有它要防的症状：
+            // · 没有可信自报 ⇒ 本轮就是观测（读到会话强语义）或推断（CPU/写入兜底）；
+            //   离线时留 nil——「它说了什么」这个问题在进程都不在时不成立，硬套一个
+            //   `.observed` 等于给一个没发生过的对撞盖章。
+            // · 自报与**强语义观测**对不上 ⇒ `.conflict`，状态仍按观测走（岛不该为一个
+            //   自称在干活的会话挂着一张不存在的脸），但两句话都要显示。
+            // · 自报与弱信号（兜底推断）对不上 ⇒ 采信自报：带令牌的那句话比
+            //   「CPU 有点高」更有资格决定卡片写什么，而 TTL 就是它的保质期。
+            let report = believableSelfReport(agentID: profile.id, now: now)
+            var displayLevel = level
+            var provenance: AgentProvenance?
+            if let report {
+                if level == .offline || (report.state.level != level && sessionSignal != nil) {
+                    provenance = .conflict
+                } else {
+                    provenance = .selfReported
+                    displayLevel = report.state.level
+                }
+            } else {
+                provenance = level == .offline ? nil : (sessionSignal != nil ? .observed : .inferred)
+            }
+
+            // 引擎级的聚合位必须跟着**对外那一拍**走：快照说 working 而 `anyWorking` 说
+            // 「没人干活」，节电与扫描频率就会按一个卡片上不存在的结论决定
+            // （外部 review 的 P1：`anyWork` 在此之前只按观测算过）
+            if displayLevel == .working { anyWork = true }
+
             results.append(AgentSnapshot(
                 profile: profile,
-                level: level,
+                level: displayLevel,
                 processRunning: running,
                 cpuPercent: publishedCPU,
                 installed: installedApps.isInstalled(profile),
@@ -887,13 +915,17 @@ public final class ActivityEngine: ObservableObject {
                 lastActivityText: Self.formatAgo(newestAgo),
                 tokenUsage: usageSnapshot[profile.id],
                 pid: matchedPID,
-                currentAction: action,
+                // 冲突那一拍不许拿自报的句子去填动作行：那等于在两处（副标题与动作条）
+                // 各替用户挑了一次，而这一维存在的理由就是「两条都给」
+                currentAction: provenance == .conflict ? action : (action ?? report?.ask ?? report?.detail),
                 memoryBytes: memory,
                 isHung: isHung,
                 backgroundTasks: sessionSignal == nil ? [] : probeContext.backgroundTasks,
                 subagents: sessionSignal == nil ? [] : probeContext.subagents,
                 tokenBreakdown: sessionSignal == nil ? nil : probeContext.tokenBreakdown,
-                sessionProbeHealth: displayHealth
+                sessionProbeHealth: displayHealth,
+                provenance: provenance,
+                selfReport: report
             ))
             // 本拍 CPU/PID 供告警链路复用（避免二次全表匹配）
             sampleInfo[profile.id] = SampleInfo(cpu: cpu, pid: matchedPID)
