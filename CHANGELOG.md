@@ -4,6 +4,66 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.148] - 2026-09-26
+
+### 收 mattpocock/skills 元规范，并补掉 AGENTS.md 一处实缺
+
+[mattpocock/skills](https://github.com/mattpocock/skills)（GitHub API 2026-09-26：
+**269,700 star / 22,724 fork / Shell / MIT / 528 open issues**），自述
+"Skills for Real Engineers. Straight from my `.agents` directory."
+新增 [`16-mattpocock-skills-meta-specs.md`](docs/workbench/16-mattpocock-skills-meta-specs.md)。
+
+它**不是竞品也不是被监控对象，是我们本机已装的 24 个 skill 的上游**——这一条是本轮最实的发现。
+读完 README 与 `.agents/` 下三份元规范（`invocation.md` / `writing-docs.md` / `install-block.md`）后，
+顺手核实并补掉了 [AGENTS.md](../../AGENTS.md) 的一处文档缺口。
+
+**补掉的缺口**：AGENTS.md 的 Installed skills 一节原先**只写了 `libraries-dev` 一个**，
+而本机 `~/.agents/skills/` 里有 **24 个来自 mattpocock/skills 的 skill 在生效**
+（grill-me / grilling / grill-with-docs / implement / to-spec / to-tickets / code-review /
+domain-modeling / codebase-design / prototype / diagnosing-bugs / research / tdd /
+resolving-merge-conflicts / wizard / wayfinder / triage / ask-matt / teach / handoff /
+wait-what / to-questionnaire / claude-handoff）。
+于是"哪些纪律是本仓定的、哪些是上游定的"分不清。已改写为两类来源并分别说明纪律。
+
+**上游三条元规范，两条对我们有约束力**（来自 `.agents/invocation.md`）：
+
+1. **user-invoked 的 skill 不能被另一个 skill 调用**，连指名工具也不行
+   （"nothing but the human can fire it: no other skill can"）。
+   → 所以"跟我说一声就跑 X"这类指令，若 X 是 user-invoked，必须写成**对人的指令**
+   （"请运行 `/x`"），不能写成对模型的工具调用。我们本机的 `grill-me` / `triage` /
+   `to-spec` / `implement` 都属 user-invoked。
+2. **skill 之间的依赖要写成"调用 Skill 工具并指名"**（`Call the Skill tool with "grilling"`），
+   **不是 `../other-skill/FILE.md` 跨目录相对链接**。
+   → 界线已写进 AGENTS.md：**给人看的路径链接可以用相对路径；给 agent 的操作指令必须点名工具。**
+
+另有一条**我们踩过但它写明了**：两条安装路径**互斥**——Claude Code 的 plugin 路
+（官方 marketplace，只读托管、自动更新）与 skills.sh 路（可编辑副本、自己 update）
+**都装会得两份**。本机走 skills.sh 路，这点原先没记。
+
+**`writing-docs.md` 给了三条可借的文档判据**：
+
+- `## It's working if` 的门槛是**读者不打开 SKILL.md 就能验证**；
+  上游点名一种伪信号："byte-identical to template.sh" 是
+  "a compliance check on the skill's internals wearing this section's name"
+  → 可搬到我们的验收标准：`risk-and-acceptance.md` 的 B 系列里若有"文件内容正确"这类，
+  要问一句它是在测实现细节还是测用户能看到的结果
+- `## Common questions` 只能收真实观察到的问题，且"the count stays honest to the evidence"，
+  不许为对齐丰技能而编——我们案例库的「没能核实的」已是这个路子，它给了更硬的说法
+- 文档页**不带安装命令**（站点自己渲染），理由是两份拷贝会漂移——
+  与我们「README 不是更新日志」同源：**一件事只说一次**
+
+**一个现成的自检问题**：上游用「模型能不能自己有用的伸手去拿」判 user/model 分界，
+用来问我们本机那三个 grilling skill——`grill-me` / `grilling` / `grill-with-docs`
+**分工没有一张表说清**。上游用"链上哪一环"说清角色，这条缺口已记进 AGENTS.md 与应用建议。
+
+**没核实的**：三份元规范读全了，但 **24 个 skill 的 SKILL.md 本体一个都没读**
+（所以"它们在本仓实际效果如何"未评估——我们用过 grill-me / to-spec / implement，
+但从没做过效果评估）；`skills.sh` 的实现未读；269,700 star 对本仓的影响面没量化；
+上游 README 说的 ~60,000 newsletter 订阅未核实；Codex 侧 `agents/openai.yaml` 那套元数据
+我们本机没有对应物。
+
+Swift 侧无改动，测试基数仍为 548 条。
+
 ## [0.0.147] - 2026-09-26
 
 ### 收 Omarchy 调研：Linux 侧对应物，并核实本仓两块整块缺失

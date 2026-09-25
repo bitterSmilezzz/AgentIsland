@@ -71,10 +71,25 @@ scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
 
 ### Installed skills
 
-本项目用 `npx skills` 管理 agent skills。单份源放在 `.agents/skills/<name>/`，`.claude/skills/<name>` 是指向它的相对软链，`skills-lock.json` 记录来源与 hash。
+本项目用 `npx skills`（skills.sh）管理 agent skills。
+
+**两类来源要分清，因为纪律不同：**
+
+**① 本仓自有的（进 git，克隆即得）**——单份源放 `.agents/skills/<name>/`，`.claude/skills/<name>` 是指向它的相对软链，`skills-lock.json` 记录来源与 hash。
 
 - `libraries-dev`（来自 `Jakubantalik/Libraries.dev`）：教你 agent 在**哪里**、**用什么程度**给界面加动效。领域是 React/Web 界面，对本项目（SwiftUI/macOS）没有可套用的组件，价值在于它的**决策规则**（按等待时长定效果、不叠特效、匹配明暗主题）——改界面时可以参考这套思路，但不要尝试 `npm install`。
 - 安装/更新/卸载：`npx skills add Jakubantalik/Libraries.dev --skill '*' --copy -y`。**不要**用它默认的 `--agent '*'`：那是 `--all` 的别名，会往项目里写 17 个 agent 目录（Antigravity、Cursor、Copilot、Goose、Junie…），每个都是同一份内容的副本。
+
+**② 全局装的（只在本机，不进 git）**——来自 [mattpocock/skills](https://github.com/mattpocock/skills)（269,700 star，MIT），装在家目录 `~/.agents/skills/`，当前有 24 个生效。它们**受上游 `.agents/invocation.md` 等元规范约束**，不是本仓定的规矩。装法 `npx skills@latest add mattpocock/skills --skill=<name>`，更新 `npx skills@latest update <name>`。
+
+上游规范里有两条对我们有约束力，值得记住：
+
+- **user-invoked 的 skill 不能被另一个 skill 调用**（连指名工具也不行）。所以"跟我说一声就跑 X"这种指令，若 X 是 user-invoked，必须写成**对人的指令**（"请运行 `/x`"），不能写成对模型的工具调用。我们本机的 `grill-me` / `grilling` / `grill-with-docs` / `triage` / `to-spec` / `implement` 等都属于 user-invoked。
+- **skill 之间的依赖要写成"调用 Skill 工具并指名"**，不是 `../other-skill/FILE.md` 跨目录相对链接。（文档之间给人看的路径链接仍可用相对路径——那条不受此限。）
+
+⚠️ **两条安装路径互斥**：Claude Code 的 plugin 路（`claude plugins install mattpocock-skills`，官方 marketplace，只读托管、自动更新）与 skills.sh 路（可编辑副本、自己 update）**都装会得两份**。本机走的是 skills.sh 路。
+
+三个 grilling skill 的分工与"哪条链用哪个"**目前没有一张表**，已知是缺口；上游用"链上哪一环"说清角色，可照做。
 
 ### Issue tracker
 

@@ -37,6 +37,7 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
 | [13-opencode-monitorability-audit.md](13-opencode-monitorability-audit.md) | **被监控对象** opencode（210k star）一手调研：会话/token 落盘位置与字段口径、Desktop App 是不是 CLI 外壳、`plan` 只读 agent 的缺口；**并从源码核出一个已存在的字段名 bug（已修）** | 改任何 opencode 相关解析前必读；装 opencode 做真机验收前必读 |
 | [14-semantica-knowledge-graph.md](14-semantica-knowledge-graph.md) | Semantica（13469 star / Python）一手调研：**与我们几乎不重叠**（企业知识图谱 + Rete/Datalog/SPARQL），只记两条纪律 | 只在想加「解释 agent 为什么这么做」类功能前读——它会告诉你那需要什么、我们给不了什么 |
 | [15-omarchy-agents-panel-and-toggles.md](15-omarchy-agents-panel-and-toggles.md) | Omarchy（43140 star / Shell / DHH）一手调研：**Linux 侧的对应物**——agents panel（限额百分比 + 按天按模型 token）、静默通知进历史、indicators 的 inactive 隐藏、toggles 是模式不是设置 | 做侧边栏首层与 `shell_mode` 前读；尤其想加"静默/勿扰"前必读（本仓这块整块缺失，已核实） |
+| [16-mattpocock-skills-meta-specs.md](16-mattpocock-skills-meta-specs.md) | mattpocock/skills（269,700 star）一手调研：**本机 24 个 skill 的上游**。三份元规范中两条对我们有约束力（user-invoked 不可被调用；skill 依赖要指名工具而非相对链接） | 新增或改动任何 agent skill 前必读；判定这条指令该写给谁时必读 |
 | [12-monocode-competitor-audit.md](12-monocode-competitor-audit.md) | MonoCode（1303 star / MIT）一手调研：**最近的同形态竞品**（同样 Tauri v2 + Rust）、harness 三层抽象、327 前端测试 + 333 Rust 测试、凭据零落盘 | **Phase 0 建测试基建前必读**；Phase 2 写 `provider.rs` 前必读（两个凭据坑） |
 
 ## 一句话
