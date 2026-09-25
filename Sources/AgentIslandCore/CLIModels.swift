@@ -32,9 +32,15 @@ public struct CLIAgentStatusDTO: Codable, Sendable {
     public let observabilityEvidence: [String]
     /// 这一拍的状态是谁说的（`selfReported` / `observed` / `inferred` / `conflict`）。
     /// `null` 是「这一路没算过来源」，不是「没有来源」——与 `isHung` 同一个三态理由。
+    /// **一条边界，实测于 v0.0.134 发版后**：自报记录活在**App 那个进程**的引擎里，
+    /// 而 `agentisland status` 是另起的一次性采样，它的登记表永远是空的 ⇒ 这个键
+    /// 在 CLI 侧只会出现 `observed`/`inferred`/`null`，**永远不会是 `selfReported`**。
+    /// 读到 `null` 或 `inferred` 不等于「这个 Agent 没自报过」。要真读到，
+    /// 得先有一条从 App 取状态的通路（`.scratch/agent-selfreport/issues/11`）。
     public let provenance: String?
-    /// 冲突那句原文（不冲突时为 null）。脚本侧要能看见「自报说 X，进程表说 Y」，
-    /// 否则只有开了岛的人才知道有对撞
+    /// 冲突那句原文（不冲突时为 null，且按本 DTO 的既有约定 **null 时整个键省略**，
+    /// 与 `pid`/`cpuPercent` 一致——脚本要用 `.get()` 而不是 `[]`）。
+    /// 同样受上面那条边界限制：CLI 侧今天恒为省略
     public let conflictStatement: String?
 
     public init(from snapshot: AgentSnapshot) {
