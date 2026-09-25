@@ -34,6 +34,7 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
 | [09-emilkowalski-let-ai-break-it.md](09-emilkowalski-let-ai-break-it.md) | Emil Kowalski「让 AI 尝试搞坏你做的东西」推文：原文 + 视频逐帧核对（1284 条 / 超长姓名 / 异常邮箱 / 布局被撑坏但零报错），以及我们手里比他的 demo 更真实的极端输入 | **写测试或定验收标准前读**——尤其决定要不要给侧边栏/灵动岛做最坏情况压测时 |
 | [10-replan-2026-09-26.md](10-replan-2026-09-26.md) | **重划方案**：四路调研推翻的 9 条地基断言、三个前置阻塞、修正后的目标/方案/Phase、6 个待拍板问题 | **任何 Phase 开工前读**；它取代 03/04 里与代码不符的断言 |
 | [11-deepchat-another-route.md](11-deepchat-another-route.md) | DeepChat（6343 star / Apache-2.0）一手调研：**另一条路线**（当 agent 的前端），两条路线的边界表 | 防方案写偏；尤其当想给自己加「可回放诊断日志」时先读它 |
+| [13-opencode-monitorability-audit.md](13-opencode-monitorability-audit.md) | **被监控对象** opencode（210k star）一手调研：会话/token 落盘位置与字段口径、Desktop App 是不是 CLI 外壳、`plan` 只读 agent 的缺口；**并从源码核出一个已存在的字段名 bug（已修）** | 改任何 opencode 相关解析前必读；装 opencode 做真机验收前必读 |
 | [12-monocode-competitor-audit.md](12-monocode-competitor-audit.md) | MonoCode（1303 star / MIT）一手调研：**最近的同形态竞品**（同样 Tauri v2 + Rust）、harness 三层抽象、327 前端测试 + 333 Rust 测试、凭据零落盘 | **Phase 0 建测试基建前必读**；Phase 2 写 `provider.rs` 前必读（两个凭据坑） |
 
 ## 一句话

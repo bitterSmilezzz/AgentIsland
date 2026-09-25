@@ -645,6 +645,72 @@ public enum AgentActionInspector {
 
     // MARK: - 8. OpenCode 会话数据库探测
 
+    /// 从 opencode 的 `part.data` JSON 判出「这个 agent 此刻在干什么」。
+    ///
+    /// 字段口径（2026-09-26 从上游源码逐版本核实，非推测）：
+    /// `packages/schema/src/v1/session.ts:315-322` 的 `ToolPart` 是
+    /// `{ type: "tool", callID, tool, state, metadata }`——判别字面量是 **"tool"**，
+    /// 工具名在 **`tool`** 字段（另有一个 `callID`）。`v1.0.180`（`packages/opencode/src/
+    /// session/message-v2.ts:274-282`）与 `v1.16.0`（`packages/core/src/v1/session.ts:306-313`）
+    /// 同此，即 `"tool-call"` / `"toolName"` **从来不是 opencode 的形状**——
+    /// 那是 DimAgent 侧的形状（见 `parseDimMessage` 读的 `toolMeta.toolName`），别混。
+    /// 这里仍兼容收旧写法，只为防御上游改名，不是因为今天长这样。
+    ///
+    /// `state` 是四态联合（同文件 `:259-313`）：`pending` / `running` / `completed` / `error`，
+    /// 其中 `running` 带 `time.start`、`completed` 带 `time.start`/`time.end`——
+    /// 所以「某个工具正在跑」在库里本来是可判的，不要退回"调用过"。
+    ///
+    /// 抽成纯函数是为了能测：DB 闭包里塞断言只能靠真库，而本机没装 opencode。
+    public static func openCodeAction(fromPartJSON partDataStr: String,
+                                      nowMs: Int64,
+                                      timeUpdatedMs: Int64,
+                                      sessionTitle: String?,
+                                      clip: ((String) -> String)? = nil) -> String? {
+        guard let data = partDataStr.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = json["type"] as? String else {
+            return nil
+        }
+
+        switch type {
+        case "reasoning":
+            return "思考规划中"
+        case "tool", "tool-call":
+            // 真实形状是 type="tool" + tool="<name>"；兼容 toolName 只为上游改名
+            // trim 后再判空：纯空白（如 "   "）与 .isEmpty 一样不该原样进文案，
+            // 否则岛上会出现「正在调用:    」这种看起来像 bug 的半句话。
+            let rawName = ((json["tool"] as? String) ?? (json["toolName"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = rawName.isEmpty ? "工具" : rawName
+            switch json["state"] as? String {
+            case "error":
+                return "工具失败: \(name)"
+            case "completed":
+                return "调用过: \(name)"
+            default:
+                // pending / running / 缺失都算进行中：宁可说"在跑"也不要谎称静止
+                return "正在调用: \(name)"
+            }
+        case "text", "subtask", "step-start", "step-finish", "snapshot",
+             "patch", "agent", "retry", "compaction", "file":
+            // 这 10 种是上游 Part 判别联合（`v1/session.ts:357-372`）里除上面两种外的全部。
+            // 它们不直接构成"正在做什么"，落到下面的标题兜底。
+            break
+        default:
+            break
+        }
+
+        // 兜底：用会话标题。但标题不等于动作，且旧会话的标题会造成"张冠李戴"，
+        // 所以只在 1 小时内有更新时才用。
+        guard let title = sessionTitle, !title.isEmpty, !title.hasPrefix("New session -") else {
+            return nil
+        }
+        let cleanTitle = title.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty, nowMs - timeUpdatedMs < 60 * 60 * 1000 else { return nil }
+        return "会话: \((clip ?? { $0 })(cleanTitle))"
+    }
+
     public static func inspectOpenCodeAction(agentId: String = "opencode") -> String? {
         guard let dbPath = sessionDatabasePath(for: agentId) else { return nil }
         return withDB(dbPath) { db in
@@ -683,23 +749,9 @@ public enum AgentActionInspector {
 
             let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
 
-            if let dataStr = partDataStr, let data = dataStr.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let type = json["type"] as? String {
-                    if type == "reasoning" {
-                        return "思考规划中"
-                    } else if type == "tool-call", let toolName = json["toolName"] as? String {
-                        return "正在调用: \(toolName)"
-                    }
-                }
-            }
-
-            if let title = sessionTitle, !title.isEmpty && !title.hasPrefix("New session -") {
-                let cleanTitle = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-                let display = clipTitle(cleanTitle)
-                if nowMs - timeUpdatedMs < 60 * 60 * 1000 {
-                    return "会话: \(display)"
-                }
+            if let dataStr = partDataStr,
+               let action = AgentActionInspector.openCodeAction(fromPartJSON: dataStr, nowMs: nowMs, timeUpdatedMs: timeUpdatedMs, sessionTitle: sessionTitle) {
+                return action
             }
             return nil
         }

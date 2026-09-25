@@ -4,6 +4,68 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.145] - 2026-09-26
+
+### 修一个从上游源码核出来的实缺：OpenCode 的「正在调用: xxx」从来没显示过
+
+[anomalyco/opencode](https://github.com/anomalyco/opencode)（210,053 star）不是竞品参照，是**我们README 里已适配的被监控对象**。调研它「能被监控到什么」时，从上游源码逐版本核出一处**我们今天代码里的字段名错误**。
+
+**错的与对的**（上游 `packages/schema/src/v1/session.ts:315-322`）：
+
+```ts
+export const ToolPart = Schema.Struct({
+  type: Schema.Literal("tool"),   // ← 我们写的是 "tool-call"
+  callID: Schema.String,
+  tool: Schema.String,            // ← 我们读的是 "toolName"
+  state: ToolState,               // ← 我们完全没读
+})
+```
+
+`v1.0.180`（`packages/opencode/src/session/message-v2.ts:274-282`）与 `v1.16.0`
+（`packages/core/src/v1/session.ts:306-313`）**同此**——也就是 `tool-call` / `toolName`
+**从来不是 opencode 的形状**，那是 DimAgent 侧的形状（`AgentLogStreamer.swift:323` 读的
+`toolMeta.toolName` 是对的，两处被混在一起了）。
+
+**后果**：`AgentActionInspector.swift:691` 的 `type == "tool-call"` 永不成立 →
+**「正在调用: xxx」这条动作从来没在岛上出现过**；`AgentLogStreamer.swift:445` 同理，
+流水的 toolCall 事件全部落空。`text` 与 `reasoning` 两个分支是对的，所以只有这一支坏。
+
+**怎么修的**（不是简单改字符串）：
+
+1. 解析逻辑从 DB 闭包抽成纯函数 `AgentActionInspector.openCodeAction(fromPartJSON:nowMs:timeUpdatedMs:sessionTitle:)`。
+   抽出来是为**能测**——DB 闭包里塞断言只能靠真库，而本机没装 opencode。
+   这也正是 12 篇 MonoCode 调研给的那条纪律（协议层做成纯函数才可测）。
+2. **同时接受新旧两种字段名**（`tool`/`tool-call` × `tool`/`toolName`），
+   注释写清兼容旧名是防御上游改名、**不是赌它今天长这样**——上游三版同此。
+3. 顺手用上 `state` 四态（`pending`/`running`/`completed`/`error`），它们此前完全没读：
+   `running`/`pending` → 「正在调用」；`completed` → 「调用过」；`error` → 「工具失败」。
+   **`error` 不再混在完成里**，这是原实现连可能性都没有的一条。
+4. Part 判别联合补齐到 12 种（`text`/`subtask`/`reasoning`/`file`/`tool`/`step-start`/
+   `step-finish`/`snapshot`/`patch`/`agent`/`retry`/`compaction`），其余 10 种显式落到标题兜底。
+
+**测试**：新增 4 条（548 全绿，v0.0.144 基线 544）。其中**有一条当场抓出我自己写的实现漏洞**——
+`tool: "   "`（纯空白）时 `isEmpty` 为 false，会把空白原样拼进文案，岛上出现「正在调用:    」
+这种半句话。测试先红，改实现（`trimmingCharacters` 后再判空）后转绿。
+
+**同时落库** [`13-opencode-monitorability-audit.md`](docs/workbench/13-opencode-monitorability-audit.md)（543 行），
+四类监控覆盖度判定 **token 全 / 状态对 / 动作半对（本版已修）/ 进程对一半**：
+
+- token 完全命中：`message.data` 的 `role`/`time.completed`/`tokens.{input,output,reasoning}`/`cost`
+  字段名与我们的 SQL 逐字一致；另发现 `step-finish` part 也带 `cost` + `tokens`（逐 step，比 message 级更细），我们今天没读
+- 进程匹配只覆盖 CLI：opencode 还有一个 **Electron Desktop App（BETA）**，自己 fork utility process 跑 server，
+  与 CLI 共用同一份库。档案里有 `bundleIDs: ["ai.opencode.desktop"]`，但 beta/dev 渠道 appId 未列，
+  且档案缺 `pathExcludes`（MiMo 档案注释记过这个坑）
+- `session.agent` 一列在库里且实时更新，我们没读——因此 **`plan`（只读 agent）与 `build` 分不出来**。
+  这条对产品有直接价值：我们本来就能显示「agent 在改文件」与「只在探索」的区别，今天没有
+
+**README 已知限制补一条**：OpenCode 的适配**只对过源码、没对过真库**
+（`~/.local/share/opencode/opencode.db` 在本机不存在）。这条比原来的「已适配」三个字重要——
+它会让人以为验证过。装上 opencode 跑一个会话是明确未做的验收。
+
+**本轮没做**：不检测 agent 是否在跑时不 kill 进程（既定）；不读 `step-finish` 的逐 step 用量（有得做但
+要改 SQL 与索引，单独一轮）；不给桌面 App 补 helper 进程匹配（先确认它的真实进程树）。
+「装上 opencode 跑一个会话复现本版修复」是最高优先级的后续，但**需要用户本机装它**。
+
 ## [0.0.144] - 2026-09-26
 
 ### 收两个竞品一手调研（MonoCode / DeepChat），并据此修正方案三处

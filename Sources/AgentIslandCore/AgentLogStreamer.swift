@@ -442,10 +442,21 @@ public enum AgentLogStreamer {
                     if type == "reasoning" {
                         kind = .thinking
                         title = "深度推理规划"
-                    } else if type == "tool-call" {
+                    } else if type == "tool" || type == "tool-call" {
+                        // opencode 的 ToolPart：type 字面量是 "tool"，工具名在 `tool` 字段
+                        // （另有一个 callID）。核实：packages/schema/src/v1/session.ts:315-322。
+                        // "tool-call"/"toolName" 是 DimAgent 侧的形状，opencode 从不使用；
+                        // 这里兼容收两者只为防御上游改名。state 四态：pending/running/completed/error。
                         kind = .toolCall
-                        let name = json["toolName"] as? String ?? "tool"
-                        title = "调用: \(name)"
+                        let name = (json["tool"] as? String) ?? (json["toolName"] as? String) ?? "tool"
+                        switch json["state"] as? String {
+                        case "error":
+                            title = "工具失败: \(name)"
+                        case "completed":
+                            title = "调用过: \(name)"
+                        default:
+                            title = "正在调用: \(name)"
+                        }
                     } else if type == "text" {
                         kind = .message
                         title = "文本响应"

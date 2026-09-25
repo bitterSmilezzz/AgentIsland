@@ -2,7 +2,7 @@
 
 监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
 
-> 本文档描述 **v0.0.144** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.145** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 
@@ -238,6 +238,7 @@ AgentIsland/
 
 - 已适配结构化确认/完成事件的 Agent 能区分待确认与已完成；未知或改版后的日志格式会安全降级到「进程 + 文件写入/CPU」三态近似。
 - Token 统计当前适配 DimAgent、OpenCode、Xiaomi MiMo、Codex、Claude、WorkBuddy、WorkBuddy AI 与 Antigravity；不提供稳定本地 usage 明细的工具（如 Qoder 只有 `credits`）会在分析页明确标为未接入而不估算
+- **OpenCode 的适配只对过源码，没对过真库**：`~/.local/share/opencode/opencode.db` 在本机不存在（未装 CLI），字段口径是从上游 `packages/schema/src/v1/session.ts:315-322` 核出来的。token 与状态两类字段名与我们的 SQL 逐字一致；「当前动作」一处的字段名（`type=="tool"` + `tool`）已按上游修正并有测试守着，但**装上 opencode 跑一个会话仍是未做的验收**。opencode 另有一个 Electron Desktop App（BETA），我们只匹配了进程名 `opencode`，其 bundle id `ai.opencode.desktop` 与 helper 进程未逐个数过
 - 闲置降频 5s 时，Agent 开始工作的检测最多延迟一个采样周期（可调「闲置降频间隔」）。
 - 多显示器跟随光标所在的那块屏（`NSScreen.screens` 按鼠标位置选），贴哪条边由吸附设置决定，四边都行。
 - **浅色小字号按 AA 正文档校准**：8–10pt 文字已 ≥4.5:1，但热力图 / 环图一类**纯图形**仍按 3:1 的图形线取值，不追求正文档。

@@ -14,6 +14,8 @@ enum EngineTests {
     static let dim = AgentRegistry.builtin.first { $0.id == "dim" }!
 
     static func register() {
+        registerOpenCodePartTests()
+
         TestKit.test("TaskDurationTracker 任务耗时与效率统计") {
             let tracker = TaskDurationTracker(maxRecordsPerAgent: 10)
             let now = Date()
@@ -2454,6 +2456,94 @@ enum EngineTests {
             try expectTrue(ProbeFailureLog.record(health, agentId: "dim", now: start),
                            "恢复后重新武装：再次变坏必须立刻再记一条")
             ProbeFailureLog.resetForTesting()
+        }
+    }
+
+    // MARK: - OpenCode part 字段口径（v0.0.145：tool-call/toolName 从来不是它的形状）
+
+    static func registerOpenCodePartTests() {
+        TestKit.test("OpenCode part: type=tool + tool 字段，state 四态各有措辞") {
+            // 字段口径核实自上游 packages/schema/src/v1/session.ts:315-322：
+            // ToolPart = { type:"tool", callID, tool, state, metadata }。
+            // 旧代码判 "tool-call" + "toolName"，在 opencode 里永不成立，
+            // 于是「正在调用: xxx」这条动作从来没在岛上出现过。这条把它钉住。
+            let now: Int64 = 1_000_000_000_000
+
+            let running = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool","callID":"c1","tool":"bash","state":"running"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(running, "正在调用: bash", "state=running 必须在调用")
+
+            let pending = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool","tool":"edit","state":"pending"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(pending, "正在调用: edit", "state=pending 也算在跑（宁可说在跑，不谎称静止）")
+
+            let done = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool","tool":"read","state":"completed"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(done, "调用过: read", "state=completed 是过去式")
+
+            let failed = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool","tool":"bash","state":"error"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(failed, "工具失败: bash", "state=error 必须说失败，不混在完成里")
+
+            let thinking = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"reasoning","text":"想一下"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(thinking, "思考规划中")
+        }
+
+        TestKit.test("OpenCode part: 工具名缺失或为空时不得吐出空动作") {
+            let now: Int64 = 1_000_000_000_000
+            let missing = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool","state":"running"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(missing, "正在调用: 工具", "缺工具名时给占位，不给空串")
+
+            let empty = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool","tool":"","state":"running"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(empty, "正在调用: 工具", "空串工具名按缺失处理")
+
+            let blank = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool","tool":"   ","state":"running"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectFalse((blank ?? "").hasPrefix("正在调用:    "), "纯空白工具名不得原样拼进文案")
+        }
+
+        TestKit.test("OpenCode part: 兼容旧写法只为防上游改名，不因为今天长这样") {
+            // 明确记录：这不是「今天 opencode 长这样」，是防御性收旧名。
+            // 上游三个版本（v1.0.180 / v1.16.0 / dev）都是 tool + tool。
+            let now: Int64 = 1_000_000_000_000
+            let legacy = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"tool-call","toolName":"bash","state":"running"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: nil)
+            try expectEqual(legacy, "正在调用: bash")
+        }
+
+        TestKit.test("OpenCode part: 非动作型 part 落标题兜底，且一小时外不再兜") {
+            let now: Int64 = 1_000_000_000_000
+            let withTitle = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"text","text":"好"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: "修监控 bug")
+            try expectEqual(withTitle, "会话: 修监控 bug")
+
+            let stale = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"text","text":"好"}"#,
+                nowMs: now, timeUpdatedMs: now - 2 * 60 * 60 * 1000, sessionTitle: "很久以前")
+            try expectNil(stale, "旧会话标题不得当当前动作（会张冠李戴）")
+
+            let auto = AgentActionInspector.openCodeAction(
+                fromPartJSON: #"{"type":"text"}"#,
+                nowMs: now, timeUpdatedMs: now, sessionTitle: "New session - 2026-09-26")
+            try expectNil(auto, "opencode 自动标题不当动作")
+
+            let broken = AgentActionInspector.openCodeAction(
+                fromPartJSON: "not json at all",
+                nowMs: now, timeUpdatedMs: now, sessionTitle: "x")
+            try expectNil(broken, "坏 JSON 安静返回 nil，不抛")
         }
     }
 
