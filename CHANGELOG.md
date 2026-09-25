@@ -4,6 +4,70 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.150] - 2026-09-26
+
+### 收 Vorssaint 调研：可插拔架构与权限 UX，并核实「只做两家」的独立佐证
+
+[vorssaint/vorssaint-utils](https://github.com/vorssaint/vorssaint-utils)（Vorssaint，
+GitHub API 2026-09-26：**21355 star / 799 fork / Swift / GPL-3.0 / 548 open issues**）——
+"Free and open-source macOS menu bar toolkit"，副标题
+"One menu bar icon doing the job of a dozen paid Mac apps."
+新增 [`18-vorssaint-pluggable-architecture-audit.md`](docs/workbench/18-vorssaint-pluggable-architecture-audit.md)（603 行）。
+
+**A｜可插拔架构（本文核心）**：73 个 feature、13 项系统权限、4800+ 用户可见开关，
+全部由一个 `AppFeature` 枚举加一张 `[AppFeature: () -> Void]` 闭包表串起来。
+三层模型（`Sources/Vorssaint/Core/FeatureCatalog.swift:6-14` 原话）：
+**availability（安装层）⊃ enable（行为层）⊃ 资源层**。关键点：
+
+- **装卸是运行时开关，不是编译期**：写 availability 键后立刻跑闭包表；
+  服务的 `syncWithPreferences()` 一律「wanted && 已安装 && 有权限 && 前台 → start，else stop」，
+  未安装 feature 的**单例连构造都不发生**
+- **设置全留 UserDefaults，卸载从不删键**（这是"reinstalling restores its settings"的实现）。
+  靠 `register(defaults:)` 而不是 `set(...)` 区分「全新安装」与「用户存过一个 false」，
+  所以**卸了再装不会把人关掉的开关又打开**。对照我们的 `SettingsStore`：
+  形态同构，**缺的只是「这个模块装没装」这一层**
+- 一道穷尽 switch 做模块→配置面索引（**73 feature → 29 page**），让新增模块逼一次显式选择
+- 它自己承认一条诚实边界：卸载当次只停服务，**真正卸载需重启**，于是有横幅 + 原地重启
+
+**B｜权限 UX（可直接照抄）**：「不再需要」= `activeFeatures(using:)` **纯函数求值为空**，
+不是引用计数也不是静态对比。函数用注入读取器（可单测），同时喂两个 UI：
+行上的「使用者：A、B、C」与 `status == .granted && isEmpty` 时的
+「已授予但没有已开启的功能需要它，可在系统设置撤销」。另有按需三段轮询
+（有可见 UI 或待授权 2.5s；已授守撤销 60s；否则无定时器）与一条硬规则：
+**撤销 Accessibility 前必须先停 event tap，否则整机输入冻结**。
+
+**C｜本次最硬的发现（我(agent)亲自读了源码）**：它有一整套 `Sources/Vorssaint/Services/AgentUsage/`
+（12 个文件），而 **`AgentProvider` 只有 `claude` 与 `codex` 两个 case**
+（`Sources/Vorssaint/Services/AgentUsage/AgentUsageModels.swift:8-9`）。
+**一个 21355 star / 255139 行的成熟产品，agent 用量这块也只做两家**
+——这与我们「Phase 2 只做 Codex 一家」是同一判断的**独立佐证**，比我们自己的推理有力。
+
+Claude 侧它走 `AgentClaudeAppUsage.swift`：只读
+`~/Library/Application Support/Claude/plan-usage-history.json`（Claude Desktop 自己每 5–15 分钟
+记一次的百分比采样），**零凭据、零网络、零子进程、零写入**；
+`version == 1 || version == 2` 之外的格式整体返回 nil（原话 "left out rather than guessed"）；
+四个窗口键 `fh`(session 300min) / `sd`(weekly) / `so`(weekly Opus) / `sn`(weekly Sonnet)，
+值钳 0–100，新鲜度 30 分钟。**它比 codenotch 那套三级回退更干净**（后者要 keychain + 打端点），
+且它还能**从历史样本反推 session 重置时刻**（"a session renews five hours after the hour its
+use began, which the history brackets"）。
+
+**D｜GPL 与一条必须先拍板的事**：
+`LICENSE` 是 GPL-3.0（35149 B），每个文件头带
+`// SPDX-License-Identifier: GPL-3.0-or-later`；`TRADEMARKS.md` 把源码版权与
+商标/图标/bundle id/签名身份分开覆盖。**结论：`Sources/` 一行都不能进我们的仓**，
+可抄的只有算法思想、数据形状、命名与流程，且要在我们自己的文件里用自己的话重写。
+
+**顺带发现一条基础事实（比 GPL 更该先解决）：本仓当前没有 LICENSE 文件**
+（`find . -maxdepth 2 -iname "LICENSE*"` 零命中），README / CONTEXT 里也**从未声明过本项目
+采用什么 license**（README 那两处 "MIT" 命中是 `install-git-hooks` 子串误配，不是 license 声明）。
+我(agent)在此前几轮的对话里多次称本项目为「MIT」——**那是我没有依据的说法，自此纠正**。
+这条不解决，"能不能抄 GPL" 甚至"本项目允许别人怎么用" 都悬空，已列为待拍板。
+
+**没核实的**：`Sources/Vorssaint` 745 个 Swift 文件（255139 行）只细读了 AgentUsage 与
+FeatureCatalog 相关；它的 13 项权限只核对了设计没核对每项实现；`Tests/NotchAgentTests.swift`
+未读；它的 Dynamic Island / Notch 那 69 个文件的子系统未看（那是它的主形态，不是我们的）。
+Swift 侧无改动，测试基数仍为 548 条。
+
 ## [0.0.149] - 2026-09-26
 
 ### 收 codenotch 调研：最直接的形态竞品，以及一条我们自己都没意识到的口径矛盾
