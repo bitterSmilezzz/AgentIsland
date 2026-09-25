@@ -4,6 +4,43 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.146] - 2026-09-26
+
+### 收 Semantica 调研：一份"基本不重叠"的诚实记录，含两条可借纪律
+
+[semantica-agi/semantica](https://github.com/semantica-agi/semantica)（13469 star / Python / MIT）
+自述 "Graph-Native Infrastructure for Context and Accountable AI Systems"——企业知识图谱 +
+因果推理（Rete / Datalog / SPARQL / RDF / PROV-O / OWL / SHACL / SKOS）+ 合规审计，
+目标域 "High-Stakes, Regulated Domains"。
+新增 [`14-semantica-knowledge-graph.md`](docs/workbench/14-semantica-knowledge-graph.md)。
+
+**这次的记录以"用不上"为主**，并写清了为什么：它是给企业数据建图谱推事实的基础设施，
+我们是读本机会话尾与进程表的监控器；它连 LLM 都声明为可选（"no LLM required for graph
+construction, reasoning, or provenance"），我们则**完全不碰 LLM**。两个问题不相通。
+一条明确的「不要做」也记了：不要因为它有 Context Graph 就给自己加图谱或决策链模块——
+我们的会话尾是别家 agent 写的日志，字段都可能缺，在它上面建图谱等于把不确定性当结构化输入。
+
+**仍借到两条纪律**：
+
+1. **「provenance 是副产品，不是产品」**。README 原话 "Decision provenance and audit trails
+   **aren't the product**. They **fall out of that structure for free**"。
+   对照本仓：`Models.swift:11-12` 的 `provenance`（`observed` / `inferred`）与 README 的
+   「自报说 X，进程表说 Y」双显**已经是这个形态**——可信度不是外加的标签层，
+   是同一个状态机的自然产出。可迁移的是那条判断标准：**新加一个能力时问一句，它的可信度信息
+   是长在数据结构里，还是我在外面贴的标签？贴标签的那个一定会过期。**
+2. **在 README 里把"这一版它就是简单的"写具体**。全文只一处自陈 limitation
+   （`README.md:545`，ReteEngine 的 alpha-node 条件匹配），但三点齐全：点名具体是什么简单、
+   给出用户侧动作（"接生产合规闸前自己验证输出"）、说清 roadmap 上有没有。
+   这与我们 README 已知限制条同路，但**可以更严格**：凡涉及"做前先读代码"的条目，
+   也该写清是哪个场景下必须先验证。
+
+**没核实的（已在篇末单列）**：源码一行未读，只依据 README 全文（60438 字符）与 GitHub API。
+它那句 "deterministic infrastructure / no LLM required" 是自述，**我们未验证**；
+测试规模、CI、实际成熟度一概未看（不同于 MonoCode 那次逐文件核实）；`semantica doctor` 未运行
+（本机未 `pip install`）。`workbench/README.md` 文档表补 14 号一行。
+
+Swift 侧无改动，测试基数仍为 548 条。
+
 ## [0.0.145] - 2026-09-26
 
 ### 修一个从上游源码核出来的实缺：OpenCode 的「正在调用: xxx」从来没显示过
