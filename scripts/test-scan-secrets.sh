@@ -68,7 +68,7 @@ fixture killed
 # Generate an email-shaped synthetic hit at run time; no address literal is
 # committed to the repository.
 printf '%s@%s\n' synthetic example.com > "$FIXTURE/fixture.txt"
-awk '{ print; if (index($0, "ln=\"${match%%:*}\"")) print "                kill -9 $$" }' \
+awk '{ print; if (index($0, "ln=\"${rest%%:*}\"")) print "                kill -9 $$" }' \
     "$SCANNER" > "$FIXTURE/scripts/scan-secrets.sh"
 grep -Fq 'kill -9 $$' "$FIXTURE/scripts/scan-secrets.sh" || { echo 'probe injection failed' >&2; exit 3; }
 run killed bash scripts/scan-secrets.sh

@@ -1,5 +1,6 @@
 use crate::filemon::{time_ago_text, FileMonitor};
 use crate::models::*;
+use crate::observability::{self, Evidence};
 use crate::procmon::{memory_text, ProcessMonitor};
 use crate::session::{self, Signal};
 use crate::settings::Settings;
@@ -7,7 +8,7 @@ use crate::tokens::now_ms;
 use crate::tokens::TokenUsageMonitor;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Receiver;
-use std::time::{SystemTime};
+use std::time::{Duration, SystemTime};
 
 /// 五态状态机引擎（与 macOS 端 ActivityEngine 同规则）：
 /// · 未解决的确认/授权请求            → attention
@@ -121,6 +122,20 @@ impl ActivityEngine {
             );
 
             let token_usage = self.token_usage_cached(&profile);
+            let observability = observability::evaluate(Evidence {
+                level,
+                process_running,
+                installed: process_running.then_some(true),
+                source_unreadable: process_running
+                    && level == ActivityLevel::Idle
+                    && observability::has_unreadable_source(&profile),
+                has_local_detail_source: observability::has_local_detail_source(&profile),
+                recent_session_write: observability::recent_write(
+                    file_result.latest_write.as_ref(),
+                    SystemTime::UNIX_EPOCH + Duration::from_millis(now.max(0) as u64),
+                ),
+                has_token_usage: token_usage.as_ref().is_some_and(|u| u.tokens_total > 0),
+            });
             if let Some(u) = &token_usage {
                 total24 += u.tokens24h;
                 total_all += u.tokens_total;
@@ -140,6 +155,7 @@ impl ActivityEngine {
                 emoji: profile.emoji.clone(),
                 level,
                 level_label: level.label().to_string(),
+                observability,
                 process_running,
                 cpu_percent: cpu,
                 memory_bytes: memory,
@@ -483,6 +499,15 @@ impl ActivityEngine {
                 emoji: p.emoji.clone(),
                 level,
                 level_label: level.label().to_string(),
+                observability: observability::evaluate(Evidence {
+                    level,
+                    process_running: true,
+                    installed: Some(true),
+                    source_unreadable: false,
+                    has_local_detail_source: true,
+                    recent_session_write: true,
+                    has_token_usage: t24 > 0,
+                }),
                 process_running: true,
                 cpu_percent: Some(if level == ActivityLevel::Working { 34.0 } else { 1.2 }),
                 memory_bytes: mem,

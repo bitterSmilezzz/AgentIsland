@@ -144,22 +144,28 @@ Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（�
 | 降频 | 有活动 `sampleInterval` / 闲置 `idleSampleInterval`（5s）/ 全离线 60s / 节电三档（[ActivityEngine.swift:1395-1404](../../Sources/AgentIslandCore/ActivityEngine.swift#L1395)） | 有活动 `sample_interval`；闲置 `×2.5` 夹在 2.0–12.5s（[main.rs:302-310](../../app/src-tauri/src/main.rs#L302)） | ⚠️ 公式不同（`×2.5` vs 独立 `idleSampleInterval` 字段）；无节电三档。**需说清**：两侧耗电量与「岛多久变灰」不同 |
 | 可见口径 | `visibleSnapshots`（只显在线）+ `ringShelfSnapshots`（[ActivityEngine.swift:1472-1483](../../Sources/AgentIslandCore/ActivityEngine.swift#L1472)） | `state()` 直接给全部 snapshot，前端可自行过滤（未逐行比对） | ⚠️ 未逐行比对 |
 
-### 4.1 「读不到 ≠ 零」：Swift 有五类结论，Rust 侧无等价物
+### 4.1 「读不到 ≠ 零」：Rust 已接五类判定，证据来源仍未对齐
 
 Swift 的 [AgentObservability.evaluate](../../Sources/AgentIslandCore/AgentObservability.swift#L46)
 返回**五类结论**（:14-25）：`observed` / `blindSessionSource`（源读不到）/
 `noLocalData`（读不到会话与用量）/ `sourceNotWired`（档案未登记明细源）/
-`notInstalled`（未安装且进程不在）。它靠两个 Rust 侧**不存在的字段**才能判：
+`notInstalled`（未安装且进程不在）。Swift 还依赖两项 Rust 侧尚未完整采集的证据：
 
 - `snapshot.installed`（安装判定，来自 `InstalledAppsCache`）——[Models.swift:421](../../Sources/AgentIslandCore/Models.swift#L421)
 - `snapshot.sessionProbeHealth`（源读到的失败原因）——[Models.swift:439](../../Sources/AgentIslandCore/Models.swift#L439)
 
-**Rust 侧结论：无等价物。** `grep -rni "selfreport|blind|provenance|不可信|读不到"` 在
-`app/src-tauri/src/` + `app/ui/js/` 零命中（唯一命中是 registry 注释里的「读不到」一词）。
-[models.rs](../../app/src-tauri/src/models.rs) 的 `AgentSnapshot` 既没有 `installed` 也没有
-`sessionProbeHealth` 也没有 `provenance`；因此 Rust 端的「待机」**无法与「没读到」区分**。
-这正是 Swift 那条被专门写过注释的口径（Models.swift:414-418「漏传只能得到没说，不能得到假的观测」）
-在 Rust 侧整体缺失。ADR 0010 M3 的 `Health` 模块若有产出，这是第一个该带的字段。
+Rust 的 [observability.rs](../../app/src-tauri/src/observability.rs) 现将五类代码和依据写入
+`AgentSnapshot.observability`，前端对缺乏证据的在线待机给出诊断标签，并避免顶栏声称
+「全部 Agent 待机」。但这只是**保守的第一层**，不能视为与 Swift 等价：
+
+- Rust 尚无 `InstalledAppsCache`；进程不在时安装状态传 `None`，只确认离线，
+  **不会凭空给出 `notInstalled`**。该代码已有纯函数守护，生产采样暂不会产生。
+- `blindSessionSource` 目前只证明已登记会话根目录的元数据/列举失败或路径不是目录；
+  深层文件读取与解析失败仍可能被吞掉，尚无 Swift 的 `SessionProbeHealth` 原因链。
+- Rust 没有 `activeSessions`，暂以十分钟内有会话文件写入作活动证据。文件新鲜度
+  与活跃会话不是同一个量；token 总量大于零也只能说明曾有用量。
+
+因此 M3 后续仍需补齐安装、探测健康和活跃会话来源，再做两端行为对照。
 
 同理，CPU 的**两态**口径（有值=测到，nil=没测，[Models.swift:415-418](../../Sources/AgentIslandCore/Models.swift#L415)）
 在 Rust 是 `Option<f64>` 且有 `None` 分支（[models.rs](../../app/src-tauri/src/models.rs)）——形式在，但
@@ -181,7 +187,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `status` / `top` | LiveSampler、ProcessMonitor、CLIOutput、CLIModels | ❌ 无 |
 | `tokens` | TokenUsageMonitor、TokenForecastEvaluator、TokenCostEstimator、DailyBudget | ❌ 无（Rust 有 `get_report` 供前端，无终端输出） |
 | `state` | AgentState（读 App 进程内状态，含自报/冲突） | ❌ 无；且后端 `AgentSnapshot` 无 provenance 字段 |
-| `doctor` | AgentObservability、AgentHealthEvaluator、SessionProbeHealth | ❌ 无（依赖 §4.1 缺失字段） |
+| `doctor` | AgentObservability、AgentHealthEvaluator、SessionProbeHealth | ❌ 无 CLI；Rust 仅有 §4.1 的局部可观测性判定，健康与探测原因链仍缺 |
 | `check` / `clean` | AgentResilienceGuard、AgentCleaner、ProcessTreeInspector | ❌ 无；Rust 有 `terminate_agent` 但无异常判定 |
 | `selftest` | Selftest（无头假数据断言） | ❌ 无同名 CLI 子命令；Rust 有 `cargo test --locked` 守护五态和会话解析 |
 | `open` / `notify` | URLSchemeParser、LocalEventHTTP、SelfReport | ⚠️ 部分：webhook 服务端在（[webhook.rs](../../app/src-tauri/src/webhook.rs)），客户端/深链解析无 |

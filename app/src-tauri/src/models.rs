@@ -121,6 +121,7 @@ pub struct AgentSnapshot {
     pub emoji: String,
     pub level: ActivityLevel,
     pub level_label: String,
+    pub observability: crate::observability::Verdict,
     pub process_running: bool,
     pub cpu_percent: Option<f64>,
     pub memory_bytes: u64,

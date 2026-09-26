@@ -10,7 +10,7 @@
 和 [23 · 两端口径对照表](23-swift-rust-parity-matrix.md)，再读 [04 · 实施计划](04-plan.md)。
 M1 的五态回放、三方言 fixture 与 `provider.rs` 原子写/掩码守护现已完成；
 M2 本机构建及真工作区实现已完成，M5 对照表已建立。
-M3 已开始修正共有档案差异，ZCode 路径有本机取证；缺失模块迁移、侧边栏、
+M3 已开始修正共有档案差异，ZCode 路径有本机取证，Rust 已接入保守的可观测性判定；缺失模块迁移、侧边栏、
 配置档位与 ToDos 均未开始。
 
 Swift 是原生灵动岛实现；Rust 目前也只有灵动岛壳，`app/ui/` 仅供 Rust 使用。
@@ -76,7 +76,7 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
 | [17-codenotch-direct-competitor-audit.md](17-codenotch-direct-competitor-audit.md) | **最直接的形态竞品** codenotch（2493 star / Swift / macOS）一手调研：26×210pt 黑 pill、17 家 provider、三级回退做到「与 /usage never disagree」、一维栈空间布局；含正面逐条对比与三条该跟进 | **做侧边栏壳（Phase 1）前必读**；遇到「凭据边界画在哪」前必读 |
 | [16-mattpocock-skills-meta-specs.md](16-mattpocock-skills-meta-specs.md) | mattpocock/skills（269,700 star）一手调研：**本机 24 个 skill 的上游**。三份元规范中两条对我们有约束力（user-invoked 不可被调用；skill 依赖要指名工具而非相对链接） | 新增或改动任何 agent skill 前必读；判定这条指令该写给谁时必读 |
 | [12-monocode-competitor-audit.md](12-monocode-competitor-audit.md) | MonoCode（1303 star / MIT）一手调研：**最近的同形态竞品**（同样 Tauri v2 + Rust）、harness 三层抽象、327 前端测试 + 333 Rust 测试、凭据零落盘 | **Phase 0 建测试基建前必读**；Phase 2 写 `provider.rs` 前必读（两个凭据坑） |
-| [23-swift-rust-parity-matrix.md](23-swift-rust-parity-matrix.md) | **ADR 0010 / M5 交付物**：两端口径对照表——26 vs 12 家档案逐字段比对、47 vs 11 个能力模块、五态与判定口径（含 Rust 侧缺失的「读不到 ≠ 零」五类结论）、CLI 12 子命令、settings 逐字段对照 | 排 M3 迁移优先级前必读；改任何两端共有的逻辑（档案 / 引擎 / settings）前必读 |
+| [23-swift-rust-parity-matrix.md](23-swift-rust-parity-matrix.md) | **ADR 0010 / M5 交付物**：两端口径对照表——26 vs 12 家档案逐字段比对、能力模块、五态与可观测性证据差异、CLI 12 子命令、settings 逐字段对照 | 排 M3 迁移优先级前必读；改任何两端共有的逻辑（档案 / 引擎 / settings）前必读 |
 
 ## 一句话
 

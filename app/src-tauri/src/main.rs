@@ -4,6 +4,7 @@
 mod engine;
 mod filemon;
 mod models;
+mod observability;
 mod placement;
 mod procmon;
 mod provider;

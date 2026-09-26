@@ -5,6 +5,7 @@
 > 当前：Phase 0 的扫描器及七条守护已入库，Rust 五态、三方言 fixture 与
 > `provider.rs` 原子写/掩码测试使 M1 完成；M2 本机工作区/打包已达成。
 > M3 已从已有档案的口径差异着手；ZCode 会话路径经本机实样核实并修正，
+> Rust 可观测性五类判定已接入快照与界面，但安装、深层探测健康、活跃会话证据未对齐。
 > Trae/Windsurf 待实样。12 个缺失模块仍待逐个迁入。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

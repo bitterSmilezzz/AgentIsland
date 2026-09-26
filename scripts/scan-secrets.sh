@@ -100,21 +100,29 @@ load_file_list() {
 
 scan_worktree() {
     : > "$HITS" 2>/dev/null || { echo "✗ 初始化 $HITS 失败" >&2; exit 3; }
-    local idx rule pat f content ln row
+    local idx rule pat f content ln row match rest grep_rc
+    local files=()
+    while IFS= read -r f; do
+        [[ -f "$f" ]] && files+=("$f")
+    done < /tmp/scan-secrets-files.txt
+    [[ ${#files[@]} -gt 0 ]] || { echo "✗ 没有可扫描的常规文件" >&2; exit 3; }
     for idx in "${!RULE_IDS[@]}"; do
         rule="${RULE_IDS[$idx]}"; pat="${RULE_PAT[$idx]}"
-        while IFS= read -r f; do
-            [[ -f "$f" ]] || continue
-            while IFS= read -r match; do
-                ln="${match%%:*}"; content="${match#*:}"
-                [[ "$content" == *"nosec:"* ]] && continue   # 就地豁免，理由必须写在同一行
-                # 掩码放在写盘前：HITS 里永远不出现密钥原文
-                row=$(printf '%s|%s|%s|%s\n' "$rule" "$f" \
-                    "$(printf '%s' "$content" | cksum | cut -d' ' -f1)" \
-                    "$(printf '%s' "$content" | redact)" | tr '\n' ' ') || exit 3
-                printf '%s\n' "${row% }" >> "$HITS" || { echo "✗ 追加 $f:$ln 命中失败" >&2; exit 3; }
-            done < <(LC_ALL=C grep -InE -- "$pat" "$f" 2>/dev/null)
-        done < /tmp/scan-secrets-files.txt
+        # 一条规则只启动一次 grep。macOS 27 的系统 Bash 在逐文件密集 fork 时
+        # 会触发 SIGTRAP；批量扫描也让 grep 的失败码不再被 process substitution 吞掉。
+        LC_ALL=C grep -InHE -- "$pat" "${files[@]}" > /tmp/scan-secrets-matches.txt 2>/dev/null
+        grep_rc=$?
+        [[ $grep_rc -le 1 ]] || { echo "✗ [$rule] 文件扫描失败（grep 退出码 $grep_rc）" >&2; exit 3; }
+        while IFS= read -r match; do
+            f="${match%%:*}"; rest="${match#*:}"
+            ln="${rest%%:*}"; content="${rest#*:}"
+            [[ "$content" == *"nosec:"* ]] && continue   # 就地豁免，理由必须写在同一行
+            # 掩码放在写盘前：HITS 里永远不出现密钥原文
+            row=$(printf '%s|%s|%s|%s\n' "$rule" "$f" \
+                "$(printf '%s' "$content" | cksum | cut -d' ' -f1)" \
+                "$(printf '%s' "$content" | redact)" | tr '\n' ' ') || exit 3
+            printf '%s\n' "${row% }" >> "$HITS" || { echo "✗ 追加 $f:$ln 命中失败" >&2; exit 3; }
+        done < /tmp/scan-secrets-matches.txt
         # 去重走临时文件再改名：对同一文件 in-place sort 是曾经静默产出空文件的那一步
         put "$HITS" sort -u "$HITS"
     done
@@ -163,7 +171,7 @@ blob_stream() {
     # sha → 路径（重命名会让同一 blob 对应多个路径，全部保留）
     put /tmp/scan-secrets-paths.txt bash -c 'git rev-list --objects --all | awk "NF>=2{print \$1\"\t\"\$2}" | sort -u'
     # 一次性流式导出全部 blob，命中行前缀所属 blob 的 sha
-    put "$BLOBSTREAM" bash -c 'git cat-file --batch < /tmp/scan-secrets-shas.txt 2>/dev/null | awk "/^[0-9a-f]{40} blob [0-9]+\$/{sha=\$1; next} {print sha\"\t\"\$0}"'
+    put "$BLOBSTREAM" bash -c 'git cat-file --batch < /tmp/scan-secrets-shas.txt 2>/dev/null | LC_ALL=C awk "/^[0-9a-f]{40} blob [0-9]+\$/{sha=\$1; next} {print sha\"\t\"\$0}"'
 }
 
 report_history() {

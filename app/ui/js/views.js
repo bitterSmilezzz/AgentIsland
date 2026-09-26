@@ -217,15 +217,27 @@ function headerPresentation(eng) {
   }
   const workingCount = visible.filter((s) => s.level === 'working').length;
   const completedCount = visible.filter((s) => s.level === 'completed').length;
+  const uncertainCount = visible.filter((s) => s.level === 'idle' && s.observability?.code && s.observability.code !== 'observed').length;
   const text = workingCount > 0 ? `${workingCount} 个 Agent 正在工作`
-    : completedCount > 0 ? `${completedCount} 个任务已完成` : '全部 Agent 待机';
-  return { title: text, subtitle: null, badge: null, tint: workingCount > 0 ? 'var(--working)' : 'var(--idle)', icon: null };
+    : completedCount > 0 ? `${completedCount} 个任务已完成`
+      : uncertainCount > 0 ? `${uncertainCount} 个 Agent 状态待核实`
+        : visible.length === 0 ? '暂无运行中的 Agent' : '全部 Agent 待机';
+  return { title: text, subtitle: null, badge: null, tint: workingCount > 0 ? 'var(--working)' : uncertainCount > 0 ? 'var(--warning)' : 'var(--idle)', icon: null };
 }
 
 // MARK: Agent 行（AgentRowView）
 
 function rowHtml(snap) {
   const c = levelColors(snap.level);
+  const uncertainLabels = {
+    blindSessionSource: '会话源读不到',
+    noLocalData: '无本地明细',
+    sourceNotWired: '未接入明细源',
+  };
+  const uncertainty = snap.level === 'idle' ? uncertainLabels[snap.observability?.code] : null;
+  const pillColor = uncertainty ? 'var(--warning)' : c.fg;
+  const pillBackground = uncertainty ? 'color-mix(in srgb, var(--warning) 10%, transparent)' : c.bg;
+  const pillBorder = uncertainty ? 'color-mix(in srgb, var(--warning) 25%, transparent)' : c.border;
   const hasAction = ['working', 'attention'].includes(snap.level) && snap.current_action;
   const usage = snap.token_usage && snap.token_usage.tokens24h > 0;
   const dots = [10, 60, 300, 900, 3600];
@@ -252,7 +264,7 @@ function rowHtml(snap) {
       </div>
       <div class="row-right">
         ${snap.process_running && snap.memory_bytes > 0 ? `<span class="mem-badge" title="物理内存驻留集 (RSS): ${esc(snap.memory_text)}">${esc(snap.memory_text)}</span>` : ''}
-        ${`<span class="status-pill" style="color:${c.fg};background:${c.bg};border-color:${c.border}">${esc(snap.level_label)}</span>`}
+        ${`<span class="status-pill" title="${esc(snap.observability?.summary ?? snap.level_label)}" style="color:${pillColor};background:${pillBackground};border-color:${pillBorder}">${esc(uncertainty ?? snap.level_label)}</span>`}
       </div>
     </div>
     ${hasAction ? `

@@ -36,7 +36,7 @@
 |---|---|---|---|
 | M1 | **`cargo test` 能跑且有守护** | `cargo test` 在本机通过；至少覆盖 `engine` 五态转移、`provider.rs` 原子写+掩码、三种会话方言解析（**fixture 化，不依赖本机装 agent CLI**） | **已完成（v0.0.160）**：五态回放见 `app/src-tauri/src/engine/state_tests.rs`，Claude/Codex/Cline 合成 fixture 见 `session.rs` 测试；`provider.rs` 有原子替换、Codex TOML 格式保真与掩码测试。`cargo test --locked --manifest-path app/src-tauri/Cargo.toml` 53 条通过。此门只证实测试地基，不代表 Phase 2 UI、钥匙串或备份还原已实现 |
 | M2 | **`cargo tauri build` 本机成功** | 产出一个 `.app`；capabilities 窗口声明与 `tauri.conf.json` 的 label 一致；`placement.rs` 按 OS 真工作区；`bundle.targets` 含 macOS | **本机构建与工作区实现已达成**：`.app` / `.dmg` 已产出，窗口 label 一致；非 Windows 分支使用 Tauri `Monitor::work_area()`，几何守护见 `placement.rs`。这不表示 Windows/Linux 打包或多屏混合 DPI 已完成真机验收 |
-| M3 | **Rust 侧补齐 12 个缺失模块** | 上表那 12 个模块在 Rust 侧存在且有测试；**RemoteNotify 三通道一并迁**（否则侧边栏一上线就是「能力比灵动岛少」） | **进行中（v0.0.161 起）**：先修共有档案口径；12 个缺失模块尚未迁入，侧边栏仍被本门拦住 |
+| M3 | **Rust 侧补齐 12 个缺失模块** | 上表那 12 个模块在 Rust 侧存在且有测试；**RemoteNotify 三通道一并迁**（否则侧边栏一上线就是「能力比灵动岛少」） | **进行中（v0.0.161 起）**：已有档案与 ZCode 路径已修正；Rust 可观测性判定已接入快照与界面，但安装/探测健康/活跃会话证据未对齐。12 个缺失模块尚未迁入，侧边栏仍被本门拦住 |
 | M4 | **license 与凭据口径先落定** | `LICENSE`（MIT）+ [ADR 0009](0009-credential-boundary-borrow-dont-hold.md) 凭据边界 | **已完成** |
 | M5 | **有一份「两端口径对照表」** | 逐条列出哪些能力只在 island 有、哪些只在 sidebar 有、哪些两边都要一致；不一致条目写明「说清」而不是「抹平」 | **对照表已建立**：[23 号](../workbench/23-swift-rust-parity-matrix.md)；表内差异与未核实项仍须逐项处理，不代表行为已一致 |
 
