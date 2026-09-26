@@ -7,6 +7,7 @@ mod engine;
 mod filemon;
 mod health;
 mod models;
+mod notifier;
 mod observability;
 mod placement;
 mod procmon;
@@ -19,6 +20,7 @@ mod session;
 mod settings;
 mod sqlite;
 mod tokens;
+mod transport;
 mod webhook;
 
 use engine::ActivityEngine;
@@ -290,16 +292,19 @@ fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
     let engine = state.lock().unwrap();
     let settings = &engine.settings;
     let now = crate::tokens::now_ms();
-    crate::remote::status(
+    let mut snapshot = crate::remote::status(
         Some(settings.remote_kind.as_str()),
         &settings.remote_channels,
         &settings.remote_policy,
         false,
-        crate::remote::local_minutes_of_day(now),
+        crate::remote::Now::at(now),
         // Rust 还没接 macOS 的在场信号层（锁屏 / 显示器睡眠 / 无输入时长）：
         // 传 unavailable ⇒ 按 fail-open 判成「人不在」，依据写在 awayReason 里
         &crate::remote::PresenceSignals::unavailable(),
-    )
+    );
+    // 节流状态在 notifier 里，不在判定层：这里补上
+    snapshot.throttled = engine.notifier.throttle_keys();
+    snapshot
 }
 
 #[tauri::command]

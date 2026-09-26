@@ -455,6 +455,26 @@ pub fn resolve_kind(raw: Option<&str>) -> (Channel, Option<String>) {
     }
 }
 
+/// 判定要用的「现在」：毫秒时间戳 + **本地**当天第几分钟。
+///
+/// 两者分开给，是因为本地分钟取不到时要按「不静默」降级（fail-open），这与时间戳无关；
+/// 也正因为分开，静默时段的口径可以离线测（用例传一个固定的分钟数）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Now {
+    pub ms: i64,
+    pub minutes_of_day: Option<u32>,
+}
+
+impl Now {
+    /// 生产路径：从系统时钟取，本地分钟取不到就是 `None`
+    pub fn at(ms: i64) -> Now {
+        Now {
+            ms,
+            minutes_of_day: local_minutes_of_day(ms),
+        }
+    }
+}
+
 /// 本地时间的「当天第几分钟」。Swift 用 `Calendar.current`；Rust 的 std 里没有本地时区，
 /// 所以走 libc 的 `localtime_r`。
 ///
@@ -502,11 +522,13 @@ pub struct Status {
     pub away_reason: String,
     /// 事件类型 → 该类是否允许外发
     pub allows: Vec<(&'static str, bool)>,
+    /// 当前被节流窗口握住的条目数（由命令层从 notifier 填；判定层不持有节流状态）
+    pub throttled: usize,
 }
 
 /// 组装上面那张快照。
 ///
-/// `minutes_of_day` 由调用方给（`local_minutes_of_day(now_ms)`），取不到时传 `None`：
+/// `now` 由调用方给（生产 = `Now::at(now_ms)`，用例 = `Now::fixed`）：
 /// 判定层不自己去取本地时间，这样静默时段的口径可以离线测。
 #[allow(clippy::too_many_arguments)]
 pub fn status(
@@ -514,7 +536,7 @@ pub fn status(
     channels: &std::collections::HashMap<String, ChannelConfig>,
     policy: &Policy,
     has_secret: bool,
-    minutes_of_day: Option<u32>,
+    now: Now,
     presence: &PresenceSignals,
 ) -> Status {
     let (channel, unrecognized) = resolve_kind(kind_raw);
@@ -531,7 +553,8 @@ pub fn status(
         plaintext_secret: channel
             .plaintext_secret_in_template(config)
             .map(str::to_string),
-        quiet_now: minutes_of_day
+        quiet_now: now
+            .minutes_of_day
             .map(|minutes| policy.in_quiet_hours(minutes))
             .unwrap_or(false),
         away_now: policy.is_away(presence),
@@ -541,6 +564,7 @@ pub fn status(
             (EventKind::Attention.as_str(), policy.allows(EventKind::Attention)),
             (EventKind::CostSpike.as_str(), policy.allows(EventKind::CostSpike)),
         ],
+        throttled: 0,
         policy,
     }
 }
@@ -892,7 +916,7 @@ mod tests {
             &channels,
             &policy,
             false,
-            Some(23 * 60),
+            Now { ms: 0, minutes_of_day: Some(23 * 60) },
             &PresenceSignals::unavailable(),
         );
         assert_eq!(snapshot.kind, "ntfy");

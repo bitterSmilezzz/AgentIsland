@@ -2,6 +2,9 @@ use crate::filemon::{time_ago_text, FileMonitor};
 use crate::models::*;
 use crate::observability::{self, Evidence};
 use crate::health;
+use crate::notifier;
+use crate::remote;
+use crate::render;
 use crate::resilience;
 use crate::procmon::{memory_text, ProcessMonitor};
 use crate::session::{self, Signal};
@@ -37,6 +40,8 @@ pub struct ActivityEngine {
     observed_running_since: HashMap<String, i64>,
     /// 异常驻留 / 死锁持续守护（[`crate::resilience::Guard`]）
     resilience: resilience::Guard,
+    /// 外发调度与记账（[`crate::notifier::Notifier`]）
+    pub notifier: notifier::Notifier,
     last_cost_spike: HashMap<String, i64>,
     token_rate: HashMap<String, (i64, i64)>,
     probe_cache: HashMap<String, (u64, SystemTime, Option<Signal>, usize)>,
@@ -70,6 +75,7 @@ impl ActivityEngine {
             high_cpu_since: HashMap::new(),
             observed_running_since: HashMap::new(),
             resilience: resilience::Guard::default(),
+            notifier: notifier::Notifier::new(),
             last_cost_spike: HashMap::new(),
             token_rate: HashMap::new(),
             probe_cache: HashMap::new(),
@@ -437,7 +443,11 @@ impl ActivityEngine {
     }
 
     /// 入队一条事件。队首直接上屏，其余排队等确认——见 `pending_events` 的注释。
+    ///
+    /// 顺带把这条事件过一遍外发闸门并记账：**发不出去也要留痕**，
+    /// 否则界面只能显示「最近没发过」，看不出是被静默时段挡下还是通道没配好。
     pub fn push_event(&mut self, event: AgentTaskEvent) {
+        self.notify_outbound(&event);
         if self.latest_event.is_none() {
             self.latest_event = Some(event);
             return;
@@ -449,6 +459,50 @@ impl ActivityEngine {
             self.pending_events.pop_front();
         }
         self.pending_events.push_back(event);
+    }
+
+    /// 每个事件过一次外发闸门并记账。
+    ///
+    /// `completed` 的 `seconds` 是「本次任务用时」：此刻 `work_started_at` 还没被清
+    /// （`decide_level` 里先 `push_event` 再 `remove`），正好拿得到；其余类型按「刚刚」。
+    fn notify_outbound(&mut self, event: &AgentTaskEvent) {
+        let Some(kind) = remote::EventKind::parse(&event.event_type) else {
+            return;
+        };
+        let seconds = if kind == remote::EventKind::Completed {
+            self.work_started_at
+                .get(&event.agent_id)
+                .map(|since| (event.timestamp - *since).max(0) as f64 / 1000.0)
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let mut inputs = render::Inputs::new(event.agent_name.clone(), kind, seconds);
+        inputs.agent_id = event.agent_id.clone();
+        inputs.message = event.message.clone();
+
+        let (channel, _) = remote::resolve_kind(Some(self.settings.remote_kind.as_str()));
+        let config = self
+            .settings
+            .remote_channels
+            .get(channel.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let policy = self.settings.remote_policy.clone();
+        // 密钥本轮一律「没有」（钥匙串未接入）：闸门会在配齐检查那一步如实挡下，
+        // 而不是拿一个空密钥去撞对端
+        let has_secret = false;
+        self.notifier.attempt(
+            &inputs,
+            &policy,
+            channel,
+            &config,
+            has_secret,
+            remote::Now::at(event.timestamp),
+            // Rust 还没接 macOS 的在场信号层：按 fail-open 判成「人不在」
+            &remote::PresenceSignals::unavailable(),
+            false,
+        );
     }
 
     /// 确认当前这条，推下一条（前端关掉横幅时调用）
@@ -649,6 +703,7 @@ impl ActivityEngine {
             snapshots: self.snapshots.clone(),
             latest_event: self.latest_event.clone(),
             pending_events: self.pending_count(),
+            recent_outbound: self.notifier.recent_view(),
             grand_total: self.grand_total.clone(),
             dock_edge: DockEdge::parse(&self.settings.dock_edge),
             appearance: self.settings.appearance.clone(),

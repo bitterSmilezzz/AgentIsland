@@ -225,6 +225,9 @@ pub struct EngineState {
     /// 已发出但还没确认的事件条数（不含 `latest_event` 那条）。
     /// 界面上是「还有几条」的角标——不暴露它，队列就成了用户看不见的暗箱。
     pub pending_events: usize,
+    /// 最近若干次外发的结果（新的在前，有界）。**失败必须看得见**：
+    /// 外发这件事的默认期待是「人不在也能收到」，收不到还显示正常最伤人。
+    pub recent_outbound: Vec<crate::notifier::Recent>,
     pub grand_total: TokenUsage,
     pub dock_edge: DockEdge,
     pub appearance: String, // system | light | dark

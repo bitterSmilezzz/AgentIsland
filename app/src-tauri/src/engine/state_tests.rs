@@ -319,6 +319,35 @@ fn work_hold_is_isolated_per_agent() {
     );
 }
 
+// MARK: 外发闸门接线（事件 → 判定 → 记账）
+
+/// 每个事件都要过一次外发闸门并留痕：否则界面只能显示「最近没发过」，
+/// 看不出是被静默时段挡下、通道没配好，还是压根没接。
+#[test]
+fn every_event_records_an_outbound_decision() {
+    let mut replay = Replay::new();
+    replay.sample(
+        100_000,
+        true,
+        Some(10.0),
+        Some(Signal::Attention("fp-outbound".into(), "要不要继续".into())),
+    );
+    let recent = replay.engine.state().recent_outbound;
+    assert_eq!(recent.len(), 1, "一条事件应留下一条外发判定");
+    // 默认策略：总开关关 ⇒ 如实记「未发」，且不碰传输
+    assert!(
+        recent[0].text.starts_with("未发：总开关未开"),
+        "{}",
+        recent[0].text
+    );
+    assert!(!recent[0].delivered);
+    assert_eq!(
+        replay.engine.notifier.throttle_keys(),
+        0,
+        "被挡下不该占节流位"
+    );
+}
+
 // MARK: 告警事件的发布路径（守护 → 事件队列 → 确认）
 
 /// 造一份「卡死且内存超高」的快照，用来驱动守护（不碰真实进程与真实时钟）
