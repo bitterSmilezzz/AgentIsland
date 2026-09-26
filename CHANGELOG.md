@@ -4,6 +4,24 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.162] - 2026-09-26
+
+### 用本机实样修复 ZCode 会话监控路径，保留未核实目录边界
+
+对本机 ZCode 只读取证：`~/.zcode/cli/rollout` 有 89 条合法 `model_io` 记录，
+均含模型响应和正数净用量；`~/.zcode/v2/checkpoints` 当前不存在，
+`~/.zcode/cli/log` 则是更新更晚、无模型响应结构的运行日志。
+取证过程只输出目录存在性、键名和汇总计数，不采集会话正文。
+
+Swift 灵动岛保留旧 checkpoints 兼容路径，并加入已验证的 rollout 路径，
+修复本机实际任务写入不在监控范围内的问题。Rust 的 ZCode 会话入口只保留 rollout，
+不再把 CLI 日志写入当作工作证据；token 来源仍是 rollout。两端各加一条注册表回归守护。
+
+Trae 和 Windsurf 在检查的标准安装位置与会话目录均无实样；官方 Cascade 文档只能证明
+`~/.codeium/windsurf` 下有 hook 配置，不能证明其为普通会话目录。
+这两项维持原实现并在[取证记录](docs/research/2026-09-26-agent-session-paths.md)
+与对照表中继续标为待核实。未迁入 M3 缺失模块，也未开放侧边栏。
+
 ## [0.0.161] - 2026-09-26
 
 ### 对齐 Rust 共用档案口径，保住旧 Roo 设置与无明细语义

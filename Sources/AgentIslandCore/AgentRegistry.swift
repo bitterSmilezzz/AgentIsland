@@ -188,8 +188,10 @@ public enum AgentRegistry {
             cpuWorkingThreshold: desktopCPUFloor,
             sessionDirs: [
                 // v2 根目录包含 bot 状态、轮询日志和 sqlite；这些会在空闲时持续更新。
-                // checkpoints 才对应一次实际 Agent 运行的状态落盘。
-                home(".zcode/v2/checkpoints")
+                // checkpoints 对应旧版任务落盘；当前安装还会把真实模型请求写到
+                // cli/rollout/model_io JSONL。CLI log 不是会话信号，不进监控。
+                home(".zcode/v2/checkpoints"),
+                home(".zcode/cli/rollout")
             ],
             category: .codeEditor,
             emoji: "🧩",

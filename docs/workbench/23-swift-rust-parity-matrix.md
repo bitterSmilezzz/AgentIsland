@@ -9,7 +9,7 @@
 > 迁移 Phase 1/2/3 的优先级由它决定：先修「不一致」，再补「只在 Swift 有」。
 >
 > Swift 端使用原生 SwiftUI；Rust 端使用自己的 `app/ui/`，其 sidebar 尚未实现。
-> 本表最初写于 v0.0.158，所列文件行数和行号保留调查时的快照；v0.0.161 的口径修正标在 §2.3。
+> 本表最初写于 v0.0.158，所列文件行数和行号保留调查时的快照；v0.0.161–162 的口径修正标在 §2.3。
 
 ## 1. 总览：规模差
 
@@ -49,7 +49,7 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 
 | id | sessionDirs / session_dirs | 一致？ | tokenRoots / token_roots | 一致？ | CPU 阈值 | 一致？ | sessionDialect | 一致？ |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `zcode` | S `~/.zcode/v2/checkpoints` :182-192 | ❌ | S **未登记** | ❌ | S 20.0 :188 / R 20.0 :34 | ✅ | S `genericTail`（默认）/ R 按 id 分派 :35 | ❌ |
+| `zcode` | 双方监控 `~/.zcode/cli/rollout`；Swift 另留 checkpoints 兼容路径（v0.0.162） | 核心路径✅，兼容路径仅 Swift | S **未登记** / R rollout（Rust 独有明细） | 有意不同 | 双方 20.0 | ✅ | S `genericTail` + 任务库 / R `probe_zcode`，解析深度不同 | ⚠️ |
 | `claude` | 双方均含 `~/.claude/sessions` + `~/.claude/projects`（顺序不同） | ✅ | 双方均含两个目录（v0.0.161 补齐 Rust sessions） | ✅ | 双方 20.0（v0.0.161 对齐） | ✅ | S `genericTail` / R `probe_claude` | ✅（同协议） |
 | `codex` | S `~/.codex/sessions` :94 | ✅ | S 同 :97 / R 同 :63 | ✅ | S 无 / R 无 | ✅ | 同 | ✅ |
 | `cursor` | S `Library/.../Cursor/...` :108 | ✅（Rust 用 `%APPDATA%`） | S 无 / R 无 | ✅ | S 20.0 / R 20.0 | ✅ | 同 | ✅ |
@@ -63,10 +63,12 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 
 **仍需裁决的差异与本轮修正：**
 
-1. **`zcode` 的会话目录完全不是同一棵树**：Swift 盯 `~/.zcode/v2/checkpoints`（Agent 运行落盘点，
-   注释解释过 v2 根目录的空闲刷新问题），Rust 盯 `~/.zcode/cli/rollout` + `log`。
-   尚无本机实样足以裁决，继续列为 M3 阻塞项，不能按文件名猜。
-   Trae 多出一个 Rust 目录、Windsurf 使用不同目录，也待对应平台实样核实。
+1. **`zcode` 的路径差异已按本机实样收敛（v0.0.162）**：rollout 有 89 条
+   `model_io` 记录且均含正数净用量；旧 checkpoints 目录当前不存在，CLI log 是另一种
+   日志结构且更新更晚。Swift 在保留旧路径的同时加入 rollout，Rust 去掉 log；
+   两端都能监控已证实的任务目录，解析深度仍不同。取证见
+   [ZCode/Trae/Windsurf 路径记录](../research/2026-09-26-agent-session-paths.md)。
+   Trae 多出一个 Rust 目录、Windsurf 使用不同目录；检查的标准位置无实样，继续待核实。
 2. **v0.0.161 已修**：Claude/OpenCode 的 CPU 下限、Claude 的 sessions token 根目录、
    OpenCode/Cline/Roo Code 没有可靠明细时不生成零报告、Roo Code 的 ID 与旧禁用设置迁移。
    Rust 回归测试从档案、会话、设置和报告四处守护；这不代表 §4–6 其他差异已解决。
@@ -249,11 +251,11 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
 1. `session.rs` 四个 `probe_*` 与 Swift 同名解析器**未逐行比对语义**（只确认了分派方式与信号种类一致）。
 2. Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读。
 3. `Swift 端 26 个档案中` `qoder`/`antigravity`/`dsh`/`workbuddy` 的方言解析与 Rust 无对应，
-   无法比对；Rust 侧 `zcode` 走 `probe_zcode`（读取 `~/.zcode/cli/rollout`），Swift 读 `~/.zcode/v2/checkpoints`，
-   **哪一边对，未在本机实跑验证**（未跑 build/test，本任务为纯调研）。
+   无法比对；ZCode 路径已在 v0.0.162 经本机实样核实并修正，但两端状态/动作解析语义
+   尚未逐行比对。
 4. Swift 与 Rust 测试的**内容覆盖对照**未做。v0.0.159 增补五态回放与三方言合成 fixture 后，可执行测试数已变化；以 `cargo test --locked` 输出为准。
 5. `report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对（ADR 0009 相关，需单独看）。
-6. §2.3 表中「token 明细是否需要」一行只对 12 个共有档案核对；14 个 Swift 独有档案的
+6. §2.3 表中「token 明细是否需要」一行只对 11 个共有档案核对；14 个 Swift 独有档案的
    `tokenRoots` 现状未逐一列（不影响「两边都有」的判定）。
 
 **本表不含**：性能基准、UI 视觉对照、`app/` 的构建状态（已有 ADR 0010 M1/M2 记录）。

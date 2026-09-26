@@ -205,6 +205,15 @@ enum RegistryTests {
             try expectTrue(aider?.processNames.contains("aider") == true, "Aider 必须包含进程名")
         }
 
+        TestKit.test("注册表: ZCode 保留 checkpoints 并接入模型 IO，排除 CLI 日志") {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let zcode = AgentRegistry.builtin.first { $0.id == "zcode" }!
+            try expectEqual(zcode.sessionDirs, [home + "/.zcode/v2/checkpoints",
+                                                home + "/.zcode/cli/rollout"])
+            try expectFalse(zcode.sessionDirs.contains { $0.hasSuffix("/.zcode/cli/log") },
+                            "运行日志更新不应单独判为 Agent 工作")
+        }
+
         TestKit.test("注册表: Cline, Roo Code, Continue 与 Goose 内置档案完整性") {
             let cline = AgentRegistry.builtin.first { $0.id == "cline" }
             try expectTrue(cline != nil, "Cline 必须存在于内置档案中")

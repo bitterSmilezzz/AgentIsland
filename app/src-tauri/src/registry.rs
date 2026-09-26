@@ -32,8 +32,8 @@ pub fn builtin() -> Vec<AgentProfile> {
             cmdline_hints: vec![],
             path_excludes: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
-            // rollout = 每会话的模型 IO 流水（活动/动作/Token 信号源）；log = CLI 运行日志
-            session_dirs: vec![p(&[".zcode", "cli", "rollout"]), p(&[".zcode", "cli", "log"])],
+            // Model IO is task evidence; CLI log can update for unrelated runtime activity.
+            session_dirs: vec![p(&[".zcode", "cli", "rollout"])],
             token_roots: vec![p(&[".zcode", "cli", "rollout"])],
             category: "assistant".into(),
         },
@@ -251,5 +251,15 @@ mod tests {
         assert!(profiles.iter().all(|p| p.id != "roo"));
         assert_eq!(get("roo-code").name, "Roo Code");
         assert!(get("roo-code").token_roots.is_empty());
+    }
+
+    #[test]
+    fn zcode_monitors_model_io_without_cli_log_noise() {
+        let profiles = builtin();
+        let zcode = profiles.iter().find(|p| p.id == "zcode").unwrap();
+        let rollout = std::path::Path::new(".zcode").join("cli").join("rollout");
+        assert_eq!(zcode.session_dirs.len(), 1);
+        assert!(std::path::Path::new(&zcode.session_dirs[0]).ends_with(&rollout));
+        assert_eq!(zcode.token_roots, zcode.session_dirs);
     }
 }
