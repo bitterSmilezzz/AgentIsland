@@ -1,4 +1,4 @@
-use crate::models::AgentProfile;
+use crate::models::{AgentProfile, SessionDatabase, SessionSchema};
 
 /// Agent 注册表：内置集（按平台路径）。与 macOS AgentRegistry 同构；
 /// 新增复用既有方言的 Agent 只改这里。
@@ -24,6 +24,25 @@ pub fn builtin() -> Vec<AgentProfile> {
 
     vec![
         AgentProfile {
+            id: "dim".into(),
+            name: "DimAgent".into(),
+            glyph: "\u{E734}".into(),
+            emoji: "✨".into(),
+            process_names: vec!["DimAgent".into(), "DimRemote".into(), "dim".into()],
+            cmdline_hints: vec![],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![p(&[".dimcode", "v2", "data", "sessions"])],
+            // 用量明细在下面的 usage_ledger 里，不读 JSONL；会话目录与采集根同路径
+            // （与 Swift 档案逐字段一致）
+            token_roots: vec![p(&[".dimcode", "v2", "data", "sessions"])],
+            session_database: Some(SessionDatabase {
+                path: p(&[".dimcode", "v2", "dimcode.sqlite"]),
+                schema: SessionSchema::DimTasks,
+            }),
+            category: "assistant".into(),
+        },
+        AgentProfile {
             id: "zcode".into(),
             name: "ZCode".into(),
             glyph: "\u{E945}".into(),
@@ -35,6 +54,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // Model IO is task evidence; CLI log can update for unrelated runtime activity.
             session_dirs: vec![p(&[".zcode", "cli", "rollout"])],
             token_roots: vec![p(&[".zcode", "cli", "rollout"])],
+            session_database: Some(SessionDatabase { path: p(&[".zcode", "v2", "tasks-index.sqlite"]), schema: SessionSchema::StatusIndex }),
             category: "assistant".into(),
         },
         AgentProfile {
@@ -48,6 +68,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".claude", "projects"]), p(&[".claude", "sessions"])],
             token_roots: vec![p(&[".claude", "sessions"]), p(&[".claude", "projects"])],
+            session_database: None,
             category: "assistant".into(),
         },
         AgentProfile {
@@ -61,6 +82,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![p(&[".codex", "sessions"])],
             token_roots: vec![p(&[".codex", "sessions"])],
+            session_database: None,
             category: "assistant".into(),
         },
         AgentProfile {
@@ -74,6 +96,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Cursor", "User", "workspaceStorage"])],
             token_roots: vec![],
+            session_database: None,
             category: "codeEditor".into(),
         },
         AgentProfile {
@@ -87,6 +110,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Code", "User", "workspaceStorage"])],
             token_roots: vec![],
+            session_database: None,
             category: "codeEditor".into(),
         },
         AgentProfile {
@@ -100,6 +124,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "saoudrizwan.claude-dev", "tasks"])],
             token_roots: vec![],
+            session_database: None,
             category: "assistant".into(),
         },
         AgentProfile {
@@ -113,6 +138,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "tasks"])],
             token_roots: vec![],
+            session_database: None,
             category: "assistant".into(),
         },
         AgentProfile {
@@ -125,9 +151,32 @@ pub fn builtin() -> Vec<AgentProfile> {
             path_excludes: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".local", "share", "opencode"])],
-            // Swift intentionally leaves tokenRoots empty: local fields are not a reliable
-            // token count. Keep the session directory for activity, but report no usage.
+            // tokenRoots 空是**刻意的**：这个产品的用量只落在自己的 SQLite 库里
+            // （message.data 的 JSON），JSONL 侧没有可用计数。用量走 session_database。
             token_roots: vec![],
+            session_database: Some(SessionDatabase { path: p(&[".local", "share", "opencode", "opencode.db"]), schema: SessionSchema::OpenCode }),
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "mimocode".into(),
+            name: "Xiaomi MiMo".into(),
+            glyph: "\u{E774}".into(),
+            emoji: "📡".into(),
+            // 桌面主进程 + 引擎进程。真实进程名按 CLI 命名习惯推的（Swift 档案同注：
+            // 待跑过一次编码会话核对），此处照搬以免两边再分叉
+            process_names: vec!["Xiaomi MiMo".into(), "mimocode".into()],
+            cmdline_hints: vec![],
+            // Electron 派生进程（GPU/渲染/网络/崩溃上报）与宿主是同一个程序：
+            // CPU 会跨条目求和，把渲染器空闲抖动累成「高负载工作中」，故按路径排除
+            path_excludes: vec!["frameworks".into(), "helper".into()],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![p(&[".local", "share", "mimocode"])],
+            // 与 OpenCode 同表形（session / message / part），复用同一方言
+            token_roots: vec![],
+            session_database: Some(SessionDatabase {
+                path: p(&[".local", "share", "mimocode", "mimocode.db"]),
+                schema: SessionSchema::OpenCode,
+            }),
             category: "assistant".into(),
         },
         AgentProfile {
@@ -141,6 +190,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![p(&[".config", "goose", "sessions"])],
             token_roots: vec![],
+            session_database: None,
             category: "assistant".into(),
         },
         AgentProfile {
@@ -154,6 +204,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![p(&[".aider"])],
             token_roots: vec![],
+            session_database: None,
             category: "assistant".into(),
         },
         AgentProfile {
@@ -167,6 +218,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".codeium", "windsurf"])],
             token_roots: vec![],
+            session_database: None,
             category: "codeEditor".into(),
         },
         AgentProfile {
@@ -180,6 +232,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Trae", "User", "workspaceStorage"]), a(&["Trae CN", "User", "workspaceStorage"])],
             token_roots: vec![],
+            session_database: None,
             category: "codeEditor".into(),
         },
     ]
@@ -261,5 +314,57 @@ mod tests {
         assert_eq!(zcode.session_dirs.len(), 1);
         assert!(std::path::Path::new(&zcode.session_dirs[0]).ends_with(&rollout));
         assert_eq!(zcode.token_roots, zcode.session_dirs);
+    }
+
+    /// 声明了 SQLite 库的档案：**方言必须与库对应**，且库路径只在档案里出现一次。
+    /// 两条都是由「形状」而非产品名决定的（ADR 0004）——把路径抄到别处，
+    /// 档案换目录时只有一半会生效；方言写错则整份统计变成 0 且不报错。
+    #[test]
+    fn sqlite_backed_profiles_pair_each_database_with_the_right_dialect() {
+        let profiles = builtin();
+        let db = |id: &str| {
+            profiles
+                .iter()
+                .find(|p| p.id == id)
+                .and_then(|p| p.session_database.clone())
+                .unwrap_or_else(|| panic!("{id} 应声明 session_database"))
+        };
+        let ends_with = |path: &str, tail: &[&str]| {
+            let mut expected = std::path::PathBuf::new();
+            for part in tail {
+                expected.push(part);
+            }
+            std::path::Path::new(path).ends_with(&expected)
+        };
+
+        let dim = db("dim");
+        assert_eq!(dim.schema, SessionSchema::DimTasks);
+        assert!(ends_with(&dim.path, &[".dimcode", "v2", "dimcode.sqlite"]));
+
+        let zcode = db("zcode");
+        assert_eq!(zcode.schema, SessionSchema::StatusIndex);
+        assert!(ends_with(&zcode.path, &[".zcode", "v2", "tasks-index.sqlite"]));
+
+        let opencode = db("opencode");
+        assert_eq!(opencode.schema, SessionSchema::OpenCode);
+        assert!(ends_with(&opencode.path, &[".local", "share", "opencode", "opencode.db"]));
+
+        let mimocode = db("mimocode");
+        assert_eq!(mimocode.schema, SessionSchema::OpenCode, "同表 fork 复用同一方言");
+        assert!(ends_with(&mimocode.path, &[".local", "share", "mimocode", "mimocode.db"]));
+
+        // 方言决定明细从哪里来：走 OpenCode 库的档案**不该**再有 JSONL 采集根，
+        // 否则同一笔用量会被两处各算一遍
+        for profile in &profiles {
+            if let Some(database) = &profile.session_database {
+                if database.schema == SessionSchema::OpenCode {
+                    assert!(
+                        profile.token_roots.is_empty(),
+                        "{} 的用量在库里，不该同时声明 token_roots",
+                        profile.id
+                    );
+                }
+            }
+        }
     }
 }

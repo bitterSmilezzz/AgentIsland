@@ -8,6 +8,8 @@
 > Rust 可观测性五类判定已接入快照与界面，但安装、深层探测健康、活跃会话证据未对齐。
 > Trae/Windsurf 待实样。12 个缺失模块已开始逐个迁入：v0.0.166 迁入 `TokenCostEstimator`
 > （费率表与算法两端口径对齐，带跨语言漂移哨兵），**剩 11 个**。
+> v0.0.168 把 token 明细的 SQLite 源接进 Rust（`sqlite.rs` 只读层 + 两类方言），
+> 并补进 `dim`/`mimocode` 两个带库档案（Rust 12 → 14）。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

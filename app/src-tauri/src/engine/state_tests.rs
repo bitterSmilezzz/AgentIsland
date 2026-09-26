@@ -25,6 +25,7 @@ impl Replay {
                 cpu_floor: None,
                 session_dirs: vec![],
                 token_roots: vec![],
+                session_database: None,
                 category: "assistant".into(),
             },
         }

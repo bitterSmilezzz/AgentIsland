@@ -483,6 +483,7 @@ impl ActivityEngine {
             cpu_floor: None,
             session_dirs: vec![],
             token_roots: vec![],
+            session_database: None,
             category: "assistant".into(),
         };
         let demo: Vec<(AgentProfile, ActivityLevel, u64, Option<String>, i64)> = vec![

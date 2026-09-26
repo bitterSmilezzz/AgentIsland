@@ -6,7 +6,7 @@ use serde::{Serialize, Serializer};
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use toml_edit::{value, DocumentMut};
 
 const REDACTED: &str = "••••";
@@ -129,6 +129,7 @@ pub(crate) fn update_codex_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 

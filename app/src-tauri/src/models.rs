@@ -81,6 +81,25 @@ impl DockEdge {
 
 // MARK: - Agent 档案
 
+/// 第三方 Agent 的会话 / 明细库（位置与方言都由档案声明）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionDatabase {
+    pub path: String,
+    pub schema: SessionSchema,
+}
+
+/// 表形与方言：查询按**形状**路由，不按产品名——新增同形 fork 只改档案（ADR 0004）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionSchema {
+    /// DimAgent：`usage_ledger`，usage 是 JSON 列，cost 是记录值
+    DimTasks,
+    /// 通用状态索引：只回答「最新一条状态」，**不含 token**
+    StatusIndex,
+    /// OpenCode 及其同表 fork（如小米 MiMo Code）：`message.data` 是 JSON
+    OpenCode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub id: String,
@@ -98,6 +117,11 @@ pub struct AgentProfile {
     pub cpu_floor: Option<f64>,
     pub session_dirs: Vec<String>,
     pub token_roots: Vec<String>,
+    /// 会话 / 明细库。**库路径只在这一处声明**——别处再写一遍字面量，
+    /// 档案换目录或改名以后只有一半会生效（`dimcode.sqlite` 与 WorkBuddy 的
+    /// `projects/` 上各踩过一次，见 ADR 0004）。
+    #[serde(default)]
+    pub session_database: Option<SessionDatabase>,
     pub category: String,
 }
 

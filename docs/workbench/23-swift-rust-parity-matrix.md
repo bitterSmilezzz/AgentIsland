@@ -25,29 +25,31 @@ Swift 端是一个「148 个版本验证过的产品体系」。所以绝大多�
 这不是缺陷而是 M3 要补的账；**真正危险的是第 5、6 节那几处「两边都有、值不一样」**——
 它们不会报错，只会让两边用户看到不同数字。
 
-## 2. Agent 档案对照（25 vs 12）
+## 2. Agent 档案对照（25 vs 14）
 
 Swift 侧内置 **25 个**档案（`AgentRegistry.swift:29-400` 的 `builtin` 数组字面量）。
 取证口径要小心：整文件 `grep -c 'AgentProfile('` 得 **26** 是**错的**——它把
 `discoverCLIProfiles()` 里动态构造的那条也数了进去；档案数只认 `builtin` 数组。
-Rust 侧内置 **12 个**（[registry.rs:5-186](../../app/src-tauri/src/registry.rs)）。
-Rust 另有一条 `>= 12` 的守护测试（[registry.rs:215-223](../../app/src-tauri/src/registry.rs)），
+Rust 侧内置 **14 个**（[registry.rs:5-238](../../app/src-tauri/src/registry.rs)）。
+Rust 另有一条 `>= 12` 的守护测试（[registry.rs:268-276](../../app/src-tauri/src/registry.rs#L268)），
 **刻意不要求两边相等**——所以档案数分叉不会被测试拦住，只能靠本表盯。
 
-### 2.1 只在 Swift 有（14 个）
+### 2.1 只在 Swift 有（12 个）
 
-`dim` `qoder` `copilot` `workbuddy` `workbuddy-ai` `antigravity` `mimocode` `hermes`
+`qoder` `copilot` `workbuddy` `workbuddy-ai` `antigravity` `hermes`
 `continue` `chatgpt` `dsh` `ego-browser` `vibe-usage` `openviking`
 
-（出处：[AgentRegistry.swift:31-343](../../Sources/AgentIslandCore/AgentRegistry.swift#L31) 各 `id:` 行；
-Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#L27)，列表不同。）
+（v0.0.168 起 `dim` 与 `mimocode` 已补进 Rust——两者都带 SQLite 明细库，补它们是为了让
+`DimTasks` / `OpenCode` 两条方言有**真实载体**，而不是先写方言再等档案。
+出处：[AgentRegistry.swift:31-343](../../Sources/AgentIslandCore/AgentRegistry.swift#L31) 各 `id:` 行；
+Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L5)，列表仍不同。）
 
 ### 2.2 只在 Rust 有（1 个）
 
-`vscode` —— [registry.rs:80](../../app/src-tauri/src/registry.rs#L80)。Swift 侧无此档案，
+`vscode` —— [registry.rs:103](../../app/src-tauri/src/registry.rs#L103)。Swift 侧无此档案，
 但 Swift 有 `cline`/`roo-code` 用的是 VS Code 的 `globalStorage/<ext>` 路径，功能上覆盖同一批用户。
 
-### 2.3 两边都有（11 个）——逐字段比
+### 2.3 两边都有（13 个）——逐字段比
 
 | id | sessionDirs / session_dirs | 一致？ | tokenRoots / token_roots | 一致？ | CPU 阈值 | 一致？ | sessionDialect | 一致？ |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -58,7 +60,9 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 | `trae` | S `.../Trae CN/User/workspaceStorage` :120 | ❌（R 含 Trae + Trae CN 两条 :179） | 均无 | ✅ | S 20.0 / R 20.0 | ✅ | 同 | ✅ |
 | `cline` | 同路径 :372 | ✅ | 双方均无（v0.0.161 清除 Rust 假明细入口） | ✅ | S 无 / R 无 | ✅ | S `.clineTasks` :375 / R `probe_cline` | 基本一致 |
 | `roo-code` | 双方 ID 已一致（v0.0.161；旧 `roo` 禁用设置迁移） | ✅ | 双方均无（v0.0.161 清除 Rust 假明细入口） | ✅ | 均无 | ✅ | S `.clineTasks` :386 / R `probe_cline` | 基本一致 |
-| `opencode` | `~/.local/share/opencode` :227 | ✅ | 双方均无（v0.0.161 清除 Rust 假明细入口） | ✅ | 双方 20.0（v0.0.161 对齐） | ✅ | S 无方言 / R 无 | ✅ |
+| `opencode` | `~/.local/share/opencode` :227 | ✅ | 双方均无（v0.0.161 清除 Rust 假明细入口）；**用量在 `session_database` 的 message 表，v0.0.168 起 Rust 也读** | ✅ | 双方 20.0（v0.0.161 对齐） | ✅ | S 无方言 / R 无 | ✅ |
+| `dim` | 双方 `~/.dimcode/v2/data/sessions` :37 | ✅ | 双方同路径；**用量实际走库（`usage_ledger`），v0.0.168 起 Rust 也读** | ✅ | 双方 20.0 | ✅ | S 状态读 `dimTasks` 库 :42 / R **无会话探测** | ⚠️ 状态未对齐 |
+| `mimocode` | 双方 `~/.local/share/mimocode` :253 | ✅ | 双方均无（用量在库里的 message 表，v0.0.168 起 Rust 也读） | ✅ | 双方 20.0 | ✅ | S `.openCode` 库 :259 / R 无 | ⚠️ 状态未对齐 |
 | `goose` | `~/.config/goose/sessions` :394 | ✅ | S 无 / R 无 | ✅ | 均无 | ✅ | 同 | ✅ |
 | `aider` | `~/.aider` :362 | ✅ | S 无 / R 无 | ✅ | 均无 | ✅ | 同 | ✅ |
 | `windsurf` | S `Library/.../Windsurf/...`，R `~/.codeium/windsurf` | ⚠️ 待核实 | S 无 / R 无 | ✅ | S 20.0 / R 20.0 | ✅ | 同 | ✅ |
@@ -75,7 +79,7 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
    OpenCode/Cline/Roo Code 没有可靠明细时不生成零报告、Roo Code 的 ID 与旧禁用设置迁移。
    Rust 回归测试从档案、会话、设置和报告四处守护；这不代表 §4–6 其他差异已解决。
 
-## 3. 能力模块对照（Swift Core 47 文件 vs Rust 11 rs）
+## 3. 能力模块对照（Swift Core 47 文件 vs Rust 16 rs）
 
 「两边都有」= Rust 侧有同名职责的模块，无论实现深浅；「字段/算法差异」列在最右。
 
@@ -116,12 +120,12 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 
 | 职责 | Swift | Rust | 差异要点 |
 | :--- | :--- | :--- | :--- |
-| 档案表 | [AgentRegistry.swift](../../Sources/AgentIslandCore/AgentRegistry.swift) 604 行：25 档案 + 自动发现 CLI + 用户自定义（UserDefaults） | [registry.rs](../../app/src-tauri/src/registry.rs) 265 行：12 档案硬编码 | Rust **无自动发现、无自定义档案**；`builtin()` 每次调用重读 home dir |
+| 档案表 | [AgentRegistry.swift](../../Sources/AgentIslandCore/AgentRegistry.swift) 604 行：25 档案 + 自动发现 CLI + 用户自定义（UserDefaults） | [registry.rs](../../app/src-tauri/src/registry.rs) 370 行：14 档案硬编码 | Rust **无自动发现、无自定义档案**；`builtin()` 每次调用重读 home dir。**v0.0.168 起两边都有 `sessionDatabase`/`session_database`**（路径 + 方言；Rust 声明了 dim/zcode/opencode/mimocode 四条） |
 | 五态引擎 | [ActivityEngine.swift](../../Sources/AgentIslandCore/ActivityEngine.swift) 1492 行 | [engine.rs](../../app/src-tauri/src/engine.rs) 678 行 | Swift 有电源分级采样、`visibleSnapshots`/`ringShelfSnapshots` 可见口径、冲突双显；Rust 有 demo 模式与 webhook 事件源。**核心双信号与 CPU 熔断一致**，见 §4 |
 | 进程监控 | [ProcessMonitor.swift](../../Sources/AgentIslandCore/ProcessMonitor.swift) 700 行：libproc 直读进程表 | [procmon.rs](../../app/src-tauri/src/procmon.rs) 129 行：`sysinfo` 0.33 | Swift 直读 `/dev` 级接口 + 自定义匹配（pathContains/pathExcludes/hostBundleIDs）；Rust 的 `AgentProfile` **没有 pathContains / hostBundleIDs 字段**——见 §2.3 与 §6 |
 | 文件活动 | [FileMonitor.swift](../../Sources/AgentIslandCore/FileMonitor.swift) 634 行：后台递归 + O(1) 缓存 + 限深 | [filemon.rs](../../app/src-tauri/src/filemon.rs) 138 行：同步遍历 | Rust 无后台队列、无深度缓存分层；`max_depth 4` + 扩展名白名单（[filemon.rs:105](../../app/src-tauri/src/filemon.rs#L105)） |
 | 会话解析 | [AgentSessionInspector.swift](../../Sources/AgentIslandCore/AgentSessionInspector.swift) 1687 行：5 种方言 + 专有协议 | [session.rs](../../app/src-tauri/src/session.rs) 414 行：4 个 id 专属 `probe_*` | 分派方式不同：Swift 按**档案声明的方言**，Rust 按 **agent id**（[session.rs:35-40](../../app/src-tauri/src/session.rs#L35)）。ADR 0010 要求「新增复用既有格式的 Agent 只改档案」，Rust 今天做不到 |
-| Token 用量 | [TokenUsageMonitor.swift](../../Sources/AgentIslandCore/TokenUsageMonitor.swift) 1294 行 + [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) 512 行 + [ReadonlyDB.swift](../../Sources/AgentIslandCore/ReadonlyDB.swift) 137 行：SQLite + JSONL 双源 | [tokens.rs](../../app/src-tauri/src/tokens.rs) 318 行：只 JSONL | Rust **完全不读 SQLite**（`grep -rn sqlite` 只命中 filemon 的扩展名白名单）；所有 `sessionDatabase` 档案（dim/zcode/opencode/mimocode/workbuddy…）在 Rust 侧 token 明细为 0 |
+| Token 用量 | [TokenUsageMonitor.swift](../../Sources/AgentIslandCore/TokenUsageMonitor.swift) 1295 行 + [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) 512 行 + [ReadonlyDB.swift](../../Sources/AgentIslandCore/ReadonlyDB.swift) 159 行：SQLite + JSONL 双源 | [tokens.rs](../../app/src-tauri/src/tokens.rs) 819 行 + [sqlite.rs](../../app/src-tauri/src/sqlite.rs) 113 行：JSONL + **两类 SQLite 方言** | ⚠️ **v0.0.168 起 Rust 也读 SQLite**：OpenCode 的 `message.data` 与 DimAgent 的 `usage_ledger`，单趟出 24h/累计 + 按模型拆分，净口径逐条照搬（cache.read 不计、dim 的 promptTokens 扣缓存命中并下限 0）。**仍缺**：① `statusIndex` 不含 token（设计如此）② Rust 侧没有 workbuddy/workbuddy-ai 档案，那两家的 JSONL 用量读不到 ③ Swift 的 `StructuredTokenUsageIndex`（70 天折入保留窗口，ADR 0007）未迁，Rust 仍是简单扫描 |
 | Token 估价 | [TokenCostEstimator.swift](../../Sources/AgentIslandCore/TokenCostEstimator.swift) 113 行：37 条官方费率 + 3:1 混合加权；估不出来返回 nil | [cost.rs](../../app/src-tauri/src/cost.rs)：同表、同顺序、同算法、同边界（估不出来就不报） | ✅ **已对齐（v0.0.166）**：Rust 原 `price_lookup` 的 5 档粗分档已删。`cost::tests::swift_table_parity` 在 Rust 测试里**直接解析 Swift 源表**逐值逐序比对，改一个数就红（已双向验证）。成本是估的还是记录的由 `cost_estimated` 显式标出 |
 | 本地 HTTP 入口 | [LocalEventHTTP.swift](../../Sources/AgentIslandCore/LocalEventHTTP.swift) 179 行 + `Sources/AgentIsland/LocalEventServer.swift` | [webhook.rs](../../app/src-tauri/src/webhook.rs) 152 行 | 端口/路由一致（41999，`/notify` `/event` `/session`）；**Token 落盘位置不同**：Swift 与引擎同进程管理，Rust 写 `config_dir()/report.token`（[webhook.rs:16-18](../../app/src-tauri/src/webhook.rs#L16)）。ADR 0009 口径需复核 |
 
@@ -252,9 +256,10 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 ## 7. 核实边界
 
 **已逐字核实**（每条结论都有 `file:line`）：两边档案 id 与路径、五态枚举、判定公式、
-settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单与行数、`AgentProfile` 字段集、
-`AgentObservability` 五类结论与依赖字段、费率表（`cost.rs` 与 Swift 源表由测试逐值锁住）、
-`normalized()` 范围差异。
+settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单与行数、`AgentProfile` 字段集
+（含 v0.0.168 的 `session_database`）、`AgentObservability` 五类结论与依赖字段、
+费率表（`cost.rs` 与 Swift 源表由测试逐值锁住）、两类 SQLite 方言的净 token 口径与
+`role` 过滤（`tokens.rs` 用例逐条对照 Swift 的 SQL）、`normalized()` 范围差异。
 
 **未核实 / 需人工确认**：
 
@@ -265,7 +270,10 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
    尚未逐行比对。
 4. Swift 与 Rust 测试的**内容覆盖对照**未做。v0.0.159 增补五态回放与三方言合成 fixture 后，可执行测试数已变化；以 `cargo test --locked` 输出为准。
 5. `report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对（ADR 0009 相关，需单独看）。
-6. §2.3 表中「token 明细是否需要」一行只对 11 个共有档案核对；14 个 Swift 独有档案的
+6. §2.3 表中「token 明细是否需要」一行只对 13 个共有档案核对；12 个 Swift 独有档案的
    `tokenRoots` 现状未逐一列（不影响「两边都有」的判定）。
+7. **Rust 侧 SQLite 读取只在合成夹具上验过**：`tokens.rs` / `sqlite.rs` 的用例现造库、现插行，
+   **未在本机真实的 `opencode.db` / `dimcode.sqlite` 上对拍过**（本机这两个库是否存在、
+   行数与 Swift 侧读数是否逐项相同，尚未取数）。
 
 **本表不含**：性能基准、UI 视觉对照、`app/` 的构建状态（已有 ADR 0010 M1/M2 记录）。

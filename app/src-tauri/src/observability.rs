@@ -193,6 +193,7 @@ mod tests {
             cpu_floor: None,
             session_dirs: vec![path.to_string_lossy().into_owned()],
             token_roots: vec![],
+            session_database: None,
             category: "assistant".into(),
         };
         assert!(has_unreadable_source(&profile));

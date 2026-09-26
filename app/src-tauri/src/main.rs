@@ -13,6 +13,7 @@ mod provider;
 mod registry;
 mod session;
 mod settings;
+mod sqlite;
 mod tokens;
 mod webhook;
 

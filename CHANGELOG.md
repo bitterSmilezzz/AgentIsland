@@ -4,6 +4,51 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.168] - 2026-09-27
+
+### 把 token 明细的 SQLite 源接进 Rust：补上只读库层与两类方言
+
+按 ADR 0010 的顺序，M3 的 token 明细组继续。此前 Rust **完全不读 SQLite**——只解析
+JSONL，于是所有把用量落在自己库里的 Agent（OpenCode、DimAgent、MiMo Code…）在 Rust 侧
+token 明细恒为 0，而 Swift 读得到。这一轮把这条链路打通。
+
+**新增 `sqlite.rs`（只读层）**，与 Swift `ReadonlyDB` 同口径：`READ_ONLY` 打开、
+`busy_timeout` 1000ms（与 Swift `ReadonlyDB.busyTimeoutMs` **是同一个数**）、永不写、
+永不 `immutable=1`。两处**有意差异**写在文件头：不缓存连接（Swift 缓存是因为一拍里
+多个探测器反复查同一个库，Rust 每档案每拍只查一次，不值一个 inode 失效面）、
+失败原因给诊断文本而不是数字返回码。
+
+**两类方言按形状路由**（ADR 0004：查询认表形、不认产品名）：
+
+- **OpenCode**（含同表 fork）：`message.data` 的 JSON，净 token = input + output + reasoning
+  （**cache.read 不计**），只算 `role='assistant'`。
+- **DimAgent**：`usage_ledger`，净 token = (promptTokens − cacheReadTokens，**下限 0**)
+  + completionTokens——`promptTokens` 含缓存命中部分，直接相加会把同一批 token 计两遍。
+
+两者都单趟出「24h + 累计」并按模型拆分；`statusIndex` 不含 token（设计如此，不是缺数据）。
+
+**成本来源分开了**：上一版靠「非零即估价」这条等价关系（当时 Rust 只有 JSONL 一种来源），
+SQLite 一进来它就不成立。现在逐来源记账——JSONL 的成本是 `cost::estimate_cost` 估的、
+标 `cost_estimated`；SQLite 的成本是库里的**记录值**，不标。界面因此只在估价上带 `~`。
+
+**档案 12 → 14**：补进 `dim` 与 `mimocode`。两者都带 SQLite 明细库，补它们是为了让
+`DimTasks` / `OpenCode` 两条方言有**真实载体**，而不是先写方言再等档案。同时给
+`AgentProfile` 加 `session_database`（路径 + 方言），与 Swift 的 `sessionDatabase` 同形：
+**库路径只在档案里声明一次**（ADR 0004）。Swift 独有 id 14 → 12。
+
+**测试 Rust 74 → 86**（+12：`sqlite.rs` 3 条、`tokens.rs` 8 条、registry 1 条）。值得点名的
+三条：只读连接**真的去写一次**必须被挡回；一列里出现 REAL 时 `SUM` 整体变浮点、不许让
+整份统计静默消失（Swift 侧「经 Double 中转」防的是同一件事）；JSONL 与 SQLite 两种成本
+来源在同一个 `TokenReport` 里必须分得开。写测试时我自己的两条期望先红了
+（`parse_iso_ms` 不解析小数秒、`time_created=5000` 其实落在 1970 年），按实现的实际口径
+改正——是测试写错，不是实现错。
+
+**没做**：① 只在合成夹具上验过，**未与真实 `opencode.db` / `dimcode.sqlite` 对拍**；
+② Rust 仍无 workbuddy/workbuddy-ai 档案，那两家读不到；③ `StructuredTokenUsageIndex`
+（70 天折入保留窗口，ADR 0007）未迁，Rust 仍是简单扫描；④ `dim`/`mimocode` 只接了**用量**，
+会话状态与动作解析（`session.rs` 只有 claude/codex/cline/zcode 四个 probe）仍未对齐；
+⑤ 两个新档案的 glyph 码位未在真机目视核对。Swift 侧零改动。
+
 ## [0.0.167] - 2026-09-27
 
 ### 钉死本地状态的存法（ADR 0011），并修掉两处会静默丢数据 / 误判的口径缺口
