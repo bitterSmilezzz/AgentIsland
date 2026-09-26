@@ -1202,9 +1202,10 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             AppLog.warn("TokenUsage: open failed \(dbPath)")
             return nil
         }
-        // 降低瞬态 BUSY：只读连接遇到写锁立即返回 BUSY，
-        // 等待最多 1s 再失败，避免偶发把整次查询打成失败
-        sqlite3_busy_timeout(handle, 1000)
+        // 降低瞬态 BUSY：只读连接遇到写锁会立即返回 BUSY，等一会儿再失败，
+        // 避免偶发把整次查询打成失败。秒数取 ReadonlyDB 那一处（全仓唯一），
+        // 否则同一类争用在「token 统计」与「会话探测」上会给出两种结论。
+        sqlite3_busy_timeout(handle, ReadonlyDB.busyTimeoutMs)
         // 代际校验（R34/F9）：打开**期间**发生 stop() 时不得写回缓存——closeConnectionsAsync
         // 已经跑过，写回来就无人再关；一次性连接用完即关。
         // 边界如实说明：整次查询完全发生在 stop() 之后的（代际前后一致）仍会写回缓存，

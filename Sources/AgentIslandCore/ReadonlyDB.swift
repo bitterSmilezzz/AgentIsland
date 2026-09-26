@@ -23,6 +23,19 @@ enum ReadonlyDB {
     /// C 的 `SQLITE_TRANSIENT` 是 `((sqlite3_destructor_type)-1)` 强转宏，不导入 Swift，故自建。
     static let transientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+    /// 只读连接的**等锁上限（毫秒）**，全仓唯一的这个数——`TokenUsageMonitor` 的只读层
+    /// 也读它，不许各留一份。
+    ///
+    /// 为什么必须有：官方 WAL 文档列出只读方仍会吃到 `SQLITE_BUSY` 的三种情形——
+    /// ① 对方以 exclusive locking mode 打开（文档点名 Chrome/Firefox 就是这样，
+    /// Electron 系 Agent 完全可能同形）；② 最后一个连接关闭时清理 WAL/-shm 的那一瞬；
+    /// ③ 上次崩溃后第一个连接做恢复期间。**不设 busy handler 时 `SQLITE_BUSY` 立刻返回**，
+    /// 于是一次瞬态争用会被下游记成「这个源读不到」——把「没读到」的口径用在了瞬态上，
+    /// 而这正是本仓最在意的那类误报。
+    ///
+    /// 取 1000ms 而不是更长：这条路径跑在采样拍的主线程上，等太久会把那一拍堵住。
+    static let busyTimeoutMs: Int32 = 1000
+
     private static let lock = NSLock()
     private static var connections: [String: OpaquePointer] = [:]
     /// 连接打开时文件的 (设备号, inode)：外部替换/重挂载后据此失效缓存连接
@@ -52,17 +65,30 @@ enum ReadonlyDB {
     /// 缓存 open 的价值只在每拍都读同一库的热路径上成立；流水页 2s 刷新一次，
     /// 一条 open（实测 ~50–150µs）远比让主线程等锁便宜。
     static func withDedicatedConnection<T>(_ path: String, _ body: (OpaquePointer) -> T) -> T? {
-        var db: OpaquePointer?
         // READONLY 不会创建缺失的库文件；打不开（含缺失/权限）一律返回 nil
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let db else {
-            if let db { sqlite3_close(db) }   // open 失败仍可能已分配句柄（实测 ~1.5KB/次）
-            return nil
-        }
+        guard let db = openReadonly(path).handle else { return nil }
         // close_v2：body 若漏 finalize 语句，close 会返回 SQLITE_BUSY 而不是真的关掉——
         // 缓存路径上有界无所谓，专用连接每次调用都新建一条，漏一次就漏一个 fd
         defer { sqlite3_close_v2(db) }
         return body(db)
+    }
+
+    /// **只读打开的唯一出口**：`open_v2` + `busy_timeout` 都在这里设。
+    /// 存在的理由就是「同一口径只有一处」：此前两条打开路径各写一遍 open，
+    /// `busy_timeout` 只在别处（`TokenUsageMonitor`）设过，于是同一台机器上
+    /// 「会话探测」与「token 统计」对同一类锁争用给出两种结论。
+    /// 失败时返回 nil 并带上 rc（调用方要用它区分 missing 与 openFailed）；
+    /// open 失败仍可能已分配 handle（rc=14 实测约 1.5KB/次），必须关掉。
+    private static func openReadonly(_ path: String) -> (handle: OpaquePointer?, rc: Int32) {
+        var db: OpaquePointer?
+        let rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
+        guard rc == SQLITE_OK, let db else {
+            if let db { sqlite3_close(db) }
+            return (nil, rc)
+        }
+        // 瞬态 BUSY 要等，不要当场判成「读不到」——理由见 busyTimeoutMs
+        sqlite3_busy_timeout(db, busyTimeoutMs)
+        return (db, rc)
     }
 
     /// 「打不开」的原因：只返回 nil 时调用方无法区分「库里确实没数据」与
@@ -113,12 +139,8 @@ enum ReadonlyDB {
             return nil   // 文件不存在，免一次注定失败的 open
         }
 
-        var db: OpaquePointer?
-        let rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
-        guard rc == SQLITE_OK else {
-            // open 失败仍会分配 handle（rc=14 等场景 handle 非 NULL，实测约 1.5KB/次），
-            // 必须关闭——0.0.17 修过的泄漏类契约在此继续成立
-            if let db { sqlite3_close(db) }
+        let (opened, rc) = openReadonly(path)
+        guard let db = opened else {
             onFailure(.openFailed(code: rc))
             return nil
         }

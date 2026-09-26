@@ -844,6 +844,83 @@ enum TokenUsageTests {
             try expectEqual(missingFailure, .missing, "缺失库应单独成类（会话探测据此不误报故障）")
         }
 
+        TestKit.test("ReadonlyDB 的只读连接会等锁，不把瞬态争用判成读不到") {
+            // 由来：ReadonlyDB 两条打开路径此前都没设 busy_timeout，而 TokenUsageMonitor
+            // 的只读层设了 1000ms——同一台机器上「会话探测」与「token 统计」对同一类锁争用
+            // 给出两种结论：前者立刻失败，并被下游记成「这个源读不到」。
+            // 官方 WAL 文档列出的三种只读方 BUSY 情形里，第一种（对方以 exclusive locking
+            // mode 打开，文档点名 Chrome/Firefox）在 Electron 系 Agent 上完全可能同形。
+            //
+            // 夹具刻意用**回滚日志模式**（fixture 默认即 delete）：WAL 下读写不互斥，
+            // 只有回滚模式才会让另一个连接的 EXCLUSIVE 写锁把读挡在外面。
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let dbPath = dir.appendingPathComponent("busy.db").path
+            defer {
+                ReadonlyDB.invalidate(dbPath)   // 别把指向已删文件的缓存句柄留在全局缓存里
+                try? FileManager.default.removeItem(at: dir)
+            }
+            try TokenFixture.exec(dbPath, ["CREATE TABLE t (v TEXT)", "INSERT INTO t VALUES ('ok')"])
+
+            // 先热一次缓存：生产里这条路径正是复用缓存连接，这样「等」只发生在语句上，
+            // 不会掺进「open 是否也要拿锁」这个与断言无关的问题
+            let warm: String? = ReadonlyDB.withConnection(dbPath) { _ in "warm" }
+            try expectEqual(warm, "warm", "前置不成立：还没加锁就读不到，后面的断言失去意义")
+
+            // 写连接**只在后台线程里创建与使用**，绝不跨线程共享 SQLite 句柄
+            let locked = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                var writer: OpaquePointer?
+                guard sqlite3_open_v2(dbPath, &writer,
+                                      SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
+                      let writer else {
+                    locked.signal(); finished.signal(); return
+                }
+                defer { sqlite3_close(writer) }
+                _ = sqlite3_exec(writer, "BEGIN EXCLUSIVE", nil, nil, nil)
+                locked.signal()
+                release.wait()
+                _ = sqlite3_exec(writer, "COMMIT", nil, nil, nil)
+                finished.signal()
+            }
+            try expectEqual(locked.wait(timeout: .now() + 5), .success, "后台未能持有写锁")
+
+            // 反向对照：**不带 busy handler** 的直连此刻必须立刻 BUSY。
+            // 没有这一条，用例可能在「锁根本没生效」时变成空转通过。
+            var probe: OpaquePointer?
+            guard sqlite3_open_v2(dbPath, &probe, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let probe else {
+                throw TestError(message: "对照连接打不开")
+            }
+            var sawBusy = false
+            var probeStmt: OpaquePointer?
+            let probeRC = sqlite3_prepare_v2(probe, "SELECT v FROM t", -1, &probeStmt, nil)
+            if probeRC == SQLITE_BUSY {
+                sawBusy = true
+            } else if probeRC == SQLITE_OK, let probeStmt {
+                if sqlite3_step(probeStmt) == SQLITE_BUSY { sawBusy = true }
+                sqlite3_finalize(probeStmt)
+            }
+            sqlite3_close_v2(probe)
+            try expectTrue(sawBusy, "对照不成立：EXCLUSIVE 锁没挡住读，这条用例会变成空转")
+
+            // 200ms 后放锁：读取必须在 1000ms 窗口内等到锁释放并把行读出来
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { release.signal() }
+            var value: String?
+            _ = ReadonlyDB.withConnection(dbPath) { db in
+                var s: OpaquePointer?
+                if sqlite3_prepare_v2(db, "SELECT v FROM t", -1, &s, nil) == SQLITE_OK, let s {
+                    if sqlite3_step(s) == SQLITE_ROW, let c = sqlite3_column_text(s, 0) {
+                        value = String(cString: c)
+                    }
+                    sqlite3_finalize(s)
+                }
+            }
+            _ = finished.wait(timeout: .now() + 5)
+            try expectEqual(value, "ok", "等到锁释放就该读到行；nil 说明 BUSY 被当场当成了「读不到」")
+        }
+
         // MARK: - R38/P2·P3：单趟汇总与戳备忘录
 
         TestKit.test("Token汇总: dim 的 24h 与累计合并成单趟后必须逐列等于原两趟") {

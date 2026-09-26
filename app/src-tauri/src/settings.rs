@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// 持久化设置（macOS 端 UserDefaults 的跨平台对应物：
 /// Windows %APPDATA%\AgentIsland\settings.json，macOS ~/Library/Application Support/…）
@@ -57,11 +58,27 @@ impl Settings {
     }
 
     pub fn save(&self) {
-        let dir = config_dir();
-        let _ = fs::create_dir_all(&dir);
-        if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(dir.join("settings.json"), json);
-        }
+        self.save_to(&config_dir());
+    }
+
+    /// 落盘到指定目录（`save()` 传真实配置目录，测试传临时目录）。
+    ///
+    /// **必须原子替换**：此前这里是裸 `fs::write`，写一半崩掉就留下截断的 JSON，
+    /// 下次启动 `load()` 解析失败、静默回落出厂值——用户的设置整份消失且没有任何提示，
+    /// 比解析失败更难发现。校验用「能被自己解析回来」，与 `load()` 同一套形状；
+    /// 校验没过则原文件逐字节不动（由 `atomicfile` 保证）。
+    pub(crate) fn save_to(&self, dir: &Path) {
+        let _ = fs::create_dir_all(dir);
+        let path = dir.join("settings.json");
+        let Ok(json) = serde_json::to_string_pretty(self) else {
+            return;
+        };
+        let _ = crate::atomicfile::atomic_replace_validated(&path, json.as_bytes(), |staged| {
+            let text = fs::read_to_string(staged)?;
+            serde_json::from_str::<Settings>(&text)
+                .map(|_| ())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        });
     }
 
     /// 脏值钳制（与 macOS EngineConfig.normalized() 同规则）
@@ -179,5 +196,50 @@ mod tests {
         let normalized = old.normalized();
         assert_eq!(normalized.disabled_agents, vec!["roo-code", "codex"]);
         assert_eq!(normalized.normalized().disabled_agents, normalized.disabled_agents);
+    }
+
+    /// 落盘必须原子：写出来的东西要能被 `load()` 的形状解析回来，且不留暂存文件。
+    /// 用临时目录而不是真实配置目录——测试不许碰用户的真设置。
+    /// 反过来那条（写坏时原文件不动）由 `atomicfile` 的用例直接覆盖。
+    #[test]
+    fn save_to_replaces_settings_atomically_and_leaves_no_staging_file() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("agentisland-settings-{}-{stamp}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let mut s = Settings::default();
+        s.appearance = "dark".into();
+        s.disabled_agents = vec!["codex".into()];
+        s.save_to(&dir);
+
+        let entries: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![std::ffi::OsString::from("settings.json")],
+            "暂存文件泄漏: {entries:?}"
+        );
+        let text = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let back: Settings = serde_json::from_str(&text).expect("写出来的必须能解析回来");
+        assert_eq!(back.appearance, "dark");
+        assert_eq!(back.disabled_agents, vec!["codex"]);
+
+        // 覆盖写：第二次落盘同样不留暂存文件，且内容是最新那份
+        s.appearance = "light".into();
+        s.save_to(&dir);
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "覆盖写之后目录里只该有一个文件"
+        );
+        let again: Settings =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(again.appearance, "light");
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

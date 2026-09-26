@@ -1,16 +1,15 @@
 //! Codex profile groundwork. This module never reads or writes the user's
 //! installed configuration on its own; Phase 2 supplies a chosen destination.
 
+use crate::atomicfile::atomic_replace_validated;
 use serde::{Serialize, Serializer};
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use toml_edit::{value, DocumentMut};
 
 const REDACTED: &str = "••••";
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// An outbound secret. There is deliberately no raw-string accessor or
 /// `Deserialize`: only the provider implementation may hold plaintext input.
@@ -58,86 +57,6 @@ pub(crate) struct ProviderProfilePreview {
     pub id: String,
     pub name: String,
     pub credential: MaskedSecret,
-}
-
-struct StagedFile(PathBuf);
-
-impl Drop for StagedFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
-/// Replace a provider configuration file only after its staged bytes pass the
-/// caller's parser. The target must already have a parent directory. A failed
-/// write or validation leaves the old file byte-for-byte unchanged. The staged
-/// file lives beside the target, so rename is on the same filesystem.
-pub(crate) fn atomic_replace_validated<F>(
-    target: &Path,
-    bytes: &[u8],
-    validate: F,
-) -> io::Result<()>
-where
-    F: FnOnce(&Path) -> io::Result<()>,
-{
-    let parent = target
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "provider target needs a parent",
-            )
-        })?;
-    let name = target.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "provider target needs a filename",
-        )
-    })?;
-    if fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink() || !m.is_file()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "provider target must be a regular file",
-        ));
-    }
-
-    let mut staged = None;
-    for _ in 0..32 {
-        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let path = parent.join(format!(
-            ".{}.agentisland-{}-{serial}.tmp",
-            name.to_string_lossy(),
-            std::process::id()
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&path) {
-            Ok(file) => {
-                staged = Some((StagedFile(path), file));
-                break;
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    let (guard, mut file): (StagedFile, File) = staged.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "provider staging name exhausted",
-        )
-    })?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    validate(&guard.0)?;
-    fs::rename(&guard.0, target)?;
-    Ok(())
 }
 
 fn invalid_toml() -> io::Error {
@@ -210,7 +129,11 @@ pub(crate) fn update_codex_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// 只服务测试沙箱的取名（生产侧那份在 `atomicfile.rs` 里）
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
     struct Sandbox(PathBuf);
 
@@ -266,77 +189,6 @@ mod tests {
                 "outbound profile exposed its credential"
             );
             assert!(output.contains(REDACTED));
-        }
-    }
-
-    #[test]
-    fn successful_replacement_validates_staged_bytes_then_replaces_atomically() {
-        let sandbox = Sandbox::new();
-        let target = sandbox.0.join("fixture.config.toml");
-        fs::write(&target, "model = 'before'\n").unwrap();
-        atomic_replace_validated(&target, b"model = 'after'\n", |stage| {
-            assert_eq!(fs::read_to_string(&target)?, "model = 'before'\n");
-            assert_eq!(fs::read_to_string(stage)?, "model = 'after'\n");
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(fs::read_to_string(&target).unwrap(), "model = 'after'\n");
-        only_target_remains(&sandbox.0, "fixture.config.toml");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-    }
-
-    #[test]
-    fn invalid_staged_config_preserves_original_and_cleans_up() {
-        let sandbox = Sandbox::new();
-        let target = sandbox.0.join("fixture.config.toml");
-        fs::write(&target, "model = 'before'\n").unwrap();
-        let result = atomic_replace_validated(&target, b"not valid TOML = [", |stage| {
-            assert_eq!(fs::read_to_string(stage)?, "not valid TOML = [");
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "synthetic parse rejection",
-            ))
-        });
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "model = 'before'\n");
-        only_target_remains(&sandbox.0, "fixture.config.toml");
-    }
-
-    #[test]
-    fn invalid_new_config_does_not_create_the_target() {
-        let sandbox = Sandbox::new();
-        let target = sandbox.0.join("fixture.config.toml");
-        let result = atomic_replace_validated(&target, b"broken", |_| {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "synthetic parse rejection",
-            ))
-        });
-        assert!(result.is_err());
-        assert!(!target.exists());
-        assert_eq!(fs::read_dir(&sandbox.0).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn symlink_target_is_rejected_without_touching_its_destination() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-            let sandbox = Sandbox::new();
-            let destination = sandbox.0.join("real.config.toml");
-            fs::write(&destination, "keep").unwrap();
-            let link = sandbox.0.join("fixture.config.toml");
-            symlink(&destination, &link).unwrap();
-            let result = atomic_replace_validated(&link, b"replace", |_| Ok(()));
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
-            assert_eq!(fs::read_to_string(destination).unwrap(), "keep");
         }
     }
 

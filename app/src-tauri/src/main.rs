@@ -1,6 +1,7 @@
 // 始终隐藏控制台：日志统一走 %TEMP%gentisland-tauri.log（log_from_ui + panic hook）
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod atomicfile;
 mod cost;
 mod engine;
 mod filemon;

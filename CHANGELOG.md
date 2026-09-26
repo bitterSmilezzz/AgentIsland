@@ -4,6 +4,45 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.167] - 2026-09-27
+
+### 钉死本地状态的存法（ADR 0011），并修掉两处会静默丢数据 / 误判的口径缺口
+
+起因是一次「我们要不要用 SQLite、有没有更能替代它的开源项目」的询问。调查分两步：
+先**把两个答案相反的场合分开**——读第三方 Agent 的库（`dimcode.sqlite` / `tasks-index.sqlite` /
+`opencode.db` / `mimocode.db` / `workbuddy.db` ×2）**格式由别人定，只能继续用 SQLite**；
+写我们自己的状态（设置 / 档位 / 待办）**可以根本不用数据库**。再把「什么时候该翻案」写成
+可判定判据。结论落成 [ADR 0011](docs/adr/0011-local-state-storage-and-migration-triggers.md)：
+**本地状态继续原子写 JSON，不引入嵌入式数据库**；同时记下迁移时必须保住的口径与被否的选型。
+
+调查中查出两处**已经成立**的缺口，都属于同一层，一并修掉：
+
+**① `settings.json` 是裸 `fs::write`，会静默丢设置。** 写一半崩掉就留下截断的 JSON，
+下次启动 `load()` 解析失败、**回落出厂值**——用户设置整份消失且没有任何提示，比解析失败
+更难发现。现在档位配置与设置落盘共用抽出来的 `atomicfile.rs`：写同目录暂存文件 →
+校验暂存内容能被自己解析回来 → `rename` 覆盖；校验没过则原文件逐字节不动、暂存文件必删。
+该机制原住在 `provider.rs`，两个消费方共用一个实现正是「一个口径一处实现」的要求。
+
+**② `ReadonlyDB` 缺 `busy_timeout`，把瞬态争用判成「读不到」。** `TokenUsageMonitor` 设了
+1000ms，而会话探测与流水共用的 `ReadonlyDB` 一个都没设——同一类锁争用在两个出口给出两种
+结论。官方 WAL 文档列出只读方仍会撞上 `SQLITE_BUSY` 的三种情形，其中一条直接点名
+Chrome/Firefox 那类 exclusive locking mode（Electron 系 Agent 可能同形）。现在秒数收成
+`ReadonlyDB.busyTimeoutMs` 一处、两条打开路径共用，并补了一条**真建库、真持锁**的行为用例；
+反向验证过：把修复摘掉，该用例立刻变红（`期望 [Optional("ok")] 实际 [nil]`）。
+
+测试：Rust **73 → 74**，Swift **549 → 550**。ADR 里同时写明了迁移时必须保住的不变量
+（没读到 ≠ 0、损坏必须降级、写入必须原子、一个口径一处实现、只读那侧永不写也永不用
+`immutable=1`、跨进程），以及被否选型的一手依据：Turso 的 COMPAT.md 明写**不支持 SQLite 与
+Turso 混用多进程**（我们的读场景正是混用）、fjall 的 README 明写一个库不可被多进程并行打开、
+sled 自己写着「reliability 优先就用 SQLite」且格式 1.0 前会变、SurrealDB 是 BSL 1.1、
+Realm/Atlas Device SDK 已被 MongoDB 弃用、DuckDB 是 OLAP 与点查场景不匹配。redb 作为
+纯 Rust 备选第二位保留在案（未被否）。
+
+没做：本轮**不动任何运行时存储**——JSON 继续用，SQLite 读侧导入仍是后续项；ADR 里那三个
+触发条件（单文件 >1MB 且整份重写 / ≥10⁴ 行要按非主键查 / 真出现两个进程同时写）
+一个都还没到。也**没有预先抽象存储接口**（YAGNI）。Swift 侧只动了 `ReadonlyDB` 与
+`TokenUsageMonitor` 各一处，属于冻结令允许的缺陷修复。
+
 ## [0.0.166] - 2026-09-27
 
 ### 迁入第一个缺失模块：Token 估价两端口径对齐，Rust 不再凭空造成本
