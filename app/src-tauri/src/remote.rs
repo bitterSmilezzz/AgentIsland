@@ -366,6 +366,16 @@ pub enum EventKind {
 }
 
 impl EventKind {
+    /// 从事件类型字符串解析（引擎的事件、界面传来的参数都是字符串）
+    pub fn parse(raw: &str) -> Option<EventKind> {
+        match raw {
+            "completed" => Some(EventKind::Completed),
+            "attention" => Some(EventKind::Attention),
+            "costSpike" => Some(EventKind::CostSpike),
+            _ => None,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             EventKind::Completed => "completed",

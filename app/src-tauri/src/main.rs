@@ -13,6 +13,7 @@ mod procmon;
 mod provider;
 mod registry;
 mod remote;
+mod render;
 mod resilience;
 mod session;
 mod settings;
@@ -254,6 +255,36 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
 /// 凭据只读钥匙串条目名，值永远不经过这里（ADR 0009）。
 /// 钥匙串读取本轮未接：ad-hoc 签名下每次出包代码标识都变，取「存在性」也可能弹窗，
 /// 所以先如实报 `false`，而不是假装查过。
+/// 「发送预览」：**真发之前**让界面看见哪些字节会离开这台机器。
+/// 密钥本轮一律传 `None`（Rust 侧还没有钥匙串），预览里 `{key}` 显示成掩码，
+/// 而不是假装查到了值。
+#[tauri::command]
+fn remote_preview(
+    state: State<SharedEngine>,
+    args: Option<crate::render::PreviewArgs>,
+) -> crate::render::Preview {
+    let engine = state.lock().unwrap();
+    let settings = &engine.settings;
+    let args = args.unwrap_or_default();
+    let (channel, _) = crate::remote::resolve_kind(Some(settings.remote_kind.as_str()));
+    let empty = crate::remote::ChannelConfig::default();
+    let config = settings
+        .remote_channels
+        .get(channel.as_str())
+        .unwrap_or(&empty);
+    let kind = crate::remote::EventKind::parse(&args.kind)
+        .unwrap_or(crate::remote::EventKind::Attention);
+    let agent_name = if args.agent_name.is_empty() {
+        "AgentIsland"
+    } else {
+        args.agent_name.as_str()
+    };
+    let mut inputs = crate::render::Inputs::new(agent_name, kind, args.seconds);
+    inputs.action_detail = args.action_detail;
+    inputs.message = args.message;
+    crate::render::preview(&inputs, channel, config, None)
+}
+
 #[tauri::command]
 fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
     let engine = state.lock().unwrap();
@@ -428,6 +459,7 @@ fn main() {
             get_settings,
             save_settings,
             remote_status,
+            remote_preview,
             set_dock_edge,
             place_island,
             snap_nearest_edge,

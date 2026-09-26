@@ -83,7 +83,7 @@ Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L
 
 「两边都有」= Rust 侧有同名职责的模块，无论实现深浅；「字段/算法差异」列在最右。
 
-### 3.1 只在 Swift 有（约 19 个，约 5,360 行）
+### 3.1 只在 Swift 有（约 18 个，约 5,270 行）
 
 逐个核实过（`ls Sources/AgentIslandCore/` vs `ls app/src-tauri/src/`，Rust 侧 18 个文件里
 `grep -ri` 这些关键词零命中或仅命中注释）：
@@ -93,7 +93,7 @@ Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L
 | [TokenBudgetTracker.swift](../../Sources/AgentIslandCore/TokenBudgetTracker.swift) | 81 | 每日预算告警；0 = 未设，`> 0` 才启用 |
 | [TokenForecastEvaluator.swift](../../Sources/AgentIslandCore/TokenForecastEvaluator.swift) | 92 | 月末预测——CLI `tokens` 的招牌输出 |
 | [TaskDurationTracker.swift](../../Sources/AgentIslandCore/TaskDurationTracker.swift) | 117 | 单次任务时长记录 |
-| [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) | 387 | 外发调度：策略→渲染→传输→记账（**策略层已迁 v0.0.174，闸门/渲染/传输/记账未迁**） |
+| [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) | 387 | 外发调度：策略→渲染→传输→记账（**策略 v0.0.174、渲染 v0.0.175 已迁；闸门/节流/传输/记账未迁**） |
 | [RemoteTransport.swift](../../Sources/AgentIslandCore/RemoteTransport.swift) | 340 | HTTP + SMTP 通道与「发送预览」 |
 | [SMTPSocket.swift](../../Sources/AgentIslandCore/SMTPSocket.swift) | 174 | Network.framework SMTP 会话 |
 | `RemoteNotification.swift` 的钥匙串部分 | ~90 | `RemoteSecret.write/read/exists/delete`（Security.framework；Rust 侧要选 crate，独立决定） |
@@ -141,7 +141,8 @@ Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（�
 | 五态枚举 | `ActivityLevel` ∈ offline/idle/completed/working/attention（[Models.swift:44-72](../../Sources/AgentIslandCore/Models.swift#L44)） | `ActivityLevel` 同五名（[models.rs:14-40](../../app/src-tauri/src/models.rs#L14)），测试钉住 serde 名（[models.rs:test](../../app/src-tauri/src/models.rs)） | ✅ **必须一致，已一致** |
 | 健康度与卡死判定 | [AgentHealthEvaluator.swift](../../Sources/AgentIslandCore/AgentHealthEvaluator.swift) 144 行 + `ActivityEngine` 里的 `isHung`（三态、资格来自 `observedRunningSince`） | [health.rs](../../app/src-tauri/src/health.rs)：同扣分表、同 85/70/50 分级、同「判不出的维度不许宣布健康」降级规则；`is_hung` 作为快照字段（[models.rs](../../app/src-tauri/src/models.rs)），界面按分数上屏 | ✅ **v0.0.171 起一致**（含文案逐字相同）。两处有意不同：① Swift 的 `HealthGrade.icon` 是五个 SF Symbol 名，网页渲染不了、**刻意不搬**（见 `health.rs` 注释）② Swift 在详情页展示，Rust 在列表行上只在非「健康」时显示分数徽标 |
 | 异常驻留 / 死锁持续守护 | [AgentResilienceGuard.swift](../../Sources/AgentIslandCore/AgentResilienceGuard.swift) 112 行：卡死 180s / 内存 300s 门槛、600s 冷却，`autoAnomaliesAlertEnabled` 控制 | [resilience.rs](../../app/src-tauri/src/resilience.rs)：同三个数、同「进程消失即作废状态」「条件消失即清冷却」两条规则；事件走 `attention`，文案逐字相同 | ✅ **v0.0.172 起一致**。Rust 侧新增设置项 `auto_anomalies_alert`（默认 `true`，与 Swift 默认一致）。差异：Swift 的事件模型带 `duration`/`pid` 两列，Rust 的 `AgentTaskEvent` 没有，时长放在 `detail` 里 |
-| 外发策略与配置校验 | [RemoteNotification.swift](../../Sources/AgentIslandCore/RemoteNotification.swift) 454 行：`RemoteNotifyPolicy`（节流/静默/在场/类型开关）、`RemoteChannelKind` 的三条校验、逐字段容错的解码 | [remote.rs](../../app/src-tauri/src/remote.rs)：同默认值、同区间（15–3600 / 30–3600）、同归一化（坏时刻退化成**不静默**）、同校验文案；容错解码用 `serde_json::Value` 手写，做到「坏一个字段只作废那一个」 | ⚠️ **v0.0.174 起策略层一致**。未迁：① 钥匙串（`RemoteSecret`）② 闸门与节流（`attempt` 的五道闸与 `claimThrottle`）③ 渲染/传输/记账。Rust 侧尚未接 macOS 在场信号层，`away` 今天一律 fail-open 判成「已离开」 |
+| 外发策略与配置校验 | [RemoteNotification.swift](../../Sources/AgentIslandCore/RemoteNotification.swift) 454 行：`RemoteNotifyPolicy`（节流/静默/在场/类型开关）、`RemoteChannelKind` 的三条校验、逐字段容错的解码 | [remote.rs](../../app/src-tauri/src/remote.rs)：同默认值、同区间（15–3600 / 30–3600）、同归一化（坏时刻退化成**不静默**）、同校验文案；容错解码用 `serde_json::Value` 手写，做到「坏一个字段只作废那一个」 | ⚠️ **v0.0.174 起策略层一致**。未迁：① 钥匙串（`RemoteSecret`）② 闸门与节流（`attempt` 的五道闸与 `claimThrottle`）③ 传输与记账。Rust 侧尚未接 macOS 在场信号层，`away` 今天一律 fail-open 判成「已离开」 |
+| 外发渲染与「发送预览」 | [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) 的 `render`/`renderRequest`/`clamp` + [WireText.swift](../../Sources/AgentIslandCore/WireText.swift) + `RenderedRequest.maskedPreview` | [render.rs](../../app/src-tauri/src/render.rs)：同最小内容口径（动作详情只有 `includeActionDetail` 才进正文）、同四类**分开**的转义（头值 ttext 集 / 查询串 unreserved 集 / 表单 `+` / JSON 转义）、同 4096 字节上限（保住首行、标题编码后再截 255）、同掩码规则（`?key=` 与「16+ 位字母数字段」） | ⚠️ **v0.0.175 起渲染一致**，且由 `remote_preview` 命令真消费（Swift 侧是设置页的「发送预览」）。未迁：传输与重试。差异：Rust 侧取不到密钥，预览里 `{key}` 一律显示掩码（Swift 会读真密钥再掩码） |
 | 状态序 | `<` 定义：offline(0)<idle(1)<completed(2)<working(3)<attention(4)（[Models.swift:66-72](../../Sources/AgentIslandCore/Models.swift#L66)） | `derive(Ord)` 声明顺序同 Swift（[models.rs](../../app/src-tauri/src/models.rs)） | ✅ v0.0.158 已纠正；两边均以 attention 为最高优先级 |
 | 中文 label | 离线/待机/已完成/工作中/待确认 :52-58 | 同 :26-32 | ✅ |
 | 双信号判定 | `working = 进程在 && (workingWindow 内有写入 \|\| CPU >= max(cpuFloor, cpuThreshold))`（[ActivityEngine.swift:8-12](../../Sources/AgentIslandCore/ActivityEngine.swift#L8)、:659） | 同一公式（[engine.rs:254-278](../../app/src-tauri/src/engine.rs#L254)） | ✅ 算法一致；但 `workingWindow=60` 在 Rust 是**硬编码字面量**（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)），Swift 来自可钳制的 `EngineConfig.workingWindow` |
