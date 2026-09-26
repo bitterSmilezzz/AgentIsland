@@ -122,7 +122,7 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 | 文件活动 | [FileMonitor.swift](../../Sources/AgentIslandCore/FileMonitor.swift) 634 行：后台递归 + O(1) 缓存 + 限深 | [filemon.rs](../../app/src-tauri/src/filemon.rs) 138 行：同步遍历 | Rust 无后台队列、无深度缓存分层；`max_depth 4` + 扩展名白名单（[filemon.rs:105](../../app/src-tauri/src/filemon.rs#L105)） |
 | 会话解析 | [AgentSessionInspector.swift](../../Sources/AgentIslandCore/AgentSessionInspector.swift) 1687 行：5 种方言 + 专有协议 | [session.rs](../../app/src-tauri/src/session.rs) 414 行：4 个 id 专属 `probe_*` | 分派方式不同：Swift 按**档案声明的方言**，Rust 按 **agent id**（[session.rs:35-40](../../app/src-tauri/src/session.rs#L35)）。ADR 0010 要求「新增复用既有格式的 Agent 只改档案」，Rust 今天做不到 |
 | Token 用量 | [TokenUsageMonitor.swift](../../Sources/AgentIslandCore/TokenUsageMonitor.swift) 1294 行 + [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) 512 行 + [ReadonlyDB.swift](../../Sources/AgentIslandCore/ReadonlyDB.swift) 137 行：SQLite + JSONL 双源 | [tokens.rs](../../app/src-tauri/src/tokens.rs) 318 行：只 JSONL | Rust **完全不读 SQLite**（`grep -rn sqlite` 只命中 filemon 的扩展名白名单）；所有 `sessionDatabase` 档案（dim/zcode/opencode/mimocode/workbuddy…）在 Rust 侧 token 明细为 0 |
-| Token 估价 | [TokenCostEstimator.swift](../../Sources/AgentIslandCore/TokenCostEstimator.swift) 113 行：25 条官方费率 + 3:1 混合加权 | [tokens.rs:302-318](../../app/src-tauri/src/tokens.rs#L302) `price_lookup`：5 档粗分 | **费率表不一致**：Swift 对 claude-3-7-sonnet 是 (3,15)，Rust 对 haiku 给 (1.0,5.0) 而 Swift 是 (0.8,4.0)；Rust 对 `glm` (0.55,2.0) 在 Swift 无对应。两边同日同量会算出不同钱 |
+| Token 估价 | [TokenCostEstimator.swift](../../Sources/AgentIslandCore/TokenCostEstimator.swift) 113 行：37 条官方费率 + 3:1 混合加权；估不出来返回 nil | [cost.rs](../../app/src-tauri/src/cost.rs)：同表、同顺序、同算法、同边界（估不出来就不报） | ✅ **已对齐（v0.0.166）**：Rust 原 `price_lookup` 的 5 档粗分档已删。`cost::tests::swift_table_parity` 在 Rust 测试里**直接解析 Swift 源表**逐值逐序比对，改一个数就红（已双向验证）。成本是估的还是记录的由 `cost_estimated` 显式标出 |
 | 本地 HTTP 入口 | [LocalEventHTTP.swift](../../Sources/AgentIslandCore/LocalEventHTTP.swift) 179 行 + `Sources/AgentIsland/LocalEventServer.swift` | [webhook.rs](../../app/src-tauri/src/webhook.rs) 152 行 | 端口/路由一致（41999，`/notify` `/event` `/session`）；**Token 落盘位置不同**：Swift 与引擎同进程管理，Rust 写 `config_dir()/report.token`（[webhook.rs:16-18](../../app/src-tauri/src/webhook.rs#L16)）。ADR 0009 口径需复核 |
 
 ### 3.3 只在 Rust 有（1 个）
@@ -244,6 +244,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | 项 | Swift | Rust | 一致？ |
 | :--- | :--- | :--- | :--- |
 | Token 净消耗口径 | 不含缓存读取（[TokenUsageMonitor.swift](../../Sources/AgentIslandCore/TokenUsageMonitor.swift) 注释） | `net = input + output + cache_write`（[tokens.rs:236](../../app/src-tauri/src/tokens.rs#L236)） | ✅ 一致 |
+| Token 成本来源 | **记录成本优先**：SQLite 源读库里的 `cost` 列；JSONL 源记 `cost: 0`（[StructuredTokenUsageIndex.swift:444](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift#L444)）。估不出就整块不报 | JSONL 源**不带记录成本**，SQLite 源未迁入；非零成本一律来自 `cost::estimate_cost`，并置 `cost_estimated = true` | ⚠️ 口径一致（都是「没记录就报无」），但 Rust 多一个显式标记位、且今日**只有估价**：Rust 界面按 `~` 显示，Swift 的记录成本不带 `~`。记录成本源迁入后此标记应转为按条判定 |
 | 会话方言枚举 | 5 种：`genericTail`/`antigravityBrain`/`dshProjection`/`clineTasks`/`qoderTranscript`（[Models.swift:100-113](../../Sources/AgentIslandCore/Models.swift#L100)） | **无枚举**，`match profile_id` 4 个 id | ❌ 无 `qoderTranscript`（Swift 有 Qoder 档案，Rust 无 Qoder 档案，暂不构成运行时差异） |
 | 档案字段集 | `bundleIDs` `pathContains` `pathExcludes` `hostBundleIDs` `cpuWorkingThreshold` `tokenAlertFloor` `sessionDirs` `tokenRoots` `emoji` `sessionDialect` `sessionDatabase` `defaultEnabled` `category` `isCustom` | `process_names` `cmdline_hints` `path_excludes` `cpu_floor` `session_dirs` `token_roots` `category` `glyph` `emoji` | ❌ **Rust 缺 `pathContains` `hostBundleIDs` `tokenAlertFloor` `sessionDialect` `sessionDatabase`**；直接后果见 §2.3 的 zcode、Swift 的 Qoder/WorkBuddy 防呆（进程名族规则 + 数据目录区分）在 Rust 无法表达 |
 | Token 上报口 | `/session` 自报（带令牌、TTL 内）→ `provenance` | `/session` 自报「登记但不参与显示」（[webhook.rs:96](../../app/src-tauri/src/webhook.rs#L96)） | ❌ 自报在 Rust 端无任何可见效果 |
@@ -252,7 +253,8 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 
 **已逐字核实**（每条结论都有 `file:line`）：两边档案 id 与路径、五态枚举、判定公式、
 settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单与行数、`AgentProfile` 字段集、
-`AgentObservability` 五类结论与依赖字段、`price_lookup` 费率表、`normalized()` 范围差异。
+`AgentObservability` 五类结论与依赖字段、费率表（`cost.rs` 与 Swift 源表由测试逐值锁住）、
+`normalized()` 范围差异。
 
 **未核实 / 需人工确认**：
 

@@ -4,6 +4,46 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.166] - 2026-09-27
+
+### 迁入第一个缺失模块：Token 估价两端口径对齐，Rust 不再凭空造成本
+
+按 ADR 0010 的依赖顺序（读数地基 → **token 明细** → 判定增强 → 外发 → 导出与自检），
+M3 的下一组是 token 明细。这一组里的第一件事不是扩能力，而是先修掉 23 号对照表记着的
+那处**明确违规**：两边都有成本概念，费率表与算法却不同，同日同量会算出两个钱数。
+ADR 0010 允许「只在一边有」，不允许「**两边都有但算法不同**」。
+
+**迁入 `TokenCostEstimator` → `app/src-tauri/src/cost.rs`**：37 条官方费率（与 Swift 逐条
+同值、同顺序）、3:1 混合加权、`resolve` 同语义（记录成本优先，估不出来就不报）。文档此前
+把这张表写成「25 条」，一并改正为 37 条。
+
+**删掉 Rust 的第二份算法**：`tokens.rs` 原本有一份 5 档粗分的 `price_lookup`，按分量分别
+计价，并给没见过的模型兜底 `(1.25, 10.0)`——等于给任何模型编一个价钱，而界面上分不出它是
+记录值还是编的。现在改为从 `cost::estimate_cost` 取价，**估不出来就是 0（不报钱数），用量照记**；
+`glm` 这类 Swift 表里根本没有的模型不再被编价。这正是本仓「没读到 ≠ 编一个数」那条口径。
+
+**估算必须显式标记**：`TokenUsage` / `ModelUsage` 增 `cost_estimated` 并一路透到界面。
+Rust 侧今天唯一的成本来源就是估价（JSONL 方言不带记录成本，SQLite 源尚未迁入），
+所以非零成本一律按 `~$x.xx` 显示；分析页的「预估月末费用」在无成本可报时显示 `—`，
+不再把「没读到」印成 `$0.00`。
+
+**跨语言漂移哨兵**：`cost::tests::swift_table_parity` 在 Rust 测试里**直接解析
+`Sources/AgentIslandCore/TokenCostEstimator.swift`** 并逐值逐序比对。费率表分叉过一次，
+靠人肉比对不会再发生。**已双向验证**：把 Swift 侧 haiku 的价从 0.8 改成 0.9，该测试立即
+变红并指出是哪一条；还原后通过。
+
+测试：Rust **62 → 73 条**（新增 11 条：`cost.rs` 8 条、`tokens.rs` 3 条），Swift 549 条不变。
+**本轮 Swift 侧零改动**——迁移方向是 Swift 冻结、能力落 Rust，所以只加 Rust。
+
+文档同步：[23 号对照表](../workbench/23-swift-rust-parity-matrix.md)的「Token 估价」行改为已对齐、
+并新增「Token 成本来源」一行写明两端口径；ADR 0010 的 M3 状态记为「已迁 1 / 剩 11」，
+其「548 条 Swift 测试」按当前实数改为 549；04-plan 的当前状态同步。
+
+没做：**SQLite token 源仍未迁入**，所以 `dim`/`zcode`/`opencode`/`mimocode`/`workbuddy`
+在 Rust 侧的 token 明细依然是 0；`cost_estimated` 的按条判定要等记录成本源落地；
+`TokenUsageMonitor` / `StructuredTokenUsageIndex` / `ReadonlyDB` 仍在 M3 待迁清单里。
+侧边栏仍被 M3 门拦住。
+
 ## [0.0.165] - 2026-09-27
 
 ### 修掉脱敏门禁的跨进程假绿：历史扫描不再复用上一轮的对象流

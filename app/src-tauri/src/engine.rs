@@ -91,6 +91,8 @@ impl ActivityEngine {
         let mut total_all = 0i64;
         let mut cost24 = 0f64;
         let mut cost_all = 0f64;
+        // 汇总位也要带估算标记：只要有一个档案的成本是估的，汇总就不是记录值
+        let mut cost_estimated = false;
 
         for profile in self.enabled_profiles() {
             let hits = self.procmon.match_profile(&profile);
@@ -141,6 +143,7 @@ impl ActivityEngine {
                 total_all += u.tokens_total;
                 cost24 += u.cost24h;
                 cost_all += u.cost_total;
+                cost_estimated = cost_estimated || u.cost_estimated;
             }
 
             let last_ago = file_result
@@ -185,6 +188,7 @@ impl ActivityEngine {
             tokens_total: total_all,
             cost24h: cost24,
             cost_total: cost_all,
+            cost_estimated,
         };
     }
 
@@ -518,6 +522,7 @@ impl ActivityEngine {
                     tokens_total: t24 * 23,
                     cost24h: t24 as f64 / 14_000_000.0,
                     cost_total: t24 as f64 / 14_000.0,
+                    cost_estimated: true,
                 }),
                 pid: Some(0),
                 current_action: action,
@@ -529,6 +534,7 @@ impl ActivityEngine {
             tokens_total: 280_000_000,
             cost24h: 0.84,
             cost_total: 19.37,
+            cost_estimated: true,
         };
         if self.latest_event.is_none() {
             self.latest_event = Some(AgentTaskEvent {
@@ -606,11 +612,11 @@ fn demo_report() -> TokenReport {
     let peak_idx = hourly.len() - 3;
     hourly[peak_idx].1 = 2_830_000;
     let models = vec![
-        ModelUsage { model: "codex-5".into(), tokens: 5_340_000, cost: 6.10 },
-        ModelUsage { model: "claude-sonnet-4-5".into(), tokens: 2_760_000, cost: 3.22 },
-        ModelUsage { model: "claude-opus-4".into(), tokens: 2_070_000, cost: 9.41 },
-        ModelUsage { model: "gpt-4o".into(), tokens: 1_860_000, cost: 2.05 },
-        ModelUsage { model: "claude-haiku-4".into(), tokens: 489_000, cost: 0.31 },
+        ModelUsage { model: "codex-5".into(), tokens: 5_340_000, cost: 6.10, cost_estimated: true },
+        ModelUsage { model: "claude-sonnet-4-5".into(), tokens: 2_760_000, cost: 3.22, cost_estimated: true },
+        ModelUsage { model: "claude-opus-4".into(), tokens: 2_070_000, cost: 9.41, cost_estimated: true },
+        ModelUsage { model: "gpt-4o".into(), tokens: 1_860_000, cost: 2.05, cost_estimated: true },
+        ModelUsage { model: "claude-haiku-4".into(), tokens: 489_000, cost: 0.31, cost_estimated: true },
     ];
     TokenReport {
         usage: TokenUsage {
@@ -618,6 +624,7 @@ fn demo_report() -> TokenReport {
             tokens_total: 280_000_000,
             cost24h: 0.84,
             cost_total: 19.37,
+            cost_estimated: true,
         },
         models24h: models.clone(),
         models_total: models,

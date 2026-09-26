@@ -1,3 +1,4 @@
+use crate::cost;
 use crate::models::{ModelUsage, TokenReport, TokenUsage};
 use crate::session;
 use serde_json::Value;
@@ -40,6 +41,8 @@ impl TokenUsageMonitor {
         let mut tokens_total = 0i64;
         let mut cost24 = 0f64;
         let mut cost_total = 0f64;
+        // 成本是估的还是记录的（见 models.rs 的 `cost_estimated`）
+        let mut cost_estimated = false;
         let mut models: HashMap<String, (i64, f64)> = HashMap::new();
 
         for root in &profile.token_roots {
@@ -69,6 +72,12 @@ impl TokenUsageMonitor {
                 cost24 += c24;
                 tokens_total += tt;
                 cost_total += ct;
+                // Rust 侧唯一的成本来源就是 `cost::estimate_cost`（JSONL 方言不带记录成本，
+                // SQLite 源尚未迁入），所以非零成本按构造即估算值。等记录成本源落地，
+                // 这里必须改成逐条记账，不能再靠这个等价关系。
+                if c24 > 0.0 || ct > 0.0 {
+                    cost_estimated = true;
+                }
                 for (model, (tk, co)) in m {
                     let e = models.entry(model).or_insert((0, 0.0));
                     e.0 += tk;
@@ -79,7 +88,12 @@ impl TokenUsageMonitor {
 
         let mut models24h: Vec<ModelUsage> = models
             .into_iter()
-            .map(|(model, (tokens, cost))| ModelUsage { model, tokens, cost })
+            .map(|(model, (tokens, cost))| ModelUsage {
+                model,
+                tokens,
+                cost,
+                cost_estimated: cost > 0.0,
+            })
             .collect();
         models24h.sort_by(|a, b| b.tokens.cmp(&a.tokens));
 
@@ -99,7 +113,13 @@ impl TokenUsageMonitor {
         hourly30d.sort_by_key(|kv| kv.0);
 
         TokenReport {
-            usage: TokenUsage { tokens24h: tokens24, tokens_total, cost24h: cost24, cost_total },
+            usage: TokenUsage {
+                tokens24h: tokens24,
+                tokens_total,
+                cost24h: cost24,
+                cost_total,
+                cost_estimated,
+            },
             models24h: models24h.clone(),
             models_total: models24h,
             hourly30d,
@@ -222,27 +242,26 @@ fn parse_usage_line(line: &str) -> Option<UsageLine> {
     let get = |key: &str| usage.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
     let input = get("input_tokens").max(get("inputTokens"));
     let output = get("output_tokens").max(get("outputTokens"));
-    let cache_read = if is_claude {
-        get("cache_read_input_tokens")
-    } else {
-        get("cached_input_tokens").max(get("cacheReadTokens"))
-    };
     let cache_write = if is_claude {
         get("cache_creation_input_tokens")
     } else {
         get("cacheWriteTokens")
     };
-    // 净消耗：不含缓存读取
+    // 净消耗：不含缓存读取（与 Swift StructuredTokenUsageIndex 同口径）。
+    // 缓存读取也不进估算——它按另一档单独计价，混进来只会把成本算高。
     let net = input + output + cache_write;
     if net <= 0 {
         return None;
     }
 
+    // 成本口径与 Swift `TokenCostEstimator` 同源：3:1 混合单价 × 总 token。
+    // 估不出来（模型不在费率表里）就是 0，**不编价**——旧实现按分量分别计价，
+    // 并给没见过的模型兜底 (1.25,10.0)，于是两台实现同日同量会算出两个数。
     let name = short_model_name(model.as_deref());
-    let (in_price, out_price) = price_lookup(&name, is_claude);
-    let cost = (input + cache_write) as f64 * in_price / 1_000_000.0
-        + output as f64 * out_price / 1_000_000.0
-        + cache_read as f64 * in_price * 0.1 / 1_000_000.0;
+    let cost = model
+        .as_deref()
+        .and_then(|m| cost::estimate_cost(m, net))
+        .unwrap_or(0.0);
 
     let ts_ms = obj
         .get("timestamp")
@@ -299,20 +318,40 @@ fn short_model_name(model: Option<&str>) -> String {
     }
 }
 
-/// ($/M input, $/M output) — 与 Windows 端 PriceTable 同源
-fn price_lookup(model: &str, is_claude: bool) -> (f64, f64) {
-    let lower = model.to_lowercase();
-    if lower.starts_with("opus") || lower.contains("opus") {
-        (15.0, 75.0)
-    } else if lower.starts_with("sonnet") || lower.contains("sonnet") {
-        (3.0, 15.0)
-    } else if lower.starts_with("haiku") || lower.contains("haiku") {
-        (1.0, 5.0)
-    } else if lower.contains("glm") {
-        (0.55, 2.0) // GLM 系近似（$/M）
-    } else if !is_claude {
-        (1.25, 10.0) // GPT 系近似
-    } else {
-        (3.0, 15.0)
+// 费率表已迁到 `crate::cost`（与 Swift `TokenCostEstimator` 同表）。此前这里有一份
+// 5 档粗分档的 `price_lookup`——同一件事两份算法，正是 ADR 0010 明令不许的。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Claude 方言的一行：3000 输入 + 1000 输出 = 净 4000 tokens
+    fn claude_line(model: &str) -> String {
+        format!(
+            r#"{{"message":{{"model":"{model}","usage":{{"input_tokens":3000,"output_tokens":1000}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn cost_comes_from_the_shared_estimator() {
+        let parsed = parse_usage_line(&claude_line("claude-3-7-sonnet")).expect("应解析出用量");
+        assert_eq!(parsed.tokens, 4000);
+        // 3:1 混合价 = (3*3 + 15)/4 = 6.0 美元/百万 → 4000 tokens = $0.024
+        assert!((parsed.cost - 0.024).abs() < 1e-12, "cost={}", parsed.cost);
+    }
+
+    #[test]
+    fn unknown_model_gets_no_invented_cost() {
+        // 旧实现对任何非 claude 模型兜底 (1.25,10.0)，于是编出一个成本
+        let parsed = parse_usage_line(&claude_line("some-local-finetune")).expect("应解析出用量");
+        assert_eq!(parsed.cost, 0.0, "费率表里没有的模型不许编成本");
+        assert_eq!(parsed.tokens, 4000, "用量照记，只是不报钱数");
+    }
+
+    #[test]
+    fn glm_is_not_priced_on_either_side() {
+        // 23 号对照表点名过：旧 Rust 给 glm 编了 (0.55,2.0)，而 Swift 表里没有这一条
+        let parsed = parse_usage_line(&claude_line("glm-4")).expect("应解析出用量");
+        assert_eq!(parsed.cost, 0.0);
     }
 }

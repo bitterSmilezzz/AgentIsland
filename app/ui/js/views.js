@@ -19,7 +19,9 @@ export function compact(tokens) {
   return trimZero((n / 1e9).toFixed(2)) + 'G';
 }
 function trimZero(s) { return s.replace(/\.?0+$/, ''); }
-export function costText(c) { return c > 0.005 ? `$${c.toFixed(2)}` : ''; }
+// 成本文案。`estimated` 为真时带 `~`——它是「这个数是估的」唯一的痕迹，
+// 按数字重排不许把它弄丢（与 Swift TokenCostEstimator.formatEstimate 同口径）。
+export function costText(c, estimated = false) { return c > 0.005 ? `${estimated ? '~' : ''}$${c.toFixed(2)}` : ''; }
 
 /// 事件摘要文案（Rust 端方法不随 JSON 序列化，与 AgentTaskEvent::summary 同口径）
 function eventSummary(ev) {
@@ -363,12 +365,12 @@ function listCard(eng, st, visible, dark, edge) {
       <div class="left">
         <span class="mini-tag" style="color:var(--cyan);background:color-mix(in srgb, var(--cyan) 16%, transparent);border-color:color-mix(in srgb, var(--cyan) 35%, transparent)">24H</span>
         <span class="num">${compact(gt.tokens24h)}</span>
-        ${costText(gt.cost24h) ? `<span class="cost">${costText(gt.cost24h)}</span>` : ''}
+        ${costText(gt.cost24h, gt.cost_estimated) ? `<span class="cost">${costText(gt.cost24h, gt.cost_estimated)}</span>` : ''}
       </div>
       <div class="right">
         <span class="mini-tag" style="color:var(--text-muted);background:rgba(127,127,127,0.10);border-color:var(--hairline)">TOTAL</span>
         <span class="num">${compact(gt.tokens_total)}</span>
-        ${costText(gt.cost_total) ? `<span class="cost">${costText(gt.cost_total)}</span>` : ''}
+        ${costText(gt.cost_total, gt.cost_estimated) ? `<span class="cost">${costText(gt.cost_total, gt.cost_estimated)}</span>` : ''}
         <span class="chev">›</span>
       </div>
     </div>` : '';
@@ -461,14 +463,14 @@ function renderReportBody(report) {
       <h4>📈 月末用量与成本预测</h4>
       <div class="totals" style="margin-top:8px;justify-content:flex-start;gap:14px">
         <div><div class="big-num" style="font-size:14px">${compact(u.tokens24h * remaining)}</div><div class="num-label">预估月末消耗</div></div>
-        <div><div class="big-num c-working" style="font-size:14px">$${(u.cost24h * remaining).toFixed(2)}</div><div class="num-label">预估月末费用</div></div>
+        <div><div class="big-num c-working" style="font-size:14px">${costText(u.cost24h, u.cost_estimated) ? `~$${(u.cost24h * remaining).toFixed(2)}` : '—'}</div><div class="num-label">预估月末费用</div></div>
         <div><div class="big-num" style="font-size:14px">${remaining} 天</div><div class="num-label">当月剩余自然日</div></div>
       </div>
     </div>
     <div class="card-box">
       <div class="totals">
         <div><div class="big-num">${compact(u.tokens24h)}</div><div class="num-label">24h 用量</div></div>
-        <div><div class="big-num">${costText(u.cost24h) || '—'}</div><div class="num-label">费用</div></div>
+        <div><div class="big-num">${costText(u.cost24h, u.cost_estimated) || '—'}</div><div class="num-label">费用</div></div>
         <div><div class="big-num">${compact(u.tokens_total)}</div><div class="num-label">累计</div></div>
       </div>
     </div>
@@ -497,7 +499,7 @@ function renderReportBody(report) {
       ${report.models24h.map((m) => `
         <div class="model-row">
           <div class="top"><span>${esc(m.model)}</span>
-            <span class="r"><span class="tk">${compact(m.tokens)}</span><span class="cost">${costText(m.cost)}</span></span></div>
+            <span class="r"><span class="tk">${compact(m.tokens)}</span><span class="cost">${costText(m.cost, m.cost_estimated)}</span></span></div>
           <div class="hbar"><i style="width:${Math.max(2, 100 * m.tokens / maxTool)}%"></i></div>
         </div>`).join('') || '<div class="c-faint" style="font-size:10px;margin-top:6px">暂无按工具明细</div>'}
     </div>`;
@@ -538,9 +540,9 @@ function renderDetailBody(report, snap) {
     <div class="card-box">
       <div class="totals" style="gap:16px">
         <div><div class="big-num" style="font-size:14px">${compact(u.tokens24h)}</div><div class="num-label">24h 用量</div></div>
-        <div><div class="big-num" style="font-size:14px">${costText(u.cost24h) || '—'}</div><div class="num-label">24h 花费</div></div>
+        <div><div class="big-num" style="font-size:14px">${costText(u.cost24h, u.cost_estimated) || '—'}</div><div class="num-label">24h 花费</div></div>
         <div><div class="big-num" style="font-size:14px">${compact(u.tokens_total)}</div><div class="num-label">累计</div></div>
-        <div><div class="big-num" style="font-size:14px">${costText(u.cost_total) || '—'}</div><div class="num-label">累计花费</div></div>
+        <div><div class="big-num" style="font-size:14px">${costText(u.cost_total, u.cost_estimated) || '—'}</div><div class="num-label">累计花费</div></div>
       </div>
     </div>
     <div class="card-box">
@@ -549,7 +551,7 @@ function renderDetailBody(report, snap) {
     const maxT = Math.max(1, ...report.models24h.map((x) => x.tokens));
     return `<div class="model-row" data-model="${esc(m.model)}">
           <div class="top"><span>${esc(m.model)}</span>
-            <span class="r"><span class="tk">${compact(m.tokens)}</span><span class="cost">${costText(m.cost)}</span></span></div>
+            <span class="r"><span class="tk">${compact(m.tokens)}</span><span class="cost">${costText(m.cost, m.cost_estimated)}</span></span></div>
           <div class="hbar"><i style="width:${Math.max(2, 100 * m.tokens / maxT)}%"></i></div>
         </div>`;
   }).join('') || `

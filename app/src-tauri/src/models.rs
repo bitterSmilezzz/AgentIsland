@@ -109,6 +109,11 @@ pub struct TokenUsage {
     pub tokens_total: i64,
     pub cost24h: f64,
     pub cost_total: f64,
+    /// 成本是**估**出来的还是日志里**记录**的。Rust 侧今天只有 JSONL 源、日志不带成本，
+    /// 所以非零成本一律是估价，界面必须带 `~` 显示——把估的当记录值印出来，
+    /// 就是「没读到 ≠ 编一个数」那条口径的反面。
+    #[serde(default)]
+    pub cost_estimated: bool,
 }
 
 // MARK: - 实时快照
@@ -169,6 +174,8 @@ pub struct ModelUsage {
     pub model: String,
     pub tokens: i64,
     pub cost: f64,
+    /// 同 `TokenUsage::cost_estimated`：这个模型的花费是不是估的。
+    pub cost_estimated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

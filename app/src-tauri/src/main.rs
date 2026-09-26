@@ -1,6 +1,7 @@
 // 始终隐藏控制台：日志统一走 %TEMP%gentisland-tauri.log（log_from_ui + panic hook）
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod cost;
 mod engine;
 mod filemon;
 mod models;
@@ -194,21 +195,25 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         let mut agg_total = 0i64;
         let mut agg_cost24 = 0f64;
         let mut agg_cost_total = 0f64;
+        // 只要有任一档案的成本是估的，聚合值就不是记录值（见 models.rs 的 `cost_estimated`）
+        let mut agg_cost_estimated = false;
         let mut hourly: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-        let mut models: std::collections::HashMap<String, (i64, f64)> = std::collections::HashMap::new();
+        let mut models: std::collections::HashMap<String, (i64, f64, bool)> = std::collections::HashMap::new();
         for p in &profiles {
             if let Some(r) = e.get_report(&p.id) {
                 agg_tokens24 += r.usage.tokens24h;
                 agg_total += r.usage.tokens_total;
                 agg_cost24 += r.usage.cost24h;
                 agg_cost_total += r.usage.cost_total;
+                agg_cost_estimated = agg_cost_estimated || r.usage.cost_estimated;
                 for (ts, v) in r.hourly30d {
                     *hourly.entry(ts).or_insert(0) += v;
                 }
                 for m in r.models24h {
-                    let e2 = models.entry(m.model).or_insert((0, 0.0));
+                    let e2 = models.entry(m.model).or_insert((0, 0.0, false));
                     e2.0 += m.tokens;
                     e2.1 += m.cost;
+                    e2.2 = e2.2 || m.cost_estimated;
                 }
             }
         }
@@ -216,7 +221,12 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         hourly30d.sort_by_key(|kv| kv.0);
         let mut models24h: Vec<models::ModelUsage> = models
             .into_iter()
-            .map(|(model, (tokens, cost))| models::ModelUsage { model, tokens, cost })
+            .map(|(model, (tokens, cost, cost_estimated))| models::ModelUsage {
+                model,
+                tokens,
+                cost,
+                cost_estimated,
+            })
             .collect();
         models24h.sort_by(|a, b| b.tokens.cmp(&a.tokens));
         return Some(models::TokenReport {
@@ -225,6 +235,7 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
                 tokens_total: agg_total,
                 cost24h: agg_cost24,
                 cost_total: agg_cost_total,
+                cost_estimated: agg_cost_estimated,
             },
             models24h: models24h.clone(),
             models_total: models24h,
