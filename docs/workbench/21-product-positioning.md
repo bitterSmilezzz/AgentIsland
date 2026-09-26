@@ -16,7 +16,7 @@
 | 名词 | 今天的意思 | 为什么必须 |
 |---|---|---|
 | **一站式配置** | 档位切换（Phase 2，含 CC Switch 的能力） | 单点是「装一个 app 就够」，不是「再多一个」 |
-| **同质** | 26 家用同一套五态、同一套口径、同一套「读不到」记号 | 没有同质，「跨」只是并列，用户要自己比 |
+| **同质** | 25 家用同一套五态、同一套口径、同一套「读不到」记号 | 没有同质，「跨」只是并列，用户要自己比 |
 | **多 agent 管理** | 任务/配置/待办都能跨 agent 一起看、一起管 | 从「监控」变成「管理」的分界 |
 
 仍然明确否掉的三条路（[07-synthesis §0](../workbench/07-synthesis.md)）：**不当 agent、不架 LLM 网关、不用 ML 做路由**。第二条尤其要守住——架网关会让产品性质从「监控」变成「中转」，那之后所有凭据与流量都要重新审视。
@@ -32,7 +32,7 @@
 
 | 层 | 同质 | 还是尊重差异 |
 |---|---|---|
-| 五态 / 可信度 / 「读不到」记号 | **同质**（26 家必须一套） | — |
+| 五态 / 可信度 / 「读不到」记号 | **同质**（25 家必须一套） | — |
 | 档位卡的呈现与「此刻跑哪个」 | **同质** | — |
 | 档位文件格式、如何生效、怎么切 | — | **尊重差异**（Codex 用原生 `--profile`，不自己造格式） |
 | 供应商预设清单 | — | **不做**（0 个，理由见下） |
@@ -41,28 +41,28 @@
 
 ---
 
-## 2. 功能现状（实测，26 个档案）
+## 2. 功能现状（实测，25 个档案）
 
 | 层 | 能力 | 覆盖实况 |
 |---|---|---|
-| **状态** | 五态 `working/attention/completed/idle/offline` | 26 家全覆盖（`AgentRegistry.swift:31-414`） |
+| **状态** | 五态 `working/attention/completed/idle/offline` | 25 家全覆盖（`AgentRegistry.swift:29-400`） |
 | **上下文** | 子进程命令 + 会话日志动作；后台任务与子智能体微胶囊 | 依赖 `sessionDirs`，25 家声明了会话目录 |
 | **确认请求** | 结构化确认/权限申请，多 agent 不漏报，每请求只提醒一次 | 依赖 `sessionDialect`（5 家声明） |
 | **token 明细** | 24h/累计、按模型拆分、花费、预算预测 | **只有 5 家读得到**：dim / claude / codex / workbuddy / workbuddy-ai |
 | **异常** | token 暴涨、死循环、孤儿后台、内存激增、429/编译错/Git 冲突/鉴权失败 | 依赖 token 与日志，5 家完整 |
-| **可信度** | 五类结论（observed/blindSessionSource/noLocalData/sourceNotWired/notInstalled） | 26 家全覆盖 |
-| **CLI** | 13 个子命令 | 全平台 |
+| **可信度** | 五类结论（observed/blindSessionSource/noLocalData/sourceNotWired/notInstalled） | 25 家全覆盖 |
+| **CLI** | 12 个子命令 | 全平台 |
 | **远程外发** | ntfy / 自定义 HTTP / SMTP 邮箱（仅 465） | 与 agent 无关，单独一层 |
 
-### 一个之前没对用户说过的实况：26 家里 21 家读不到 token
+### 一个之前没对用户说过的实况：25 家里 20 家读不到 token
 
-`tokenRoots` 逐家统计：**26 家中 5 家非空，21 家为空或未声明**
+`tokenRoots` 逐家统计：**25 家中 5 家非空，20 家为空**
 （qoder、cursor、trae、copilot、zcode、antigravity、opencode、mimocode、hermes、continue、
-chatgpt、dsh、ego-browser、vibe-usage、openviking、windsurf、aider、cline、roo-code、goose、cli-\*）。
+chatgpt、dsh、ego-browser、vibe-usage、openviking、windsurf、aider、cline、roo-code、goose）。
 
 **这不是 bug，是今天的事实。** 但它直接决定两件事：
 
-1. **「token 成本」这个卖点今天只对 5 家成立。** 首层如果按 26 家一视同仁地展示，
+1. **「token 成本」这个卖点今天只对 5 家成立。** 首层如果按 25 家一视同仁地展示，
    21 家会在「花了多少 token」那一栏撒谎或空缺。
 2. **用户拍板的「读不到要显式标出」正是对症的**，且这一层已经有地基（`AgentObservability`
    五类结论 + CONTEXT.md 的「没查到 ≠ 零」记号），不是从零做。
@@ -78,7 +78,7 @@ chatgpt、dsh、ego-browser、vibe-usage、openviking、windsurf、aider、cline
 |---|---|
 | **档位卡上直接显示「此刻跑哪个档、跑着什么会话、有没有卡住」** | CC Switch 不读会话尾，也不做五态 |
 | **「读不到」有五种命名结论** | codenotch 的数字一致做得好，但「没读到」只有一类 |
-| **26 家用同一套五态** | Vorssaint 21k star 也只做两家；MonoCode 是宿主不读别人日志 |
+| **25 家用同一套五态** | Vorssaint 21k star 也只做两家；MonoCode 是宿主不读别人日志 |
 | **token 明细含 cache read/write** | 竞品要么只做配额、要么只统流经自己的请求 |
 
 ---
@@ -115,8 +115,8 @@ chatgpt、dsh、ego-browser、vibe-usage、openviking、windsurf、aider、cline
 
 ## 6. 本文的核实边界
 
-- 26 家档案、5 家有 token 明细：逐家读 `AgentRegistry.swift` 字段得出，非估算。
-- CLI 13 个子命令、外发三通道、五态/五类结论：均读源码确认。
-- 「26 家全覆盖会话目录」是从字段声明推断，**未逐家验证路径真实存在**。
+- 25 家档案、5 家有 token 明细：读 `builtin` 数组运行时求值得出（整文件 `grep -c 'AgentProfile('` 会把自动发现那条动态档案一起数进去），非估算。
+- CLI 12 个子命令、外发三通道、五态/五类结论：均读源码确认。
+- 「25 家全覆盖会话目录」是从字段声明推断，**未逐家验证路径真实存在**。
 - 侧边栏与档位均**尚未实现**（`shell_mode` 实测零命中），本文写的是目标口径不是现状。
 - 配额直读、provider 直读等「未核实」项均已在 20 号列明，本文不重复。

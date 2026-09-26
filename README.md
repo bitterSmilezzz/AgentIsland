@@ -4,9 +4,9 @@
 
 **同一个 agent 的五态与可信度，在三个出口永远对得上：灵动岛卡片、`agentisland doctor`、`agentisland state`。** 三处读的是同一份 `AgentObservability.evaluate(snapshot:)`（`state` 直接问运行中的 app，`doctor` 在 CLI 进程里调同一个纯函数）；对不上时三处都显示「有冲突」，而不是各自挑一个数给你看。同理，「没读到」在三个出口都是「没读到」，不是 0。
 
-> **能力边界今天是这样**（不藏）：26 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
+> **能力边界今天是这样**（不藏）：25 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy / WorkBuddy AI）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
 
-> 本文档描述 **v0.0.163** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.164** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 >
@@ -14,7 +14,7 @@
 
 ## 能看见什么
 
-**支持的 agent**（26 个内置档案，外加按 PATH 自动发现已安装的 CLI）：DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose，以及 Aider / Windsurf / ChatGPT / Hermes / Mimocode / DSH / EgoBrowser / VibeUsage / OpenViking。**都能报五态**；token 明细目前 5 家完整（DimAgent / Claude Code / Codex / WorkBuddy），其余明确显示「读不到」。
+**支持的 agent**（25 个内置档案，外加按 PATH 自动发现已安装的 CLI）：DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / WorkBuddy AI / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose，以及 Aider / Windsurf / ChatGPT / Hermes / DSH / EgoBrowser / VibeUsage / OpenViking。**都能报五态**；token 明细目前 5 家完整（DimAgent / Claude Code / Codex / WorkBuddy / WorkBuddy AI），其余明确显示「读不到」。
 
 - **五态**：`working` 运行中 / `attention` 等待你确认 / `completed` 已完成 / `idle` 待机 / `offline` 离线，各有独立语义与颜色；异常高负载再叠一层橙/红告警。
 - **正在做什么**：子进程命令实时提取（`git diff`、`swift build`、`npm run build`…）与会话日志里的动作上下文（`正在修改: IslandView.swift`、`正在执行: pytest`）。后台任务与子智能体以 `⚡ 后台N`、`🤖 N子任务` 微胶囊呈现。

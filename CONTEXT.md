@@ -207,7 +207,8 @@ _Avoid_: 把自己做成 agent、把 agent 的请求接到自己进程里（那�
 - 形态由 `shell_mode` 决定：`island`（默认，老用户零感知）/ `sidebar`。两者**并存**而非互斥——
   灵动岛保住的「不打断注意力」与侧边栏的「键盘可达 + 信息容量」不可互相替代。
   **模式名只用一代**：旧名降为后台兼容读取，不出现在 UI 上。
-- Rust 核心约 2,670 行 / 12 个 agent 档案，Swift 核心 15,705 行 / 26 个档案——
+- Rust 核心约 4,400 行 / 12 个 agent 档案，Swift 核心约 15,700 行 / 25 个档案
+  （`wc -l` 口径：`app/src-tauri/src` 与 `Sources/AgentIslandCore`）——
   **两者不是「原型与复用」关系，是并列的第二份独立实现**（Rust 缺 14 个 id、1 种方言，
   且 TokenBudget / Forecast / Health / Resilience / TaskDuration / RemoteNotify 等模块在 Rust 侧
   尚不存在）。改哪一侧前先看 [ADR 0010](docs/adr/0010-swift-freeze-and-rust-prerequisites.md)。

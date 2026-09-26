@@ -4,6 +4,30 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.164] - 2026-09-27
+
+### 纠正内置档案数：25 而不是 26，并补上 token 明细的第五家
+
+对代码核实「能力边界」时发现，README、CONTEXT 与工作台若干文档把内置档案数写成
+**26**，而 `AgentRegistry.builtin` 实际是 **25** 条。根因在 23 号对照表自己写下的
+取证命令：`grep -c 'AgentProfile('` 会把 `discoverCLIProfiles()` 里**动态构造**的那一条
+也数进去，于是多出一个并不存在的档案；这个错数随后被抄进 6 个文件、25 处。
+
+本轮改的是数字，不是能力——运行时求值核实：`builtin.count = 25`，其中 `tokenRoots`
+非空 5 家（DimAgent / Claude / Codex / WorkBuddy / **WorkBuddy AI**），20 家为空。
+README 两处「5 家」此前只列了 4 个名字，现补上第五家；同时去掉把 `mimocode` 当独立
+条目的重复计数（它的档案名就是 `Xiaomi Mi Mo`）。工作台 21 号把「13 个子命令」改为
+12（与 23 号对照表一致）。工作台 23 号换上可复核的取证口径，并写明整文件 grep 为何是错的。
+
+顺带修正同批过期数字：`AgentRegistry.swift` 602→604 行、`registry.rs` 232→265 行、
+`engine.rs` 626→678 行、CONTEXT 的 Rust 核心行数（约 2,670→约 4,400，并写明 `wc -l`
+口径是 `app/src-tauri/src` 与 `Sources/AgentIslandCore`）。`ActivityEngine.swift` 的
+1492 行与 `ProcessMonitor.swift` 的 700 行经复核本来就对，未动。
+
+没做：各 agent 档案本身的能力、`builtin` 数组内容与 Rust 侧档案一律未改，只有
+`registry.rs` 测试模块里的一句注释跟着改了数字；site 与 research 文档里的字符数
+（如「23946 字符」）未逐条重测，留待单独核查。Swift 侧零改动。
+
 ## [0.0.163] - 2026-09-27
 
 ### 让 Rust 灵动岛区分「待机」与「缺少观测证据」

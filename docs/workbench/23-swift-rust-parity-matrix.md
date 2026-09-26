@@ -25,11 +25,13 @@ Swift 端是一个「148 个版本验证过的产品体系」。所以绝大多�
 这不是缺陷而是 M3 要补的账；**真正危险的是第 5、6 节那几处「两边都有、值不一样」**——
 它们不会报错，只会让两边用户看到不同数字。
 
-## 2. Agent 档案对照（26 vs 12）
+## 2. Agent 档案对照（25 vs 12）
 
-Swift 侧内置 **26 个**档案（`AgentRegistry.swift:29-398`，`grep -c 'AgentProfile('` = 26）；
-Rust 侧内置 **12 个**（[registry.rs:25-183](../../app/src-tauri/src/registry.rs)）。
-Rust 另有一条 `>= 12` 的守护测试（[registry.rs:214-221](../../app/src-tauri/src/registry.rs)），
+Swift 侧内置 **25 个**档案（`AgentRegistry.swift:29-400` 的 `builtin` 数组字面量）。
+取证口径要小心：整文件 `grep -c 'AgentProfile('` 得 **26** 是**错的**——它把
+`discoverCLIProfiles()` 里动态构造的那条也数了进去；档案数只认 `builtin` 数组。
+Rust 侧内置 **12 个**（[registry.rs:5-186](../../app/src-tauri/src/registry.rs)）。
+Rust 另有一条 `>= 12` 的守护测试（[registry.rs:215-223](../../app/src-tauri/src/registry.rs)），
 **刻意不要求两边相等**——所以档案数分叉不会被测试拦住，只能靠本表盯。
 
 ### 2.1 只在 Swift 有（14 个）
@@ -114,8 +116,8 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 
 | 职责 | Swift | Rust | 差异要点 |
 | :--- | :--- | :--- | :--- |
-| 档案表 | [AgentRegistry.swift](../../Sources/AgentIslandCore/AgentRegistry.swift) 602 行：26 档案 + 自动发现 CLI + 用户自定义（UserDefaults） | [registry.rs](../../app/src-tauri/src/registry.rs) 232 行：12 档案硬编码 | Rust **无自动发现、无自定义档案**；`builtin()` 每次调用重读 home dir |
-| 五态引擎 | [ActivityEngine.swift](../../Sources/AgentIslandCore/ActivityEngine.swift) 1492 行 | [engine.rs](../../app/src-tauri/src/engine.rs) 626 行 | Swift 有电源分级采样、`visibleSnapshots`/`ringShelfSnapshots` 可见口径、冲突双显；Rust 有 demo 模式与 webhook 事件源。**核心双信号与 CPU 熔断一致**，见 §4 |
+| 档案表 | [AgentRegistry.swift](../../Sources/AgentIslandCore/AgentRegistry.swift) 604 行：25 档案 + 自动发现 CLI + 用户自定义（UserDefaults） | [registry.rs](../../app/src-tauri/src/registry.rs) 265 行：12 档案硬编码 | Rust **无自动发现、无自定义档案**；`builtin()` 每次调用重读 home dir |
+| 五态引擎 | [ActivityEngine.swift](../../Sources/AgentIslandCore/ActivityEngine.swift) 1492 行 | [engine.rs](../../app/src-tauri/src/engine.rs) 678 行 | Swift 有电源分级采样、`visibleSnapshots`/`ringShelfSnapshots` 可见口径、冲突双显；Rust 有 demo 模式与 webhook 事件源。**核心双信号与 CPU 熔断一致**，见 §4 |
 | 进程监控 | [ProcessMonitor.swift](../../Sources/AgentIslandCore/ProcessMonitor.swift) 700 行：libproc 直读进程表 | [procmon.rs](../../app/src-tauri/src/procmon.rs) 129 行：`sysinfo` 0.33 | Swift 直读 `/dev` 级接口 + 自定义匹配（pathContains/pathExcludes/hostBundleIDs）；Rust 的 `AgentProfile` **没有 pathContains / hostBundleIDs 字段**——见 §2.3 与 §6 |
 | 文件活动 | [FileMonitor.swift](../../Sources/AgentIslandCore/FileMonitor.swift) 634 行：后台递归 + O(1) 缓存 + 限深 | [filemon.rs](../../app/src-tauri/src/filemon.rs) 138 行：同步遍历 | Rust 无后台队列、无深度缓存分层；`max_depth 4` + 扩展名白名单（[filemon.rs:105](../../app/src-tauri/src/filemon.rs#L105)） |
 | 会话解析 | [AgentSessionInspector.swift](../../Sources/AgentIslandCore/AgentSessionInspector.swift) 1687 行：5 种方言 + 专有协议 | [session.rs](../../app/src-tauri/src/session.rs) 414 行：4 个 id 专属 `probe_*` | 分派方式不同：Swift 按**档案声明的方言**，Rust 按 **agent id**（[session.rs:35-40](../../app/src-tauri/src/session.rs#L35)）。ADR 0010 要求「新增复用既有格式的 Agent 只改档案」，Rust 今天做不到 |
@@ -256,7 +258,7 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
 
 1. `session.rs` 四个 `probe_*` 与 Swift 同名解析器**未逐行比对语义**（只确认了分派方式与信号种类一致）。
 2. Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读。
-3. `Swift 端 26 个档案中` `qoder`/`antigravity`/`dsh`/`workbuddy` 的方言解析与 Rust 无对应，
+3. `Swift 端 25 个档案中` `qoder`/`antigravity`/`dsh`/`workbuddy` 的方言解析与 Rust 无对应，
    无法比对；ZCode 路径已在 v0.0.162 经本机实样核实并修正，但两端状态/动作解析语义
    尚未逐行比对。
 4. Swift 与 Rust 测试的**内容覆盖对照**未做。v0.0.159 增补五态回放与三方言合成 fixture 后，可执行测试数已变化；以 `cargo test --locked` 输出为准。

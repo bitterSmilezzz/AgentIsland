@@ -116,7 +116,7 @@
 
 ### 一个方向三发现的、会影响 Phase 1 范围的事实
 
-**三份实现不是「Swift 原型 → Rust 复用」**：Rust 端 12 个 agent 档案 vs Swift 26 个
+**三份实现不是「Swift 原型 → Rust 复用」**：Rust 端 12 个 agent 档案 vs Swift 25 个
 （14 个 id 只在 Swift 侧）、方言 4 vs 5；且 Swift 有 6 个 Rust **完全没有**的模块
 （TokenBudget / Forecast / Health / Resilience / TaskDuration / **RemoteNotifier 三通道外发**）。
 → **Phase 1 只在 Rust 端长侧边栏，这些能力一开始就是缺的。** 这不是 bug 是现状，
