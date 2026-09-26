@@ -163,8 +163,8 @@ _Avoid_: 锁屏检测（只是三条里的一条，且在远程场景下永远�
 **节流 / 静默时段**:
 同一 Agent 同一事件类型在窗口内只发一次（默认 90s，按 `agentId|kind` 分键；**预登记**、最终失败才回滚，否则并发同类事件会各发一条）；静默时段按本地时区「时:分」区间，跨零点支持。写坏的时段整段作废退化成「不静默」——宁可多发，也不全天吞掉通知。
 
-**凭据口径**:
-密钥（SendKey / token / webhook 里的 key / SMTP 授权码）只进 macOS 钥匙串，条目名由通道唯一决定（`remote.ntfy` / `remote.customHTTP` / `remote.smtpEmail`），**不做成可配字段**——「存了但条目名对不上」是界面全绿、每次发送都失败且永远查不出来的失效。UserDefaults 里零密钥；界面与日志只出现掩码。
+**凭据口径**（口径与边界见 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md)）:
+密钥（SendKey / token / webhook 里的 key / SMTP 授权码）只进 macOS 钥匙串，条目名由通道唯一决定（`remote.ntfy` / `remote.customHTTP` / `remote.smtpEmail`），**不做成可配字段**——「存了但条目名对不上」是界面全绿、每次发送都失败且永远查不出来的失效。UserDefaults 里零密钥；界面与日志只出现掩码。这些凭据**只用于用户自己配的那条通道**，不复用于访问任何 agent 厂商服务；厂商侧一律不调 API、不碰 OAuth 刷新，只读 agent 自己落本机的文件与会话尾。
 
 ### 面板与菜单栏
 
@@ -193,7 +193,8 @@ MenuBarExtra 的 .window 浮窗微卡片，呈现工作状态呼吸灯、活跃 
 
 **AgentIsland 是一款跨 Agent 的本机管理工作台**——不做 Agent，不架网关，不用 ML 路由。
 它知道机器上每个 AI 编码 agent 此刻在干什么、花了多少 token、用的哪个模型/账号，
-并能管这些配置与待办。**不碰网络、不转发流量、不持有密钥。**
+并能管这些配置与待办。**不持有非本机既有登录态的密钥，不主动打厂商端点**
+（边界见 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md)：用户自己配的外发通道用自己的凭据出网）。
 完整方案见 [docs/workbench/07-synthesis.md](docs/workbench/07-synthesis.md)。
 
 _Avoid_: 把自己做成 agent、把 agent 的请求接到自己进程里（那会让产品性质从监控变成中转）
@@ -206,6 +207,8 @@ _Avoid_: 把自己做成 agent、把 agent 的请求接到自己进程里（那�
 - 形态由 `shell_mode` 决定：`island`（默认，老用户零感知）/ `sidebar`。两者**并存**而非互斥——
   灵动岛保住的「不打断注意力」与侧边栏的「键盘可达 + 信息容量」不可互相替代。
   **模式名只用一代**：旧名降为后台兼容读取，不出现在 UI 上。
-- Rust 核心（`engine` / `session` / `tokens` / `filemon` / `procmon` 等约 2,100 行）与界面形态
-  无关，跨形态复用；只有 `main.rs` 的窗口壳与 `placement.rs` 的定位按形态分派。
+- Rust 核心约 2,670 行 / 12 个 agent 档案，Swift 核心 15,705 行 / 26 个档案——
+  **两者不是「原型与复用」关系，是并列的第二份独立实现**（Rust 缺 14 个 id、1 种方言，
+  且 TokenBudget / Forecast / Health / Resilience / TaskDuration / RemoteNotify 等模块在 Rust 侧
+  尚不存在）。改哪一侧前先看 [ADR 0010](docs/adr/0010-swift-freeze-and-rust-prerequisites.md)。
 - 上述口径定案后应沉淀进本文件或 `docs/adr/`，`docs/workbench/` 只承载进行中的设计。
