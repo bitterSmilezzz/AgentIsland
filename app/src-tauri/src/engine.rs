@@ -518,19 +518,22 @@ pub fn compact(tokens: i64) -> String {
     if tokens < 1_000 {
         format!("{tokens}")
     } else if tokens < 1_000_000 {
-        trim_zero(format!("{:.1}k", n / 1_000.0))
+        format!("{}k", trim_zero(format!("{:.1}", n / 1_000.0)))
     } else if tokens < 1_000_000_000 {
         let m = n / 1_000_000.0;
         if m >= 100.0 {
             format!("{:.0}M", m)
         } else {
-            trim_zero(format!("{m:.2}M"))
+            format!("{}M", trim_zero(format!("{m:.2}")))
         }
     } else {
         trim_zero(format!("{:.2}G", n / 1_000_000_000.0))
     }
 }
 
+/// 只处理纯数字字符串：剥掉尾部的 `.` 与多余的 `0`。
+/// **单位后缀必须由调用方在外层拼**——因为 `trim_end_matches('0')` 遇到
+/// `"1.0k"` 这种末尾是字母的串会直接不匹配，假精度就漏了出去。
 fn trim_zero(s: String) -> String {
     if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -571,5 +574,53 @@ fn demo_report() -> TokenReport {
         models24h: models.clone(),
         models_total: models,
         hourly30d: hourly,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compact;
+
+    /// `compact` 是 token 数的显示格式化。契约三条：**短、不引入歧义、负数不出现**。
+    /// `1.0k` 这种假精度会让人以为精确到百位；负数来自统计回绕，显示出来等于说谎。
+    #[test]
+    fn compact_short_unambiguous_never_negative() {
+        assert_eq!(compact(0), "0");
+        assert_eq!(compact(999), "999");
+        assert_eq!(compact(-1), "0", "负数是统计回绕，必须显示 0 而不是 -1");
+
+        let one_k = compact(1000);
+        assert!(one_k.contains('k'), "1000 未格式化为 k 形式：{one_k}");
+        assert!(!one_k.contains(".0"), "{one_k} 带了假精度（1.0k 读起来像精确到百位）");
+
+        for raw in [0i64, 1, 999, 1000, 1500, 999_999, 1_000_000, 12_345_678] {
+            let got = compact(raw);
+            assert!(!got.trim().is_empty(), "compact({raw}) 为空");
+            assert!(got.len() <= 8, "compact({raw}) = {got:?} 过长");
+        }
+    }
+
+    /// 量级必须单调不降：`compact` 只做缩写不做取舍，
+    /// 若 a <= b 却 compact(a) 在量级上大于 compact(b)，是分桶边界写错了。
+    #[test]
+    fn compact_magnitude_is_monotonic() {
+        let seq = [500i64, 999, 1000, 1500, 999_999, 1_000_000, 1_500_000, 1_000_000_000];
+        let mut prev_unit = 'd';
+        for &v in &seq {
+            let s = compact(v);
+            let unit = s.chars().rev().find(|c| c.is_ascii_alphabetic()).unwrap_or('d');
+            // k < M < G：单位只能往上升或不变，不能倒退
+            let rank = |u: char| match u {
+                'G' => 3,
+                'M' => 2,
+                'k' => 1,
+                _ => 0,
+            };
+            assert!(
+                rank(unit) >= rank(prev_unit),
+                "量级倒退：{prev_unit} -> {unit}（token={v}）"
+            );
+            prev_unit = unit;
+        }
     }
 }

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "AgentIsland 灵动岛窗口默认能力",
-  "windows": ["island", "main"],
+  "windows": ["island"],
   "permissions": [
     "core:default",
     "core:window:allow-set-position",

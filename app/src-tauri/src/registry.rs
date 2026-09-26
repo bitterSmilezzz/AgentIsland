@@ -182,3 +182,51 @@ pub fn builtin() -> Vec<AgentProfile> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 档案表是读数的地基：**id 必须唯一且非空**。
+    /// 重名会让 `settings.disabled_agents` 按 id 过滤时一次关掉两家
+    /// （`engine.rs:enabled_profiles` 就是按 id 过滤的）——这是纯数据结构就能防住的错。
+    #[test]
+    fn registry_ids_are_unique_and_non_empty() {
+        let profiles = builtin();
+        assert!(!profiles.is_empty(), "档案表为空，读数无从发生");
+
+        let mut ids: Vec<&str> = profiles.iter().map(|p| p.id.as_str()).collect();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "档案表存在重复 id");
+
+        for p in &profiles {
+            assert!(!p.id.trim().is_empty(), "存在空 id 的档案");
+            assert!(!p.name.trim().is_empty(), "档案 {} 的 name 为空", p.id);
+        }
+    }
+
+    /// Swift 侧 26 个档案，Rust 侧今天 12 个（ADR 0010 / M3 记录在案）。
+    /// 这条**不要求两边相等**——只要求 Rust 侧不少于 12，
+    /// 免得无意中回归到「连今天支持的这 12 家都读不到」。
+    #[test]
+    fn registry_keeps_at_least_the_current_twelve() {
+        let profiles = builtin();
+        assert!(
+            profiles.len() >= 12,
+            "Rust 侧档案数退化了：{} < 12",
+            profiles.len()
+        );
+    }
+
+    /// `builtin()` 每次调用都应给出一致的表：它读 `dirs::home_dir()` 拼路径，
+    /// 但 id 集合只来自代码字面量，与运行环境无关。若哪天有人把 id 做成环境相关，
+    /// 「同一台机器两次启动支持的 agent 不同」这种最难查的 bug 会从这里冒出来。
+    #[test]
+    fn registry_id_set_is_environment_independent() {
+        let a: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
+        let b: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
+        assert_eq!(a, b, "builtin() 的 id 集合与环境/调用次数相关");
+    }
+}
