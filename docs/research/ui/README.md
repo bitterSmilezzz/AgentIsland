@@ -39,8 +39,9 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 | [12](12-halogen-recorder-capsule-states.md) | [@sashabirukoff](https://x.com/sashabirukoff)「Halogen case study otw」 | 常驻录屏小部件的四种形态：闭合 / 展开 / 录制单行 / 回落 | **它不是四个控件，是一个控件的四种高度**；不可用的选项让它在场外而不是置灰 |
 | [13](13-kopp-morphing-dropdown.md) | [@koppkev](https://x.com/koppkev)「morphing dropdown」 | Details.so Vault 的导航下拉在四种内容形态间反复变形 | **先问「这是几个菜单，还是一个菜单的几个状态」**——四种内容共享同一个容器几何，就只有一份开合逻辑 |
 | [14](14-mide-progressive-payment-reveal.md) | [@mide_ajibade](https://x.com/mide_ajibade)「Progressive Payment Reveal」 | 分期付款界面：进度在三个 tab 间切换 | **数字会变时让它数上去，不要跳**——`0 → 47 → 50` 与 `0 → 50` 给用户的信息量不同 |
+| [15](15-ip-as-logo-skill.md) | [s1dashu/ip-as-logo-skill](https://github.com/s1dashu/ip-as-logo-skill)（~5.5k star / MIT） | 单文件 skill：把「好看的吉祥物方图」写成可判定约束（4–7 个大形状、恰好三色、32×32 可读、85–95% 占幅、从下角探出） | **别把创作当验收测试**——每次生成只画一次，不自动重试、不做合规审查、不后处理修补；且**提示词里绝不出现 logo / brand mark / app icon**（模型会照你说的做） |
 
-> 编号说明：01–07、11、12、13、14 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的
+> 编号说明：01–07、11、12、13、14 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的；15 同理（引申发现，2026-09-26）
 > 同源案例（素材与分析均为一手实样，见各篇「素材文件」与「取证命令」）。
 > 分开编号是为了让人一眼看出哪些是指定素材、哪些是沿链发现的。
 
@@ -141,6 +142,13 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
    在多个帧一致；两者不同步是这类控件最常见的 bug，而且**截图看不出来，只在动的时候暴露**。
    → 与 [11](11-plasma-ui-liquid-glass-panels.md)「同一光学参数的两个消费者共用一份来源」
    是同一条纪律在数据层的版本。
+
+24. **别把创作当验收测试。** [15](15-ip-as-logo-skill.md) 的元约束是「每次生成只画一次，
+   不自动重试、不做合规审查、不后处理修补」。同样的话适用于我们自己的产出：**生成一次就交付，
+   不要反复生成直到「看起来对」**——那测的是运气不是规格。它另一条元约束
+   （提示词里绝不出现 logo / brand mark / app icon，因为「模型会照你说的做」）
+   是同一条经验的反面：**你以为在描述约束，其实在设定目标**。
+   → 与共识 1「Do not force an effect」同源：都是「别让意图污染判据」。
 
 ## 新增一篇要做什么
 
