@@ -83,7 +83,7 @@ Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L
 
 「两边都有」= Rust 侧有同名职责的模块，无论实现深浅；「字段/算法差异」列在最右。
 
-### 3.1 只在 Swift 有（约 20 个，约 5,450 行）
+### 3.1 只在 Swift 有（约 19 个，约 5,360 行）
 
 逐个核实过（`ls Sources/AgentIslandCore/` vs `ls app/src-tauri/src/`，Rust 侧 18 个文件里
 `grep -ri` 这些关键词零命中或仅命中注释）：
@@ -93,11 +93,10 @@ Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L
 | [TokenBudgetTracker.swift](../../Sources/AgentIslandCore/TokenBudgetTracker.swift) | 81 | 每日预算告警；0 = 未设，`> 0` 才启用 |
 | [TokenForecastEvaluator.swift](../../Sources/AgentIslandCore/TokenForecastEvaluator.swift) | 92 | 月末预测——CLI `tokens` 的招牌输出 |
 | [TaskDurationTracker.swift](../../Sources/AgentIslandCore/TaskDurationTracker.swift) | 117 | 单次任务时长记录 |
-| [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) | 387 | 外发调度：策略→渲染→传输→记账 |
-| [RemoteNotification.swift](../../Sources/AgentIslandCore/RemoteNotification.swift) | 454 | 消息模型与策略（外发每字节都离开本机） |
+| [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) | 387 | 外发调度：策略→渲染→传输→记账（**策略层已迁 v0.0.174，闸门/渲染/传输/记账未迁**） |
 | [RemoteTransport.swift](../../Sources/AgentIslandCore/RemoteTransport.swift) | 340 | HTTP + SMTP 通道与「发送预览」 |
-| [RemoteNotifyStore.swift](../../Sources/AgentIslandCore/RemoteNotifyStore.swift) | 98 | 通道配置落盘（明文）与密钥（钥匙串）分离 |
 | [SMTPSocket.swift](../../Sources/AgentIslandCore/SMTPSocket.swift) | 174 | Network.framework SMTP 会话 |
+| `RemoteNotification.swift` 的钥匙串部分 | ~90 | `RemoteSecret.write/read/exists/delete`（Security.framework；Rust 侧要选 crate，独立决定） |
 | [AuditReportExporter.swift](../../Sources/AgentIslandCore/AuditReportExporter.swift) | 255 | Markdown/CSV/JSON 运维审计报告 |
 | [TokenReportExporter.swift](../../Sources/AgentIslandCore/TokenReportExporter.swift) | 84 | Token 账单/会话报表导出 |
 | [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) | 512 | JSONL 工具 token 明细索引（只留时间与计数） |
@@ -142,6 +141,7 @@ Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（�
 | 五态枚举 | `ActivityLevel` ∈ offline/idle/completed/working/attention（[Models.swift:44-72](../../Sources/AgentIslandCore/Models.swift#L44)） | `ActivityLevel` 同五名（[models.rs:14-40](../../app/src-tauri/src/models.rs#L14)），测试钉住 serde 名（[models.rs:test](../../app/src-tauri/src/models.rs)） | ✅ **必须一致，已一致** |
 | 健康度与卡死判定 | [AgentHealthEvaluator.swift](../../Sources/AgentIslandCore/AgentHealthEvaluator.swift) 144 行 + `ActivityEngine` 里的 `isHung`（三态、资格来自 `observedRunningSince`） | [health.rs](../../app/src-tauri/src/health.rs)：同扣分表、同 85/70/50 分级、同「判不出的维度不许宣布健康」降级规则；`is_hung` 作为快照字段（[models.rs](../../app/src-tauri/src/models.rs)），界面按分数上屏 | ✅ **v0.0.171 起一致**（含文案逐字相同）。两处有意不同：① Swift 的 `HealthGrade.icon` 是五个 SF Symbol 名，网页渲染不了、**刻意不搬**（见 `health.rs` 注释）② Swift 在详情页展示，Rust 在列表行上只在非「健康」时显示分数徽标 |
 | 异常驻留 / 死锁持续守护 | [AgentResilienceGuard.swift](../../Sources/AgentIslandCore/AgentResilienceGuard.swift) 112 行：卡死 180s / 内存 300s 门槛、600s 冷却，`autoAnomaliesAlertEnabled` 控制 | [resilience.rs](../../app/src-tauri/src/resilience.rs)：同三个数、同「进程消失即作废状态」「条件消失即清冷却」两条规则；事件走 `attention`，文案逐字相同 | ✅ **v0.0.172 起一致**。Rust 侧新增设置项 `auto_anomalies_alert`（默认 `true`，与 Swift 默认一致）。差异：Swift 的事件模型带 `duration`/`pid` 两列，Rust 的 `AgentTaskEvent` 没有，时长放在 `detail` 里 |
+| 外发策略与配置校验 | [RemoteNotification.swift](../../Sources/AgentIslandCore/RemoteNotification.swift) 454 行：`RemoteNotifyPolicy`（节流/静默/在场/类型开关）、`RemoteChannelKind` 的三条校验、逐字段容错的解码 | [remote.rs](../../app/src-tauri/src/remote.rs)：同默认值、同区间（15–3600 / 30–3600）、同归一化（坏时刻退化成**不静默**）、同校验文案；容错解码用 `serde_json::Value` 手写，做到「坏一个字段只作废那一个」 | ⚠️ **v0.0.174 起策略层一致**。未迁：① 钥匙串（`RemoteSecret`）② 闸门与节流（`attempt` 的五道闸与 `claimThrottle`）③ 渲染/传输/记账。Rust 侧尚未接 macOS 在场信号层，`away` 今天一律 fail-open 判成「已离开」 |
 | 状态序 | `<` 定义：offline(0)<idle(1)<completed(2)<working(3)<attention(4)（[Models.swift:66-72](../../Sources/AgentIslandCore/Models.swift#L66)） | `derive(Ord)` 声明顺序同 Swift（[models.rs](../../app/src-tauri/src/models.rs)） | ✅ v0.0.158 已纠正；两边均以 attention 为最高优先级 |
 | 中文 label | 离线/待机/已完成/工作中/待确认 :52-58 | 同 :26-32 | ✅ |
 | 双信号判定 | `working = 进程在 && (workingWindow 内有写入 \|\| CPU >= max(cpuFloor, cpuThreshold))`（[ActivityEngine.swift:8-12](../../Sources/AgentIslandCore/ActivityEngine.swift#L8)、:659） | 同一公式（[engine.rs:254-278](../../app/src-tauri/src/engine.rs#L254)） | ✅ 算法一致；但 `workingWindow=60` 在 Rust 是**硬编码字面量**（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)），Swift 来自可钳制的 `EngineConfig.workingWindow` |
@@ -243,7 +243,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | 电池/节电 | `batterySaverEnabled` + `PowerSourceMonitor` | **无字段** | ❌ | |
 | 异常告警开关 | `autoAnomaliesAlertEnabled`（默认 `true`；只关告警，**不影响** `isHung` 与健康度） | `auto_anomalies_alert`（默认 `true`，v0.0.172 补齐） | ✅ 默认值与语义同（关掉不影响采集） |
 | 启动登录 / 全局热键 / 菜单栏徽标 / 屏幕跟随 / 紧凑视图 / 隐藏停靠条 / 新 agent 提示 | `launchAtLogin` `globalHotKeyEnabled` `menuBarBadgeMode` `screenFollowMode` `compactView` `hideDockedSliver` `knownAgents` | **全部无** | ❌ | 共 7 键；Swift 侧 30 个键名里 Rust 覆盖 12 个 |
-| 远程通知通道 | `remote.notify.channel.<kind>.v1` JSON blob（明文）+ 钥匙串（密钥） | **无** | ❌ | ADR 0005/0006/0009 口径只落在 Swift |
+| 远程通知通道 | `remote.notify.policy.v1` / `kind.v1` / `channel.<kind>.v1` 三个 UserDefaults 键（明文，非密钥）+ 钥匙串（密钥） | `remote_kind` / `remote_policy` / `remote_channels`（v0.0.174；按 ADR 0011 与其余设置同放 settings.json，**只存非密钥字段**）+ `remote_status` 命令 | ⚠️ **非密钥部分已对齐**；密钥（钥匙串条目 `remote.<kind>`）**未迁**，`remote_status` 因此一律报 `hasSecret = false` |
 
 ### 6.3 其他格式口径
 

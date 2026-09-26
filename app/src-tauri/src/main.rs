@@ -12,6 +12,7 @@ mod placement;
 mod procmon;
 mod provider;
 mod registry;
+mod remote;
 mod resilience;
 mod session;
 mod settings;
@@ -249,6 +250,27 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
     e.get_report(&agent_id)
 }
 
+/// 外发状态快照（设置页用）。**不含任何密钥值**——`has_secret` 是布尔，
+/// 凭据只读钥匙串条目名，值永远不经过这里（ADR 0009）。
+/// 钥匙串读取本轮未接：ad-hoc 签名下每次出包代码标识都变，取「存在性」也可能弹窗，
+/// 所以先如实报 `false`，而不是假装查过。
+#[tauri::command]
+fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
+    let engine = state.lock().unwrap();
+    let settings = &engine.settings;
+    let now = crate::tokens::now_ms();
+    crate::remote::status(
+        Some(settings.remote_kind.as_str()),
+        &settings.remote_channels,
+        &settings.remote_policy,
+        false,
+        crate::remote::local_minutes_of_day(now),
+        // Rust 还没接 macOS 的在场信号层（锁屏 / 显示器睡眠 / 无输入时长）：
+        // 传 unavailable ⇒ 按 fail-open 判成「人不在」，依据写在 awayReason 里
+        &crate::remote::PresenceSignals::unavailable(),
+    )
+}
+
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
     // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
@@ -405,6 +427,7 @@ fn main() {
             get_boot_args,
             get_settings,
             save_settings,
+            remote_status,
             set_dock_edge,
             place_island,
             snap_nearest_edge,

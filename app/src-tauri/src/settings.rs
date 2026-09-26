@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,15 @@ pub struct Settings {
     /// 异常驻留 / 死锁持续守护的开关（Swift 侧 `autoAnomaliesAlertEnabled`，默认开）。
     /// 关掉它只关告警，**不影响** `is_hung` 与健康度判定——采集与告警解耦。
     pub auto_anomalies_alert: bool,
+    /// 外发（远程通知）配置。Swift 侧散在四个 UserDefaults 键里
+    /// （`remote.notify.policy.v1` / `kind.v1` / `channel.<kind>.v1`）；
+    /// Rust 按 ADR 0011 收在一个 settings.json 里，**非密钥字段**照旧。
+    /// 密钥永远不在这里：只存钥匙串条目名的推导规则（`remote.<kind>`）。
+    pub remote_kind: String,
+    pub remote_policy: crate::remote::Policy,
+    /// 每个通道各一份配置，切换通道时互不覆盖——否则用户试完邮箱再试 ntfy，
+    /// 回来发现 SMTP 全空了。键是通道名（`ntfy` / `customHTTP` / `smtpEmail`）。
+    pub remote_channels: HashMap<String, crate::remote::ChannelConfig>,
     pub token_alert_threshold: i64,
     pub notification_policy: String, // standard | focus | silent
     pub play_completion_sound: bool,
@@ -37,6 +46,9 @@ impl Default for Settings {
             token_alert_enabled: true,
             auto_anomalies_alert: true,
             token_alert_threshold: 200_000,
+            remote_kind: "ntfy".into(),
+            remote_policy: crate::remote::Policy::default(),
+            remote_channels: HashMap::new(),
             notification_policy: "standard".into(),
             play_completion_sound: true,
             disabled_agents: vec![],
@@ -106,6 +118,16 @@ impl Settings {
         }
         s.token_alert_threshold = s.token_alert_threshold.clamp(1_000, 10_000_000);
         s.dock_anchor = s.dock_anchor.clamp(0.0, 1.0);
+
+        // 外发配置：读出即归一化。损坏/越界的值在落盘时就可能已经写进去了，
+        // 读这条路是唯一防线（Swift `loadPolicy` / `loadConfig` 同一个位置做同一件事）
+        s.remote_policy = s.remote_policy.normalized();
+        for config in s.remote_channels.values_mut() {
+            // 手改 JSON 留下 smtpPort = 0 会每次都连向一个注定不存在的端口，比退回默认更难查
+            if config.smtp_port <= 0 || config.smtp_port > 65_535 {
+                config.smtp_port = 465;
+            }
+        }
         s
     }
 }
@@ -161,6 +183,34 @@ mod tests {
 
     /// `normalized()` 是幂等的：钳一次和钳两次必须一样。
     /// 非幂等意味着每次 `load()` 都会再夹一次，用户的合法值会被慢慢推离他设的那个数。
+    /// 外发配置也是「读出即归一化」：坏值在落盘时就可能已经写进去了，读这条路是唯一防线
+    /// （Swift `loadPolicy` / `loadConfig` 在同一个位置做同一件事）。
+    #[test]
+    fn remote_config_is_normalized_on_load_and_bad_ports_fall_back() {
+        let mut dirty = Settings::default();
+        dirty.remote_policy.throttle_seconds = 5;
+        dirty.remote_policy.quiet_start = "25:00".into();
+        dirty.remote_policy.quiet_end = "07:00".into();
+        dirty.remote_channels.insert(
+            "smtpEmail".into(),
+            crate::remote::ChannelConfig {
+                smtp_port: 0,
+                ..Default::default()
+            },
+        );
+
+        let clean = dirty.normalized();
+        assert_eq!(clean.remote_policy.throttle_seconds, crate::remote::THROTTLE_RANGE.0);
+        assert!(
+            clean.remote_policy.quiet_start.is_empty() && clean.remote_policy.quiet_end.is_empty(),
+            "写坏的时刻必须整对作废"
+        );
+        assert_eq!(clean.remote_channels["smtpEmail"].smtp_port, 465);
+
+        // 归一化幂等：再读一遍不会再变
+        assert_eq!(clean.normalized().remote_policy, clean.remote_policy);
+    }
+
     #[test]
     fn normalized_is_idempotent() {
         let mut s = Settings::default();

@@ -19,6 +19,8 @@ tiny_http = "0.12"
 walkdir = "2"
 dirs = "5"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# 本地时区（静默时段要按用户的钟表判）：lock 里早有这个版本，作为直接依赖不增加构建成本
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

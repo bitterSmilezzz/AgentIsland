@@ -13,6 +13,7 @@ name = "agentisland"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
