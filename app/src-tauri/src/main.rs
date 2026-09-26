@@ -89,7 +89,8 @@ fn place_island(
             e.settings.dock_anchor,
         )
     };
-    let (left, top) = placement::place(edge, anchor, width, height);
+    let wa = placement::work_area_under_window(&window);
+    let (left, top) = placement::place_with(edge, anchor, width, height, wa);
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
@@ -108,11 +109,12 @@ fn snap_nearest_edge(
 ) -> Result<String, String> {
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
-    let cx_phys = pos.x + size.width as i32 / 2;
-    let cy_phys = pos.y + size.height as i32 / 2;
-    let (wx, wy, ww, wh, _scale) = placement::work_area_at(cx_phys, cy_phys);
-    let cx = (cx_phys as f64) / _scale;
-    let cy = (cy_phys as f64) / _scale;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    // 统一回逻辑坐标：outer_position 是物理像素，而 place_with 吃逻辑坐标。
+    // 原先这里拿物理中心点去问一个返回逻辑工作区的函数，2x 屏上距离全算错。
+    let cx = (pos.x as f64 + size.width as f64 / 2.0) / scale;
+    let cy = (pos.y as f64 + size.height as f64 / 2.0) / scale;
+    let (wx, wy, ww, wh, _s) = placement::work_area_at_logical(&window, cx, cy);
 
     let d_top = cy - wy;
     let d_bottom = wy + wh - cy;
@@ -137,7 +139,8 @@ fn snap_nearest_edge(
         s.save();
     }
     let edge = DockEdge::parse(edge_str);
-    let (left, top) = placement::place(edge, anchor.clamp(0.0, 1.0), width, height);
+    let wa = placement::work_area_under_window(&window);
+    let (left, top) = placement::place_with(edge, anchor.clamp(0.0, 1.0), width, height, wa);
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
@@ -156,7 +159,8 @@ fn reposition_now(window: tauri::WebviewWindow, state: State<SharedEngine>, widt
             e.settings.dock_anchor,
         )
     };
-    let (left, top) = placement::place(edge, anchor, width, height);
+    let wa = placement::work_area_under_window(&window);
+    let (left, top) = placement::place_with(edge, anchor, width, height, wa);
     let _ = window.set_position(LogicalPosition::new(left, top));
 }
 
@@ -166,7 +170,8 @@ fn reposition(app: &AppHandle, _state: State<SharedEngine>, edge: &DockEdge, anc
         let scale = win.scale_factor().unwrap_or(1.0);
         let w = size.width as f64 / scale;
         let h = size.height as f64 / scale;
-        let (left, top) = placement::place(*edge, anchor, w, h);
+        let wa = placement::work_area_under_window(&win);
+        let (left, top) = placement::place_with(*edge, anchor, w, h, wa);
         let _ = win.set_position(LogicalPosition::new(left, top));
     }
 }

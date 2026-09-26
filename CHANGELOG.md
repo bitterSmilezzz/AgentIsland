@@ -4,6 +4,60 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.158] - 2026-09-26
+
+### 主次定了：移动端降为后续可选项，先做跨平台桌面端；placement 换成真工作区，并纠正我上一轮改错的五态序
+
+用户明确主次：**先把跨平台桌面端做完**，移动端与 bot 是后续可选项。
+这条写进 CONTEXT.md 与 22 号开头——22 号先定架构与坑，**不得因它推迟桌面端**。
+
+### placement.rs 从硬编码 1440×900 换成 Tauri 真工作区（ADR 0010 的 M2 后半）
+
+原先 macOS/Linux 分支返回 `(0, 0, 1440, 900)`，任何非该分辨率的屏幕贴边全错；
+且 `work_area_at` 直接忽略传入坐标，多显示器场景必然算错。
+
+改为走 Tauri 的 monitor API：`Monitor::work_area()` 在 macOS 底层是
+`NSScreen.visibleFrame()`（已读 `tauri-runtime-wry/src/monitor/macos.rs` 确认，
+`visibleFrame` 与 `frame` 的差正是 Dock 与菜单栏），**所以拿到的是真空工作区**，
+灵动岛不会再被 Dock 压住。Windows 侧保留原 Win32 实现，不回退。
+
+顺手修掉三个几何/口径问题：
+
+- **`snap_nearest_edge` 混了物理与逻辑坐标**：它拿 `outer_position()`（物理像素）
+  去问一个返回逻辑工作区的函数，2x 屏上四条距离全算错。改为先统一回逻辑坐标。
+- **超大窗口会飞出屏幕**：原 clamp 在「窗口比工作区大」时整段跳过（`ww > width` 为假），
+  居中算式给出负值，窗口一截在屏外，**用户可能再也拖不回来**。改为此时仍钳回工作区左/上边界。
+- 新增 5 条 `place_with` 几何测试（四边居中、锚点真的生效、超大窗口不出现 NaN 且钳回边界、
+  越界锚点仍留在工作区内、0×0 兜底不出 NaN）。Rust 测试从 14 条增至 **19 条**。
+
+### 我(agent)上一轮改错了一处，这轮按对照表纠正
+
+**M5 两端口径对照表**（新增 [23 号](docs/workbench/23-swift-rust-parity-matrix.md)，267 行）
+逐行比对 Swift 与 Rust 两份并列实现，坐实 8 处不一致。其中一条戳中我上一轮的手：
+
+我把 Rust 侧 `ActivityLevel` 的序改成了 `attention > working`（让 working 最大）。
+**这是错的。** Swift 侧 `ActivityLevel.order()`（`Models.swift:64-72`）是
+`offline 0 / idle 1 / completed 2 / working 3 / attention 4`——**attention 才是最高**。
+业务上也该如此：`attention` 是「agent 停下来等用户拍板」，`working` 是「agent 自己还在跑」，
+前者需要人立刻回去。两边序不同，多 agent 汇总取 `max()` 时会选出不同的 agent。
+
+本轮改回与 Swift 逐值一致，测试断言一并纠正，并在注释里写明**不许再改回去**与踩坑记录
+（`418805c` 曾改反，被 23 号逐行比出来）。这正是 ADR 0010 里「不允许两边都有但算法不同」那条红线。
+
+### 23 号查出的其他问题（记录在案，排队修）
+
+- **Rust 侧完全没有「读不到 ≠ 零」那套口径**：`AgentObservability` 五类结论
+  （observed / blindSessionSource / noLocalData / sourceNotWired / notInstalled）在 `app/` 零命中，
+  `AgentSnapshot` 既无 `installed` 也无 probe health。**所以侧边栏的「待机」无法与「没读到」区分**，
+  而「没查到就说没查到」正是我们唯一被外部独立验证过的差异（20 号判断 4）。
+- `claude`/`opencode` 的 CPU 阈值两边不一致（Swift 20.0 floor vs Rust `None`）。
+- `zcode` 会话目录是两棵不同的树（`~/.zcode/v2/checkpoints` vs `~/.zcode/cli/rollout`）。
+- `roo-code` vs `roo` id 不同，且 settings 空集语义相反（Swift `enabledAgents` 空=全关，
+  Rust `disabled_agents` 空=全开）——新装用户两边看到的 agent 数就不同。
+- Rust 侧 CLI 0 个子命令（Swift 12 个）；`AgentProfile` 缺 4 个 Swift 侧必需的字段。
+
+Swift 侧无代码改动，测试基数仍为 548 条，Rust 侧增至 19 条。
+
 ## [0.0.157] - 2026-09-26
 
 ### 「移动端是不是一定要服务器中转」：不是二元是四种形态，并实测出 DimRemote 的形态

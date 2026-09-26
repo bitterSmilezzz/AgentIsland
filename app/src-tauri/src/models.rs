@@ -2,20 +2,25 @@ use serde::{Deserialize, Serialize};
 
 // MARK: - 活动等级（五态，与 macOS AgentIslandCore/Models.swift 同源）
 
-/// 声明序 = 严重度**升**序，`derive(Ord)` 直接继承它。
-/// 这样多 agent 汇总用 `max()` 就是「取最严重的那个」：
-/// 一个 agent 待确认、其余工作中 → Attention 不能输给 Working。
-/// **改动这个顺序前先搜 `.max()` / `fold` 的调用方**，别让「语义正确」跑在
-/// 「汇总没用到序」的巧合上。
-/// 注意 `serde(rename_all = "lowercase")` 只影响序列化名，与此处的 Ord 无关。
+/// 声明序 = 严重度**升**序，`derive(Ord)` 直接继承它，`max()` 即「取最需要用户理的那个」。
+///
+/// **`attention` 必须排在 `working` 之上**，不是反过来：`attention` 是「agent 停下来等用户
+/// 拍板」，`working` 是「agent 自己还在跑」。前者需要人立刻回去，后者不需要。
+/// 这个序与 Swift 侧 `ActivityLevel.order()` 逐值一致
+/// （[Models.swift:64-72](../../../Sources/AgentIslandCore/Models.swift)：offline 0 / idle 1 /
+/// completed 2 / working 3 / attention 4）。
+/// `418805c` 曾把它改反过（让 working 最大），被
+/// [23 号口径对照表](23-swift-rust-parity-matrix.md)逐行比出来——**两边序不同，
+/// 多 agent 汇总 `max()` 时会选出不同的 agent**，正是「两边都有但算法不同」那条红线。
+/// `serde(rename_all = "lowercase")` 只影响序列化名，与此处的 Ord 无关。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ActivityLevel {
     Offline,
     Idle,
     Completed,
-    Attention,
     Working,
+    Attention,
 }
 
 impl ActivityLevel {
@@ -205,12 +210,15 @@ mod tests {
         assert_eq!(ActivityLevel::Attention.as_str(), "attention");
     }
 
-    /// 五态序 = 严重的降序：`Working > Attention > Completed > Idle > Offline`。
-    /// 多 agent 汇总时按最大值取，序错了会出现「一个 agent 待确认却显示待机」。
+    /// 五态序 = 需要用户插手的急迫度升序：`Attention > Working > Completed > Idle > Offline`。
+    /// **attention 高于 working**：前者是「agent 停下来等用户拍板」，后者是「agent 自己还在跑」。
+    /// 多 agent 汇总用 `max()` 取「最需要人理的那个」，序错了会出现「有 agent 在等确认，
+    /// 汇总却显示工作中」——它把人按在电脑前，而真正该催的那件事没人看见。
+    /// 与 Swift 侧 `Models.swift:64-72` 的 `order()` 逐值一致（红线：两边算法必须相同）。
     #[test]
-    fn activity_level_ordering_is_severity_desc() {
-        assert!(ActivityLevel::Working > ActivityLevel::Attention);
-        assert!(ActivityLevel::Attention > ActivityLevel::Completed);
+    fn activity_level_ordering_matches_swift() {
+        assert!(ActivityLevel::Attention > ActivityLevel::Working);
+        assert!(ActivityLevel::Working > ActivityLevel::Completed);
         assert!(ActivityLevel::Completed > ActivityLevel::Idle);
         assert!(ActivityLevel::Idle > ActivityLevel::Offline);
     }
