@@ -144,11 +144,34 @@ fn parse_url(url: &str) -> Option<Parsed> {
 
 impl Transport for HttpTransport {
     fn perform(&self, request: &Request) -> Outcome {
-        // SMTP 走的是另一条会话（下一轮）。这里如实地说不支持，而不是假装送达
-        if request.smtp.is_some() || request.method == "SMTP" {
-            return Outcome::Failed {
-                reason: "SMTP 会话未接入".into(),
-                permanent: true,
+        // SMTP 走另一条会话（Swift 的 `HTTPTransport` 也是这么分的：先看 smtp 字段）
+        if request.method == "SMTP" || request.smtp.is_some() {
+            let Some(target) = &request.smtp else {
+                // 没有目标 = 渲染时就缺密钥（钥匙串未接入）：闸门本该拦住，
+                // 真走到这里就如实说清楚，而不是拿空凭据去撞对端
+                return Outcome::Failed {
+                    reason: "SMTP 目标缺失（通道未配齐密钥）".into(),
+                    permanent: true,
+                };
+            };
+            let subject = request
+                .headers
+                .iter()
+                .find(|field| field.name == "Subject")
+                .map(|field| field.value.clone())
+                .unwrap_or_default();
+            return match crate::smtp::TlsSession::connect(target) {
+                Err(reason) => Outcome::Failed {
+                    reason,
+                    permanent: false,
+                },
+                Ok(mut session) => crate::smtp::run(
+                    &mut session,
+                    target,
+                    &subject,
+                    &request.body,
+                    crate::tokens::now_ms(),
+                ),
             };
         }
         let Some(url) = parse_url(&request.url) else {
@@ -370,12 +393,11 @@ mod tests {
     }
 
     #[test]
-    fn smtp_is_reported_as_unwired_and_https_is_actually_attempted() {
-        // https 现在真的去连（下面另有自签证书的端到端用例）：连不上时报的是连接错误，
-        // 而不是「未接入」——这两句话对应完全不同的排查方向
-        // 1 号端口不会被测试绑定（特权端口），于是「连不上」是确定性的。
-        // 别用「绑定后释放」那一招：并行跑的其它用例会立刻把这个端口抢走，
-        // 于是连接会成功、报的错变成 TLS 握手失败——这条曾经因此间歇性变红。
+    fn https_is_actually_attempted_and_smtp_fails_honestly_without_a_target() {
+        // https 现在真的去连（另有自签证书的端到端用例）：连不上时报的是连接错误，
+        // 而不是「未接入」——这两句话对应完全不同的排查方向。
+        // 用 1 号端口（特权端口，测试不会绑它）保证拒绝连接是确定性的：
+        // 「绑定后释放」那一招在并行套件里会被别的用例抢走端口。
         let https = Request {
             url: "https://127.0.0.1:1/x".into(),
             ..post(1, "/", "b")
@@ -388,12 +410,28 @@ mod tests {
             other => panic!("应报连接失败，实际 {other:?}"),
         }
 
-        let smtp = Request {
+        // 没有目标（渲染时就没密钥）⇒ 如实说清楚，而不是拿空凭据去撞对端
+        let without_target = Request {
+            method: "SMTP".into(),
+            url: String::new(),
+            smtp: None,
+            ..post(1, "/", "b")
+        };
+        match HttpTransport::new().perform(&without_target) {
+            Outcome::Failed { reason, permanent } => {
+                assert!(reason.contains("SMTP 目标缺失"), "{reason}");
+                assert!(permanent);
+            }
+            other => panic!("应如实报缺目标，实际 {other:?}"),
+        }
+
+        // 非 465 在连接之前就被挡下（STARTTLS 的原地升级不支持）——**不碰网络**
+        let starttls = Request {
             method: "SMTP".into(),
             url: String::new(),
             smtp: Some(crate::render::SmtpTarget {
                 host: "smtp.example.com".into(),
-                port: 465,
+                port: 587,
                 user: "me@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
                 password: "p".into(),
                 from: "me@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
@@ -401,12 +439,9 @@ mod tests {
             }),
             ..post(1, "/", "b")
         };
-        match HttpTransport::new().perform(&smtp) {
-            Outcome::Failed { reason, permanent } => {
-                assert!(reason.contains("SMTP"), "{reason}");
-                assert!(permanent, "SMTP 会话未接入：重试也不会有不同结果");
-            }
-            other => panic!("应如实报未接入，实际 {other:?}"),
+        match HttpTransport::new().perform(&starttls) {
+            Outcome::Failed { reason, .. } => assert!(reason.contains("465"), "{reason}"),
+            other => panic!("587 应在连接前被挡下，实际 {other:?}"),
         }
     }
 

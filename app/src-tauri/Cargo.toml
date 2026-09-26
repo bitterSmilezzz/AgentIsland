@@ -25,6 +25,8 @@ libc = "0.2"
 # 用系统 TLS 栈（macOS = Security.framework，与 Swift 侧 URLSession/Network.framework 同一套），
 # 好处是它同时带进 security-framework —— 下一轮钥匙串正好要用同一个 crate。
 native-tls = "0.2"
+# SMTP 的 AUTH LOGIN 与 RFC 2047 主题都要 base64；lock 里早有 0.21.7（传递依赖），列为直接依赖不增加下载
+base64 = "0.21"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

@@ -18,6 +18,7 @@ mod render;
 mod resilience;
 mod session;
 mod settings;
+mod smtp;
 mod sqlite;
 mod tokens;
 mod transport;

@@ -946,8 +946,11 @@ mod async_tests {
     fn dispatch_returns_immediately_even_when_the_transport_is_slow() {
         // 这条是本轮的重点：传输最长 10 秒，引擎那一拍不能在它上面等
         let calls = Arc::new(AtomicUsize::new(0));
+        // 传输 500ms、上限 150ms：判据要**宽到不受机器负载影响**，
+        // 同时**窄到把「同步跑」钉死**（同步会等满 500ms）。
+        // 之前写 300ms/100ms，在刚编译完的负载下飘过一次红。
         let notifier = Notifier::with_transport(Box::new(SlowTransport {
-            delay: Duration::from_millis(300),
+            delay: Duration::from_millis(500),
             calls: calls.clone(),
         }));
         let started = std::time::Instant::now();
@@ -963,7 +966,7 @@ mod async_tests {
         );
         let elapsed = started.elapsed();
         assert!(
-            elapsed < Duration::from_millis(100),
+            elapsed < Duration::from_millis(150),
             "dispatch 必须立刻返回，实际等了 {elapsed:?}"
         );
         // 结果稍后由工作线程写进账本
