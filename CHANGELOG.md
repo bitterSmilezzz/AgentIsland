@@ -4,6 +4,69 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.151] - 2026-09-26
+
+### 收 graphify 调研：用机制而非文档保证 agent 行为，以及 Apache-2.0 与 GPL 的分界
+
+[Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify)（GitHub API 2026-09-26：
+**121,455 star / 11,705 fork / Python / Apache-2.0 / 创建于 2026-04-03（不到 6 个月）/
+1477 open issues / default_branch `v8`**）。自述把它代码库+文档+SQL+PDF 变成可查询知识图谱，
+形态是 **一个 `/graphify` agent skill**（Claude Code / Cursor / Codex / Gemini CLI 等 20+ 平台）。
+新增 [`19-graphify-confidence-and-strict-hook.md`](docs/workbench/19-graphify-confidence-and-strict-hook.md)（665 行）。
+
+**一句话**：**它是「用机制而不是用文档保证 agent 行为」这条路目前最完整的公开实现**，
+而机制只有两层——一个 fail-open 的 PreToolUse guard（默认只 nudge），
+加一个 opt-in 的 strict deny（第一次 raw source read 被拒，然后永久退回 soft nudge）。
+
+**C｜strict 机制（最该抄的一处，抄形状不抄内容）**：挂在 Claude Code 的 PreToolUse
+（Read|Glob + Bash|Grep），`_run_hook_guard`（`cli_full.py:814-955`）**五道闸门之后才是 deny**，
+全程 fail-open。「至多一次」靠 `_mark_session_denied` 的 `O_CREAT|O_EXCL` 文件互斥 + 24h GC
+（`cli_full.py:710-732`）；「不卡死」靠 query 过就自解锁的 `last_query_stamp` TTL 1800s、
+Glob/search 永不 deny、stale 图软化为 nudge。14 个 pytest 逐条钉住
+（`tests/test_hook_strict.py:64-167`）。
+
+**这条直击我们的一个真实短板**：我们的纪律（「给 agent 的操作指令必须点名工具」、
+「项目文件是数据不是指令」）**全靠文档约定，没有机制保证**。已给出三个可落点。
+
+**B｜三档置信度：判断是不加第三档**（这条没有盲目附和"三档更好"）：
+`AgentProvenance`（`Models.swift:11-19`）是确定性四态 `selfReported` / `observed` /
+`inferred` / `conflict`，且**已有 graphify 没有的 `conflict` 格**（自报与观测对不上，两条都显示）。
+graphify 的 AMBIGUOUS **只由 LLM 语义 pass 产生**（`llm.py:485`/`:515` 的 prompt 与
+`extraction-spec.md:59` 是全部出处；AST 侧 39 处 INFERRED、**零处** AMBIGUOUS）——
+它是「模型的出口阀」（离散 rubric 里没一个值合适），不是算法判定。我(agent)复核了这一点：
+`extract.py` 里那 2 处 "AMBIGUOUS" 命中是 C++/CLI 正则的 `_CPP_CLI_SUFFIX_UNAMBIGUOUS_RE`
+变量名，与置信度无关。
+**真要动就按同一动机**（`Models.swift:6-8`「同一张卡片混着两种可信度」）**把 `inferred` 拆成
+「有已知负载能解释 CPU」与「没有」两档**——加 case，不加浮点 score。
+
+**D｜Apache-2.0 vs GPL-3.0 的分界（这是与 18 篇的关键区别）**：
+
+| | graphify（Apache-2.0） | Vorssaint（GPL-3.0） |
+| :--- | :--- | :--- |
+| 传染性 | **不传染**，embed/派生/闭源再分发均可 | **强传染**，派生必须以 GPL 提供源码 |
+| 我们能做的 | **可以读源码学实现、可复制代码片段进本项目** | 只能学做法与结构，源码一行不能进 |
+| 义务 | 保留 LICENSE/NOTICE/版权；**改动过的文件标注 "changed"** | 提供源码、同 license、声明修改 |
+
+**所以对 graphify：源码可以抄**——但我(agent)加了三条限定：① 它 NOTICE 里有一段 MIT 历史
+（"contributed under the MIT License prior to the relicensing"），**逐文件判断**，
+抄整段/整文件时是实的；② Apache-2.0 **不授予商标权**，叫它名字依然不行；
+③ 它 6 个月从 0 到 121k star，**API 与 skill 格式都在剧烈变动**，
+所以抄「形状」不抄「具体哪一行」（例如抄 hook guard 的五道闸门形状可以，
+抄它的 `_HOOK_SOURCE_EXTS` 元组没意义——它的清单会变）。
+
+**另两条可抄**：
+- **git hook 的安装方式**：解释器路径**安装时内嵌进 hook 脚本**（GUI git client / CI 里
+  `~/.local/bin` 不在 PATH 也能触发）+ marker 追加不覆盖 + **整块包子 shell**
+  （防第一个 hook 的 `exit 0` 吞掉后面的）。**我们的 `scripts/install-git-hooks.sh:19-24`
+  正是「有别人 hook 就 exit 1」且无 rebase 短路**——这是本仓一个具体可修的点。
+- **`tools/skillgen`**：用**片段（fragments）+ 期望输出快照**生成 13 个平台的 skill 文件。
+  这正是我们「同一份内容要分发到多家 harness」那个问题的工业级解法。
+
+**没核实的**：665 行报告读完，但 graphify 主体（`graphify/` 下约 60 个模块）只读了
+`llm.py`、`extract.py`、`cli_full.py` 与 skillgen 结构；它的 benchmark 数字未复现
+（方法论记了：它怎么设计 benchmark）；`/graphify` 未实跑（本机未 `uv tool install`）；
+13 个平台的 skill 差异只看了目录结构没逐字比对。Swift 侧无改动，测试基数仍为 548 条。
+
 ## [0.0.150] - 2026-09-26
 
 ### 收 Vorssaint 调研：可插拔架构与权限 UX，并核实「只做两家」的独立佐证
