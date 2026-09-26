@@ -83,16 +83,15 @@ Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L
 
 「两边都有」= Rust 侧有同名职责的模块，无论实现深浅；「字段/算法差异」列在最右。
 
-### 3.1 只在 Swift 有（约 22 个，约 5,700 行）
+### 3.1 只在 Swift 有（约 21 个，约 5,560 行）
 
-逐个核实过（`ls Sources/AgentIslandCore/` vs `ls app/src-tauri/src/`，Rust 侧 11 个文件里
+逐个核实过（`ls Sources/AgentIslandCore/` vs `ls app/src-tauri/src/`，Rust 侧 17 个文件里
 `grep -ri` 这些关键词零命中或仅命中注释）：
 
 | Swift 模块 | 行 | 职责（为什么不能少） |
 | :--- | ---: | :--- |
 | [TokenBudgetTracker.swift](../../Sources/AgentIslandCore/TokenBudgetTracker.swift) | 81 | 每日预算告警；0 = 未设，`> 0` 才启用 |
 | [TokenForecastEvaluator.swift](../../Sources/AgentIslandCore/TokenForecastEvaluator.swift) | 92 | 月末预测——CLI `tokens` 的招牌输出 |
-| [AgentHealthEvaluator.swift](../../Sources/AgentIslandCore/AgentHealthEvaluator.swift) | 144 | 健康度评分（`HealthGrade`） |
 | [AgentResilienceGuard.swift](../../Sources/AgentIslandCore/AgentResilienceGuard.swift) | 112 | 异常驻留/死锁持续守护状态机 |
 | [TaskDurationTracker.swift](../../Sources/AgentIslandCore/TaskDurationTracker.swift) | 117 | 单次任务时长记录 |
 | [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) | 387 | 外发调度：策略→渲染→传输→记账 |
@@ -141,6 +140,7 @@ Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（�
 | 项 | Swift | Rust | 判定 |
 | :--- | :--- | :--- | :--- |
 | 五态枚举 | `ActivityLevel` ∈ offline/idle/completed/working/attention（[Models.swift:44-72](../../Sources/AgentIslandCore/Models.swift#L44)） | `ActivityLevel` 同五名（[models.rs:14-40](../../app/src-tauri/src/models.rs#L14)），测试钉住 serde 名（[models.rs:test](../../app/src-tauri/src/models.rs)） | ✅ **必须一致，已一致** |
+| 健康度与卡死判定 | [AgentHealthEvaluator.swift](../../Sources/AgentIslandCore/AgentHealthEvaluator.swift) 144 行 + `ActivityEngine` 里的 `isHung`（三态、资格来自 `observedRunningSince`） | [health.rs](../../app/src-tauri/src/health.rs)：同扣分表、同 85/70/50 分级、同「判不出的维度不许宣布健康」降级规则；`is_hung` 作为快照字段（[models.rs](../../app/src-tauri/src/models.rs)），界面按分数上屏 | ✅ **v0.0.171 起一致**（含文案逐字相同）。两处有意不同：① Swift 的 `HealthGrade.icon` 是五个 SF Symbol 名，网页渲染不了、**刻意不搬**（见 `health.rs` 注释）② Swift 在详情页展示，Rust 在列表行上只在非「健康」时显示分数徽标 |
 | 状态序 | `<` 定义：offline(0)<idle(1)<completed(2)<working(3)<attention(4)（[Models.swift:66-72](../../Sources/AgentIslandCore/Models.swift#L66)） | `derive(Ord)` 声明顺序同 Swift（[models.rs](../../app/src-tauri/src/models.rs)） | ✅ v0.0.158 已纠正；两边均以 attention 为最高优先级 |
 | 中文 label | 离线/待机/已完成/工作中/待确认 :52-58 | 同 :26-32 | ✅ |
 | 双信号判定 | `working = 进程在 && (workingWindow 内有写入 \|\| CPU >= max(cpuFloor, cpuThreshold))`（[ActivityEngine.swift:8-12](../../Sources/AgentIslandCore/ActivityEngine.swift#L8)、:659） | 同一公式（[engine.rs:254-278](../../app/src-tauri/src/engine.rs#L254)） | ✅ 算法一致；但 `workingWindow=60` 在 Rust 是**硬编码字面量**（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)），Swift 来自可钳制的 `EngineConfig.workingWindow` |
@@ -193,7 +193,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `status` / `top` | LiveSampler、ProcessMonitor、CLIOutput、CLIModels | ❌ 无 |
 | `tokens` | TokenUsageMonitor、TokenForecastEvaluator、TokenCostEstimator、DailyBudget | ❌ 无（Rust 有 `get_report` 供前端，无终端输出） |
 | `state` | AgentState（读 App 进程内状态，含自报/冲突） | ❌ 无；且后端 `AgentSnapshot` 无 provenance 字段 |
-| `doctor` | AgentObservability、AgentHealthEvaluator、SessionProbeHealth | ❌ 无 CLI；Rust 仅有 §4.1 的局部可观测性判定，健康与探测原因链仍缺 |
+| `doctor` | AgentObservability、AgentHealthEvaluator、SessionProbeHealth | ❌ 无 CLI；Rust 仅有 §4.1 的局部可观测性判定，**健康度已有（v0.0.171）但探测原因链仍缺** |
 | `check` / `clean` | AgentResilienceGuard、AgentCleaner、ProcessTreeInspector | ❌ 无；Rust 有 `terminate_agent` 但无异常判定 |
 | `selftest` | Selftest（无头假数据断言） | ❌ 无同名 CLI 子命令；Rust 有 `cargo test --locked` 守护五态和会话解析 |
 | `open` / `notify` | URLSchemeParser、LocalEventHTTP、SelfReport | ⚠️ 部分：webhook 服务端在（[webhook.rs](../../app/src-tauri/src/webhook.rs)），客户端/深链解析无 |

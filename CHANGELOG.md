@@ -4,6 +4,54 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.171] - 2026-09-27
+
+### 判定增强开张：迁入健康度评估与它依赖的「卡死」三态
+
+按 ADR 0010 的顺序，token 明细收口后进「判定增强」组。第一个模块选
+`AgentHealthEvaluator`（144 行），但它的第一个扣分维度就依赖一个 **Rust 完全没有的概念**：
+`grep -i hung app/src-tauri/src` 零命中——卡死判定从来不存在，所以两个一起搬。
+
+**新增 `health.rs`**：`Grade`（五档，中文与 Swift `HealthGrade.rawValue` 逐字相同）、
+100 分制 `Report`（分数/等级/摘要/问题清单/建议）、`evaluate()`（扣分表、85/70/50 分级、
+分数钳制全部照搬）。三条口径值得点名：
+
+- **「健康」是一条全清结论**：有维度没测（`is_hung == None` 或 `cpu_percent == None`）就不许宣布
+  健康，降级为「观测不全」。但**只在其余维度干净时降级**——内存/CPU 已经扣分时那两级正在喊话，
+  换成「观测不全」反而盖掉了真实的严重度。
+- **判不出的维度不扣分**：给 `None` 扣分等于凭空造一个病症，给它满分又等于宣布清白。
+- **建议的优先级**与扣分同序（卡死 → 内存 → CPU → 未评估 → 一般）。
+
+**卡死三态**（`health::is_hung`）：死锁是「CPU 连续超阈值达 5 分钟」的**时间性**判定，
+而前提是这段窗口**确实被观测过**。引擎新增 `observed_running_since` 作资格——一次性 CLI 进程
+活不到 5 分钟，它的每一拍都凑不出窗口，此时 `false` 的含义是「没测」而不是「没有」，所以返回
+`None`。资格写在数据里、不靠调用方自报（Swift 侧上一版让调用方传 `sustainedObservation`，
+漏传一处的症状是静默谎报）。
+
+**阈值收敛到一处**：`RUNAWAY_CPU_THRESHOLD = 70.0` / `RUNAWAY_DURATION_MS = 300_000`
+此前是 `engine.rs` 里的两个字面量（熔断告警一处、健康度要另写一处）；现在全仓只有 `health.rs`
+一个来源。顺带把熔断的 `>` 对齐成 Swift 的 `>=`。
+
+**顺带修掉一处哑火**：`views.js` 早就在读 `snap.isHung`，而 Rust 输出的是 `is_hung`
+（快照没有 `rename_all`）——于是「卡死时圆环变红」这条路径**从来没有亮过**。为此加了一条哨兵
+`every_snapshot_field_the_ui_reads_exists_in_the_json`：它直接解析 `views.js` 源码里的
+`snap.<字段>`，逐个比对真实序列化出来的 JSON 键。**视图读一个后端不输出的键不会报错，
+只会让那一档静默失效**，这条哨兵正是为这类错配准备的（反向验证过：把 `is_hung` 改回 `isHung`，
+测试红并点名 `["isHung"]`）。
+
+界面：非「健康」时在列表行上显示分数徽标（等级决定配色），`title` 里是摘要 + 问题 + 建议。
+Swift 的 `HealthGrade.icon` 是五个 SF Symbol 名，网页渲染不了——**刻意不搬**：要么猜等义码位
+（猜错没人发现），要么留一段永不被调用的代码。
+
+测试 Rust 97 → **105**（+8：健康度 7 条 + 跨文件字段哨兵 1 条）。写测试时自己的两条期望先红了
+（`"9 GB"` 只是文案、`memory_bytes` 还是 0），按实现的实际口径改正。
+新加的 `Grade::glyph()` 因为没人用而多产生一条编译警告，也一并删掉（警告数保持 26）。Swift 侧零改动。
+
+没做：Swift 在**详情页**展示健康度，Rust 没有详情页，暂时只在列表行上表达；
+`AgentResilienceGuard` / `TaskDurationTracker`（同组剩下两个）未迁；
+Swift 的 `AgentCleaner.hungNotEvaluatedNote` 那条从配置读的措辞在 Rust 无对应
+（Rust 侧的建议文案里不含阈值数字，与 Swift 同一处口径）。
+
 ## [0.0.170] - 2026-09-27
 
 ### 迁入 `StructuredTokenUsageIndex` 的保留口径：70 天窗口、折入保和、单文件上限

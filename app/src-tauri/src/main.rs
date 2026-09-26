@@ -5,6 +5,7 @@ mod atomicfile;
 mod cost;
 mod engine;
 mod filemon;
+mod health;
 mod models;
 mod observability;
 mod placement;

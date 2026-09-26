@@ -1,6 +1,7 @@
 use crate::filemon::{time_ago_text, FileMonitor};
 use crate::models::*;
 use crate::observability::{self, Evidence};
+use crate::health;
 use crate::procmon::{memory_text, ProcessMonitor};
 use crate::session::{self, Signal};
 use crate::settings::Settings;
@@ -29,6 +30,10 @@ pub struct ActivityEngine {
     alerted_fingerprints: HashSet<String>,
     last_completed_fp: HashMap<String, String>,
     high_cpu_since: HashMap<String, i64>,
+    /// 连续观测起点：进程在跑的每一拍续上，进程消失即作废。
+    /// 它是「卡死」判定的**资格**——死锁是「CPU 连续超阈值达 5 分钟」的时间性判定，
+    /// 而前提是这段窗口确实被观测过。资格写在数据里、不靠调用方自报，见 [`crate::health::is_hung`]。
+    observed_running_since: HashMap<String, i64>,
     last_cost_spike: HashMap<String, i64>,
     token_rate: HashMap<String, (i64, i64)>,
     probe_cache: HashMap<String, (u64, SystemTime, Option<Signal>, usize)>,
@@ -54,6 +59,7 @@ impl ActivityEngine {
             alerted_fingerprints: HashSet::new(),
             last_completed_fp: HashMap::new(),
             high_cpu_since: HashMap::new(),
+            observed_running_since: HashMap::new(),
             last_cost_spike: HashMap::new(),
             token_rate: HashMap::new(),
             probe_cache: HashMap::new(),
@@ -151,7 +157,15 @@ impl ActivityEngine {
                 .and_then(|t| t.elapsed().ok())
                 .map(|d| d.as_secs_f64());
 
-            list.push(AgentSnapshot {
+            // 卡死三态：资格（连续观测够不够久）与事实（高 CPU 持续够不够久）都来自本引擎的
+            // 跨拍状态，所以判定放在这里、由 `health::is_hung` 一处实现
+            let is_hung = health::is_hung(
+                self.observed_running_since.get(&profile.id).copied(),
+                self.high_cpu_since.get(&profile.id).copied(),
+                now,
+            );
+
+            let mut snapshot = AgentSnapshot {
                 id: profile.id.clone(),
                 name: profile.name.clone(),
                 glyph: profile.glyph.clone(),
@@ -159,6 +173,10 @@ impl ActivityEngine {
                 level,
                 level_label: level.label().to_string(),
                 observability,
+                is_hung,
+                // 先占位再就地求值：健康度是**由这份快照自身**推出来的，
+                // 用 not_running() 占位只是为了满足结构体字面量，紧接着就被覆盖
+                health: health::Report::not_running(),
                 process_running,
                 cpu_percent: cpu,
                 memory_bytes: memory,
@@ -174,7 +192,9 @@ impl ActivityEngine {
                     _ => None,
                 },
                 subagent_count: probe.subagent_count,
-            });
+            };
+            snapshot.health = health::evaluate(&snapshot);
+            list.push(snapshot);
         }
 
         list.sort_by(|a, b| {
@@ -212,6 +232,7 @@ impl ActivityEngine {
             &mut self.last_work_signal_at,
             &mut self.work_started_at,
             &mut self.high_cpu_since,
+            &mut self.observed_running_since,
         ] {
             if let Some(since) = anchors.get_mut(&key) {
                 if *since > now {
@@ -223,9 +244,12 @@ impl ActivityEngine {
             self.last_work_signal_at.remove(&key);
             self.work_started_at.remove(&key);
             self.high_cpu_since.remove(&key);
+            self.observed_running_since.remove(&key);
             self.token_rate.remove(&key);
             return ActivityLevel::Offline;
         }
+        // 进程在跑 ⇒ 续上连续观测窗口（首次插入即起点）
+        self.observed_running_since.entry(key.clone()).or_insert(now);
 
         // 强语义：attention 优先（同一指纹只提醒一次）
         if let Some(Signal::Attention(fp, message)) = &probe.signal {
@@ -317,11 +341,13 @@ impl ActivityEngine {
             ActivityLevel::Idle
         };
 
-        // 熔断：CPU 连续 70% 以上达 5 分钟
+        // 熔断：CPU 连续 70% 以上达 5 分钟。阈值只从 health 那一个来源取——
+        // 此前这里和健康度判定各写一遍 70.0 / 300_000，改一处就会让
+        // 「告警会响」与「健康度说卡死」对不上
         if let Some(c) = cpu {
-            if c >= 70.0 {
+            if c >= health::RUNAWAY_CPU_THRESHOLD {
                 let since = *self.high_cpu_since.entry(key.clone()).or_insert(now);
-                if now - since > 300_000 {
+                if now - since >= health::RUNAWAY_DURATION_MS {
                     self.raise_cost_spike(
                         profile,
                         pid,
@@ -513,6 +539,9 @@ impl ActivityEngine {
                     recent_session_write: true,
                     has_token_usage: t24 > 0,
                 }),
+                // 演示数据里的进程在跑，但引擎没为它们采过样：观测窗口凑不够 ⇒ 卡死是「没测」
+                is_hung: None,
+                health: health::Report::not_running(),
                 process_running: true,
                 cpu_percent: Some(if level == ActivityLevel::Working { 34.0 } else { 1.2 }),
                 memory_bytes: mem,
@@ -528,6 +557,10 @@ impl ActivityEngine {
                 pid: Some(0),
                 current_action: action,
                 subagent_count: 0,
+            })
+            .map(|mut snapshot| {
+                snapshot.health = health::evaluate(&snapshot);
+                snapshot
             })
             .collect();
         self.grand_total = TokenUsage {

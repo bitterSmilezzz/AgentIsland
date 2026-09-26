@@ -350,6 +350,22 @@ html, body {
   white-space: nowrap;
 }
 
+/* 健康度：只在非「健康」时上屏，数值与等级都来自快照的 health（Rust health.rs） */
+.health-chip {
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  min-width: 20px;
+  text-align: center;
+  padding: 2px 6px 3px;
+  border-radius: 6px;
+  border: 0.5px solid transparent;
+}
+.health-chip[data-grade="partial"] { color: var(--text-muted); background: var(--pill); border-color: var(--hairline); }
+.health-chip[data-grade="attention"] { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 16%, transparent); border-color: color-mix(in srgb, var(--cyan) 34%, transparent); }
+.health-chip[data-grade="warning"] { color: var(--ring-amber, #d99a2b); background: color-mix(in srgb, #d99a2b 18%, transparent); border-color: color-mix(in srgb, #d99a2b 36%, transparent); }
+.health-chip[data-grade="critical"] { color: var(--ring-red, #e5484d); background: color-mix(in srgb, #e5484d 18%, transparent); border-color: color-mix(in srgb, #e5484d 38%, transparent); }
+
 /* 工作态实时动作横条 */
 .action-bar {
   margin: 5px 0 0 46px;

@@ -107,7 +107,7 @@ function ringHtml(snap, size) {
   const dark = document.documentElement.classList.contains('theme-dark');
   if (snap.level === 'working') {
     progress = Math.max(0.5, Math.min(0.5 + (snap.cpu_percent ?? 0) / 100 * 0.5, 1));
-    color = snap.isHung ? 'var(--ring-red)' : (snap.cpu_percent ?? 0) >= 80 ? 'var(--ring-orange)' : 'var(--ring-green)';
+    color = snap.is_hung === true ? 'var(--ring-red)' : (snap.cpu_percent ?? 0) >= 80 ? 'var(--ring-orange)' : 'var(--ring-green)';
   } else if (snap.level === 'attention') {
     progress = 0.78; color = 'var(--ring-yellow)';
   } else if (snap.level === 'completed') {
@@ -229,6 +229,17 @@ function headerPresentation(eng) {
 
 // MARK: Agent 行（AgentRowView）
 
+// 健康度徽标：分数与等级都来自快照的 `health`（Rust 侧 health.rs，对齐 Swift
+// AgentHealthEvaluator），界面**不自己判定**任何一档——包括「健康就不显示」这条
+// 也只是显示策略。等级为 healthy 时不占位：这一行是常显列表，
+// 默认状态挂一枚「健康」是纯噪音（Swift 那边是点开详情才看到，等价）。
+function healthChip(snap) {
+  const health = snap.health;
+  if (!health || health.grade === 'healthy') return '';
+  const tips = [health.summary, ...(health.issues ?? []), health.suggestion].filter(Boolean).join(' · ');
+  return `<span class="health-chip" data-grade="${esc(health.grade)}" title="${esc(tips)}">${esc(health.score)}</span>`;
+}
+
 function rowHtml(snap) {
   const c = levelColors(snap.level);
   const uncertainLabels = {
@@ -266,6 +277,7 @@ function rowHtml(snap) {
       </div>
       <div class="row-right">
         ${snap.process_running && snap.memory_bytes > 0 ? `<span class="mem-badge" title="物理内存驻留集 (RSS): ${esc(snap.memory_text)}">${esc(snap.memory_text)}</span>` : ''}
+        ${healthChip(snap)}
         ${`<span class="status-pill" title="${esc(snap.observability?.summary ?? snap.level_label)}" style="color:${pillColor};background:${pillBackground};border-color:${pillBorder}">${esc(uncertainty ?? snap.level_label)}</span>`}
       </div>
     </div>

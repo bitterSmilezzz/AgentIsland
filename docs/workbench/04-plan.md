@@ -13,6 +13,7 @@
 > v0.0.169 按本机真实日志修掉 JSONL 净口径的 29 倍虚高，并对齐记录形状与去重。
 > v0.0.170 迁入 `StructuredTokenUsageIndex` 的保留口径（70 天窗口 / 折入保和 / 单文件上限 / 戳判定），
 > token 明细这一组收口。
+> v0.0.171 进入判定增强组：迁入 `AgentHealthEvaluator` 与它依赖的卡死三态（含「连续观测资格」）。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

@@ -85,6 +85,8 @@ impl Replay {
                 has_token_usage: false,
             }),
             process_running: running,
+            is_hung: None,
+            health: crate::health::Report::not_running(),
             cpu_percent: cpu,
             memory_bytes: 0,
             memory_text: "—".into(),

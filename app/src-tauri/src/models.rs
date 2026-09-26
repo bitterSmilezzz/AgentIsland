@@ -151,6 +151,11 @@ pub struct AgentSnapshot {
     pub level: ActivityLevel,
     pub level_label: String,
     pub observability: crate::observability::Verdict,
+    /// 卡死 / 僵卡三态：`None` 是「本轮判不出」（连续观测不足阈值），**不是「没有」**。
+    /// 判定规则见 [`crate::health::is_hung`]。
+    pub is_hung: Option<bool>,
+    /// 100 分制健康度报告（[`crate::health::evaluate`]，对齐 Swift `AgentHealthEvaluator`）
+    pub health: crate::health::Report,
     pub process_running: bool,
     pub cpu_percent: Option<f64>,
     pub memory_bytes: u64,
@@ -298,5 +303,62 @@ mod tests {
         assert!(DockEdge::Bottom.is_horizontal());
         assert!(!DockEdge::Left.is_horizontal());
         assert!(!DockEdge::Right.is_horizontal());
+    }
+
+    /// **视图读的字段必须在快照 JSON 里真实存在。**
+    ///
+    /// 视图读一个后端没输出的键时，不会报错、不会变空白——那一档功能静默失效。
+    /// 本仓真发生过：`views.js` 读 `snap.isHung`，而 Rust 输出的是 `is_hung`（快照没有
+    /// `rename_all`），于是「卡死时圆环变红」这条路径从来没有亮过。
+    /// 这条哨兵**直接解析 `views.js` 源码**，与费率表的跨语言哨兵同一套思路：
+    /// 改名字而忘了改另一侧，测试就红。
+    #[test]
+    fn every_snapshot_field_the_ui_reads_exists_in_the_json() {
+        let snapshot = AgentSnapshot {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            level: ActivityLevel::Idle,
+            level_label: "空闲".into(),
+            observability: crate::observability::Verdict {
+                code: crate::observability::Code::Observed,
+                summary: "",
+                evidence: Vec::new(),
+            },
+            is_hung: Some(true),
+            health: crate::health::Report::not_running(),
+            process_running: true,
+            cpu_percent: Some(1.0),
+            memory_bytes: 0,
+            memory_text: "—".into(),
+            last_activity_text: "—".into(),
+            token_usage: Some(TokenUsage::default()),
+            pid: None,
+            current_action: None,
+            subagent_count: 0,
+        };
+        let value = serde_json::to_value(&snapshot).expect("快照应能序列化");
+        let object = value.as_object().expect("快照应序列化成对象");
+
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+            .expect("读不到 views.js——这条哨兵的存在意义就是跨文件对名字");
+        let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (index, _) in source.match_indices("snap.") {
+            let rest = &source[index + "snap.".len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+        assert!(names.len() >= 8, "只抓到 {} 个 snap. 字段，解析八成坏了", names.len());
+        let missing: Vec<&String> = names.iter().filter(|n| !object.contains_key(*n)).collect();
+        assert!(
+            missing.is_empty(),
+            "views.js 读了快照里没有的字段：{missing:?}（静默失效，不会报错）"
+        );
     }
 }
