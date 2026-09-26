@@ -22,6 +22,8 @@
 用户在手机上提的新方向：远程操控（含下发任务，用户已授权但**鉴权是硬前置**）、一键全配、
 红糖、QQ/微信 bot。含一个关键发现——**鉴权不必从零造，`LocalEventServer` 早有 `selfReportTokens`**
 （`LocalEventServer.swift:43-51`），「一次配对、此后自动连」就建在它上面。
+> ⚠️ **这是后续可选项，不是当前主战场。** 用户已明确：**先把跨平台桌面端做完**。
+> 本文先定架构与坑，防止桌面端做完再回头改；不要因为它推迟桌面端。
 
 然后读
 
@@ -62,6 +64,7 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
 | [17-codenotch-direct-competitor-audit.md](17-codenotch-direct-competitor-audit.md) | **最直接的形态竞品** codenotch（2493 star / Swift / macOS）一手调研：26×210pt 黑 pill、17 家 provider、三级回退做到「与 /usage never disagree」、一维栈空间布局；含正面逐条对比与三条该跟进 | **做侧边栏壳（Phase 1）前必读**；遇到「凭据边界画在哪」前必读 |
 | [16-mattpocock-skills-meta-specs.md](16-mattpocock-skills-meta-specs.md) | mattpocock/skills（269,700 star）一手调研：**本机 24 个 skill 的上游**。三份元规范中两条对我们有约束力（user-invoked 不可被调用；skill 依赖要指名工具而非相对链接） | 新增或改动任何 agent skill 前必读；判定这条指令该写给谁时必读 |
 | [12-monocode-competitor-audit.md](12-monocode-competitor-audit.md) | MonoCode（1303 star / MIT）一手调研：**最近的同形态竞品**（同样 Tauri v2 + Rust）、harness 三层抽象、327 前端测试 + 333 Rust 测试、凭据零落盘 | **Phase 0 建测试基建前必读**；Phase 2 写 `provider.rs` 前必读（两个凭据坑） |
+| [23-swift-rust-parity-matrix.md](23-swift-rust-parity-matrix.md) | **ADR 0010 / M5 交付物**：两端口径对照表——26 vs 12 家档案逐字段比对、47 vs 11 个能力模块、五态与判定口径（含 Rust 侧缺失的「读不到 ≠ 零」五类结论）、CLI 12 子命令、settings 逐字段对照 | 排 M3 迁移优先级前必读；改任何两端共有的逻辑（档案 / 引擎 / settings）前必读 |
 
 ## 一句话
 

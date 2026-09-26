@@ -240,7 +240,7 @@ cd /tmp/ip-as-logo-skill && file assets/ip-as-logo-wall.webp
 | 1 | `assets/ip-as-logo-wall.webp` 里每张示例图是否真的满足上游自己那套约束（三色 / 4–7 形 / 下角构图） | 本文**没有逐张读图**，只做了 `file` 与尺寸判定。上游 prompt 与产物之间的符合率是未知的 |
 | 2 | ipaslogo.com 的 logo 到底在什么许可下可商用、要不要署名 | README 只有一句 "Every logo is free for commercial use"，**没有许可正文**；本文未抓该站 |
 | 3 | 上游那份 prompt 骨架在 GPT Image 2 / Nano Banana Pro 上的实际成功率 | 上游没有给出任何统计；README 只说"模型是随机的，可能对单条约束有不同解释" |
-| 4 | 本机是否装有可用的顶级图像模型或对应工具 | 未探测。上游把它当硬前置（`SKILL.md:56`），本仓要跟进此事之前必须先补这一项 |
+| 4 | 本机是否装有可用的顶级图像模型或对应工具 | 未探测。上游把它当硬前置（`SKILL.md:25`），本仓要跟进此事之前必须先补这一项 |
 
 > 与案例库纪律的关系：本文引用的每一条上游规则都带 `SKILL.md` 行号，可在
 > `/tmp/ip-as-logo-skill/SKILL.md` 逐条对上；本仓现状三行均指到具体文件与行号。
