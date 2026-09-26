@@ -30,12 +30,12 @@
 
 ### 第二半 · 执行：五道前置门，全绿才开始迁第一行
 
-| # | 门 | 完成判据（可执行） |
-|---|---|---|
-| M1 | **`cargo test` 能跑且有守护** | `cargo test` 在本机通过；至少覆盖 `engine` 五态转移、`provider.rs` 原子写+掩码、三种会话方言解析（**fixture 化，不依赖本机装 agent CLI**） |
-| M2 | **`cargo tauri build` 本机成功** | 产出一个 `.app`；capabilities 窗口声明与 `tauri.conf.json` 的 label 一致；`placement.rs` 按 OS 真工作区；`bundle.targets` 含 macOS |
+| # | 门 | 完成判据（可执行） | 状态 |
+|---|---|---|---|
+| M1 | **`cargo test` 能跑且有守护** | `cargo test` 在本机通过；至少覆盖 `engine` 五态转移、`provider.rs` 原子写+掩码、三种会话方言解析（**fixture 化，不依赖本机装 agent CLI**） | **前半已达成**（14 条测试全绿，v0.0.153 `418805c`）；后半（五态转移/方言 fixture）仍待做 |
+| M2 | **`cargo tauri build` 本机成功** | 产出一个 `.app`；capabilities 窗口声明与 `tauri.conf.json` 的 label 一致；`placement.rs` 按 OS 真工作区；`bundle.targets` 含 macOS | **主体已达成**（`.app` + `.dmg` 均产出，v0.0.153 `418805c`）；`placement.rs` 真工作区仍待做（依赖 Tauri v2 `work_area` API，未核实） |
 | M3 | **Rust 侧补齐 12 个缺失模块** | 上表那 12 个模块在 Rust 侧存在且有测试；**RemoteNotify 三通道一并迁**（否则侧边栏一上线就是「能力比灵动岛少」） |
-| M4 | **license 与凭据口径先落定** | 已完成：`LICENSE`（MIT）+ [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md) 凭据边界 |
+| M4 | **license 与凭据口径先落定** | 已完成：`LICENSE`（MIT）+ [ADR 0009](0009-credential-boundary-borrow-dont-hold.md) 凭据边界 |
 | M5 | **有一份「两端口径对照表」** | 逐条列出哪些能力只在 island 有、哪些只在 sidebar 有、哪些两边都要一致；不一致条目写明「说清」而不是「抹平」 |
 
 **迁移按 M3 的模块逐个走，不整批搬**：每迁一个模块 → 补 Rust 测试 → 在 island 形态下确认行为不变 → 才迁下一个。**任何一个模块迁完无法证实行为不变，该模块回退，不带着不确定上线。**

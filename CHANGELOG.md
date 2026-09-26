@@ -4,6 +4,76 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.153] - 2026-09-26
+
+### 本轮的实质：让 Rust 侧第一次「能构建、能测」（ADR 0010 的 M1+M2），并补上三条长期缺口
+
+21 篇调研收敛出「瓶颈不在功能在能不能被验证」（见
+[20-convergence-what-to-do.md](docs/workbench/20-convergence-what-to-do.md)）。本轮把它落成代码：
+**`cargo test` 与 `cargo tauri build` 各自在本机成功了一次**——148 个版本以来 `app/` 从未构建成功过。
+
+**依托 [ADR 0010](docs/adr/0010-swift-freeze-and-rust-prerequisites.md)**：Swift 端进入冻结
+（只修 Bug 不增功能），本体演进交给 Rust；但五道前置门未全齐之前不迁第一行。**M1、M2 的门已过半**，
+`placement.rs` 真工作区与方言 fixture 仍待做（依赖 Tauri v2 `work_area` API，未核实）。
+
+#### Rust 端从零测试到 14 条全绿
+
+新增 14 条测试，此前 `#[test]` / `#[cfg(test)]` **零命中**。覆盖 models（五态 serde 契约、
+严重度序、中文 label、`DockEdge` 兜底与全集划分）、settings（`#[serde(default)]` 迁移、
+`normalized()` 上下界与幂等、serde 往返）、registry（id 唯一非空、不少于当前 12 家、
+集合与环境无关）、engine（`compact` 不假精度不出现负数、量级单调）。
+**刻意不引 agent CLI**——协议层做成 fixture 式纯断言，装没装 agent 都能跑。
+
+#### 测试照出两个真 bug，修的是 bug 不是改测试迁就它
+
+1. **`trim_zero` 对带单位后缀的串完全失效**：`"1.0k"` 的 `0` 在末尾字母之后，`trim_end_matches('0')`
+   根本不匹配，于是 `1.0k`、`1.00M` 这种假精度一直漏到界面（读起来像精确到百位）。
+   改为只处理纯数字、单位由调用方拼，k/M 两处分支一并修。
+2. **`ActivityLevel` 的 `derive(Ord)` 与语义严重度相反**：原声明序让 `Working < Attention`，
+   任何按 `max()` 汇总的地方「等待确认」都会输给「运行中」。改为严重度升序。
+   已验证前端全走序列化字符串比较（`views.js` 的 `'attention'`），不依赖枚举序，改动零影响。
+
+#### `app/` 三个构建阻塞全清，产出真的 `.app` 与 `.dmg`
+
+- `capabilities/default.json` 声明了**不存在的 `main` 窗口**——它其实是 tray-icon 的 id
+  （`main.rs` 里 `TrayIconBuilder::with_id("main")`），声明成 windows 让能力清单直接对不上。
+- `bundle.targets` 只有 `nsis`（Windows 安装器），补齐 `app` + `dmg`；
+  `main.rs` 的 `#![windows_subsystem]` 加 `#[cfg(windows)]`，免得 macOS 也走 Windows 子系统。
+- 产出：`app/src-tauri/target/release/bundle/macos/AgentIsland.app` + `.dmg`，`gen/schemas/` 补齐。
+
+#### 修一个会静默吞掉门禁的真 bug：`install-git-hooks.sh`
+
+原来「检测到已有 pre-commit 就 exit 1」，看似保险，实则没解决问题：**别人的 hook 里一句
+`exit 0` 会把整个 hook 文件结束掉**，追加在后面的我们那段连跑的机会都没有。
+我用「前有 `set -e` + `exit 0`、后有我们那段」的混合钩子实测，假的 `sk-proj-` 凭据照样提交成功——**门禁一次都没响，却看起来装着**。
+
+改为 marker 环绕 + **置顶插入** + 显式 `exit 1`：我们的段跑在最前（命中即拒，
+别人的钩子不执行——顺序反过来的代价是门禁可能被吞，正是要消灭的东西），
+别人的内容一字符不动、一行不删，只是排在我们后面。子 shell 自带 `set`/`cd`，
+失败显式 `exit 1`（子 shell 返回码不会自动让 git 拒提交，这点也实测过）。
+已验证：重复执行三次 md5 一致；混入他人 `exit 0` 钩子后假凭据被拒（退出码 1）；
+真实提交时我们的扫描先跑、Qoder 的 post-commit 等钩子也照常执行。
+
+#### 三条长期缺口一次性补掉
+
+- **补 MIT [LICENSE](LICENSE)**：此前本仓**没有 LICENSE 文件**（`find -iname "LICENSE*"` 零命中），
+  README 那两处 "MIT" 命中是 `install-git-hooks` 子串误配。此前在对话里称本项目为「MIT」
+  是没有依据的说法，已纠正。
+- **[ADR 0009 凭据边界](docs/adr/0009-credential-boundary-borrow-dont-hold.md)**：
+  `CONTEXT.md:196` 的「不碰网络、不持有密钥」与 `:167`（钥匙串存 SMTP/ntfy/webhook 凭据、
+  远程外发主动出网）**今天已两处矛盾**，且 Phase 2 档位文件里必然出现 key。
+  改写为「**不持有非本机既有登录态的密钥，不主动打厂商端点**」：读只借本机既有登录态、
+  不调厂商 API；写与发只用用户自己配通道的凭据。
+  **明确接受的代价：配额百分比统读不到**（codenotch 靠它做卖点、Vorssaint 读
+  `plan-usage-history.json` 拿到了），记为 deferred 而非 decided-against。
+- **README 首段改成一句可当场验收的承诺**：不再只列 16 家 agent 的品类清单，而是
+  「三个出口永远对得上」。**写之前核实过承重墙**：`DoctorCommand.swift:45`、
+  `ToolboxMonitoringCard.swift:15`（岛内）、`CLIModels.swift:62,65`/`:289,292`（报表与 CLI）、
+  `AuditReportExporter.swift:162` 五处全调同一个 `AgentObservability.evaluate(snapshot:)`，
+  `state` 走 HTTP 问同一个 app。不是照抄竞品 README 的一句话。
+
+Swift 侧仅文档与 README 改动；测试基数仍为 548 条，Rust 侧新增 14 条。
+
 ## [0.0.152] - 2026-09-26
 
 ### 三路独立判断后收敛：我们该做什么、不做什么
@@ -364,7 +434,7 @@ Swift 侧无改动，测试基数仍为 548 条。
 - **没有任何勿扰/静默开关**：`grep -rn -i '勿扰|muteAll|silenceAll' Sources/` 只命中两处
   `AgentCleaner.swift:164` 与 `TopCommand.swift:204` 里"静默漏掉报警"的注释，与通知无关
 - **`shell_mode` 一行实现都没有**：`grep -rn 'shell_mode|shellMode' Sources/ app/` 结果为 0，
-  只活在 CONTEXT 与 CHANGELOG 里（与 [10 号方案](10-replan-2026-09-26.md) 已记的一致）
+  只活在 CONTEXT 与 CHANGELOG 里（与 [10 号方案](docs/workbench/10-replan-2026-09-26.md) 已记的一致）
 - 另：`TokenAnalyticsView.swift:418` 那个 `percent` 是**与上一周期比的增减百分比**，
   不是"配额已用百分之几"——两者回答不同问题，后者今天没有
 
@@ -678,14 +748,14 @@ Mídé（[@mide_ajibade](https://x.com/mide_ajibade)，8454 followers）的
   （`CS101` / `Chemistry for Engineers`，展开后六个字段）。切 tab 时外壳不动。
 - **明暗主题切换被真实演示**：x14/x15 两帧确认月亮激活、界面确实变暗——不是只放个开关没切。
 - **另一条可抄**：`Courses` 卡折叠态两行、展开态六个字段，同一张卡同一个箭头（箭头由下变上）。
-  这是 [12](12-halogen-recorder-capsule-states.md)「一个控件的几种形态」的**第三个独立样本**。
+  这是 [12](docs/research/ui/12-halogen-recorder-capsule-states.md)「一个控件的几种形态」的**第三个独立样本**。
 - 四色图例用**色点 + 名称 + 数值**，颜色不是唯一载体；`Due 26 Feb 2027 • in 164 days`
   把绝对日期与相对天数并排（前者存档、后者决策）。
 
 **对本仓最直接的一条**：Token 用量与耗时改成"数上去"。
 **但附了前提**：必须先确认取值频率——若是每秒轮询，每秒都数一次反而比跳变更吵，
 应当**只在值真正变化时数**。另有「进度条与数字必须同源」：两者不同步是这类控件最常见的 bug，
-而且**截图看不出来，只在动的时候暴露**。这与 [11 篇](11-plasma-ui-liquid-glass-panels.md)
+而且**截图看不出来，只在动的时候暴露**。这与 [11 篇](docs/research/ui/11-plasma-ui-liquid-glass-panels.md)
 「同一光学参数的两个消费者共用一份来源」是同一条纪律在数据层的版本，已写成共识第 22、23 条。
 
 **没核实的**：这是作者的个人 demo，**未找到公开仓库或站点**（推文只给视频），所有实现层结论

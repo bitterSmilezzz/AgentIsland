@@ -1,10 +1,14 @@
 # AgentIsland — Agent 会话灵动岛监控器
 
-监控本机所有 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
+**同一个 agent 的五态与可信度，在三个出口永远对得上：灵动岛卡片、`agentisland doctor`、`agentisland state`。** 三处读的是同一份 `AgentObservability.evaluate(snapshot:)`（`state` 直接问运行中的 app，`doctor` 在 CLI 进程里调同一个纯函数）；对不上时三处都显示「有冲突」，而不是各自挑一个数给你看。同理，「没读到」在三个出口都是「没读到」，不是 0。
 
-> 本文档描述 **v0.0.152** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+监控本机 Agent 软件（DimAgent / Claude Code / Codex / Cursor / Trae / Google Antigravity / ZCode / WorkBuddy / Copilot / OpenCode / Xiaomi MiMo / Qoder / Cline / Roo Code / Continue / Goose 等）的运行状态：谁在跑、正在做什么、需不需要你回去确认、这一轮花了多少。以 macOS 灵动岛风格呈现，可选地把通知送出本机到手机或邮箱。
+
+> 本文档描述 **v0.0.153** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
+>
+> 许可证：[MIT](LICENSE)。
 
 ## 能看见什么
 
