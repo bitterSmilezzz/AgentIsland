@@ -212,3 +212,16 @@ _Avoid_: 把自己做成 agent、把 agent 的请求接到自己进程里（那�
   且 TokenBudget / Forecast / Health / Resilience / TaskDuration / RemoteNotify 等模块在 Rust 侧
   尚不存在）。改哪一侧前先看 [ADR 0010](docs/adr/0010-swift-freeze-and-rust-prerequisites.md)。
 - 上述口径定案后应沉淀进本文件或 `docs/adr/`，`docs/workbench/` 只承载进行中的设计。
+
+**远程操控与一键全配**（[docs/workbench/22-remote-control-and-one-tap-setup.md](docs/workbench/22-remote-control-and-one-tap-setup.md)）：
+从「电脑单向出网喊你」扩到「手机/IM 入站操作电脑」。两条硬口径：
+
+- **入站控制必须鉴权，这是硬前置不是可选项。** 用户已授权「也能下发任务和写代码」，
+  授权范围越大，鉴权越要做实——未经鉴权的远程执行等于把这台电脑的 shell 交出去。
+  实现建在既有的 `engine.selfReportTokens` 上（`LocalEventServer.swift:43-51`），不另造凭据系统；
+  **一次配对、此后自动连**就是「一键全配」的落点：可信关系变成一次性配对，
+  新模型/新账号只在电脑侧加档位，手机自动可见，不重复配置。
+- **远程层与通道解耦**：一套带鉴权的入站控制面 + 可增删的通道适配器（手机 app / QQ bot /
+  微信 bot / 将来 Telegram、飞书）。加第四个通道是加适配器，不是重做一遍。
+  bot 侧可下发任务，但不承接「在 IM 里写代码」的 IDE 化交互——守住不当 agent 前端这条界
+  （[21 号](docs/workbench/21-product-positioning.md) §1）。

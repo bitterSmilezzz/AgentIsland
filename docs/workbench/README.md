@@ -18,6 +18,13 @@
 
 然后读
 
+[**22-remote-control-and-one-tap-setup.md · 远程操控与一键全配**](22-remote-control-and-one-tap-setup.md) ——
+用户在手机上提的新方向：远程操控（含下发任务，用户已授权但**鉴权是硬前置**）、一键全配、
+红糖、QQ/微信 bot。含一个关键发现——**鉴权不必从零造，`LocalEventServer` 早有 `selfReportTokens`**
+（`LocalEventServer.swift:43-51`），「一次配对、此后自动连」就建在它上面。
+
+然后读
+
 [**10-replan-2026-09-26.md · 重划方案**](10-replan-2026-09-26.md) —— 四路调研（代码资产 / 14 篇 UI 案例 /
 风险验收 / 竞品边界）之后的重划。它推翻了本目录九份文档里的 9 条地基断言，其中三条最关键：
 **`app/` 从未构建成功**（无 target/gen、capabilities 引用不存在的 `main` 窗口、`placement.rs`

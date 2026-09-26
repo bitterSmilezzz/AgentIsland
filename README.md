@@ -6,7 +6,7 @@
 
 > **能力边界今天是这样**（不藏）：26 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
 
-> 本文档描述 **v0.0.154** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.155** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 >
