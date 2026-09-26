@@ -36,6 +36,9 @@ BASELINE="scripts/secrets-baseline.txt"
 HISTORY_ALLOW="scripts/secrets-history-allow.txt"
 HITS=/tmp/scan-secrets-hits.txt
 BLOBSTREAM=/tmp/scan-secrets-blobs.txt
+# 进程内一次性备忘，只由 blob_stream 置位。刻意**不**用「/tmp 文件是否存在」当记忆：
+# 那等于跨进程复用上一轮的对象流，新提交的 blob 永远扫不到，门禁会假绿。
+BLOBSTREAM_READY=""
 
 # 本机用户名走环境变量注入，不写死在脚本里——写死等于把开发者代号放进被扫描的仓库
 WHOAMI="${USER:-$(id -un)}"
@@ -165,13 +168,19 @@ report_worktree() {
 }
 
 blob_stream() {
-    [[ -s "$BLOBSTREAM" && -s /tmp/scan-secrets-shas.txt && -s /tmp/scan-secrets-paths.txt ]] && return 0
-    rm -f "$BLOBSTREAM"
+    [[ -n "$BLOBSTREAM_READY" ]] && return 0
+    # 每轮都从当前 git 重新枚举，进程内备忘只在同一次运行里省重复劳动。
+    # 上一版拿 /tmp 文件是否存在当记忆，于是第二次发版会静默复用第一次的对象流：
+    # v0.0.163 / v0.0.164 两次提交新增的 27 个 blob 就是这样一次都没进过历史扫描。
+    # 顺带一提，工作区扫描用 grep -I 跳过二进制，历史扫描用 grep -a 不跳——
+    # 所以「新提交的二进制文件里有没有东西」只有这一遍能回答，假绿的代价不是零。
+    rm -f "$BLOBSTREAM" /tmp/scan-secrets-shas.txt /tmp/scan-secrets-paths.txt
     put /tmp/scan-secrets-shas.txt bash -c 'git rev-list --objects --all | awk "{print \$1}" | sort -u | git cat-file --batch-check 2>/dev/null | awk "\$2==\"blob\"{print \$1}"'
     # sha → 路径（重命名会让同一 blob 对应多个路径，全部保留）
     put /tmp/scan-secrets-paths.txt bash -c 'git rev-list --objects --all | awk "NF>=2{print \$1\"\t\"\$2}" | sort -u'
     # 一次性流式导出全部 blob，命中行前缀所属 blob 的 sha
     put "$BLOBSTREAM" bash -c 'git cat-file --batch < /tmp/scan-secrets-shas.txt 2>/dev/null | LC_ALL=C awk "/^[0-9a-f]{40} blob [0-9]+\$/{sha=\$1; next} {print sha\"\t\"\$0}"'
+    BLOBSTREAM_READY=1
 }
 
 report_history() {

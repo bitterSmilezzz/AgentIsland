@@ -97,5 +97,32 @@ printf '%s@%s\n' synthetic example.com > "$FIXTURE/fixture.txt"
 run new-hit bash scripts/scan-secrets.sh
 check 'unreviewed hit is rejected' nonzero '新增' "$RC" "$OUT"
 
+# 历史扫描必须每轮重新枚举对象。曾经它是拿「/tmp 对象流文件还在不在」当记忆的，
+# 于是同一个工作区里第二次运行会复用第一次的对象流——新提交的 blob 一个都扫不到，
+# 而输出照样打 ✓。这条用「提交后 blob 计数必须变大」来抓，不依赖任何凭据形状。
+fixture history-fresh
+git -C "$FIXTURE" config user.email fixture@example.invalid
+git -C "$FIXTURE" config user.name fixture
+printf 'first\n' > "$FIXTURE/first.txt"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+git -C "$FIXTURE" commit -qm first >/dev/null 2>&1
+# 故意先把上一轮留下的对象流放在那儿：修好之后它不该被采信
+rm -f /tmp/scan-secrets-blobs.txt /tmp/scan-secrets-shas.txt /tmp/scan-secrets-paths.txt
+run history-first bash scripts/scan-secrets.sh --history
+FIRST=$(sed -nE 's/^==> git 对象：([0-9]+) 个 blob.*/\1/p' "$OUT" | head -1)
+printf 'second\n' > "$FIXTURE/second.txt"
+git -C "$FIXTURE" add -A >/dev/null 2>&1
+git -C "$FIXTURE" commit -qm second >/dev/null 2>&1
+run history-second bash scripts/scan-secrets.sh --history
+SECOND=$(sed -nE 's/^==> git 对象：([0-9]+) 个 blob.*/\1/p' "$OUT" | head -1)
+if [[ -n "$FIRST" && -n "$SECOND" && "$SECOND" -gt "$FIRST" ]]; then
+    printf '  OK   %s\n' 'history scan re-enumerates objects instead of reusing a stale cache'
+    PASS=$((PASS+1))
+else
+    printf '  FAIL history scan re-enumerates objects instead of reusing a stale cache (first=%s second=%s)\n' \
+        "${FIRST:-无}" "${SECOND:-无}" >&2
+    FAIL=$((FAIL+1))
+fi
+
 printf '结果: %s 通过, %s 失败\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
