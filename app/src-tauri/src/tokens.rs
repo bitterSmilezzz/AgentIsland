@@ -14,18 +14,101 @@ pub struct TokenUsageMonitor {
     states: HashMap<String, FileState>,
 }
 
+/// 明细保留窗口。**70 天不是拍的**：分析页最宽 30 天，那一档还要往前读同样长的
+/// 「上一周期」做对比，所以取 2×最宽档 + 10 天余量（余量免得刚好掉出边界的明细
+/// 被反复折出/折回，折回要重读整份文件）。与 Swift `detailRetention` 同一个数。
+const RETENTION_MS: i64 = 70 * 86_400_000;
+
+/// 单文件明细条数硬上限（与 Swift `maxDetailEventsPerFile` 同值）。触顶时折掉**最早**的一段：
+/// 明细有界，累计不受影响。
+const MAX_DETAIL_PER_FILE: usize = 20_000;
+
+/// 单文件的（类型, 时间, 大小）。**三者任一变化都要重判怎么读**：
+/// 只看「变小了」会漏掉等长的原地重写（日志轮转、备份恢复都是这个形状），
+/// 只看大小会漏掉「同名同长但换了内容」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    inode: u64,
+    mtime_ns: i64,
+    size: u64,
+}
+
+fn stamp_of(path: &Path) -> Option<Stamp> {
+    let meta = fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        meta.ino()
+    };
+    #[cfg(not(unix))]
+    let inode = 0u64;
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+    Some(Stamp { inode, mtime_ns, size: meta.len() })
+}
+
+/// 一条待统计的明细：(unix ms, 模型, tokens, cost)
+type Entry = (i64, String, i64, f64);
+
 #[derive(Default)]
 struct FileState {
-    parsed_len: u64,
-    last_write: Option<SystemTime>,
-    tokens_total: i64,
-    cost_total: f64,
-    /// (unix ms, model, tokens, cost)
-    entries: Vec<(i64, String, i64, f64)>,
-    /// 已计入的去重键。resume/fork 会把同一响应在同一份文件里抄第二遍，
-    /// 不挡就会把同一笔用量计两次（Swift 侧 `seen` 集合守的是同一件事）。
-    /// 文件被截断/整体重写时**必须清空**，否则全量重读会被全部挡掉。
+    /// 上一次读完之后文件的标识
+    stamp: Option<Stamp>,
+    /// 窗口内的明细（≤ RETENTION_MS，且 ≤ MAX_DETAIL_PER_FILE 条）
+    entries: Vec<Entry>,
+    /// 折入合计：掉出窗口或被上限裁掉的那部分。
+    /// **累计 = rolled + Σentries** —— 「折入保和」因此是结构上成立的，
+    /// 而不是靠两处加减互相对齐（旧实现用累加器，文件被整体重写时会把同一批再加一遍）。
+    rolled_tokens: i64,
+    rolled_cost: f64,
+    /// 折入条数。**非零 ⇒ 不许增量续读**：折入的去重看不见已经折掉的那段键。
+    rolled_count: i64,
+    /// 增量续读用的去重键。resume/fork 会把同一响应在同一份文件里抄第二遍，
+    /// 不挡就会计两次。只在 `rolled_count == 0` 期间保留——一旦有折入就每轮整份重读、
+    /// 当轮内去重，这个集合随之清空（内存也就有界了）。
     seen_ids: HashSet<String>,
+    /// 上次是否停在整行边界上。false 时不许增量续读（否则半个 JSON 行会被跳过去）。
+    ended_with_newline: bool,
+}
+
+/// 折入：先按窗口分，再按条数上限裁。**保和**——被折掉的每一条都进合计。
+fn fold(events: Vec<Entry>, carry: Vec<Entry>, cutoff_ms: i64) -> (Vec<Entry>, i64, f64, i64) {
+    let mut kept: Vec<Entry> = Vec::new();
+    let mut tokens = 0i64;
+    let mut cost = 0.0f64;
+    let mut count = 0i64;
+    for event in carry.into_iter().chain(events) {
+        if event.0 < cutoff_ms {
+            tokens += event.2;
+            cost += event.3;
+            count += 1;
+        } else {
+            kept.push(event);
+        }
+    }
+    // 上限只裁明细、不裁累计：折掉**最早**的那一段，留住最近（图表用得上的部分）。
+    // 用下标集合而不是先排序，是为了别打乱存留明细的解析顺序。
+    if kept.len() > MAX_DETAIL_PER_FILE {
+        let mut order: Vec<usize> = (0..kept.len()).collect();
+        order.sort_by_key(|&i| kept[i].0);
+        let doomed: HashSet<usize> = order.into_iter().take(kept.len() - MAX_DETAIL_PER_FILE).collect();
+        let mut survivors: Vec<Entry> = Vec::with_capacity(MAX_DETAIL_PER_FILE);
+        for (index, event) in kept.into_iter().enumerate() {
+            if doomed.contains(&index) {
+                tokens += event.2;
+                cost += event.3;
+                count += 1;
+            } else {
+                survivors.push(event);
+            }
+        }
+        kept = survivors;
+    }
+    (kept, tokens, cost, count)
 }
 
 struct UsageLine {
@@ -168,74 +251,89 @@ impl TokenUsageMonitor {
         cutoff24: i64,
     ) -> (i64, f64, i64, f64, HashMap<String, (i64, f64)>) {
         let key = path.to_string_lossy().to_string();
-        let (start, last_write) = {
-            let st = self.states.entry(key.clone()).or_default();
-        let meta = fs::metadata(path);
-        match meta {
-            Ok(m) => {
-                let lw = m.modified().unwrap_or(UNIX_EPOCH);
-                let len = m.len();
-                if len < st.parsed_len {
-                    st.parsed_len = 0; // 文件被截断/重写：全量重读
-                    st.seen_ids.clear(); // 去重键也得跟着作废，否则重读会被自己挡掉
-                }
-                (st.parsed_len, Some(lw))
+        let now = now_ms();
+        // stat 失败（文件消失 / 读不到）：保留上一轮的值——「没看到」不等于「没有」
+        let Some(stamp) = stamp_of(path) else {
+            return self.summarize(&key, cutoff24);
+        };
+        let (start, can_append) = match self.states.get(&key).and_then(|st| st.stamp) {
+            // 戳逐字相同 ⇒ 事件集合与顺序都不变，摊平与折入整套跳过
+            Some(prev) if prev == stamp => return self.summarize(&key, cutoff24),
+            Some(prev) => {
+                let st = self.states.get(&key).unwrap();
+                // 增量续读四个条件缺一不可：没折过东西（折入的去重看不见已折掉的键）、
+                // 同一个 inode、上次停在整行边界、文件确实变长了
+                let can_append = st.rolled_count == 0
+                    && st.ended_with_newline
+                    && prev.inode == stamp.inode
+                    && stamp.size > prev.size;
+                (if can_append { prev.size } else { 0 }, can_append)
             }
-            Err(_) => (st.parsed_len, st.last_write),
-        }
-    };
+            None => (0, false),
+        };
 
         let mut collected: Vec<(u64, UsageLine)> = Vec::new();
         let mut index: u64 = 0;
-        let new_len = session::for_each_line(path, start, |line| {
+        let consumed = session::for_each_complete_line(path, start, |line| {
             let line_index = index;
             index += 1;
             if line.len() < 8 {
                 return;
             }
             if let Some(u) = parse_usage_line(line) {
-                collected.push((index, u));
+                collected.push((line_index, u));
             }
         });
 
-        // 汇总在借种作用域内完成，之后状态表可再整体访问
-        let (tokens24, cost24, tokens_total, cost_total, models) = {
-            let st = self.states.get_mut(&key).unwrap();
-            if let Some(l) = new_len {
-                st.parsed_len = l;
-                st.last_write = last_write;
+        {
+            let st = self.states.entry(key.clone()).or_default();
+            if !can_append {
+                // 整份重读：明细与折入合计都按这一遍重建，去重也在这遍内完成
+                st.entries.clear();
+                st.rolled_tokens = 0;
+                st.rolled_cost = 0.0;
+                st.rolled_count = 0;
+                st.seen_ids.clear();
             }
-            for (index, u) in collected {
-                // 去重键：优先用记录自带的 id（resume/fork 会把同一响应抄第二遍）；
+            let mut fresh: Vec<Entry> = Vec::new();
+            for (line_index, u) in collected {
+                // 去重键：优先用记录自带 id（resume/fork 会把同一响应抄第二遍）；
                 // 没有 id 的行用「文件 + 段起点 + 行号」兜底——与 Swift 的 fallbackId 同构
                 let dedup = match &u.id {
                     Some(id) => id.clone(),
-                    None => format!("{key}#{start}-{index}"),
+                    None => format!("{key}#{start}-{line_index}"),
                 };
                 if !st.seen_ids.insert(dedup) {
-                    continue; // 同一响应已经计过，不再计第二遍
+                    continue; // 同一响应已经计过
                 }
-                st.tokens_total += u.tokens;
-                st.cost_total += u.cost;
-                st.entries.push((u.ts_ms, u.model, u.tokens, u.cost));
+                fresh.push((u.ts_ms, u.model, u.tokens, u.cost));
             }
-            // entries 有界：只留近 7 天
-            let cutoff7 = now_ms() - 7 * 24 * 3600 * 1000;
-            st.entries.retain(|(ts, _, _, _)| *ts >= cutoff7);
-            let mut models: HashMap<String, (i64, f64)> = HashMap::new();
-            let mut tokens24 = 0i64;
-            let mut cost24 = 0f64;
-            for (ts, model, tokens, cost) in &st.entries {
-                if *ts >= cutoff24 {
-                    tokens24 += tokens;
-                    cost24 += cost;
-                    let e = models.entry(model.clone()).or_insert((0, 0.0));
-                    e.0 += tokens;
-                    e.1 += cost;
-                }
+            let carry = if can_append {
+                std::mem::take(&mut st.entries)
+            } else {
+                Vec::new()
+            };
+            let (kept, folded_tokens, folded_cost, folded_count) =
+                fold(fresh, carry, now - RETENTION_MS);
+            st.entries = kept;
+            st.rolled_tokens += folded_tokens;
+            st.rolled_cost += folded_cost;
+            st.rolled_count += folded_count;
+            if st.rolled_count > 0 {
+                // 有折入 ⇒ 之后每轮走整份重读、当轮内去重，跨轮去重集不再需要（内存随之有界）
+                st.seen_ids.clear();
             }
-            (tokens24, cost24, st.tokens_total, st.cost_total, models)
-        };
+            if let Some((bytes, ended)) = consumed {
+                // size 记**真正承认到的字节数**而不是 stat 到的大小：stat 与读之间文件
+                // 还可能被追加，记大了下一轮的 offset 就落在从未解析过的字节之后
+                st.stamp = Some(Stamp {
+                    inode: stamp.inode,
+                    mtime_ns: stamp.mtime_ns,
+                    size: bytes,
+                });
+                st.ended_with_newline = ended;
+            }
+        }
         // 状态表有界
         if self.states.len() > 8000 {
             let keys: Vec<String> = self
@@ -248,7 +346,43 @@ impl TokenUsageMonitor {
                 self.states.remove(&k);
             }
         }
-        (tokens24, cost24, tokens_total, cost_total, models)
+        self.summarize(&key, cutoff24)
+    }
+
+    /// 由「折入合计 + 窗口内明细」汇总出这一轮的口径。
+    /// 累计**每次重算**而不是往上累加：这既是「折入保和」的保证，也是「文件被整体重写
+    /// 不重复计数」的保证（旧实现用累加器，同一份文件重读一遍就把同一批用量又加了一次）。
+    fn summarize(
+        &self,
+        key: &str,
+        cutoff24: i64,
+    ) -> (i64, f64, i64, f64, HashMap<String, (i64, f64)>) {
+        let Some(st) = self.states.get(key) else {
+            return (0, 0.0, 0, 0.0, HashMap::new());
+        };
+        let mut models: HashMap<String, (i64, f64)> = HashMap::new();
+        let mut tokens24 = 0i64;
+        let mut cost24 = 0f64;
+        let mut detail_tokens = 0i64;
+        let mut detail_cost = 0f64;
+        for (ts, model, tokens, cost) in &st.entries {
+            detail_tokens += tokens;
+            detail_cost += cost;
+            if *ts >= cutoff24 {
+                tokens24 += tokens;
+                cost24 += cost;
+                let e = models.entry(model.clone()).or_insert((0, 0.0));
+                e.0 += tokens;
+                e.1 += cost;
+            }
+        }
+        (
+            tokens24,
+            cost24,
+            st.rolled_tokens + detail_tokens,
+            st.rolled_cost + detail_cost,
+            models,
+        )
     }
 }
 
@@ -636,9 +770,36 @@ mod tests {
     // ── JSONL 净口径与去重（对齐 StructuredTokenUsageIndex）────────────────────
 
     fn codex_record(input: i64, cached: i64, output: i64, response_id: &str) -> String {
+        codex_record_at(input, cached, output, response_id, "2020-01-01T00:00:00.000Z")
+    }
+
+    fn codex_record_at(
+        input: i64,
+        cached: i64,
+        output: i64,
+        response_id: &str,
+        iso: &str,
+    ) -> String {
         format!(
-            r#"{{"type":"token_usage_record","timestamp":"2020-01-01T00:00:00.000Z","payload":{{"response_id":"{response_id}","usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"output_tokens":{output},"cache_write_input_tokens":0}}}}}}"#
+            r#"{{"type":"token_usage_record","timestamp":"{iso}","payload":{{"response_id":"{response_id}","usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"output_tokens":{output},"cache_write_input_tokens":0}}}}}}"#
         )
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "agentisland-tokens-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sum_hourly(report: &TokenReport) -> i64 {
+        report.hourly30d.iter().map(|(_, v)| *v).sum()
     }
 
     fn one_root_profile(id: &str, root: &str) -> crate::models::AgentProfile {
@@ -721,15 +882,7 @@ mod tests {
     #[test]
     fn duplicate_responses_in_one_file_are_counted_once() {
         // resume/fork 会把同一响应在同一份文件里抄第二遍：靠记录自带的 id 去重
-        let dir = std::env::temp_dir().join(format!(
-            "agentisland-tokens-dedup-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("dedup");
         let a = codex_record(1_000, 900, 50, "resp-A"); // 净 150
         let b = codex_record(2_000, 1_900, 100, "resp-B"); // 净 200
         std::fs::write(dir.join("session.jsonl"), format!("{a}\n{a}\n{b}\n")).unwrap();
@@ -737,6 +890,127 @@ mod tests {
         let mut monitor = TokenUsageMonitor::new();
         let report = monitor.monitor(&one_root_profile("dedup", &dir.to_string_lossy()));
         assert_eq!(report.usage.tokens_total, 350, "同一 response_id 抄两遍只算一次");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 保留窗口 / 折入 / 上限（对齐 StructuredTokenUsageIndex 的保留口径）──────
+
+    #[test]
+    fn rewriting_a_file_does_not_double_count_its_usage() {
+        // 旧实现用「累加器 + 只在 size 变小时重置游标」：文件被整体重写后会把同一批用量
+        // 再加一遍（这里是 150+110=260），而正确答案是「按现在这一份算，110」。
+        let dir = temp_dir("rewrite");
+        let file = dir.join("session.jsonl");
+        std::fs::write(&file, format!("{}\n", codex_record(10_000, 9_000, 1_000, "old-long-id"))).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        let profile = one_root_profile("rewrite", &dir.to_string_lossy());
+        assert_eq!(monitor.monitor(&profile).usage.tokens_total, 2_000);
+
+        // 截短并换内容（size 变小）
+        std::fs::write(&file, format!("{}\n", codex_record(200, 100, 10, "b"))).unwrap();
+        assert_eq!(
+            monitor.monitor(&profile).usage.tokens_total,
+            110,
+            "整体重写后应按现在这一份算，而不是把旧的也留着"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_same_size_in_place_rewrite_is_still_detected() {
+        // 日志轮转/备份恢复会出现「等长但内容换过」：只看 size 的判定会一直用旧值
+        let dir = temp_dir("same-size");
+        let file = dir.join("session.jsonl");
+        let profile = one_root_profile("same-size", &dir.to_string_lossy());
+        let first = format!("{}\n", codex_record(1_000, 900, 50, "aaaa")); // 净 150
+        std::fs::write(&file, &first).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        assert_eq!(monitor.monitor(&profile).usage.tokens_total, 150);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let second = format!("{}\n", codex_record(1_000, 900, 60, "cccc")); // 净 160，**等长**
+        assert_eq!(second.len(), first.len(), "前置不成立：两份内容必须等长");
+        std::fs::write(&file, &second).unwrap();
+        assert_eq!(
+            monitor.monitor(&profile).usage.tokens_total,
+            160,
+            "等长原地重写必须靠 mtime/inode 发现，不能只看大小"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detail_window_covers_the_whole_thirty_day_chart() {
+        // 旧实现只留 7 天明细，于是 30 天的逐小时桶实际只画得出一周。
+        // 这里放 29 天前 / 8 天前 / 刚刚三条：三条都必须在 30 天桶里。
+        let dir = temp_dir("window");
+        let now = now_ms();
+        let day = 86_400_000i64;
+        let lines = [
+            codex_record_at(1_000, 900, 50, "d29", &iso_utc_from_ms(now - 29 * day)),
+            codex_record_at(1_000, 900, 50, "d8", &iso_utc_from_ms(now - 8 * day)),
+            codex_record_at(1_000, 900, 50, "d0", &iso_utc_from_ms(now - 60_000)),
+        ]
+        .join("\n");
+        std::fs::write(dir.join("session.jsonl"), format!("{lines}\n")).unwrap();
+
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&one_root_profile("window", &dir.to_string_lossy()));
+        assert_eq!(report.usage.tokens_total, 450, "三条都要进累计");
+        assert_eq!(sum_hourly(&report), 450, "29 天前与 8 天前那两条也得画得出来");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folding_out_of_window_detail_is_conservative() {
+        // ADR 0007 的核心不变式：折的是明细，不是数字。掉出窗口的那条只进累计、不进图表。
+        let dir = temp_dir("fold");
+        let now = now_ms();
+        let lines = [
+            codex_record(1_000, 900, 50, "ancient"), // 2020-01-01，必然掉出 70 天窗口 → 净 150
+            codex_record_at(1_000, 900, 50, "recent", &iso_utc_from_ms(now - 60_000)), // 净 150
+        ]
+        .join("\n");
+        std::fs::write(dir.join("session.jsonl"), format!("{lines}\n")).unwrap();
+
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&one_root_profile("fold", &dir.to_string_lossy()));
+        assert_eq!(report.usage.tokens_total, 300, "折入保和：掉出窗口的那条仍计累计");
+        assert_eq!(sum_hourly(&report), 150, "图表只画窗口内的那条");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn per_file_detail_cap_trims_the_oldest_without_touching_totals() {
+        // 单文件明细硬上限：触顶折掉最早的，累计一条不少。
+        // 期望值**写字面量**而不是引用 `MAX_DETAIL_PER_FILE`：写成常量的话，改常量时期望跟着变，
+        // 这条用例就永远绿——反向验证时它确实没红，才改成现在这样（20_000 是定案口径）。
+        const CAP: i64 = 20_000;
+        const LINES: i64 = CAP + 1;
+        let dir = temp_dir("cap");
+        let now = now_ms();
+        let mut body = String::new();
+        for i in 0..LINES {
+            body.push_str(&codex_record_at(
+                1_000,
+                900,
+                50,
+                &format!("r{i}"),
+                &iso_utc_from_ms(now - 60_000 + i),
+            ));
+            body.push('\n');
+        }
+        std::fs::write(dir.join("session.jsonl"), body).unwrap();
+
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&one_root_profile("cap", &dir.to_string_lossy()));
+        let per = 150i64;
+        assert_eq!(report.usage.tokens_total, per * LINES, "累计不受上限影响");
+        assert_eq!(
+            sum_hourly(&report),
+            per * CAP,
+            "明细被裁到上限，图表少画最早那一条（改成 20_000 以外就红了）"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

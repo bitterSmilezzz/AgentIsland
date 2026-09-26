@@ -442,3 +442,44 @@ pub fn for_each_line<F: FnMut(&str)>(path: &Path, start_offset: u64, mut f: F) -
     }
     Some(len)
 }
+
+/// 按行读取，**只承认到最后一条完整行**，并回吐 `(真正承认到的字节数, 文件是否以换行结尾)`。
+///
+/// 与 `for_each_line` 的差别是刻意的，不是重复实现：
+/// 会话尾读每轮重读尾部窗口，末尾半行解析失败也无所谓；而 token 明细是**续读游标**——
+/// 一旦把半个 JSON 行承认下来并前进游标，那条记录下一次就再也读不回来了
+/// （下一次从更后面开始）。所以这里宁可停在上一个换行处，等它写完再读。
+pub fn for_each_complete_line<F: FnMut(&str)>(
+    path: &Path,
+    start_offset: u64,
+    mut f: F,
+) -> Option<(u64, bool)> {
+    use std::io::BufRead;
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = if len < start_offset { 0 } else { start_offset };
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut buffer = Vec::new();
+    let mut consumed = start;
+    let mut ended_with_newline = false;
+    loop {
+        buffer.clear();
+        let read = reader.read_until(b'\n', &mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        if buffer.last() != Some(&b'\n') {
+            // 末尾半行：不承认（consumed 停在上一处换行之后），下次补全了再读
+            ended_with_newline = false;
+            break;
+        }
+        consumed += read as u64;
+        ended_with_newline = true;
+        let line = &buffer[..buffer.len() - 1];
+        if !line.is_empty() {
+            f(&String::from_utf8_lossy(line));
+        }
+    }
+    Some((consumed, ended_with_newline))
+}
