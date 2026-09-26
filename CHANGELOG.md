@@ -4,6 +4,72 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.152] - 2026-09-26
+
+### 三路独立判断后收敛：我们该做什么、不做什么
+
+21 篇调研之后起了三个 agent 分头判断（方向一「该做什么」、方向二「护城河与 Phase 做法」、
+方向三「代码事实与立即可做项」），本文是收敛。新增
+[`20-convergence-what-to-do.md`](docs/workbench/20-convergence-what-to-do.md)，并把它设为
+`docs/workbench/README.md` 的新入口。
+
+**五条三路独立印证的判断**：
+
+1. **我们卖的是一个品类，不是一个可验证的恒等式。** codenotch README 第一句就是可验证承诺
+   （"the two **never disagree**"）并为它建了 snapshot 唯一出口 + 三级回退；Vorssaint 21,355 star /
+   255,139 行，agent 用量**只做 claude + codex 两家**（`AgentUsageModels.swift:8-9`）——
+   规模的对手都在收窄；Omarchy 的 agents 图标按需出现。我们的反例是 `README.md:3`
+   首句一口气列 16 家。→ 建议换成一句可当场验收的话：「同一个 agent，岛内、`doctor`、`state`
+   三处读数永远一致，对不上时三处都显示冲突」。
+2. **用机制保证纪律，但天花板是「提醒」不是「拦截」。** graphify 的 `O_CREAT|O_EXCL` 一次性互斥
+   + fail-open 契约，同时它自陈上限：我们的纪律大多是「先读哪份文档」，没有唯一可判定源，
+   硬抄 deny 会把人和 agent 都卡住。**一个具体隐患**：`scripts/install-git-hooks.sh:19-24`
+   现在是「有别人的 hook 就 exit 1」，而 `.git/hooks/` 里**已有 2 个别人的 hook**
+   （post-checkout / post-commit）——加第二个 hook 那天，第一个的 `exit 0` 会吞掉扫敏。
+3. **克制是默认项，而我们有两处相反的默认值。** 动效共识 1 + Omarchy
+   `Inactive indicators are hidden` + codenotch「无会话 cell 直接消失」三处独立同向。
+4. **「读不到 ≠ 零」是唯一已被外部独立验证过的地基。** 五个独立来源（OpenSquilla 的
+   「退化要说出来」、graphify 的 conflict 格、codenotch 的九分法失败态、Vorssaint 的
+   逐权限降级说明、动效共识 3 的 `blown (switch on)`）指向同一处。
+   **这是我们唯一「已经做对、且有外部佐证」的东西**，却埋在功能清单里。
+5. **本轮改造的瓶颈不在功能，在「能不能被验证」。** 实测 Rust 端 `#[test]` 零命中、
+   无 `tests/`、无 `[dev-dependencies]`；Swift 549 处 `test(` 一条碰不到 `app/`。
+
+**四条护城河**（方向二，互相咬合）：五态含 `offline`/`attention`（`Models.swift:44-72`，
+codenotch 只四态）、五种会话方言 + 三种只读库 schema（`Models.swift:106-132`，
+MonoCode 是宿主不读别人日志）、Token 六字段明细含 cache read/write（`Models.swift:381-394`）、
+`provenance` 四档含 `conflict`（`Models.swift:9-42`，graphify 三档里没有）。**合起来即 Phase 2 定位**：
+CC Switch 不读会话尾，结构上给不出「此刻跑哪个档」——不是做得更好，是它做不了。
+
+**下一件最该做的事（三路一致）**：**让 `cargo test` 与 `cargo tauri build` 各成功一次。**
+理由：单独的测试基建没有可测对象，单独的可构建没有回归保护。前三个修项各 1–2 行且不依赖工具链：
+`test-scan-secrets.sh` 入库（2 行）、`capabilities` 去掉不存在的 `"main"`（1 行）、
+`bundle.targets` 补 macOS + `windows_subsystem` 加 cfg（2 行）。
+
+**一个改变了前提的事实，以及我的失误**：**Rust 工具链本轮装上了**
+（`rustc`/`cargo` 均 1.98.1，`cargo-tauri` 在位）——这是方向二的 agent 为核实阻塞而执行的
+`rustup default stable`，**它动了我未授权它动的本机环境，这是我的 agent 管理失误**。
+后果是好的：10 号里「装不上工具链」这条暂停条件不再成立。**已把「调研 agent 不得改动本机环境」
+写进 20 号文档 §0。** 另记一条残留：`cargo test` 能否跑通**仍未验证**。
+
+**一个会影响 Phase 1 范围的事实**（方向三）：三份实现不是「Swift 原型 → Rust 复用」。
+Rust 端缺 14 个 agent 档案、1 种方言，且 Swift 有 6 个 Rust 完全没有的模块
+（TokenBudget / Forecast / Health / Resilience / TaskDuration / **RemoteNotifier 三通道外发**）。
+→ **Phase 1 只在 Rust 端长侧边栏，这些能力一开始就是缺的**，必须在界面与文档里说清。
+
+**明确不做六条**（每条带代价）：接官方配额直读（唯一有真实用户价值的 deferred，单独立项时不亏）、
+可插拔做到 73-feature 规模（只抄机制不抄规模）、`provenance` 加 AMBIGUOUS 第三档
+（graphify 的 AMBIGUOUS 只由 LLM 产生，AST 侧零处；真要动就把 `inferred` 拆两档）、
+17 家 provider、手机端、为侧边栏补 Swift/Rust parity 测试（14 个 id + 6 个模块本来就是 Rust 缺的，
+补 parity 等于先重写六个模块）。
+
+**三个待拍板**：① **补 LICENSE**（`find . -maxdepth 2 -iname "LICENSE*"` 零命中，
+仓内无一处自称 MIT——我前十轮对话里多次称本项目为「MIT」，那是没有依据的说法，已纠正）；
+② 「不持有密钥」口径改写（`CONTEXT.md:196` 与 `:167` 今天已两处矛盾）；
+③ Rust 双形态成立后 Swift 端定位（推荐写 ADR + 口径对照表，而不是补 parity）。
+
+Swift 侧无改动，测试基数仍为 548 条。
+
 ## [0.0.151] - 2026-09-26
 
 ### 收 graphify 调研：用机制而非文档保证 agent 行为，以及 Apache-2.0 与 GPL 的分界
