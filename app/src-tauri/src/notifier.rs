@@ -15,6 +15,7 @@
 //! ③ **被策略挡下不算失败**，也不该记成成功：它记的是「为什么没发」。
 
 use crate::remote::{Channel, ChannelConfig, Now, Policy, PresenceSignals};
+use crate::secret::{self, SecretStore};
 use crate::render::{self, Inputs, Request};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -131,6 +132,9 @@ struct Inner {
 pub struct Notifier {
     inner: Arc<Mutex<Inner>>,
     transport: Arc<dyn Transport>,
+    /// 密钥来源（生产 = macOS 钥匙串）。**只在闸门放行之后才读它**：
+    /// 总开关关着时不该碰钥匙串——那是这个功能的隐私闸门。
+    secrets: Arc<dyn SecretStore>,
     /// 失败后重试的间隔；0 = 不睡（测试）。**要不要重试**由 `retry_attempts` 控制
     retry_delay_ms: i64,
     /// 初次之外再试几次（Swift 是 1）
@@ -144,6 +148,7 @@ impl Default for Notifier {
             // 默认就是真传输：它能发明文 http 与 https（系统 TLS 栈），
             // 对 SMTP 如实报「会话未接入」——见 `transport.rs`
             transport: Arc::new(crate::transport::HttpTransport::new()),
+            secrets: Arc::new(secret::Keychain),
             retry_delay_ms: RETRY_DELAY_MS,
             retry_attempts: 1,
         }
@@ -160,11 +165,21 @@ impl Notifier {
     pub fn with_transport(transport: Box<dyn Transport>) -> Self {
         Notifier {
             transport: Arc::from(transport),
+            // **用例绝不碰真钥匙串**：默认一个空键盘串，要测密钥的用 `with_secrets`。
+            // 真钥匙串在 ad-hoc 签名下可能弹授权框，用例不该触发它。
+            secrets: Arc::new(EmptySecrets),
             retry_delay_ms: 0,
             // 既有用例关心的是闸门与记账，不该被重试改变语义；要测重试的自己开
             retry_attempts: 0,
             ..Notifier::default()
         }
+    }
+
+    /// 注入密钥源（测试用）
+    #[cfg(test)]
+    pub fn with_secrets(mut self, secrets: Arc<dyn SecretStore>) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// 打开重试（测试用）
@@ -175,23 +190,21 @@ impl Notifier {
         self
     }
 
-    /// 五道闸。**顺序与 Swift `attempt` 逐条一致**，每条都有既有理由（见各分支注释）。
-    /// 通过则返回节流键。
-    #[allow(clippy::too_many_arguments)]
-    fn gate(
+    /// 闸门第一段：**不需要密钥**的那几道。
+    ///
+    /// 顺序与 Swift `attempt` 逐条一致，而且这个「先做这一段」的切分本身就是口径：
+    /// 总开关 / 类型 / 静默 / 在场都判完才去碰钥匙串——总开关关着时不该读密钥
+    /// （它是这个功能的隐私闸门），也正因为排在最前面，关掉时连钥匙串都不碰。
+    fn gate_policy(
         &self,
         inputs: &Inputs,
         policy: &Policy,
-        channel: Channel,
-        config: &ChannelConfig,
-        has_secret: bool,
         now: Now,
         presence: &PresenceSignals,
         bypass_policy: bool,
-    ) -> Result<String, Outcome> {
+    ) -> Result<(), Outcome> {
         let normalized = policy.normalized();
-        // 总开关连「发送测试」一起挡：它是这个功能的隐私闸门，若按一次测试就能出本机，
-        // 开关本身就不可信。也正因为排在前面，关掉时不会去碰钥匙串
+        // 总开关连「发送测试」一起挡：若按一次测试就能出本机，开关本身就不可信
         if !normalized.master_enabled {
             return Err(Outcome::Suppressed {
                 reason: "总开关未开".into(),
@@ -204,9 +217,8 @@ impl Notifier {
             });
         }
         if !bypass_policy {
-            // 绕过只覆盖「什么时候打扰用户」这三条里的后两条（节流 / 静默 / 在场）。
-            // 本地分钟取不到时按**不静默**降级（fail-open）：宁可发出去，
-            // 也不要出现「开关开着却永远不发」。
+            // 绕过只覆盖「什么时候打扰用户」这两条。本地分钟取不到时按**不静默**降级
+            // （fail-open）：宁可发出去，也不要出现「开关开着却永远不发」。
             let quiet = now
                 .minutes_of_day
                 .map(|minutes| normalized.in_quiet_hours(minutes))
@@ -224,6 +236,22 @@ impl Notifier {
                 });
             }
         }
+        Ok(())
+    }
+
+    /// 闸门第二段：配置检查与节流。**必须排在密钥读取之后**——
+    /// 「配齐了没有」的第一条就是「有没有密钥」。
+    fn gate_config_and_claim(
+        &self,
+        inputs: &Inputs,
+        policy: &Policy,
+        channel: Channel,
+        config: &ChannelConfig,
+        has_secret: bool,
+        now: Now,
+        bypass_policy: bool,
+    ) -> Result<String, Outcome> {
+        let normalized = policy.normalized();
         // 配置检查放在节流之前：配置坏了是每次都发不出去，
         // 若先判节流，用户会看到「节流命中」而实际是根本没配好
         if let Some(missing) = channel.missing_field(config, has_secret) {
@@ -241,8 +269,8 @@ impl Notifier {
     }
 
     /// 判定 + 真发 + 记账（**同步**，含重试）。
-    /// `has_secret` / `presence` 由调用方给：本模块不碰钥匙串、也不取窗口服务器信号，
-    /// 判据保持纯函数（每次外发都会调它）。
+    /// `presence` 由调用方给：本模块不取窗口服务器信号，判据保持纯函数。
+    /// 密钥**自己读**（读在策略闸门之后，见下），所以调用方不必也不该先把它读出来。
     ///
     /// 引擎**不该直接调它**——传输有 10 秒超时，会占住采样那一拍；走 [`Notifier::dispatch`]。
     #[allow(clippy::too_many_arguments)]
@@ -252,21 +280,33 @@ impl Notifier {
         policy: &Policy,
         channel: Channel,
         config: &ChannelConfig,
-        has_secret: bool,
         now: Now,
         presence: &PresenceSignals,
         bypass_policy: bool,
     ) -> Outcome {
         // 标题用渲染出来的那个（与 Swift 同一处取值），被挡下时也要有标题
         let title = render::render(inputs, config).title;
-        let throttle_key = match self.gate(
+        if let Err(outcome) = self.gate_policy(inputs, policy, now, presence, bypass_policy) {
+            self.record(Attempt {
+                at_ms: now.ms,
+                title,
+                outcome: outcome.clone(),
+                tries: 1,
+            });
+            return outcome;
+        }
+
+        // **到这一步才碰钥匙串**。读的是该通道固定的条目名（不是可配字段）：
+        // 「密钥存了但条目名对不上」是查不出来的失效，所以条目名由通道种类唯一决定。
+        let secret = self.secrets.read(&secret::default_secret_name(channel));
+
+        let throttle_key = match self.gate_config_and_claim(
             inputs,
             policy,
             channel,
             config,
-            has_secret,
+            secret.is_some(),
             now,
-            presence,
             bypass_policy,
         ) {
             Ok(key) => key,
@@ -281,10 +321,10 @@ impl Notifier {
             }
         };
 
-        // 密钥本轮一律 `None`（钥匙串未接入）：渲染出的请求不会带任何凭据，
-        // `{key}` 位置留空——由传输层如实失败，而不是拿一个空密钥去撞对端
+        // 密钥只进这一个地方：渲染出来的请求。它不进账本、不进日志、不进界面
+        // （`Request::masked_preview` 另有掩码）。
         let message = render::render(inputs, config);
-        let request = render::render_request(&message, channel, config, None, false);
+        let request = render::render_request(&message, channel, config, secret.as_deref(), false);
         let mut tries = 1;
         let mut outcome = self.transport.perform(&request);
         // 自动外发失败重试一次：这个功能存在的意义就是「人不在机器前也要收到」，
@@ -332,7 +372,6 @@ impl Notifier {
         policy: Policy,
         channel: Channel,
         config: ChannelConfig,
-        has_secret: bool,
         now: Now,
         presence: PresenceSignals,
         bypass_policy: bool,
@@ -344,11 +383,9 @@ impl Notifier {
                 &policy,
                 channel,
                 &config,
-                has_secret,
                 now,
                 &presence,
-                bypass_policy,
-            );
+                bypass_policy);
         });
     }
 
@@ -419,10 +456,23 @@ impl Notifier {
     }
 }
 
+/// 用例默认的密钥源：**永远是「没有密钥」**。
+/// 存在的意义是让用例绝不碰真钥匙串——真钥匙串在 ad-hoc 签名下可能弹授权框。
+#[cfg(test)]
+struct EmptySecrets;
+
+#[cfg(test)]
+impl SecretStore for EmptySecrets {
+    fn read(&self, _name: &str) -> Option<String> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::remote::{EventKind, Policy};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// 假传输：记录收到的请求，返回预设结果（Swift 侧 `MockTransport` 同一角色）
@@ -487,11 +537,9 @@ mod tests {
             policy,
             Channel::Ntfy,
             &ntfy(),
-            false,
             now(at),
             &unavailable(),
-            false,
-        )
+            false)
     }
 
     #[test]
@@ -512,11 +560,9 @@ mod tests {
             &policy,
             Channel::Ntfy,
             &ntfy(),
-            false,
             now(2_000),
             &unavailable(),
-            true,
-        );
+            true);
         assert_eq!(
             bypassed,
             Outcome::Suppressed {
@@ -539,7 +585,6 @@ mod tests {
             &policy,
             Channel::Ntfy,
             &ntfy(),
-            false,
             now(1_000),
             &unavailable(),
             true, // 发送测试也代发不了被关掉的类型
@@ -572,14 +617,12 @@ mod tests {
             &policy,
             Channel::Ntfy,
             &ntfy(),
-            false,
             at,
             &PresenceSignals {
                 idle_seconds: Some(1.0),
                 ..PresenceSignals::default()
             },
-            false,
-        );
+            false);
         assert_eq!(quiet, Outcome::Suppressed { reason: "静默时段".into() });
 
         // bypass 绕过这两条 ⇒ 这次要真的走传输
@@ -588,14 +631,12 @@ mod tests {
             &policy,
             Channel::Ntfy,
             &ntfy(),
-            false,
             at,
             &PresenceSignals {
                 idle_seconds: Some(1.0),
                 ..PresenceSignals::default()
             },
-            true,
-        );
+            true);
         assert_eq!(bypassed, Outcome::Delivered);
         assert_eq!(seen.lock().unwrap().len(), 1);
 
@@ -605,12 +646,10 @@ mod tests {
             &inputs(EventKind::Attention),
             &policy,
             Channel::Ntfy,
-            &ChannelConfig::default(), // 缺主题名
-            false,
+            &ChannelConfig::default(),
             at,
             &unavailable(),
-            true,
-        );
+            true);
         assert_eq!(
             unconfigured,
             Outcome::NotConfigured {
@@ -631,11 +670,9 @@ mod tests {
             &enabled(),
             Channel::Ntfy,
             &ntfy(),
-            false,
             now(1_000),
             &present,
-            false,
-        );
+            false);
         assert_eq!(by_default, Outcome::Delivered, "默认不要求「人不在」");
 
         let (mut strict, _) = fixture(Outcome::Delivered);
@@ -648,11 +685,9 @@ mod tests {
             &policy,
             Channel::Ntfy,
             &ntfy(),
-            false,
             now(1_000),
             &present,
-            false,
-        );
+            false);
         match blocked {
             Outcome::Suppressed { reason } => {
                 assert!(reason.starts_with("有人在机器前（"), "{reason}");
@@ -676,12 +711,10 @@ mod tests {
             &inputs(EventKind::Attention),
             &policy,
             Channel::Ntfy,
-            &ChannelConfig::default(), // 缺主题名
-            false,
+            &ChannelConfig::default(),
             now(1_500),
             &unavailable(),
-            false,
-        );
+            false);
         assert_eq!(
             outcome,
             Outcome::NotConfigured {
@@ -744,11 +777,9 @@ mod tests {
                 &policy,
                 Channel::Ntfy,
                 &ntfy(),
-                false,
                 now(1_000 + i),
                 &unavailable(),
-                false,
-            );
+                false);
         }
         let recent = notifier.recent();
         assert_eq!(recent.len(), HISTORY_LIMIT);
@@ -816,11 +847,9 @@ mod tests {
             &enabled(),
             Channel::CustomHttp,
             &config,
-            false,
             now(1_000),
             &unavailable(),
-            false,
-        );
+            false);
         match &outcome {
             Outcome::Failed { reason, .. } => assert!(reason.contains("连接失败"), "{reason}"),
             other => panic!("应报连接失败，实际 {other:?}"),
@@ -831,312 +860,173 @@ mod tests {
         assert!(!recent[0].delivered);
     }
 
+    /// 记录密钥读取次数的假密钥源：用来钉住「总开关关着时不碰钥匙串」。
+    struct CountingSecrets {
+        value: Option<String>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl SecretStore for CountingSecrets {
+        fn read(&self, _name: &str) -> Option<String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            self.value.clone()
+        }
+    }
+
+    fn counting_secrets(value: Option<&str>) -> (Arc<dyn SecretStore>, Arc<AtomicUsize>) {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let store = CountingSecrets {
+            value: value.map(str::to_string),
+            reads: reads.clone(),
+        };
+        (Arc::new(store), reads)
+    }
+
+    fn custom_config() -> ChannelConfig {
+        ChannelConfig {
+            url_template: "https://x/y?key={key}".into(),
+            body_template: "t={title}".into(),
+            ..ChannelConfig::default()
+        }
+    }
+
     #[test]
-    fn the_rendered_request_never_carries_a_secret_while_the_keychain_is_unwired() {
-        // 钥匙串未接入 ⇒ 密钥传 None：请求里不许出现任何凭据占位被填上值
+    fn a_key_placeholder_without_a_stored_secret_is_never_sent() {
+        // 模板要密钥、钥匙串里却没有 ⇒ 在**配置检查**那一步就被挡下。
+        // 旧行为是「留空照样发」——那等于拿一个空密钥去撞对端，还让用户以为发成功了
         let seen = Arc::new(Mutex::new(Vec::new()));
         let transport = FakeTransport {
             outcome: Outcome::Delivered,
             seen: seen.clone(),
         };
         let mut notifier = Notifier::with_transport(Box::new(transport));
-        let config = ChannelConfig {
-            url_template: "https://x/y?key={key}".into(),
-            body_template: "t={title}".into(),
-            ..ChannelConfig::default()
-        };
         let outcome = notifier.attempt(
             &inputs(EventKind::Attention),
             &enabled(),
             Channel::CustomHttp,
-            &config,
-            true,
+            &custom_config(),
+            now(1_000),
+            &unavailable(),
+            false,
+        );
+        assert!(
+            matches!(outcome, Outcome::NotConfigured { .. }),
+            "缺密钥应报未配置，实际 {outcome:?}"
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "被挡下的请求一个字节都不该出去"
+        );
+    }
+
+    #[test]
+    fn a_stored_secret_reaches_the_request_and_nowhere_else() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let transport = FakeTransport {
+            outcome: Outcome::Delivered,
+            seen: seen.clone(),
+        };
+        let (store, reads) = counting_secrets(Some("s3cret-value-9"));
+        let _ = &reads;
+        let mut notifier = Notifier::with_transport(Box::new(transport)).with_secrets(store);
+        let outcome = notifier.attempt(
+            &inputs(EventKind::Attention),
+            &enabled(),
+            Channel::CustomHttp,
+            &custom_config(),
             now(1_000),
             &unavailable(),
             false,
         );
         assert_eq!(outcome, Outcome::Delivered);
+        // ① 请求里带的是真密钥（这是它唯一该出现的地方）
         let request = seen.lock().unwrap()[0].clone();
-        assert!(
-            request.url.ends_with("key="),
-            "没有密钥就留空，不要编一个：{}",
-            request.url
-        );
-    }
-}
-
-#[cfg(test)]
-mod async_tests {
-    use super::*;
-    use crate::remote::{ChannelConfig, EventKind, PresenceSignals};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// 慢传输：证明引擎那一拍不会被它占住
-    struct SlowTransport {
-        delay: Duration,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl Transport for SlowTransport {
-        fn perform(&self, _request: &Request) -> Outcome {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(self.delay);
-            Outcome::Delivered
-        }
-    }
-
-    /// 按脚本依次返回结果的传输（测重试）
-    struct ScriptedTransport {
-        script: Mutex<Vec<Outcome>>,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl Transport for ScriptedTransport {
-        fn perform(&self, _request: &Request) -> Outcome {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let mut script = self.script.lock().unwrap();
-            if script.is_empty() {
-                // 脚本用完之后一直返回最后一个结果
-                return Outcome::Failed {
-                    reason: "脚本已用尽".into(),
-                    permanent: true,
-                };
-            }
-            script.remove(0)
-        }
-    }
-
-    fn inputs() -> Inputs {
-        Inputs::new("Claude", EventKind::Attention, 0.0)
-    }
-
-    fn config() -> ChannelConfig {
-        ChannelConfig {
-            topic_or_url: "island".into(),
-            ..ChannelConfig::default()
-        }
-    }
-
-    fn enabled() -> Policy {
-        Policy {
-            master_enabled: true,
-            ..Policy::default()
-        }
-    }
-
-    fn now(ms: i64) -> Now {
-        Now {
-            ms,
-            minutes_of_day: Some(12 * 60),
-        }
-    }
-
-    fn wait_for_history(notifier: &Notifier, want: usize) -> Vec<Attempt> {
-        for _ in 0..300 {
-            let recent = notifier.recent();
-            if recent.len() >= want {
-                return recent;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        notifier.recent()
-    }
-
-    #[test]
-    fn dispatch_returns_immediately_even_when_the_transport_is_slow() {
-        // 这条是本轮的重点：传输最长 10 秒，引擎那一拍不能在它上面等
-        let calls = Arc::new(AtomicUsize::new(0));
-        // 传输 500ms、上限 150ms：判据要**宽到不受机器负载影响**，
-        // 同时**窄到把「同步跑」钉死**（同步会等满 500ms）。
-        // 之前写 300ms/100ms，在刚编译完的负载下飘过一次红。
-        let notifier = Notifier::with_transport(Box::new(SlowTransport {
-            delay: Duration::from_millis(500),
-            calls: calls.clone(),
-        }));
-        let started = std::time::Instant::now();
-        notifier.dispatch(
-            inputs(),
-            enabled(),
-            Channel::Ntfy,
-            config(),
-            false,
-            now(1_000),
-            PresenceSignals::unavailable(),
-            false,
-        );
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(150),
-            "dispatch 必须立刻返回，实际等了 {elapsed:?}"
-        );
-        // 结果稍后由工作线程写进账本
-        let recent = wait_for_history(&notifier, 1);
+        assert!(request.url.contains("s3cret-value-9"), "{}", request.url);
+        // ② 账本与给界面看的文案里不许出现它
+        let recent = notifier.recent_view();
         assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].short_text(), "已送达");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn a_retryable_failure_is_retried_once_and_the_tries_are_recorded() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
-            script: Mutex::new(vec![
-                Outcome::Failed {
-                    reason: "网络抖动".into(),
-                    permanent: false,
-                },
-                Outcome::Delivered,
-            ]),
-            calls: calls.clone(),
-        }))
-        .with_retry(1, 0);
-        let outcome = notifier.attempt(
-            &inputs(),
-            &enabled(),
-            Channel::Ntfy,
-            &config(),
-            false,
-            now(1_000),
-            &PresenceSignals::unavailable(),
-            false,
+        assert!(
+            !recent[0].text.contains("s3cret-value-9") && !recent[0].title.contains("s3cret-value-9"),
+            "账本里不许出现密钥：{:?}",
+            recent[0]
         );
-        assert_eq!(outcome, Outcome::Delivered);
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "失败后应重试一次");
-        let recent = notifier.recent();
-        assert_eq!(recent[0].tries, 2);
-        assert_eq!(
-            recent[0].short_text(),
-            "已送达（重试 1 次后）",
-            "重试必须留痕：一次就送达与重试后送达是不同的通道健康度"
+        // ③ 掩码预览里也不许出现
+        let masked = crate::render::render_request(
+            &crate::render::render(&inputs(EventKind::Attention), &custom_config()),
+            Channel::CustomHttp,
+            &custom_config(),
+            Some("s3cret-value-9"),
+            true,
+        );
+        assert!(
+            !masked.url.contains("s3cret-value-9"),
+            "掩码预览不许带真密钥：{}",
+            masked.url
         );
     }
 
     #[test]
-    fn a_permanent_rejection_is_not_retried() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
-            script: Mutex::new(vec![Outcome::Failed {
-                reason: "服务端返回 404".into(),
+    fn the_ledger_never_contains_the_secret_even_when_the_send_fails() {
+        // 失败文案最容易夹带请求上下文，所以单独钉一条
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let transport = FakeTransport {
+            outcome: Outcome::Failed {
+                reason: "服务端返回 401".into(),
                 permanent: true,
-            }]),
-            calls: calls.clone(),
-        }))
-        .with_retry(1, 0);
-        let outcome = notifier.attempt(
-            &inputs(),
-            &enabled(),
-            Channel::Ntfy,
-            &config(),
-            false,
-            now(1_000),
-            &PresenceSignals::unavailable(),
-            false,
-        );
-        assert!(matches!(outcome, Outcome::Failed { permanent: true, .. }));
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "对端明确拒绝时再要一次只是给它加负载，而且 ntfy.sh 这类中转按条数限流"
-        );
-        assert_eq!(
-            notifier.recent()[0].short_text(),
-            "失败：服务端返回 404（对端明确拒绝，重试无用）"
-        );
-    }
-
-    #[test]
-    fn a_test_send_is_never_retried_because_the_user_is_watching() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
-            script: Mutex::new(vec![
-                Outcome::Failed {
-                    reason: "网络抖动".into(),
-                    permanent: false,
-                },
-                Outcome::Delivered,
-            ]),
-            calls: calls.clone(),
-        }))
-        .with_retry(1, 0);
-        let outcome = notifier.attempt(
-            &inputs(),
-            &enabled(),
-            Channel::Ntfy,
-            &config(),
-            false,
-            now(1_000),
-            &PresenceSignals::unavailable(),
-            true, // 发送测试
-        );
-        assert!(matches!(outcome, Outcome::Failed { permanent: false, .. }));
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "用户盯着界面等，立刻给如实结果");
-    }
-
-    #[test]
-    fn the_throttle_slot_stays_claimed_while_the_retry_is_in_flight() {
-        // Swift 的原话：「占位在整个『初次 + 重试』期间都握着，同一键的并发事件挤不进第二条」。
-        // 这条用真并发验它：重试等着的时候从另一线程发同一键的事件，必须被节流挡下。
-        let calls = Arc::new(AtomicUsize::new(0));
-        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
-            script: Mutex::new(vec![
-                Outcome::Failed {
-                    reason: "抖一次".into(),
-                    permanent: false,
-                },
-                Outcome::Failed {
-                    reason: "又抖一次".into(),
-                    permanent: false,
-                },
-            ]),
-            calls: calls.clone(),
-        }))
-        .with_retry(1, 250);
-
-        let worker = notifier.clone();
-        let handle = std::thread::spawn(move || {
-            worker.attempt(
-                &inputs(),
-                &enabled(),
-                Channel::Ntfy,
-                &config(),
-                false,
-                now(1_000),
-                &PresenceSignals::unavailable(),
-                false,
-            )
-        });
-        // 等它占住节流位（**轮询**而不是睡固定时间：线程启动慢一点就会让并发探针
-        // 先抢到占位，于是这条用例间歇性变红）。占位在初次失败前就已落下，
-        // 而释放要等重试结束，所以「已占位」这个时刻一定落在窗口内。
-        let mut claimed = false;
-        for _ in 0..400 {
-            if notifier.throttle_keys() == 1 {
-                claimed = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(claimed, "工作线程应已占住节流位");
-        let intruder = notifier.attempt(
-            &inputs(),
-            &enabled(),
-            Channel::Ntfy,
-            &config(),
-            false,
-            now(1_100),
-            &PresenceSignals::unavailable(),
-            false,
-        );
-        assert_eq!(
-            intruder,
-            Outcome::Suppressed {
-                reason: "节流命中".into()
             },
-            "重试在途时，同一键的第二条事件必须挤不进来"
+            seen: seen.clone(),
+        };
+        let (store, _) = counting_secrets(Some("s3cret-value-9"));
+        let mut notifier = Notifier::with_transport(Box::new(transport)).with_secrets(store);
+        let outcome = notifier.attempt(
+            &inputs(EventKind::Attention),
+            &enabled(),
+            Channel::CustomHttp,
+            &custom_config(),
+            now(1_000),
+            &unavailable(),
+            false,
         );
-        let outcome = handle.join().unwrap();
         assert!(matches!(outcome, Outcome::Failed { .. }));
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "那条并发事件不该真的发出去");
-        assert_eq!(notifier.throttle_keys(), 0, "两次都没送达 ⇒ 占位要撤掉");
+        let rendered = format!("{outcome:?}");
+        assert!(!rendered.contains("s3cret-value-9"), "{rendered}");
+        let recent = notifier.recent_view();
+        assert!(!recent[0].text.contains("s3cret-value-9"), "{}", recent[0].text);
+    }
+
+    #[test]
+    fn the_keychain_is_not_read_while_the_master_switch_is_off() {
+        // 总开关是这个功能的隐私闸门：关着的时候，连「有没有密钥」都不该去问钥匙串。
+        // 这条守的是「关掉开关就不会有任何东西离开本机」这句话的字面含义。
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let transport = FakeTransport {
+            outcome: Outcome::Delivered,
+            seen: seen.clone(),
+        };
+        let (store, reads) = counting_secrets(Some("s3cret-value-9"));
+        let mut notifier = Notifier::with_transport(Box::new(transport)).with_secrets(store);
+        let mut policy = enabled();
+        policy.master_enabled = false;
+        let outcome = notifier.attempt(
+            &inputs(EventKind::Attention),
+            &policy,
+            Channel::CustomHttp,
+            &custom_config(),
+            now(1_000),
+            &unavailable(),
+            false,
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Suppressed {
+                reason: "总开关未开".into()
+            }
+        );
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "总开关关着时不该去读钥匙串：闸门顺序就是这条口径"
+        );
+        assert!(seen.lock().unwrap().is_empty());
     }
 }

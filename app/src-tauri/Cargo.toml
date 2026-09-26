@@ -27,6 +27,11 @@ libc = "0.2"
 native-tls = "0.2"
 # SMTP 的 AUTH LOGIN 与 RFC 2047 主题都要 base64；lock 里早有 0.21.7（传递依赖），列为直接依赖不增加下载
 base64 = "0.21"
+# 钥匙串：密钥只进 macOS 钥匙串（本仓红线）。这个 crate 由 native-tls 已经带进来，
+# 列为直接依赖不增加下载；sys 那层是为了两个具名错误码常量，
+# 用名字而不是 -25308 这种魔数（与 Swift `RemoteSecret.describe` 同一处文案）。
+security-framework = "3"
+security-framework-sys = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

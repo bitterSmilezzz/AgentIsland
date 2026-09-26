@@ -54,7 +54,8 @@ impl Channel {
     /// 刻意不做成可配字段：「密钥存了但条目名对不上」是查不出来的失效——
     /// 界面全绿、每次发送都失败。条目名由通道种类唯一决定。
     pub fn default_secret_name(self) -> String {
-        format!("remote.{}", self.as_str())
+        // 单一来源：钥匙串那一侧也用同一个函数，两处各写一次必然漂移
+        crate::secret::default_secret_name(self)
     }
 
     /// 端点是否明文过网。与「配齐」检查**分开**的独立警告：

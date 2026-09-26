@@ -17,6 +17,8 @@ dependencies = [
  "libc",
  "native-tls",
  "rusqlite",
+ "security-framework",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "sysinfo",

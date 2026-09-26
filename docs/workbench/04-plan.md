@@ -21,7 +21,8 @@
 > v0.0.176 迁入闸门/节流/记账（`notifier.rs`，含 20 条「最近外发」账本）与传输骨架（`transport.rs`：明文 http 端到端可发，https/SMTP 如实报未接入）。
 > v0.0.177 接入 `https`（`native-tls` = 系统 TLS 栈），本地自签证书离线端到端验证；SMTP 会话仍缺。
 > v0.0.178 外发改走工作线程（不再占用采样那一拍）并补上失败重试一次；顺手修掉一个并行测试的端口竞争。
-> v0.0.179 迁入 SMTP over 465 会话（`smtp.rs`，含点号加倍、`smtp_line` 折行、失败也关连接）；外发组只剩钥匙串。
+> v0.0.179 迁入 SMTP over 465 会话（`smtp.rs`，含点号加倍、`smtp_line` 折行、失败也关连接）。
+> v0.0.180 迁入钥匙串（`secret.rs`：同 service/条目名、「闸门放行后才读」、存在性不取数据），并接出 `remote_secret_set`/`remote_secret_delete`。**外发组迁完**；下一步进「导出与自检」组。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

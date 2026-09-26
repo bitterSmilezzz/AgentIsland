@@ -17,6 +17,7 @@ mod remote;
 mod render;
 mod resilience;
 mod session;
+mod secret;
 mod settings;
 mod smtp;
 mod sqlite;
@@ -293,11 +294,15 @@ fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
     let engine = state.lock().unwrap();
     let settings = &engine.settings;
     let now = crate::tokens::now_ms();
+    // 「密钥存过没有」查钥匙串的**存在性**（不带 kSecReturnData：值不进界面内存）。
+    // 条目名由通道种类唯一决定，所以这里必须先解析出通道。
+    let (channel, _) = crate::remote::resolve_kind(Some(settings.remote_kind.as_str()));
+    let has_secret = crate::secret::exists(&crate::secret::default_secret_name(channel));
     let mut snapshot = crate::remote::status(
         Some(settings.remote_kind.as_str()),
         &settings.remote_channels,
         &settings.remote_policy,
-        false,
+        has_secret,
         crate::remote::Now::at(now),
         // Rust 还没接 macOS 的在场信号层（锁屏 / 显示器睡眠 / 无输入时长）：
         // 传 unavailable ⇒ 按 fail-open 判成「人不在」，依据写在 awayReason 里
@@ -306,6 +311,48 @@ fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
     // 节流状态在 notifier 里，不在判定层：这里补上
     snapshot.throttled = engine.notifier.throttle_keys();
     snapshot
+}
+
+/// 存密钥：**由用户自己录入，只进钥匙串**（ADR 0009：本仓不存任何凭据）。
+///
+/// 返回 `WriteResult` 而不是 bool：ad-hoc 签名下每次出包代码标识都变，钥匙串可能弹
+/// 「允许访问」甚至直接拒绝——**拒绝的理由必须原样显示给用户**，静默吞掉就等于
+/// 用户以为存上了，之后每次外发都失败且没有任何线索。
+///
+/// 刻意**不提供「读回密钥」的命令**：界面只需要「存过没有」（`remote_status.secret_set`）
+/// 与掩码回显，值没有理由回到 webview。
+#[tauri::command]
+fn remote_secret_set(
+    state: State<SharedEngine>,
+    value: Option<String>,
+) -> crate::secret::WriteResult {
+    let channel = {
+        let engine = state.lock().unwrap();
+        crate::remote::resolve_kind(Some(engine.settings.remote_kind.as_str())).0
+    };
+    let value = value.unwrap_or_default();
+    if value.trim().is_empty() {
+        // 空值当「清除」处理：这也是用户最容易做出的动作（把输入框清空再点保存）
+        let name = crate::secret::default_secret_name(channel);
+        return if crate::secret::delete(&name) {
+            crate::secret::WriteResult::Ok
+        } else {
+            crate::secret::WriteResult::Refused {
+                reason: "钥匙串里本来就没有这一条".to_string(),
+            }
+        };
+    }
+    crate::secret::write(&crate::secret::default_secret_name(channel), &value)
+}
+
+/// 删密钥：与「留空保存」同一个结果，单独给一个命令是为了界面能把「清除」做得明确
+#[tauri::command]
+fn remote_secret_delete(state: State<SharedEngine>) -> bool {
+    let channel = {
+        let engine = state.lock().unwrap();
+        crate::remote::resolve_kind(Some(engine.settings.remote_kind.as_str())).0
+    };
+    crate::secret::delete(&crate::secret::default_secret_name(channel))
 }
 
 #[tauri::command]
@@ -466,6 +513,8 @@ fn main() {
             save_settings,
             remote_status,
             remote_preview,
+            remote_secret_set,
+            remote_secret_delete,
             set_dock_edge,
             place_island,
             snap_nearest_edge,
