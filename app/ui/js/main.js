@@ -132,6 +132,7 @@ async function boot() {
     appearance: 'system', dock_edge: 'top', dock_anchor: 0.5,
     collapse_delay: 0.5, sample_interval: 2, cpu_threshold: 6,
     token_alert_enabled: true, token_alert_threshold: 200000,
+    auto_anomalies_alert: true,
     notification_policy: 'standard', play_completion_sound: true, disabled_agents: [],
   }));
   // 归一化：Rust/手动改配置可能出现 'Top'/'Dark' 等大小写变体

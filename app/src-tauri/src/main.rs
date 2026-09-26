@@ -12,6 +12,7 @@ mod placement;
 mod procmon;
 mod provider;
 mod registry;
+mod resilience;
 mod session;
 mod settings;
 mod sqlite;

@@ -16,6 +16,9 @@ pub struct Settings {
     pub sample_interval: f64,   // 秒
     pub cpu_threshold: f64,     // %
     pub token_alert_enabled: bool,
+    /// 异常驻留 / 死锁持续守护的开关（Swift 侧 `autoAnomaliesAlertEnabled`，默认开）。
+    /// 关掉它只关告警，**不影响** `is_hung` 与健康度判定——采集与告警解耦。
+    pub auto_anomalies_alert: bool,
     pub token_alert_threshold: i64,
     pub notification_policy: String, // standard | focus | silent
     pub play_completion_sound: bool,
@@ -32,6 +35,7 @@ impl Default for Settings {
             sample_interval: 2.0,
             cpu_threshold: 6.0,
             token_alert_enabled: true,
+            auto_anomalies_alert: true,
             token_alert_threshold: 200_000,
             notification_policy: "standard".into(),
             play_completion_sound: true,

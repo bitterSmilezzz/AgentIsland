@@ -2,6 +2,7 @@ use crate::filemon::{time_ago_text, FileMonitor};
 use crate::models::*;
 use crate::observability::{self, Evidence};
 use crate::health;
+use crate::resilience;
 use crate::procmon::{memory_text, ProcessMonitor};
 use crate::session::{self, Signal};
 use crate::settings::Settings;
@@ -34,6 +35,8 @@ pub struct ActivityEngine {
     /// 它是「卡死」判定的**资格**——死锁是「CPU 连续超阈值达 5 分钟」的时间性判定，
     /// 而前提是这段窗口确实被观测过。资格写在数据里、不靠调用方自报，见 [`crate::health::is_hung`]。
     observed_running_since: HashMap<String, i64>,
+    /// 异常驻留 / 死锁持续守护（[`crate::resilience::Guard`]）
+    resilience: resilience::Guard,
     last_cost_spike: HashMap<String, i64>,
     token_rate: HashMap<String, (i64, i64)>,
     probe_cache: HashMap<String, (u64, SystemTime, Option<Signal>, usize)>,
@@ -60,6 +63,7 @@ impl ActivityEngine {
             last_completed_fp: HashMap::new(),
             high_cpu_since: HashMap::new(),
             observed_running_since: HashMap::new(),
+            resilience: resilience::Guard::default(),
             last_cost_spike: HashMap::new(),
             token_rate: HashMap::new(),
             probe_cache: HashMap::new(),
@@ -202,6 +206,26 @@ impl ActivityEngine {
                 .cmp(&a.level)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
+
+        // 异常驻留与死锁持续守护（Swift 侧由 `autoAnomaliesAlertEnabled` 控制，默认开）。
+        // 放在排序之后、赋值之前：守护吃的是**这一拍的快照**，而 `list` 此刻还是局部量，
+        // 于是不会和 `self.resilience` 的可变借用打架
+        if self.settings.auto_anomalies_alert {
+            let alerts = self.resilience.evaluate(&list, now);
+            for alert in alerts {
+                self.push_event(AgentTaskEvent {
+                    id: crate::webhook::webhook_uuid(),
+                    agent_id: alert.agent_id,
+                    agent_name: alert.agent_name,
+                    event_type: "attention".into(),
+                    timestamp: now,
+                    message: Some(alert.message),
+                    detail: Some(format!("kind={} elapsed_ms={}", alert.kind, alert.elapsed_ms)),
+                    externally_delivered: false,
+                });
+            }
+        }
+
         self.snapshots = list;
         self.grand_total = TokenUsage {
             tokens24h: total24,

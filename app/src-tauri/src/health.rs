@@ -15,6 +15,11 @@ use serde::Serialize;
 pub const RUNAWAY_CPU_THRESHOLD: f64 = 70.0;
 pub const RUNAWAY_DURATION_MS: i64 = 300_000;
 
+/// 「物理内存严重过高」的门槛。**健康度与持续驻留守护共用这一个数**：
+/// Swift 侧 `AgentHealthEvaluator` 与 `AgentResilienceGuard` 各写了一遍 `2GB`
+/// （两处都叫 `twoGB`），改一处就会让「健康度说严重」与「守护会不会告警」对不上。
+pub const MEMORY_SEVERE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 /// 健康等级。`serde` 出的是给界面做类名/图标用的 ASCII 码，
 /// 中文等级在 [`Report::grade_label`] 里（与 Swift `HealthGrade.rawValue` 逐字相同）。
 ///
@@ -133,9 +138,8 @@ pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
     }
 
     // 3. 内存驻留集（RSS）溢出与泄露倾向
-    const TWO_GB: u64 = 2 * 1024 * 1024 * 1024;
     const ONE_AND_HALF_GB: u64 = 1536 * 1024 * 1024;
-    if snapshot.memory_bytes >= TWO_GB {
+    if snapshot.memory_bytes >= MEMORY_SEVERE_BYTES {
         deduction += 30;
         issues.push(format!("物理内存严重过高 ({} ≥ 2.0GB)", snapshot.memory_text));
     } else if snapshot.memory_bytes >= ONE_AND_HALF_GB {
@@ -179,7 +183,7 @@ pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
 
     let suggestion = if snapshot.is_hung == Some(true) {
         "检测到死锁，建议点击「终止逃生舱」重置智能体进程".to_string()
-    } else if snapshot.memory_bytes >= TWO_GB {
+    } else if snapshot.memory_bytes >= MEMORY_SEVERE_BYTES {
         "长会话存在内存泄露隐患，建议在新会话中重新开始".to_string()
     } else if snapshot.cpu_percent.is_some_and(|cpu| cpu >= 80.0) {
         "任务可能陷入重度计算或死循环，请检查终端日志".to_string()
