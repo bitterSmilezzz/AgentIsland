@@ -67,6 +67,13 @@ STAGED=$(git diff --cached --name-only)
 echo "$STAGED" | sed 's/^/    /'
 git commit -q -m "release: v$VERSION - $TITLE"
 
+# 提交**之后**再扫一次历史：上面那次 `--release` 跑在提交之前，本次新增的 blob
+# 还没进历史，于是「工作区靠 nosec 放行、历史这一关却要按对象备案」的差异
+# 要到下一轮才暴露（v0.0.174 真发生过：发版成功，下一次冷扫描才发现 1 个
+# url_token_param blob 未核准）。放在 tag/push 之前，失败就还没推出去。
+step "提交后复扫 git 历史（新 blob 也要过这一关）"
+scripts/scan-secrets.sh --history
+
 step "打 tag 并推送"
 git tag -a "v$VERSION" -m "v$VERSION — $TITLE"
 git push -q origin main
