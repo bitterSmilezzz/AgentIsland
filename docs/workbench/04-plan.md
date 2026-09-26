@@ -10,6 +10,7 @@
 > （费率表与算法两端口径对齐，带跨语言漂移哨兵），**剩 11 个**。
 > v0.0.168 把 token 明细的 SQLite 源接进 Rust（`sqlite.rs` 只读层 + 两类方言），
 > 并补进 `dim`/`mimocode` 两个带库档案（Rust 12 → 14）。
+> v0.0.169 按本机真实日志修掉 JSONL 净口径的 29 倍虚高，并对齐记录形状与去重。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

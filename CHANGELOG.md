@@ -4,6 +4,45 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.169] - 2026-09-27
+
+### 修掉 Rust JSONL 净口径的 29 倍虚高，并对齐记录形状与去重
+
+准备把 `StructuredTokenUsageIndex` 的保留口径搬进 Rust 时，先逐行读了 Swift 的 `netTokens`，
+发现两边公式不同。这次能**拿本机真实日志量一次**：`~/.codex/sessions` 下 26 份 `*.jsonl`，
+按「记录族 × 公式」四种组合求和——**记录族只差 0.3%，公式差 29 倍**
+（3,905,535 vs 114,006,271）。原因看一条真实记录就明白了：`input_tokens 43449` 里
+`cached_input_tokens` 占 41728（**96%**），旧公式 `input + output + cache_write` 把这份
+缓存命中的上下文当新输入全额计。取证与复跑命令见
+[JSONL 净口径实测](docs/research/2026-09-27-jsonl-net-token-formula.md)。
+
+**修法（对齐 Swift `StructuredTokenUsageIndex`）**：
+
+- 净口径改为 `max(input − min(cached, input), 0) + max(output, 0)`，缓存读取按方言各自的键
+  （Anthropic `cache_read_input_tokens` / Codex `cached_input_tokens` / ZCode `cacheReadTokens`）；
+  `cache_creation` / `cache_write` 不进净额。
+- **codex 改为认 `token_usage_record` 族**（Swift 认的那一族）。本机 26 份里 21 份**两族并存**
+  （另一族是 `event_msg.payload.type == "token_count"`）；两族并存意味着「都认」会把同一笔用量
+  计两遍，所以明确只认一族。
+- **加去重**：resume/fork 会把同一响应在同一份文件里抄第二遍。现在按记录自带 id 去重
+  （codex `payload.response_id`、Anthropic `id`/`uuid`、ZCode `requestId`），没有 id 的行用
+  「文件 + 段起点 + 行号」兜底；文件被截断或整体重写时去重键一并作废（否则全量重读会被自己挡掉）。
+- codex 那一族记录里**没有模型名**，模型落 `unknown`——旧实现写死 `"gpt-5"`，那是编的。
+- 解析前先做 `"usage"` 标记预筛（日志里 99% 以上是对话正文）。
+
+**端到端复核**：改完后用同一个 monitor 直接跑本机真实目录（临时探针，验完即删），
+`tokens_total = 3,905,535`，与独立脚本按 Swift 公式算出的数**逐字相同**；修前同一路径是
+114,006,271 那一档。
+
+测试 Rust 86 → **92**（+6：含缓存钳制的净口径、codex 只认一族、Anthropic 的 key 与 uuid 兜底、
+ZCode 形状、标记预筛不 panic、同文件重复响应只算一次）。23 号对照表里那条原本写着
+「净消耗口径 ✅ 一致」的行**此前是错的**（对 JSONL 侧根本不成立），本轮改为已对齐并附取证链接；
+「档案字段集」一行去掉 Rust 已具备的 `sessionDatabase`。
+
+没做：`StructuredTokenUsageIndex` 的**保留/折入口径仍是下一轮**——Rust 现在还是「明细只留 7 天 +
+全量累加」，没有 70 天窗口、没有折入、没有单文件 20,000 条上限，也没有 Swift 的 memo/戳复用；
+`cost.rs` 的估价落点差异（Swift 在视图层估、Rust 在数据层估）也未对齐。Swift 侧零改动。
+
 ## [0.0.168] - 2026-09-27
 
 ### 把 token 明细的 SQLite 源接进 Rust：补上只读库层与两类方言

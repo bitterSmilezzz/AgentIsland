@@ -3,7 +3,7 @@ use crate::models::{ModelUsage, SessionSchema, TokenReport, TokenUsage};
 use crate::session;
 use crate::sqlite;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,9 +22,15 @@ struct FileState {
     cost_total: f64,
     /// (unix ms, model, tokens, cost)
     entries: Vec<(i64, String, i64, f64)>,
+    /// 已计入的去重键。resume/fork 会把同一响应在同一份文件里抄第二遍，
+    /// 不挡就会把同一笔用量计两次（Swift 侧 `seen` 集合守的是同一件事）。
+    /// 文件被截断/整体重写时**必须清空**，否则全量重读会被全部挡掉。
+    seen_ids: HashSet<String>,
 }
 
 struct UsageLine {
+    /// 记录自带的 id（没有则调用方用「文件 + 段起点 + 行号」兜底）
+    id: Option<String>,
     tokens: i64,
     cost: f64,
     model: String,
@@ -171,6 +177,7 @@ impl TokenUsageMonitor {
                 let len = m.len();
                 if len < st.parsed_len {
                     st.parsed_len = 0; // 文件被截断/重写：全量重读
+                    st.seen_ids.clear(); // 去重键也得跟着作废，否则重读会被自己挡掉
                 }
                 (st.parsed_len, Some(lw))
             }
@@ -178,13 +185,16 @@ impl TokenUsageMonitor {
         }
     };
 
-        let mut collected: Vec<UsageLine> = Vec::new();
+        let mut collected: Vec<(u64, UsageLine)> = Vec::new();
+        let mut index: u64 = 0;
         let new_len = session::for_each_line(path, start, |line| {
+            let line_index = index;
+            index += 1;
             if line.len() < 8 {
                 return;
             }
             if let Some(u) = parse_usage_line(line) {
-                collected.push(u);
+                collected.push((index, u));
             }
         });
 
@@ -195,7 +205,16 @@ impl TokenUsageMonitor {
                 st.parsed_len = l;
                 st.last_write = last_write;
             }
-            for u in collected {
+            for (index, u) in collected {
+                // 去重键：优先用记录自带的 id（resume/fork 会把同一响应抄第二遍）；
+                // 没有 id 的行用「文件 + 段起点 + 行号」兜底——与 Swift 的 fallbackId 同构
+                let dedup = match &u.id {
+                    Some(id) => id.clone(),
+                    None => format!("{key}#{start}-{index}"),
+                };
+                if !st.seen_ids.insert(dedup) {
+                    continue; // 同一响应已经计过，不再计第二遍
+                }
                 st.tokens_total += u.tokens;
                 st.cost_total += u.cost;
                 st.entries.push((u.ts_ms, u.model, u.tokens, u.cost));
@@ -240,46 +259,70 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Claude: {"type":"assistant","timestamp":"...","message":{"model":"...","usage":{...}}}
-/// Codex:  {"type":"event_msg","timestamp":"...","payload":{"type":"token_count","info":{"last_token_usage":{...}}}}
+/// 各方言的**记录形状**（对齐 Swift `StructuredTokenUsageIndex.parse`）：
+/// · Anthropic/Claude：`{"timestamp":…,"id"|"uuid":…,"message":{"model":…,"usage":{…}}}`
+/// · Codex：`{"type":"token_usage_record","timestamp":…,"payload":{"response_id":…,"usage":{…}}}`
+///   ——同一份日志里**还有另一族** `event_msg.payload.type == "token_count"`；本机 26 份实测
+///   两族数值相差 0.3%、条数几乎一一对应，所以**只认一族**，免得同一笔用量被计两遍。
+/// · ZCode rollout：`{"requestId":…,"model":{"modelId":…},"response":{"usage":{…}}}`
 fn parse_usage_line(line: &str) -> Option<UsageLine> {
+    // 日志里 99% 以上的行是对话正文：先在字符串上找标记，命中才解析 JSON
+    if !line.contains("\"usage\"") {
+        return None;
+    }
     let doc: Value = serde_json::from_str(line).ok()?;
     let obj = doc.as_object()?;
 
-    let (usage, model, is_claude): (Value, Option<String>, bool) = if let Some(msg) = obj.get("message") {
-        let u = msg.get("usage")?.clone();
-        let m = msg.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
-        (u, m, true)
-    } else if let Some(pl) = obj.get("payload") {
-        if pl.get("type").and_then(|v| v.as_str()) != Some("token_count") {
+    let (usage, model, cached_key, id): (Value, Option<String>, &str, Option<String>) =
+        if let Some(msg) = obj.get("message") {
+            let usage = msg.get("usage")?.clone();
+            let model = msg.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let id = obj
+                .get("id")
+                .or_else(|| obj.get("uuid"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            (usage, model, "cache_read_input_tokens", id)
+        } else if obj.get("type").and_then(|v| v.as_str()) == Some("token_usage_record") {
+            let payload = obj.get("payload")?;
+            let usage = payload.get("usage")?.clone();
+            let id = payload
+                .get("response_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            // 这一族记录里**没有模型名**（payload 只有 response_id / turn_id / usage 一族），
+            // 所以落 unknown——旧实现写死 "gpt-5"，那是编的
+            (usage, None, "cached_input_tokens", id)
+        } else if let Some(resp) = obj.get("response") {
+            // ZCode rollout：response.usage {inputTokens, outputTokens, cacheRead/WriteTokens}
+            let usage = resp.get("usage")?.clone();
+            let model = obj
+                .get("model")
+                .and_then(|m| m.get("modelId"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let id = obj
+                .get("requestId")
+                .or_else(|| resp.get("responseId"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            (usage, model, "cacheReadTokens", id)
+        } else {
             return None;
-        }
-        let u = pl.get("info")?.get("last_token_usage")?.clone();
-        (u, Some("gpt-5".to_string()), false)
-    } else if let Some(resp) = obj.get("response") {
-        // ZCode rollout：response.usage {inputTokens, outputTokens, cacheRead/WriteTokens}
-        let u = resp.get("usage")?.clone();
-        let m = obj
-            .get("model")
-            .and_then(|mv| mv.get("modelId"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        (u, m, false)
-    } else {
-        return None;
-    };
+        };
 
     let get = |key: &str| usage.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+    // snake_case 与 camelCase 两种拼法都认（实测各方言各用一种：Anthropic/Codex 用
+    // `input_tokens`，ZCode 用 `inputTokens`）
     let input = get("input_tokens").max(get("inputTokens"));
     let output = get("output_tokens").max(get("outputTokens"));
-    let cache_write = if is_claude {
-        get("cache_creation_input_tokens")
-    } else {
-        get("cacheWriteTokens")
-    };
-    // 净消耗：不含缓存读取（与 Swift StructuredTokenUsageIndex 同口径）。
-    // 缓存读取也不进估算——它按另一档单独计价，混进来只会把成本算高。
-    let net = input + output + cache_write;
+    let cached = get(cached_key);
+    // 净消耗 = **未命中缓存的输入** + 输出。与 Swift `netTokens` 逐字同口径：
+    // `max(input - min(cached, input), 0) + max(output, 0)`。
+    // 旧实现写的是 `input + output + cache_write`——把缓存命中的上下文当新输入全额计。
+    // 本机 26 份真实 codex 日志实测因此虚高 **29 倍**（3.9M → 114M），
+    // 见 docs/research/2026-09-27-jsonl-net-token-formula.md。
+    let net = (input - cached.min(input)).max(0) + output.max(0);
     if net <= 0 {
         return None;
     }
@@ -300,7 +343,7 @@ fn parse_usage_line(line: &str) -> Option<UsageLine> {
         .and_then(parse_iso_ms)
         .unwrap_or_else(now_ms);
 
-    Some(UsageLine { tokens: net, cost, model: name, ts_ms })
+    Some(UsageLine { id, tokens: net, cost, model: name, ts_ms })
 }
 
 pub fn parse_iso_ms_pub(s: &str) -> Option<i64> {
@@ -590,6 +633,113 @@ mod tests {
         assert_eq!(parsed.cost, 0.0);
     }
 
+    // ── JSONL 净口径与去重（对齐 StructuredTokenUsageIndex）────────────────────
+
+    fn codex_record(input: i64, cached: i64, output: i64, response_id: &str) -> String {
+        format!(
+            r#"{{"type":"token_usage_record","timestamp":"2020-01-01T00:00:00.000Z","payload":{{"response_id":"{response_id}","usage":{{"input_tokens":{input},"cached_input_tokens":{cached},"output_tokens":{output},"cache_write_input_tokens":0}}}}}}"#
+        )
+    }
+
+    fn one_root_profile(id: &str, root: &str) -> crate::models::AgentProfile {
+        crate::models::AgentProfile {
+            id: id.into(),
+            name: "Fixture".into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            process_names: vec![],
+            cmdline_hints: vec![],
+            path_excludes: vec![],
+            cpu_floor: None,
+            session_dirs: vec![],
+            token_roots: vec![root.to_string()],
+            session_database: None,
+            category: "assistant".into(),
+        }
+    }
+
+    #[test]
+    fn net_tokens_exclude_cache_hits_like_swift() {
+        // 本机真实一行的数值（codex）：input 43449 / cached 41728 / output 200。
+        // Swift 口径 = max(input-cached,0)+output = 1921；
+        // 旧 Rust 口径 = input+output+cache_write = 43649（虚高 23 倍，整批 29 倍）。
+        let parsed = parse_usage_line(&codex_record(43_449, 41_728, 200, "resp-1")).expect("应解析");
+        assert_eq!(parsed.tokens, 1_921, "缓存命中的上下文不许当新输入全额计");
+        assert_ne!(parsed.tokens, 43_649, "43649 是被修掉的那个数");
+        // 缓存命中比输入还多时下限为 0，不许出现负数
+        let clamped = parse_usage_line(&codex_record(100, 9_999, 40, "resp-2")).expect("应解析");
+        assert_eq!(clamped.tokens, 40);
+    }
+
+    #[test]
+    fn codex_reads_only_the_token_usage_record_family() {
+        // 同一份日志里两族并存（本机 26 份里 21 份两者都有）：只认一族，否则同一笔用量计两遍
+        let other_family = r#"{"type":"event_msg","timestamp":"2020-01-01T00:00:00.000Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":50}}}}"#;
+        assert!(parse_usage_line(other_family).is_none(), "另一族不得再被计入");
+
+        let parsed = parse_usage_line(&codex_record(1_000, 900, 50, "resp-7")).expect("应解析");
+        assert_eq!(parsed.tokens, 150);
+        assert_eq!(parsed.id.as_deref(), Some("resp-7"), "去重键取自 payload.response_id");
+        // 这一族记录里没有模型名：落 unknown，不许编一个
+        assert_eq!(parsed.model, "unknown");
+    }
+
+    #[test]
+    fn anthropic_uses_its_own_cache_key_and_falls_back_to_uuid() {
+        let line = r#"{"id":"msg_1","timestamp":"2020-01-01T00:00:00.000Z","message":{"model":"claude-3-7-sonnet","usage":{"input_tokens":5000,"cache_read_input_tokens":4800,"cache_creation_input_tokens":700,"output_tokens":120}}}"#;
+        let parsed = parse_usage_line(line).expect("应解析");
+        // (5000-4800) + 120 = 320；cache_creation **不**进净消耗
+        assert_eq!(parsed.tokens, 320);
+        assert_eq!(parsed.id.as_deref(), Some("msg_1"));
+
+        let by_uuid = r#"{"uuid":"u-9","timestamp":"2020-01-01T00:00:00.000Z","message":{"usage":{"input_tokens":10,"output_tokens":5}}}"#;
+        assert_eq!(
+            parse_usage_line(by_uuid).unwrap().id.as_deref(),
+            Some("u-9"),
+            "没有 id 时用 uuid 兜底"
+        );
+    }
+
+    #[test]
+    fn zcode_rollout_keeps_its_own_shape_and_cache_key() {
+        let line = r#"{"requestId":"req-7","completedAt":"2020-01-01T00:00:00.000Z","model":{"modelId":"glm-4"},"response":{"responseId":"r1","usage":{"inputTokens":900,"cacheReadTokens":850,"outputTokens":30,"cacheWriteTokens":10}}}"#;
+        let parsed = parse_usage_line(line).expect("应解析");
+        // (900-850) + 30 = 80；cacheWrite 不进净消耗
+        assert_eq!(parsed.tokens, 80);
+        assert_eq!(parsed.id.as_deref(), Some("req-7"));
+        assert_eq!(parsed.model, "glm-4");
+    }
+
+    #[test]
+    fn lines_without_a_usage_marker_are_skipped_without_panicking() {
+        // 日志里 99% 以上是对话正文：不含 "usage" 的行直接跳过
+        assert!(parse_usage_line(r#"{"type":"message","text":"hello world"}"#).is_none());
+        assert!(parse_usage_line("not json at all").is_none());
+        assert!(parse_usage_line("").is_none());
+    }
+
+    #[test]
+    fn duplicate_responses_in_one_file_are_counted_once() {
+        // resume/fork 会把同一响应在同一份文件里抄第二遍：靠记录自带的 id 去重
+        let dir = std::env::temp_dir().join(format!(
+            "agentisland-tokens-dedup-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = codex_record(1_000, 900, 50, "resp-A"); // 净 150
+        let b = codex_record(2_000, 1_900, 100, "resp-B"); // 净 200
+        std::fs::write(dir.join("session.jsonl"), format!("{a}\n{a}\n{b}\n")).unwrap();
+
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&one_root_profile("dedup", &dir.to_string_lossy()));
+        assert_eq!(report.usage.tokens_total, 350, "同一 response_id 抄两遍只算一次");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ── SQLite 明细源 ────────────────────────────────────────────────────────
 
     fn temp_db(name: &str) -> String {
@@ -817,3 +967,4 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
