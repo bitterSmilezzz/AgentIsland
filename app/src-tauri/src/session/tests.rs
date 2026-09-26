@@ -81,6 +81,14 @@ fn claude_final_response_completes_via_public_file_probe() {
 }
 
 #[test]
+fn roo_code_id_uses_cline_session_dialect() {
+    let path = fixture_path("cline-lifecycle.json");
+    let aligned = completed_fingerprint(probe("roo-code", &path));
+    let legacy = completed_fingerprint(probe("roo", &path));
+    assert_eq!(aligned, legacy);
+}
+
+#[test]
 fn codex_open_tool_is_active_until_its_matching_result() {
     active_fingerprint(probe_codex(&prefix(CODEX, 2), FIXTURE_PATH), "cargo check");
     active_fingerprint(probe_codex(&prefix(CODEX, 3), FIXTURE_PATH), "cargo check");

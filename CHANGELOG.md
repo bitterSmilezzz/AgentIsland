@@ -4,6 +4,23 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.161] - 2026-09-26
+
+### 对齐 Rust 共用档案口径，保住旧 Roo 设置与无明细语义
+
+M3 从两端已有能力的差异开始：Rust 的 Claude 和 OpenCode CPU 工作下限改为与 Swift 相同的
+20%，Claude token 根目录补入 `~/.claude/sessions`。OpenCode、Cline、Roo Code 的
+token 根目录清空，因为现有采集器读不到可靠明细；详情请求现在返回「无本地明细」，
+而不是伪造一份零用量报告。
+
+Roo Code 的 Rust 档案 ID 对齐 Swift 的 `roo-code`，会话解析继续走 Cline 方言。
+旧设置里禁用的 `roo` 在加载时映射到新 ID，避免升级后悄悄重新启用。新增四条
+Rust 回归测试守住档案字段、旧设置、Roo 会话解析和无来源报告，现有 **57 条通过**。
+
+对照表同步标出已修差异；ZCode 的两套会话路径仍缺实样裁决，Trae/Windsurf 路径、
+可观测性与 settings 等差异继续列为后续 M3 工作。本轮没有迁入 12 个缺失模块，
+没有开放侧边栏或配置档位 UI；正式下载包仍为 Swift 原生端。
+
 ## [0.0.160] - 2026-09-26
 
 ### 建成 Provider 原子写与掩码地基，补齐 Rust 迁移前置测试

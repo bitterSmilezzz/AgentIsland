@@ -9,7 +9,7 @@
 > 迁移 Phase 1/2/3 的优先级由它决定：先修「不一致」，再补「只在 Swift 有」。
 >
 > Swift 端使用原生 SwiftUI；Rust 端使用自己的 `app/ui/`，其 sidebar 尚未实现。
-> 本表最初写于 v0.0.158，所列文件行数和行号保留调查时的快照；后续修正标在相关段落。
+> 本表最初写于 v0.0.158，所列文件行数和行号保留调查时的快照；v0.0.161 的口径修正标在 §2.3。
 
 ## 1. 总览：规模差
 
@@ -45,38 +45,31 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 `vscode` —— [registry.rs:80](../../app/src-tauri/src/registry.rs#L80)。Swift 侧无此档案，
 但 Swift 有 `cline`/`roo-code` 用的是 VS Code 的 `globalStorage/<ext>` 路径，功能上覆盖同一批用户。
 
-### 2.3 两边都有（12 个）——逐字段比
+### 2.3 两边都有（11 个）——逐字段比
 
 | id | sessionDirs / session_dirs | 一致？ | tokenRoots / token_roots | 一致？ | CPU 阈值 | 一致？ | sessionDialect | 一致？ |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `zcode` | S `~/.zcode/v2/checkpoints` :182-192 | ❌ | S **未登记** | ❌ | S 20.0 :188 / R 20.0 :34 | ✅ | S `genericTail`（默认）/ R 按 id 分派 :35 | ❌ |
-| `claude` | S `~/.claude/sessions` + `~/.claude/projects` :51 | ❌ | S 同上两个 :52 / R 同两个 :50 | ✅ | S 20.0 :50 / R `None` :48 | ❌ | S `genericTail` / R `probe_claude` :35 | ✅（同协议） |
+| `claude` | 双方均含 `~/.claude/sessions` + `~/.claude/projects`（顺序不同） | ✅ | 双方均含两个目录（v0.0.161 补齐 Rust sessions） | ✅ | 双方 20.0（v0.0.161 对齐） | ✅ | S `genericTail` / R `probe_claude` | ✅（同协议） |
 | `codex` | S `~/.codex/sessions` :94 | ✅ | S 同 :97 / R 同 :63 | ✅ | S 无 / R 无 | ✅ | 同 | ✅ |
 | `cursor` | S `Library/.../Cursor/...` :108 | ✅（Rust 用 `%APPDATA%`） | S 无 / R 无 | ✅ | S 20.0 / R 20.0 | ✅ | 同 | ✅ |
 | `trae` | S `.../Trae CN/User/workspaceStorage` :120 | ❌（R 含 Trae + Trae CN 两条 :179） | 均无 | ✅ | S 20.0 / R 20.0 | ✅ | 同 | ✅ |
-| `cline` | 同路径 :372 | ✅ | S 无 / R 同 :102 | ✅ | S 无 / R 无 | ✅ | S `.clineTasks` :375 / R `probe_cline` :35 | 基本一致 |
-| `roo-code` / Rust `roo` | **id 本身不同**：S `roo-code` :378，R `roo` :106 | ❌ | S 无 / R 同 :115 | ✅ | 均无 | ✅ | S `.clineTasks` :386 / R 同 :35 | 基本一致 |
-| `opencode` | `~/.local/share/opencode` :227 | ✅ | S 无 / R 有 :128 | ❌ | S 20.0 :224 / R `None` | ❌ | S 无方言 / R 无 | ✅ |
+| `cline` | 同路径 :372 | ✅ | 双方均无（v0.0.161 清除 Rust 假明细入口） | ✅ | S 无 / R 无 | ✅ | S `.clineTasks` :375 / R `probe_cline` | 基本一致 |
+| `roo-code` | 双方 ID 已一致（v0.0.161；旧 `roo` 禁用设置迁移） | ✅ | 双方均无（v0.0.161 清除 Rust 假明细入口） | ✅ | 均无 | ✅ | S `.clineTasks` :386 / R `probe_cline` | 基本一致 |
+| `opencode` | `~/.local/share/opencode` :227 | ✅ | 双方均无（v0.0.161 清除 Rust 假明细入口） | ✅ | 双方 20.0（v0.0.161 对齐） | ✅ | S 无方言 / R 无 | ✅ |
 | `goose` | `~/.config/goose/sessions` :394 | ✅ | S 无 / R 无 | ✅ | 均无 | ✅ | 同 | ✅ |
 | `aider` | `~/.aider` :362 | ✅ | S 无 / R 无 | ✅ | 均无 | ✅ | 同 | ✅ |
-| `windsurf` | `Library/.../Windsurf/...` :352 | ✅（R 用 `~/.codeium/windsurf` :166） | S 无 / R 无 | ✅ | S 20.0 / R 20.0 | ✅ | 同 | ✅ |
+| `windsurf` | S `Library/.../Windsurf/...`，R `~/.codeium/windsurf` | ⚠️ 待核实 | S 无 / R 无 | ✅ | S 20.0 / R 20.0 | ✅ | 同 | ✅ |
 
-**必须「说清」而不是「抹平」的四处差异：**
+**仍需裁决的差异与本轮修正：**
 
-1. **`claude` / `opencode` 的 CPU 阈值不一致**：Swift 给 `cpuWorkingThreshold: desktopCPUFloor(20.0)`
-   （[AgentRegistry.swift:50](../../Sources/AgentIslandCore/AgentRegistry.swift#L50)、:224），
-   Rust 是 `cpu_floor: None`（[registry.rs:48](../../app/src-tauri/src/registry.rs#L48)、:124）。
-   后果：同一个 claude 进程在岛里**不会**被判 working，在 sidebar **会**。
-   这属于「两边都有但算法不同」，ADR 0010 明确不允许。
-2. **`zcode` 的会话目录完全不是同一棵树**：Swift 盯 `~/.zcode/v2/checkpoints`（Agent 运行落盘点，
+1. **`zcode` 的会话目录完全不是同一棵树**：Swift 盯 `~/.zcode/v2/checkpoints`（Agent 运行落盘点，
    注释解释过 v2 根目录的空闲刷新问题），Rust 盯 `~/.zcode/cli/rollout` + `log`。
-   两者**不可能同时为真**：至少一边读错了位置。ADR 0010 M3 里 `session` 是地基模块，这条要在迁之前裁。
-3. **`opencode` 的 token 明细**：Swift 刻意**不登记** `tokenRoots`（同 Qoder 的理由：落盘 token 字段全 0），
-   Rust 却登记了 `~/.local/share/opencode`（[registry.rs:128](../../app/src-tauri/src/registry.rs#L128)）。
-   ① 的 CPU 差异 + 这一条，会让 opencode 在两边显示完全不同的 token 数。
-4. **`roo-code` vs `roo` id 不一致**：`settings.disabled_agents` 是按 id 过滤的
-   （[engine.rs:66-72](../../app/src-tauri/src/engine.rs#L66)），同一条设置在两边关掉的是不同字符串；
-   跨形态导设置会静默失效。**建议在 Phase 1 统一成 `roo-code`，两边同时改。**
+   尚无本机实样足以裁决，继续列为 M3 阻塞项，不能按文件名猜。
+   Trae 多出一个 Rust 目录、Windsurf 使用不同目录，也待对应平台实样核实。
+2. **v0.0.161 已修**：Claude/OpenCode 的 CPU 下限、Claude 的 sessions token 根目录、
+   OpenCode/Cline/Roo Code 没有可靠明细时不生成零报告、Roo Code 的 ID 与旧禁用设置迁移。
+   Rust 回归测试从档案、会话、设置和报告四处守护；这不代表 §4–6 其他差异已解决。
 
 ## 3. 能力模块对照（Swift Core 47 文件 vs Rust 11 rs）
 

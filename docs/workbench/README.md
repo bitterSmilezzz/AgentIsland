@@ -10,7 +10,7 @@
 和 [23 · 两端口径对照表](23-swift-rust-parity-matrix.md)，再读 [04 · 实施计划](04-plan.md)。
 M1 的五态回放、三方言 fixture 与 `provider.rs` 原子写/掩码守护现已完成；
 M2 本机构建及真工作区实现已完成，M5 对照表已建立。
-M3 缺失模块迁移、侧边栏、配置档位与 ToDos 均未开始。
+M3 已开始修正共有档案差异，缺失模块迁移、侧边栏、配置档位与 ToDos 均未开始。
 
 Swift 是原生灵动岛实现；Rust 目前也只有灵动岛壳，`app/ui/` 仅供 Rust 使用。
 Rust 的 island/sidebar 双形态是目标，不是已交付能力。

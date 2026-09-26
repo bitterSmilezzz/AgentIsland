@@ -89,6 +89,16 @@ impl Replay {
 }
 
 #[test]
+fn agents_without_token_source_do_not_return_zero_usage_reports() {
+    let (_, rx) = mpsc::channel();
+    let mut engine = ActivityEngine::new(Settings::default(), rx);
+    assert!(engine.get_report("opencode").is_none());
+    assert!(engine.get_report("cline").is_none());
+    assert!(engine.get_report("roo-code").is_none());
+    assert!(engine.get_report("unknown-agent").is_none());
+}
+
+#[test]
 fn working_hold_expires_despite_frequent_sampling() {
     let mut replay = Replay::new();
     assert_eq!(

@@ -437,10 +437,13 @@ impl ActivityEngine {
         if self.demo_mode {
             return Some(demo_report());
         }
+        let profile = self.profiles.iter().find(|p| p.id == agent_id)?.clone();
+        if profile.token_roots.is_empty() {
+            return None;
+        }
         if let Some((_, report)) = self.token_cache.get(agent_id) {
             return Some(report.clone());
         }
-        let profile = self.profiles.iter().find(|p| p.id == agent_id)?.clone();
         let report = self.tokens.monitor(&profile);
         self.token_cache.insert(agent_id.to_string(), (now_ms(), report.clone()));
         Some(report)

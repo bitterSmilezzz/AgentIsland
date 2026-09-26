@@ -45,9 +45,9 @@ pub fn builtin() -> Vec<AgentProfile> {
             process_names: vec!["claude".into()],
             cmdline_hints: vec!["claude".into()],
             path_excludes: vec![],
-            cpu_floor: None,
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".claude", "projects"]), p(&[".claude", "sessions"])],
-            token_roots: vec![p(&[".claude", "projects"])],
+            token_roots: vec![p(&[".claude", "sessions"]), p(&[".claude", "projects"])],
             category: "assistant".into(),
         },
         AgentProfile {
@@ -99,11 +99,11 @@ pub fn builtin() -> Vec<AgentProfile> {
             path_excludes: vec![],
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "saoudrizwan.claude-dev", "tasks"])],
-            token_roots: vec![a(&["Code", "User", "globalStorage", "saoudrizwan.claude-dev", "tasks"])],
+            token_roots: vec![],
             category: "assistant".into(),
         },
         AgentProfile {
-            id: "roo".into(),
+            id: "roo-code".into(),
             name: "Roo Code".into(),
             glyph: "\u{E8A5}".into(),
             emoji: "🦘".into(),
@@ -112,7 +112,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             path_excludes: vec![],
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "tasks"])],
-            token_roots: vec![a(&["Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "tasks"])],
+            token_roots: vec![],
             category: "assistant".into(),
         },
         AgentProfile {
@@ -123,9 +123,11 @@ pub fn builtin() -> Vec<AgentProfile> {
             process_names: vec!["opencode".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
-            cpu_floor: None,
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".local", "share", "opencode"])],
-            token_roots: vec![p(&[".local", "share", "opencode"])],
+            // Swift intentionally leaves tokenRoots empty: local fields are not a reliable
+            // token count. Keep the session directory for activity, but report no usage.
+            token_roots: vec![],
             category: "assistant".into(),
         },
         AgentProfile {
@@ -228,5 +230,26 @@ mod tests {
         let a: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
         let b: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
         assert_eq!(a, b, "builtin() 的 id 集合与环境/调用次数相关");
+    }
+
+    #[test]
+    fn shared_profiles_keep_swift_cpu_token_and_id_contracts() {
+        let profiles = builtin();
+        let get = |id: &str| profiles.iter().find(|p| p.id == id).unwrap();
+        let claude = get("claude");
+        assert_eq!(claude.cpu_floor, Some(20.0));
+        assert!(claude.token_roots.iter().any(|p| {
+            std::path::Path::new(p).ends_with(std::path::Path::new(".claude").join("sessions"))
+        }));
+        assert!(claude.token_roots.iter().any(|p| {
+            std::path::Path::new(p).ends_with(std::path::Path::new(".claude").join("projects"))
+        }));
+        let opencode = get("opencode");
+        assert_eq!(opencode.cpu_floor, Some(20.0));
+        assert!(opencode.token_roots.is_empty(), "no reliable local token detail source");
+        assert!(get("cline").token_roots.is_empty());
+        assert!(profiles.iter().all(|p| p.id != "roo"));
+        assert_eq!(get("roo-code").name, "Roo Code");
+        assert!(get("roo-code").token_roots.is_empty());
     }
 }

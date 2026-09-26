@@ -39,7 +39,7 @@ pub fn probe(profile_id: &str, path: &str) -> SessionProbe {
     match profile_id {
         "claude" => probe_claude(&lines, path),
         "codex" => probe_codex(&lines, path),
-        "cline" | "roo" => probe_cline(&lines, path),
+        "cline" | "roo-code" | "roo" => probe_cline(&lines, path),
         "zcode" => probe_zcode(&lines, path),
         _ => SessionProbe { signal: None, subagent_count: 0 },
     }
