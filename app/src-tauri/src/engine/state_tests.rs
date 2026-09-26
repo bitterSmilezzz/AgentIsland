@@ -332,7 +332,16 @@ fn every_event_records_an_outbound_decision() {
         Some(10.0),
         Some(Signal::Attention("fp-outbound".into(), "要不要继续".into())),
     );
-    let recent = replay.engine.state().recent_outbound;
+    // 账本由**工作线程**回填（dispatch 不阻塞采样），所以这里轮询等它，
+    // 而不是假设调用返回时就写好了——这条本身就证明了「不阻塞」是真的
+    let mut recent = Vec::new();
+    for _ in 0..200 {
+        recent = replay.engine.state().recent_outbound;
+        if !recent.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(recent.len(), 1, "一条事件应留下一条外发判定");
     // 默认策略：总开关关 ⇒ 如实记「未发」，且不碰传输
     assert!(

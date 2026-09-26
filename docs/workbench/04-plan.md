@@ -20,6 +20,7 @@
 > v0.0.175 迁入渲染层（`render.rs`：最小内容口径 / 四类分开的转义 / 4096 上限 / 掩码），接 `remote_preview`（「发送预览」）。
 > v0.0.176 迁入闸门/节流/记账（`notifier.rs`，含 20 条「最近外发」账本）与传输骨架（`transport.rs`：明文 http 端到端可发，https/SMTP 如实报未接入）。
 > v0.0.177 接入 `https`（`native-tls` = 系统 TLS 栈），本地自签证书离线端到端验证；SMTP 会话仍缺。
+> v0.0.178 外发改走工作线程（不再占用采样那一拍）并补上失败重试一次；顺手修掉一个并行测试的端口竞争。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

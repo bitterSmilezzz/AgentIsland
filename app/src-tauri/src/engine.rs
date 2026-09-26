@@ -492,15 +492,17 @@ impl ActivityEngine {
         // 密钥本轮一律「没有」（钥匙串未接入）：闸门会在配齐检查那一步如实挡下，
         // 而不是拿一个空密钥去撞对端
         let has_secret = false;
-        self.notifier.attempt(
-            &inputs,
-            &policy,
+        // **走 dispatch（工作线程）**：传输最长 10 秒，且 https 接进来之后「会真去连」
+        // 是常态路径——直接在采样线程里跑会让界面卡住。结果由工作线程写进账本。
+        self.notifier.dispatch(
+            inputs,
+            policy,
             channel,
-            &config,
+            config,
             has_secret,
             remote::Now::at(event.timestamp),
             // Rust 还没接 macOS 的在场信号层：按 fail-open 判成「人不在」
-            &remote::PresenceSignals::unavailable(),
+            remote::PresenceSignals::unavailable(),
             false,
         );
     }

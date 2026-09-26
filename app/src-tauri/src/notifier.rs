@@ -3,20 +3,23 @@
 //! 对齐 Swift `RemoteNotifier` 的 `attempt` / `send` / `claimThrottle` / `releaseThrottle` /
 //! `record` 与 `OutboundOutcome` / `OutboundAttempt`。
 //!
-//! **传输层用 trait 注入**（Swift 侧是 `protocol RemoteTransport`）：真实现要选 TLS crate
-//! （HTTPS 与 SMTP over 465），是下一轮的独立决定；本轮给的是 [`UnwiredTransport`]——
-//! 它**如实说「没接入」**，而不是假装送达或静默丢弃。
+//! **不阻塞采样**：`attempt` 同步跑完一次外发（含重试），但引擎走的是
+//! [`Notifier::dispatch`]——把它丢到工作线程，账本随后回填。Swift 侧靠 async Task 达到同一效果，
+//! Rust 的引擎是同步的，所以用线程。传输有 10 秒超时（Swift 同值），
+//! 而 https 接进来之后「会真去连」是常态路径，这一步不能省。
 //!
 //! 三条硬规矩在这里落地：
 //! ① **失败如实**：任何非 delivered 都记账并回传，界面看得到，绝不显示「已发送」；
-//! ② **失败必须能立刻重试**：节流占位只登记在「已经送出去」之前的那一瞬间，
-//!    没送达就撤回——否则一次网络抖动会吞掉后面一整段（默认 90 秒）的通知；
+//! ② **失败必须能立刻重试**：节流占位只在「已经要发」的那一瞬间落下，没送达就撤回——
+//!    否则一次网络抖动会吞掉后面一整段（默认 90 秒）的通知；
 //! ③ **被策略挡下不算失败**，也不该记成成功：它记的是「为什么没发」。
 
 use crate::remote::{Channel, ChannelConfig, Now, Policy, PresenceSignals};
 use crate::render::{self, Inputs, Request};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// 一次外发的结果
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -92,8 +95,8 @@ impl Attempt {
 }
 
 /// 通道执行者。Swift 侧是 `protocol RemoteTransport: Sendable`（测试注入假实现）。
-/// 引擎是跨线程共享的（`Arc<Mutex<ActivityEngine>>`），所以这里也要 `Send`。
-pub trait Transport: Send {
+/// 引擎跨线程共享，而且工作线程要拿着它去发，所以这里要 `Send + Sync`。
+pub trait Transport: Send + Sync {
     fn perform(&self, request: &Request) -> Outcome;
 }
 
@@ -112,22 +115,37 @@ pub struct Recent {
 pub const HISTORY_LIMIT: usize = 20;
 /// 节流键空间的上界：Agent 数 × 事件类型，用户会增删档案，顺手收个上界
 const THROTTLE_KEYS_LIMIT: usize = 200;
+/// 自动外发失败后的重试间隔（Swift `retryDelay` 默认 5 秒）
+pub const RETRY_DELAY_MS: i64 = 5_000;
 
-pub struct Notifier {
+#[derive(Default)]
+struct Inner {
     /// key = `agentId|kind` → 上次**真的送出去**的时刻
     throttle: HashMap<String, i64>,
     history: VecDeque<Attempt>,
-    transport: Box<dyn Transport + Send>,
+}
+
+/// 外发调度器。内部状态是共享的（`Arc<Mutex<_>>`），所以它可克隆、
+/// 可以交给工作线程，而引擎侧读账本不必等外发结束。
+#[derive(Clone)]
+pub struct Notifier {
+    inner: Arc<Mutex<Inner>>,
+    transport: Arc<dyn Transport>,
+    /// 失败后重试的间隔；0 = 不睡（测试）。**要不要重试**由 `retry_attempts` 控制
+    retry_delay_ms: i64,
+    /// 初次之外再试几次（Swift 是 1）
+    retry_attempts: i64,
 }
 
 impl Default for Notifier {
     fn default() -> Self {
         Notifier {
-            throttle: HashMap::new(),
-            history: VecDeque::new(),
-            // 默认就是真传输：它今天能发明文 http（自建/内网端点），
-            // 对 https 与 SMTP 如实报「未接入」——见 `transport.rs`
-            transport: Box::new(crate::transport::HttpTransport::new()),
+            inner: Arc::new(Mutex::new(Inner::default())),
+            // 默认就是真传输：它能发明文 http 与 https（系统 TLS 栈），
+            // 对 SMTP 如实报「会话未接入」——见 `transport.rs`
+            transport: Arc::new(crate::transport::HttpTransport::new()),
+            retry_delay_ms: RETRY_DELAY_MS,
+            retry_attempts: 1,
         }
     }
 }
@@ -137,22 +155,31 @@ impl Notifier {
         Notifier::default()
     }
 
-    /// 注入假传输的入口。**只在测试里用**：生产只有 `HttpTransport` 一个实现，
-    /// 留一个生产侧没人调的构造器就是一段没人走的代码（Swift 侧靠 `protocol` 注入，
-    /// 那边没有这个问题）。等真传输多起来（TLS / SMTP）再放开。
+    /// 注入假传输与重试参数。**只在测试里用**：生产只有 `HttpTransport` 一个实现。
     #[cfg(test)]
-    pub fn with_transport(transport: Box<dyn Transport + Send>) -> Self {
+    pub fn with_transport(transport: Box<dyn Transport>) -> Self {
         Notifier {
-            transport,
+            transport: Arc::from(transport),
+            retry_delay_ms: 0,
+            // 既有用例关心的是闸门与记账，不该被重试改变语义；要测重试的自己开
+            retry_attempts: 0,
             ..Notifier::default()
         }
+    }
+
+    /// 打开重试（测试用）
+    #[cfg(test)]
+    pub fn with_retry(mut self, attempts: i64, delay_ms: i64) -> Self {
+        self.retry_attempts = attempts;
+        self.retry_delay_ms = delay_ms;
+        self
     }
 
     /// 五道闸。**顺序与 Swift `attempt` 逐条一致**，每条都有既有理由（见各分支注释）。
     /// 通过则返回节流键。
     #[allow(clippy::too_many_arguments)]
     fn gate(
-        &mut self,
+        &self,
         inputs: &Inputs,
         policy: &Policy,
         channel: Channel,
@@ -213,19 +240,14 @@ impl Notifier {
         Ok(key)
     }
 
-    /// 判定 + 真发 + 记账。
+    /// 判定 + 真发 + 记账（**同步**，含重试）。
     /// `has_secret` / `presence` 由调用方给：本模块不碰钥匙串、也不取窗口服务器信号，
     /// 判据保持纯函数（每次外发都会调它）。
     ///
-    /// **已知限制（会随传输层一起改）**：这里是**同步**的，而传输有 10 秒超时
-    /// （Swift 同值）。Swift 侧 `deliver` 是 async、在后台 Task 里跑，Rust 的引擎是同步的，
-    /// 于是这一调用会占住引擎那一拍。今天**打不到**这条路径：总开关默认关（判据在传输之前
-    /// 就返回），而且 https / SMTP 在 `HttpTransport` 里是**立即失败、不发网络 I/O** ——
-    /// 只有用户手动打开总开关、又配了一个 `http://` 且会挂住的端点才可能卡住那一拍。
-    /// 改成「起线程发送 + 结果回填」是传输层那一轮的事（重试也需要它）。
+    /// 引擎**不该直接调它**——传输有 10 秒超时，会占住采样那一拍；走 [`Notifier::dispatch`]。
     #[allow(clippy::too_many_arguments)]
     pub fn attempt(
-        &mut self,
+        &self,
         inputs: &Inputs,
         policy: &Policy,
         channel: Channel,
@@ -237,74 +259,141 @@ impl Notifier {
     ) -> Outcome {
         // 标题用渲染出来的那个（与 Swift 同一处取值），被挡下时也要有标题
         let title = render::render(inputs, config).title;
-        let throttle_key =
-            match self.gate(inputs, policy, channel, config, has_secret, now, presence, bypass_policy)
-            {
-                Ok(key) => key,
-                Err(outcome) => {
-                    self.record(Attempt {
-                        at_ms: now.ms,
-                        title,
-                        outcome: outcome.clone(),
-                        tries: 1,
-                    });
-                    return outcome;
-                }
-            };
+        let throttle_key = match self.gate(
+            inputs,
+            policy,
+            channel,
+            config,
+            has_secret,
+            now,
+            presence,
+            bypass_policy,
+        ) {
+            Ok(key) => key,
+            Err(outcome) => {
+                self.record(Attempt {
+                    at_ms: now.ms,
+                    title,
+                    outcome: outcome.clone(),
+                    tries: 1,
+                });
+                return outcome;
+            }
+        };
 
         // 密钥本轮一律 `None`（钥匙串未接入）：渲染出的请求不会带任何凭据，
         // `{key}` 位置留空——由传输层如实失败，而不是拿一个空密钥去撞对端
         let message = render::render(inputs, config);
         let request = render::render_request(&message, channel, config, None, false);
-        let outcome = self.transport.perform(&request);
+        let mut tries = 1;
+        let mut outcome = self.transport.perform(&request);
+        // 自动外发失败重试一次：这个功能存在的意义就是「人不在机器前也要收到」，
+        // 而一次网络抖动就把那条唯一提醒永久丢掉。**「发送测试」不重试**——
+        // 用户盯着界面等，立刻拿到如实结果更有用；对端明确拒绝（404/535/550）也不重试，
+        // 再要一次只是给已经说过「不」的服务器加负载，而且 ntfy.sh 这类公开中转按条数限流。
+        if !bypass_policy
+            && self.retry_attempts > 0
+            && matches!(
+                outcome,
+                Outcome::Failed {
+                    permanent: false,
+                    ..
+                }
+            )
+        {
+            if self.retry_delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(self.retry_delay_ms as u64));
+            }
+            tries += 1;
+            outcome = self.transport.perform(&request);
+        }
         if !outcome.is_delivered() {
-            // 没发出去就撤掉预登记：失败必须能立刻重试；
-            // 撤在「重试之后」是 Swift 的既定顺序（占位在整个初次+重试期间都握着）
+            // 没发出去就撤掉预登记：失败必须能立刻重试。
+            // 撤在**重试之后**是 Swift 的既定顺序：占位在整个「初次 + 重试」期间都握着，
+            // 同一键的并发事件挤不进第二条
             self.release(&throttle_key, now.ms);
         }
         self.record(Attempt {
             at_ms: now.ms,
             title,
             outcome: outcome.clone(),
-            tries: 1,
+            tries,
         });
         outcome
     }
 
+    /// 把一次外发丢给工作线程，**立刻返回**。
+    /// 引擎每一拍都调它：传输最长 10 秒，直接在采样线程里跑会让界面卡住。
+    /// 结果由工作线程写进账本（`recent_view` 读得到）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch(
+        &self,
+        inputs: Inputs,
+        policy: Policy,
+        channel: Channel,
+        config: ChannelConfig,
+        has_secret: bool,
+        now: Now,
+        presence: PresenceSignals,
+        bypass_policy: bool,
+    ) {
+        let worker = self.clone();
+        std::thread::spawn(move || {
+            worker.attempt(
+                &inputs,
+                &policy,
+                channel,
+                &config,
+                has_secret,
+                now,
+                &presence,
+                bypass_policy,
+            );
+        });
+    }
+
     /// 原子地「查节流 + 预登记」。返回 false 表示落在窗口内，本次不该发
-    fn claim(&mut self, key: &str, now_ms: i64, window_seconds: i64) -> bool {
-        if let Some(last) = self.throttle.get(key) {
+    fn claim(&self, key: &str, now_ms: i64, window_seconds: i64) -> bool {
+        let mut inner = self.inner.lock().expect("外发状态锁不应中毒");
+        if let Some(last) = inner.throttle.get(key) {
             if now_ms - *last < window_seconds * 1000 {
                 return false;
             }
         }
-        self.throttle.insert(key.to_string(), now_ms);
-        if self.throttle.len() > THROTTLE_KEYS_LIMIT {
+        inner.throttle.insert(key.to_string(), now_ms);
+        if inner.throttle.len() > THROTTLE_KEYS_LIMIT {
             // 顺手收个上界：一天前的登记已经没有意义
-            self.throttle
-                .retain(|_, at| now_ms - *at <= 86_400_000);
+            inner.throttle.retain(|_, at| now_ms - *at <= 86_400_000);
         }
         true
     }
 
     /// 撤掉预登记。只撤「还是本次登记」的那一条——按时刻比对，
     /// 否则会把同一键上别人刚登记的时间戳抹掉
-    fn release(&mut self, key: &str, at_ms: i64) {
-        if self.throttle.get(key) == Some(&at_ms) {
-            self.throttle.remove(key);
+    fn release(&self, key: &str, at_ms: i64) {
+        let mut inner = self.inner.lock().expect("外发状态锁不应中毒");
+        if inner.throttle.get(key) == Some(&at_ms) {
+            inner.throttle.remove(key);
         }
     }
 
-    fn record(&mut self, attempt: Attempt) {
-        self.history.push_front(attempt);
-        while self.history.len() > HISTORY_LIMIT {
-            self.history.pop_back();
+    fn record(&self, attempt: Attempt) {
+        let mut inner = self.inner.lock().expect("外发状态锁不应中毒");
+        inner.history.push_front(attempt);
+        while inner.history.len() > HISTORY_LIMIT {
+            inner.history.pop_back();
         }
     }
 
     /// 最近若干次外发结果（有界，新的在前）
     pub fn recent(&self) -> Vec<Attempt> {
-        self.history.iter().cloned().collect()
+        self.inner
+            .lock()
+            .expect("外发状态锁不应中毒")
+            .history
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// 给界面看的最近若干次（句子已拼好）
@@ -322,7 +411,11 @@ impl Notifier {
 
     /// 当前握着的节流占位数（诊断用：正常应当只有「刚发出去还没过窗口」的那些）
     pub fn throttle_keys(&self) -> usize {
-        self.throttle.len()
+        self.inner
+            .lock()
+            .expect("外发状态锁不应中毒")
+            .throttle
+            .len()
     }
 }
 
@@ -708,18 +801,16 @@ mod tests {
     fn the_default_transport_really_attempts_and_records_into_the_ledger() {
         // 默认传输 = `HttpTransport`（真连）。指向一个刚释放的本地端口：
         // 走真传输、真失败、真进账本，但**不碰外网**——用例不该依赖网络。
-        let closed = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
-            drop(listener);
-            port
-        };
+        // 1 号端口（特权端口，测试不会绑它）：确定性拒绝连接。
+        // 「绑定后释放」那一招在并行测试下会被别的用例抢走端口，不可用。
         let config = ChannelConfig {
-            url_template: format!("http://127.0.0.1:{closed}/notify"),
+            url_template: "http://127.0.0.1:1/notify".into(),
             body_template: "t={title}".into(),
             ..ChannelConfig::default()
         };
-        let mut notifier = Notifier::new();
+        // 关掉重试：这条用例测的是「真传输真的去连了、并如实进账本」，
+        // 不该为了它等 5 秒重试（重试本身另有专门用例）
+        let notifier = Notifier::new().with_retry(0, 0);
         let outcome = notifier.attempt(
             &inputs(EventKind::Attention),
             &enabled(),
@@ -771,5 +862,278 @@ mod tests {
             "没有密钥就留空，不要编一个：{}",
             request.url
         );
+    }
+}
+
+#[cfg(test)]
+mod async_tests {
+    use super::*;
+    use crate::remote::{ChannelConfig, EventKind, PresenceSignals};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 慢传输：证明引擎那一拍不会被它占住
+    struct SlowTransport {
+        delay: Duration,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Transport for SlowTransport {
+        fn perform(&self, _request: &Request) -> Outcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            Outcome::Delivered
+        }
+    }
+
+    /// 按脚本依次返回结果的传输（测重试）
+    struct ScriptedTransport {
+        script: Mutex<Vec<Outcome>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Transport for ScriptedTransport {
+        fn perform(&self, _request: &Request) -> Outcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut script = self.script.lock().unwrap();
+            if script.is_empty() {
+                // 脚本用完之后一直返回最后一个结果
+                return Outcome::Failed {
+                    reason: "脚本已用尽".into(),
+                    permanent: true,
+                };
+            }
+            script.remove(0)
+        }
+    }
+
+    fn inputs() -> Inputs {
+        Inputs::new("Claude", EventKind::Attention, 0.0)
+    }
+
+    fn config() -> ChannelConfig {
+        ChannelConfig {
+            topic_or_url: "island".into(),
+            ..ChannelConfig::default()
+        }
+    }
+
+    fn enabled() -> Policy {
+        Policy {
+            master_enabled: true,
+            ..Policy::default()
+        }
+    }
+
+    fn now(ms: i64) -> Now {
+        Now {
+            ms,
+            minutes_of_day: Some(12 * 60),
+        }
+    }
+
+    fn wait_for_history(notifier: &Notifier, want: usize) -> Vec<Attempt> {
+        for _ in 0..300 {
+            let recent = notifier.recent();
+            if recent.len() >= want {
+                return recent;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        notifier.recent()
+    }
+
+    #[test]
+    fn dispatch_returns_immediately_even_when_the_transport_is_slow() {
+        // 这条是本轮的重点：传输最长 10 秒，引擎那一拍不能在它上面等
+        let calls = Arc::new(AtomicUsize::new(0));
+        let notifier = Notifier::with_transport(Box::new(SlowTransport {
+            delay: Duration::from_millis(300),
+            calls: calls.clone(),
+        }));
+        let started = std::time::Instant::now();
+        notifier.dispatch(
+            inputs(),
+            enabled(),
+            Channel::Ntfy,
+            config(),
+            false,
+            now(1_000),
+            PresenceSignals::unavailable(),
+            false,
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "dispatch 必须立刻返回，实际等了 {elapsed:?}"
+        );
+        // 结果稍后由工作线程写进账本
+        let recent = wait_for_history(&notifier, 1);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].short_text(), "已送达");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_retryable_failure_is_retried_once_and_the_tries_are_recorded() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
+            script: Mutex::new(vec![
+                Outcome::Failed {
+                    reason: "网络抖动".into(),
+                    permanent: false,
+                },
+                Outcome::Delivered,
+            ]),
+            calls: calls.clone(),
+        }))
+        .with_retry(1, 0);
+        let outcome = notifier.attempt(
+            &inputs(),
+            &enabled(),
+            Channel::Ntfy,
+            &config(),
+            false,
+            now(1_000),
+            &PresenceSignals::unavailable(),
+            false,
+        );
+        assert_eq!(outcome, Outcome::Delivered);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "失败后应重试一次");
+        let recent = notifier.recent();
+        assert_eq!(recent[0].tries, 2);
+        assert_eq!(
+            recent[0].short_text(),
+            "已送达（重试 1 次后）",
+            "重试必须留痕：一次就送达与重试后送达是不同的通道健康度"
+        );
+    }
+
+    #[test]
+    fn a_permanent_rejection_is_not_retried() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
+            script: Mutex::new(vec![Outcome::Failed {
+                reason: "服务端返回 404".into(),
+                permanent: true,
+            }]),
+            calls: calls.clone(),
+        }))
+        .with_retry(1, 0);
+        let outcome = notifier.attempt(
+            &inputs(),
+            &enabled(),
+            Channel::Ntfy,
+            &config(),
+            false,
+            now(1_000),
+            &PresenceSignals::unavailable(),
+            false,
+        );
+        assert!(matches!(outcome, Outcome::Failed { permanent: true, .. }));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "对端明确拒绝时再要一次只是给它加负载，而且 ntfy.sh 这类中转按条数限流"
+        );
+        assert_eq!(
+            notifier.recent()[0].short_text(),
+            "失败：服务端返回 404（对端明确拒绝，重试无用）"
+        );
+    }
+
+    #[test]
+    fn a_test_send_is_never_retried_because_the_user_is_watching() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
+            script: Mutex::new(vec![
+                Outcome::Failed {
+                    reason: "网络抖动".into(),
+                    permanent: false,
+                },
+                Outcome::Delivered,
+            ]),
+            calls: calls.clone(),
+        }))
+        .with_retry(1, 0);
+        let outcome = notifier.attempt(
+            &inputs(),
+            &enabled(),
+            Channel::Ntfy,
+            &config(),
+            false,
+            now(1_000),
+            &PresenceSignals::unavailable(),
+            true, // 发送测试
+        );
+        assert!(matches!(outcome, Outcome::Failed { permanent: false, .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "用户盯着界面等，立刻给如实结果");
+    }
+
+    #[test]
+    fn the_throttle_slot_stays_claimed_while_the_retry_is_in_flight() {
+        // Swift 的原话：「占位在整个『初次 + 重试』期间都握着，同一键的并发事件挤不进第二条」。
+        // 这条用真并发验它：重试等着的时候从另一线程发同一键的事件，必须被节流挡下。
+        let calls = Arc::new(AtomicUsize::new(0));
+        let notifier = Notifier::with_transport(Box::new(ScriptedTransport {
+            script: Mutex::new(vec![
+                Outcome::Failed {
+                    reason: "抖一次".into(),
+                    permanent: false,
+                },
+                Outcome::Failed {
+                    reason: "又抖一次".into(),
+                    permanent: false,
+                },
+            ]),
+            calls: calls.clone(),
+        }))
+        .with_retry(1, 250);
+
+        let worker = notifier.clone();
+        let handle = std::thread::spawn(move || {
+            worker.attempt(
+                &inputs(),
+                &enabled(),
+                Channel::Ntfy,
+                &config(),
+                false,
+                now(1_000),
+                &PresenceSignals::unavailable(),
+                false,
+            )
+        });
+        // 等它占住节流位（**轮询**而不是睡固定时间：线程启动慢一点就会让并发探针
+        // 先抢到占位，于是这条用例间歇性变红）。占位在初次失败前就已落下，
+        // 而释放要等重试结束，所以「已占位」这个时刻一定落在窗口内。
+        let mut claimed = false;
+        for _ in 0..400 {
+            if notifier.throttle_keys() == 1 {
+                claimed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(claimed, "工作线程应已占住节流位");
+        let intruder = notifier.attempt(
+            &inputs(),
+            &enabled(),
+            Channel::Ntfy,
+            &config(),
+            false,
+            now(1_100),
+            &PresenceSignals::unavailable(),
+            false,
+        );
+        assert_eq!(
+            intruder,
+            Outcome::Suppressed {
+                reason: "节流命中".into()
+            },
+            "重试在途时，同一键的第二条事件必须挤不进来"
+        );
+        let outcome = handle.join().unwrap();
+        assert!(matches!(outcome, Outcome::Failed { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "那条并发事件不该真的发出去");
+        assert_eq!(notifier.throttle_keys(), 0, "两次都没送达 ⇒ 占位要撤掉");
     }
 }

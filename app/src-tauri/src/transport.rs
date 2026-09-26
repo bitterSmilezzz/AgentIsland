@@ -373,14 +373,11 @@ mod tests {
     fn smtp_is_reported_as_unwired_and_https_is_actually_attempted() {
         // https 现在真的去连（下面另有自签证书的端到端用例）：连不上时报的是连接错误，
         // 而不是「未接入」——这两句话对应完全不同的排查方向
-        let closed = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
-            drop(listener);
-            port
-        };
+        // 1 号端口不会被测试绑定（特权端口），于是「连不上」是确定性的。
+        // 别用「绑定后释放」那一招：并行跑的其它用例会立刻把这个端口抢走，
+        // 于是连接会成功、报的错变成 TLS 握手失败——这条曾经因此间歇性变红。
         let https = Request {
-            url: format!("https://127.0.0.1:{closed}/x"),
+            url: "https://127.0.0.1:1/x".into(),
             ..post(1, "/", "b")
         };
         match HttpTransport::new().perform(&https) {
@@ -602,11 +599,9 @@ mod tests {
 
     #[test]
     fn a_dead_endpoint_is_a_retryable_failure_with_a_readable_reason() {
-        // 连一个刚被释放的端口：拿不到响应，但要说得出是哪一步失败
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        match HttpTransport::new().perform(&post(port, "/x", "b")) {
+        // 连 1 号端口（特权端口，测试不会绑它）：确定性拒绝连接，
+        // 且要说得出是哪一步失败
+        match HttpTransport::new().perform(&post(1, "/x", "b")) {
             Outcome::Failed { reason, permanent } => {
                 assert!(!permanent, "连不上是链路问题，值得重试");
                 assert!(reason.contains("连接失败") || reason.contains("地址解析失败"), "{reason}");
