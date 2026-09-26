@@ -8,8 +8,8 @@
 
 先读 [ADR 0010 · Swift 冻结与 Rust 前置门](../adr/0010-swift-freeze-and-rust-prerequisites.md)
 和 [23 · 两端口径对照表](23-swift-rust-parity-matrix.md)，再读 [04 · 实施计划](04-plan.md)。
-当前工作是补齐已有 Rust 地基的守护：五态回放与三方言 fixture 已覆盖，M1 仍缺
-`provider.rs` 原子写与掩码；M2 本机构建及真工作区实现已完成，M5 对照表已建立。
+M1 的五态回放、三方言 fixture 与 `provider.rs` 原子写/掩码守护现已完成；
+M2 本机构建及真工作区实现已完成，M5 对照表已建立。
 M3 缺失模块迁移、侧边栏、配置档位与 ToDos 均未开始。
 
 Swift 是原生灵动岛实现；Rust 目前也只有灵动岛壳，`app/ui/` 仅供 Rust 使用。
@@ -120,7 +120,7 @@ key/账号**，跨厂商模型这条路走不通。这一点要写进用户可�
 | Phase | 内容 | 状态 |
 | :--- | :--- | :--- |
 | 0 | 修脱敏闸门假绿 + 守护入库 | 扫描器已修复；`scripts/test-scan-secrets.sh` 纳入仓库与发布前置，验收命令见 04 号 |
-| 0' | Rust 测试与构建地基 + 发布守护 | **进行中**：五态回放、三方言 fixture 与本机打包已有；M1 的 provider 守护未实现，其余验收范围见 ADR 0010 |
+| 0' | Rust 测试与构建地基 + 发布守护 | **已完成 M1/M2**：五态、三方言、Provider 写盘与脱敏守护可用；本机打包与工作区实现已验证。M3 仍是后续迁移门 |
 | 1 | `shell_mode` 设置项 + 侧边栏壳 + 双形态并存 | 未开始，**前置条件见 ADR 0010** |
 | 2 | **Codex 配置档位**（v0.0.142 收窄：只做 Codex 一家，不做 Claude Code） | 未开始，方案已按 CC Switch 一层「通用配置片段」重写；生效语义按「Codex 需重启进程」设计 |
 | 3 | ToDos 模块 | 未开始 |

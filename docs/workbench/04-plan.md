@@ -2,8 +2,8 @@
 
 > **当前执行门禁**以 [ADR 0010](../adr/0010-swift-freeze-and-rust-prerequisites.md) 的 M1–M5 为准。
 > 下列 Phase 1–4 是最初的功能实施草案，不能跳过 Rust 测试与能力迁移直接开侧边栏。
-> 当前：Phase 0 的扫描器及七条守护已入库，Rust 五态与三方言 fixture 已覆盖；
-> M1 仍缺 `provider.rs` 原子写与掩码测试，M2 本机工作区/打包已达成，M3 尚未开始。
+> 当前：Phase 0 的扫描器及七条守护已入库，Rust 五态、三方言 fixture 与
+> `provider.rs` 原子写/掩码测试使 M1 完成；M2 本机工作区/打包已达成，M3 尚未开始。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 
 ## Phase 0 — 修复不可信的发版门禁（✅ 已完成）

@@ -6,6 +6,7 @@ mod filemon;
 mod models;
 mod placement;
 mod procmon;
+mod provider;
 mod registry;
 mod session;
 mod settings;

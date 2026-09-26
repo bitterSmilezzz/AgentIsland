@@ -21,6 +21,7 @@ app/
     │   ├── filemon.rs       # 会话目录扫描（节流缓存/跳过依赖目录）
     │   ├── session.rs       # JSONL 尾读强语义（Claude/Codex/Cline 方言族）
     │   ├── tokens.rs        # Token 用量（净消耗口径/指纹增量/按模型拆分/30天逐时桶）
+    │   ├── provider.rs      # Codex profile 写盘、TOML 格式保留、密钥预览掩码（尚无 UI）
     │   ├── webhook.rs       # 127.0.0.1:41999（/notify /event /session，与 macOS 同协议）
     │   ├── placement.rs     # 屏幕工作区 + DPI 换算 + 统一锚点放置
     │   └── main.rs          # 组装：托盘/命令/引擎线程
@@ -66,4 +67,4 @@ Windows 需要 Rust stable-msvc、MSVC Build Tools 与 WebView2；打包时显�
 - 设置窗口用系统对话框替代（设置读写已通，UI 面板待补）
 - 键盘流（1~3 / j,k / ? HUD）、Peek 微弹窗、远程通知、维护工作台未实现
 - macOS/Linux 工作区由 Tauri monitor API 提供，Windows 使用 Win32 工作区；跨屏与不同 DPI 的真实设备验收仍需分别进行。
-- `provider.rs` 与凭据掩码/原子写入守护尚无实现；Rust 回归通过不代表迁移前置门已全部完成。
+- `provider.rs` 的原子写与掩码守护已实现；档位列表、钥匙串、备份还原与 UI 尚未接入。
