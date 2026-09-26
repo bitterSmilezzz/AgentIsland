@@ -19,6 +19,7 @@
 > v0.0.174 进外发组：迁入策略层（策略 / 通道校验 / 逐字段容错解码 → `remote.rs`），接进设置与 `remote_status`。
 > v0.0.175 迁入渲染层（`render.rs`：最小内容口径 / 四类分开的转义 / 4096 上限 / 掩码），接 `remote_preview`（「发送预览」）。
 > v0.0.176 迁入闸门/节流/记账（`notifier.rs`，含 20 条「最近外发」账本）与传输骨架（`transport.rs`：明文 http 端到端可发，https/SMTP 如实报未接入）。
+> v0.0.177 接入 `https`（`native-tls` = 系统 TLS 栈），本地自签证书离线端到端验证；SMTP 会话仍缺。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

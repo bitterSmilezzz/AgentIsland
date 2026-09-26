@@ -4,6 +4,51 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.177] - 2026-09-27
+
+### 外发能出 https 了：接入系统 TLS 栈（native-tls）
+
+上一轮的传输只会发明文 `http://`，而 ntfy 与各家 webhook 的默认路径都是 https——
+不接 TLS，外发功能等于不可用。这一轮补上。
+
+**选型**：`native-tls`（macOS = Security.framework），而不是 `rustls`。三条理由：
+与 Swift 侧 URLSession / Network.framework **同一套信任栈**（系统钥匙串里的企业根证书、
+代理设置行为一致）；它同时带进 `security-framework`，**下一轮钥匙串正好用同一个 crate**；
+`rustls` 不读系统信任栈，要多引 webpki-roots，「系统怎么信我就怎么信」这条口径就分叉了。
+代价写在代码注释里：错误文本来自系统，不如 rustls 结构化。
+
+**实现**：明文与 TLS 共用同一段 HTTP 往返代码（一个 `ReadWrite` 抽象）；
+https 在 TCP 之上叠一层 TLS，**主机名交给 TLS 栈校验**——证书对不上必须失败，
+静默降级成明文是不可接受的。
+
+**离线端到端验证**（这是本轮最重要的部分）：本地起一个 TLS 服务器、自签证书，
+客户端注入一份信任该证书的连接器 → 断言 `Delivered` 并**逐字核对服务器收到的
+`POST /island HTTP/1.1`、`X-Title` 与正文**；再加一条「同一个服务器 + 默认连接器必须失败，
+且报的是 TLS 握手问题」。反向验证：把 https 分支改成直接返回明文流 → 第二条立刻红。
+
+**踩到四个非显然的坑**（都记进了 [研究文档](docs/research/2026-09-27-macos-tls-for-rust-outbound.md)）：
+① macOS 的 `Identity::from_pkcs8` **只吃 RSA**，喂 rcgen 的 EC 密钥四种组合全是
+`-25257 Unknown format in import`（native-tls 自己的测试用的就是 RSA），所以本地证书绕道系统
+`openssl` 生成；② 它的**参数顺序与文档签名相反**（实现里第一个是证书）；③ 自签证书必须带
+`extendedKeyUsage=serverAuth`，否则 Security.framework 拒绝这张证书；④ 双栈主机要
+**逐个地址试连**（`localhost` 解析到 `::1` 与 `127.0.0.1`，只试第一个会 `Connection refused`）——
+这一条生产同样受益，与 Swift 侧 URLSession 的 happy-eyeballs 是最小等价物。
+
+**脱敏闸门又拦了一次**：研究文档里我写了 PEM 私钥头的字面量，命中 **`private_key` 这条
+绝对零命中规则**（不许备案）——改写措辞后通过。这条规则的存在意义正在于此。
+
+**顺带修掉一条上一轮自己的用例**：它断言「ntfy 的 https 报未接入」，https 接进来后前提失效，
+而且它会去**真连公网**（全量测试从 2.04s 掉到 0.41s，就是因为不再有网络调用）。
+已改成指向「刚释放的本地端口」：走真传输、真失败、真进账本，但不碰外网。
+
+测试 Rust 160 → **162**（+2，都是 TLS 端到端）。编译警告保持 **26**。Swift 侧零改动。
+
+没做：**SMTP over 465 会话**（`HttpTransport` 对 SMTP 仍如实报「SMTP 会话未接入」，
+含上一轮欠着的 `smtp_line` 折叠）；**重试**（Swift 5 秒后重试一次）；
+**异步化**（`attempt` 仍是同步的，10 秒超时那一拍的问题与上一轮相同——https 接进来后
+「会真去连」的路径变多了，这条限制的分量比上一轮更重）；钥匙串。
+**真实公网证书链**没有实样验证过（用例都是自签证书 + 注入连接器）。
+
 ## [0.0.176] - 2026-09-27
 
 ### 外发组：闸门 / 节流 / 记账，与能真发出去的传输骨架

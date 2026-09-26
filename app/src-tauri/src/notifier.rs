@@ -127,7 +127,7 @@ impl Default for Notifier {
             history: VecDeque::new(),
             // 默认就是真传输：它今天能发明文 http（自建/内网端点），
             // 对 https 与 SMTP 如实报「未接入」——见 `transport.rs`
-            transport: Box::new(crate::transport::HttpTransport),
+            transport: Box::new(crate::transport::HttpTransport::new()),
         }
     }
 }
@@ -705,14 +705,34 @@ mod tests {
     }
 
     #[test]
-    fn the_default_transport_is_the_real_one_and_it_reports_unwired_schemes() {
-        // 默认传输 = `HttpTransport`（能发明文 http，对 https/SMTP 如实报未接入）。
-        // 这里用 https 走一遍：结果必须是「失败」并进记账，而不是假装送达
+    fn the_default_transport_really_attempts_and_records_into_the_ledger() {
+        // 默认传输 = `HttpTransport`（真连）。指向一个刚释放的本地端口：
+        // 走真传输、真失败、真进账本，但**不碰外网**——用例不该依赖网络。
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        let config = ChannelConfig {
+            url_template: format!("http://127.0.0.1:{closed}/notify"),
+            body_template: "t={title}".into(),
+            ..ChannelConfig::default()
+        };
         let mut notifier = Notifier::new();
-        let outcome = run(&mut notifier, EventKind::Attention, &enabled(), 1_000);
+        let outcome = notifier.attempt(
+            &inputs(EventKind::Attention),
+            &enabled(),
+            Channel::CustomHttp,
+            &config,
+            false,
+            now(1_000),
+            &unavailable(),
+            false,
+        );
         match &outcome {
-            Outcome::Failed { reason, .. } => assert!(reason.contains("TLS"), "{reason}"),
-            other => panic!("ntfy 默认走 https，应如实报未接入，实际 {other:?}"),
+            Outcome::Failed { reason, .. } => assert!(reason.contains("连接失败"), "{reason}"),
+            other => panic!("应报连接失败，实际 {other:?}"),
         }
         let recent = notifier.recent_view();
         assert_eq!(recent.len(), 1);

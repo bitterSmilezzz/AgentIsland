@@ -21,6 +21,10 @@ dirs = "5"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # 本地时区（静默时段要按用户的钟表判）：lock 里早有这个版本，作为直接依赖不增加构建成本
 libc = "0.2"
+# 外发要出网：ntfy 与各家 webhook 的默认路径都是 https，SMTP 走 465 隐式 TLS。
+# 用系统 TLS 栈（macOS = Security.framework，与 Swift 侧 URLSession/Network.framework 同一套），
+# 好处是它同时带进 security-framework —— 下一轮钥匙串正好要用同一个 crate。
+native-tls = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
