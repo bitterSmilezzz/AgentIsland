@@ -194,10 +194,14 @@ function headerPresentation(eng) {
   if (eng?.latest_event && ['attention', 'costSpike'].includes(eng.latest_event.event_type)) {
     const ev = eng.latest_event;
     const isCost = ev.event_type === 'costSpike';
+    // 还有几条在排队：不显示它就等于把队列藏起来——用户会以为「关掉这条就没事了」。
+    // 计数来自 Rust 的 `pending_events`（不含正在显示的这条）。
+    const pending = eng.pending_events ?? 0;
+    const base = ev.externally_delivered ? (isCost ? '外部告警' : '外部确认') : isCost ? '告警' : '待确认';
     return {
       title: ev.agent_name,
       subtitle: eventSummary(ev),
-      badge: ev.externally_delivered ? (isCost ? '外部告警' : '外部确认') : isCost ? '告警' : '待确认',
+      badge: pending > 0 ? `${base} +${pending}` : base,
       tint: isCost ? 'var(--danger)' : 'var(--warning)',
       iconChar: isCost ? '\uE7BA' : '\uE7C2',
     };

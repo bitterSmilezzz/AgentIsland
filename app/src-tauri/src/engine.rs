@@ -8,7 +8,7 @@ use crate::session::{self, Signal};
 use crate::settings::Settings;
 use crate::tokens::now_ms;
 use crate::tokens::TokenUsageMonitor;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, SystemTime};
 
@@ -44,6 +44,12 @@ pub struct ActivityEngine {
     pub event_rx: Option<Receiver<AgentTaskEvent>>,
 
     pub latest_event: Option<AgentTaskEvent>,
+    /// 已发出但用户还没确认的事件队列，`latest_event` 是它的队首。
+    ///
+    /// 此前 `push_event` 是**覆盖** `latest_event`：同一拍里两条告警只活一条，
+    /// 用户永远看不到先发的那条（卡死与内存同时到点就是这个形状）。
+    /// 现在一条一条地展示、确认一条推下一条，**不丢**。
+    pending_events: VecDeque<AgentTaskEvent>,
     pub grand_total: TokenUsage,
     pub snapshots: Vec<AgentSnapshot>,
 }
@@ -70,6 +76,7 @@ impl ActivityEngine {
             token_cache: HashMap::new(),
             event_rx: Some(event_rx),
             latest_event: None,
+            pending_events: VecDeque::new(),
             grand_total: TokenUsage::default(),
             snapshots: vec![],
         }
@@ -210,21 +217,7 @@ impl ActivityEngine {
         // 异常驻留与死锁持续守护（Swift 侧由 `autoAnomaliesAlertEnabled` 控制，默认开）。
         // 放在排序之后、赋值之前：守护吃的是**这一拍的快照**，而 `list` 此刻还是局部量，
         // 于是不会和 `self.resilience` 的可变借用打架
-        if self.settings.auto_anomalies_alert {
-            let alerts = self.resilience.evaluate(&list, now);
-            for alert in alerts {
-                self.push_event(AgentTaskEvent {
-                    id: crate::webhook::webhook_uuid(),
-                    agent_id: alert.agent_id,
-                    agent_name: alert.agent_name,
-                    event_type: "attention".into(),
-                    timestamp: now,
-                    message: Some(alert.message),
-                    detail: Some(format!("kind={} elapsed_ms={}", alert.kind, alert.elapsed_ms)),
-                    externally_delivered: false,
-                });
-            }
-        }
+        self.publish_guard_alerts(&list, now);
 
         self.snapshots = list;
         self.grand_total = TokenUsage {
@@ -443,8 +436,51 @@ impl ActivityEngine {
         });
     }
 
+    /// 入队一条事件。队首直接上屏，其余排队等确认——见 `pending_events` 的注释。
     pub fn push_event(&mut self, event: AgentTaskEvent) {
-        self.latest_event = Some(event);
+        if self.latest_event.is_none() {
+            self.latest_event = Some(event);
+            return;
+        }
+        // 有界：用户长时间不确认时丢**最早**的（当前状态比历史告警更值得看）。
+        // 64 条的余量远大于真实告警频率（同类告警有 10 分钟冷却），所以这是纯保险。
+        const MAX_PENDING_EVENTS: usize = 64;
+        if self.pending_events.len() >= MAX_PENDING_EVENTS {
+            self.pending_events.pop_front();
+        }
+        self.pending_events.push_back(event);
+    }
+
+    /// 确认当前这条，推下一条（前端关掉横幅时调用）
+    pub fn ack_latest_event(&mut self) {
+        self.latest_event = self.pending_events.pop_front();
+    }
+
+    /// 还没确认的事件条数（不含队首那条）
+    pub fn pending_count(&self) -> usize {
+        self.pending_events.len()
+    }
+
+    /// 把守护判出的告警发成事件。**抽出来是为了让 refresh 的那条接线可测**：
+    /// 引擎真跑一拍要真进程真 CPU，用例里造不出来；而这段映射（含设置开关）
+    /// 恰恰是「判定接上了没有」最容易出错的地方。
+    fn publish_guard_alerts(&mut self, snapshots: &[AgentSnapshot], now: i64) {
+        if !self.settings.auto_anomalies_alert {
+            return;
+        }
+        let alerts = self.resilience.evaluate(snapshots, now);
+        for alert in alerts {
+            self.push_event(AgentTaskEvent {
+                id: crate::webhook::webhook_uuid(),
+                agent_id: alert.agent_id,
+                agent_name: alert.agent_name,
+                event_type: "attention".into(),
+                timestamp: now,
+                message: Some(alert.message),
+                detail: Some(format!("kind={} elapsed_ms={}", alert.kind, alert.elapsed_ms)),
+                externally_delivered: false,
+            });
+        }
     }
 
     /// 按候选顺序（新→旧）逐个探测，返回第一个有信号的；全无信号返回空探测。
@@ -612,6 +648,7 @@ impl ActivityEngine {
         EngineState {
             snapshots: self.snapshots.clone(),
             latest_event: self.latest_event.clone(),
+            pending_events: self.pending_count(),
             grand_total: self.grand_total.clone(),
             dock_edge: DockEdge::parse(&self.settings.dock_edge),
             appearance: self.settings.appearance.clone(),

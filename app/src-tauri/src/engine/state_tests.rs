@@ -318,3 +318,118 @@ fn work_hold_is_isolated_per_agent() {
         ActivityLevel::Idle
     );
 }
+
+// MARK: 告警事件的发布路径（守护 → 事件队列 → 确认）
+
+/// 造一份「卡死且内存超高」的快照，用来驱动守护（不碰真实进程与真实时钟）
+fn alarming_snapshot(running: bool) -> AgentSnapshot {
+    AgentSnapshot {
+        id: "fixture-agent".into(),
+        name: "Fixture Agent".into(),
+        glyph: String::new(),
+        emoji: String::new(),
+        level: ActivityLevel::Working,
+        level_label: "工作中".into(),
+        observability: crate::observability::evaluate(crate::observability::Evidence {
+            level: ActivityLevel::Working,
+            process_running: running,
+            installed: Some(true),
+            source_unreadable: false,
+            has_local_detail_source: false,
+            recent_session_write: true,
+            has_token_usage: false,
+        }),
+        is_hung: Some(true),
+        health: crate::health::Report::not_running(),
+        process_running: running,
+        cpu_percent: Some(97.0),
+        memory_bytes: crate::health::MEMORY_SEVERE_BYTES + 1,
+        memory_text: "2.4 GB".into(),
+        last_activity_text: "—".into(),
+        token_usage: None,
+        pid: Some(4242),
+        current_action: None,
+        subagent_count: 0,
+    }
+}
+
+/// 同一拍里两条告警**都要活下来**：这正是一直以来被覆盖式 `push_event` 丢掉的那条。
+/// 走的是 `refresh` 真正调用的那条路径（`publish_guard_alerts`），不是另写一段测试专用代码。
+#[test]
+fn two_alerts_in_one_tick_both_reach_the_user() {
+    let (_, rx) = mpsc::channel();
+    let mut engine = ActivityEngine::new(Settings::default(), rx);
+    let snap = alarming_snapshot(true);
+    let start = 1_000_000i64;
+
+    // 第一拍：两个条件都刚成立，只记起点
+    engine.publish_guard_alerts(&[snap.clone()], start);
+    assert!(engine.latest_event.is_none(), "刚成立不告警");
+
+    // 第二拍：卡死 3 分钟 + 内存 5 分钟同时到点 ⇒ 两条
+    engine.publish_guard_alerts(&[snap.clone()], start + crate::resilience::MEMORY_THRESHOLD_MS);
+    let first = engine.latest_event.clone().expect("队首应有一条");
+    assert_eq!(first.event_type, "attention");
+    assert!(first.message.as_deref().unwrap().contains("死锁"), "先发卡死那条");
+    assert_eq!(engine.pending_count(), 1, "第二条在排队，不许被顶掉");
+
+    engine.ack_latest_event();
+    let second = engine.latest_event.clone().expect("确认后应推下一条");
+    assert!(second.message.as_deref().unwrap().contains("内存长期占用过高"));
+    assert_ne!(second.id, first.id, "两条是各自的事件，不是同一条重复上屏");
+
+    engine.ack_latest_event();
+    assert!(engine.latest_event.is_none(), "都确认完就清空");
+}
+
+/// 开关真的关得住：`auto_anomalies_alert = false` 时一条都不发。
+/// 这条不测，那个设置项就是装饰品。
+#[test]
+fn the_anomaly_alert_switch_actually_gates_the_publication() {
+    let (_, rx) = mpsc::channel();
+    let mut engine = ActivityEngine::new(Settings::default(), rx);
+    engine.settings.auto_anomalies_alert = false;
+    let snap = alarming_snapshot(true);
+    let start = 1_000_000i64;
+    engine.publish_guard_alerts(&[snap.clone()], start);
+    engine.publish_guard_alerts(&[snap.clone()], start + crate::resilience::MEMORY_THRESHOLD_MS);
+    assert!(engine.latest_event.is_none());
+    assert_eq!(engine.pending_count(), 0);
+
+    // 打开后从这一刻起**重新计时**——开关关着时守护根本没被调用，所以没有可继承的窗口。
+    // 这与 Swift 一致（`if autoAlert { resilienceGuard.evaluate(...) }`）。
+    engine.settings.auto_anomalies_alert = true;
+    let reopened = start + 2 * crate::resilience::MEMORY_THRESHOLD_MS;
+    engine.publish_guard_alerts(&[snap.clone()], reopened);
+    assert!(engine.latest_event.is_none(), "打开的那一拍才开始计时");
+    engine.publish_guard_alerts(&[snap.clone()], reopened + crate::resilience::MEMORY_THRESHOLD_MS);
+    assert!(engine.latest_event.is_some(), "打开后照旧发得出来");
+}
+
+/// 队列有界：用户一直不确认也不会无限增长，且保留的是**最近**的那些。
+#[test]
+fn the_pending_queue_is_bounded_and_keeps_the_newest() {
+    let (_, rx) = mpsc::channel();
+    let mut engine = ActivityEngine::new(Settings::default(), rx);
+    for i in 0..200 {
+        engine.push_event(AgentTaskEvent {
+            id: format!("ev-{i}"),
+            agent_id: "a".into(),
+            agent_name: "A".into(),
+            event_type: "completed".into(),
+            timestamp: i,
+            message: Some(format!("第 {i} 条")),
+            detail: None,
+            externally_delivered: false,
+        });
+    }
+    assert!(engine.pending_count() <= 64, "待发队列必须有界：{}", engine.pending_count());
+    // 队首仍是最早那条（用户先看到它），队尾是最后进来的
+    assert_eq!(engine.latest_event.as_ref().unwrap().id, "ev-0");
+    let mut last = None;
+    while let Some(ev) = engine.latest_event.clone() {
+        last = Some(ev.id.clone());
+        engine.ack_latest_event();
+    }
+    assert_eq!(last.as_deref(), Some("ev-199"), "最新的那条不能被丢掉");
+}

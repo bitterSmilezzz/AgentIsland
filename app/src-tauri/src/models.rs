@@ -222,6 +222,9 @@ pub struct TokenReport {
 pub struct EngineState {
     pub snapshots: Vec<AgentSnapshot>,
     pub latest_event: Option<AgentTaskEvent>,
+    /// 已发出但还没确认的事件条数（不含 `latest_event` 那条）。
+    /// 界面上是「还有几条」的角标——不暴露它，队列就成了用户看不见的暗箱。
+    pub pending_events: usize,
     pub grand_total: TokenUsage,
     pub dock_edge: DockEdge,
     pub appearance: String, // system | light | dark

@@ -251,7 +251,8 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
 
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
-    state.lock().unwrap().latest_event = None;
+    // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
+    state.lock().unwrap().ack_latest_event();
 }
 
 #[tauri::command]

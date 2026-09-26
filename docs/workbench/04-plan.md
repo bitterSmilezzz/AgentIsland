@@ -15,6 +15,7 @@
 > token 明细这一组收口。
 > v0.0.171 进入判定增强组：迁入 `AgentHealthEvaluator` 与它依赖的卡死三态（含「连续观测资格」）。
 > v0.0.172 同组继续：迁入 `AgentResilienceGuard`（持续死锁 / 内存驻留守护，含默认开启的开关）。
+> v0.0.173 修掉事件投递的丢事件缺陷（覆盖式赋值 → 待发队列），并把 refresh 的接线抽成可测函数。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 
