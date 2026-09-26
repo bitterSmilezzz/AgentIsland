@@ -42,7 +42,11 @@ else
     scripts/scan-secrets.sh --release
 fi
 
-step "测试门禁与打包"
+step "脱敏守护与 Rust 回归测试"
+scripts/test-scan-secrets.sh
+cargo test --locked --manifest-path app/src-tauri/Cargo.toml
+
+step "Swift 测试门禁与打包"
 scripts/build-app.sh "$VERSION"
 
 step "发布包"

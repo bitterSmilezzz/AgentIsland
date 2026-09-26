@@ -39,6 +39,7 @@ id_ed25519
 # 例外：脱敏门禁本身必须入库，否则别人克隆下来没有这道闸。
 # 上面 `*secrets*` 会把它连同 baseline 一起挡掉（v0.0.119 首次发版就这么漏的）
 !scripts/scan-secrets.sh
+!scripts/test-scan-secrets.sh
 !scripts/secrets-baseline.txt
 !scripts/secrets-history-allow.txt
 !docs/agents/triage-labels.md

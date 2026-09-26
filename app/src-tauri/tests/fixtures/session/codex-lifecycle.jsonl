@@ -1,0 +1,11 @@
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Build the synthetic fixture."}]}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"fixture-command-1","arguments":"{\"cmd\":\"cargo check\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"fixture-other-call","output":"Unrelated synthetic result."}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"fixture-command-1","output":"Synthetic build result."}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"request_user_input","call_id":"fixture-question-1","status":"completed","input":"{\"questions\":[{\"question\":\"Choose the fixture option.\"}]}"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":12}}}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"fixture-question-1","output":"Synthetic selection."}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"fixture-turn-1"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":16}}}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Start the next synthetic task."}]}}
+{"type":"response_item","payload":{"type":"reasoning","id":"fixture-reasoning-2"}}

@@ -2,7 +2,9 @@
 
 一句话说清本决定的两半：**方向上 Swift 本体改为只修 Bug、不再加功能，本体演进交给 Rust；执行上前置条件全齐之前不许开始迁移。** 前一句是 2026-09-26 用户拍板的，后一句是同一次拍板附带的——「先把文档、改造方案、测试框架等前期准备工作都弄齐了再转 Rust」。
 
-## 现象与定位
+## 决策时的现象与定位
+
+> 下表是决定作出时的调查记录，不是当前构建与测试状态；当前进度见 M1–M5 状态列。
 
 先摊开成本，因为这是全仓最贵的一次方向决定：
 
@@ -32,15 +34,17 @@
 
 | # | 门 | 完成判据（可执行） | 状态 |
 |---|---|---|---|
-| M1 | **`cargo test` 能跑且有守护** | `cargo test` 在本机通过；至少覆盖 `engine` 五态转移、`provider.rs` 原子写+掩码、三种会话方言解析（**fixture 化，不依赖本机装 agent CLI**） | **前半已达成**（14 条测试全绿，v0.0.153 `418805c`）；后半（五态转移/方言 fixture）仍待做 |
-| M2 | **`cargo tauri build` 本机成功** | 产出一个 `.app`；capabilities 窗口声明与 `tauri.conf.json` 的 label 一致；`placement.rs` 按 OS 真工作区；`bundle.targets` 含 macOS | **主体已达成**（`.app` + `.dmg` 均产出，v0.0.153 `418805c`）；`placement.rs` 真工作区仍待做（依赖 Tauri v2 `work_area` API，未核实） |
-| M3 | **Rust 侧补齐 12 个缺失模块** | 上表那 12 个模块在 Rust 侧存在且有测试；**RemoteNotify 三通道一并迁**（否则侧边栏一上线就是「能力比灵动岛少」） |
-| M4 | **license 与凭据口径先落定** | 已完成：`LICENSE`（MIT）+ [ADR 0009](0009-credential-boundary-borrow-dont-hold.md) 凭据边界 |
-| M5 | **有一份「两端口径对照表」** | 逐条列出哪些能力只在 island 有、哪些只在 sidebar 有、哪些两边都要一致；不一致条目写明「说清」而不是「抹平」 |
+| M1 | **`cargo test` 能跑且有守护** | `cargo test` 在本机通过；至少覆盖 `engine` 五态转移、`provider.rs` 原子写+掩码、三种会话方言解析（**fixture 化，不依赖本机装 agent CLI**） | **部分完成**：五态回放见 `app/src-tauri/src/engine/state_tests.rs`，Claude/Codex/Cline 的合成 fixture 守护见 `session.rs` 测试；用 `cargo test --locked --manifest-path app/src-tauri/Cargo.toml` 验证。`provider.rs` 尚不存在，原子写与掩码守护未完成，M1 尚未全绿 |
+| M2 | **`cargo tauri build` 本机成功** | 产出一个 `.app`；capabilities 窗口声明与 `tauri.conf.json` 的 label 一致；`placement.rs` 按 OS 真工作区；`bundle.targets` 含 macOS | **本机构建与工作区实现已达成**：`.app` / `.dmg` 已产出，窗口 label 一致；非 Windows 分支使用 Tauri `Monitor::work_area()`，几何守护见 `placement.rs`。这不表示 Windows/Linux 打包或多屏混合 DPI 已完成真机验收 |
+| M3 | **Rust 侧补齐 12 个缺失模块** | 上表那 12 个模块在 Rust 侧存在且有测试；**RemoteNotify 三通道一并迁**（否则侧边栏一上线就是「能力比灵动岛少」） | **未开始**；当前工作限于已有 Rust 地基的修复与守护，未宣称缺失模块已迁入 |
+| M4 | **license 与凭据口径先落定** | `LICENSE`（MIT）+ [ADR 0009](0009-credential-boundary-borrow-dont-hold.md) 凭据边界 | **已完成** |
+| M5 | **有一份「两端口径对照表」** | 逐条列出哪些能力只在 island 有、哪些只在 sidebar 有、哪些两边都要一致；不一致条目写明「说清」而不是「抹平」 | **对照表已建立**：[23 号](../workbench/23-swift-rust-parity-matrix.md)；表内差异与未核实项仍须逐项处理，不代表行为已一致 |
 
 **迁移按 M3 的模块逐个走，不整批搬**：每迁一个模块 → 补 Rust 测试 → 在 island 形态下确认行为不变 → 才迁下一个。**任何一个模块迁完无法证实行为不变，该模块回退，不带着不确定上线。**
 
 ## 为什么不反过来选
+
+以下保留决策时的取舍理由；其中「从未构建成功」是当时的阻塞，当前状态以 M2 为准。
 
 **A. 现在就冻结 Swift 并开始迁移**——这是原决定的前半句单独执行。不行：`app/` 从未构建成功，迁移目标是个没验证过的容器，而源端同时被冻结，中间没有退路。
 

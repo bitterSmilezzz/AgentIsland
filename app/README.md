@@ -1,6 +1,6 @@
 # AgentIsland — 跨平台端 (Tauri / Web + Rust)
 
-AgentIsland 的多平台实现：一套代码出 **Windows / macOS / Linux** 三端。UI 用纯静态 Web 技术（HTML/CSS/JS，无 npm 依赖），核心监控用 Rust，灵动岛贴边/悬浮玻璃卡/五态监控/Token 统计/本地 Webhook 与 macOS 端（`Sources/`）和 Windows 原生端（`windows/`）共用同一套设计令牌与判定口径。
+AgentIsland 的跨平台迁移目标：Rust 核心 + 纯静态 Web UI（HTML/CSS/JS，无 npm 依赖）。当前提供灵动岛窗口、五态监控、Token 统计与本地 Webhook；侧边栏、配置档位与 ToDos 尚未实现。macOS 的 `.app` / `.dmg` 可在本机构建，Windows/Linux 尚需对应平台构建与真机验收。与 Swift 原生端的能力差异见 [两端对照表](../docs/workbench/23-swift-rust-parity-matrix.md)。
 
 ```
 app/
@@ -29,15 +29,20 @@ app/
 
 ## 构建与运行
 
-需要 Rust（stable-msvc）+ MSVC Build Tools（链接器）+ WebView2（Win10/11 自带）。**不需要 Node/npm**：
+macOS 需要 Rust stable、Command Line Tools 和 `cargo-tauri`。**不需要 Node/npm**：
 
-```powershell
+```sh
 cd app/src-tauri
-cargo tauri build          # 打包（NSIS 安装包）
+cargo test --locked        # 合成样本回归，不依赖已安装的 Agent CLI
+cargo tauri build --bundles app,dmg
 # 或开发调试：
 cargo build
-./target/debug/agentisland.exe --expand --demo --route=tokenAnalytics
+./target/debug/agentisland --expand --demo --route=tokenAnalytics
 ```
+
+Windows 需要 Rust stable-msvc、MSVC Build Tools 与 WebView2；打包时显式选择 `--bundles nsis`，可执行文件带 `.exe` 后缀。默认 bundle 配置为 macOS 的 `app` / `dmg`。
+
+测试入口覆盖五态连续采样、保持时限、时钟回拨、CPU 阈值、事件去重，以及 Claude/Codex/Cline 合成会话的文件解析。完整发布由仓库根目录的 `scripts/release.sh` 执行 Rust 与 Swift 测试；正式下载包仍为 Swift 原生端，Tauri 产物位于 `src-tauri/target/release/bundle/`。
 
 启动参数：`--demo` 注入演示数据；`--expand` 自动展开；`--route=tokenAnalytics | agentDetail:<id>` 直达子页。
 
@@ -52,7 +57,7 @@ cargo build
 
 - 设计令牌：`tokens.css` ← `Theme.swift`（同一批 Tailwind 色阶与荧光强调，深浅两套 AA 校准）
 - 几何：cardWidth 330 / curl 10 / radiusLg 18 / sliver 140×6 / 命中区 +12pt
-- 五态判定：attention/completed 强语义优先 → 双信号降级（写入 60s ∨ CPU≥6%）→ idle → offline；完成事件带时长、指纹去重、CPU 熔断（70%×5min）
+- 五态判定：进程不在即 offline；在线时 attention/completed 强语义优先，随后按双信号降级（写入 60s ∨ CPU≥阈值），信号消失后保持 10s 再回 idle。完成事件按指纹去重，CPU 熔断为持续高负载（70%×5min）。通知与会话新鲜度的完整 Swift 对齐仍待迁移。
 - Token：净消耗（不含缓存读取）、按模型拆分、内置价目表估算成本
 - Webhook：`POST /notify` `{"agent","event":"completed|attention|costSpike","message","detail"}` → 横幅带「外部确认/外部告警」徽标
 
@@ -60,4 +65,5 @@ cargo build
 
 - 设置窗口用系统对话框替代（设置读写已通，UI 面板待补）
 - 键盘流（1~3 / j,k / ? HUD）、Peek 微弹窗、远程通知、维护工作台未实现
-- macOS/Linux 的窗口放置需各自补齐 `placement.rs` 的非 Windows 分支（接口已留好）
+- macOS/Linux 工作区由 Tauri monitor API 提供，Windows 使用 Win32 工作区；跨屏与不同 DPI 的真实设备验收仍需分别进行。
+- `provider.rs` 与凭据掩码/原子写入守护尚无实现；Rust 回归通过不代表迁移前置门已全部完成。

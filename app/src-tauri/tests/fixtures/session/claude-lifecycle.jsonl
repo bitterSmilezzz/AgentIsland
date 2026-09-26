@@ -1,0 +1,7 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Build the synthetic fixture."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"fixture-shell-1","name":"Bash","input":{"command":"cargo check"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"fixture-other-call","content":"Unrelated synthetic result."}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"fixture-shell-1","content":"Synthetic build result."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"fixture-question-1","name":"AskUserQuestion","input":{"questions":[{"question":"Choose the fixture option."}]}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"fixture-question-1","content":"Synthetic selection."}]}}
+{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Synthetic task finished."}]}}

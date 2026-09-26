@@ -1,0 +1,32 @@
+[
+  {
+    "ts": 1700000000000,
+    "type": "say",
+    "say": "task",
+    "text": "Build the synthetic fixture."
+  },
+  {
+    "ts": 1700000001000,
+    "type": "say",
+    "say": "command",
+    "text": "cargo check"
+  },
+  {
+    "ts": 1700000002000,
+    "type": "ask",
+    "ask": "command",
+    "text": "cargo check"
+  },
+  {
+    "ts": 1700000003000,
+    "type": "say",
+    "say": "command_output",
+    "text": "Synthetic build output."
+  },
+  {
+    "ts": 1700000004000,
+    "type": "say",
+    "say": "completion_result",
+    "text": "Synthetic task finished."
+  }
+]

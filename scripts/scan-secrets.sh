@@ -86,7 +86,7 @@ load_file_list() {
     file_list "$mode" > "$raw"
     rc=$?
     if [[ $rc -ne 0 ]]; then
-        echo "✗ 取文件列表失败（git 退出码 $rc）。目录不对还是仓库坏了？门禁不放行。" >&2
+        echo "✗ 取文件列表失败（git 退出码 ${rc}）。目录不对还是仓库坏了？门禁不放行。" >&2
         exit 3
     fi
     # 只保留还存在于工作区的条目：git 跟踪但文件已删的（submodule 未初始化等）不是扫描失败
@@ -123,15 +123,20 @@ scan_worktree() {
 report_worktree() {
     local new hard_new baseline
     baseline=/tmp/scan-secrets-baseline.txt
-    put "$baseline" grep -v '^#' "$BASELINE" 2>/dev/null || : > /dev/null
-    # 允许基线文件不存在（等价于「一条都没备过案」），但不存在时不许当成零命中
+    # A missing baseline is a distinct failure, not an empty approved set.
     if [[ ! -e "$BASELINE" ]]; then
-        echo "✗ 找不到基线 $BASELINE——没有基线就无法判断「新增」，门禁不放行。" >&2
+        echo "✗ 找不到基线 ${BASELINE}——没有基线就无法判断「新增」，门禁不放行。" >&2
         return 1
     fi
-    local baseline_tmp=/tmp/scan-secrets-baseline.txt
-    grep -v '^#' "$BASELINE" 2>/dev/null | cut -d'|' -f1-3 | sort -u > "$baseline_tmp"
-    new=$(comm -23 <(cut -d'|' -f1-3 "$HITS" | sort -u) "$baseline_tmp")
+    grep -v '^#' "$BASELINE" | cut -d'|' -f1-3 | sort -u > "$baseline" || {
+        echo "✗ 读取基线失败，门禁不放行" >&2
+        return 1
+    }
+    [[ -f "$baseline" ]] || return 1
+    new=$(comm -23 <(cut -d'|' -f1-3 "$HITS" | sort -u) "$baseline") || {
+        echo "✗ 基线比较失败，门禁不放行" >&2
+        return 1
+    }
     if [[ -z "$new" ]]; then
         echo "✓ 工作区：$(wc -l < "$HITS" | tr -d ' ') 条命中全部已备案，无新增"
         return 0

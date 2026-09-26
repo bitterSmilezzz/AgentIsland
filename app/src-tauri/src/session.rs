@@ -1,7 +1,11 @@
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone)]
 pub struct SessionProbe {
@@ -248,7 +252,11 @@ fn claude_question_text(input: &Value) -> Option<String> {
 // MARK: Codex rollout JSONL
 
 fn probe_codex(lines: &[String], path: &str) -> SessionProbe {
-    for line in lines.iter().rev() {
+    // Read the bounded tail in order: tool outputs are only meaningful when they
+    // resolve a call with the same ID. Accounting and ordinary messages are neutral.
+    let mut open: HashMap<String, (usize, String, bool, String)> = HashMap::new();
+    let mut completion: Option<String> = None;
+    for (index, line) in lines.iter().enumerate() {
         let Ok(doc) = serde_json::from_str::<Value>(line) else { continue };
         let type_ = doc.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if type_ != "response_item" && type_ != "event_msg" {
@@ -256,32 +264,54 @@ fn probe_codex(lines: &[String], path: &str) -> SessionProbe {
         }
         let Some(payload) = doc.get("payload") else { continue };
         let pt = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if pt == "function_call" {
-            let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("command");
-            let args = payload.get("arguments").and_then(|v| v.as_str()).unwrap_or("");
-            let action = format!("运行: {}", one_line(&format!("{name} {args}"), 100));
-            return SessionProbe {
-                signal: Some(Signal::Active(fingerprint(path, &action), Some(action))),
-                subagent_count: 0,
-            };
-        }
-        if pt == "message" || pt == "agent_message" {
-            let msg = payload
-                .get("message")
-                .or_else(|| payload.get("content"))
-                .map(|v| match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })
-                .unwrap_or_default();
-            let fp = fingerprint(path, &msg.chars().take(64).collect::<String>());
-            return SessionProbe {
-                signal: Some(Signal::Completed(fp)),
-                subagent_count: 0,
-            };
+        match pt {
+            "function_call" | "custom_tool_call" => {
+                let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("command");
+                let args = payload.get("arguments").or_else(|| payload.get("input"))
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                let id = payload.get("call_id").and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty()).map(str::to_owned)
+                    .unwrap_or_else(|| format!("record-{index}"));
+                let question = name == "request_user_input";
+                let description = if question {
+                    serde_json::from_str::<Value>(args).ok()
+                        .and_then(|input| claude_question_text(&input))
+                        .unwrap_or_else(|| "等待你确认".into())
+                } else {
+                    format!("运行: {}", one_line(&format!("{name} {args}"), 100))
+                };
+                open.insert(id, (index, name.to_string(), question, description));
+                completion = None;
+            }
+            "function_call_output" | "custom_tool_call_output" => {
+                if let Some(id) = payload.get("call_id").and_then(|v| v.as_str()) {
+                    open.remove(id);
+                }
+            }
+            "task_complete" => {
+                let turn = payload.get("turn_id").and_then(|v| v.as_str())
+                    .unwrap_or(line);
+                completion = Some(fingerprint(path, turn));
+            }
+            "reasoning" => completion = None,
+            "message" if payload.get("role").and_then(|v| v.as_str()) == Some("user") => {
+                completion = None;
+                open.clear();
+            }
+            _ => {}
         }
     }
-    SessionProbe { signal: None, subagent_count: 0 }
+    if let Some((id, (_, _, question, description))) = open.iter()
+        .max_by_key(|(_, (index, _, _, _))| index) {
+        let id = fingerprint(path, id);
+        let signal = if *question {
+            Signal::Attention(id, description.clone())
+        } else {
+            Signal::Active(id, Some(description.clone()))
+        };
+        return SessionProbe { signal: Some(signal), subagent_count: 0 };
+    }
+    SessionProbe { signal: completion.map(Signal::Completed), subagent_count: 0 }
 }
 
 // MARK: Cline / Roo ui_messages.json（JSON 数组投影）
@@ -315,7 +345,7 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
             subagent_count: 0,
         };
     }
-    if say == "command_output" || say == "tool" {
+    if matches!(say, "command" | "command_output" | "tool") {
         let action = if text.is_empty() {
             None
         } else {

@@ -1,0 +1,2 @@
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"fixture-tail-command","arguments":"{\"cmd\":\"cargo check\"}"}}
+{synthetic partial row

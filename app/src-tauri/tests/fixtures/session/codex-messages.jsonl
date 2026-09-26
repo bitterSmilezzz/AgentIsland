@@ -1,0 +1,4 @@
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic request."}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","channel":"commentary","content":[{"type":"output_text","text":"Checking the synthetic fixture."}]}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"Still checking the synthetic fixture."}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Ordinary synthetic text."}]}}

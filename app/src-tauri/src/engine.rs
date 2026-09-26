@@ -22,7 +22,8 @@ pub struct ActivityEngine {
     procmon: ProcessMonitor,
     filemon: FileMonitor,
     tokens: TokenUsageMonitor,
-    phase_since: HashMap<String, i64>,
+    /// Last real work evidence, never refreshed by a hysteresis-only sample.
+    last_work_signal_at: HashMap<String, i64>,
     work_started_at: HashMap<String, i64>,
     alerted_fingerprints: HashSet<String>,
     last_completed_fp: HashMap<String, String>,
@@ -47,7 +48,7 @@ impl ActivityEngine {
             procmon: ProcessMonitor::new(),
             filemon: FileMonitor::new(),
             tokens: TokenUsageMonitor::new(),
-            phase_since: HashMap::new(),
+            last_work_signal_at: HashMap::new(),
             work_started_at: HashMap::new(),
             alerted_fingerprints: HashSet::new(),
             last_completed_fp: HashMap::new(),
@@ -81,7 +82,6 @@ impl ActivityEngine {
         let cpu_threshold = self.settings.cpu_threshold;
         let working_window = 60.0;
         let min_working_hold = 10.0;
-        let active_window_secs = 600.0;
 
         self.procmon.refresh();
         let now = now_ms();
@@ -187,8 +187,23 @@ impl ActivityEngine {
         pid: Option<u32>,
     ) -> ActivityLevel {
         let key = profile.id.clone();
+        // Match Swift's clock-rewind protection: future anchors must not extend a hold forever.
+        for anchors in [
+            &mut self.last_work_signal_at,
+            &mut self.work_started_at,
+            &mut self.high_cpu_since,
+        ] {
+            if let Some(since) = anchors.get_mut(&key) {
+                if *since > now {
+                    *since = now;
+                }
+            }
+        }
         if !process_running {
-            self.phase_since.insert(key.clone(), now);
+            self.last_work_signal_at.remove(&key);
+            self.work_started_at.remove(&key);
+            self.high_cpu_since.remove(&key);
+            self.token_rate.remove(&key);
             return ActivityLevel::Offline;
         }
 
@@ -211,24 +226,26 @@ impl ActivityEngine {
                     self.alerted_fingerprints.clear();
                 }
             }
-            self.phase_since.insert(key.clone(), now);
+            self.last_work_signal_at.remove(&key);
+            self.work_started_at.remove(&key);
             return ActivityLevel::Attention;
         }
 
         // 强语义：本轮明确结束（有写入证据才宣布完成）
         let write_evidence = file
             .latest_write
-            .and_then(|t| t.elapsed().ok())
-            .map(|d| d.as_secs_f64() < working_window)
+            .map(|t| {
+                let written_ms = match t.duration_since(SystemTime::UNIX_EPOCH) {
+                    Ok(d) => d.as_secs_f64() * 1000.0,
+                    Err(e) => -e.duration().as_secs_f64() * 1000.0,
+                };
+                // One sampling clock, including synthetic replay and future-mtime clamping.
+                (now as f64 - written_ms).max(0.0) / 1000.0 <= working_window
+            })
             .unwrap_or(false);
         if let Some(Signal::Completed(fp)) = &probe.signal {
             if write_evidence {
                 let fp = fp.clone();
-                let changed = self
-                    .phase_since
-                    .get(&key)
-                    .map(|s| (now - *s) / 1000)
-                    .unwrap_or(0);
                 let is_new = match self.last_completed_fp.get(&key) {
                     Some(prev) => *prev != fp,
                     None => true,
@@ -246,7 +263,8 @@ impl ActivityEngine {
                         externally_delivered: false,
                     });
                 }
-                self.phase_since.insert(key.clone(), now);
+                self.last_work_signal_at.remove(&key);
+                self.work_started_at.remove(&key);
                 return ActivityLevel::Completed;
             }
         }
@@ -262,18 +280,20 @@ impl ActivityEngine {
             .any(|s| s.id == key && s.level == ActivityLevel::Working);
         let holding = was_working
             && self
-                .phase_since
+                .last_work_signal_at
                 .get(&key)
                 .map(|s| (now - *s) as f64 / 1000.0 < min_working_hold)
                 .unwrap_or(false);
 
-        let level = if in_flight || write_evidence || cpu_hot || holding {
+        let level = if in_flight || write_evidence || cpu_hot {
             self.work_started_at.entry(key.clone()).or_insert(now);
-            self.phase_since.insert(key.clone(), now);
+            self.last_work_signal_at.insert(key.clone(), now);
+            ActivityLevel::Working
+        } else if holding {
             ActivityLevel::Working
         } else {
             self.work_started_at.remove(&key);
-            self.phase_since.insert(key.clone(), now);
+            self.last_work_signal_at.remove(&key);
             ActivityLevel::Idle
         };
 
@@ -576,6 +596,10 @@ fn demo_report() -> TokenReport {
         hourly30d: hourly,
     }
 }
+
+#[cfg(test)]
+#[path = "engine/state_tests.rs"]
+mod state_tests;
 
 #[cfg(test)]
 mod tests {

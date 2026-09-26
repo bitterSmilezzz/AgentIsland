@@ -1,12 +1,12 @@
 # AgentIsland — Agent 会话灵动岛监控器
 
-一款**跨 Agent 的本机管理工作台**：一站式配置与同质、多 agent 管理、ToDos。它知道你机器上每个 AI 编码 agent 此刻在干什么、花了多少 token、用的哪个模型/账号，并能替你管这些配置与待办。以 macOS 灵动岛或侧边栏形态呈现。
+一款**跨 Agent 的本机监控工具**：在 macOS 灵动岛中展示 AI 编码 agent 的运行状态、当前动作与可读取的 token 用量。跨平台 Rust/Tauri 端处于迁移阶段；侧边栏、配置档位与 ToDos 的实施范围见 [工作台计划](docs/workbench/README.md)。
 
 **同一个 agent 的五态与可信度，在三个出口永远对得上：灵动岛卡片、`agentisland doctor`、`agentisland state`。** 三处读的是同一份 `AgentObservability.evaluate(snapshot:)`（`state` 直接问运行中的 app，`doctor` 在 CLI 进程里调同一个纯函数）；对不上时三处都显示「有冲突」，而不是各自挑一个数给你看。同理，「没读到」在三个出口都是「没读到」，不是 0。
 
 > **能力边界今天是这样**（不藏）：26 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
 
-> 本文档描述 **v0.0.158** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.159** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 >
@@ -140,6 +140,7 @@ swift build && swift build --build-tests
 .build/debug/AgentIsland --probe        # 真实环境状态表
 
 ./scripts/test-scan-secrets.sh          # 脱敏闸门自身的行为测试（7 条，专盯「假绿」）
+cargo test --locked --manifest-path app/src-tauri/Cargo.toml  # Rust 五态回放与合成会话 fixture
 
 ./scripts/build-app.sh                  # 打包：测试门禁 + 图标 + ad-hoc 签名
 open dist/AgentIsland.app
@@ -149,7 +150,7 @@ AGENTISLAND_DEBUG=1 open dist/AgentIsland.app && tail -f /tmp/agentisland.log
 # log show --predicate 'subsystem == "com.agentisland.app"' --last 10m
 ```
 
-交付链路（新克隆先装钩子）：
+交付链路（新克隆先装钩子）：发布入口要求 Rust stable 工具链，依次运行脱敏扫描、脱敏守护、Rust 测试和 Swift 测试，再打包提交。Tauri 的构建要求见 [跨平台端说明](app/README.md)。
 
 ```bash
 ./scripts/install-git-hooks.sh              # pre-commit 挂上脱敏扫描

@@ -1,0 +1,3 @@
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"fixture-repeat-1","arguments":"{\"cmd\":\"cargo check\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"fixture-repeat-1","output":"Synthetic build result."}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"fixture-repeat-2","arguments":"{\"cmd\":\"cargo check\"}"}}

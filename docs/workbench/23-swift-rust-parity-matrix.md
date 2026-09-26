@@ -1,15 +1,15 @@
 # 两端口径对照表（ADR 0010 / M5 交付物）
 
 > 本表回答一件事：**AgentIsland 现在有两份并列实现**——Swift 端（灵动岛形态，`Sources/`）
-> 与 Rust 端（跨平台双形态，`app/`）。哪些能力只在一边有、哪些两边都要一致，
+> 与 Rust 端（跨平台迁移实现，当前只有 island 壳，`app/`）。哪些能力只在一边有、哪些两边都要一致，
 > 一条一条列清楚，好让人一眼看出「缺什么、哪里正在悄悄分叉」。
 >
 > 依据是 [ADR 0010](../../docs/adr/0010-swift-freeze-and-rust-prerequisites.md)：**允许「只在一边有」，
 > 不允许「两边都有但算法不同」。** 本表的用途就是把第二类逐条揪出来——
 > 迁移 Phase 1/2/3 的优先级由它决定：先修「不一致」，再补「只在 Swift 有」。
 >
-> 形态对位：**island = Swift 端**，**sidebar = Rust 端**（两者今天共用 `app/ui/` 这一份前端）。
-> 每格都带 `file:line`；读不到的写「未核实」，不猜。
+> Swift 端使用原生 SwiftUI；Rust 端使用自己的 `app/ui/`，其 sidebar 尚未实现。
+> 本表最初写于 v0.0.158，所列文件行数和行号保留调查时的快照；后续修正标在相关段落。
 
 ## 1. 总览：规模差
 
@@ -17,8 +17,8 @@
 | :--- | ---: | ---: | :--- |
 | Swift（`Sources/AgentIslandCore`） | 15,705 行 | 47 个 swift | island（macOS only） |
 | Swift（`Sources/AgentIsland` App 层 + CLI） | 12,495 行 | 39 + 12 | island 的 UI 与终端 |
-| Rust（`app/src-tauri/src`） | 2,930 行 | 11 个 rs | island + sidebar 双形态 |
-| Rust 前端（`app/ui`） | 897 行 | 4 个文件 | 两形态共用 |
+| Rust（`app/src-tauri/src`） | 2,930 行（调查时） | 11 个 rs（调查时） | island；sidebar 待实现 |
+| Rust 前端（`app/ui`） | 897 行（调查时） | 4 个文件（调查时） | 仅 Rust island 使用 |
 
 结论先放：**Rust 端今天是一个「能采数、能定五态、能贴边、能弹窗」的最小闭环**，
 Swift 端是一个「148 个版本验证过的产品体系」。所以绝大多数条目落在「只在 Swift 有」，
@@ -130,21 +130,20 @@ Rust 侧 12 个 id 见 [registry.rs:27-171](../../app/src-tauri/src/registry.rs#
 
 ### 3.3 只在 Rust 有（1 个）
 
-[placement.rs](../../app/src-tauri/src/placement.rs) 100 行：Win32 真实工作区 + DPI 换算
-（Windows 分支）。**macOS/Linux 分支是硬编码 1440×900**（[placement.rs:57-62](../../app/src-tauri/src/placement.rs#L57)）——
-这是 ADR 0010 M2 遗留项：本机构建 `.app` 用的是这个假工作区，贴边位置在一台真机上是错的。
-Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（按 NSScreen 真工作区），
-不算「Rust 独有」，而是「Rust 在 macOS 上是 stub」。
+[placement.rs](../../app/src-tauri/src/placement.rs) 处理 Win32 工作区、DPI 换算与几何放置。
+**更新于 v0.0.158**：macOS/Linux 分支已改用 Tauri `Monitor::work_area()`，不再返回
+1440×900 的假工作区；当前几何守护验证了边界钳制，多显示器真机验收仍待完成。
+Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（按 NSScreen 真工作区）。
 
 ## 4. 五态与判定口径
 
 | 项 | Swift | Rust | 判定 |
 | :--- | :--- | :--- | :--- |
 | 五态枚举 | `ActivityLevel` ∈ offline/idle/completed/working/attention（[Models.swift:44-72](../../Sources/AgentIslandCore/Models.swift#L44)） | `ActivityLevel` 同五名（[models.rs:14-40](../../app/src-tauri/src/models.rs#L14)），测试钉住 serde 名（[models.rs:test](../../app/src-tauri/src/models.rs)） | ✅ **必须一致，已一致** |
-| 状态序 | `<` 定义：offline(0)<idle(1)<completed(2)<working(3)<attention(4)（[Models.swift:66-72](../../Sources/AgentIslandCore/Models.swift#L66)） | `derive(Ord)` 声明序 attention>completed>idle>offline，**且 working=5 > attention**（[models.rs:10-21](../../app/src-tauri/src/models.rs#L10)） | ❌ **排序方向相反**：Swift `working > attention`，Rust `attention > working`。多 agent 汇总时「取最严重」在两边取到不同的 agent |
+| 状态序 | `<` 定义：offline(0)<idle(1)<completed(2)<working(3)<attention(4)（[Models.swift:66-72](../../Sources/AgentIslandCore/Models.swift#L66)） | `derive(Ord)` 声明顺序同 Swift（[models.rs](../../app/src-tauri/src/models.rs)） | ✅ v0.0.158 已纠正；两边均以 attention 为最高优先级 |
 | 中文 label | 离线/待机/已完成/工作中/待确认 :52-58 | 同 :26-32 | ✅ |
 | 双信号判定 | `working = 进程在 && (workingWindow 内有写入 \|\| CPU >= max(cpuFloor, cpuThreshold))`（[ActivityEngine.swift:8-12](../../Sources/AgentIslandCore/ActivityEngine.swift#L8)、:659） | 同一公式（[engine.rs:254-278](../../app/src-tauri/src/engine.rs#L254)） | ✅ 算法一致；但 `workingWindow=60` 在 Rust 是**硬编码字面量**（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)），Swift 来自可钳制的 `EngineConfig.workingWindow` |
-| attention/completed 强语义 | 方言分派 + 有界尾读 + 指纹去重 | id 分派 `probe_claude/codex/cline/zcode` + 指纹去重（[engine.rs:196-252](../../app/src-tauri/src/engine.rs#L196)） | ✅ 语义一致（源不同，见 3.2） |
+| attention/completed 强语义 | 方言分派 + 有界尾读 + 指纹去重 | id 分派 `probe_claude/codex/cline/zcode` + 指纹去重；Codex 调用配对与完成标记有合成 fixture 守护 | ⚠️ 部分协议行为有守护，方言分派与来源覆盖仍不同，不能宣称整体一致 |
 | CPU 熔断 | `runawayCpuAlert`（70% / 5 分钟，[Models.swift:739-740](../../Sources/AgentIslandCore/Models.swift#L739)） | 70% / 5 分钟，硬编码（[engine.rs:280-296](../../app/src-tauri/src/engine.rs#L280)） | ✅ 数值一致；Swift 可关（`runawayCpuAlert`），Rust 无此开关 |
 | Token 暴涨告警 | 每分钟净增量 > `tokenAlertThreshold`（200k） | 同一口径，注释明说「与 macOS 端口径一致」（[engine.rs:298](../../app/src-tauri/src/engine.rs#L298)） | ✅ |
 | 降频 | 有活动 `sampleInterval` / 闲置 `idleSampleInterval`（5s）/ 全离线 60s / 节电三档（[ActivityEngine.swift:1395-1404](../../Sources/AgentIslandCore/ActivityEngine.swift#L1395)） | 有活动 `sample_interval`；闲置 `×2.5` 夹在 2.0–12.5s（[main.rs:302-310](../../app/src-tauri/src/main.rs#L302)） | ⚠️ 公式不同（`×2.5` vs 独立 `idleSampleInterval` 字段）；无节电三档。**需说清**：两侧耗电量与「岛多久变灰」不同 |
@@ -189,7 +188,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `state` | AgentState（读 App 进程内状态，含自报/冲突） | ❌ 无；且后端 `AgentSnapshot` 无 provenance 字段 |
 | `doctor` | AgentObservability、AgentHealthEvaluator、SessionProbeHealth | ❌ 无（依赖 §4.1 缺失字段） |
 | `check` / `clean` | AgentResilienceGuard、AgentCleaner、ProcessTreeInspector | ❌ 无；Rust 有 `terminate_agent` 但无异常判定 |
-| `selftest` | Selftest（无头假数据断言） | ❌ 无（Rust 有 14 条 `#[test]`，非 CLI 子命令） |
+| `selftest` | Selftest（无头假数据断言） | ❌ 无同名 CLI 子命令；Rust 有 `cargo test --locked` 守护五态和会话解析 |
 | `open` / `notify` | URLSchemeParser、LocalEventHTTP、SelfReport | ⚠️ 部分：webhook 服务端在（[webhook.rs](../../app/src-tauri/src/webhook.rs)），客户端/深链解析无 |
 | `report` / `raycast` | AuditReportExporter、TokenReportExporter、AppVersion | ❌ 无 |
 
@@ -221,7 +220,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | 采样间隔（有活动） | `sampleInterval`（EngineConfig 默认 2.0） | `sample_interval` 默认 2.0 | ✅ | |
 | 采样间隔（闲置） | `idleSampleInterval` 默认 **5.0** | **无此字段**（用 `sample_interval × 2.5`） | ❌ | 见 §4 |
 | 工作判定窗口 | `workingWindow` 默认 60 | 硬编码 60（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)） | ⚠️ 值同、不可配 | |
-| 活跃会话窗口 | `activeSessionWindow` 默认 600 | 硬编码 600（[engine.rs:84](../../app/src-tauri/src/engine.rs#L84)） | ⚠️ 值同、不可配 | |
+| 活跃会话窗口 | `activeSessionWindow` 默认 600 | 无等价采样窗口（原表把未使用字面量误记为实现） | ❌ | Rust 尚未补齐活跃会话数口径 |
 | 工作滞回 | `minWorkingHold` 默认 10 | 硬编码 10（[engine.rs:83](../../app/src-tauri/src/engine.rs#L83)） | ⚠️ 值同、不可配 | |
 | CPU 阈值 | `cpuThreshold` 默认 6，区间 **1...50** | `cpu_threshold` 默认 6，钳 **1...50** | ✅ | 区间一致 |
 | 收起延迟 | `collapseDelay` 默认 0.5，区间 `SettingLimits` **0.2...5**（:144） | `collapse_delay` 默认 0.5，钳 **0.2...30** | ❌ | 上限不同：5 vs 30 |
@@ -259,7 +258,7 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
 3. `Swift 端 26 个档案中` `qoder`/`antigravity`/`dsh`/`workbuddy` 的方言解析与 Rust 无对应，
    无法比对；Rust 侧 `zcode` 走 `probe_zcode`（读取 `~/.zcode/cli/rollout`），Swift 读 `~/.zcode/v2/checkpoints`，
    **哪一边对，未在本机实跑验证**（未跑 build/test，本任务为纯调研）。
-4. Swift 548 条测试与 Rust 14 条测试的**内容覆盖对照**未做（数量差已由 ADR 0010 记录）。
+4. Swift 与 Rust 测试的**内容覆盖对照**未做。v0.0.159 增补五态回放与三方言合成 fixture 后，可执行测试数已变化；以 `cargo test --locked` 输出为准。
 5. `report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对（ADR 0009 相关，需单独看）。
 6. §2.3 表中「token 明细是否需要」一行只对 12 个共有档案核对；14 个 Swift 独有档案的
    `tokenRoots` 现状未逐一列（不影响「两边都有」的判定）。

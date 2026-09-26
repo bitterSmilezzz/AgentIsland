@@ -1,5 +1,11 @@
 # 04 · 实施计划
 
+> **当前执行门禁**以 [ADR 0010](../adr/0010-swift-freeze-and-rust-prerequisites.md) 的 M1–M5 为准。
+> 下列 Phase 1–4 是最初的功能实施草案，不能跳过 Rust 测试与能力迁移直接开侧边栏。
+> 当前：Phase 0 的扫描器及七条守护已入库，Rust 五态与三方言 fixture 已覆盖；
+> M1 仍缺 `provider.rs` 原子写与掩码测试，M2 本机工作区/打包已达成，M3 尚未开始。
+> `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
+
 ## Phase 0 — 修复不可信的发版门禁（✅ 已完成）
 
 脱敏闸门 `scripts/scan-secrets.sh` 有两处失败静默，症状都是「什么都没扫却打印 ✓」。
@@ -53,14 +59,14 @@
 
 ---
 
-## Phase 2 — CC Switch 模块
+## Phase 2 — Codex 配置档位（原 CC Switch 草案收窄）
 
 1. `provider.rs`：`scan_tools()` / `list_profiles()` / `save_profile()` /
    `apply_profile()`（原子写 + 备份）/ `delete_profile()`。
 2. `main.rs` 注册 command，DTO 强制掩码。
 3. 前端页面：档位列表 + 当前生效标记 + 切换确认 + 备份还原。
    **仅在 sidebar 形态下可达**（island 形态的 372×520 卡片装不下）。
-4. 只实现 `Tool::Claude` 与 `Tool::Codex`；`Gemini` / `OpenCode` 返回「本机未发现配置」。
+4. 第一阶段只实现 `Tool::Codex`；其他工具待单独核实并立项。
 5. 测试：原子写失败不留半截文件、密钥绝不出现在 DTO、备份-还原往返一致。
 6. **界面必须写明能力边界**：「切换同厂商多账号，不含跨厂商模型」——否则用户切了档
    以为能用 Kimi，实际不能用。这是 Magpie 调研的直接结论，不能只写在文档里。
@@ -70,10 +76,10 @@
 
 **验收**
 
-- 改一个 Claude 档位的 `env.ANTHROPIC_BASE_URL` → 应用 → `~/.claude/settings.json`
-  内容正确，且原始内容可从备份还原
+- 改一个 Codex 档位的配置片段 → 应用 → `~/.codex/config.toml`
+  内容正确，且原始内容可从备份还原；生效需重启 Codex 进程并给用户提示
 - DTO 里搜不到任何 4 位以上连续密钥形状串
-- 只做有配置文件的 2 家，不做另外 7 家的 UI
+- 只做 Codex 一家，不为其他工具画未实现的档位 UI
 - 配置文件的注释与缩写在切换后仍然保留
 - 界面上能看到能力边界说明
 
@@ -112,14 +118,13 @@
 | **扫描器假绿持续存在** | 中 | Phase 0 已修并有 7 条守卫测试盯住 |
 | **双形态导致 CSS / 定位代码翻倍** | 中高 | island 分支零改动；共用组件抽到独立文件；两壳不共根容器 |
 | **`views.js` 抽取时破坏 island 首屏** | 中 | 默认 `shell_mode=island`；重构后先在 island 下跑通 544 项再开 sidebar 开关 |
-| **CC Switch 工具集扩张失控** | 中 | 第一阶段硬编码 2 家 + 档位模型预留，不接无配置文件的工具 |
+| **CC Switch 工具集扩张失控** | 中 | 第一阶段只做 Codex；其他工具待独立核实 |
 | **构建门槛** | 低 | README 前置条件已写 `SDKROOT=MacOSX26.5.sdk` |
 
 ## 开放项
 
-1. **macOS 本体（`Sources/`，97 文件 29,526 行）怎么办**：与 Rust 端并行维护，
-   还是最终由 Rust 端统一？本轮不碰 `Sources/`，但双形态在 Rust 端成立后，
-   Swift 端的形态口径需要明确。
+1. **macOS 本体迁移方向已定**：[ADR 0010](../adr/0010-swift-freeze-and-rust-prerequisites.md)
+   要求前置门齐备后逐模块迁到 Rust；Swift 仅保留 Bug、安全与必要兼容修复。
 2. **`shell_mode` 默认值是否要为「新用户默认 sidebar」加版本迁移逻辑**：
    当前一律默认 island，最安全但不能让新用户直接看到侧边栏。
 3. **灵动岛形态下 Provider / 待办不可达**：这是有意的形态分工（372×520 装不下），
