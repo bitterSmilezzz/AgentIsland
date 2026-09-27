@@ -599,6 +599,12 @@ curl -sS  https://collectui.com/categories/__data.json       # {"nodes":[null,nu
 6. **Beautiful UI 没有 `llms.txt`**（`/llms.txt` 返回 404，首页也没有 `llms.txt` 链接），
    也没有暴露 registry JSON。它的 agent 友好度**低于** beUI 与 BoardUI——
    本文没有推测它"一定会加"，只记今天没有。
+   > **2026-09-27 更正（不改上文，只更正）**：后半句被 [16 篇](16-agent-ready-ui-sites-and-motion-tokens.md) 证伪——
+   > `curl -sS https://www.beautifului.dev/r/registry.json` 返回 **200 / 3,006 B**，
+   > 是一份 `$schema: https://ui.shadcn.com/schema/registry.json` 的注册表索引（**27 项**），
+   > 逐项 JSON 也可取（`/r/task-rows.json` 200 / 11,330 B）。
+   > **前半句仍成立**：`/llms.txt`、`/mcp`、`/docs/mcp`、`/skills`、`/llms-full.txt` 至今都是 404。
+   > 所以准确的说法是：**它有注册表，但没有指路的索引**——agent 得先知道 shadcn 的约定路径才找得到。
 7. **Beautiful UI / BoardUI 的作者身份除 BoardUI 外未核实。** Beautiful UI 的
    `/license` 确认 `Copyright (c) 2026 Shane Levine` 且由 cal.com 链接（`shane-levine-7bnfdw`）
    指向同一人；BoardUI 页脚署名 `Mertcan Esmergül`（`x.com/sitenley`），

@@ -40,8 +40,9 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
 | [13](13-kopp-morphing-dropdown.md) | [@koppkev](https://x.com/koppkev)「morphing dropdown」 | Details.so Vault 的导航下拉在四种内容形态间反复变形 | **先问「这是几个菜单，还是一个菜单的几个状态」**——四种内容共享同一个容器几何，就只有一份开合逻辑 |
 | [14](14-mide-progressive-payment-reveal.md) | [@mide_ajibade](https://x.com/mide_ajibade)「Progressive Payment Reveal」 | 分期付款界面：进度在三个 tab 间切换 | **数字会变时让它数上去，不要跳**——`0 → 47 → 50` 与 `0 → 50` 给用户的信息量不同 |
 | [15](15-ip-as-logo-skill.md) | [s1dashu/ip-as-logo-skill](https://github.com/s1dashu/ip-as-logo-skill)（~5.5k star / MIT） | 单文件 skill：把「好看的吉祥物方图」写成可判定约束（4–7 个大形状、恰好三色、32×32 可读、85–95% 占幅、从下角探出） | **别把创作当验收测试**——每次生成只画一次，不自动重试、不做合规审查、不后处理修补；且**提示词里绝不出现 logo / brand mark / app icon**（模型会照你说的做） |
+| [16](16-agent-ready-ui-sites-and-motion-tokens.md) | [@x5cnhp](https://x.com/x5cnhp)「5 个 UI 站」+ [rareui.com](https://rareui.com) / [transitions.dev](https://transitions.dev) / [ui.shadcn.com](https://ui.shadcn.com) | 一条中文资源清单帖背后的三个新站；唯一配图是**被浏览器机翻成中文的 shadcn 首页截图** | **「丢个链接让 agent 自己扒」要先看站点给没给接口**——五个站实测四种形态各占几件，且**接口存在 ≠ 能被发现**（Beautiful UI 有注册表却没有指路的 `llms.txt`，本篇据此更正了 04 篇一条旧结论）；另加 transitions.dev 那套**按用途命名**的动效 token 表 |
 
-> 编号说明：01–07、11、12、13、14 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的；15 同理（引申发现，2026-09-26）
+> 编号说明：01–07、11–14、16 由使用者指定链接研究而来；08–10 是研究过程中 subagent 引申发现的；15 同理（引申发现，2026-09-26）
 > 同源案例（素材与分析均为一手实样，见各篇「素材文件」与「取证命令」）。
 > 分开编号是为了让人一眼看出哪些是指定素材、哪些是沿链发现的。
 
@@ -150,11 +151,43 @@ AgentIsland 是常驻 UI，动效的取舍比一次性落地页更重：常驻�
    是同一条经验的反面：**你以为在描述约束，其实在设定目标**。
    → 与共识 1「Do not force an effect」同源：都是「别让意图污染判据」。
 
+25. **"丢给 agent 让它自己扒"成立与否，取决于站点给没给接口——这件事可以逐 URL 核实。**
+    [16](16-agent-ready-ui-sites-and-motion-tokens.md) 实测五个站（四件套：发现索引 / 注册表 / MCP / agent skill）：
+    `/llms.txt` 两个 200、两个 404、一个 402（站点本体拒绝 curl）；MCP 两个；agent skill 两个；
+    注册表 **5 个里 4 个有**（Transitions 走的是 skill + 自建 CLI，没有注册表索引）；
+    但**接口存在 ≠ 能被发现**——Beautiful UI 的注册表
+    （`/r/registry.json` 200 / 27 项）没有任何 `llms.txt` 指路，agent 得先知道 shadcn 的约定路径。
+    → 与 04 篇「给 agent 的接口优先级是能写文件 > 只能读」同源，但 16 篇给的是**检查表版本**：
+    判据是返回码，不是宣传语。本仓说"支持 agent 接入"之前，应先答得出"发现索引在哪、取件接口在哪"。
+
+26. **动效参数按用途命名，且按用途匹配，不按数字匹配。** [16](16-agent-ready-ui-sites-and-motion-tokens.md)
+    的 transitions.dev 把参数收成 7 档时长 / 6 条缓动 / 5 档位移 / 4 档缩放 / 3 档模糊，每档注释写的是**谁在用它**
+    （`--duration-quick: 150ms /* modal/dropdown close, text swap, tooltip appear */`），并明说
+    `A 300ms modal close maps to --duration-quick because both are "modal close", even though the numbers differ`。
+    → 与共识 11「时长按读起来多快定，不按名义多长定」同一条，但它给了**可执行的收敛路径**：
+    先给每个动效写用途名，再让相同用途共用一档（不是先统一数字）。
+
+27. **"关"比"开"短，而且已经成对写进 token 名。** 同一个案例里，panel open 400ms / close 350ms、
+    badge pop 500ms / close 180ms、tooltip in 150ms（+80ms 延迟）/ out 50ms。
+    → 共识 2「不对称才有重量」至此有三个独立样本（Slingshot Lamp 34/16、3dicon 分级、这份 token 表），
+    可以当收敛结论用了。
+
+28. **同一个东西换状态时，先问是"变形"还是"重建"。** [16](16-agent-ready-ui-sites-and-motion-tokens.md) 里
+    tooltip 只用一个气泡、在多个触发点之间 tween 过去；Rare UI 的 matrix-orb 把状态移出 `useEffect` 依赖，
+    注释原话 `the loop retargets, it never restarts`；task-list 的完成项**等动画落定才搬家**。
+    → 与共识 21 同一条，样本再 +4。常驻 UI 上"重建动画"的代价是每天几百次重播。
+
+29. **换文案时，容器的宽度要脱离文案。** 16 篇的 `thinking-states` 用一层隐藏 sizer 装着**最长的那条状态文案**，
+    可见层绝对定位铺在它的宽度上，原句 `every state centres in a box that never resizes mid-swap`。
+    → 灵动岛收起态的宽度是算死的，中间那行状态文案一换长度就可能抖；若抖，解法是**给这个位置定宽**，
+    不是把文案改短。
+
 ## 新增一篇要做什么
 
 1. 文件命名 `NN-<英文slug>.md`，按加入顺序编号，不要用日期（日期会诱导人按时间读而不是按主题读）
 2. 四节写全，尤其第 3 节：没有一手证据的案例不收
-3. 若涉及本机抓取，写明走代理等环境事实（本机 `*.twimg.com` 直连不通，需 `127.0.0.1:10808`）
+3. 若涉及本机抓取，写明走代理等环境事实（本机 `video.twimg.com` 的视频需 `127.0.0.1:10808`，
+   但 `pbs.twimg.com` 的图片直连即得；`web.archive.org` 直连超时、需走代理——三条不能互相套用，16 篇实测）
 4. 更新本文件的案例表与「共识」两节
 5. 若是第三方 skill，同时记一笔到 [AGENTS.md](../../../AGENTS.md) 的 Installed skills
 6. **写完自查引用**：行号引文回头 grep 一遍（v0.0.137 时写错过 `lamp.js:607`，实际 621）；
