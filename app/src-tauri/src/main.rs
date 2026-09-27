@@ -15,6 +15,7 @@ mod provider;
 mod registry;
 mod remote;
 mod render;
+mod report;
 mod resilience;
 mod session;
 mod secret;
@@ -381,7 +382,7 @@ fn token_forecast(state: State<SharedEngine>) -> crate::forecast::ForecastReport
 /// 用的是**这一拍的快照**与面板同源的 `grand_total`（口径差异会在报告里写明），
 /// 不重新聚合：报告与岛对不上时，用户怀疑的是面板。
 #[tauri::command]
-fn audit_report_markdown(state: State<SharedEngine>) -> crate::audit::Export {
+fn audit_report_markdown(state: State<SharedEngine>) -> crate::models::Export {
     let engine = state.lock().unwrap();
     crate::audit::markdown_export(
         &engine.snapshots,
@@ -392,7 +393,7 @@ fn audit_report_markdown(state: State<SharedEngine>) -> crate::audit::Export {
 }
 
 #[tauri::command]
-fn audit_report_csv(state: State<SharedEngine>) -> crate::audit::Export {
+fn audit_report_csv(state: State<SharedEngine>) -> crate::models::Export {
     let engine = state.lock().unwrap();
     crate::audit::csv_export(&engine.snapshots, crate::tokens::now_ms())
 }
@@ -423,6 +424,36 @@ fn agent_process_tree(state: State<SharedEngine>, agent_id: String) -> Option<cr
 #[tauri::command]
 fn run_selftest() -> crate::selftest::Report {
     crate::selftest::run()
+}
+
+/// Token 消费报表（Markdown / CSV）。`range` 取 `day` / `week` / `month`，缺省与写错都按 `day`。
+///
+/// 与审计报告同一套约定：返回 `{filename, content}`（同一拍），
+/// 累计历史那一行用引擎缓存的总量（与面板汇总栏同源，避免报告与岛对不上）。
+#[tauri::command]
+fn token_report_markdown(
+    state: State<SharedEngine>,
+    range: Option<String>,
+) -> crate::models::Export {
+    let engine = state.lock().unwrap();
+    let range = range
+        .as_deref()
+        .and_then(crate::report::TokenTimeRange::parse)
+        .unwrap_or(crate::report::TokenTimeRange::Day);
+    let timeline = crate::report::build_timeline(range, crate::tokens::now_ms());
+    crate::report::markdown_export(&timeline, &engine.grand_total, crate::tokens::now_ms())
+}
+
+#[tauri::command]
+fn token_report_csv(state: State<SharedEngine>, range: Option<String>) -> crate::models::Export {
+    let engine = state.lock().unwrap();
+    let range = range
+        .as_deref()
+        .and_then(crate::report::TokenTimeRange::parse)
+        .unwrap_or(crate::report::TokenTimeRange::Day);
+    let timeline = crate::report::build_timeline(range, crate::tokens::now_ms());
+    let _ = &engine;
+    crate::report::csv_export(&timeline, crate::tokens::now_ms())
 }
 
 #[tauri::command]
@@ -596,6 +627,8 @@ fn main() {
             audit_report_csv,
             agent_process_tree,
             run_selftest,
+            token_report_markdown,
+            token_report_csv,
             remote_secret_set,
             remote_secret_delete,
             set_dock_edge,

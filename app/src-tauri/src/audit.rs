@@ -15,7 +15,7 @@
 //! `Cargo.toml` 版本是 `0.1.0`、与 App 版本（`AppVersion.string`）**并未同步**——
 //! 直接用它会把一个错号发给用户。要迁先得解决「第四个版本位」的同步规则（见 review）。
 
-use crate::models::{AgentSnapshot, AgentTaskEvent, TokenUsage};
+use crate::models::{AgentSnapshot, AgentTaskEvent, Export, TokenUsage};
 use crate::observability::Code;
 
 /// 「yyyy-MM-dd HH:mm:ss」（本地时间）
@@ -40,16 +40,6 @@ pub fn file_timestamp_text(now_ms: i64) -> String {
 
 pub fn default_filename(ext: &str, now_ms: i64) -> String {
     format!("AgentIsland_Audit_{}.{ext}", file_timestamp_text(now_ms))
-}
-
-/// 一次导出的结果：正文 + 建议文件名。
-/// 两者放一起返回，是因为它们必须来自**同一拍**——分开两次调用会拿到两个时间戳，
-/// 用户存下来的文件名与报告里写的生成时间就会差几秒。
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Export {
-    pub filename: String,
-    pub content: String,
 }
 
 pub fn markdown_export(

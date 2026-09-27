@@ -245,6 +245,49 @@ impl TokenUsageMonitor {
         }
     }
 
+    /// 某个周期内的（tokens, cost）合计。
+    ///
+    /// 复用同一套解析：`parse_file` 本来就按传入的 cutoff 聚合（`summarize` 里逐条
+    /// 比 `ts >= cutoff`），所以周期口径与 24h 那一档不会因为两处各写一份而对不上，
+    /// 文件指纹缓存也照旧命中——重复换档查询不会重读文件。
+    pub fn range_totals(
+        &mut self,
+        profile: &crate::models::AgentProfile,
+        range_ms: i64,
+        now: i64,
+    ) -> (i64, f64) {
+        let cutoff = now.saturating_sub(range_ms);
+        let mut tokens = 0i64;
+        let mut cost = 0f64;
+        for root in &profile.token_roots {
+            if !Path::new(root).is_dir() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(root)
+                .max_depth(4)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                if entry
+                    .path()
+                    .extension()
+                    .map(|e| e.to_string_lossy() != "jsonl")
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                let (t, c, _, _, _) = self.parse_file(&entry.path().to_path_buf(), cutoff);
+                tokens += t;
+                cost += c;
+            }
+        }
+        (tokens, cost)
+    }
+
     fn parse_file(
         &mut self,
         path: &PathBuf,
@@ -1345,3 +1388,113 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+    use crate::models::AgentProfile;
+
+    /// 带时间戳的 Claude 方言一行（4000 净 tokens ⇒ $0.024）
+    fn line_at(iso: &str) -> String {
+        format!(
+            r#"{{"timestamp":"{iso}","id":"msg-{iso}","message":{{"model":"claude-3-7-sonnet","usage":{{"input_tokens":3000,"output_tokens":1000}}}}}}"#
+        )
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "agentisland-range-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 把本地时间的分量写成 ISO 串。**它按 UTC 解析，所以与实际时刻最多差一个时区**
+    /// （≤14h）——本用例的间距是 1 小时与 14 天，这点偏差不影响任何一条断言。
+    /// 之所以不写固定字面量：`parse_file` 用**真实时钟**算 70 天明细保留窗口，
+    /// 夹具时间戳离真实 now 太远（我第一版放在 8 个月前）会被折进累计、不再逐条保留，
+    /// 于是区间查询全返回 0——那不是被测代码的问题，是夹具没贴近现实。
+    fn iso_like(ms: i64) -> String {
+        let (y, mo, d, h, mi, s) = local_time_parts(ms).expect("本地时间应可用");
+        format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+    }
+
+    /// 区间合计必须**按传入的 cutoff 分档**：同一份明细里，24h / 7d / 30d 要给出不同的数。
+    #[test]
+    fn the_range_cutoff_actually_separates_recent_from_old_detail() {
+        let dir = temp_dir("cutoff");
+        let real_now = now_ms();
+        // 相隔 14 天的两条明细，都落在 70 天保留窗口内
+        let recent_iso = iso_like(real_now - 3_600_000);
+        let old_iso = iso_like(real_now - 14 * 86_400_000);
+        std::fs::write(
+            dir.join("session.jsonl"),
+            format!("{}\n{}\n", line_at(&recent_iso), line_at(&old_iso)),
+        )
+        .unwrap();
+
+        // 「现在」由用例给（`range_totals` 收 `now` 参数就是为了这个）
+        let now = real_now;
+
+        let profile = AgentProfile {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            process_names: vec![],
+            cmdline_hints: vec![],
+            path_excludes: vec![],
+            cpu_floor: None,
+            session_dirs: vec![],
+            token_roots: vec![dir.to_string_lossy().to_string()],
+            session_database: None,
+            category: "assistant".into(),
+        };
+
+        let mut monitor = TokenUsageMonitor::new();
+        let (day_tokens, day_cost) = monitor.range_totals(&profile, 24 * 3_600_000, now);
+        assert_eq!(day_tokens, 4_000, "24h 档只该含 1 小时前那条");
+        assert!(day_cost > 0.0, "成本也要随区间缩放：{day_cost}");
+
+        let (week_tokens, _) = monitor.range_totals(&profile, 7 * 86_400_000, now);
+        assert_eq!(week_tokens, 4_000, "7 天档仍只含最近那条（另一条是 14 天前）");
+
+        let (month_tokens, month_cost) = monitor.range_totals(&profile, 30 * 86_400_000, now);
+        assert_eq!(month_tokens, 8_000, "30 天档两条都在");
+        assert!(
+            (month_cost - day_cost * 2.0).abs() < 1e-9,
+            "两条同价 ⇒ 30 天应是 24h 的两倍：{month_cost} vs {day_cost}"
+        );
+
+        // 换档不重读文件：同一台 monitor 再查一次 24h，结果必须一致
+        let (again, _) = monitor.range_totals(&profile, 24 * 3_600_000, now);
+        assert_eq!(again, day_tokens, "重复查询（命中缓存）结果必须一致");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_profile_without_readable_roots_reports_zero_instead_of_panicking() {
+        let profile = AgentProfile {
+            id: "empty".into(),
+            name: "Empty".into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            process_names: vec![],
+            cmdline_hints: vec![],
+            path_excludes: vec![],
+            cpu_floor: None,
+            session_dirs: vec![],
+            token_roots: vec!["/nonexistent/agentisland-range".into()],
+            session_database: None,
+            category: "assistant".into(),
+        };
+        let mut monitor = TokenUsageMonitor::new();
+        assert_eq!(monitor.range_totals(&profile, 24 * 3_600_000, now_ms()), (0, 0.0));
+    }
+}

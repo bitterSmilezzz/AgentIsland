@@ -27,7 +27,8 @@
 > v0.0.182 迁入审计报告导出（`audit.rs`：Markdown/CSV、表格转义、`—`≠`0`、跨源口径差额），并给事件补上 `duration`（报告「耗时」列与完成摘要从此有真值）。
 > v0.0.183 迁入派生进程树（`trees.rs`：防环、根不算自己的后代、全程不递归；`procmon::table()` 提供整张表）。
 > v0.0.184 迁入无头自检（`selftest.rs`：22 条检查；`agentisland --selftest` 与 `run_selftest` 命令），并把进程匹配抽成纯函数 `profile_matches` 让排除规则可夹具断言；顺手统一「最近活动」文案口径。
-> 「导出与自检」组只剩 `TokenReportExporter`。
+> v0.0.185 迁入 Token 消费报表导出（`report.rs`：Markdown/CSV、BOM、区间合计按 cutoff 分档；接两条命令）。
+> **M3 的 12 个模块已迁 11 个，只剩 `TaskDurationTracker`**——迁完它 M3 才收口、侧边栏门禁才解除。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 

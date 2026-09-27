@@ -238,6 +238,19 @@ pub struct TokenReport {
     pub hourly30d: Vec<(i64, i64)>,
 }
 
+// MARK: - 导出件的统一形状
+
+/// 一次导出的结果：正文 + 建议文件名。
+///
+/// 两个导出器（审计报告、Token 报表）共用它，而且**必须**共用：
+/// 文件名与正文要来自同一拍，否则用户存下来的文件名与正文里的生成时间会差几秒。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Export {
+    pub filename: String,
+    pub content: String,
+}
+
 // MARK: - 引擎推送给 UI 的完整状态
 
 #[derive(Debug, Clone, Serialize)]
