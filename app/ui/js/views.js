@@ -845,10 +845,23 @@ export function renderSidebar() {
   root.querySelectorAll('[data-agent]').forEach((el) => {
     el.onclick = () => {
       st.route = `agentDetail:${el.dataset.agent}`;
-      renderCard(); // 详情页与灵动岛共用同一个页面函数
+      // **不借 `renderCard()`**：那个函数会把内容包进灵动岛的 `.card dock-*` 外壳里，
+      // 在侧边栏里就是一个尺寸与形状都不属于这里的盒子。页面函数本身是共用的
+      // （`pageAgentDetail` + `hydrateReport`），只有外壳不同。
+      renderSidebarDetail();
       hydrateReport();
     };
   });
+}
+
+/// 侧边栏里的 Agent 详情：同一份页面函数，铺进内容区
+export function renderSidebarDetail() {
+  const st = getState();
+  const eng = st.engine ?? { snapshots: [] };
+  const agentId = st.route.startsWith('agentDetail:') ? st.route.split(':')[1] : '';
+  const body = document.querySelector('.sb-body');
+  if (!body) return;
+  body.innerHTML = `<div class="sb-page">${pageAgentDetail(eng, agentId)}</div>`;
 }
 
 function escapeHtml(text) {
@@ -1056,6 +1069,8 @@ function showProviderToast(root, text) {
   toast.setAttribute('data-toast', '');
   toast.textContent = text;
   root.appendChild(toast);
+  // 同上：Toast 会随重画消失，失败信息另写一份到应用日志
+  invoke('log_from_ui', { message: `[provider] ${text}` }).catch(() => {});
 }
 
 // MARK: - 待办页（Phase 3）
@@ -1177,4 +1192,7 @@ function showTodoToast(root, text) {
   toast.className = 'sb-toast';
   toast.textContent = text;
   root.appendChild(toast);
+  // Toast 会随下一次重画消失，而**失败信息不该只存在一瞬间**：
+  // 同时写进应用日志（`log_from_ui`），事后还能查。
+  invoke('log_from_ui', { message: `[todo] ${text}` }).catch(() => {});
 }

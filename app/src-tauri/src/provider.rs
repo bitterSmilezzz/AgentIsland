@@ -3,7 +3,6 @@
 
 use crate::atomicfile::atomic_replace_validated;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -35,52 +34,13 @@ fn replace_value_preserving_decor(doc: &mut DocumentMut, key: &str, new_value: &
     doc[key] = item;
 }
 
-/// Update the native Codex profile layer while retaining unrelated TOML
-/// comments, key order, plugin tables, and arrays. Provider definitions belong
-/// in the base config; this layer only selects their name. A running Codex
-/// process must be restarted separately before this change can take effect.
-pub(crate) fn update_codex_profile(
-    target: &Path,
-    model: &str,
-    model_provider: Option<&str>,
-) -> io::Result<()> {
-    if !target
-        .file_name()
-        .and_then(|s| s.to_str())
-        .is_some_and(|name| name.ends_with(".config.toml") && name != ".config.toml")
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a Codex profile path",
-        ));
-    }
-    if model.trim().is_empty() || model_provider.is_some_and(|p| p.trim().is_empty()) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "empty Codex profile field",
-        ));
-    }
-
-    let original = match fs::read_to_string(target) {
-        Ok(content) => content,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error),
-    };
-    let mut doc: DocumentMut = original.parse().map_err(|_| invalid_toml())?;
-    replace_value_preserving_decor(&mut doc, "model", model);
-    if let Some(provider) = model_provider {
-        replace_value_preserving_decor(&mut doc, "model_provider", provider);
-    } else {
-        // No override means inherit from the base config, not keep the previous one.
-        doc.as_table_mut().remove("model_provider");
-    }
-    let updated = doc.to_string();
-    atomic_replace_validated(target, updated.as_bytes(), |staged| {
-        let text = fs::read_to_string(staged)?;
-        text.parse::<DocumentMut>().map_err(|_| invalid_toml())?;
-        Ok(())
-    })
-}
+// 这里原本有一个 `update_codex_profile`（只写顶层 model/model_provider，并支持
+// 「不带 provider ⇒ 清掉覆盖」，来自 v0.0.160 的地基）。已删除，理由两条：
+// ① 它的写入职责被 `plan_codex_apply` 完整取代（后者还写 provider 表，且走同一条路径校验）；
+// ② 它唯一独有的行为是「清掉 model_provider 覆盖」，也就是「回到 Codex 默认」——
+//    而这件事**用现有功能就能做到**：档位页里每次切换前都会留备份，从备份还原即可。
+//    与其为它多养一条没人走的写入路径，不如让用户用已有且被用例覆盖的那条。
+// 「回到默认」在界面上没有单独按钮，这一点记在 CHANGELOG 与 review 里，不藏在注释里。
 
 // MARK: - 档位（Phase 2）
 
@@ -521,6 +481,27 @@ mod tests {
             fs::create_dir(&path).unwrap();
             Self(path)
         }
+
+        /// 造一个 `<sandbox>/.codex/config.toml`（生产侧的路径校验只认这个形状）
+        fn codex_config(&self) -> PathBuf {
+            let dir = self.0.join(".codex");
+            fs::create_dir_all(&dir).unwrap();
+            dir.join("config.toml")
+        }
+    }
+
+    /// 一份合用的档位 fixture
+    fn profile() -> CodexProfile {
+        CodexProfile {
+            id: "work".into(),
+            name: "工作账号".into(),
+            model: "gpt-5".into(),
+            provider_id: "acme".into(),
+            provider_name: "Acme".into(),
+            base_url: "https://api.example.invalid/v1".into(),
+            env_key: "ACME_API_KEY".into(),
+            wire_api: "responses".into(),
+        }
     }
 
     impl Drop for Sandbox {
@@ -539,143 +520,6 @@ mod tests {
             vec![target_name],
             "staging file leaked: {entries:?}"
         );
-    }
-
-    #[test]
-    fn codex_profile_update_preserves_unrelated_formatting_and_comments() {
-        let sandbox = Sandbox::new();
-        let target = sandbox.0.join("fixture.config.toml");
-        let before = "# Keep this comment\nmodel = 'old-model' # chosen by hand\nmodel_provider = 'old-provider' # account selection\n\n[plugins.\"fixture@marketplace\"]\nenabled = true\npaths = [\n  'alpha',\n  'beta',\n]\n";
-        fs::write(&target, before).unwrap();
-        update_codex_profile(&target, "new-model", Some("official-provider")).unwrap();
-        let after = fs::read_to_string(&target).unwrap();
-        assert!(after.contains("# Keep this comment"));
-        assert!(
-            after.contains("# chosen by hand"),
-            "inline model comment was lost: {after}"
-        );
-        assert!(
-            after.contains("# account selection"),
-            "inline provider comment was lost: {after}"
-        );
-        assert!(after.contains("[plugins.\"fixture@marketplace\"]\nenabled = true\npaths = [\n  'alpha',\n  'beta',\n]"));
-        let doc: DocumentMut = after.parse().unwrap();
-        assert_eq!(doc["model"].as_str(), Some("new-model"));
-        assert_eq!(doc["model_provider"].as_str(), Some("official-provider"));
-        only_target_remains(&sandbox.0, "fixture.config.toml");
-    }
-
-    #[test]
-    fn codex_profile_update_creates_a_missing_native_profile() {
-        let sandbox = Sandbox::new();
-        let target = sandbox.0.join("fixture.config.toml");
-        update_codex_profile(&target, "new-model", Some("official-provider")).unwrap();
-        let text = fs::read_to_string(&target).unwrap();
-        let doc: DocumentMut = text.parse().unwrap();
-        assert_eq!(doc["model"].as_str(), Some("new-model"));
-        assert_eq!(doc["model_provider"].as_str(), Some("official-provider"));
-        only_target_remains(&sandbox.0, "fixture.config.toml");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-    }
-
-    #[test]
-    fn invalid_existing_profile_and_auth_path_cannot_be_overwritten() {
-        let sandbox = Sandbox::new();
-        let target = sandbox.0.join("fixture.config.toml");
-        fs::write(&target, "invalid = [").unwrap();
-        assert_eq!(
-            update_codex_profile(&target, "new-model", None)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidData
-        );
-        assert_eq!(fs::read_to_string(&target).unwrap(), "invalid = [");
-        let auth = sandbox.0.join("auth.json");
-        fs::write(&auth, "leave this file alone").unwrap();
-        assert_eq!(
-            update_codex_profile(&auth, "new-model", None)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(fs::read_to_string(auth).unwrap(), "leave this file alone");
-    }
-
-    #[test]
-    fn clearing_provider_override_keeps_the_rest_of_the_profile() {
-        let sandbox = Sandbox::new();
-        let target = sandbox.0.join("fixture.config.toml");
-        fs::write(
-            &target,
-            "# keep\nmodel = 'old'\nmodel_provider = 'old-provider'\n",
-        )
-        .unwrap();
-        update_codex_profile(&target, "new", None).unwrap();
-        let text = fs::read_to_string(&target).unwrap();
-        assert!(text.starts_with("# keep\n"));
-        let doc: DocumentMut = text.parse().unwrap();
-        assert_eq!(doc["model"].as_str(), Some("new"));
-        assert!(doc.get("model_provider").is_none());
-    }
-}
-
-#[cfg(test)]
-mod phase2_tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    /// 沙箱取名要带**序号**：`as_nanos()` 在 macOS 上分辨率很粗，
-    /// 并行的两个用例完全可能取到同一个值 —— 那样两个用例共用一个目录，
-    /// 先结束的那个 `Drop` 会把另一个的文件删掉。症状是「某次跑挂了三条、再跑全绿」。
-    /// （同一类问题在 selftest 里已经踩过一次。）
-    static NEXT_SANDBOX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    struct Sandbox(PathBuf);
-    impl Sandbox {
-        fn new() -> Self {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let serial = NEXT_SANDBOX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "agentisland-provider2-{}-{stamp}-{serial}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-        /// 造一个 `<sandbox>/.codex/config.toml`（生产侧的路径校验只认这个形状）
-        fn codex_config(&self) -> PathBuf {
-            let dir = self.0.join(".codex");
-            fs::create_dir_all(&dir).unwrap();
-            dir.join("config.toml")
-        }
-    }
-    impl Drop for Sandbox {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn profile() -> CodexProfile {
-        CodexProfile {
-            id: "work".into(),
-            name: "工作账号".into(),
-            model: "gpt-5".into(),
-            provider_id: "acme".into(),
-            provider_name: "Acme".into(),
-            base_url: "https://api.example.invalid/v1".into(),
-            env_key: "ACME_API_KEY".into(),
-            wire_api: "responses".into(),
-        }
     }
 
     #[test]

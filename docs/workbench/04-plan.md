@@ -164,14 +164,25 @@
 
 ## Phase 4 — 收尾
 
-1. 文档同步：README / CONTEXT / CHANGELOG。README 里所有「灵动岛」表述从
-   「唯一形态」改成「形态之一」，逐条核对，不留已不成立的描述
-   （AGENTS.md：过期的限制比没有限制更误导）。
-2. `docs/adr/0009-sidebar-alongside-island.md`：记录为何两种形态并存而非二选一、
+1. ✅ 文档同步：README 已逐条核对。**但结论与计划原先的写法不同**：
+   今天实际交付的是 **Swift 本体（只有灵动岛）**，把「唯一形态」一律改成「形态之一」
+   会得到一句**对交付物不成立**的话。改成按交付物分开写：灵动岛一节标明「当前交付形态」，
+   另加一节讲 Rust 端的侧边栏（含「档位与待办只在侧边栏可达」这条限制），
+   并在「已知限制」里补上 Rust 端今天真正成立的三条（无像素实样、未对真实配置做过切换、
+   一致性靠逐条核对而非同一份代码）。
+2. ✅ `docs/adr/0012-sidebar-alongside-island.md`：记录为何两种形态并存而非二选一、
    各自适用面（island = 不打断注意力的被动感知；sidebar = 键盘可达与信息容量）、
-   以及 `shell_mode` 默认 island 的理由。
-3. `scripts/scan-secrets.sh --release`，按 AGENTS.md 走 扫描 → commit → tag → release。
-4. `docs/code-review/` 写本轮独立 review。
+   以及 `shell_mode` 默认 island 的理由。**（原写的是 0009，但那个号已被「凭据边界」占用，故改用 0012。）**
+3. ✅ `scripts/scan-secrets.sh --release`，按 AGENTS.md 走 扫描 → commit → tag → release。
+4. ✅ `docs/code-review/2026-09-27-1111-v0.0.192-dsh.md`。
+
+**收尾时另外处理的三项**（计划外、但 review 里点过名）：
+- 侧边栏的详情页原先借 `renderCard()`，会把灵动岛的 `.card dock-*` 外壳塞进侧边栏 ⇒
+  改成直接铺开（页面函数仍共用，只有外壳不同）；启动路由补上详情页分支。
+- `update_codex_profile`（v0.0.160 地基，被 `plan_codex_apply` 取代后成了死代码）⇒ 删除。
+  它唯一独有的「回到 Codex 默认」**用还原备份就能做到**，不值得为它多养一条写入路径；
+  界面上没有单独按钮这件事记在 CHANGELOG 里。
+- 档位页与待办页的失败提示只在 Toast 里存在一瞬间 ⇒ 同时写进应用日志（`log_from_ui`）。
 
 ---
 

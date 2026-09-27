@@ -1,5 +1,14 @@
 // AgentIsland 前端入口：状态管理、贴边交互、渲染调度
-import { hydrateProvider, hydrateReport, hydrateTodo, renderCard, renderSidebar, renderSliver, sliverSize } from './views.js';
+import {
+  hydrateProvider,
+  hydrateReport,
+  hydrateTodo,
+  renderCard,
+  renderSidebar,
+  renderSidebarDetail,
+  renderSliver,
+  sliverSize,
+} from './views.js';
 import { invoke } from './tauri.js';
 import { isSidebar, SHELL } from './shell.js';
 
@@ -165,6 +174,11 @@ async function boot() {
     if (state.route === 'tokenAnalytics') await hydrateReport();
     if (state.route === 'provider') await hydrateProvider();
     if (state.route === 'todo') await hydrateTodo();
+    // 详情页：先铺壳再填内容（与灵动岛同一个页面函数，只是外壳不同）
+    if (state.route.startsWith('agentDetail:')) {
+      renderSidebarDetail();
+      await hydrateReport();
+    }
     await listen('engine://tick', (e) => {
       state.engine = e.payload;
       // **只有「实时列表」这一页随推送重画**。分析页、档位页是「进来时渲染一次」：
