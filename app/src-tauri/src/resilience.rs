@@ -154,6 +154,7 @@ mod tests {
             is_hung,
             health: crate::health::Report::not_running(),
             process_running: running,
+            work_stats: crate::duration::Stats::empty(),
             cpu_percent: Some(1.0),
             memory_bytes: memory,
             memory_text: memory_text.into(),

@@ -350,6 +350,7 @@ mod tests {
                 suggestion: "一切正常".into(),
             },
             process_running: true,
+            work_stats: crate::duration::Stats::empty(),
             cpu_percent: Some(3.5),
             memory_bytes: 1024 * 1024 * 512,
             memory_text: "512 MB".into(),

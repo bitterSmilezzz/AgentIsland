@@ -334,6 +334,30 @@ pub fn run() -> Report {
         Some(format!("{runaway:?}")),
     );
 
+    // 11. 任务效能统计：合计 / 平均 / 最长 / 排版口径
+    {
+        let mut tracker = crate::duration::TaskDurationTracker::new();
+        tracker.record("selftest", 10.0, now - 1_000);
+        tracker.record("selftest", 20.0, now - 2_000);
+        // 窗口外的那次不算：否则「过去 24 小时」这句话就是假的
+        tracker.record("selftest", 999.0, now - crate::duration::DEFAULT_WINDOW_MS - 1);
+        let stats = tracker.stats("selftest", crate::duration::DEFAULT_WINDOW_MS, now);
+        runner.check(
+            "任务效能：两次记录 ⇒ 合计 30 秒、平均 15 秒、最长 20 秒（窗口外不算）",
+            stats.task_count == 2
+                && (stats.total_work_time - 30.0).abs() < 1e-9
+                && (stats.average_duration - 15.0).abs() < 1e-9
+                && (stats.max_duration - 20.0).abs() < 1e-9,
+            Some(format!("{stats:?}")),
+        );
+        let empty = tracker.stats("nobody", crate::duration::DEFAULT_WINDOW_MS, now);
+        runner.check(
+            "没有任务样本时平均时长写 —（不是 0秒/次）",
+            empty.formatted_average_duration == "—" && empty.formatted_total_time == "0秒",
+            Some(format!("{empty:?}")),
+        );
+    }
+
     runner.finish()
 }
 
@@ -383,7 +407,7 @@ mod tests {
             report.text()
         );
         // 这个下限的作用是「检查项被删掉时显形」，不是为了好看
-        assert!(report.passed >= 22, "检查项少了：{}", report.passed);
+        assert!(report.passed >= 24, "检查项少了：{}", report.passed);
         assert_eq!(report.exit_code(), 0);
     }
 

@@ -56,6 +56,8 @@ pub struct ActivityEngine {
     /// 现在一条一条地展示、确认一条推下一条，**不丢**。
     pending_events: VecDeque<AgentTaskEvent>,
     pub grand_total: TokenUsage,
+    /// 任务耗时与效率统计（Swift `ActivityEngine.durationTracker`）
+    pub durations: crate::duration::TaskDurationTracker,
     /// Token 预算告警状态机（Swift `ActivityEngine.budgetTracker`）
     pub budget: crate::budget::BudgetTracker,
     /// 当前预算状态（界面绑定；Swift 侧是 `@Published budgetStatus`）
@@ -88,6 +90,7 @@ impl ActivityEngine {
             latest_event: None,
             pending_events: VecDeque::new(),
             grand_total: TokenUsage::default(),
+            durations: crate::duration::TaskDurationTracker::new(),
             budget: crate::budget::BudgetTracker::new(),
             budget_status: crate::budget::BudgetStatus::Disabled,
             snapshots: vec![],
@@ -188,6 +191,11 @@ impl ActivityEngine {
                 now,
             );
 
+            let work_stats = self.durations.stats(
+                &profile.id,
+                crate::duration::DEFAULT_WINDOW_MS,
+                now,
+            );
             let mut snapshot = AgentSnapshot {
                 id: profile.id.clone(),
                 name: profile.name.clone(),
@@ -202,6 +210,7 @@ impl ActivityEngine {
                 health: health::Report::not_running(),
                 process_running,
                 cpu_percent: cpu,
+                work_stats,
                 memory_bytes: memory,
                 memory_text: memory_text(memory),
                 // None 的文案在这一处决定（`—`），不在调用点各写一遍
@@ -386,6 +395,17 @@ impl ActivityEngine {
                         .get(&key)
                         .map(|started| ((now - *started).max(0) as f64) / 1000.0)
                         .unwrap_or(0.0);
+                    // **够格才算一次任务**：Swift `recordTaskCompleted` 的门槛是 3.5 秒
+                    // （「过滤瞬时微抖动」）。Rust 侧此前只有「保持 Working 的窗口」，
+                    // 于是 0.2 秒的抖动也会记一笔并推一条「任务完成 (0秒)」。
+                    // 不够格时**既不记录也不推事件**，但下面照旧清掉起点（这一轮确实结束了）
+                    if seconds >= crate::duration::MIN_TASK_SECONDS {
+                        self.durations.record(&key, seconds, now);
+                    } else {
+                        self.last_work_signal_at.remove(&key);
+                        self.work_started_at.remove(&key);
+                        return ActivityLevel::Completed;
+                    }
                     self.push_event(AgentTaskEvent {
                         id: fp,
                         agent_id: key.clone(),
@@ -739,6 +759,7 @@ impl ActivityEngine {
                 is_hung: None,
                 health: health::Report::not_running(),
                 process_running: true,
+                work_stats: crate::duration::Stats::empty(),
                 cpu_percent: Some(if level == ActivityLevel::Working { 34.0 } else { 1.2 }),
                 memory_bytes: mem,
                 memory_text: memory_text(mem),

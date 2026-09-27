@@ -158,6 +158,9 @@ pub struct AgentSnapshot {
     pub health: crate::health::Report,
     pub process_running: bool,
     pub cpu_percent: Option<f64>,
+    /// 任务效能统计（过去 24 小时；[`crate::duration::TaskDurationTracker`]）。
+    /// 排版文本也在里面，界面不必再拼一遍
+    pub work_stats: crate::duration::Stats,
     pub memory_bytes: u64,
     pub memory_text: String,
     pub last_activity_text: String,
@@ -370,6 +373,7 @@ mod tests {
             is_hung: Some(true),
             health: crate::health::Report::not_running(),
             process_running: true,
+            work_stats: crate::duration::Stats::empty(),
             cpu_percent: Some(1.0),
             memory_bytes: 0,
             memory_text: "—".into(),

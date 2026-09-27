@@ -85,6 +85,7 @@ impl Replay {
                 has_token_usage: false,
             }),
             process_running: running,
+            work_stats: crate::duration::Stats::empty(),
             is_hung: None,
             health: crate::health::Report::not_running(),
             cpu_percent: cpu,
@@ -286,7 +287,7 @@ fn file_freshness_uses_the_sampling_clock_and_includes_the_window_boundary() {
 }
 
 #[test]
-fn repeated_semantic_fingerprints_do_not_repeat_notifications() {
+fn repeated_attention_fingerprints_do_not_repeat_notifications() {
     let mut replay = Replay::new();
     let ask = Some(Signal::Attention("ask-once".into(), "Confirm?".into()));
     replay.sample(100_000, true, None, ask.clone());
@@ -296,16 +297,69 @@ fn repeated_semantic_fingerprints_do_not_repeat_notifications() {
     );
     replay.sample(101_000, true, None, ask);
     assert!(replay.engine.latest_event.is_none());
+}
 
-    let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(102_000));
+#[test]
+fn repeated_completion_fingerprints_do_not_repeat_notifications() {
+    let mut replay = Replay::new();
+    // 先真的工作一段（≥3.5 秒的门槛），否则完成事件按设计不推
+    replay.sample(100_000, true, Some(20.0), None);
+    assert_eq!(replay.engine.snapshots[0].level, ActivityLevel::Working);
+
+    let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(104_000));
     let done = Some(Signal::Completed("done-once".into()));
-    replay.sample_with_write(102_000, true, None, done.clone(), write);
-    assert_eq!(
-        replay.engine.latest_event.take().unwrap().event_type,
-        "completed"
+    replay.sample_with_write(104_000, true, None, done.clone(), write);
+    let event = replay.engine.latest_event.take().expect("4 秒的实质工作应算一次完成");
+    assert_eq!(event.event_type, "completed");
+    assert!(
+        (event.duration - 4.0).abs() < 1e-9,
+        "事件要带上真实时长：{}",
+        event.duration
     );
-    replay.sample_with_write(103_000, true, None, done, write);
+    // 同一份指纹再来一次：不再推
+    replay.sample_with_write(105_000, true, None, done, write);
     assert!(replay.engine.latest_event.is_none());
+}
+
+#[test]
+fn a_flash_of_work_shorter_than_the_threshold_is_not_a_task() {
+    // Swift `recordTaskCompleted` 的门槛是 3.5 秒（「过滤瞬时微抖动」）。
+    // 不够格时**既不推事件、也不记时长**——否则界面会冒出「任务完成 (0秒)」，
+    // 而效能统计里会多出一次根本没发生的任务
+    let mut replay = Replay::new();
+    replay.sample(100_000, true, Some(20.0), None); // 起点 100_000
+    let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(102_000));
+    replay.sample_with_write(102_000, true, None, Some(Signal::Completed("flash".into())), write);
+    assert!(
+        replay.engine.latest_event.is_none(),
+        "2 秒的抖动不该算一次任务"
+    );
+    assert_eq!(
+        replay
+            .engine
+            .durations
+            .stats("fixture-agent", crate::duration::DEFAULT_WINDOW_MS, 102_000)
+            .task_count,
+        0,
+        "不够格的任务不进效能统计"
+    );
+    // 够格的那次照常记
+    replay.sample(103_000, true, Some(20.0), None);
+    let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(108_000));
+    replay.sample_with_write(
+        108_000,
+        true,
+        None,
+        Some(Signal::Completed("real".into())),
+        write,
+    );
+    let stats = replay.engine.durations.stats(
+        "fixture-agent",
+        crate::duration::DEFAULT_WINDOW_MS,
+        108_000,
+    );
+    assert_eq!(stats.task_count, 1);
+    assert!((stats.total_work_time - 5.0).abs() < 1e-9, "{}", stats.total_work_time);
 }
 
 #[test]
@@ -380,6 +434,7 @@ fn alarming_snapshot(running: bool) -> AgentSnapshot {
         is_hung: Some(true),
         health: crate::health::Report::not_running(),
         process_running: running,
+        work_stats: crate::duration::Stats::empty(),
         cpu_percent: Some(97.0),
         memory_bytes: crate::health::MEMORY_SEVERE_BYTES + 1,
         memory_text: "2.4 GB".into(),

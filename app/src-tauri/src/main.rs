@@ -3,6 +3,7 @@
 
 mod atomicfile;
 mod cost;
+mod duration;
 mod engine;
 mod filemon;
 mod health;
