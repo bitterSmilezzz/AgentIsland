@@ -4,6 +4,7 @@
 mod atomicfile;
 mod cli;
 mod cost;
+mod deeplink;
 mod duration;
 mod selfreport;
 #[cfg(test)]
@@ -951,6 +952,100 @@ fn log_from_ui(message: String) {
     log_line(&format!("[webview] {}", message));
 }
 
+/// 深链投递的事件落进事件队列。
+///
+/// 标记为**外部投递**（`externally_delivered`）：它来自一条 URL，
+/// 而 URL 可以由任何进程拼出来。岛内必须能把它与本机自发的事件区分开，
+/// 而且按本仓的既有纪律，外部投递**一律不外发**——
+/// 深链 / `/notify` / 没令牌的自报都不是用户自己敲的，不该从机器上再飞出去。
+#[tauri::command]
+fn notify_external(
+    state: State<SharedEngine>,
+    agent: String,
+    kind: String,
+    message: String,
+    detail: String,
+) -> bool {
+    let mut engine = state.lock().unwrap();
+    // 投递目标必须能解析到已知档案：深链的 agent 参数是任意字符串
+    let Some(profile) = crate::registry::builtin()
+        .into_iter()
+        .find(|p| p.id.eq_ignore_ascii_case(agent.trim()))
+    else {
+        log_line(&format!("[deeplink] notify 投递给未知档案：{agent}"));
+        return false;
+    };
+    let event_type = match kind.as_str() {
+        "attention" | "confirm" | "wait" => "attention",
+        "costspike" | "cost" | "budget" | "alert" => "costSpike",
+        _ => "completed",
+    };
+    engine.push_event(models::AgentTaskEvent {
+        id: format!("deeplink-{}", tokens::now_ms()),
+        agent_id: profile.id.clone(),
+        agent_name: profile.name.clone(),
+        event_type: event_type.to_string(),
+        timestamp: tokens::now_ms(),
+        message: if message.is_empty() { None } else { Some(message) },
+        detail: if detail.is_empty() { None } else { Some(detail) },
+        duration: 0.0,
+        externally_delivered: true,
+    });
+    true
+}
+
+/// 处理一条 `agentisland://` 深链。返回是否真的做了动作。
+///
+/// **执行面只做窗口可见性与路由，不做两件事**（与 Swift 侧同一条纪律）：
+/// · **不写剪贴板**——`open agentisland://export` 无需任何确认，
+///   而 `clearContents` 会让一个 npm postinstall 或 `.command` 脚本
+///   静默销毁用户正准备粘贴的密码。自动化请走显式的 `agentisland report -o`。
+/// · **不杀进程**——`clean` 只把用户带到工作台的清理区，点不点由人决定。
+pub fn handle_deep_link(app: &AppHandle, url: &str) -> bool {
+    let Some(action) = deeplink::parse(url) else {
+        log_line(&format!("[deeplink] 认不出的指令：{url}"));
+        return false;
+    };
+
+    // `notify` 要投递到**已知档案**。档案表来自 `registry::builtin()`（自由函数），
+    // **刻意不经过引擎**：深链处理可能由任意线程调进来，
+    // 在这里锁引擎多一层拿不到任何东西，却添一条死锁的路。
+    if let deeplink::Action::Notify { .. } = &action {
+        let known: Vec<String> = crate::registry::builtin()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        let Some((agent, kind, message, detail)) = deeplink::resolve_notify(&action, &known) else {
+            // 拒绝理由要写进日志：用户看到「什么都没发生」时，
+            // 唯一能查的就是这一行
+            log_line(&format!("[deeplink] 拒绝投递给未知智能体：{url}"));
+            return false;
+        };
+        let _ = app.emit(
+            "deeplink://notify",
+            serde_json::json!({ "agent": agent, "kind": kind, "message": message, "detail": detail }),
+        );
+        return true;
+    }
+
+    if action.reveals_window() {
+        // 两个窗口都建好了才谈「显示哪个」——这里只发意图，
+        // 由前端按 `shell_mode` 决定显示岛还是侧边栏，
+        // 免得 Rust 侧再写一份显隐规则（两份规则迟早只改一处）
+        let _ = app.emit("deeplink://navigate", serde_json::json!({
+            "action": format!("{action:?}"),
+        }));
+    } else if let deeplink::Action::Settings(tab) = &action {
+        // 设置是独立窗口：先把它显示出来，岛保持当前形态
+        if let Some(win) = app.get_webview_window("settings") {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+        let _ = app.emit("deeplink://settings", serde_json::json!({ "tab": tab }));
+    }
+    true
+}
+
 fn main() {
     // `--selftest` / `selftest`：无头自检（对应 Swift 的 `agentisland selftest`）。
     // 放在最前面：它不该启动 UI、采集或任何后台线程——自检的全部价值是
@@ -980,6 +1075,7 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(shared.clone())
         .setup(move |app| {
             // 全局热键：按设置里的开关注册。
@@ -1015,6 +1111,37 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(5));
                 });
             }
+            // 深链：冷启动那条 URL 已经被 `get_current` 收走了，
+            // 这里取出来消费掉——否则用户从 Raycast 冷启动应用时，
+            // 岛会开起来但**什么都不发生**，而那正是他点进来的原因。
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let app_handle = app.handle().clone();
+                // 插件返回 `Result`：取不到不是「没有深链」而是「不知道」，
+                // 所以失败也要留痕——冷启动路径上这是最常见的静默失败
+                match app_handle.deep_link().get_current() {
+                    Ok(Some(urls)) => {
+                        for url in urls {
+                            handle_deep_link(&app_handle, url.as_str());
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => log_line(&format!("[deeplink] 取冷启动 URL 失败: {error}")),
+                }
+            }
+
+            // 运行期收到的新深链
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let app_handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    // 一次事件可能带多条 URL（批量粘贴时会发生），逐条消费
+                    for url in event.urls() {
+                        handle_deep_link(&app_handle, url.as_str());
+                    }
+                });
+            }
+
             // 引擎采样线程
             let shared2 = shared.clone();
             let handle = app.handle().clone();
@@ -1112,6 +1239,7 @@ fn main() {
             set_dock_edge,
             set_shell_mode,
             set_launch_at_login,
+            notify_external,
             launch_at_login_state,
             set_sidebar_width,
             set_sidebar_edge,

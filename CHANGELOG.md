@@ -4,6 +4,51 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.207] - 2026-09-28
+
+### 深链终于能用了：上一版导出的 Raycast 清单，点下去其实是死的
+
+v0.0.206 导出了 Raycast 命令清单，清单里每条都写着 `agentisland://…`。
+而 Rust App 侧**根本没有深链处理**——那批 URL 全部指向虚空。
+这一版补上解析与接线。
+
+**新增 `deeplink.rs`**（纯函数、可离线测，对齐 Swift `URLSchemeParser` + `URLSchemeRouter`），
+九类动作：`toggle` / `expand` / `collapse` / `agent?id=` / `analytics` / `toolbox` /
+`settings?tab=` / `clean` / `export` / `notify`。三条与 Swift 侧一致的硬约定：
+
+· **投递目标必须解析到已知档案**。`agentisland://notify?agent=..%2Fwhatever` 这种
+  任意字符串放行之后会直接成为事件身份，岛内出现一条不存在的 Agent 的告警，
+  而那条告警会被 `doctor` 当成真实证据汇报出去。校验放在 `resolve_notify`
+  （**唯一能拒绝的地方**——解析层没有档案表）。
+· **深链不写剪贴板、不杀进程**。`export` 只跳到工作台：一个 npm postinstall 或
+  `.command` 脚本不该能静默销毁用户正准备粘贴的密码。`clean` 只把人带到清理区。
+  两条各有一条用例钉住解析层**表达不出**这类动作。
+· **认不出的指令返回 `None`，不猜**。猜错的后果是用户点了 A、发生了 B，
+  而界面上没有任何提示。
+
+**接线**：官方 `tauri-plugin-deep-link`（MSRV 已是 1.90，无需再抬）。
+冷启动那条 URL 会被 `get_current()` 收走，**必须取出来消费掉**——
+否则用户从 Raycast 冷启动应用时岛会开起来但什么都不发生，而那正是他点进来的原因。
+运行期走 `on_open_url`。Rust 侧只发**意图**（`deeplink://navigate`），
+由两个壳各自决定怎么呈现——Rust 侧不再写一份「显示哪个窗口、切到哪一页」的规则，
+两份规则迟早只改一处。
+
+深链投递的事件标记为**外部投递**且**一律不外发**：它来自一条 URL，
+而 URL 可以由任何进程拼出来。
+
+顺带删掉一处**我自己刚造的隐患**：`handle_deep_link` 里为了拿档案表锁了引擎，
+而档案表来自 `registry::builtin()`（自由函数）——那把锁拿不到任何东西，
+却给一个可能由任意线程调进来的处理函数添了一条死锁的路。
+
+测试 Rust 344 → **353**（+9，含危险动作表达不出来、未知档案拒绝、百分号解码），
+编译警告保持 **17**，Swift 侧零改动。
+
+**没做**：① 冷启动深链的**真机验收**（本轮只做了离线用例 + 编译，
+没有点过 Raycast 真的把应用带起来）② `status -w` 动态监控
+③ `status` 的取用量开关与 Swift 相反 ④ 24 个 Swift 专属档案
+⑤ `SessionProbeHealth` 原因链与 `activeSessions` 真口径
+⑥ `probe_cline` / `probe_zcode` 逐行比对
+
 ## [0.0.206] - 2026-09-28
 
 ### CLI 到 11/12：补上 raycast / open / top，并把版本号收成一处

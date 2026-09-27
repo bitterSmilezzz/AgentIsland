@@ -212,6 +212,59 @@ async function boot() {
       // （同一个坑在分析页上也踩过一次）。
       if (state.route === 'list') renderSidebar();
     });
+    // 深链（`agentisland://…`）：Rust 侧解析完把**意图**发过来，
+    // 由形态各自决定怎么呈现——这里两份壳各写一小段，
+    // 而不是让 Rust 再写一份「显示哪个窗口、切到哪一页」的规则
+    // （两份规则迟早只改一处）。
+    await listen('deeplink://navigate', async (e) => {
+      const intent = String(e.payload?.action ?? '');
+      if (isSidebar()) {
+        // 侧边栏是常驻的，没有展开/收起——只有路由有意义
+        if (intent.startsWith('Analytics')) {
+          state.route = 'tokenAnalytics';
+          renderSidebar();
+          await hydrateReport();
+        } else if (intent.startsWith('Agent(')) {
+          const id = intent.slice('Agent('.length).replace(')', '');
+          state.route = `agentDetail:${id}`;
+          renderSidebarDetail();
+          await hydrateReport();
+        } else if (intent.startsWith('Toolbox') || intent.startsWith('Clean') || intent.startsWith('Export')) {
+          // 侧边栏没有工作台，落到设置页（最接近的「重页面」入口）
+          state.route = 'settings';
+          renderSidebar();
+        }
+        return;
+      }
+      // 灵动岛
+      if (intent.startsWith('Toggle')) {
+        state.expanded ? collapse() : expand();
+      } else if (intent.startsWith('Expand')) {
+        await expand();
+      } else if (intent.startsWith('Analytics')) {
+        await expand();
+        state.route = 'tokenAnalytics';
+        renderCard();
+        await hydrateReport();
+      } else if (intent.startsWith('Agent(')) {
+        const id = intent.slice('Agent('.length).replace(')', '');
+        await expand();
+        state.route = `agentDetail:${id}`;
+        renderCard();
+        await hydrateReport();
+      } else if (intent.startsWith('Toolbox') || intent.startsWith('Clean') || intent.startsWith('Export')) {
+        await expand();
+        state.route = 'list';
+        renderCard();
+      }
+    });
+    await listen('deeplink://notify', async (e) => {
+      // 深链投递 = **外部投递**。岛内要标出来，不能与本机自发的事件混为一谈
+      const p = e.payload ?? {};
+      await invoke('notify_external', {
+        agent: p.agent, kind: p.kind, message: p.message ?? '', detail: p.detail ?? '',
+      }).catch(() => {});
+    });
     // 侧边栏没有「展开/收起」：它一直是展开的
     return;
   }

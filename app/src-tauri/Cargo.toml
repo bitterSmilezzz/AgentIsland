@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.206"
+version = "0.0.207"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -42,6 +42,7 @@ security-framework-sys = "2"
 # 二者都要求 rustc 1.90，见上面 `rust-version` 那条注。
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-deep-link = "2.5.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

@@ -237,7 +237,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `clean` | AgentCleaner、ProcessTreeInspector | ❌ 终止动作与进程树未迁（**有意**，见本节开头） |
 | `selftest` | Selftest（无头假数据断言） | ✅ `cli::selftest`（且 `--selftest` 两种写法都收） |
 | `notify` | LocalEventHTTP | ✅ `cli::notify`（端到端验过：`{"ok":true,"delivered":"external"}`） |
-| `open` | URLSchemeParser | ⚠️ `cli::open` 已走系统派发打开 URL，但 **Rust App 侧收到 `agentisland://` 后的处理未迁** |
+| `open` | URLSchemeParser | ✅ **v0.0.207 起两侧闭环**：`deeplink.rs` 九类动作 + 官方 deep-link 插件。**冷启动真机验收未做** |
 | `report` | AuditReportExporter | ✅ `cli::report`（md / csv，`-o` 原子写） |
 | `raycast` | AppVersion | ✅ `cli::raycast`。**第四个版本位已收口**：`Cargo.toml` 与 `AppVersion.string` 由一条用例对账（此前一直是 0.1.0） |
 
