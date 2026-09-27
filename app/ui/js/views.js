@@ -1,5 +1,6 @@
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
+import { isIsland } from './shell.js';
 import { getState, setState, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge } from './main.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -629,7 +630,7 @@ function bindCardEvents(eng, st) {
   root.querySelectorAll('[data-agent]').forEach((el) => el.addEventListener('click', () => {
     st.route = `agentDetail:${el.dataset.agent}`;
     renderCard();
-    loadReport();
+    hydrateReport();
   }));
 
   const jump = root.querySelector('[data-agent-jump]');
@@ -638,7 +639,7 @@ function bindCardEvents(eng, st) {
     // 直达窗口：Windows 端后续接 Win32 激活；v1 回到详情页
     st.route = `agentDetail:${jump.dataset.agentJump}`;
     renderCard();
-    loadReport();
+    hydrateReport();
   });
 
   const bannerDetail = root.querySelector('[data-banner-detail]');
@@ -690,7 +691,7 @@ function bindCardEvents(eng, st) {
   }
 
   // 分析页/详情页数据加载
-  if (st.route === 'tokenAnalytics' || st.route.startsWith('agentDetail:')) loadReport();
+  if (st.route === 'tokenAnalytics' || st.route.startsWith('agentDetail:')) hydrateReport();
 }
 
 function bindRowClicks(st) {
@@ -698,12 +699,12 @@ function bindRowClicks(st) {
     el.onclick = () => {
       st.route = `agentDetail:${el.dataset.agent}`;
       renderCard();
-      loadReport();
+      hydrateReport();
     };
   });
 }
 
-async function loadReport() {
+export async function hydrateReport() {
   const st = getState();
   const body = document.querySelector('[data-report-root]');
   if (!body) return;
@@ -715,6 +716,103 @@ async function loadReport() {
   }
   const snap = st.engine?.snapshots.find((s) => s.id === agentId);
   body.innerHTML = st.route === 'tokenAnalytics' ? renderReportBody(report) : renderDetailBody(report, snap);
-  // 报告注入后内容高度变化，窗口跟随
-  await resizeToContent();
+  // 报告注入后内容高度变化，窗口跟随——**只在灵动岛窗口做**：
+  // 侧边栏是一整列固定尺寸的窗口，跟着内容长高会把用户拉好的宽度与位置一起改掉
+  if (isIsland()) await resizeToContent();
+}
+
+// MARK: - 侧边栏形态
+
+/// 侧边栏壳：左导航 + 右内容。
+///
+/// 与灵动岛的**数据与页面函数完全共用**，只是容器不同——这就是「监控模块不依赖容器尺寸」
+/// 这句要求的最小落地：`pageAnalytics` / `pageAgentDetail` 原样复用，
+/// 侧边栏自己只负责导航与列表。
+export function renderSidebar() {
+  const st = getState();
+  const eng = st.engine ?? {
+    snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
+    latest_event: null, any_working: false, has_attention: false,
+  };
+  const running = eng.snapshots.filter((snap) => snap.process_running || snap.level !== 'offline');
+  const attention = eng.snapshots.filter((snap) => snap.level === 'attention').length;
+
+  const nav = [
+    { key: 'list', label: '监控', count: running.length },
+    { key: 'tokenAnalytics', label: 'Token 用量', count: 0 },
+    // 待办与设置分别是 Phase 3 与设置页的事；这里**明说未做**，而不是给一个点了没反应的入口
+    { key: 'todo', label: '待办（未做）', count: 0, disabled: true },
+    { key: 'settings', label: '设置（未做）', count: 0, disabled: true },
+  ];
+  const route = st.route === 'list' || st.route === 'tokenAnalytics' ? st.route : 'list';
+
+  let body;
+  if (route === 'tokenAnalytics') {
+    body = pageAnalytics(eng);
+  } else if (running.length === 0) {
+    body = '<div class="sb-empty">还没有检测到运行中的智能体</div>';
+  } else {
+    body = running
+      // 参数命名成 `snap`（而不是 `s`）是**有意的**：`models.rs` 有一条跨文件哨兵，
+      // 它扫 views.js 里所有的 `snap.<字段>` 并断言快照 JSON 里确实有那个字段。
+      // 用别的名字就绕过了那条哨兵，字段改名时会静默失效。
+      .map((snap) => {
+        const u = snap.token_usage;
+        const tokens = u ? `${compact(u.tokens24h)} tokens` : '—';
+        const detail = [snap.level_label, snap.last_activity_text].filter(Boolean).join(' · ');
+        return `<div class="sb-agent" data-agent="${snap.id}">
+          <div class="name">${escapeHtml(snap.name)}</div>
+          <div class="tokens">${tokens}</div>
+          <div class="meta">${escapeHtml(detail)}</div>
+        </div>`;
+      })
+      .join('');
+  }
+
+  const header = route === 'tokenAnalytics'
+    ? { t: 'Token 用量', s: '净消耗 · 不含缓存读取' }
+    : { t: '智能体', s: attention > 0 ? `${attention} 个等待确认` : '全部正常' };
+
+  const root = document.getElementById('root');
+  root.innerHTML = `
+    <div class="sb">
+      <nav class="sb-nav">
+        <div class="sb-brand">AgentIsland</div>
+        ${nav
+          .map(
+            (item) => `<div class="sb-item${item.key === route ? ' is-active' : ''}${item.disabled ? ' is-disabled' : ''}"
+              ${item.disabled ? '' : `data-nav="${item.key}"`}>
+              <span>${item.label}</span>${item.count ? `<span class="sb-count">${item.count}</span>` : ''}
+            </div>`,
+          )
+          .join('')}
+      </nav>
+      <main class="sb-main">
+        <div class="sb-head"><div class="t">${header.t}</div><div class="s">${header.s}</div></div>
+        <div class="sb-body">${body}</div>
+      </main>
+    </div>`;
+
+  root.querySelectorAll('[data-nav]').forEach((el) => {
+    el.onclick = async () => {
+      st.route = el.dataset.nav;
+      renderSidebar();
+      if (st.route === 'tokenAnalytics') await hydrateReport();
+    };
+  });
+  root.querySelectorAll('[data-agent]').forEach((el) => {
+    el.onclick = () => {
+      st.route = `agentDetail:${el.dataset.agent}`;
+      renderCard(); // 详情页与灵动岛共用同一个页面函数
+      hydrateReport();
+    };
+  });
+}
+
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }

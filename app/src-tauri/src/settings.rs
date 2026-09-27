@@ -10,6 +10,12 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct Settings {
     pub appearance: String,     // system | light | dark
+    /// 形态：`island` | `sidebar`（ADR 0009：两者并存，默认仍是灵动岛）
+    pub shell_mode: String,
+    /// 侧边栏贴在左边还是右边（只有这两档）
+    pub sidebar_edge: String,
+    /// 侧边栏宽度（**记忆**：用户拉过一次，下次开还在那儿）
+    pub sidebar_width: f64,
     pub dock_edge: String,      // top | bottom | left | right
     pub dock_anchor: f64,       // 0..1
     pub collapse_delay: f64,    // 秒
@@ -44,6 +50,9 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             appearance: "system".into(),
+            shell_mode: "island".into(),
+            sidebar_edge: "right".into(),
+            sidebar_width: crate::placement::DEFAULT_SIDEBAR_WIDTH,
             dock_edge: "top".into(),
             dock_anchor: 0.5,
             collapse_delay: 0.5,
@@ -129,6 +138,17 @@ impl Settings {
         // 手改 settings.json 写进一个负预算会让「超额」永远成立
         s.daily_token_budget = s.daily_token_budget.clamp(0, 1_000_000_000);
         s.dock_anchor = s.dock_anchor.clamp(0.0, 1.0);
+        // 形态与侧边栏：认得的值以外一律回落，宽度钳进可用区间
+        // （手改 settings.json 写进 0 或 5000 会让侧边栏变成一条缝或盖住整块屏）
+        s.shell_mode = crate::models::ShellMode::parse(&s.shell_mode)
+            .as_str()
+            .to_string();
+        s.sidebar_edge = if s.sidebar_edge.trim().eq_ignore_ascii_case("left") {
+            "left".to_string()
+        } else {
+            "right".to_string()
+        };
+        s.sidebar_width = crate::placement::clamp_sidebar_width(s.sidebar_width);
 
         // 外发配置：读出即归一化。损坏/越界的值在落盘时就可能已经写进去了，
         // 读这条路是唯一防线（Swift `loadPolicy` / `loadConfig` 同一个位置做同一件事）
@@ -140,6 +160,48 @@ impl Settings {
             }
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    #[test]
+    fn a_hand_edited_shell_mode_or_edge_falls_back_instead_of_breaking_the_window() {
+        let mut s = Settings::default();
+        assert_eq!(s.shell_mode, "island", "默认仍是灵动岛（ADR 0009 的并存前提）");
+        assert_eq!(s.sidebar_edge, "right");
+        assert_eq!(s.sidebar_width, crate::placement::DEFAULT_SIDEBAR_WIDTH);
+
+        s.shell_mode = "SIDEBAR".into();
+        s.sidebar_edge = "LEFT".into();
+        let n = s.normalized();
+        assert_eq!(n.shell_mode, "sidebar", "大小写不该影响识别");
+        assert_eq!(n.sidebar_edge, "left");
+
+        // 认不出的一律回落：形态回落灵动岛、边沿回落右
+        s.shell_mode = "sider".into();
+        s.sidebar_edge = "top".into();
+        let n = s.normalized();
+        assert_eq!(n.shell_mode, "island");
+        assert_eq!(n.sidebar_edge, "right", "侧边栏没有上下两档");
+    }
+
+    #[test]
+    fn an_absurd_sidebar_width_is_clamped_so_it_cannot_become_a_slit_or_cover_the_screen() {
+        let mut s = Settings::default();
+        for (raw, want) in [
+            (0.0, crate::placement::MIN_SIDEBAR_WIDTH),
+            (-100.0, crate::placement::MIN_SIDEBAR_WIDTH),
+            (5_000.0, crate::placement::MAX_SIDEBAR_WIDTH),
+            (420.0, 420.0),
+            (f64::NAN, crate::placement::DEFAULT_SIDEBAR_WIDTH),
+            (f64::INFINITY, crate::placement::MAX_SIDEBAR_WIDTH),
+        ] {
+            s.sidebar_width = raw;
+            assert_eq!(s.normalized().sidebar_width, want, "raw={raw}");
+        }
     }
 }
 

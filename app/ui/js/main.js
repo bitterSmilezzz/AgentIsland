@@ -1,6 +1,7 @@
 // AgentIsland 前端入口：状态管理、贴边交互、渲染调度
-import { renderCard, renderSliver, sliverSize } from './views.js';
+import { renderCard, renderSidebar, renderSliver, sliverSize } from './views.js';
 import { invoke } from './tauri.js';
+import { isSidebar, SHELL } from './shell.js';
 
 const $root = () => document.getElementById('root');
 
@@ -98,6 +99,10 @@ export function scheduleRender() {
   rafPending = true;
   requestAnimationFrame(async () => {
     rafPending = false;
+    if (isSidebar()) {
+      renderSidebar();
+      return;
+    }
     if (state.expanded) {
       if (state.route === 'list') {
         renderCard();
@@ -139,6 +144,24 @@ async function boot() {
   state.settings.dock_edge = (state.settings.dock_edge ?? 'top').toLowerCase();
   state.settings.appearance = (state.settings.appearance ?? 'system').toLowerCase();
   applyAppearance(state.settings.appearance);
+
+  // 形态分派：两个窗口加载同一个 index.html，靠 URL 上的 `?shell=` 分辨自己是谁。
+  // 侧边栏分支**不再做灵动岛那套事**（细条几何、贴边放置、展开收起、失焦防抖）——
+  // 那些只为「浮在屏幕边沿的一小块」而存在。
+  document.documentElement.classList.add(`shell-${SHELL}`);
+
+  const { listen } = await import('./tauri.js');
+  if (isSidebar()) {
+    await invoke('place_sidebar').catch(() => {});
+    renderSidebar();
+    await listen('engine://tick', (e) => {
+      state.engine = e.payload;
+      renderSidebar();
+    });
+    // 侧边栏没有「展开/收起」：它一直是展开的
+    return;
+  }
+
   applyEdge();
   renderSliver();
 
@@ -146,7 +169,6 @@ async function boot() {
   await invoke('place_island', { width: size.w, height: size.h });
 
   // 引擎推送
-  const { listen } = await import('./tauri.js');
   await listen('engine://tick', (e) => {
     state.engine = e.payload;
     scheduleRender();

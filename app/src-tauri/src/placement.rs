@@ -150,6 +150,51 @@ fn fallback_work_area() -> (f64, f64, f64, f64, f64) {
     (0.0, 0.0, 0.0, 0.0, 1.0)
 }
 
+/// 侧边栏宽度的上下界。下界是「还能读一列信息」，上界是「别盖住整块屏」
+pub const MIN_SIDEBAR_WIDTH: f64 = 280.0;
+pub const MAX_SIDEBAR_WIDTH: f64 = 720.0;
+pub const DEFAULT_SIDEBAR_WIDTH: f64 = 360.0;
+
+/// 把侧边栏宽度钳进可用区间。
+///
+/// 三个非正常值各有明确去处：NaN 回落默认值（NaN 的比较全为假，`clamp` 拿它没办法），
+/// 正负无穷按**取到边界**处理（`+inf` 的语义是「要多宽有多宽」⇒ 上界，
+/// 与 `clamp` 的直觉一致，而不是悄悄变成默认值）。
+pub fn clamp_sidebar_width(width: f64) -> f64 {
+    if width.is_nan() {
+        return DEFAULT_SIDEBAR_WIDTH;
+    }
+    if width.is_infinite() {
+        return if width > 0.0 {
+            MAX_SIDEBAR_WIDTH
+        } else {
+            MIN_SIDEBAR_WIDTH
+        };
+    }
+    width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+}
+
+/// 侧边栏的几何：贴左或贴右、**铺满工作区高度**、宽度取记忆值。
+///
+/// 与细条那套「锚点 × 工作区」不是一回事：侧边栏不是浮在中间的卡片，而是一整列，
+/// 所以它不用锚点、也不需要垂直居中。`Top`/`Bottom` 传进来按**右侧**处理——
+/// 侧边栏没有上下两档，与其静默给一个奇怪的几何，不如按明确的一条回落。
+///
+/// 返回 `(left, top, width, height)`，逻辑坐标。
+pub fn sidebar_frame(edge: DockEdge, width: f64, wa: (f64, f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let (wx, wy, ww, wh, _scale) = wa;
+    // 宽度既受记忆值也受工作区约束：窗口比工作区宽会让它有一截永远在屏幕外。
+    // 工作区比下界还窄时**以工作区为准**（此时侧边栏铺满宽度）——
+    // 下界是「还能读一列信息」的期望值，不是可以无视屏幕的许可
+    let width = clamp_sidebar_width(width).min(ww);
+    let left = match edge {
+        DockEdge::Left => wx,
+        // 右侧，以及上下两档的回落
+        _ => wx + ww - width,
+    };
+    (left, wy, width, wh)
+}
+
 /// 统一锚点模型（与 Windows 端 IslandWindow.cs 同源）：
 /// 细条中心 = 卡片中心 = anchor × 工作区（水平边沿 X，垂直边沿 Y）。
 /// 返回窗口应放置的逻辑左上角。
@@ -204,6 +249,72 @@ pub fn place(edge: DockEdge, anchor: f64, width: f64, height: f64) -> (f64, f64)
         height,
         (0.0, 0.0, 1440.0, 900.0, 1.0),
     )
+}
+
+#[cfg(test)]
+mod sidebar_tests {
+    use super::*;
+
+    /// 一块 1440×900、scale 2 的工作区
+    fn wa() -> (f64, f64, f64, f64, f64) {
+        (0.0, 0.0, 1440.0, 900.0, 2.0)
+    }
+
+    #[test]
+    fn the_sidebar_spans_the_work_area_height_on_whichever_side_it_is_docked() {
+        let (left, top, w, h) = sidebar_frame(DockEdge::Right, 360.0, wa());
+        assert_eq!((left, top, w, h), (1080.0, 0.0, 360.0, 900.0));
+
+        let (left, top, w, h) = sidebar_frame(DockEdge::Left, 360.0, wa());
+        assert_eq!((left, top, w, h), (0.0, 0.0, 360.0, 900.0));
+
+        // 工作区原点不在 (0,0) 时也要贴着它（多显示器、菜单栏留空都走这条）
+        let wa2 = (100.0, 50.0, 1000.0, 700.0, 1.0);
+        let (left, top, w, h) = sidebar_frame(DockEdge::Right, 300.0, wa2);
+        assert_eq!((left, top, w, h), (800.0, 50.0, 300.0, 700.0));
+    }
+
+    #[test]
+    fn top_and_bottom_fall_back_to_the_right_side_instead_of_producing_odd_geometry() {
+        // 侧边栏没有上下两档：静默给一个居中或越界的几何比明确回落更难查
+        let right = sidebar_frame(DockEdge::Right, 360.0, wa());
+        assert_eq!(sidebar_frame(DockEdge::Top, 360.0, wa()), right);
+        assert_eq!(sidebar_frame(DockEdge::Bottom, 360.0, wa()), right);
+    }
+
+    #[test]
+    fn the_width_is_clamped_and_never_wider_than_the_work_area() {
+        // 记忆值超出上下界 ⇒ 钳回区间
+        assert_eq!(sidebar_frame(DockEdge::Right, 5_000.0, wa()).2, MAX_SIDEBAR_WIDTH);
+        assert_eq!(sidebar_frame(DockEdge::Right, 10.0, wa()).2, MIN_SIDEBAR_WIDTH);
+
+        // 工作区比下界还窄（小屏/分屏）：宽度以工作区为上限，
+        // 否则窗口会有一截永远在屏幕外，用户再也拖不回来
+        let narrow = (0.0, 0.0, 220.0, 600.0, 1.0);
+        let (left, _, w, _) = sidebar_frame(DockEdge::Right, 360.0, narrow);
+        assert_eq!(w, 220.0, "不该比工作区还宽");
+        assert_eq!(left, 0.0, "右边贴着工作区右缘（此时等于铺满）");
+        let (left, _, w, _) = sidebar_frame(DockEdge::Left, 360.0, narrow);
+        assert_eq!((left, w), (0.0, 220.0));
+    }
+
+    #[test]
+    fn the_width_clamp_handles_nan_and_infinities_explicitly() {
+        assert_eq!(clamp_sidebar_width(360.0), 360.0);
+        assert_eq!(clamp_sidebar_width(0.0), MIN_SIDEBAR_WIDTH);
+        assert_eq!(clamp_sidebar_width(-1.0), MIN_SIDEBAR_WIDTH);
+        assert_eq!(clamp_sidebar_width(9_999.0), MAX_SIDEBAR_WIDTH);
+        assert_eq!(clamp_sidebar_width(f64::NAN), DEFAULT_SIDEBAR_WIDTH);
+        assert_eq!(clamp_sidebar_width(f64::INFINITY), MAX_SIDEBAR_WIDTH);
+        assert_eq!(clamp_sidebar_width(f64::NEG_INFINITY), MIN_SIDEBAR_WIDTH);
+    }
+
+    #[test]
+    fn the_default_width_is_inside_the_allowed_range() {
+        // 默认值漂出区间的话，第一次打开侧边栏就会被「归一化」成别的宽度
+        assert!(DEFAULT_SIDEBAR_WIDTH >= MIN_SIDEBAR_WIDTH);
+        assert!(DEFAULT_SIDEBAR_WIDTH <= MAX_SIDEBAR_WIDTH);
+    }
 }
 
 #[cfg(test)]

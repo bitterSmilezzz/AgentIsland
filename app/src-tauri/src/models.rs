@@ -55,6 +55,34 @@ pub enum DockEdge {
     Right,
 }
 
+/// 形态：灵动岛（贴边细条）或侧边栏（一整列的窗口）。
+///
+/// 两者**并存**（ADR 0009）：切形态只是显示哪一个窗口，另一形态的窗口配置与行为一概不动——
+/// 所以「默认启动仍是灵动岛」这条不需要额外保证，它是默认值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellMode {
+    Island,
+    Sidebar,
+}
+
+impl ShellMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShellMode::Island => "island",
+            ShellMode::Sidebar => "sidebar",
+        }
+    }
+
+    /// 解析。**认得的值以外一律回落到灵动岛**：拼错的形态不该让谁开不出界面
+    pub fn parse(raw: &str) -> ShellMode {
+        match raw.trim().to_lowercase().as_str() {
+            "sidebar" => ShellMode::Sidebar,
+            _ => ShellMode::Island,
+        }
+    }
+}
+
 impl DockEdge {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -268,6 +296,10 @@ pub struct EngineState {
     pub recent_outbound: Vec<crate::notifier::Recent>,
     pub grand_total: TokenUsage,
     pub dock_edge: DockEdge,
+    /// 当前形态（`island` / `sidebar`）：两个窗口都读同一份，于是界面不必猜自己在哪
+    pub shell_mode: String,
+    pub sidebar_edge: String,
+    pub sidebar_width: f64,
     pub appearance: String, // system | light | dark
     pub any_working: bool,
     pub has_attention: bool,
@@ -275,6 +307,36 @@ pub struct EngineState {
 }
 
 // MARK: - 测试（M1：Rust 测试基建，见 docs/adr/0010-swift-freeze-and-rust-prerequisites.md）
+
+#[cfg(test)]
+mod shell_mode_tests {
+    use super::ShellMode;
+
+    #[test]
+    fn only_the_known_modes_are_recognised_and_anything_else_falls_back_to_island() {
+        assert_eq!(ShellMode::parse("island"), ShellMode::Island);
+        assert_eq!(ShellMode::parse("sidebar"), ShellMode::Sidebar);
+        assert_eq!(ShellMode::parse(" Sidebar "), ShellMode::Sidebar);
+        assert_eq!(ShellMode::parse("SIDEBAR"), ShellMode::Sidebar);
+        // 拼错/空/垃圾值都回落：形态拼错不该让谁开不出界面
+        for raw in ["", "  ", "sider", "island-2", "null", "{}"] {
+            assert_eq!(
+                ShellMode::parse(raw),
+                ShellMode::Island,
+                "{raw:?} 应回落到灵动岛"
+            );
+        }
+    }
+
+    #[test]
+    fn the_round_trip_between_string_and_mode_is_stable() {
+        for mode in [ShellMode::Island, ShellMode::Sidebar] {
+            assert_eq!(ShellMode::parse(mode.as_str()), mode);
+        }
+        assert_eq!(ShellMode::Island.as_str(), "island");
+        assert_eq!(ShellMode::Sidebar.as_str(), "sidebar");
+    }
+}
 
 #[cfg(test)]
 mod tests {

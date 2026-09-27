@@ -23,7 +23,23 @@
         "shadow": false,
         "resizable": false,
         "visible": true,
-        "focus": false
+        "focus": false,
+        "url": "index.html?shell=island"
+      },
+      {
+        "label": "sidebar",
+        "title": "AgentIsland",
+        "width": 360,
+        "height": 800,
+        "transparent": false,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "shadow": true,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "url": "index.html?shell=sidebar"
       }
     ],
     "security": {

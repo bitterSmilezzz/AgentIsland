@@ -82,6 +82,107 @@ fn save_settings(state: State<SharedEngine>, new_settings: Settings) {
     s.save();
 }
 
+/// 把侧边栏窗口按记忆值摆好（贴左/贴右、宽度、铺满工作区高度）。
+///
+/// 与灵动岛那条路分开：灵动岛是「锚点 × 工作区」的浮层，侧边栏是一整列，
+/// 两者共用一个 `place_with` 只会让两边都别扭。
+fn place_sidebar_window(app: &AppHandle, edge: crate::models::DockEdge, width: f64) {
+    let Some(win) = app.get_webview_window("sidebar") else {
+        return; // 配置里没有这个窗口（旧包）：如实什么都不做，而不是 panic
+    };
+    let wa = placement::work_area_under_window(&win);
+    let (left, top, w, h) = placement::sidebar_frame(edge, width, wa);
+    let _ = win.set_size(LogicalSize::new(w, h));
+    let _ = win.set_position(LogicalPosition::new(left, top));
+}
+
+/// 切换形态。**两个窗口都建好了**，这里只改显示哪一个——
+/// 「切回去」因此不需要重建窗口，也就不会有「切十次留十个窗口」这种事。
+#[tauri::command]
+fn set_shell_mode(state: State<SharedEngine>, app: AppHandle, mode: String) -> String {
+    let mode = crate::models::ShellMode::parse(&mode);
+    let (edge, width);
+    {
+        let mut e = state.lock().unwrap();
+        e.settings.shell_mode = mode.as_str().to_string();
+        let s = e.settings.clone();
+        s.save();
+        edge = crate::models::DockEdge::parse(&e.settings.sidebar_edge);
+        width = e.settings.sidebar_width;
+    }
+    match mode {
+        crate::models::ShellMode::Island => {
+            if let Some(sidebar) = app.get_webview_window("sidebar") {
+                let _ = sidebar.hide();
+            }
+            if let Some(island) = app.get_webview_window("island") {
+                let _ = island.show();
+            }
+        }
+        crate::models::ShellMode::Sidebar => {
+            place_sidebar_window(&app, edge, width);
+            if let Some(sidebar) = app.get_webview_window("sidebar") {
+                let _ = sidebar.show();
+            }
+            if let Some(island) = app.get_webview_window("island") {
+                let _ = island.hide();
+            }
+        }
+    }
+    mode.as_str().to_string()
+}
+
+/// 侧边栏自己报尺寸变化（用户拉了宽度）时存下来并重新摆位。
+/// 宽度钳在可用区间内：拉到 20px 会让它变成一条缝且再也拉不回来。
+#[tauri::command]
+fn set_sidebar_width(state: State<SharedEngine>, app: AppHandle, width: f64) -> f64 {
+    let width = placement::clamp_sidebar_width(width);
+    let edge;
+    {
+        let mut e = state.lock().unwrap();
+        e.settings.sidebar_width = width;
+        let s = e.settings.clone();
+        s.save();
+        edge = crate::models::DockEdge::parse(&e.settings.sidebar_edge);
+    }
+    place_sidebar_window(&app, edge, width);
+    width
+}
+
+/// 侧边栏贴左/贴右（拖到哪边就贴哪边）。上下两档按**右侧**回落，
+/// 与 `sidebar_frame` 同一条规则——两处不一致会让「拖到上面」变成不可预测的行为。
+#[tauri::command]
+fn set_sidebar_edge(state: State<SharedEngine>, app: AppHandle, edge: String) -> String {
+    let edge = if edge.trim().eq_ignore_ascii_case("left") {
+        "left"
+    } else {
+        "right"
+    };
+    let width;
+    {
+        let mut e = state.lock().unwrap();
+        e.settings.sidebar_edge = edge.to_string();
+        let s = e.settings.clone();
+        s.save();
+        width = e.settings.sidebar_width;
+    }
+    place_sidebar_window(&app, crate::models::DockEdge::parse(edge), width);
+    edge.to_string()
+}
+
+/// 侧边栏初始化：窗口创建后调一次（它初始是隐藏的，尺寸与位置要按记忆值摆）
+#[tauri::command]
+fn place_sidebar(state: State<SharedEngine>, app: AppHandle) {
+    let (edge, width) = {
+        let e = state.lock().unwrap();
+        (
+            crate::models::DockEdge::parse(&e.settings.sidebar_edge),
+            e.settings.sidebar_width,
+        )
+    };
+    place_sidebar_window(&app, edge, width);
+}
+
 #[tauri::command]
 fn set_dock_edge(state: State<SharedEngine>, app: AppHandle, edge: String) {
     let anchor;
@@ -615,6 +716,25 @@ fn main() {
             // 初始贴边放置
             let win = app.get_webview_window("island").unwrap();
             let _ = win.set_ignore_cursor_events(false);
+
+            // 上次关在侧边栏形态 ⇒ 这次仍开侧边栏。**两个窗口都已经建好**，
+            // 这里只是决定显示哪一个——直接复用命令那条路径，避免「启动」与「切换」
+            // 两处各写一份显隐规则（两份规则迟早只改一处）
+            let (mode, sidebar_edge, sidebar_width) = {
+                let e = shared.lock().unwrap();
+                (
+                    crate::models::ShellMode::parse(&e.settings.shell_mode),
+                    crate::models::DockEdge::parse(&e.settings.sidebar_edge),
+                    e.settings.sidebar_width,
+                )
+            };
+            if mode == crate::models::ShellMode::Sidebar {
+                place_sidebar_window(app.handle(), sidebar_edge, sidebar_width);
+                if let Some(sidebar) = app.get_webview_window("sidebar") {
+                    let _ = sidebar.show();
+                }
+                let _ = win.hide();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -633,6 +753,10 @@ fn main() {
             remote_secret_set,
             remote_secret_delete,
             set_dock_edge,
+            set_shell_mode,
+            set_sidebar_width,
+            set_sidebar_edge,
+            place_sidebar,
             place_island,
             snap_nearest_edge,
             reposition_now,

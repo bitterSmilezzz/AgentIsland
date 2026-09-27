@@ -65,26 +65,33 @@
 
 ## Phase 1 — 侧边栏壳 + 双形态并存
 
-1. `settings.rs` 增 `shell_mode: "island" | "sidebar"`，默认 `island`。
-2. `tauri.conf.json`：保留现有 island 窗口配置不动，**新增** `sidebar` 窗口。
-3. 新增 `app/ui/css/sidebar.css`：两栏骨架 + 侧栏导航 + 极简首层；复用 `tokens.css`，不新增色值。
-4. 新增 `js/main.js` 的形态分派与侧栏导航；模块按需 `import()` 懒加载。
-5. `views.js` 重构：`renderCard`/`pageAnalytics`/`pageAgentDetail` 抽成不依赖容器尺寸的
-   **监控模块**，island 形态包一层卡片、sidebar 形态直接铺进内容区。
-6. `placement.rs` / `main.rs` 按 `shell_mode` 分派定位策略：island 分支零改动，
-   sidebar 分支新增「贴左/右 + 记忆宽度」。
-7. `island.css` 拆成 island 专属（notch / sliver / edge-top）与共用组件两部分，
-   专属部分只在 island 壳下挂载。
+> **进行中（v0.0.187 起）**。逐条对照下面的清单；未打勾的**没做**，不是「已完成但没写」。
 
-**验收**
+1. ✅ `settings.rs` 增 `shell_mode`（`island` | `sidebar`，默认 `island`），另加 `sidebar_edge`（左/右）与
+   `sidebar_width`（记忆宽度，钳在 280–720 且不超过工作区）；三者都带归一化（认不出的值一律回落）。
+2. ✅ `tauri.conf.json`：island 窗口配置**未动**，新增 `sidebar` 窗口（初始 `visible: false`）；
+   两个窗口各带 `?shell=island` / `?shell=sidebar`，前端据此分派（无需额外 IPC 询问）。
+3. ✅ `app/ui/css/sidebar.css`：两栏骨架 + 导航 + 首层极简列表，**只用 `tokens.css` 的变量**，
+   且全部规则挂在 `.shell-sidebar` 下（不串味）。
+4. ✅ `js/main.js` 的形态分派（`js/shell.js` 提供形态事实，避免 `views.js` ↔ `main.js` 成环）；
+   侧边栏分支不做灵动岛那套（细条几何 / 贴边放置 / 展开收起 / 失焦防抖）。**懒加载 `import()` 未做**。
+5. ⚠️ **部分**：`views.js` 侧边栏直接复用了 `pageAnalytics` / `pageAgentDetail` 与报表注水路径，
+   但 `renderCard` **尚未**抽成「不依赖容器尺寸的监控模块」——现在仍是「灵动岛包卡片 + 侧边栏另写列表」。
+6. ✅ `main.rs` / `placement.rs`：按 `shell_mode` 分派（island 分支零改动；sidebar 分支走
+   `placement::sidebar_frame`：贴左/右、铺满工作区高度、宽度取记忆值）；命令
+   `set_shell_mode` / `set_sidebar_width` / `set_sidebar_edge` / `place_sidebar`；
+   启动时按上次的形态显示对应窗口。
+7. ❌ `island.css` 尚未拆分（专属部分与共用组件仍在一起；目前靠 `.shell-sidebar` 前缀隔离，够用但不够干净）。
 
-- 默认启动仍是灵动岛且行为零变化
-- 切到 sidebar 后为侧边栏，首层极简
-- 「高级设置」能进到既有分析页与详情页，功能不变
-- 既有 544 项测试无回归
-- 两种形态反复切换 10 次：无窗口残留、无样式串味
+**验收对照**
 
----
+- ✅ 默认启动仍是灵动岛且行为零变化（默认值就是 `island`；island 分支代码未动）
+- ⚠️ 切到 sidebar 后为侧边栏、首层极简：**代码路径与几何有测试，视觉未验证**（见 review 的如实标注）
+- ⚠️ 「高级设置」进分析页与详情页：侧边栏可进分析页与详情页（复用同一批页面函数），
+  但**没有设置入口**（设置页还没做）
+- ✅ 既有测试无回归（Rust 252 条；Swift 550 条由发版脚本跑）
+- ❌ 「两种形态反复切换 10 次：无窗口残留、无样式串味」**未做运行时验证**
+  （设计上不会残留：两个窗口都只建一次，切换只改显隐；但这需要真按十次）
 
 ## Phase 2 — Codex 配置档位（原 CC Switch 草案收窄）
 
