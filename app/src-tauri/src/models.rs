@@ -520,6 +520,7 @@ mod tests {
         // 留的端点，界面上暂时只读 `provider_status`——没有消费方的字段就不该进哨兵，
         // 否则哨兵会逼着界面去读一个它不需要的 DTO。
         use crate::provider::{BackupInfo, CodexProfile, ProviderApplyResult, ProviderStatus};
+        use crate::todos::TodoList;
 
         let views = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
             .expect("读不到 views.js");
@@ -570,12 +571,27 @@ mod tests {
             })
             .unwrap(),
         );
+        let todo = keys(
+            &serde_json::to_value(TodoList {
+                items: vec![crate::todos::Todo {
+                    id: "1".into(),
+                    text: "示例".into(),
+                    done: false,
+                    created_ms: 0,
+                }],
+                pending: 1,
+                broken_backup: None,
+            })
+            .unwrap(),
+        );
+
         // 前缀 → 该前缀下允许的键
         for (prefix, allowed) in [
             ("profile.", &profile),
             ("status.", &status),
             ("applied.", &applied),
             ("backup.", &backup),
+            ("todo.", &todo),
         ] {
             let mut cursor = 0;
             let mut seen = 0usize;

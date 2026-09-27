@@ -1,5 +1,5 @@
 // AgentIsland 前端入口：状态管理、贴边交互、渲染调度
-import { hydrateProvider, hydrateReport, renderCard, renderSidebar, renderSliver, sliverSize } from './views.js';
+import { hydrateProvider, hydrateReport, hydrateTodo, renderCard, renderSidebar, renderSliver, sliverSize } from './views.js';
 import { invoke } from './tauri.js';
 import { isSidebar, SHELL } from './shell.js';
 
@@ -156,10 +156,15 @@ async function boot() {
     // 启动路由也认（与灵动岛同一条约定：`--route=provider` 这类参数由托盘/命令行走）。
     // 侧边栏原先不认它，于是「用一个参数直接开到某一页」在两种形态下行为不一致。
     if (state.bootRoute) state.route = state.bootRoute;
+    // 角标要显示未完成数，所以启动时读一次待办（**只读计数**，不读页面内容——
+    // 读页面内容会白白重画一次，还会和下面的 hydrate 抢同一块 DOM）
+    const todos = await invoke('todos_list').catch(() => null);
+    state.todosPending = todos?.pending ?? 0;
     renderSidebar();
     // 数据型页面进来要填一次内容（与点导航时同一路径，避免两套入口两种行为）
     if (state.route === 'tokenAnalytics') await hydrateReport();
     if (state.route === 'provider') await hydrateProvider();
+    if (state.route === 'todo') await hydrateTodo();
     await listen('engine://tick', (e) => {
       state.engine = e.payload;
       // **只有「实时列表」这一页随推送重画**。分析页、档位页是「进来时渲染一次」：

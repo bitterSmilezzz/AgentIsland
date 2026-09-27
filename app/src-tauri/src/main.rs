@@ -4,6 +4,7 @@
 mod atomicfile;
 mod cost;
 mod duration;
+mod todos;
 mod engine;
 mod filemon;
 mod health;
@@ -671,6 +672,33 @@ fn provider_restore_backup(name: String) -> Result<(), String> {
         .map_err(|e| format!("还原失败：{e}"))
 }
 
+// MARK: - 待办（Phase 3）
+
+#[tauri::command]
+fn todos_list() -> crate::todos::TodoList {
+    crate::todos::TodoStore::at_default().snapshot(crate::tokens::now_ms())
+}
+
+#[tauri::command]
+fn todos_add(text: String) -> Result<crate::todos::TodoList, String> {
+    crate::todos::TodoStore::at_default().add(&text, crate::tokens::now_ms())
+}
+
+#[tauri::command]
+fn todos_toggle(id: String) -> Result<crate::todos::TodoList, String> {
+    crate::todos::TodoStore::at_default().toggle(&id)
+}
+
+#[tauri::command]
+fn todos_remove(id: String) -> Result<crate::todos::TodoList, String> {
+    crate::todos::TodoStore::at_default().remove(&id)
+}
+
+#[tauri::command]
+fn todos_clear_done() -> Result<crate::todos::TodoList, String> {
+    crate::todos::TodoStore::at_default().clear_done()
+}
+
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
     // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
@@ -865,6 +893,11 @@ fn main() {
             audit_report_csv,
             agent_process_tree,
             run_selftest,
+            todos_list,
+            todos_add,
+            todos_toggle,
+            todos_remove,
+            todos_clear_done,
             provider_scan_tools,
             provider_list_profiles,
             provider_save_profile,

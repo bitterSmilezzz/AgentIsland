@@ -2,63 +2,19 @@
 //! installed configuration on its own; Phase 2 supplies a chosen destination.
 
 use crate::atomicfile::atomic_replace_validated;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::Path;
 use toml_edit::{value, DocumentMut};
 
-const REDACTED: &str = "••••";
-
-/// An outbound secret. There is deliberately no raw-string accessor or
-/// `Deserialize`: only the provider implementation may hold plaintext input.
-pub(crate) struct MaskedSecret(Box<str>);
-
-impl MaskedSecret {
-    pub(crate) fn from_plaintext(value: String) -> Self {
-        Self(value.into_boxed_str())
-    }
-
-    fn redacted(&self) -> &'static str {
-        if self.0.is_empty() {
-            "—"
-        } else {
-            REDACTED
-        }
-    }
-}
-
-impl fmt::Debug for MaskedSecret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.redacted())
-    }
-}
-
-impl fmt::Display for MaskedSecret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.redacted())
-    }
-}
-
-impl Serialize for MaskedSecret {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.redacted())
-    }
-}
-
-/// The only shape intended for an outbound profile summary. In particular,
-/// raw TOML and plaintext credentials are absent from this type.
-#[derive(Debug, Serialize)]
-pub(crate) struct ProviderProfilePreview {
-    pub id: String,
-    pub name: String,
-    pub credential: MaskedSecret,
-}
-
+// 这里原本有一套 `MaskedSecret` / `ProviderProfilePreview`（v0.0.160 建）。
+// 已删除，理由：它没有消费方，而**这轮的保护方式更强**——
+// 档位结构里**根本没有承载密钥的字段**（只存 `env_key` 这个变量名），
+// 并且校验会在门口拒绝「一整串像密钥的东西被填进 env_key」。
+// 留着一套没人调的掩码类型，会让人以为「密钥是被掩码保护的」，
+// 而真实情况是「密钥压根进不来」。真需要显示掩码时，历史里有它。
 fn invalid_toml() -> io::Error {
     // Parser diagnostics may quote the input line, which could contain a key.
     io::Error::new(io::ErrorKind::InvalidData, "invalid provider TOML")
@@ -583,27 +539,6 @@ mod tests {
             vec![target_name],
             "staging file leaked: {entries:?}"
         );
-    }
-
-    #[test]
-    fn preview_never_serializes_or_formats_plaintext() {
-        let secret = "synthetic-provider-secret-value".to_string(); // nosec: synthetic masking fixture, not a credential
-        let preview = ProviderProfilePreview {
-            id: "synthetic".into(),
-            name: "Fixture profile".into(),
-            credential: MaskedSecret::from_plaintext(secret.clone()),
-        };
-        for output in [
-            serde_json::to_string(&preview).unwrap(),
-            format!("{preview:?}"),
-            format!("{}", preview.credential),
-        ] {
-            assert!(
-                !output.contains(&secret),
-                "outbound profile exposed its credential"
-            );
-            assert!(output.contains(REDACTED));
-        }
     }
 
     #[test]

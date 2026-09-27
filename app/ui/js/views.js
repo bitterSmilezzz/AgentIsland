@@ -773,13 +773,15 @@ export function renderSidebar() {
     { key: 'list', label: '监控', count: running.length },
     { key: 'tokenAnalytics', label: 'Token 用量', count: 0 },
     { key: 'provider', label: 'Codex 档位', count: 0 },
-    // 待办是 Phase 3 的事；这里**明说未做**，而不是给一个点了没反应的入口
-    { key: 'todo', label: '待办（未做）', count: 0, disabled: true },
+    // 角标是**未完成**数（不是总条数）：勾掉最后一条之后角标就该消失
+    { key: 'todo', label: '待办', count: st.todosPending ?? 0, badge: 'todo' },
   ];
-  const route = ['list', 'tokenAnalytics', 'provider'].includes(st.route) ? st.route : 'list';
+  const route = ['list', 'tokenAnalytics', 'provider', 'todo'].includes(st.route) ? st.route : 'list';
 
   let body;
-  if (route === 'provider') {
+  if (route === 'todo') {
+    body = pageTodo();
+  } else if (route === 'provider') {
     body = pageProvider();
   } else if (route === 'tokenAnalytics') {
     body = pageAnalytics(eng);
@@ -820,7 +822,7 @@ export function renderSidebar() {
           .map(
             (item) => `<div class="sb-item${item.key === route ? ' is-active' : ''}${item.disabled ? ' is-disabled' : ''}"
               ${item.disabled ? '' : `data-nav="${item.key}"`}>
-              <span>${item.label}</span>${item.count ? `<span class="sb-count">${item.count}</span>` : ''}
+              <span>${item.label}</span>${item.count ? `<span class="sb-count" ${item.badge ? `data-nav-count="${item.badge}"` : ''}>${item.count}</span>` : ''}
             </div>`,
           )
           .join('')}
@@ -837,6 +839,7 @@ export function renderSidebar() {
       renderSidebar();
       if (st.route === 'tokenAnalytics') await hydrateReport();
       if (st.route === 'provider') await hydrateProvider();
+      if (st.route === 'todo') await hydrateTodo();
     };
   });
   root.querySelectorAll('[data-agent]').forEach((el) => {
@@ -1051,6 +1054,127 @@ function showProviderToast(root, text) {
   const toast = root.querySelector('[data-toast]') ?? document.createElement('div');
   toast.className = 'sb-toast';
   toast.setAttribute('data-toast', '');
+  toast.textContent = text;
+  root.appendChild(toast);
+}
+
+// MARK: - 待办页（Phase 3）
+
+/// 待办页骨架。与档位页同一套路：先出骨架，再由 `hydrateTodo()` 填内容。
+export function pageTodo() {
+  return `
+    <div class="sb-page" data-todo-root>
+      <div class="sb-empty">加载中…</div>
+    </div>`;
+}
+
+/// 读一次待办并重画页面。**只重画页面、不整页重画侧边栏**——
+/// 整页重画会让光标从输入框里掉出去，也会把角标与列表的更新顺序搅在一起。
+export async function hydrateTodo() {
+  const root = document.querySelector('[data-todo-root]');
+  if (!root) return;
+  const todo = await invoke('todos_list').catch(() => null);
+  if (!todo) {
+    root.innerHTML = '<div class="sb-empty">读不到待办清单</div>';
+    return;
+  }
+  renderTodoPage(root, todo);
+}
+
+function renderTodoPage(root, todo) {
+  // 读坏过就**说出来**：清单看起来是空的，但用户的东西并没有被删掉（留档了）
+  const broken = todo.broken_backup
+    ? `<div class="sb-note">上次的清单读不出来，已留档为 <code>${escapeHtml(todo.broken_backup)}</code>。当前显示的是空清单。</div>`
+    : '';
+
+  const rows = todo.items.length === 0
+    ? '<div class="sb-empty">还没有待办。在下面输入，回车即可加一条。</div>'
+    : todo.items
+        .map(
+          (item) => `<div class="sb-todo${item.done ? ' is-done' : ''}" data-todo-row="${escapeHtml(item.id)}">
+            <span class="box" data-toggle="${escapeHtml(item.id)}">${item.done ? '✓' : ''}</span>
+            <span class="text">${escapeHtml(item.text)}</span>
+            <span class="x" data-remove="${escapeHtml(item.id)}">×</span>
+          </div>`,
+        )
+        .join('');
+
+  const clearBtn = todo.items.some((item) => item.done)
+    ? '<span class="mini-btn" data-clear-done>清除已完成</span>'
+    : '';
+
+  root.innerHTML = `
+    ${broken}
+    ${rows}
+    <div class="sb-todo-add">
+      <input data-todo-input placeholder="加一条待办，回车确认" maxlength="500" />
+    </div>
+    <div class="sb-todo-foot">${clearBtn}</div>`;
+
+  updateTodoBadge(root, todo.pending);
+
+  // 回车加条：极简列表的全部交互就是这一下
+  const input = root.querySelector('[data-todo-input]');
+  if (input) {
+    input.onkeydown = async (event) => {
+      if (event.key !== 'Enter') return;
+      const text = input.value;
+      if (!text.trim()) return;
+      input.value = ''; // 先清空：命令慢的时候用户不会重复按回车加两条一样的
+      const next = await invoke('todos_add', { text }).catch((error) => ({ failure: String(error) }));
+      if (next?.failure) {
+        showTodoToast(root, next.failure);
+        input.value = text; // 失败就把内容还给用户，别让他重打
+        return;
+      }
+      renderTodoPage(root, next);
+      root.querySelector('[data-todo-input]')?.focus();
+    };
+    input.focus();
+  }
+
+  root.querySelectorAll('[data-toggle]').forEach((el) => {
+    el.onclick = async () => {
+      const next = await invoke('todos_toggle', { id: el.dataset.toggle }).catch((error) => ({ failure: String(error) }));
+      if (next?.failure) showTodoToast(root, next.failure);
+      else renderTodoPage(root, next);
+    };
+  });
+
+  root.querySelectorAll('[data-remove]').forEach((el) => {
+    el.onclick = async () => {
+      const next = await invoke('todos_remove', { id: el.dataset.remove }).catch((error) => ({ failure: String(error) }));
+      if (next?.failure) showTodoToast(root, next.failure);
+      else renderTodoPage(root, next);
+    };
+  });
+
+  const clear = root.querySelector('[data-clear-done]');
+  if (clear) {
+    // 「清除已完成」不弹确认：它只删已经勾掉的条目，而且删除本身就是用户点出来的
+    clear.onclick = async () => {
+      const next = await invoke('todos_clear_done').catch((error) => ({ failure: String(error) }));
+      if (next?.failure) showTodoToast(root, next.failure);
+      else renderTodoPage(root, next);
+    };
+  }
+}
+
+/// 更新侧栏角标**并记住计数**：下次整页重画时用它，不必再去读一次文件。
+function updateTodoBadge(root, pending) {
+  const st = getState();
+  st.todosPending = pending;
+  const badge = document.querySelector('[data-nav-count="todo"]');
+  if (badge) {
+    badge.textContent = String(pending);
+    badge.hidden = pending === 0;
+  }
+  void root;
+}
+
+function showTodoToast(root, text) {
+  const toast = document.createElement('div');
+  toast.className = 'sb-toast';
   toast.textContent = text;
   root.appendChild(toast);
 }

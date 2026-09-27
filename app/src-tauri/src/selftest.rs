@@ -358,6 +358,51 @@ pub fn run() -> Report {
         );
     }
 
+    // 12. 待办：增删改查往返 + 坏文件降级（都在临时目录里做，不碰用户的清单）
+    {
+        let dir = std::env::temp_dir().join(format!(
+            "agentisland-selftest-todos-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let store = crate::todos::TodoStore::new(dir.clone());
+        let added = store.add("自检加一条", 1_000).is_ok() && store.add("再加一条", 2_000).is_ok();
+        let pending_after_add = store.snapshot(0).pending;
+        let toggled = store.toggle("1").map(|t| t.pending).unwrap_or(9) == 1;
+        let removed = store.remove("2").map(|t| t.items.len()).unwrap_or(9) == 1;
+        let cleared = store.clear_done().map(|t| t.items.is_empty()).unwrap_or(false);
+        runner.check(
+            "待办：加两条 ⇒ 未完成 2；勾一条 ⇒ 1；删一条 ⇒ 剩 1；清已完成 ⇒ 空",
+            added && pending_after_add == 2 && toggled && removed && cleared,
+            Some(format!(
+                "added={added} pending={pending_after_add} toggled={toggled} removed={removed} cleared={cleared}"
+            )),
+        );
+
+        // 坏文件：降级为空清单、留档、且之后还能继续用
+        let broken_dir = dir.join("broken");
+        let _ = std::fs::create_dir_all(&broken_dir);
+        let broken = crate::todos::TodoStore::new(broken_dir.clone());
+        let _ = std::fs::write(broken_dir.join("todos.json"), "{ 这不是 JSON");
+        let snapshot = broken.snapshot(4_242);
+        let stashed = snapshot.broken_backup.as_deref() == Some("todos.json.broken-4242");
+        let recovered = broken.add("恢复之后", 5_000).map(|t| t.items.len()).unwrap_or(9) == 1;
+        runner.check(
+            "待办：清单文件读坏 ⇒ 显示空清单、原文件留档、之后还能继续加",
+            snapshot.items.is_empty() && stashed && recovered,
+            Some(format!(
+                "items={} stash={:?} recovered={recovered}",
+                snapshot.items.len(),
+                snapshot.broken_backup
+            )),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     runner.finish()
 }
 
@@ -407,7 +452,7 @@ mod tests {
             report.text()
         );
         // 这个下限的作用是「检查项被删掉时显形」，不是为了好看
-        assert!(report.passed >= 24, "检查项少了：{}", report.passed);
+        assert!(report.passed >= 26, "检查项少了：{}", report.passed);
         assert_eq!(report.exit_code(), 0);
     }
 
