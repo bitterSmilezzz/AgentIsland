@@ -32,6 +32,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["com.dimcode.app".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".dimcode", "v2", "data", "sessions"])],
             // 用量明细在下面的 usage_ledger 里，不读 JSONL；会话目录与采集根同路径
@@ -52,6 +53,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["dev.zcode.app".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             // Model IO is task evidence; CLI log can update for unrelated runtime activity.
             session_dirs: vec![p(&[".zcode", "cli", "rollout"])],
@@ -68,6 +70,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["com.anthropic.claudefordesktop".into(), "com.anthropic.claudecode".into()],
             cmdline_hints: vec!["claude".into()],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".claude", "projects"]), p(&[".claude", "sessions"])],
             token_roots: vec![p(&[".claude", "sessions"]), p(&[".claude", "projects"])],
@@ -83,6 +86,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec![],
             cmdline_hints: vec!["codex".into()],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![p(&[".codex", "sessions"])],
             token_roots: vec![p(&[".codex", "sessions"])],
@@ -98,6 +102,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["com.todesktop.230113mital1efw".into(), "com.cursor.cursor".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Cursor", "User", "workspaceStorage"])],
             token_roots: vec![],
@@ -113,6 +118,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["com.microsoft.VSCode".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Code", "User", "workspaceStorage"])],
             token_roots: vec![],
@@ -128,6 +134,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec![],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "saoudrizwan.claude-dev", "tasks"])],
             token_roots: vec![],
@@ -143,6 +150,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec![],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "tasks"])],
             token_roots: vec![],
@@ -158,6 +166,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["ai.opencode.desktop".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".local", "share", "opencode"])],
             // tokenRoots 空是**刻意的**：这个产品的用量只落在自己的 SQLite 库里
@@ -179,6 +188,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // Electron 派生进程（GPU/渲染/网络/崩溃上报）与宿主是同一个程序：
             // CPU 会跨条目求和，把渲染器空闲抖动累成「高负载工作中」，故按路径排除
             path_excludes: vec!["frameworks".into(), "helper".into()],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".local", "share", "mimocode"])],
             // 与 OpenCode 同表形（session / message / part），复用同一方言
@@ -198,6 +208,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec![],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![p(&[".config", "goose", "sessions"])],
             token_roots: vec![],
@@ -213,6 +224,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec![],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![p(&[".aider"])],
             token_roots: vec![],
@@ -228,6 +240,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["com.exafunction.windsurf".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".codeium", "windsurf"])],
             token_roots: vec![],
@@ -243,11 +256,250 @@ pub fn builtin() -> Vec<AgentProfile> {
             bundle_ids: vec!["cn.trae.solo.app".into(), "com.trae.ai".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Trae", "User", "workspaceStorage"]), a(&["Trae CN", "User", "workspaceStorage"])],
             token_roots: vec![],
             session_database: None,
             category: "codeEditor".into(),
+        },
+        // ===== v0.0.209：补齐 macOS 端有、这里没有的 12 个档案 =====
+        // 逐条对齐 `Sources/AgentIslandCore/AgentRegistry.swift` 的同名档案。
+        //
+        // **`path_contains` 不是可选项**：这 12 个里有 6 个依赖它，而缺了它
+        // `workbuddy` 与 `workbuddy-ai` 会互相命中（两者进程 basename 都是 `Electron`），
+        // 结果是同一批进程被两个档案各算一次——界面上表现为「有两个 WorkBuddy 都在工作」。
+        // 那是**静默错误**：不报错、不崩，只是数字翻倍。
+
+        AgentProfile {
+            id: "qoder".into(),
+            name: "Qoder".into(),
+            glyph: "\u{E5A5}".into(),
+            emoji: "🖥️".into(),
+            process_names: vec!["qoder".into()],
+            bundle_ids: vec!["com.qoder.app".into()],
+            cmdline_hints: vec![],
+            // 路径锚定到安装目录，不用裸子串 `qoder`：裸子串会把 ~/code/qoder-playground
+            // 里跑的任何 Electron 程序认成本 Agent（macOS 侧已记为已知风险）
+            path_contains: vec!["/applications/qoder.app".into()],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![p(&[".qoder", "projects"])],
+            // tokenRoots **故意留空**：Qoder 落盘的 token 字段全为 0（真值只有 credits）。
+            // 接上采集只会多花 1~1.9s 换 0 条数据——那是「编一个看起来正常的零」。
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "copilot".into(),
+            name: "ima.copilot".into(),
+            glyph: "\u{E728}".into(),
+            emoji: "🧑‍✈️".into(),
+            process_names: vec!["ima.copilot".into(), "Copilot".into()],
+            bundle_ids: vec!["com.tencent.imamac".into()],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![p(&["Library", "Application Support", "com.tencent.imamac"])],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "workbuddy".into(),
+            name: "WorkBuddy".into(),
+            glyph: "\u{F0B7}".into(),
+            emoji: "💼".into(),
+            // 进程名含 `Electron` 是**被迫**的（Electron 应用都长这样），
+            // 所以身份完全靠下面的 `path_contains`
+            process_names: vec!["WorkBuddy".into(), "workbuddy".into(), "Electron".into()],
+            bundle_ids: vec!["com.tencent.workbuddy.mac".into()],
+            cmdline_hints: vec![],
+            // 不能用宽口径 `workbuddy`：两个变体的进程路径都含它，会互相误命中
+            path_contains: vec!["/applications/workbuddy.app".into(), ".workbuddy/".into()],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            // tasks/ 是任务产物（工作信号）；sessions/*.json 只是宿主心跳，
+            // 会被后台同步触碰，放进来会把空闲判成工作
+            session_dirs: vec![p(&[".workbuddy", "tasks"])],
+            // token 明细在 projects/ 的会话 JSONL 里，与工作信号不同子树
+            token_roots: vec![p(&[".workbuddy", "projects"])],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "workbuddy-ai".into(),
+            name: "WorkBuddy AI".into(),
+            glyph: "\u{F774}".into(),
+            emoji: "💼".into(),
+            process_names: vec!["Electron".into(), "workbuddy".into()],
+            // 真实 bundle id 以 WorkBuddy AI.app 的 Info.plist 为准（plutil 实测
+            // com.workbuddy.workbuddy-ai）——此前照抄 Application Support 目录名漏了 -ai
+            bundle_ids: vec!["com.workbuddy.workbuddy-ai".into()],
+            cmdline_hints: vec![],
+            // 与国内版的数据目录完全独立，只能靠路径区分
+            path_contains: vec!["workbuddy ai.app".into(), ".workbuddy-ai".into()],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![p(&[".workbuddy-ai", "tasks"])],
+            token_roots: vec![p(&[".workbuddy-ai", "projects"])],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "antigravity".into(),
+            name: "Antigravity".into(),
+            glyph: "\u{E7FD}".into(),
+            emoji: "⚛️".into(),
+            process_names: vec!["Antigravity".into(), "Electron".into()],
+            bundle_ids: vec!["com.google.antigravity".into(), "com.yuzhiqiang.antigravity.studio".into()],
+            cmdline_hints: vec![],
+            path_contains: vec!["antigravity".into()],
+            path_excludes: vec!["frameworks".into(), "helper".into(), "language_server".into()],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            // 只监控 Agent 自身的会话数据；`Library/Application Support/Antigravity`
+            // 是内核用户数据目录（Chromium 缓存 + 更新器 + 账号状态），
+            // 实测仅打开应用就有 36 次写入/20 分钟且全在此列，会把空闲判成工作
+            session_dirs: vec![
+                p(&[".gemini", "antigravity", "conversations"]),
+                p(&[".gemini", "antigravity", "brain"]),
+            ],
+            token_roots: vec![],
+            session_database: None,
+            category: "codeEditor".into(),
+        },
+        AgentProfile {
+            id: "hermes".into(),
+            name: "Hermes Agent".into(),
+            glyph: "\u{E29C}".into(),
+            emoji: "🪄".into(),
+            process_names: vec!["hermes-agent".into(), "hermes".into()],
+            bundle_ids: vec![],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: None,
+            session_dirs: vec![p(&[".hermes", "sessions"]), p(&[".hermes", "logs"])],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "continue".into(),
+            name: "Continue".into(),
+            glyph: "\u{E29B}".into(),
+            emoji: "▶️".into(),
+            process_names: vec!["Continue".into(), "continue".into(), "continue-core".into()],
+            bundle_ids: vec!["com.continue.continue".into()],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![p(&[".continue"])],
+            token_roots: vec![],
+            session_database: None,
+            category: "codeEditor".into(),
+        },
+        AgentProfile {
+            id: "chatgpt".into(),
+            name: "ChatGPT".into(),
+            glyph: "\u{E9A0}".into(),
+            emoji: "💬".into(),
+            process_names: vec!["ChatGPT".into()],
+            bundle_ids: vec!["com.openai.codex".into()],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![p(&["Library", "Application Support", "com.openai.codex"])],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "dsh".into(),
+            name: "DeepSeek Harness".into(),
+            glyph: "\u{E7A1}".into(),
+            emoji: "⚡️".into(),
+            // web 模式由 Node 启动 bin.js，最终可执行 basename 是 `node`；
+            // 只靠 `dsh` 进程名会漏掉当前桌面/网页宿主形态
+            process_names: vec!["dsh".into()],
+            bundle_ids: vec![],
+            cmdline_hints: vec![],
+            path_contains: vec!["deepseek-harness".into()],
+            path_excludes: vec![".codegraph".into()],
+            cpu_floor: None,
+            session_dirs: vec![
+                p(&[".dsh", "sessions"]),
+                p(&[".dsh", "storages", "session_projcache", "sessions"]),
+            ],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "ego-browser".into(),
+            name: "Ego Browser".into(),
+            glyph: "\u{F774}".into(),
+            emoji: "🌐".into(),
+            process_names: vec!["ego-browser".into(), "ego lite".into(), "ego".into()],
+            bundle_ids: vec!["com.citrolabs.ego.lite".into()],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![
+                p(&[".local", "share", "ego"]),
+                p(&["Library", "Application Support", "ego lite"]),
+            ],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "vibe-usage".into(),
+            name: "Vibe Usage".into(),
+            glyph: "\u{E4CA}".into(),
+            emoji: "📊".into(),
+            process_names: vec!["vibe-usage".into(), "Vibe Usage".into()],
+            bundle_ids: vec!["ai.vibecafe.vibe-usage".into()],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![
+                p(&[".vibe-usage"]),
+                p(&["Library", "Application Support", "Vibe Usage"]),
+            ],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "openviking".into(),
+            name: "OpenViking".into(),
+            glyph: "\u{F4A3}".into(),
+            emoji: "📦".into(),
+            process_names: vec![
+                "openviking".into(),
+                "openviking-server".into(),
+                "ov".into(),
+                "vikingbot".into(),
+            ],
+            bundle_ids: vec![],
+            cmdline_hints: vec![],
+            path_contains: vec!["openviking".into()],
+            path_excludes: vec![],
+            cpu_floor: None,
+            // 只监控数据目录。`~/.local/share/uv/tools/openviking` 是 uv 装的
+            // Python venv（lib/bin/pyvenv.cfg，4452 个条目），与任务无关，
+            // 实测占全量扫描最大的一块
+            session_dirs: vec![p(&[".openviking"])],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
         },
     ]
 }
@@ -380,5 +632,116 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// **档案数与 macOS 端对齐**。这条是「补齐档案」这件事的完成线。
+#[cfg(test)]
+mod parity {
+    use super::*;
+    use crate::procmon::profile_matches;
+
+    fn find(id: &str) -> AgentProfile {
+        builtin()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("没有 {id} 这个档案"))
+    }
+
+    #[test]
+    fn the_registry_covers_all_twenty_five_agents_plus_vscode() {
+        let ids: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
+        // macOS 端 25 个，Rust 侧另有 1 个 `vscode`（Swift 用 cline/roo-code 覆盖同一批用户）
+        assert_eq!(ids.len(), 26, "档案数：{ids:?}");
+        for id in [
+            "qoder", "copilot", "workbuddy", "workbuddy-ai", "antigravity", "hermes",
+            "continue", "chatgpt", "dsh", "ego-browser", "vibe-usage", "openviking",
+        ] {
+            assert!(ids.iter().any(|i| i == id), "缺档案 {id}");
+        }
+    }
+
+    /// **两个 WorkBuddy 变体不得互相命中。**
+    ///
+    /// 两者的进程 basename 都是 `Electron`（所有 Electron 应用都长这样），
+    /// 身份完全靠路径区分。缺了 `path_contains`，同一批进程会被两个档案各算一次——
+    /// 症状是界面上「有两个 WorkBuddy 都在工作」，而**没有任何报错**。
+    #[test]
+    fn the_two_workbuddy_variants_do_not_claim_each_others_processes() {
+        let cn = find("workbuddy");
+        let intl = find("workbuddy-ai");
+
+        let cn_exe = "/Applications/WorkBuddy.app/Contents/MacOS/Electron";
+        let intl_exe = "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron";
+
+        assert!(profile_matches(&cn, "electron", cn_exe, ""), "国内版应当命中自己的路径");
+        assert!(
+            !profile_matches(&intl, "electron", cn_exe, ""),
+            "国内版的进程**不得**被国外版认领"
+        );
+        assert!(profile_matches(&intl, "electron", intl_exe, ""), "国外版应当命中自己的路径");
+        assert!(
+            !profile_matches(&cn, "electron", intl_exe, ""),
+            "国外版的进程**不得**被国内版认领"
+        );
+    }
+
+    /// Qoder 用路径锚定是为了不把 `~/code/qoder-playground` 里跑的任何 Electron
+    /// 程序认成它——同类过宽匹配在 macOS 侧已记为已知风险。
+    #[test]
+    fn qoder_is_anchored_to_its_install_directory() {
+        let qoder = find("qoder");
+        assert!(profile_matches(
+            &qoder,
+            "qoder",
+            "/Applications/Qoder.app/Contents/MacOS/Qoder",
+            ""
+        ));
+        assert!(
+            !profile_matches(
+                &qoder,
+                "qoder",
+                "/Users/me/code/qoder-playground/node_modules/electron/dist/Electron",
+                ""
+            ),
+            "同名的自建目录不得被认成 Qoder"
+        );
+    }
+
+    /// 声明了 `path_contains` 就**必须**命中其中一条——
+    /// 这是「有则必须命中」而不是「命中则加分」，后者会让锚定形同虚设。
+    #[test]
+    fn a_declared_path_anchor_is_mandatory_not_a_bonus() {
+        // 用 workbuddy 验机制：它的锚点足够具体
+        let cn = find("workbuddy");
+        // 进程名对、锚点不对 ⇒ 不匹配
+        assert!(!profile_matches(&cn, "electron", "/Applications/Other.app/Contents/MacOS/Electron", ""));
+
+        // 顺带**如实记录** openviking 的锚点很宽（macOS 侧声明的就是裸子串
+        // `openviking`）：名字对而路径也含 openviking 时必然匹配。
+        // 它排除 uv 装的 Python venv 靠的是**不把那个目录写进 sessionDirs**，
+        // 不是靠路径锚定——所以这里不假装它更严。
+        let openviking = find("openviking");
+        assert!(
+            profile_matches(&openviking, "openviking", "/usr/local/bin/openviking", ""),
+            "openviking 的锚点是宽口径裸子串，路径含名字即匹配（与 macOS 端同声明）"
+        );
+    }
+
+    /// Qoder 的 `token_roots` **必须**是空的。
+    ///
+    /// 它的落盘 token 字段全为 0（真值只有 credits）。接上采集会多花 1~1.9s
+    /// 换 0 条数据，而界面上会显示「Qoder 24h 用量 0」——那是**编一个看起来正常的零**。
+    #[test]
+    fn qoder_declares_no_token_roots_on_purpose() {
+        let qoder = find("qoder");
+        assert!(
+            qoder.token_roots.is_empty(),
+            "Qoder 的 token 字段恒为 0，声明采集根只会换来一片零"
+        );
+        assert!(
+            !qoder.session_dirs.is_empty(),
+            "但会话目录是真的：那是它的工作信号来源"
+        );
     }
 }

@@ -435,6 +435,7 @@ pub fn run() -> Report {
             bundle_ids: vec![bundle.into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![],
             token_roots: vec![],

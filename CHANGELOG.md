@@ -4,6 +4,44 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.209] - 2026-09-28
+
+### 档案 14 → 26：macOS 端那 12 个终于在 Rust 端也能被监控了
+
+README 写「25 个内置档案都能报五态」，而 Rust 侧此前只有 14 个——
+用户在 Mac 上装了的 Antigravity、ChatGPT、WorkBuddy、DSH 这些，
+换到 Rust 端**根本不在列表里**。这一版逐条对齐 Swift 注册表补齐。
+
+**`path_contains` 不是可选项，是这批档案正确性所必需。** 12 个里有 6 个依赖它：
+
+`workbuddy` 与 `workbuddy-ai` 的**进程 basename 都是 `Electron`**（所有 Electron 应用
+都长这样），身份完全靠路径区分。缺了字段，同一批进程会被两个档案各认领一次——
+界面上表现为「有两个 WorkBuddy 都在工作」，而**不报错、不崩，只是数字翻倍**。
+Qoder 若用裸子串 `qoder`，还会把 `~/code/qoder-playground` 里跑的任何 Electron 程序
+认成它（macOS 侧早已把这类过宽匹配记为已知风险）。
+
+匹配语义是**「有则必须命中」**而不是「命中则加分」——后者会让锚定形同虚设。
+两条用例钉住它：`workbuddy-ai` 的进程**不得**被 `workbuddy` 认领（反之亦然）、
+Qoder 不得认领同名的自建目录。
+
+**顺带记下一个反直觉的事实**：`openviking` 的锚点是**宽口径裸子串** `openviking`，
+所以进程名与路径都含它时必然匹配。它排除 uv 装的 Python venv 靠的是
+**不把那个目录写进 `sessionDirs`**，不是靠路径锚定。用例里如实记着这一点，
+不假装它比实际更严。
+
+**Qoder 的 `token_roots` 故意留空**：它落盘的 token 字段全为 0（真值只有 credits）。
+接上采集会多花 1~1.9s 换 0 条数据，而界面上会显示「Qoder 24h 用量 0」——
+那是**编一个看起来正常的零**。工作信号仍来自它的 `session_dirs`（那条是真的）。
+
+测试 Rust 355 → **360**（+5，含两个变体不互相命中、锚定强制、Qoder 零采集），
+编译警告保持 **17**，Swift 侧零改动。
+
+**仍缺的档案字段**（对照表 §6.3 记着）：`tokenAlertFloor`（WorkBuddy 两家要用，
+它抑制「token 暴涨」告警的阈值）、`sessionDialect`（Qoder / Antigravity / DSH 三家要声明），
+以及 `defaultEnabled`（`continue` 在 macOS 侧默认关闭）。
+本轮**没有**加这三个字段：前两个要同时改引擎与解析层，第三个要引入「默认启用集」语义
+（与现有 `disabled_agents` 黑名单正好相反）——各自是独立一块，不该混在这一版里悄悄带过。
+
 ## [0.0.208] - 2026-09-28
 
 ### 真机一验，发现上一版的深链在这台机器上是不可达代码

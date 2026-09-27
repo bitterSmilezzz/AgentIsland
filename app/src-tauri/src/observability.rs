@@ -251,6 +251,7 @@ mod tests {
             bundle_ids: vec![],
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![path.to_string_lossy().into_owned()],
             token_roots: vec![],

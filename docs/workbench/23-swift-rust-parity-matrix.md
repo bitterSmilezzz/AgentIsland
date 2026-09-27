@@ -34,10 +34,14 @@ Rust 侧内置 **14 个**（[registry.rs:5-238](../../app/src-tauri/src/registry
 Rust 另有一条 `>= 12` 的守护测试（[registry.rs:268-276](../../app/src-tauri/src/registry.rs#L268)），
 **刻意不要求两边相等**——所以档案数分叉不会被测试拦住，只能靠本表盯。
 
-### 2.1 只在 Swift 有（12 个）
+### 2.1 ~~只在 Swift 有（12 个）~~ ✅ **v0.0.209 起两侧都有**
 
 `qoder` `copilot` `workbuddy` `workbuddy-ai` `antigravity` `hermes`
 `continue` `chatgpt` `dsh` `ego-browser` `vibe-usage` `openviking`
+
+**这一批依赖新补的 `path_contains`**：WorkBuddy 两家的进程 basename 都是 `Electron`，
+身份全靠路径区分——缺了它同一批进程会被两个档案各认领一次（数字翻倍且不报错）。
+Rust 侧档案数 14 → 26（macOS 25 + Rust 独有的 `vscode`）。
 
 （v0.0.168 起 `dim` 与 `mimocode` 已补进 Rust——两者都带 SQLite 明细库，补它们是为了让
 `DimTasks` / `OpenCode` 两条方言有**真实载体**，而不是先写方言再等档案。

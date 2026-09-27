@@ -354,6 +354,7 @@ mod tests {
             bundle_ids: bundles.iter().map(|s| (*s).into()).collect(),
             cmdline_hints: vec![],
             path_excludes: vec![],
+            path_contains: vec![],
             cpu_floor: None,
             session_dirs: vec![],
             token_roots: vec![],

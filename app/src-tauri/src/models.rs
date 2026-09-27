@@ -147,6 +147,14 @@ pub struct AgentProfile {
     /// 命令行包含提示词即算命中
     #[serde(default)]
     pub cmdline_hints: Vec<String>,
+    /// 路径必须包含其中之一（不区分大小写），**否则不匹配**。
+    ///
+    /// 存在的理由很具体：`workbuddy` 与 `workbuddy-ai` 的进程 basename **都是 `Electron`**，
+    /// 只靠进程名两个档案会互相命中、造成双份计数；Qoder 若用裸子串 `qoder`，
+    /// 又会把 `~/code/qoder-playground` 里跑的任何 Electron 程序认成它。
+    /// Swift 侧同字段（`pathContains`）的注记写得更细，此处逐条对齐。
+    #[serde(default)]
+    pub path_contains: Vec<String>,
     pub path_excludes: Vec<String>,
     /// 桌面类 Agent 的 CPU 工作判定下限（Electron 空闲抖动）
     pub cpu_floor: Option<f64>,

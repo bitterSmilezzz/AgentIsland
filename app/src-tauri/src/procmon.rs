@@ -151,6 +151,19 @@ pub fn profile_matches(profile: &AgentProfile, name: &str, exe: &str, cmdline: &
     if !name_hit && !hint_hit {
         return false;
     }
+    // 路径锚定：登记了 `path_contains` 就**必须**命中其中一条。
+    // 这是「有则必须命中」而不是「命中则加分」——后者会让锚定形同虚设，
+    // 而前者才是 Swift 侧注释里说的「防止两个变体互相误命中」。
+    if !profile.path_contains.is_empty() {
+        let lower_exe = exe.to_lowercase();
+        if !profile
+            .path_contains
+            .iter()
+            .any(|anchor| lower_exe.contains(&anchor.to_lowercase()))
+        {
+            return false;
+        }
+    }
     !profile
         .path_excludes
         .iter()
