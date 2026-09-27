@@ -86,6 +86,26 @@ fn save_settings(state: State<SharedEngine>, new_settings: Settings) {
 ///
 /// 与灵动岛那条路分开：灵动岛是「锚点 × 工作区」的浮层，侧边栏是一整列，
 /// 两者共用一个 `place_with` 只会让两边都别扭。
+/// 命令行里的 `--shell=<mode>`（也接受 `--shell <mode>`）。给不了就返回 `None`，
+/// 于是「用户没写」与「用户写了 island」不会混为一谈。
+fn shell_arg_override() -> Option<crate::models::ShellMode> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if let Some(value) = arg.strip_prefix("--shell=") {
+            return Some(crate::models::ShellMode::parse(value));
+        }
+        if arg == "--shell" {
+            if let Some(value) = args.get(index + 1) {
+                return Some(crate::models::ShellMode::parse(value));
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
 fn place_sidebar_window(app: &AppHandle, edge: crate::models::DockEdge, width: f64) {
     let Some(win) = app.get_webview_window("sidebar") else {
         return; // 配置里没有这个窗口（旧包）：如实什么都不做，而不是 panic
@@ -728,6 +748,10 @@ fn main() {
                     e.settings.sidebar_width,
                 )
             };
+            // `--shell=sidebar` / `--shell=island`：**只影响这一次运行，不写回设置**。
+            // 加它是为了能在不改用户 settings.json 的前提下验证另一个形态
+            // （改了设置去验证，验证完还得记得改回来，那是最容易留下脏状态的做法）
+            let mode = shell_arg_override().unwrap_or(mode);
             if mode == crate::models::ShellMode::Sidebar {
                 place_sidebar_window(app.handle(), sidebar_edge, sidebar_width);
                 if let Some(sidebar) = app.get_webview_window("sidebar") {

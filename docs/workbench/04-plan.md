@@ -75,8 +75,16 @@
    且全部规则挂在 `.shell-sidebar` 下（不串味）。
 4. ✅ `js/main.js` 的形态分派（`js/shell.js` 提供形态事实，避免 `views.js` ↔ `main.js` 成环）；
    侧边栏分支不做灵动岛那套（细条几何 / 贴边放置 / 展开收起 / 失焦防抖）。**懒加载 `import()` 未做**。
-5. ⚠️ **部分**：`views.js` 侧边栏直接复用了 `pageAnalytics` / `pageAgentDetail` 与报表注水路径，
-   但 `renderCard` **尚未**抽成「不依赖容器尺寸的监控模块」——现在仍是「灵动岛包卡片 + 侧边栏另写列表」。
+   v0.0.188 补：`capabilities/default.json` 的 `windows` 加上 `sidebar`——
+   否则它**没有监听权限**，`listen('engine://tick')` 被静默拒绝，侧边栏永远不刷新
+   （详见 v0.0.188 的 CHANGELOG 与 review；这是运行时冒烟抓到的，单元测试抓不到）。
+5. ✅（**内容层**）：`views.js` 新增 `agentRowModel(snap)` —— 一行 Agent「显示什么、怎么措辞、
+   什么颜色、没取到写什么」**只有这一处**，灵动岛的行与侧边栏的行都走它；页面函数
+   （`pageAnalytics` / `pageAgentDetail`）与报表注水路径也共用。
+   **排版层按形态分开是有意的**（灵动岛的行有进度环/动作条/趋势点，侧边栏只是两行字），
+   而且不再有漂移风险：漂移发生在「文案与字段」上，那一层已经收敛。
+   两条哨兵守着它：`both_shells_render_agent_rows_through_one_shared_model` 与
+   `every_sidebar_class_is_actually_styled`（都用例反证过）。
 6. ✅ `main.rs` / `placement.rs`：按 `shell_mode` 分派（island 分支零改动；sidebar 分支走
    `placement::sidebar_frame`：贴左/右、铺满工作区高度、宽度取记忆值）；命令
    `set_shell_mode` / `set_sidebar_width` / `set_sidebar_edge` / `place_sidebar`；
@@ -86,7 +94,9 @@
 **验收对照**
 
 - ✅ 默认启动仍是灵动岛且行为零变化（默认值就是 `island`；island 分支代码未动）
-- ⚠️ 切到 sidebar 后为侧边栏、首层极简：**代码路径与几何有测试，视觉未验证**（见 review 的如实标注）
+- ⚠️ 切到 sidebar 后为侧边栏、首层极简：**功能层已验证**（`--shell=sidebar` 起得来、前端零错误、
+  能收到引擎推送）；**像素未验证**——本机 `screencapture` 需要屏幕录制授权，拿不到
+  （`could not create image from rect`）。
 - ⚠️ 「高级设置」进分析页与详情页：侧边栏可进分析页与详情页（复用同一批页面函数），
   但**没有设置入口**（设置页还没做）
 - ✅ 既有测试无回归（Rust 252 条；Swift 550 条由发版脚本跑）

@@ -468,4 +468,86 @@ mod tests {
             "views.js 读了快照里没有的字段：{missing:?}（静默失效，不会报错）"
         );
     }
+
+    /// 侧边栏用到的 `sb-*` 类必须在 `sidebar.css` 里有定义。
+    ///
+    /// 这类失效特别安静：类名打错一个字母，界面**不报错**、只是长得不对——
+    /// 而在这个环境里没法靠截图发现（屏幕录制权限拿不到）。所以退一步做静态核对：
+    /// 从 `renderSidebar` 的 `class="..."` 里取 `sb-` 开头的类，逐个去 CSS 里找。
+    #[test]
+    fn every_sidebar_class_is_actually_styled() {
+        let views = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+            .expect("读不到 views.js");
+        let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/css/sidebar.css"))
+            .expect("读不到 sidebar.css");
+
+        let start = views
+            .find("export function renderSidebar(")
+            .expect("views.js 里找不到 renderSidebar");
+        let rest = &views[start..];
+        let body = &rest[..rest.len().min(6_000)];
+
+        let mut classes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut cursor = 0;
+        while let Some(index) = body[cursor..].find("class=\"") {
+            let from = cursor + index + "class=\"".len();
+            let Some(end) = body[from..].find('"') else { break };
+            for token in body[from..from + end].split_whitespace() {
+                // 只查静态类名；模板插值出来的（`${...}`）没法静态核对
+                if token.starts_with("sb-") && !token.contains("${") {
+                    classes.insert(token.to_string());
+                }
+            }
+            cursor = from + end;
+        }
+        assert!(
+            classes.len() >= 5,
+            "只从 renderSidebar 里抓到 {} 个 sb-* 类，解析八成坏了",
+            classes.len()
+        );
+        let missing: Vec<&String> = classes.iter().filter(|c| !css.contains(&format!(".{c}"))).collect();
+        assert!(
+            missing.is_empty(),
+            "sidebar.css 里没有这些类的样式：{missing:?}（界面不会报错，只会长得不对）"
+        );
+    }
+
+    /// 两种形态必须**共用同一份显示模型**（`agentRowModel`）。
+    ///
+    /// 字段层面的分叉有上面那条哨兵拦（读了不存在的字段会红），但**文案与颜色的分叉没人拦**：
+    /// 灵动岛写「会话源读不到」、侧边栏写「无数据」，两边都编译通过、都跑得起来，
+    /// 只有用户会觉得同一件事有两个说法。所以这里对 `views.js` 做一次结构检查——
+    /// 与那条字段哨兵同一套路（读源文件，而不是跑界面）。
+    #[test]
+    fn both_shells_render_agent_rows_through_one_shared_model() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+            .expect("读不到 views.js");
+
+        // 定义只有一处
+        assert_eq!(
+            source.matches("export function agentRowModel(").count(),
+            1,
+            "显示模型必须只有一处定义"
+        );
+        // 「判不出」的文案表也只有一处
+        assert_eq!(
+            source.matches("const UNCERTAIN_LABELS").count(),
+            1,
+            "状态文案表必须只有一处"
+        );
+
+        // 两个渲染路径都要过这个模型
+        for (func, label) in [("function rowHtml(", "灵动岛的行"), ("export function renderSidebar(", "侧边栏的行")] {
+            let start = source
+                .find(func)
+                .unwrap_or_else(|| panic!("views.js 里找不到 {func}——{label} 改名字了？"));
+            let rest = &source[start..];
+            // 取该函数往后 4000 字符作为「函数体」近似（JS 源码里这些函数都没那么长）
+            let body = &rest[..rest.len().min(4_000)];
+            assert!(
+                body.contains("agentRowModel("),
+                "{label}没有走共用的显示模型：文案与颜色会各写一份"
+            );
+        }
+    }
 }

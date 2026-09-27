@@ -245,19 +245,51 @@ function healthChip(snap) {
   return `<span class="health-chip" data-grade="${esc(health.grade)}" title="${esc(tips)}">${esc(health.score)}</span>`;
 }
 
-function rowHtml(snap) {
-  const c = levelColors(snap.level);
-  const uncertainLabels = {
-    blindSessionSource: '会话源读不到',
-    noLocalData: '无本地明细',
-    sourceNotWired: '未接入明细源',
+/// 「可观测性判定」在界面上的说法。**只有这一份**：
+/// 卡片与侧边栏若各写一份，改一处就会出现「同一个状态两种说法」。
+const UNCERTAIN_LABELS = {
+  blindSessionSource: '会话源读不到',
+  noLocalData: '无本地明细',
+  sourceNotWired: '未接入明细源',
+};
+
+/// 一行 Agent 的**显示内容**（灵动岛与侧边栏共用）。
+///
+/// 为什么只共用「内容」而不共用「排版」：字段/文案/颜色的分叉**没人拦**
+/// （`models.rs` 那条哨兵只拦「字段不存在」），而排版的分叉是**有意的**——
+/// 灵动岛的行有进度环、动作条与迷你趋势点，侧边栏的行只是两行字。
+/// 把内容抽出来之后，两种形态各自排版，但「显示什么、怎么措辞、什么颜色」只有一处。
+export function agentRowModel(snap) {
+  const colors = levelColors(snap.level);
+  const uncertainty = snap.level === 'idle' ? UNCERTAIN_LABELS[snap.observability?.code] : null;
+  const hasAction = ['working', 'attention'].includes(snap.level);
+  return {
+    id: snap.id,
+    name: snap.name,
+    level: snap.level,
+    /** 状态那一格显示什么：判不出时**不能**说「空闲」——那会把「读不到」说成「闲着」 */
+    statusText: uncertainty ?? snap.level_label,
+    statusColor: uncertainty ? 'var(--warning)' : colors.fg,
+    statusBackground: uncertainty ? 'color-mix(in srgb, var(--warning) 10%, transparent)' : colors.bg,
+    statusBorder: uncertainty ? 'color-mix(in srgb, var(--warning) 25%, transparent)' : colors.border,
+    /** 24h 用量：没取到写 `—`（不是 0） */
+    tokensText: snap.token_usage && snap.token_usage.tokens24h > 0 ? compact(snap.token_usage.tokens24h) : '—',
+    /** 只有工作/等待确认才有「当前动作」，其余形态是空的 */
+    actionText: hasAction ? (snap.current_action ?? '') : '',
+    hasAction: hasAction && !!snap.current_action,
+    activityText: snap.last_activity_text ?? '',
+    isAttention: snap.level === 'attention',
   };
-  const uncertainty = snap.level === 'idle' ? uncertainLabels[snap.observability?.code] : null;
-  const pillColor = uncertainty ? 'var(--warning)' : c.fg;
-  const pillBackground = uncertainty ? 'color-mix(in srgb, var(--warning) 10%, transparent)' : c.bg;
-  const pillBorder = uncertainty ? 'color-mix(in srgb, var(--warning) 25%, transparent)' : c.border;
-  const hasAction = ['working', 'attention'].includes(snap.level) && snap.current_action;
-  const usage = snap.token_usage && snap.token_usage.tokens24h > 0;
+}
+
+function rowHtml(snap) {
+  const model = agentRowModel(snap);
+  const c = levelColors(snap.level);
+  const pillColor = model.statusColor;
+  const pillBackground = model.statusBackground;
+  const pillBorder = model.statusBorder;
+  const hasAction = model.hasAction;
+  const usage = model.tokensText !== '—';
   const dots = [10, 60, 300, 900, 3600];
   const ago = snap.last_activity_text === '刚刚' ? 5 : null;
 
@@ -283,7 +315,7 @@ function rowHtml(snap) {
       <div class="row-right">
         ${snap.process_running && snap.memory_bytes > 0 ? `<span class="mem-badge" title="物理内存驻留集 (RSS): ${esc(snap.memory_text)}">${esc(snap.memory_text)}</span>` : ''}
         ${healthChip(snap)}
-        ${`<span class="status-pill" title="${esc(snap.observability?.summary ?? snap.level_label)}" style="color:${pillColor};background:${pillBackground};border-color:${pillBorder}">${esc(uncertainty ?? snap.level_label)}</span>`}
+        ${`<span class="status-pill" title="${esc(snap.observability?.summary ?? model.statusText)}" style="color:${pillColor};background:${pillBackground};border-color:${pillBorder}">${esc(model.statusText)}</span>`}
       </div>
     </div>
     ${hasAction ? `
@@ -757,12 +789,14 @@ export function renderSidebar() {
       // 它扫 views.js 里所有的 `snap.<字段>` 并断言快照 JSON 里确实有那个字段。
       // 用别的名字就绕过了那条哨兵，字段改名时会静默失效。
       .map((snap) => {
-        const u = snap.token_usage;
-        const tokens = u ? `${compact(u.tokens24h)} tokens` : '—';
-        const detail = [snap.level_label, snap.last_activity_text].filter(Boolean).join(' · ');
-        return `<div class="sb-agent" data-agent="${snap.id}">
-          <div class="name">${escapeHtml(snap.name)}</div>
-          <div class="tokens">${tokens}</div>
+        // 与灵动岛**同一份**显示模型：状态怎么说、用量怎么缩写、没取到写什么，
+        // 两处不会再各说各话（排版仍各自不同）
+        const model = agentRowModel(snap);
+        const tokens = model.tokensText === '—' ? '—' : `${model.tokensText} tokens`;
+        const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
+        return `<div class="sb-agent" data-agent="${model.id}">
+          <div class="name">${escapeHtml(model.name)}</div>
+          <div class="tokens" style="color:${model.statusColor}">${tokens}</div>
           <div class="meta">${escapeHtml(detail)}</div>
         </div>`;
       })
