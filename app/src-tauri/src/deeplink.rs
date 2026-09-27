@@ -334,3 +334,57 @@ mod execution_safety {
         assert!(Action::Export.reveals_window());
     }
 }
+
+/// **bundle 必须声明 `agentisland://`**，否则深链处理在这台机器上是不可达代码。
+///
+/// 这条不是形式检查，而是补一个**真机上查出来、离线测查不出**的洞：
+/// v0.0.207 把 `deeplink.rs` 与插件接线都做完了，单测全绿、编译干净，
+/// 但真机一验发现出包后的 `Info.plist` **没有 `CFBundleURLTypes`**——
+/// macOS 只把 URL 派发给声明了该 scheme 的应用，于是 `open agentisland://…`
+/// 叫起的是**别的应用**，本应用什么都不会发生。
+///
+/// 症状安静到极致：没有编译错、没有单测红、没有日志、界面一切正常。
+/// 写死字符串会漂（协议名改了这里不会），所以从 `deeplink::SCHEME` 取。
+#[cfg(test)]
+mod bundle_registration {
+    #[test]
+    fn the_src_plist_declares_the_deep_link_scheme() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("读不到 {}", path.display()));
+        assert!(
+            text.contains("CFBundleURLTypes"),
+            "Info.plist 里没有 CFBundleURLTypes —— 深链永远不会被派发到这里"
+        );
+        assert!(
+            text.contains("<key>CFBundleURLSchemes</key>"),
+            "Info.plist 里没有 CFBundleURLSchemes"
+        );
+        // 协议名从常量取，不写死：将来改 `SCHEME` 时这条会红，而不是悄悄派发不到
+        assert!(
+            text.contains(&format!("<string>{}</string>", super::SCHEME)),
+            "Info.plist 声明的协议名与 `deeplink::SCHEME`（{}）不一致",
+            super::SCHEME
+        );
+    }
+
+    /// 与 macOS 端那份声明**形状必须一致**。
+    ///
+    /// `scripts/build-app.sh` 硬写的是同一个 `CFBundleURLTypes` 结构。
+    /// 两边不一致的症状很具体：装过旧包之后 `open agentisland://x` 打开的是
+    /// 另一个应用，而两个应用都自称是 AgentIsland。
+    #[test]
+    fn the_swift_bundle_declares_the_same_scheme() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/build-app.sh");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("读不到 {}", path.display()));
+        assert!(
+            text.contains("CFBundleURLSchemes") && text.contains(super::SCHEME),
+            "build-app.sh 里的 macOS 端声明与 `deeplink::SCHEME` 不一致"
+        );
+        assert!(
+            text.contains("com.agentisland.url"),
+            "build-app.sh 里的 CFBundleURLName 与 Info.plist 不一致"
+        );
+    }
+}

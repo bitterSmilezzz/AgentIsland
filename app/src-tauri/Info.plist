@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Tauri v2 会把本文件作为生成 `Contents/Info.plist` 的底板合并进去。
+
+  **为什么必须在这里声明 URL scheme**：macOS 只把 `agentisland://` 派发给
+  **声明了这个 scheme 的应用**。不写这一段，代码里的深链处理（`deeplink.rs`
+  + `tauri-plugin-deep-link`）在这台机器上就是**不可达代码**——编译过、
+  单测过、`Info.plist` 里没有，于是 `open agentisland://analytics` 叫起的是
+  别的应用，本应用什么都不会发生。
+
+  症状极其安静：没有报错、没有日志、界面正常。所以这一段是 2026-09-28
+  真机验收时才补上的（v0.0.207 之前的深链处理等于没接）。
+
+  ⚠️ 与 macOS 端（Swift 本体）的那份声明**必须一致**：
+  `scripts/build-app.sh` 硬写的是同一个 `CFBundleURLTypes` 形状。
+  两边不一致的症状是「装过旧包之后，URL 打开的是另一个应用」。
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>com.agentisland.url</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>agentisland</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

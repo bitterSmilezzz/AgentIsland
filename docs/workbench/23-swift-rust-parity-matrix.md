@@ -237,7 +237,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `clean` | AgentCleaner、ProcessTreeInspector | ❌ 终止动作与进程树未迁（**有意**，见本节开头） |
 | `selftest` | Selftest（无头假数据断言） | ✅ `cli::selftest`（且 `--selftest` 两种写法都收） |
 | `notify` | LocalEventHTTP | ✅ `cli::notify`（端到端验过：`{"ok":true,"delivered":"external"}`） |
-| `open` | URLSchemeParser | ✅ **v0.0.207 起两侧闭环**：`deeplink.rs` 九类动作 + 官方 deep-link 插件。**冷启动真机验收未做** |
+| `open` | URLSchemeParser | ⚠️ `deeplink.rs` 九类动作 + 官方插件（v0.0.207）。**v0.0.208 补上 `src-tauri/Info.plist` 的 URL scheme 声明**——此前 Rust bundle 根本没声明，深链在这台机器上不可达。**端到端派发仍未证明**：本机两个应用都声明该 scheme，系统只路由给一个 |
 | `report` | AuditReportExporter | ✅ `cli::report`（md / csv，`-o` 原子写） |
 | `raycast` | AppVersion | ✅ `cli::raycast`。**第四个版本位已收口**：`Cargo.toml` 与 `AppVersion.string` 由一条用例对账（此前一直是 0.1.0） |
 
