@@ -302,7 +302,18 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
 
 **未核实 / 需人工确认**：
 
-1. `session.rs` 四个 `probe_*` 与 Swift 同名解析器**未逐行比对语义**（只确认了分派方式与信号种类一致）。
+1. ~~`session.rs` 四个 `probe_*` 与 Swift 同名解析器未逐行比对语义~~
+   ⚠️ **v0.0.199 比对了 `probe_claude` 一支**，结论见
+   [会话强语义逐段比对](../research/2026-09-27-session-probe-parity-check.md)：
+   - **查出并修掉一个真 bug**：用户中断（Ctrl-C）后 Rust 仍报在途，
+     Agent 被永久钉在 working（2s 快采样与高频扫描一起被锁住）。
+     `probe_claude` 已补上 Swift 侧 `isInterruptionNotice` 的等价机制（短语表 10 条照搬，
+     含短行闸），**撤销只作用于中断之前的调用**，三条用例 + 反向验证。
+   - **两处差异记录未修**：① 在途判定范围——Swift 只拦终端执行类工具，
+     Rust 拦**任何**未收口 `tool_use`（多报方向）② 尾部窗口 96 行/256KB vs 600 行/8MB。
+   - **两处未确认**：完成态 15 分钟过期在引擎层是否有等价物；更宽窗口会不会捞出旧 attention。
+   - **仍未比对**：`probe_cline` / `probe_zcode` 与 Swift 对应实现，以及 `collectFacts`
+     那些事实键的等价覆盖。
 2. ~~Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读~~
    ✅ **v0.0.198 已核实**：`cpu_percent` 只喂环形仪表的弧长（`?? 0`，对仪表是正确的），
    **任何出口都没有把它渲染成文字**，不存在「0.0%」；两壳都过滤离线项；

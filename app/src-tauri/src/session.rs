@@ -96,8 +96,20 @@ fn md5_lite(s: &str) -> u64 {
 fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
     let mut sidechains = 0usize;
 
+    // 用户中断（Ctrl-C / 点停止）会留下一条永不交付 tool_result 的执行类调用。
+    // 不撤销的话：本行之后的每一拍都拿到 `.active`，滞回与完成分支永远走不到，
+    // 该 Agent 被钉死在 working——2s 快采样与高频全树扫描一并被锁住（耗电与 CPU 双输）。
+    // Swift 侧同名机制 `isInterruptionNotice`，短语表逐条照搬。
+    //
+    // 语义与 Swift 一致：**只撤销中断之前**的调用。中断之后重新发起的命令仍然是在途。
+    let last_interruption = lines.iter().rposition(|l| is_interruption_notice(l));
+
     // 自尾向前找最新一条 assistant 条目
-    for line in lines.iter().rev() {
+    for (index, line) in lines.iter().enumerate().rev() {
+        // 走到中断点即止：它与更早的一切都已被用户撤销
+        if last_interruption.is_some_and(|cut| index <= cut) {
+            break;
+        }
         let Ok(doc) = serde_json::from_str::<Value>(line) else { continue };
         let obj = match doc.as_object() { Some(o) => o, None => continue };
         let type_ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -164,6 +176,47 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
         }
     }
     SessionProbe { signal: None, subagent_count: sidechains }
+}
+
+/// 中断短语表。与 Swift `AgentSessionInspector.interruptionPhrases` 逐条同值——
+/// 这里少一条，就有一种打断方式会让 Agent 继续被钉在工作态。
+const INTERRUPTION_PHRASES: [&str; 10] = [
+    "interrupted by user",
+    "request interrupted",
+    "user interrupted",
+    "turn_aborted",
+    "turn aborted",
+    "aborted by user",
+    "cancelled by user",
+    "canceled by user",
+    "user cancelled",
+    "user canceled",
+];
+
+/// 这一行是不是「用户按了停止」。
+///
+/// 三道与 Swift 相同的闸：① 短行（`line.count <= 400`）——长行里出现
+/// "aborted by user" 多半是在转述别人的话，不是本轮被打断；
+/// ② 必须是 user 角色/类型那一行；③ 命中短语表。
+fn is_interruption_notice(line: &str) -> bool {
+    if line.chars().count() > 400 {
+        return false;
+    }
+    let lowered = line.to_lowercase();
+    if !INTERRUPTION_PHRASES.iter().any(|p| lowered.contains(p)) {
+        return false;
+    }
+    let Ok(doc) = serde_json::from_str::<Value>(line) else {
+        return false;
+    };
+    let type_ = doc.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    if type_ == "user" {
+        return true;
+    }
+    doc.get("message")
+        .and_then(|m| m.get("role"))
+        .and_then(|v| v.as_str())
+        == Some("user")
 }
 
 fn tail_has_tool_result(lines: &[String], tool_use_id: &str) -> bool {

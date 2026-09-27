@@ -184,3 +184,53 @@ fn output_records_without_requests_do_not_recreate_work_or_attention() {
         assert_no_signal(probe_codex(&[CODEX.lines().nth(index).unwrap().to_owned()], FIXTURE_PATH));
     }
 }
+
+    /// 用户中断撤销在途命令：不得把 Agent 永久钉在 working。
+    ///
+    /// 症状（Rust 侧实测）：中断之后仍返回 `Active("运行: sleep 999")`，
+    /// 于是每一拍都拿到在途信号，滞回与完成分支永远走不到——
+    /// 2s 快采样与高频扫描被一起锁住，耗电与 CPU 双输。
+    /// Swift 侧同名用例：`多智能体高级: 用户中断撤销在途命令: 不得把 Agent 永久钉在 working`。
+    #[test]
+    fn a_user_interruption_voids_the_calls_it_interrupted() {
+        let sandbox = crate::testutil::Sandbox::new("interrupt");
+        let path = sandbox.path().join("s.jsonl");
+        let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
+        let interrupt = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+        std::fs::write(&path, format!("{bash}\n{interrupt}\n")).unwrap();
+        assert_no_signal(crate::session::probe("claude", path.to_str().unwrap()));
+    }
+
+    /// 撤销只作用于中断之前的调用——中断之后重新发起的命令仍然是在途。
+    /// 这一条与上一条成对：只做前半截会把「真的在跑」也一并抹掉。
+    #[test]
+    fn a_command_started_after_the_interruption_is_still_in_flight() {
+        let sandbox = crate::testutil::Sandbox::new("interrupt2");
+        let path = sandbox.path().join("s.jsonl");
+        let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
+        let interrupt = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+        let swift = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu2","name":"Bash","input":{"command":"swift test"}}]}}"#;
+        std::fs::write(&path, format!("{bash}\n{interrupt}\n{swift}\n")).unwrap();
+        active_fingerprint(
+            crate::session::probe("claude", path.to_str().unwrap()),
+            "swift test",
+        );
+    }
+
+    /// 长行里出现中断短语不算数：多半是在转述别人的话。
+    /// 与 Swift 的 `line.count <= 400` 同闸。
+    #[test]
+    fn an_interruption_phrase_inside_a_long_line_does_not_void_anything() {
+        let sandbox = crate::testutil::Sandbox::new("interrupt3");
+        let path = sandbox.path().join("s.jsonl");
+        let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
+        let long_quote = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+            "Request interrupted by user ".repeat(30)
+        );
+        std::fs::write(&path, format!("{bash}\n{long_quote}\n")).unwrap();
+        active_fingerprint(
+            crate::session::probe("claude", path.to_str().unwrap()),
+            "sleep 999",
+        );
+    }
