@@ -8,7 +8,7 @@
 
 > **能力边界今天是这样**（不藏）：25 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy / WorkBuddy AI）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
 
-> 本文档描述 **v0.0.195** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.196** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 >
@@ -108,7 +108,7 @@
 - **CPU 要有窗口才谈得上测到**：利用率是两次采样之间的进程时间差分量，所以只采一拍的入口（`status` / `report`）根本没有窗口，那一列印 `—`、JSON 里是 `null`，不是 `0.0%`。要真实 CPU 用 `doctor`（双采）或 `top`（持续观测）。只按 bundle 命中的档案同样算「没测」——占位条目的 0 是「没看着这个进程」。
 - **退出码**：1 = 失败，2 = 用法错。写盘失败不会静默 exit 0。
 - **深链**：`agentisland://` 支持 `toggle`、`expand`、`collapse`、`agent?id=<id>`、`analytics`、`toolbox`、`clean`、`export`、`notify`。投递目标必须解析到已知档案，否则拒绝。
-- **本地 Webhook**：`127.0.0.1:41999`。
+- **本地 Webhook**：`127.0.0.1:41999`（本应用的地址；认证令牌在`~/Library/Application Support/AgentIsland/report.token`）。迁移中的 Rust 端用 `127.0.0.1:42000`，**同一枚令牌**、同一套协议——两个应用可以同时跑而互不打扰，理由与「什么时候改回去」见 [ADR 0013](docs/adr/0013-local-event-port-during-migration.md)。
   - `POST /notify`、`/event`：供 CI 或脚本毫秒级直推事件。**无鉴权**，只靠「仅监听回环」限制来源，岛内标为「外部投递」，不外送。
   - `POST /session`、`DELETE /session`：给智能体自己上报生命周期（working / idle / attention / completed）并带 TTL。要出示令牌 `X-AgentIsland-Token`，值在 `~/Library/Application Support/AgentIsland/report.token`（`0600`，同机用户可读得懂的文件形态都会被打回）。TTL 钳在 15–600 秒（默认 90），到期只盖章不删除——之后那个会话的状态重新由进程表推断。没有令牌的申报不丢：落回上面那条无鉴权通道，带「未采信」标记。可声明的状态只有四种，认不出就 400，绝不猜。
   - `GET /state`：读 App 进程里的实时状态，与 `/session` 用同一枚令牌。只给聚合状态（谁在跑、状态是谁说的、自报还剩多久、冲突那句原文）；**命令正文、文件路径、会话 id 一律不给**。

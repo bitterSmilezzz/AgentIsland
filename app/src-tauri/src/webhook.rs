@@ -3,9 +3,33 @@ use std::io::Read;
 use std::sync::mpsc::Sender;
 use tiny_http::{Header, Method, Response, Server};
 
-/// 本地 Webhook（127.0.0.1:41999，与 macOS 端同端口同协议）：
+/// 本地 Webhook（127.0.0.1，协议与 macOS 端相同）：
 /// · POST /notify、/event：无鉴权直推事件（岛内标「外部投递」）
 /// · POST /session、DELETE /session：需令牌 X-AgentIsland-Token
+///
+/// **端口与 macOS 端不同**（它用 41999，见 ADR 0013）：
+/// 两个应用都用一个端口时，先启动的占住、后启动的**静默失效**——而请求还会「正常返回」，
+/// 只是答话的是另一个进程。迁移期两件并存，所以各用各的：
+/// · 41999 是**交付物**（Swift 本体）对外的承诺，README 里写的就是它，不能动；
+/// · Rust 端用 42000，第三方配置指向 41999 时说的仍然是交付物。
+/// Swift 退场后（ADR 0010 的迁移收尾）把这个默认值改回 41999 即可。
+pub const DEFAULT_EVENT_PORT: u16 = 42000;
+
+/// 端口解析：环境变量优先（`AGENTISLAND_EVENT_PORT`），认不出就用默认值。
+///
+/// 抽成纯函数是为了可测——`std::env::set_var` 在并行测试里是进程级共享状态，
+/// 拿它测等于给自己埋一个偶发。**认不出时回默认而不是 panic**：一个手滑的环境变量
+/// 不该让本地入口整个起不来。
+pub fn parse_event_port(raw: Option<&str>) -> u16 {
+    match raw.map(str::trim) {
+        Some(value) if !value.is_empty() => value.parse::<u16>().unwrap_or(DEFAULT_EVENT_PORT),
+        _ => DEFAULT_EVENT_PORT,
+    }
+}
+
+pub fn event_port() -> u16 {
+    parse_event_port(std::env::var("AGENTISLAND_EVENT_PORT").ok().as_deref())
+}
 pub struct LocalEventServer {
     handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -38,7 +62,8 @@ fn rand_u64() -> u64 {
 
 impl LocalEventServer {
     pub fn start(tx: Sender<AgentTaskEvent>, engine: crate::SharedEngine) -> Self {
-        let server = match Server::http("127.0.0.1:41999") {
+        let port = event_port();
+        let server = match Server::http(format!("127.0.0.1:{port}")) {
             Ok(s) => s,
             Err(error) => {
                 // 端口被占：岛其余功能不受影响，但**必须说出来**。
@@ -46,11 +71,14 @@ impl LocalEventServer {
                 // 先启动的那个占住，后启动的本地入口就没了——而所有请求会看起来「正常返回」，
                 // 只是答话的是另一个进程（我实测时就被这件事骗过一次）。
                 crate::log_line(&format!(
-                    "[webhook] 41999 绑定失败（{error}）：本地 /notify、/event、/session 入口本次不可用"
+                    "[webhook] 127.0.0.1:{port} 绑定失败（{error}）：本地 /notify、/event、/session 入口本次不可用"
                 ));
                 return LocalEventServer { handle: None };
             }
         };
+        crate::log_line(&format!(
+            "[webhook] 本地入口监听 127.0.0.1:{port}（协议与 macOS 端相同；端口不同见 ADR 0013）"
+        ));
         let handle = std::thread::spawn(move || {
             ensure_token();
             for mut request in server.incoming_requests() {
@@ -106,7 +134,7 @@ fn route(
             }
             return (401, r#"{"bound":false,"reason":"noToken"}"#.to_string());
         }
-        let (agent_id, session_id) = session_query(url);
+        let (agent_id, session_id) = resolve_session_ids(url, body);
         if *method == Method::Delete {
             let mut guard = engine.lock().unwrap();
             let removed = guard.self_reports.remove(agent_id.trim());
@@ -202,6 +230,40 @@ fn session_query(url: &str) -> (String, String) {
     (agent, session)
 }
 
+/// 从请求里取 `agent` 与 `session`。**与 Swift 侧一致**：`agent` 走查询串、`session` 走正文。
+///
+/// 这不只是风格问题——hook 的 http 配置只会原样 POST 事件正文，主会话的 payload 里
+/// 没有我们的档案 id，所以 `agent` 必须能从查询串带；而 `session` 在正文里。
+/// 我第一版两个都从查询串取，于是**按 Swift 格式发过来的请求会被拒掉**——
+/// 这个缺口是靠「拿真 Swift 应用对打」发现的，自己的测试发现不了。
+/// 两种形式都收（查询串那份作为回落）：比 Swift 更宽容不会伤人。
+pub fn resolve_session_ids(url: &str, body: &str) -> (String, String) {
+    let (query_agent, query_session) = session_query(url);
+    let json: Option<serde_json::Value> = serde_json::from_str(body).ok();
+    let from_body = |key: &str| -> String {
+        json.as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let agent = if query_agent.trim().is_empty() {
+        from_body("agent")
+    } else {
+        query_agent
+    };
+    let session = {
+        let in_body = from_body("session");
+        if in_body.is_empty() {
+            query_session
+        } else {
+            in_body
+        }
+    };
+    (agent, session)
+}
+
 fn percent_decode(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -274,7 +336,7 @@ fn bind_self_report(
         return reject(
             400,
             reason.reason(),
-            "查询串里要带 ?agent=<id>&session=<id>",
+            "agent 要带在查询串上（?agent=<id>）、session 放在正文里",
         );
     }
 
@@ -489,5 +551,105 @@ mod session_tests {
             "百分号解码"
         );
         assert_eq!(session_query("/session"), (String::new(), String::new()));
+    }
+}
+
+#[cfg(test)]
+mod port_tests {
+    use super::*;
+
+    #[test]
+    fn the_event_port_defaults_away_from_the_shipped_app() {
+        // 交付物（Swift 本体）用 41999，Rust 端不该去抢它
+        assert_eq!(parse_event_port(None), DEFAULT_EVENT_PORT);
+        assert_ne!(DEFAULT_EVENT_PORT, 41999, "Rust 端不能与交付物同端口");
+        assert_eq!(parse_event_port(Some("")), DEFAULT_EVENT_PORT, "空串算没给");
+        assert_eq!(parse_event_port(Some("   ")), DEFAULT_EVENT_PORT);
+    }
+
+    #[test]
+    fn a_hand_written_port_is_honoured_but_garbage_falls_back_instead_of_panicking() {
+        assert_eq!(parse_event_port(Some("42100")), 42100);
+        assert_eq!(parse_event_port(Some(" 42100 ")), 42100, "两侧空白容错");
+        // 认不出的：回默认值而不是 panic——一个手滑的环境变量不该让本地入口起不来
+        for bad in ["abc", "-1", "70000", "41999abc", "1.5"] {
+            assert_eq!(
+                parse_event_port(Some(bad)),
+                DEFAULT_EVENT_PORT,
+                "{bad:?} 应回落默认值"
+            );
+        }
+        // 合法但特殊的值照收（0 = 让内核选端口，测试里有用）
+        assert_eq!(parse_event_port(Some("0")), 0);
+    }
+}
+
+#[cfg(test)]
+mod interop_tests {
+    use super::*;
+    use crate::settings::Settings;
+    use std::sync::{mpsc, Arc, Mutex};
+
+    fn shared_engine() -> crate::SharedEngine {
+        let (_tx, rx) = mpsc::channel();
+        Arc::new(Mutex::new(crate::engine::ActivityEngine::new(
+            Settings::default(),
+            rx,
+        )))
+    }
+
+    /// Swift 的调用约定：`?agent=` 在查询串上、`session` 在正文里。
+    /// 这条用例守的是**跨实现互操作**——按 Swift 格式发过来必须被接受，
+    /// 否则第三方按文档配好也送不进来（我第一版就是这样：两个都从查询串取）。
+    #[test]
+    fn the_swift_wire_shape_is_understood() {
+        assert_eq!(
+            resolve_session_ids(
+                "/session?agent=dim",
+                r#"{"session":"hook-session-1","state":"working"}"#
+            ),
+            ("dim".to_string(), "hook-session-1".to_string())
+        );
+        // 更宽容的一侧：两处都给时正文为准（与 Swift 一致）
+        assert_eq!(
+            resolve_session_ids("/session?agent=dim&session=from-query", r#"{"session":"from-body"}"#),
+            ("dim".to_string(), "from-body".to_string())
+        );
+        // 正文没给 session 时回落到查询串
+        assert_eq!(
+            resolve_session_ids("/session?agent=dim&session=from-query", r#"{"state":"idle"}"#),
+            ("dim".to_string(), "from-query".to_string())
+        );
+        // agent 也能从正文来（我们没有这条需求，但收下不伤人）
+        assert_eq!(
+            resolve_session_ids("/session", r#"{"agent":"codex","session":"s"}"#),
+            ("codex".to_string(), "s".to_string())
+        );
+        // 都没有 ⇒ 空，交给校验去报 malformed
+        assert_eq!(
+            resolve_session_ids("/session", "{}"),
+            (String::new(), String::new())
+        );
+    }
+
+    /// 真正接通一条「Swift 格式」的申报（端到端那一层由 `bind_self_report` 的用例覆盖）
+    #[test]
+    fn a_swift_shaped_request_binds_end_to_end() {
+        let engine = shared_engine();
+        let (agent, session) = resolve_session_ids(
+            "/session?agent=dim",
+            r#"{"session":"hook-session-1","state":"working"}"#,
+        );
+        let (status, body) = bind_self_report(
+            r#"{"session":"hook-session-1","state":"working"}"#,
+            &agent,
+            &session,
+            &engine,
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains(r#""bound":true"#), "{body}");
+        let guard = engine.lock().unwrap();
+        let record = guard.self_reports.record("dim").expect("应已登记");
+        assert_eq!(record.session_id, "hook-session-1");
     }
 }

@@ -825,7 +825,7 @@ fn main() {
             let handle = app.handle().clone();
             std::thread::spawn(move || engine_loop(shared2, handle));
 
-            // 本地 Webhook（127.0.0.1:41999）
+            // 本地 Webhook（Rust 端 127.0.0.1:42000，与 Swift 的 41999 分开以免静默抢端口）
             let shared_for_webhook = shared.clone();
             std::thread::spawn(move || {
                 let _server = webhook::LocalEventServer::start(tx, shared_for_webhook);
