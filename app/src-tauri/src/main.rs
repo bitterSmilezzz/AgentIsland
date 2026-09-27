@@ -578,6 +578,125 @@ fn token_report_csv(state: State<SharedEngine>, range: Option<String>) -> crate:
     crate::report::csv_export(&timeline, crate::tokens::now_ms())
 }
 
+// MARK: - Codex 档位（Phase 2）
+
+/// **能力边界**：只要涉及档位切换，这段就随结果一起返回。
+///
+/// 放在 Rust 侧拼好（而不是让界面各写一遍）是因为它必须**逐字**出现：
+/// 用户切了档以为能用别家的模型、结果不能用，是这次改造最容易招来的误解。
+/// 界面上少写一次，就没有第二道防线了。
+const PROVIDER_LIMITATIONS: &str = "只切换本机已有的 Codex 档位（同厂商多账号、模型与 provider 选择），**不含跨厂商模型能力**：切了档不等于那个模型就能用。API key 不由本应用保存——档位只记环境变量名，你需要自己把它设进环境变量。切换后需重启正在运行的 Codex 会话才生效。";
+
+#[derive(serde::Serialize)]
+struct ProviderStatus {
+    installed: bool,
+    config_path: Option<String>,
+    /// `config.toml` 里当前生效的 provider id（读不到就是 `None`——**不猜**）
+    active_provider_id: Option<String>,
+    /// 反查出来的档位 id（能对上才有）
+    active_profile_id: Option<String>,
+    profile_count: usize,
+    limitations: &'static str,
+}
+
+#[tauri::command]
+fn provider_scan_tools() -> Vec<crate::provider::ToolScan> {
+    crate::provider::scan_tools()
+}
+
+#[tauri::command]
+fn provider_list_profiles() -> Vec<crate::provider::CodexProfile> {
+    crate::provider::ProviderStore::at_default().list()
+}
+
+#[tauri::command]
+fn provider_save_profile(
+    profile: crate::provider::CodexProfile,
+) -> Result<crate::provider::CodexProfile, String> {
+    crate::provider::ProviderStore::at_default().save(profile)
+}
+
+#[tauri::command]
+fn provider_delete_profile(id: String) -> Result<(), String> {
+    crate::provider::ProviderStore::at_default().delete(&id)
+}
+
+#[tauri::command]
+fn provider_status() -> ProviderStatus {
+    let store = crate::provider::ProviderStore::at_default();
+    let profiles = store.list();
+    let path = crate::provider::codex_config_path();
+    let installed = path.as_ref().is_some_and(|p| p.exists());
+    let active_provider_id = path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| crate::provider::active_provider_id(&text));
+    let active_profile_id = active_provider_id.as_ref().and_then(|provider| {
+        profiles
+            .iter()
+            .find(|profile| &profile.provider_id == provider)
+            .map(|profile| profile.id.clone())
+    });
+    ProviderStatus {
+        installed,
+        config_path: path.map(|p| p.to_string_lossy().to_string()),
+        active_provider_id,
+        active_profile_id,
+        profile_count: profiles.len(),
+        limitations: PROVIDER_LIMITATIONS,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ProviderApplyResult {
+    config_path: String,
+    backup_name: String,
+    limitations: &'static str,
+}
+
+/// 切换档位：**先备份、再原子写**。写失败时原文件逐字节不动（`atomicfile` 保证）。
+#[tauri::command]
+fn provider_apply_profile(id: String) -> Result<ProviderApplyResult, String> {
+    let store = crate::provider::ProviderStore::at_default();
+    let profile = store
+        .list()
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| format!("没有这个档位：{id}"))?;
+    let target = crate::provider::codex_config_path()
+        .ok_or_else(|| "找不到 Codex 配置目录".to_string())?;
+    let backup = crate::provider::apply_codex_profile(
+        &target,
+        &store.backups_dir(),
+        &profile,
+        crate::tokens::now_ms(),
+    )
+    .map_err(|e| format!("切换档位失败：{e}"))?;
+    Ok(ProviderApplyResult {
+        config_path: target.to_string_lossy().to_string(),
+        backup_name: backup
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        limitations: PROVIDER_LIMITATIONS,
+    })
+}
+
+#[tauri::command]
+fn provider_list_backups() -> Vec<crate::provider::BackupInfo> {
+    crate::provider::list_backups(&crate::provider::ProviderStore::at_default().backups_dir())
+}
+
+/// 按**名字**还原（界面只能选我们列出的备份；传别的名字一律拒绝）
+#[tauri::command]
+fn provider_restore_backup(name: String) -> Result<(), String> {
+    let store = crate::provider::ProviderStore::at_default();
+    let target = crate::provider::codex_config_path()
+        .ok_or_else(|| "找不到 Codex 配置目录".to_string())?;
+    crate::provider::restore_backup_by_name(&target, &store.backups_dir(), &name)
+        .map_err(|e| format!("还原失败：{e}"))
+}
+
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
     // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
@@ -772,6 +891,14 @@ fn main() {
             audit_report_csv,
             agent_process_tree,
             run_selftest,
+            provider_scan_tools,
+            provider_list_profiles,
+            provider_save_profile,
+            provider_delete_profile,
+            provider_status,
+            provider_apply_profile,
+            provider_list_backups,
+            provider_restore_backup,
             token_report_markdown,
             token_report_csv,
             remote_secret_set,

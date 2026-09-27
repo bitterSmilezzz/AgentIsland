@@ -103,7 +103,7 @@ docs/               ADR、调研、验收记录、agent 协同约定
 | :--- | :--- | --- | :--- |
 | Claude Code | `~/.claude/settings.json` | 271B | `{permissions, hooks}`，**`env` 为空** |
 | Claude Code | `~/.claude.json` | 548B | — |
-| Codex | `~/.codex/config.toml` | 3533B | `[desktop]` / `[mcp_servers.*]` / `[marketplaces.*]` / `[model_providers]` |
+| Codex | `~/.codex/config.toml` | 3533B | `[desktop]` / `[mcp_servers.*]` / `[marketplaces.*]`（**2026-09-27 复核：本机当前没有 `[model_providers]` 段**，此格此前记的是 09-25 的快照，已过期；详见 [研究记录](../research/2026-09-27-codex-provider-config.md)）|
 | Codex | `~/.codex/auth.json` | 3954B | 凭据载体 |
 | Gemini CLI | `~/.gemini/settings.json` | — | **不存在** |
 | OpenCode | `~/.opencode/config.json` | — | **不存在** |

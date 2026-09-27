@@ -105,18 +105,28 @@
 
 ## Phase 2 — Codex 配置档位（原 CC Switch 草案收窄）
 
-1. `provider.rs`：`scan_tools()` / `list_profiles()` / `save_profile()` /
-   `apply_profile()`（原子写 + 备份）/ `delete_profile()`。
-2. `main.rs` 注册 command，DTO 强制掩码。
-3. 前端页面：档位列表 + 当前生效标记 + 切换确认 + 备份还原。
-   **仅在 sidebar 形态下可达**（island 形态的 372×520 卡片装不下）。
-4. 第一阶段只实现 `Tool::Codex`；其他工具待单独核实并立项。
-5. 测试：原子写失败不留半截文件、密钥绝不出现在 DTO、备份-还原往返一致。
-6. **界面必须写明能力边界**：「切换同厂商多账号，不含跨厂商模型」——否则用户切了档
-   以为能用 Kimi，实际不能用。这是 Magpie 调研的直接结论，不能只写在文档里。
-7. 学习 Magpie 被点名的一项工程实践：**原子写时保留配置文件的注释、顺序与缩进**
-   （`settings.json` / `config.toml` / `config.yaml`）。朴素的 JSON 序列化会把用户手写的
-   格式冲掉，这是会被用户立刻察觉的破坏。
+> **进行中（v0.0.189 起）**。Rust 侧（1/2/5/7）已完成；界面（3/6）未做。
+
+1. ✅ `provider.rs`（v0.0.160 建的地基 + v0.0.189 补全）：`scan_tools()`（第一阶段只认 Codex）、
+   `ProviderStore::{list,save,delete}`（我们自己的 `profiles.json`，损坏即降级为空清单）、
+   `plan_codex_apply()`（纯函数，保留注释/顺序/缩进）、`apply_codex_profile()`（**先备份再原子写**）、
+   `restore_codex_backup()` / `restore_backup_by_name()`（按**名字**还原，拒绝路径穿越）、
+   `is_codex_config_target()`（只认 `<某目录>/.codex/config.toml`，`auth.json` 进不来）。
+2. ✅ `main.rs` 注册 8 条命令：`provider_scan_tools` / `provider_list_profiles` /
+   `provider_save_profile` / `provider_delete_profile` / `provider_status` /
+   `provider_apply_profile` / `provider_list_backups` / `provider_restore_backup`。
+   **DTO 本来就无密钥字段**（档位只存 `env_key` 这个变量名），另有用例断言序列化结果里
+   没有任何像密钥的长串。
+3. ❌ 前端页面（档位列表 + 当前生效标记 + 切换确认 + 备份还原）：**未做**。
+   **仅在 sidebar 形态下可达**（island 的 372×520 装不下）。
+4. ✅ 只做 `Tool::Codex`；`scan_tools()` 的用例断言它**只承诺 Codex**，不为别的工具画未实现的 UI。
+5. ✅ 用例：原子写失败不留半截文件、坏档位在碰到配置前就被拒、备份-还原逐字节一致、
+   备份写不进去时配置一个字节不动（这条**专门分辨「先备份后写」与「先写后备份」**）、
+   密钥形状串不出现在 DTO、tool scan 只承诺 Codex。
+6. ⚠️ **文案已就位、界面未就位**：`PROVIDER_LIMITATIONS`（能力边界）在 Rust 侧拼好，
+   任何一次切换的结果都带它——但今天还没有界面显示它。
+7. ✅ 保留注释/顺序/缩进：写入走 `toml_edit`，有用例钉住行内注释与数组缩进；
+   用户的额外 provider 键（如 `request_max_retries`）**不删**，也有用例。
 
 **验收**
 

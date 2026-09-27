@@ -931,9 +931,14 @@ mod tests {
         )
     }
 
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
+    /// 沙箱取名带**序号**：`as_nanos()` 在 macOS 上分辨率很粗，并行用例会撞名，
+    /// 于是两个用例共用一个目录、先结束的把另一个的文件删掉（表现为「偶发挂几条」）。
+    static NEXT_SANDBOX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    pub(super) fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let serial = NEXT_SANDBOX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "agentisland-tokens-{tag}-{}-{}",
+            "agentisland-tokens-{tag}-{}-{}-{serial}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1401,17 +1406,9 @@ mod range_tests {
         )
     }
 
+    /// 复用 `tests::temp_dir`（**一处实现**：沙箱命名要带序号这件事只能有一个地方知道）
     fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "agentisland-range-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        super::tests::temp_dir(tag)
     }
 
     /// 把本地时间的分量写成 ISO 串。**它按 UTC 解析，所以与实际时刻最多差一个时区**

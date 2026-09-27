@@ -73,7 +73,7 @@ impl Default for Settings {
     }
 }
 
-pub fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     let mut dir = dirs::data_dir().unwrap_or_else(std::env::temp_dir);
     dir.push("AgentIsland");
     dir
