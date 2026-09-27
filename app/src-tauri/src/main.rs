@@ -580,25 +580,6 @@ fn token_report_csv(state: State<SharedEngine>, range: Option<String>) -> crate:
 
 // MARK: - Codex 档位（Phase 2）
 
-/// **能力边界**：只要涉及档位切换，这段就随结果一起返回。
-///
-/// 放在 Rust 侧拼好（而不是让界面各写一遍）是因为它必须**逐字**出现：
-/// 用户切了档以为能用别家的模型、结果不能用，是这次改造最容易招来的误解。
-/// 界面上少写一次，就没有第二道防线了。
-const PROVIDER_LIMITATIONS: &str = "只切换本机已有的 Codex 档位（同厂商多账号、模型与 provider 选择），**不含跨厂商模型能力**：切了档不等于那个模型就能用。API key 不由本应用保存——档位只记环境变量名，你需要自己把它设进环境变量。切换后需重启正在运行的 Codex 会话才生效。";
-
-#[derive(serde::Serialize)]
-struct ProviderStatus {
-    installed: bool,
-    config_path: Option<String>,
-    /// `config.toml` 里当前生效的 provider id（读不到就是 `None`——**不猜**）
-    active_provider_id: Option<String>,
-    /// 反查出来的档位 id（能对上才有）
-    active_profile_id: Option<String>,
-    profile_count: usize,
-    limitations: &'static str,
-}
-
 #[tauri::command]
 fn provider_scan_tools() -> Vec<crate::provider::ToolScan> {
     crate::provider::scan_tools()
@@ -622,7 +603,7 @@ fn provider_delete_profile(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn provider_status() -> ProviderStatus {
+fn provider_status() -> crate::provider::ProviderStatus {
     let store = crate::provider::ProviderStore::at_default();
     let profiles = store.list();
     let path = crate::provider::codex_config_path();
@@ -637,26 +618,19 @@ fn provider_status() -> ProviderStatus {
             .find(|profile| &profile.provider_id == provider)
             .map(|profile| profile.id.clone())
     });
-    ProviderStatus {
+    crate::provider::ProviderStatus {
         installed,
         config_path: path.map(|p| p.to_string_lossy().to_string()),
         active_provider_id,
         active_profile_id,
         profile_count: profiles.len(),
-        limitations: PROVIDER_LIMITATIONS,
+        limitations: crate::provider::PROVIDER_LIMITATIONS,
     }
-}
-
-#[derive(serde::Serialize)]
-struct ProviderApplyResult {
-    config_path: String,
-    backup_name: String,
-    limitations: &'static str,
 }
 
 /// 切换档位：**先备份、再原子写**。写失败时原文件逐字节不动（`atomicfile` 保证）。
 #[tauri::command]
-fn provider_apply_profile(id: String) -> Result<ProviderApplyResult, String> {
+fn provider_apply_profile(id: String) -> Result<crate::provider::ProviderApplyResult, String> {
     let store = crate::provider::ProviderStore::at_default();
     let profile = store
         .list()
@@ -672,13 +646,13 @@ fn provider_apply_profile(id: String) -> Result<ProviderApplyResult, String> {
         crate::tokens::now_ms(),
     )
     .map_err(|e| format!("切换档位失败：{e}"))?;
-    Ok(ProviderApplyResult {
+    Ok(crate::provider::ProviderApplyResult {
         config_path: target.to_string_lossy().to_string(),
         backup_name: backup
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default(),
-        limitations: PROVIDER_LIMITATIONS,
+        limitations: crate::provider::PROVIDER_LIMITATIONS,
     })
 }
 

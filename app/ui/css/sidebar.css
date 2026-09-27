@@ -156,3 +156,149 @@
   box-shadow: none;
   background: transparent;
 }
+
+/* ── Codex 档位页（Phase 2）────────────────────────────────────────── */
+
+/* 页面容器：内容滚动交给 .sb-body，这里只管纵向排布 */
+.shell-sidebar .sb-page {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+
+/* 能力边界：必须显眼。它写的是「这个功能做不到什么」，而不是装饰 */
+.shell-sidebar .sb-note {
+  margin: 0 0 10px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: var(--slate-50, #f8fafc);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--slate-600, #475569);
+}
+
+.shell-sidebar .sb-kv {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text, #0f172a);
+}
+
+.shell-sidebar .sb-kv code,
+.shell-sidebar .sb-profile code {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--slate-100, #f1f5f9);
+}
+
+.shell-sidebar .sb-section {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--slate-500, #64748b);
+}
+
+.shell-sidebar .sb-profile {
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  margin-bottom: 6px;
+}
+
+.shell-sidebar .sb-profile .name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.shell-sidebar .sb-profile .meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--slate-500, #64748b);
+  overflow-wrap: anywhere;
+}
+
+.shell-sidebar .sb-profile .actions,
+.shell-sidebar .sb-confirm .actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.shell-sidebar .sb-tag {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 20px;
+  color: var(--emerald-700, #047857);
+  background: var(--emerald-50, #ecfdf5);
+  border: 1px solid var(--emerald-200, #a7f3d0);
+}
+
+.shell-sidebar .sb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.shell-sidebar .sb-form input,
+.shell-sidebar .sb-form select {
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff);
+  color: var(--text, #0f172a);
+}
+
+.shell-sidebar .sb-form .mini-btn {
+  align-self: flex-start;
+}
+
+.shell-sidebar .sb-backup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 2px;
+  font-size: 11px;
+  color: var(--slate-600, #475569);
+}
+
+.shell-sidebar .sb-backup .name {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 确认框：破坏性动作（切换 / 还原 / 删除）都要先过这里 */
+.shell-sidebar .sb-confirm {
+  margin-top: 12px;
+  padding: 9px;
+  border-radius: 8px;
+  border: 1px solid var(--amber-200, #fde68a);
+  background: var(--amber-50, #fffbeb);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--slate-700, #334155);
+}
+
+.shell-sidebar .sb-toast {
+  margin-top: 10px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--slate-100, #f1f5f9);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--slate-700, #334155);
+  overflow-wrap: anywhere;
+}
+
+.shell-sidebar .sb-item.is-disabled {
+  opacity: 0.45;
+  cursor: default;
+}

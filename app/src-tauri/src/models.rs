@@ -481,18 +481,15 @@ mod tests {
         let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/css/sidebar.css"))
             .expect("读不到 sidebar.css");
 
-        let start = views
-            .find("export function renderSidebar(")
-            .expect("views.js 里找不到 renderSidebar");
-        let rest = &views[start..];
-        let body = &rest[..rest.len().min(6_000)];
-
+        // 扫**整个** views.js 里 `sb-` 开头的静态类名。
+        // 一开始只扫 `renderSidebar` 的函数体，于是「档位页」这种后加的页面不在保护范围内——
+        // 哨兵的保护面必须跟着页面走，否则新页面天然是没人管的那一半。
         let mut classes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut cursor = 0;
-        while let Some(index) = body[cursor..].find("class=\"") {
+        while let Some(index) = views[cursor..].find("class=\"") {
             let from = cursor + index + "class=\"".len();
-            let Some(end) = body[from..].find('"') else { break };
-            for token in body[from..from + end].split_whitespace() {
+            let Some(end) = views[from..].find('"') else { break };
+            for token in views[from..from + end].split_whitespace() {
                 // 只查静态类名；模板插值出来的（`${...}`）没法静态核对
                 if token.starts_with("sb-") && !token.contains("${") {
                     classes.insert(token.to_string());
@@ -510,6 +507,99 @@ mod tests {
             missing.is_empty(),
             "sidebar.css 里没有这些类的样式：{missing:?}（界面不会报错，只会长得不对）"
         );
+    }
+
+    /// 档位页读的字段必须真的在命令的 DTO 里。
+    ///
+    /// 与快照那条哨兵同一套路，但对象是 `provider.rs` 的四个 DTO：
+    /// 界面写 `profile.base_url`、Rust 侧字段叫 `base_url`（serde 原样输出 snake_case），
+    /// 任何一边改名都会让界面**静默显示空值**——不报错，只是什么都没有。
+    #[test]
+    fn every_provider_field_the_ui_reads_exists_in_the_dto() {
+        // 只覆盖界面**真的在用**的四个前缀。`provider_scan_tools` 是给「将来接第二个工具」
+        // 留的端点，界面上暂时只读 `provider_status`——没有消费方的字段就不该进哨兵，
+        // 否则哨兵会逼着界面去读一个它不需要的 DTO。
+        use crate::provider::{BackupInfo, CodexProfile, ProviderApplyResult, ProviderStatus};
+
+        let views = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+            .expect("读不到 views.js");
+
+        let keys = |value: &serde_json::Value| -> std::collections::BTreeSet<String> {
+            value
+                .as_object()
+                .expect("DTO 应序列化成对象")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let profile = keys(&serde_json::to_value(CodexProfile {
+            id: "work".into(),
+            name: "工作账号".into(),
+            model: "gpt-5".into(),
+            provider_id: "acme".into(),
+            provider_name: "Acme".into(),
+            base_url: "https://api.example.invalid/v1".into(),
+            env_key: "ACME_API_KEY".into(),
+            wire_api: "responses".into(),
+        })
+        .unwrap());
+        let backup = keys(
+            &serde_json::to_value(BackupInfo {
+                name: "config-1.toml".into(),
+                created_ms: 1,
+                bytes: 2,
+            })
+            .unwrap(),
+        );
+        let status = keys(
+            &serde_json::to_value(ProviderStatus {
+                installed: true,
+                config_path: None,
+                active_provider_id: None,
+                active_profile_id: None,
+                profile_count: 0,
+                limitations: crate::provider::PROVIDER_LIMITATIONS,
+            })
+            .unwrap(),
+        );
+        let applied = keys(
+            &serde_json::to_value(ProviderApplyResult {
+                config_path: "/tmp/config.toml".into(),
+                backup_name: "config-1.toml".into(),
+                limitations: crate::provider::PROVIDER_LIMITATIONS,
+            })
+            .unwrap(),
+        );
+        // 前缀 → 该前缀下允许的键
+        for (prefix, allowed) in [
+            ("profile.", &profile),
+            ("status.", &status),
+            ("applied.", &applied),
+            ("backup.", &backup),
+        ] {
+            let mut cursor = 0;
+            let mut seen = 0usize;
+            while let Some(index) = views[cursor..].find(prefix) {
+                let from = cursor + index + prefix.len();
+                let name: String = views[from..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                cursor = from;
+                if name.is_empty() {
+                    continue;
+                }
+                seen += 1;
+                assert!(
+                    allowed.contains(&name),
+                    "views.js 读了 {prefix}{name}，但 DTO 里没有这个键（界面会静默显示空值）。有的键：{allowed:?}"
+                );
+            }
+            assert!(
+                seen > 0,
+                "views.js 里没有任何 `{prefix}` 用法——档位页被删了，或改了变量名（哨兵因此失效）"
+            );
+        }
     }
 
     /// 两种形态必须**共用同一份显示模型**（`agentRowModel`）。

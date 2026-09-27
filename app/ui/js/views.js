@@ -772,14 +772,16 @@ export function renderSidebar() {
   const nav = [
     { key: 'list', label: '监控', count: running.length },
     { key: 'tokenAnalytics', label: 'Token 用量', count: 0 },
-    // 待办与设置分别是 Phase 3 与设置页的事；这里**明说未做**，而不是给一个点了没反应的入口
+    { key: 'provider', label: 'Codex 档位', count: 0 },
+    // 待办是 Phase 3 的事；这里**明说未做**，而不是给一个点了没反应的入口
     { key: 'todo', label: '待办（未做）', count: 0, disabled: true },
-    { key: 'settings', label: '设置（未做）', count: 0, disabled: true },
   ];
-  const route = st.route === 'list' || st.route === 'tokenAnalytics' ? st.route : 'list';
+  const route = ['list', 'tokenAnalytics', 'provider'].includes(st.route) ? st.route : 'list';
 
   let body;
-  if (route === 'tokenAnalytics') {
+  if (route === 'provider') {
+    body = pageProvider();
+  } else if (route === 'tokenAnalytics') {
     body = pageAnalytics(eng);
   } else if (running.length === 0) {
     body = '<div class="sb-empty">还没有检测到运行中的智能体</div>';
@@ -805,7 +807,9 @@ export function renderSidebar() {
 
   const header = route === 'tokenAnalytics'
     ? { t: 'Token 用量', s: '净消耗 · 不含缓存读取' }
-    : { t: '智能体', s: attention > 0 ? `${attention} 个等待确认` : '全部正常' };
+    : route === 'provider'
+      ? { t: 'Codex 档位', s: '切换本机已有的 provider 配置' }
+      : { t: '智能体', s: attention > 0 ? `${attention} 个等待确认` : '全部正常' };
 
   const root = document.getElementById('root');
   root.innerHTML = `
@@ -832,6 +836,7 @@ export function renderSidebar() {
       st.route = el.dataset.nav;
       renderSidebar();
       if (st.route === 'tokenAnalytics') await hydrateReport();
+      if (st.route === 'provider') await hydrateProvider();
     };
   });
   root.querySelectorAll('[data-agent]').forEach((el) => {
@@ -849,4 +854,203 @@ function escapeHtml(text) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+// MARK: - Codex 档位页（Phase 2）
+
+/// 档位页骨架。数据要读 `config.toml` 与档位库（异步），所以先出骨架、
+/// 再由 `hydrateProvider()` 填内容——与报表页同一套路。
+export function pageProvider() {
+  return `
+    <div class="sb-page" data-provider-root>
+      <div class="sb-empty">加载中…</div>
+    </div>`;
+}
+
+/// 填档位页。三个数据源各自独立取，**任何一项失败都明说失败**，不静默留空：
+/// 「读不到」与「没有档位」在界面上是两件事，混起来用户会以为自己的配置丢了。
+export async function hydrateProvider() {
+  const root = document.querySelector('[data-provider-root]');
+  if (!root) return;
+  const status = await invoke('provider_status').catch(() => null);
+  if (!status) {
+    root.innerHTML = '<div class="sb-empty">读不到 Codex 状态（命令没接上？）</div>';
+    return;
+  }
+  const profiles = await invoke('provider_list_profiles').catch(() => []);
+  const backups = await invoke('provider_list_backups').catch(() => []);
+  renderProviderPage(root, status, profiles, backups);
+}
+
+function renderProviderPage(root, status, profiles, backups) {
+  // ① 能力边界：**逐字**用 Rust 给的那段，界面不自己编一句话
+  const limitations = `<div class="sb-note" data-limitations>${escapeHtml(status.limitations ?? '')}</div>`;
+
+  // ② 当前生效：读不到就直说读不到（不说「无」——那会被读成「没在切换」）
+  const activeName = status.active_profile_id
+    ? (profiles.find((profile) => profile.id === status.active_profile_id)?.name ?? status.active_profile_id)
+    : null;
+  const activeLine = status.installed
+    ? (status.active_profile_id
+        ? `生效中：<b>${escapeHtml(activeName)}</b>（provider <code>${escapeHtml(status.active_provider_id ?? '')}</code>）`
+        : `生效中：<b>不是本应用的档位</b>（读到的 provider 是 <code>${escapeHtml(status.active_provider_id ?? '未设置')}</code>）`)
+    : '未检测到 Codex 配置（没装，或还没跑过一次）';
+
+  // ③ 档位列表：每条带「切换」，生效中的标出来
+  const rows = profiles.length === 0
+    ? '<div class="sb-empty">还没有档位。先在下面建一个。</div>'
+    : profiles
+        .map((profile) => {
+          const isActive = profile.id === status.active_profile_id;
+          return `<div class="sb-profile" data-profile-row="${escapeHtml(profile.id)}">
+            <div class="name">${escapeHtml(profile.name)}${isActive ? '<span class="sb-tag">生效中</span>' : ''}</div>
+            <div class="meta">${escapeHtml(profile.model)} · ${escapeHtml(profile.provider_id)} · ${escapeHtml(profile.base_url)}</div>
+            <div class="meta">key 来自环境变量 <code>${escapeHtml(profile.env_key)}</code></div>
+            <div class="actions">
+              ${isActive ? '' : `<span class="mini-btn" data-switch="${escapeHtml(profile.id)}">切换到此档</span>`}
+              <span class="mini-btn" data-delete="${escapeHtml(profile.id)}">删除</span>
+            </div>
+          </div>`;
+        })
+        .join('');
+
+  // ④ 备份：还原是破坏性动作，所以也要确认
+  const backupRows = backups.length === 0
+    ? '<div class="sb-empty">还没有备份。第一次切换时才会产生。</div>'
+    : backups
+        .slice(0, 8)
+        .map(
+          (backup) => `<div class="sb-backup">
+            <span class="name">${escapeHtml(backup.name)}</span>
+            <span class="mini-btn" data-restore="${escapeHtml(backup.name)}">还原</span>
+          </div>`,
+        )
+        .join('');
+
+  // ⑤ 新增档位：字段与 Rust 侧的 `CodexProfile` 同名（哨兵会盯着这些名字）
+  const form = `
+    <div class="sb-form">
+      <input data-field="id" placeholder="标识（字母数字 - _ .，例如 work）" />
+      <input data-field="name" placeholder="显示名（可留空，用标识）" />
+      <input data-field="model" placeholder="模型（例如 gpt-5）" />
+      <input data-field="provider_id" placeholder="provider 标识（例如 acme）" />
+      <input data-field="provider_name" placeholder="provider 显示名（可留空）" />
+      <input data-field="base_url" placeholder="base_url（https://…/v1）" />
+      <input data-field="env_key" placeholder="环境变量名（只存名字，不存值，例如 ACME_API_KEY）" />
+      <select data-field="wire_api"><option value="responses">responses</option><option value="chat">chat</option></select>
+      <span class="mini-btn" data-save-profile>保存档位</span>
+    </div>`;
+
+  root.innerHTML = `
+    ${limitations}
+    <div class="sb-kv" data-status>${activeLine}</div>
+    <div class="sb-section">档位</div>
+    ${rows}
+    <div class="sb-section">新增档位</div>
+    ${form}
+    <div class="sb-section">备份（切换前自动生成）</div>
+    ${backupRows}
+    <div class="sb-confirm" data-confirm hidden></div>`;
+
+  bindProviderEvents(root, status, profiles);
+}
+
+function bindProviderEvents(root, status, profiles) {
+  const confirmBox = root.querySelector('[data-confirm]');
+
+  const askConfirm = (text, onConfirm) => {
+    confirmBox.hidden = false;
+    confirmBox.innerHTML = `<div class="text">${text}</div>
+      <div class="actions"><span class="mini-btn" data-yes>确认</span><span class="mini-btn" data-no>取消</span></div>`;
+    confirmBox.querySelector('[data-yes]').onclick = async () => {
+      confirmBox.hidden = true;
+      await onConfirm();
+    };
+    confirmBox.querySelector('[data-no]').onclick = () => {
+      confirmBox.hidden = true;
+    };
+  };
+
+  root.querySelectorAll('[data-switch]').forEach((el) => {
+    el.onclick = () => {
+      const id = el.dataset.switch;
+      const profile = profiles.find((p) => p.id === id);
+      // 确认框里写清**会发生什么**：改哪个文件、模型与 provider 会变成什么
+      askConfirm(
+        `把 <code>${escapeHtml(profile?.model ?? '')}</code> / <code>${escapeHtml(profile?.provider_id ?? '')}</code> ` +
+          `写进 <code>${escapeHtml(status.config_path ?? '')}</code>？<br/>` +
+          '切换前会先备份；正在运行的 Codex 需要重启才会用上新配置。',
+        async () => {
+          // 变量名 `applied` 是**约定的**：`models.rs` 的档位字段哨兵按 `applied.` / `status.` /
+          // `profile.` / `backup.` 四个前缀扫这个文件，并断言这些键真的在 DTO 里。
+          // 换个名字就等于把这段代码移出哨兵的保护面。
+          //
+          // 失败也**不挂在 `applied.` 上**：那会把一个客户端临时对象混进「DTO 字段」的地盘，
+          // 哨兵会（正确地）报「DTO 里没有这个键」。失败单独一个变量。
+          let failure = '';
+          const applied = await invoke('provider_apply_profile', { id }).catch((error) => {
+            failure = String(error);
+            return null;
+          });
+          if (failure || !applied) {
+            await hydrateProvider();
+            showProviderToast(root, `切换失败：${failure || '命令没有返回结果'}`);
+            return;
+          }
+          await hydrateProvider();
+          showProviderToast(
+            root,
+            `已切换，备份：${applied.backup_name}。${applied.limitations ?? ''}`,
+          );
+        },
+      );
+    };
+  });
+
+  root.querySelectorAll('[data-restore]').forEach((el) => {
+    el.onclick = () => {
+      const name = el.dataset.restore;
+      askConfirm(
+        `用备份 <code>${escapeHtml(name)}</code> 覆盖当前 <code>config.toml</code>？<br/>这会丢掉备份之后的改动。`,
+        async () => {
+          const error = await invoke('provider_restore_backup', { name }).catch((e) => String(e));
+          await hydrateProvider();
+          showProviderToast(root, error ? `还原失败：${error}` : `已从 ${name} 还原`);
+        },
+      );
+    };
+  });
+
+  root.querySelectorAll('[data-delete]').forEach((el) => {
+    el.onclick = () => {
+      const id = el.dataset.delete;
+      askConfirm(`删除档位 <code>${escapeHtml(id)}</code>？（不会动 config.toml）`, async () => {
+        const error = await invoke('provider_delete_profile', { id }).catch((e) => String(e));
+        await hydrateProvider();
+        showProviderToast(root, error ? `删除失败：${error}` : `已删除 ${id}`);
+      });
+    };
+  });
+
+  const saveBtn = root.querySelector('[data-save-profile]');
+  if (saveBtn) {
+    saveBtn.onclick = async () => {
+      const profile = {};
+      root.querySelectorAll('[data-field]').forEach((el) => {
+        profile[el.dataset.field] = el.value.trim();
+      });
+      const saved = await invoke('provider_save_profile', { profile }).catch((e) => ({ error: String(e) }));
+      await hydrateProvider();
+      // 校验在 Rust 侧：**原话带回界面**，不在这里翻译成自己的说法
+      showProviderToast(root, saved?.error ? `保存失败：${saved.error}` : `已保存档位 ${saved.id}`);
+    };
+  }
+}
+
+function showProviderToast(root, text) {
+  const toast = root.querySelector('[data-toast]') ?? document.createElement('div');
+  toast.className = 'sb-toast';
+  toast.setAttribute('data-toast', '');
+  toast.textContent = text;
+  root.appendChild(toast);
 }

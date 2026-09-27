@@ -379,6 +379,37 @@ pub fn active_provider_id(original: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+// MARK: - 给界面的 DTO（搬到这里是为了让「字段哨兵」够得着）
+
+/// 界面读的状态。`limitations` 与切换结果里的是**同一段话**（见 `PROVIDER_LIMITATIONS`）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderStatus {
+    pub installed: bool,
+    pub config_path: Option<String>,
+    /// `config.toml` 里当前生效的 provider id（读不到就是 `None`——**不猜**）
+    pub active_provider_id: Option<String>,
+    /// 反查出来的档位 id（能对上才有）
+    pub active_profile_id: Option<String>,
+    pub profile_count: usize,
+    pub limitations: &'static str,
+}
+
+/// 一次切换的结果。**必带 `limitations`**：界面上少显示一次就没有第二道防线。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderApplyResult {
+    pub config_path: String,
+    pub backup_name: String,
+    pub limitations: &'static str,
+}
+
+/// **能力边界**：只要涉及档位切换，这段就随结果一起返回。
+///
+/// 放在 Rust 侧（而不是让界面各写一遍）是因为它必须**逐字**出现：
+/// 用户切了档以为能用别家的模型、结果不能用，是这次改造最容易招来的误解。
+pub const PROVIDER_LIMITATIONS: &str = "只切换本机已有的 Codex 档位（同厂商多账号、模型与 provider 选择），\
+**不含跨厂商模型能力**：切了档不等于那个模型就能用。API key 不由本应用保存——\
+档位只记环境变量名，你需要自己把它设进环境变量。切换后需重启正在运行的 Codex 会话才生效。";
+
 // MARK: - 本地档位库（我们自己的文件，不含任何凭据）
 
 /// 档位库目录：`<app data>/AgentIsland/providers/`。

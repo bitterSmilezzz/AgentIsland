@@ -1,5 +1,5 @@
 // AgentIsland 前端入口：状态管理、贴边交互、渲染调度
-import { renderCard, renderSidebar, renderSliver, sliverSize } from './views.js';
+import { hydrateProvider, hydrateReport, renderCard, renderSidebar, renderSliver, sliverSize } from './views.js';
 import { invoke } from './tauri.js';
 import { isSidebar, SHELL } from './shell.js';
 
@@ -100,7 +100,7 @@ export function scheduleRender() {
   requestAnimationFrame(async () => {
     rafPending = false;
     if (isSidebar()) {
-      renderSidebar();
+      if (state.route === 'list') renderSidebar();
       return;
     }
     if (state.expanded) {
@@ -153,10 +153,19 @@ async function boot() {
   const { listen } = await import('./tauri.js');
   if (isSidebar()) {
     await invoke('place_sidebar').catch(() => {});
+    // 启动路由也认（与灵动岛同一条约定：`--route=provider` 这类参数由托盘/命令行走）。
+    // 侧边栏原先不认它，于是「用一个参数直接开到某一页」在两种形态下行为不一致。
+    if (state.bootRoute) state.route = state.bootRoute;
     renderSidebar();
+    // 数据型页面进来要填一次内容（与点导航时同一路径，避免两套入口两种行为）
+    if (state.route === 'tokenAnalytics') await hydrateReport();
+    if (state.route === 'provider') await hydrateProvider();
     await listen('engine://tick', (e) => {
       state.engine = e.payload;
-      renderSidebar();
+      // **只有「实时列表」这一页随推送重画**。分析页、档位页是「进来时渲染一次」：
+      // 每 2 秒重画一次会把它们打回「加载中」，档位页还会把用户正在填的表单冲掉
+      // （同一个坑在分析页上也踩过一次）。
+      if (state.route === 'list') renderSidebar();
     });
     // 侧边栏没有「展开/收起」：它一直是展开的
     return;
