@@ -73,6 +73,12 @@ as an upgrade compatibility shim and are not shown in the current UI"*）。
 - **高级设置**：朴素入口，点进去才有 token 分析、异常扫描、各 Agent 详情、远程通知、
   自定义档案等既有重页面。
 
+> **实现状态（v0.0.200）**：入口与**设置页本身**已做（五个分组 28 个控件，
+> 侧栏导航第四项「高级设置 ›」；Provider 角标显示当前档位名，同节第二项也已落地）。
+> 页内**不含**远程通知与 Agent 启停列表——两条命令面都在、界面入口还没有，
+> 已列进 [对照表 §6.2](../workbench/23-swift-rust-parity-matrix.md) 与
+> `settings.rs` 的 `MANAGED_ELSEWHERE` 豁免名单（有断言盯着那份名单不许自己变长）。
+
 ## 4. CC Switch 模块（`provider.rs`）
 
 > **能力边界（先说清）**：这一层只读写 agent 的本地配置文件，**不架网关、不做协议翻译**。

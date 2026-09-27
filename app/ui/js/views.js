@@ -777,11 +777,15 @@ export function renderSidebar() {
     { key: 'provider', label: 'Codex 档位', count: 0 },
     // 角标是**未完成**数（不是总条数）：勾掉最后一条之后角标就该消失
     { key: 'todo', label: '待办', count: st.todosPending ?? 0, badge: 'todo' },
+    // 03-approach §3：首层极简，重页面（设置 / 分析 / 详情）从这里进
+    { key: 'settings', label: '高级设置 ›', count: 0 },
   ];
-  const route = ['list', 'tokenAnalytics', 'provider', 'todo'].includes(st.route) ? st.route : 'list';
+  const route = ['list', 'tokenAnalytics', 'provider', 'todo', 'settings'].includes(st.route) ? st.route : 'list';
 
   let body;
-  if (route === 'todo') {
+  if (route === 'settings') {
+    body = pageSettings();
+  } else if (route === 'todo') {
     body = pageTodo();
   } else if (route === 'provider') {
     body = pageProvider();
@@ -809,7 +813,9 @@ export function renderSidebar() {
       .join('');
   }
 
-  const header = route === 'tokenAnalytics'
+  const header = route === 'settings'
+    ? { t: '高级设置', s: '改完立即生效 · 越界自动夹回' }
+    : route === 'tokenAnalytics'
     ? { t: 'Token 用量', s: '净消耗 · 不含缓存读取' }
     : route === 'provider'
       ? { t: 'Codex 档位', s: '切换本机已有的 provider 配置' }
@@ -828,7 +834,9 @@ export function renderSidebar() {
           .map(
             (item) => `<div class="sb-item${item.key === route ? ' is-active' : ''}${item.disabled ? ' is-disabled' : ''}"
               ${item.disabled ? '' : `data-nav="${item.key}"`}>
-              <span>${item.label}</span>${item.count ? `<span class="sb-count" ${item.badge ? `data-nav-count="${item.badge}"` : ''}>${item.count}</span>` : ''}
+              <span>${escapeHtml(item.label)}</span>${item.text
+                ? `<span class="sb-count" data-nav-text="${escapeHtml(item.badge ?? '')}">${escapeHtml(item.text)}</span>`
+                : item.count ? `<span class="sb-count" ${item.badge ? `data-nav-count="${item.badge}"` : ''}>${item.count}</span>` : ''}
             </div>`,
           )
           .join('')}
@@ -839,6 +847,8 @@ export function renderSidebar() {
       </main>
     </div>`;
 
+
+  if (route === 'settings') bindSettings();
 
   // 量一次布局（在内容就位之后：把度量放在注水之前只会量到「加载中…」的骨架，
   // 我第一版就是这么量的，于是每个路由的数字都一模一样、看起来「都没问题」）。
@@ -851,6 +861,7 @@ export function renderSidebar() {
       if (st.route === 'tokenAnalytics') await hydrateReport();
       if (st.route === 'provider') await hydrateProvider();
       if (st.route === 'todo') await hydrateTodo();
+      if (st.route === 'settings') bindSettings();
     };
   });
   root.querySelectorAll('[data-agent]').forEach((el) => {
@@ -887,7 +898,157 @@ function escapeHtml(text) {
 
 /// 档位页骨架。数据要读 `config.toml` 与档位库（异步），所以先出骨架、
 /// 再由 `hydrateProvider()` 填内容——与报表页同一套路。
-export function pageProvider() {
+// MARK: 高级设置（03-approach §3 的「高级设置 ›」入口）
+
+/// 设置页的字段表：**显示名、说明、控件类型、取值范围**只有这一份。
+///
+/// 为什么不在模板里逐行写：这类页面的字段会随 Swift 侧增补而变长，
+/// 而「区间」与「默认值」是**与 Rust `Settings::normalized()` 对齐**的——
+/// 写错一个界不会有任何症状，只会让用户拖到一个本该被夹回去的值，
+/// 然后怀疑是自己手滑了。集中一份之后，改一处就够。
+const SETTING_FIELDS = [
+  { group: '通用与外观', items: [
+    { key: 'shell_mode', label: '形态', type: 'select', hint: '灵动岛与侧边栏并存，默认灵动岛',
+      options: [['island', '灵动岛'], ['sidebar', '侧边栏']] },
+    { key: 'appearance', label: '外观', type: 'select', hint: '浅色 / 深色 / 跟随系统',
+      options: [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']] },
+    { key: 'dock_edge', label: '贴边位置', type: 'select',
+      options: [['top', '上'], ['bottom', '下'], ['left', '左'], ['right', '右']] },
+    { key: 'sidebar_edge', label: '侧边栏靠', type: 'select', hint: '宽度拖出来后会记住',
+      options: [['left', '左边'], ['right', '右边']] },
+    { key: 'notification_policy', label: '通知策略', type: 'select',
+      options: [['standard', '标准'], ['focus', '专注免打扰'], ['silent', '完全静默']] },
+  ]},
+  { group: '引擎与性能', items: [
+    { key: 'sample_interval', label: '有活动时采样间隔', type: 'number', unit: '秒', min: 0.5, max: 600, step: 0.5 },
+    { key: 'idle_sample_interval', label: '全闲置时采样间隔', type: 'number', unit: '秒', min: 0.5, max: 600, step: 0.5,
+      hint: '有活动间隔不得大于它（会自动拉平）' },
+    { key: 'working_window', label: '工作判定窗口', type: 'number', unit: '秒', min: 10, max: 300, step: 5,
+      hint: '该窗口内有文件写入即判为工作中' },
+    { key: 'min_working_hold', label: '工作态最短保持', type: 'number', unit: '秒', min: 1, max: 300, step: 1,
+      hint: '防抖：工作信号消失后至少保持这么久' },
+    { key: 'active_session_window', label: '活跃会话窗口', type: 'number', unit: '秒', min: 60, max: 3600, step: 60 },
+    { key: 'cpu_threshold', label: 'CPU 工作阈值', type: 'number', unit: '%', min: 1, max: 50, step: 1 },
+    { key: 'collapse_delay', label: '自动收起延迟', type: 'number', unit: '秒', min: 0.2, max: 5, step: 0.1 },
+    { key: 'battery_saver_enabled', label: '电池供电时降频', type: 'bool' },
+    { key: 'runaway_cpu_alert', label: '持续高负载告警', type: 'bool', hint: '关掉只关告警，不影响健康度判定' },
+    { key: 'runaway_cpu_threshold', label: '高负载判定阈值', type: 'number', unit: '%', min: 10, max: 100, step: 1 },
+    { key: 'runaway_duration_threshold', label: '需持续多久', type: 'number', unit: '秒', min: 30, max: 3600, step: 30 },
+  ]},
+  { group: 'Token 与预算', items: [
+    { key: 'token_alert_enabled', label: 'Token 暴涨告警', type: 'bool' },
+    { key: 'token_alert_threshold', label: '暴涨阈值', type: 'number', unit: 'token/分', min: 1000, max: 10000000, step: 1000 },
+    { key: 'daily_token_budget', label: '每日 Token 预算', type: 'number', unit: 'token', min: 0, max: 1000000000, step: 100000,
+      hint: '0 = 未设。滚动 24 小时口径，不是自然日' },
+    { key: 'budget_alert_enabled', label: '预算告警', type: 'bool', hint: '关掉只关告警，不影响用量统计' },
+  ]},
+  { group: '提醒', items: [
+    { key: 'play_completion_sound', label: '完成提示音', type: 'bool' },
+    { key: 'auto_anomalies_alert', label: '异常驻留告警', type: 'bool', hint: '关掉只关告警，不影响卡死与健康度判定' },
+  ]},
+  { group: '界面与系统', items: [
+    { key: 'compact_view', label: '紧凑视图', type: 'bool' },
+    { key: 'hide_docked_sliver', label: '收起时隐藏微细条', type: 'bool' },
+    { key: 'global_hot_key_enabled', label: '全局热键', type: 'bool' },
+    { key: 'launch_at_login', label: '开机自启', type: 'bool' },
+    { key: 'menu_bar_badge_mode', label: '菜单栏徽标', type: 'select',
+      options: [['iconOnly', '仅图标'], ['activeCount', '活跃任务数'], ['tokenUsage', '今日 Token']] },
+    { key: 'screen_follow_mode', label: '屏幕跟随', type: 'select',
+      options: [['followMouse', '跟随鼠标所在屏'], ['mainScreen', '固定主屏'], ['builtInScreen', '优先内置屏'], ['externalScreen', '外接屏']] },
+  ]},
+];
+
+/// 设置页外壳。先渲染出**当前值**（读的是后端 `state.settings`），
+/// 不用占位符——设置页显示 0 再被真实值替换，用户会以为它闪了一下。
+export function pageSettings() {
+  const st = getState();
+  const s = st.settings ?? {};
+  const body = SETTING_FIELDS.map((group) => `
+    <div class="sb-group">
+      <div class="sb-group-title">${escapeHtml(group.group)}</div>
+      ${group.items.map((f) => settingRow(f, s[f.key])).join('')}
+    </div>`).join('');
+
+  return `<div class="sb-page" data-settings-root>
+    <div class="sb-note">改完立即生效，不需要重启。数值超出范围会被自动夹回合法区间。</div>
+    ${body}
+  </div>`;
+}
+
+function settingRow(field, raw) {
+  const id = escapeHtml(field.key);
+  const hint = field.hint ? `<div class="sb-hint">${escapeHtml(field.hint)}</div>` : '';
+  let control;
+  if (field.type === 'bool') {
+    control = `<input type="checkbox" data-set="${id}"${raw ? ' checked' : ''}>`;
+  } else if (field.type === 'select') {
+    const options = field.options
+      .map(([v, label]) => `<option value="${escapeHtml(v)}"${v === raw ? ' selected' : ''}>${escapeHtml(label)}</option>`)
+      .join('');
+    control = `<select data-set="${id}">${options}</select>`;
+  } else {
+    // 读不到就留空而不是写 0：这一栏的含义是「未核实」，0 会被读成「用户设成 0」
+    const value = (raw === undefined || raw === null) ? '' : String(raw);
+    control = `<input type="number" data-set="${id}" value="${escapeHtml(value)}"
+      min="${field.min}" max="${field.max}" step="${field.step}">${field.unit ? `<span class="sb-unit">${escapeHtml(field.unit)}</span>` : ''}`;
+  }
+  return `<label class="sb-set">
+    <span class="sb-set-label">${escapeHtml(field.label)}</span>
+    <span class="sb-set-ctl">${control}</span>
+  </label>${hint}`;
+}
+
+/// 绑定设置页的输入。**写盘失败要明说**：静默失败会让用户以为改掉了。
+export function bindSettings() {
+  const st = getState();
+  const root = document.querySelector('[data-settings-root]');
+  if (!root) return;
+  root.querySelectorAll('[data-set]').forEach((el) => {
+    const handler = async () => {
+      const key = el.dataset.set;
+      const field = SETTING_FIELDS.flatMap((g) => g.items).find((f) => f.key === key);
+      let value;
+      if (field.type === 'bool') value = el.checked;
+      else if (field.type === 'select') value = el.value;
+      else {
+        // 空值不写：用户清空输入框不等于「设成 0」
+        if (el.value.trim() === '') return;
+        value = Number(el.value);
+        if (!Number.isFinite(value)) {
+          el.closest('.sb-set')?.appendChild(notice('这一栏只收数字'));
+          return;
+        }
+        // 越界就地夹回并回填，别让界面显示一个不会被采用的数
+        if (field.min !== undefined) value = Math.min(Math.max(value, field.min), field.max);
+        if (field.type === 'number' && Number.isInteger(field.step) && !Number.isInteger(value)) {
+          value = Math.round(value);
+        }
+        el.value = value;
+      }
+      st.settings = st.settings ?? {};
+      st.settings[key] = value;
+      try {
+        await invoke('save_settings', { newSettings: st.settings });
+        if (key === 'shell_mode') await invoke('set_shell_mode', { mode: String(value) });
+        if (key === 'appearance') applyAppearance(String(value));
+        if (key === 'dock_edge') applyEdge();
+      } catch (error) {
+        el.closest('.sb-set')?.appendChild(notice(`保存失败：${error}`));
+      }
+    };
+    el.addEventListener(el.tagName === 'SELECT' ? 'change' : el.type === 'checkbox' ? 'change' : 'change', handler);
+  });
+}
+
+function notice(text) {
+  return `<div class="sb-hint sb-warn">${escapeHtml(text)}</div>`;
+}
+
+export function pageSettingsHeaderLabel() {
+  return '高级设置';
+}
+
+
   return `
     <div class="sb-page" data-provider-root>
       <div class="sb-empty">加载中…</div>
@@ -896,8 +1057,7 @@ export function pageProvider() {
 
 /// 填档位页。三个数据源各自独立取，**任何一项失败都明说失败**，不静默留空：
 /// 「读不到」与「没有档位」在界面上是两件事，混起来用户会以为自己的配置丢了。
-export async function hydrateProvider() {
-  const root = document.querySelector('[data-provider-root]');
+export async function hydrateProvider() {  const root = document.querySelector('[data-provider-root]');
   if (!root) return;
   const status = await invoke('provider_status').catch(() => null);
   if (!status) {
@@ -918,6 +1078,9 @@ function renderProviderPage(root, status, profiles, backups) {
   const activeName = status.active_profile_id
     ? (profiles.find((profile) => profile.id === status.active_profile_id)?.name ?? status.active_profile_id)
     : null;
+  // 记进状态给导航角标用（03-approach §3：Provider 角标显示当前档位名）。
+  // 读不到就记空串——角标空着是对的，显示成别的名字才是撒谎。
+  getState().providerActiveName = activeName ?? '';
   const activeLine = status.installed
     ? (status.active_profile_id
         ? `生效中：<b>${escapeHtml(activeName)}</b>（provider <code>${escapeHtml(status.active_provider_id ?? '')}</code>）`

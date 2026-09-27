@@ -385,3 +385,74 @@
   display: flex;
   gap: 6px;
 }
+
+/* 高级设置页（03-approach §3）。
+   每条规则都挂在 .shell-sidebar 下——`models.rs` 有一条哨兵扫这张表，
+   漏挂会让侧边栏样式漏进灵动岛，而那条测试会直接红。 */
+.shell-sidebar .sb-group {
+  margin-top: 14px;
+}
+
+.shell-sidebar .sb-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-faint, #64748b);
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.shell-sidebar .sb-set {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+
+.shell-sidebar .sb-set-label {
+  color: var(--text, #0f172a);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.shell-sidebar .sb-set-ctl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.shell-sidebar .sb-set-ctl input[type='number'],
+.shell-sidebar .sb-set-ctl select {
+  width: 84px;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 5px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff);
+  color: var(--text, #0f172a);
+}
+
+.shell-sidebar .sb-set-ctl input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--working, #30d158);
+}
+
+.shell-sidebar .sb-unit {
+  font-size: 10px;
+  color: var(--text-faint, #64748b);
+  min-width: 26px;
+}
+
+.shell-sidebar .sb-hint {
+  font-size: 10px;
+  color: var(--text-faint, #64748b);
+  margin: -2px 0 4px;
+}
+
+.shell-sidebar .sb-warn {
+  color: var(--danger, #dc2626);
+}

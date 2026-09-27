@@ -780,10 +780,13 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
                 .snapshots
                 .iter()
                 .any(|snap| matches!(snap.level, models::ActivityLevel::Working | models::ActivityLevel::Attention));
+            // 全闲置走**独立字段**（Swift `idleSampleInterval`，默认 5s）。
+            // 此前这里写死 `sample_interval × 2.5`——那是另一个公式，
+            // 于是两侧的耗电量与「岛多久变灰」对不上。
             let interval = if active {
                 e.settings.sample_interval
             } else {
-                (e.settings.sample_interval * 2.5).clamp(2.0, 12.5)
+                e.settings.idle_sample_interval.clamp(0.5, 600.0)
             };
             (s, interval)
         };

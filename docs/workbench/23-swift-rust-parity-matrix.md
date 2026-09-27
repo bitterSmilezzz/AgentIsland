@@ -262,23 +262,25 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | 贴边 | `dockEdge`（right/top/bottom/left，:34） | `dock_edge` | ✅ 值域同 | Rust 未知值兜底 `Top`（[models.rs:parse](../../app/src-tauri/src/models.rs)） |
 | 贴边锚点 | `dockAnchorX` + `dockAnchorY` 两个键（:35-36，水平边用 X、垂直边用 Y） | `dock_anchor: f64` 单值 | ❌ | 两个坐标 vs 一个标量 |
 | 采样间隔（有活动） | `sampleInterval`（EngineConfig 默认 2.0） | `sample_interval` 默认 2.0 | ✅ | |
-| 采样间隔（闲置） | `idleSampleInterval` 默认 **5.0** | **无此字段**（用 `sample_interval × 2.5`） | ❌ | 见 §4 |
-| 工作判定窗口 | `workingWindow` 默认 60 | 硬编码 60（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)） | ⚠️ 值同、不可配 | |
-| 活跃会话窗口 | `activeSessionWindow` 默认 600 | 无等价采样窗口（原表把未使用字面量误记为实现） | ❌ | Rust 尚未补齐活跃会话数口径 |
-| 工作滞回 | `minWorkingHold` 默认 10 | 硬编码 10（[engine.rs:83](../../app/src-tauri/src/engine.rs#L83)） | ⚠️ 值同、不可配 | |
+| 采样间隔（闲置） | `idleSampleInterval` 默认 **5.0** | `idle_sample_interval` 默认 **5.0** | ✅ **v0.0.200 起一致**。此前是 `sample_interval × 2.5`——另一个公式，于是两侧耗电量与「岛多久变灰」对不上 |
+| 工作判定窗口 | `workingWindow` 默认 60，区间 10…300 | `working_window` 默认 60，同区间 | ✅ **v0.0.200 起可配** | |
+| 活跃会话窗口 | `activeSessionWindow` 默认 600，区间 60…3600 | `active_session_window` 默认 600，同区间 | ⚠️ **v0.0.200 字段已补**，但**活跃会话数本身仍未迁**（`activeSessions` 仍是「十分钟内有写入」的代理，见 §4.1） |
+| 工作滞回 | `minWorkingHold` 默认 10，区间 1…300 | `min_working_hold` 默认 10，同区间 | ✅ **v0.0.200 起可配** | |
 | CPU 阈值 | `cpuThreshold` 默认 6，区间 **1...50** | `cpu_threshold` 默认 6，钳 **1...50** | ✅ | 区间一致 |
-| 收起延迟 | `collapseDelay` 默认 0.5，区间 `SettingLimits` **0.2...5**（:144） | `collapse_delay` 默认 0.5，钳 **0.2...30** | ❌ | 上限不同：5 vs 30 |
+| 收起延迟 | `collapseDelay` 默认 0.5，区间 **0.2…5** | `collapse_delay` 默认 0.5，钳 **0.2…5** | ✅ **v0.0.200 起一致**（此前上限 30，脏值能让面板久驻十几秒） |
 | Token 告警开关 | `tokenAlertEnabled`（:38） | `token_alert_enabled` | ✅ | |
 | Token 告警阈值 | `tokenAlertThreshold` 默认 200k，区间 **1_000...10_000_000** | `token_alert_threshold` 默认 200k，钳 **1_000...10_000_000** | ✅ | 区间一致 |
-| 死循环告警 | `runawayCpuAlert` + `runawayCpuThreshold`(70) + `runawayDurationThreshold`(300) | **无字段**（硬编码） | ❌ | Rust 用户无法关闭 CPU 熔断 |
+| 死循环告警 | `runawayCpuAlert`(true) + `runawayCpuThreshold`(70, 10…100) + `runawayDurationThreshold`(300, 30…3600) | 三个字段同名同默认同区间 | ✅ **v0.0.200 起一致**。此前 Rust 无开关，用户无法关闭 CPU 熔断 |
 | 启停集合 | `enabledAgents`（键存在=全集语义；空集合是有意全关，:226-229） | `disabled_agents`（**黑名单**） | ❌ | 空集语义相反：Swift 空=全关，Rust 空=全开。**新装用户在两边看到的 agent 数不同** |
-| 自定义档案 | `customAgents`（+ 损坏备份键 :32） | **无** | ❌ | |
+| 自定义档案 | `customAgents`（+ 损坏备份键 :32） | **无** | ❌ |
+| 远程通知**界面** | 设置 → 远程通知（三通道 + 掩码 + 预览） | 命令面齐全（`remote_status` / `remote_secret_set` / `remote_secret_delete`），**界面无入口** | ❌ v0.0.200 已列入待办 |
+| Agent 启停**界面** | 主列表逐项开关 | `disabled_agents` 只有 JSON 能改 | ❌ v0.0.200 已列入待办 | |
 | 通知策略 | `notificationPolicy`（standard/focus/silent，:414-418） | `notification_policy` | ✅ 值域同 | |
-| 完成提示音 | `playCompletionSound` + `completionSoundOption`(Glass/Pop/Ping/Blow/mute) + `alertSoundOption`(Sosumi/…) | `play_completion_sound`（bool） | ❌ | Rust 无音色选择 |
+| 完成提示音 | `playCompletionSound` + `completionSoundOption`(Glass/Pop/Ping/Blow/mute) + `alertSoundOption`(Sosumi/…) | `play_completion_sound`（bool） | ⚠️ 开关已有，**音色选择仍无** |
 | 每日 token 预算 | `dailyTokenBudget` + `budgetAlertEnabled`（:43-44，区间 0...10 亿） | **无字段** | ❌ | |
-| 电池/节电 | `batterySaverEnabled` + `PowerSourceMonitor` | **无字段** | ❌ | |
+| 电池/节电 | `batterySaverEnabled`(true) + `PowerSourceMonitor` | `battery_saver_enabled`(true) | ⚠️ **v0.0.200 字段已补**；电源状态探测（电池/插电）**尚未接** | |
 | 异常告警开关 | `autoAnomaliesAlertEnabled`（默认 `true`；只关告警，**不影响** `isHung` 与健康度） | `auto_anomalies_alert`（默认 `true`，v0.0.172 补齐） | ✅ 默认值与语义同（关掉不影响采集） |
-| 启动登录 / 全局热键 / 菜单栏徽标 / 屏幕跟随 / 紧凑视图 / 隐藏停靠条 / 新 agent 提示 | `launchAtLogin` `globalHotKeyEnabled` `menuBarBadgeMode` `screenFollowMode` `compactView` `hideDockedSliver` `knownAgents` | **全部无** | ❌ | 共 7 键；Swift 侧 30 个键名里 Rust 覆盖 12 个 |
+| 启动登录 / 全局热键 / 菜单栏徽标 / 屏幕跟随 / 紧凑视图 / 隐藏停靠条 | `launchAtLogin` `globalHotKeyEnabled` `menuBarBadgeMode` `screenFollowMode` `compactView` `hideDockedSliver` | 六个字段已补并有界面控件 | ⚠️ **v0.0.200 补齐字段与控件，但引擎尚未消费**——它们要各自接一处窗口行为 / 系统集成 | ❌ `knownAgents`（新 agent 提示）仍无 |
 | 远程通知通道 | `remote.notify.policy.v1` / `kind.v1` / `channel.<kind>.v1` 三个 UserDefaults 键（明文，非密钥）+ 钥匙串（密钥） | `remote_kind` / `remote_policy` / `remote_channels`（v0.0.174；按 ADR 0011 与其余设置同放 settings.json，**只存非密钥字段**）+ `remote_status` 命令 | ✅ **v0.0.180 起两侧都用钥匙串**（同 service `com.agentisland.remote`、同条目名 `remote.<kind>`，老用户存过的密钥直接可用）。`remote_status` 现在查**真存在性**；写入/删除接成两条命令 `remote_secret_set` / `remote_secret_delete`（刻意**没有**读回密钥的命令：界面只要「存过没有」与掩码） |
 
 ### 6.3 其他格式口径

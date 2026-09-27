@@ -123,8 +123,9 @@ impl ActivityEngine {
         }
 
         let cpu_threshold = self.settings.cpu_threshold;
-        let working_window = 60.0;
-        let min_working_hold = 10.0;
+        // 这两个此前是硬编码字面量，Swift 侧同名字段是可在设置页调的
+        let working_window = self.settings.working_window;
+        let min_working_hold = self.settings.min_working_hold;
 
 
         self.procmon.refresh();
@@ -499,9 +500,13 @@ impl ActivityEngine {
         // 此前这里和健康度判定各写一遍 70.0 / 300_000，改一处就会让
         // 「告警会响」与「健康度说卡死」对不上
         if let Some(c) = cpu {
-            if c >= health::RUNAWAY_CPU_THRESHOLD {
+            // 开关关掉只关**告警**，不清 `high_cpu_since`：持续高负载的证据要留着，
+            // 否则「健康度说卡死」与「告警不响」会变成两个互相矛盾的结论。
+            if c >= self.settings.runaway_cpu_threshold {
                 let since = *self.high_cpu_since.entry(key.clone()).or_insert(now);
-                if now - since >= health::RUNAWAY_DURATION_MS {
+                if now - since >= (self.settings.runaway_duration_threshold * 1000.0) as i64
+                    && self.settings.runaway_cpu_alert
+                {
                     self.raise_cost_spike(
                         profile,
                         pid,

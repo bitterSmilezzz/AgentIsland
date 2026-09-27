@@ -142,12 +142,23 @@ async function boot() {
   state.demo = !!boot.demo;
   state.bootRoute = boot.route || '';
 
+  // 取不到设置时的兜底：**与 Rust `Settings::default()` 逐字段一致**。
+  // 少写一个字段，设置页那一栏就会是空的——而「空」在界面上读起来像「用户没设过」，
+  // 于是他会在一个其实生效着的值上反复调。
   state.settings = await invoke('get_settings').catch(() => ({
-    appearance: 'system', dock_edge: 'top', dock_anchor: 0.5,
-    collapse_delay: 0.5, sample_interval: 2, cpu_threshold: 6,
+    appearance: 'system', shell_mode: 'island', sidebar_edge: 'right',
+    dock_edge: 'top', dock_anchor: 0.5,
+    collapse_delay: 0.5, sample_interval: 2, idle_sample_interval: 5,
+    working_window: 60, min_working_hold: 10, active_session_window: 600,
+    runaway_cpu_alert: true, runaway_cpu_threshold: 70, runaway_duration_threshold: 300,
+    cpu_threshold: 6, battery_saver_enabled: true,
     token_alert_enabled: true, token_alert_threshold: 200000,
+    daily_token_budget: 0, budget_alert_enabled: true,
     auto_anomalies_alert: true,
     notification_policy: 'standard', play_completion_sound: true, disabled_agents: [],
+    launch_at_login: false, hide_docked_sliver: false, compact_view: false,
+    global_hot_key_enabled: true, menu_bar_badge_mode: 'iconOnly',
+    screen_follow_mode: 'followMouse',
   }));
   // 归一化：Rust/手动改配置可能出现 'Top'/'Dark' 等大小写变体
   state.settings.dock_edge = (state.settings.dock_edge ?? 'top').toLowerCase();

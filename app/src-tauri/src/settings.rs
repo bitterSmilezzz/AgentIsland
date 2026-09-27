@@ -20,7 +20,26 @@ pub struct Settings {
     pub dock_anchor: f64,       // 0..1
     pub collapse_delay: f64,    // 秒
     pub sample_interval: f64,   // 秒
+    /// 全闲置时的降频间隔（Swift `idleSampleInterval`，默认 5.0）。
+    /// 此前 Rust 没有这个字段，用 `sample_interval × 2.5` 顶替——那是**另一个公式**，
+    /// 于是两侧的耗电量与「岛多久变灰」对不上。区间与 Swift 同用 `sampleIntervalRange`。
+    pub idle_sample_interval: f64,
+    /// 「有文件写入即工作」的窗口（Swift `workingWindow`，默认 60s）。此前硬编码。
+    pub working_window: f64,
+    /// 滞回：working 信号消失后保持的最短时长（Swift `minWorkingHold`，默认 10s）。此前硬编码。
+    pub min_working_hold: f64,
+    /// 活跃会话计数窗口（Swift `activeSessionWindow`，默认 600s）。
+    pub active_session_window: f64,
+    /// 持续高负荷（死循环）告警开关（Swift `runawayCpuAlert`，默认开）。
+    /// 此前 Rust **没有这个开关**——CPU 熔断无法关闭。
+    pub runaway_cpu_alert: bool,
+    /// 持续高负荷的 CPU 阈值（Swift `runawayCpuThreshold`，默认 70%）。此前硬编码。
+    pub runaway_cpu_threshold: f64,
+    /// 持续高负荷需持续多久（Swift `runawayDurationThreshold`，默认 300s）。此前硬编码。
+    pub runaway_duration_threshold: f64,
     pub cpu_threshold: f64,     // %
+    /// 电池供电时降频（Swift `batterySaverEnabled`，默认开）。此前 Rust 无此字段。
+    pub battery_saver_enabled: bool,
     pub token_alert_enabled: bool,
     /// 异常驻留 / 死锁持续守护的开关（Swift 侧 `autoAnomaliesAlertEnabled`，默认开）。
     /// 关掉它只关告警，**不影响** `is_hung` 与健康度判定——采集与告警解耦。
@@ -44,6 +63,20 @@ pub struct Settings {
     pub notification_policy: String, // standard | focus | silent
     pub play_completion_sound: bool,
     pub disabled_agents: Vec<String>,
+    // MARK: 界面侧开关（Swift `SettingsStore` 的散点，Rust 侧此前整块缺失）
+
+    /// 开机自启（Swift `launchAtLogin`，默认关）
+    pub launch_at_login: bool,
+    /// 收起时隐藏 6pt 微细条（Swift `hideDockedSliver`，默认关 = 显示）
+    pub hide_docked_sliver: bool,
+    /// 紧凑视图（Swift `compactView`，默认关）
+    pub compact_view: bool,
+    /// 全局热键（Swift `globalHotKeyEnabled`，默认开）
+    pub global_hot_key_enabled: bool,
+    /// 菜单栏徽标模式（Swift `menuBarBadgeMode`）：`iconOnly` | `activeCount` | `tokenUsage`
+    pub menu_bar_badge_mode: String,
+    /// 屏幕跟随模式（Swift `screenFollowMode`）：`followMouse` | `mainScreen` | `builtInScreen` | `externalScreen`
+    pub screen_follow_mode: String,
 }
 
 impl Default for Settings {
@@ -57,7 +90,15 @@ impl Default for Settings {
             dock_anchor: 0.5,
             collapse_delay: 0.5,
             sample_interval: 2.0,
+            idle_sample_interval: 5.0,
+            working_window: 60.0,
+            min_working_hold: 10.0,
+            active_session_window: 600.0,
+            runaway_cpu_alert: true,
+            runaway_cpu_threshold: 70.0,
+            runaway_duration_threshold: 300.0,
             cpu_threshold: 6.0,
+            battery_saver_enabled: true,
             token_alert_enabled: true,
             auto_anomalies_alert: true,
             token_alert_threshold: 200_000,
@@ -69,6 +110,12 @@ impl Default for Settings {
             notification_policy: "standard".into(),
             play_completion_sound: true,
             disabled_agents: vec![],
+            launch_at_login: false,
+            hide_docked_sliver: false,
+            compact_view: false,
+            global_hot_key_enabled: true,
+            menu_bar_badge_mode: "iconOnly".into(),
+            screen_follow_mode: "followMouse".into(),
         }
     }
 }
@@ -114,9 +161,30 @@ impl Settings {
         });
     }
 
-    /// 脏值钳制（与 macOS EngineConfig.normalized() 同规则）
+    /// 脏值钳制（与 macOS `EngineConfig.normalized()` 同规则）
+    ///
+    /// 顺序与 Swift 一致：**先归位 NaN，再钳区间，最后拉平相互依赖的两个字段**。
+    /// 少了 NaN 那一步，`NaN.clamp()` 会原样返回 NaN，而 NaN 进了比较就是 false——
+    /// 于是所有 `if cpu > threshold` 判定会静默走「没超」那一支。
     pub fn normalized(&self) -> Self {
         let mut s = self.clone();
+        // NaN 先归位到出厂值：手改 settings.json 写进 NaN 是现实（`1e999` 之类），
+        // 而 `f64::clamp` 对 NaN 不生效。逐个字段与 Swift 的 `if … isNaN` 一一对应。
+        let base = Settings::default();
+        for (value, fallback) in [
+            (&mut s.sample_interval, base.sample_interval),
+            (&mut s.idle_sample_interval, base.idle_sample_interval),
+            (&mut s.working_window, base.working_window),
+            (&mut s.cpu_threshold, base.cpu_threshold),
+            (&mut s.active_session_window, base.active_session_window),
+            (&mut s.min_working_hold, base.min_working_hold),
+            (&mut s.runaway_cpu_threshold, base.runaway_cpu_threshold),
+            (&mut s.runaway_duration_threshold, base.runaway_duration_threshold),
+        ] {
+            if value.is_nan() {
+                *value = fallback;
+            }
+        }
         // Registry ID was `roo` before Swift/Rust parity. Preserve an existing
         // disabled choice when loading older settings instead of enabling it anew.
         for id in &mut s.disabled_agents {
@@ -129,15 +197,37 @@ impl Settings {
         let clamp = |v: f64, lo: f64, hi: f64| v.clamp(lo, hi);
         s.cpu_threshold = clamp(s.cpu_threshold, 1.0, 50.0);
         s.sample_interval = clamp(s.sample_interval, 0.5, 600.0);
-        s.collapse_delay = clamp(s.collapse_delay, 0.2, 30.0);
-        if s.sample_interval < 0.5 {
-            s.sample_interval = 0.5;
+        s.idle_sample_interval = clamp(s.idle_sample_interval, 0.5, 600.0);
+        s.working_window = clamp(s.working_window, 10.0, 300.0);
+        s.active_session_window = clamp(s.active_session_window, 60.0, 3600.0);
+        s.min_working_hold = clamp(s.min_working_hold, 1.0, 300.0);
+        s.runaway_cpu_threshold = clamp(s.runaway_cpu_threshold, 10.0, 100.0);
+        s.runaway_duration_threshold = clamp(s.runaway_duration_threshold, 30.0, 3600.0);
+        // 收起延迟上限 5s（Swift `SettingLimits.collapseDelayRange`）。此前 Rust 放到 30s，
+        // 脏值能让面板久驻十几秒——那不是「宽容」，是用户找不到它关哪儿了。
+        s.collapse_delay = clamp(s.collapse_delay, 0.2, 5.0);
+        // 有活动间隔不得大于闲置间隔（Swift `normalized()` 末尾同一条）：
+        // 否则「有活动」反而比「全闲置」更慢，滞回与降频都失去意义。
+        if s.sample_interval > s.idle_sample_interval {
+            s.sample_interval = s.idle_sample_interval;
         }
         s.token_alert_threshold = s.token_alert_threshold.clamp(1_000, 10_000_000);
         // 与 Swift `SettingLimits.dailyTokenBudgetRange` 同区间（0…1e9）。
         // 手改 settings.json 写进一个负预算会让「超额」永远成立
         s.daily_token_budget = s.daily_token_budget.clamp(0, 1_000_000_000);
         s.dock_anchor = s.dock_anchor.clamp(0.0, 1.0);
+        // 两个枚举字段：认得的值以外一律回落出厂值。
+        // 回落到「默认值」而不是「第一个变体」——默认值才是这个键出厂时的样子。
+        s.menu_bar_badge_mode = match s.menu_bar_badge_mode.as_str() {
+            "iconOnly" | "activeCount" | "tokenUsage" => s.menu_bar_badge_mode.clone(),
+            _ => "iconOnly".to_string(),
+        };
+        s.screen_follow_mode = match s.screen_follow_mode.as_str() {
+            "followMouse" | "mainScreen" | "builtInScreen" | "externalScreen" => {
+                s.screen_follow_mode.clone()
+            }
+            _ => "followMouse".to_string(),
+        };
         // 形态与侧边栏：认得的值以外一律回落，宽度钳进可用区间
         // （手改 settings.json 写进 0 或 5000 会让侧边栏变成一条缝或盖住整块屏）
         s.shell_mode = crate::models::ShellMode::parse(&s.shell_mode)
@@ -241,17 +331,129 @@ mod tests {
 
         let mut hi = Settings::default();
         hi.cpu_threshold = 1e9;
-        hi.sample_interval = 1e9;
+        hi.working_window = 1e9;
+        hi.active_session_window = 1e9;
+        hi.min_working_hold = 1e9;
+        hi.runaway_cpu_threshold = 1e9;
+        hi.runaway_duration_threshold = 1e9;
         hi.collapse_delay = 1e9;
         hi.dock_anchor = 1e9;
         hi.token_alert_threshold = i64::MAX;
         let n = hi.normalized();
 
         assert_eq!(n.cpu_threshold, 50.0, "cpu_threshold 上限");
-        assert_eq!(n.sample_interval, 600.0, "sample_interval 上限");
-        assert_eq!(n.collapse_delay, 30.0, "collapse_delay 上限");
+        assert_eq!(n.working_window, 300.0, "working_window 上限");
+        assert_eq!(n.active_session_window, 3600.0, "active_session_window 上限");
+        assert_eq!(n.min_working_hold, 300.0, "min_working_hold 上限");
+        assert_eq!(n.runaway_cpu_threshold, 100.0, "runaway_cpu_threshold 上限");
+        assert_eq!(n.runaway_duration_threshold, 3600.0, "runaway_duration_threshold 上限");
+        assert_eq!(n.collapse_delay, 5.0, "collapse_delay 上限（Swift SettingLimits 是 5s，不是 30s）");
         assert_eq!(n.dock_anchor, 1.0, "dock_anchor 上限");
         assert_eq!(n.token_alert_threshold, 10_000_000, "token_alert_threshold 上限");
+    }
+
+    /// 区间与默认值**逐个**对着 Swift `EngineConfig` 核。
+    ///
+    /// 这条是给「补字段」这件事上的机械守卫：上一轮补了 8 个字段，
+    /// 手抄区间最容易抄错上下界，而错一个界不会有任何症状——
+    /// 只会让用户在设置页拖到一个本该被夹回去的值。
+    #[test]
+    fn every_engine_field_matches_the_swift_default_and_range() {
+        let d = Settings::default();
+        assert_eq!(d.sample_interval, 2.0, "sampleInterval");
+        assert_eq!(d.idle_sample_interval, 5.0, "idleSampleInterval");
+        assert_eq!(d.working_window, 60.0, "workingWindow");
+        assert_eq!(d.cpu_threshold, 6.0, "cpuThreshold");
+        assert_eq!(d.active_session_window, 600.0, "activeSessionWindow");
+        assert_eq!(d.min_working_hold, 10.0, "minWorkingHold");
+        assert!(d.runaway_cpu_alert, "runawayCpuAlert 默认开");
+        assert_eq!(d.runaway_cpu_threshold, 70.0, "runawayCpuThreshold");
+        assert_eq!(d.runaway_duration_threshold, 300.0, "runawayDurationThreshold");
+        assert!(d.battery_saver_enabled, "batterySaverEnabled 默认开");
+        assert!(!d.launch_at_login, "launchAtLogin 默认关");
+        assert!(!d.hide_docked_sliver, "hideDockedSliver 默认关");
+        assert!(!d.compact_view, "compactView 默认关");
+        assert!(d.global_hot_key_enabled, "globalHotKeyEnabled 默认开");
+        assert_eq!(d.menu_bar_badge_mode, "iconOnly", "menuBarBadgeMode");
+        assert_eq!(d.screen_follow_mode, "followMouse", "screenFollowMode");
+
+        // 下界逐个核（Swift 的 range lowerBound）
+        let mut lo = Settings::default();
+        lo.sample_interval = -1.0;
+        lo.idle_sample_interval = -1.0;
+        lo.working_window = 0.0;
+        lo.active_session_window = 0.0;
+        lo.min_working_hold = 0.0;
+        lo.runaway_cpu_threshold = 0.0;
+        lo.runaway_duration_threshold = 0.0;
+        let n = lo.normalized();
+        assert_eq!(n.sample_interval, 0.5, "sampleIntervalRange 下界");
+        assert_eq!(n.idle_sample_interval, 0.5, "idleSampleIntervalRange 下界");
+        assert_eq!(n.working_window, 10.0, "workingWindowRange 下界");
+        assert_eq!(n.active_session_window, 60.0, "activeSessionWindowRange 下界");
+        assert_eq!(n.min_working_hold, 1.0, "minWorkingHoldRange 下界");
+        assert_eq!(n.runaway_cpu_threshold, 10.0, "runawayCpuThresholdRange 下界");
+        assert_eq!(n.runaway_duration_threshold, 30.0, "runawayDurationThresholdRange 下界");
+    }
+
+    /// NaN 必须先归位再钳。
+    ///
+    /// `f64::clamp` 对 NaN **不生效**（返回 NaN），而 NaN 进了任何比较都是 false——
+    /// 于是 `if cpu > threshold` 会静默走「没超」那一支，引擎把高负载当没发生。
+    /// 手改 settings.json 写进 `1e999` 就是 NaN，这是现实输入。
+    #[test]
+    fn a_nan_interval_falls_back_to_the_factory_value_instead_of_silently_disabling() {
+        let mut s = Settings::default();
+        s.cpu_threshold = f64::NAN;
+        s.working_window = f64::NAN;
+        s.runaway_cpu_threshold = f64::NAN;
+        s.sample_interval = f64::NAN;
+        let n = s.normalized();
+        assert_eq!(n.cpu_threshold, 6.0, "NaN 归位到出厂值");
+        assert_eq!(n.working_window, 60.0);
+        assert_eq!(n.runaway_cpu_threshold, 70.0);
+        assert_eq!(n.sample_interval, 2.0);
+        assert!(n.normalized().cpu_threshold.is_nan() == false, "归一化后不得仍是 NaN");
+    }
+
+    /// 有活动间隔不得大于闲置间隔（Swift `normalized()` 末尾同一条）。
+    /// 否则「有活动」反而比「全闲置」更慢，滞回与降频都失去意义。
+    #[test]
+    fn the_active_interval_is_pulled_down_to_the_idle_one_when_it_exceeds_it() {
+        let mut s = Settings::default();
+        s.sample_interval = 120.0;
+        s.idle_sample_interval = 5.0;
+        let n = s.normalized();
+        assert_eq!(n.sample_interval, 5.0, "有活动间隔不得慢于全闲置");
+        assert_eq!(n.idle_sample_interval, 5.0, "闲置间隔不动");
+
+        // 反向合法值不受影响
+        let mut ok = Settings::default();
+        ok.sample_interval = 2.0;
+        ok.idle_sample_interval = 5.0;
+        assert_eq!(ok.normalized().sample_interval, 2.0);
+    }
+
+    /// 两个枚举字段认不出的值一律回出厂值——回落到**默认值**而不是第一个变体。
+    #[test]
+    fn unknown_enum_settings_fall_back_to_their_factory_value() {
+        let mut s = Settings::default();
+        s.menu_bar_badge_mode = "rainbow".into();
+        s.screen_follow_mode = "thirdMonitor".into();
+        let n = s.normalized();
+        assert_eq!(n.menu_bar_badge_mode, "iconOnly");
+        assert_eq!(n.screen_follow_mode, "followMouse");
+
+        for good in ["iconOnly", "activeCount", "tokenUsage"] {
+            let mut keep = Settings::default();
+            keep.menu_bar_badge_mode = good.into();
+            assert_eq!(keep.normalized().menu_bar_badge_mode, good);
+        }
+        for good in ["followMouse", "mainScreen", "builtInScreen", "externalScreen"] {
+            let mut keep = Settings::default();
+            keep.screen_follow_mode = good.into();
+            assert_eq!(keep.normalized().screen_follow_mode, good);
+        }
     }
 
     /// `normalized()` 是幂等的：钳一次和钳两次必须一样。
@@ -364,5 +566,133 @@ mod tests {
         assert_eq!(again.appearance, "light");
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// 侧边栏「高级设置」页的字段表（`app/ui/js/views.js` 的 `SETTING_FIELDS`）
+/// 必须与本结构体**双向**对齐。
+///
+/// 为什么要这条哨兵：设置页的字段表是手写的清单，而 `Settings` 是另一份。
+/// 任何一边加了字段而另一边没跟上，都不会报错——只会有一个**永远显示不出来**
+/// 或**界面上有、点下去没反应**的设置项。设置项多起来之后，这类漂移迟早发生，
+/// 而它对用户的症状是「这个开关不管用」，极难自查。
+#[cfg(test)]
+mod ui_parity {
+    use super::*;
+
+    /// 从 `views.js` 里粗解析出 `SETTING_FIELDS` 用到的键。
+    /// 只认 `{ key: '...' }` 这一种形状——解析失败宁可返回空集让断言报出来，
+    /// 也不要猜一个键名继续往下走。
+    fn ui_field_keys() -> Vec<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../app/ui/js/views.js");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            panic!("读不到 views.js：{}", path.display());
+        };
+        let start = text.find("const SETTING_FIELDS = [")
+            .expect("views.js 里应当有 SETTING_FIELDS");
+        let end = text[start..].find("\n];").expect("SETTING_FIELDS 应当有结束标记") + start;
+        let block = &text[start..end];
+
+        let mut keys: Vec<String> = Vec::new();
+        let mut rest = block;
+        while let Some(at) = rest.find("{ key: '") {
+            rest = &rest[at + 8..];
+            let Some(endq) = rest.find('\'') else { break };
+            keys.push(rest[..endq].to_string());
+            rest = &rest[endq..];
+        }
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    /// `Settings` 的字段名（从源码文本取，避免为测试造一套反射）。
+    fn rust_field_names() -> Vec<String> {
+        let text = std::fs::read_to_string(file!()).expect("读不到 settings.rs");
+        let start = text.find("pub struct Settings {").expect("应能定位结构体");
+        let end = text[start..].find("\n}").expect("应能定位结构体结尾") + start;
+        text[start..end]
+            .lines()
+            .skip(1) // 首行是 `pub struct Settings {` 本身，不是字段
+            .filter_map(|l| {
+                let t = l.trim();
+                if !t.starts_with("pub ") {
+                    return None;
+                }
+                t.strip_prefix("pub ")?
+                    .split(':')
+                    .next()
+                    .map(|s| s.trim().to_string())
+            })
+            .collect()
+    }
+
+    /// **不由设置页管的字段**，逐条写明「谁在管」。
+    ///
+    /// 这份名单是**缺口清单，不是免责清单**：每一条要么是直接操作（拖拽/拉伸），
+    /// 要么是「这一页还没有、已在待办里」。后者不允许长期留在这里——
+    /// 每补一页就从这里移走一条，名单空了这条断言就自动收紧成「零例外」。
+    const MANAGED_ELSEWHERE: &[(&str, &str)] = &[
+        ("sidebar_width", "侧边栏直接拖拽调整（记宽度），不是滑块"),
+        ("dock_anchor", "灵动岛顶栏拖拽 + 松手吸附直接操作，滑块给不出同样的手感"),
+        ("remote_kind", "❌ 远程通知页还没有——待办"),
+        ("remote_policy", "❌ 远程通知页还没有——待办"),
+        ("remote_channels", "❌ 远程通知页还没有——待办"),
+        ("disabled_agents", "❌ Agent 启停列表还没有——待办"),
+    ];
+
+    #[test]
+    fn every_settings_field_is_reachable_from_the_sidebar_page() {
+        let ui = ui_field_keys();
+        let rust = rust_field_names();
+        let exempt: Vec<&str> = MANAGED_ELSEWHERE.iter().map(|(k, _)| *k).collect();
+        let missing: Vec<&String> = rust
+            .iter()
+            .filter(|f| !ui.contains(f) && !exempt.contains(&f.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "Settings 里有这些字段但设置页没有对应控件，用户永远改不了：{missing:?}"
+        );
+    }
+
+    /// 名单里的字段**必须真的存在**，否则就是一条写脏了的豁免在替真缺口挡枪。
+    #[test]
+    fn every_exemption_names_a_field_that_actually_exists() {
+        let rust = rust_field_names();
+        for (key, why) in MANAGED_ELSEWHERE {
+            assert!(
+                rust.iter().any(|f| f == key),
+                "豁免 {key}（{why}）指向一个已经不存在的字段——多半是它被改名或删掉了"
+            );
+        }
+    }
+
+    /// 名单只收「真的还没做」的。每补一页就应当少一条；写测试的人会看到它变短。
+    #[test]
+    fn the_exemption_list_has_not_grown_beyond_the_known_gaps() {
+        let unfinished: Vec<&str> = MANAGED_ELSEWHERE
+            .iter()
+            .filter(|(_, why)| why.starts_with('❌'))
+            .map(|(k, _)| *k)
+            .collect();
+        assert_eq!(
+            unfinished,
+            vec!["remote_kind", "remote_policy", "remote_channels", "disabled_agents"],
+            "远程通知页与启停列表一旦做出来，就把对应字段从 MANAGED_ELSEWHERE 移走；\
+             新增条目必须先想清楚为什么它不能进设置页"
+        );
+    }
+
+    #[test]
+    fn the_settings_page_has_no_control_for_a_field_that_does_not_exist() {
+        let ui = ui_field_keys();
+        let rust = rust_field_names();
+        let ghost: Vec<&String> = ui.iter().filter(|f| !rust.contains(f)).collect();
+        assert!(
+            ghost.is_empty(),
+            "设置页引用了不存在的字段，界面上有、点下去静默失效：{ghost:?}"
+        );
     }
 }
