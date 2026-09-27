@@ -18,6 +18,7 @@ mod render;
 mod resilience;
 mod session;
 mod secret;
+mod selftest;
 mod settings;
 mod smtp;
 mod sqlite;
@@ -415,6 +416,15 @@ fn agent_process_tree(state: State<SharedEngine>, agent_id: String) -> Option<cr
     Some(crate::trees::build_tree(pid, &monitor.table()))
 }
 
+/// 无头自检（对应 Swift 的 `agentisland selftest`）。
+///
+/// 它是**唯一**一条不读引擎状态、自己造合成输入跑一遍核心判定的命令：
+/// 界面坏掉、采集读不到、设置被写坏的时候，这条仍然能回答「判定逻辑本身还对不对」。
+#[tauri::command]
+fn run_selftest() -> crate::selftest::Report {
+    crate::selftest::run()
+}
+
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
     // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
@@ -510,6 +520,14 @@ fn log_from_ui(message: String) {
 }
 
 fn main() {
+    // `--selftest` / `selftest`：无头自检（对应 Swift 的 `agentisland selftest`）。
+    // 放在最前面：它不该启动 UI、采集或任何后台线程——自检的全部价值是
+    // 「在这台机器上，判定逻辑本身还对不对」，被采集的副作用搅进来就不再是那个问题的答案。
+    if std::env::args().any(|arg| arg == "--selftest" || arg == "selftest") {
+        let report = selftest::run();
+        print!("{}", report.text());
+        std::process::exit(report.exit_code());
+    }
     let (tx, rx) = mpsc::channel::<models::AgentTaskEvent>();
     let settings = Settings::load();
     let mut engine = ActivityEngine::new(settings, rx);
@@ -577,6 +595,7 @@ fn main() {
             audit_report_markdown,
             audit_report_csv,
             agent_process_tree,
+            run_selftest,
             remote_secret_set,
             remote_secret_delete,
             set_dock_edge,

@@ -44,17 +44,8 @@ impl ProcessMonitor {
     /// 按档案匹配进程（名字前缀族 + 命令行提示 + 路径排除）。
     pub fn match_profile(&self, profile: &AgentProfile) -> Vec<ProcHit> {
         let mut hits: Vec<ProcHit> = Vec::new();
-        if profile.process_names.is_empty() && profile.cmdline_hints.is_empty() {
-            return hits;
-        }
         for (pid, proc_) in self.sys.processes() {
             let raw_name = proc_.name().to_string_lossy().to_string();
-            // Windows 上 sysinfo 返回 "ZCode.exe"：匹配前去掉扩展名并统一小写
-            let lower_raw = raw_name.to_lowercase();
-            let name = lower_raw
-                .strip_suffix(".exe")
-                .unwrap_or(&lower_raw)
-                .to_string();
             let exe = proc_
                 .exe()
                 .map(|e| e.to_string_lossy().to_string())
@@ -64,32 +55,17 @@ impl ProcessMonitor {
                 .iter()
                 .map(|c| c.to_string_lossy())
                 .collect::<Vec<_>>()
-                .join(" ")
-                .to_lowercase();
-
-            let name_hit = profile.process_names.iter().any(|want| {
-                let want = want.to_lowercase();
-                name == want || name.starts_with(&format!("{} ", want))
-            });
-            // npm 安装的 CLI 跑在 node.exe 里：命令行包含提示词即命中
-            let hint_hit = !profile.cmdline_hints.is_empty()
-                && profile
-                    .cmdline_hints
-                    .iter()
-                    .any(|hint| cmdline.contains(&hint.to_lowercase()));
-            if !name_hit && !hint_hit {
+                .join(" ");
+            if !profile_matches(profile, &raw_name, &exe, &cmdline) {
                 continue;
             }
-            if profile
-                .path_excludes
-                .iter()
-                .any(|x| exe.to_lowercase().contains(&x.to_lowercase()))
-            {
-                continue;
-            }
+            let lower_raw = raw_name.to_lowercase();
+            let name = lower_raw
+                .strip_suffix(".exe")
+                .unwrap_or(&lower_raw)
+                .to_string();
             let cpu = if self.last_refresh.is_some() {
-                let c = proc_.cpu_usage() as f64;
-                Some(c)
+                Some(proc_.cpu_usage() as f64)
             } else {
                 None
             };
@@ -145,6 +121,40 @@ impl ProcessMonitor {
             .map(|p: &Process| p.name().to_string_lossy().to_string())
             .collect()
     }
+}
+
+/// 一个进程是否属于某个档案。**纯函数**：只看名字 / 可执行路径 / 命令行三个字符串。
+///
+/// 抽出来是为了让排除规则能被夹具逐条断言——自检里那几条「系统路径不该误报」
+/// （`CursorUIViewService` 不该算 Cursor、`ssh-agent` 不该算任何档案）以前只能靠真机碰运气。
+///
+/// 三条规则与 Swift `ProcessMatcher` 同口径：
+/// ① 名字**精确**匹配或「名字 + 空格」前缀（所以 `cursoruiviewservice` 不会命中 `Cursor`）；
+/// ② 命令含提示词也算命中（npm 装的 CLI 跑在 node 里，进程名对不上）；
+/// ③ 路径命中排除表就否决——即使名字对上了。
+pub fn profile_matches(profile: &AgentProfile, name: &str, exe: &str, cmdline: &str) -> bool {
+    if profile.process_names.is_empty() && profile.cmdline_hints.is_empty() {
+        return false;
+    }
+    let lower = name.to_lowercase();
+    // Windows 上 sysinfo 返回 "ZCode.exe"：匹配前去掉扩展名
+    let name = lower.strip_suffix(".exe").unwrap_or(&lower);
+    let name_hit = profile.process_names.iter().any(|want| {
+        let want = want.to_lowercase();
+        name == want || name.starts_with(&format!("{want} "))
+    });
+    let hint_hit = !profile.cmdline_hints.is_empty()
+        && profile
+            .cmdline_hints
+            .iter()
+            .any(|hint| cmdline.to_lowercase().contains(&hint.to_lowercase()));
+    if !name_hit && !hint_hit {
+        return false;
+    }
+    !profile
+        .path_excludes
+        .iter()
+        .any(|exclude| exe.to_lowercase().contains(&exclude.to_lowercase()))
 }
 
 pub fn memory_text(bytes: u64) -> String {

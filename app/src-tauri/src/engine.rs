@@ -204,9 +204,8 @@ impl ActivityEngine {
                 cpu_percent: cpu,
                 memory_bytes: memory,
                 memory_text: memory_text(memory),
-                last_activity_text: last_ago
-                    .map(time_ago_text)
-                    .unwrap_or_else(|| "—".into()),
+                // None 的文案在这一处决定（`—`），不在调用点各写一遍
+                last_activity_text: time_ago_text(last_ago),
                 token_usage,
                 pid,
                 current_action: match &probe.signal {
@@ -294,7 +293,9 @@ impl ActivityEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn decide_level(
+    /// `pub(crate)`：自检（`selftest.rs`）要用它复现判定路径——自检与单元测试跑同一段决策代码，
+    /// 而不是各写一份「差不多」的判据。
+    pub(crate) fn decide_level(
         &mut self,
         profile: &AgentProfile,
         now: i64,

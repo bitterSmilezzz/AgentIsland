@@ -123,16 +123,28 @@ impl FileMonitor {
     }
 }
 
-pub fn time_ago_text(ago_secs: f64) -> String {
-    if ago_secs < 10.0 {
-        "刚刚".into()
-    } else if ago_secs < 60.0 {
-        format!("{}秒前", ago_secs as u64)
-    } else if ago_secs < 3600.0 {
-        format!("{}分钟前", (ago_secs / 60.0) as u64)
-    } else if ago_secs < 86400.0 {
-        format!("{}小时前", (ago_secs / 3600.0) as u64)
-    } else {
-        format!("{}天前", (ago_secs / 86400.0) as u64)
+/// 「最近活动」这一列（Swift `ActivityEngine.formatAgo` 同口径）。
+///
+/// **这一轮修掉的又一处同表面不同口径**：Rust 曾经写「30秒前 / 2分钟前 / 3小时前」
+/// 并把「刚刚」的阈值放在 10 秒；而参考实现是 `30s 前 / 2m 前`、阈值 **5** 秒、且没有「天」这一档。
+/// 两个数都是「最近活动」这一列，用户在岛上看到 `2m 前`、在侧边栏看到 `2分钟前`——
+/// 同一份数据两种说法。与 `compact` 那次同样的判断：审美偏好不足以支撑与参考实现分叉。
+///
+/// `None` → `—`：**「没有活动信号」与「刚刚活动过」是两件事**，
+/// 把 nil 当 0 秒显示成「刚刚」会让读的人以为这个 Agent 很活跃。
+pub fn time_ago_text(ago_secs: Option<f64>) -> String {
+    let Some(ago) = ago_secs else {
+        return "—".into();
+    };
+    let seconds = ago.max(0.0).round() as i64;
+    if seconds < 5 {
+        return "刚刚".into();
     }
+    if seconds < 60 {
+        return format!("{seconds}s 前");
+    }
+    if seconds < 3600 {
+        return format!("{}m 前", seconds / 60);
+    }
+    format!("{}h 前", seconds / 3600)
 }
