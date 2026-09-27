@@ -4,6 +4,37 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.205] - 2026-09-28
+
+### CLI 再补三个：`check` / `notify` / `report`，其中 notify 端到端验过
+
+上一版开了 CLI 的口子但只落地 5 个。这一版补三个，**12 个里已实现 8 个**。
+
+**`check`** 排查异常驻留与持续高负载。**它永远不终止任何进程，也不给 `--force`**——
+终止是 `clean` 的事，而 `clean` 还没迁。把两者混在一起的后果很直接：
+用户以为自己在「看」，实际上有东西被杀了。所以输出最后一行明写
+「`check` 只看不杀，要释放请用 `agentisland clean`（尚未实现）」。
+
+**`notify`** 向本机 App 投递一次事件（`--kind` / `--agent` / `--message`）。
+走 `POST /notify`（Rust 端 42000，ADR 0013）。**App 没在跑就说没在跑**——
+静默返回 0 会让脚本以为投递成功了。**端到端验过**：起一个 Rust 端实例，
+`lsof` 确认 42000 在听，投递返回 `{"ok":true,"delivered":"external"}`，退出码 0。
+
+**`report`** 生成 Markdown / CSV 运维报告（`--format md|csv`、`-o <路径>`）。
+写盘走**原子替换**且失败一律 exit 1：半份报告比没有更难认，
+而静默成功会让定时任务以为报告存下来了。`--format=pdf` 这种拼错是**用法错（退出码 2）**
+而不是运行失败——分错的后果是脚本会当成「生成失败」去重试，而重试没有意义。
+
+**实现里刻意不引 HTTP 客户端**：`notify` 只投本机回环、body 短、不加密，
+一次 TCP 往返足够。`transport.rs` 那套是给外发通道用的，带 TLS、重试与背压，
+这里三样都用不上。端口读 `webhook::DEFAULT_EVENT_PORT` 常量而不写死。
+
+测试 Rust 338 → **340**，编译警告保持 **17**，Swift 侧零改动。
+
+**没做**：剩下 4 个子命令（`top` 最大、`clean` 要终止能力、`open` 需 App 进程、
+`raycast` 要版本号同步）② `status -w` 动态监控 ③ `status` 的取用量开关与 Swift 相反
+④ 24 个 Swift 专属档案 ⑤ `SessionProbeHealth` 原因链与 `activeSessions` 真口径
+
 ## [0.0.204] - 2026-09-28
 
 ### Rust 端终于有了终端入口：12 个子命令里先落地 5 个

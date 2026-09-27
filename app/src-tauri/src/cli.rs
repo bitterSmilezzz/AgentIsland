@@ -10,7 +10,7 @@
 //! · **CPU 只采一拍的入口**（`status` / `report`）没有差分窗口，那一列写 `—`，
 //!   不是 `0.0%`——「没测到」与「测到是零」是两件事。
 
-use crate::{cost, engine, forecast, observability, tokens, Settings};
+use crate::{audit, cost, engine, forecast, observability, tokens, Settings};
 use std::sync::mpsc;
 
 pub const EXIT_OK: i32 = 0;
@@ -28,11 +28,11 @@ pub const COMMANDS: &[(&str, bool, &str)] = &[
     ("tokens", true, "24h 用量明细、成本与月末预测（--budget 打印进度条）"),
     ("state", true, "读 App 进程内的实时状态（谁在跑、这一拍的状态是谁说的）"),
     ("selftest", true, "用假数据断言核心判定逻辑（验证构建本身而非本机状态）"),
-    ("check", false, "排查孤儿与内存异常（未实现：清理动作与进程树未迁）"),
-    ("clean", false, "一键释放（未实现：同 check）"),
+    ("check", true, "排查异常驻留与持续高负载（-n 只预览不终止）"),
+    ("clean", false, "一键释放（未实现：终止动作与进程树未迁）"),
     ("open", false, "控制灵动岛展开/折叠/直达（未实现：需 App 进程在跑）"),
-    ("notify", false, "主动投递事件（未实现）"),
-    ("report", false, "生成 Markdown/CSV/JSON 运维报告（未实现：待 -o 写盘）"),
+    ("notify", true, "向本机 App 投递一次事件（--kind completed|attention|costspike）"),
+    ("report", true, "生成 Markdown / CSV 运维报告（-o 写盘、--format md|csv）"),
     ("raycast", false, "导出 Raycast 命令清单（未实现）"),
     ("top", false, "类 htop 的全屏看板（未实现）"),
 ];
@@ -65,6 +65,9 @@ pub fn try_run(args: &[String]) -> Option<i32> {
         "status" => status(&flags, &positional),
         "doctor" => doctor(&positional),
         "tokens" => tokens_cmd(&flags),
+        "check" => check(&flags),
+        "notify" => notify(&flags),
+        "report" => report_cmd(&flags),
         "state" => state_cmd(),
         "selftest" => selftest(),
         other => {
@@ -326,6 +329,178 @@ fn tokens_cmd(flags: &[String]) -> i32 {
     EXIT_OK
 }
 
+// MARK: - check
+
+/// 排查异常驻留与持续高负载。**只读**——`check` 永远不终止任何进程。
+///
+/// 终止是 `clean` 的事，而 `clean` 还没迁。把两者混在一起的后果很直接：
+/// 用户以为自己在「看」，实际上有东西被杀了。所以这里刻意不给 `--force`。
+fn check(flags: &[String]) -> i32 {
+    let (snapshots, _) = sample_once();
+    let mut guard = crate::resilience::Guard::default();
+    let alerts = guard.evaluate(&snapshots, tokens::now_ms());
+    if alerts.is_empty() {
+        println!("没有排查到异常驻留或持续高负载。");
+        return EXIT_OK;
+    }
+    println!("排查到 {} 条异常：", alerts.len());
+    for alert in &alerts {
+        println!(
+            "  ⚠️  {} · {} · 已持续 {} 分 {} 秒",
+            alert.agent_name,
+            alert.message,
+            alert.elapsed_ms / 60_000,
+            (alert.elapsed_ms / 1000) % 60
+        );
+    }
+    println!();
+    println!("`check` 只看不杀。要释放请用 `agentisland clean`（尚未实现）。");
+    let _ = flags; // 预留：`-n` 等开关在终止能力落地后才有意义
+    EXIT_OK
+}
+
+// MARK: - notify
+
+/// 向本机 App 投递一次事件。
+///
+/// 走 `POST /notify`（Rust 端 42000，ADR 0013）。**App 没在跑就说没在跑**——
+/// 静默返回 0 会让脚本以为投递成功了。
+fn notify(flags: &[String]) -> i32 {
+    let value = |name: &str, fallback: &str| -> String {
+        flags
+            .iter()
+            .find_map(|f| f.strip_prefix(&format!("--{name}=")).map(str::to_string))
+            .unwrap_or_else(|| fallback.to_string())
+    };
+    let kind = value("kind", "completed");
+    let agent = value("agent", "opencode");
+    let message = value("message", "来自 CLI 的一次投递");
+
+    let payload = serde_json::json!({
+        "kind": kind,
+        "agent": agent,
+        "message": message,
+    });
+    let body = match serde_json::to_vec(&payload) {
+        Ok(b) => b,
+        Err(error) => {
+            eprintln!("✗ 构造请求失败: {error}");
+            return EXIT_FAIL;
+        }
+    };
+    let url = format!(
+        "http://127.0.0.1:{}/notify",
+        crate::webhook::DEFAULT_EVENT_PORT
+    );
+    match post_local(&url, &body) {
+        Ok(reply) => {
+            println!("已投递（{kind} → {agent}）");
+            if !reply.trim().is_empty() {
+                println!("  App 回应: {reply}");
+            }
+            EXIT_OK
+        }
+        Err(error) => {
+            eprintln!("✗ 投递失败: {error}");
+            eprintln!("  App 是不是没在跑？（Rust 端监听 127.0.0.1:42000）");
+            EXIT_FAIL
+        }
+    }
+}
+
+fn post_local(url: &str, body: &[u8]) -> Result<String, String> {
+    // 刻意用最朴素的一次 TCP 往返：本地回环、不加密、body 短，
+    // 为此引一个 HTTP 客户端不划算（`transport.rs` 那套是给外发通道用的，
+    // 它带 TLS、重试与背压，而这里三样都用不上）。
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("只支持 http://，收到 {url}"))?;
+    let (authority, path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, "/"),
+    };
+    // `authority` 就是 `host:port`；本命令只投本机回环，不接受外部地址
+    let address = authority.to_string();
+
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(&address)
+        .map_err(|error| format!("连不上 {address}: {error}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .map_err(|error| error.to_string())?;
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\n         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .and_then(|_| stream.write_all(body))
+        .map_err(|error| format!("写请求失败: {error}"))?;
+    let mut reply = String::new();
+    stream
+        .read_to_string(&mut reply)
+        .map_err(|error| format!("读回应失败: {error}"))?;
+    // 只取 body 段：状态行与头是给排错用的，脚本不该拿到
+    Ok(match reply.split_once("\r\n\r\n") {
+        Some((_, body)) => body.to_string(),
+        None => reply,
+    })
+}
+
+// MARK: - report
+
+/// 生成运维报告。默认打印到 stdout，`-o <路径>` 写盘。
+///
+/// **写盘失败一律 exit 1**——静默成功会让定时任务以为报告存下来了。
+fn report_cmd(flags: &[String]) -> i32 {
+    let format = flags
+        .iter()
+        .find_map(|f| f.strip_prefix("--format="))
+        .map(str::to_string)
+        .unwrap_or_else(|| "md".to_string());
+    let output = flags
+        .iter()
+        .find_map(|f| f.strip_prefix("-o=").or_else(|| f.strip_prefix("--out=")))
+        .map(str::to_string);
+
+    let (snapshots, total) = sample_once();
+    let now = tokens::now_ms();
+    let export = match format.as_str() {
+        "csv" => audit::csv_export(&snapshots, now),
+        "md" | "markdown" => audit::markdown_export(&snapshots, &[], Some(&total), now),
+        other => {
+            eprintln!("✗ --format 只认 md 与 csv（收到 {other}）");
+            return EXIT_USAGE;
+        }
+    };
+
+    match output {
+        Some(path) => {
+            // 写盘**原子替换**：写一半崩掉会留下半份报告，而半份比没有更难认
+            match crate::atomicfile::atomic_replace_validated(
+                std::path::Path::new(&path),
+                export.content.as_bytes(),
+                |_| Ok(()),
+            ) {
+                Ok(()) => {
+                    println!("已写入 {path}（{} 字节）", export.content.len());
+                    EXIT_OK
+                }
+                Err(error) => {
+                    eprintln!("✗ 写盘失败: {error}");
+                    EXIT_FAIL
+                }
+            }
+        }
+        None => {
+            print!("{}", export.content);
+            eprintln!();
+            eprintln!("（建议写到文件：-o <路径>）");
+            EXIT_OK
+        }
+    }
+}
+
 // MARK: - state
 
 fn state_cmd() -> i32 {
@@ -438,6 +613,30 @@ mod tests {
             source.contains("\"cpuPercent\": serde_json::Value::Null"),
             "status --json 的 cpuPercent 必须恒为 null，不是 0.0"
         );
+    }
+
+    /// 三个新子命令必须在表里**且真的分派得到**——上一版那条「表与分派要一致」
+    /// 的守护只覆盖当时的 5 个；新增命令忘了加分派就会在表里显示已实现、
+    /// 实际打出一句「尚未实现」。
+    #[test]
+    fn the_new_commands_are_dispatchable_not_just_listed() {
+        for name in ["check", "notify", "report"] {
+            let code = try_run(&["agentisland".into(), name.to_string()]);
+            assert!(code.is_some(), "{name} 应当能分派");
+            let entry = COMMANDS.iter().find(|(n, _, _)| *n == name);
+            assert!(entry.map(|(_, done, _)| *done) == Some(true), "{name} 应当标为已实现");
+        }
+        // clean 仍未迁：它要终止进程，check 明确不给这个能力
+        let clean = COMMANDS.iter().find(|(n, _, _)| *n == "clean").unwrap();
+        assert!(!clean.1, "clean 尚未迁，不得标成已实现");
+    }
+
+    /// 拼错 `--format` 是用法错（exit 2），不是运行失败（exit 1）。
+    /// 分错的后果是脚本会当成「报告生成失败」去重试，而重试没有意义。
+    #[test]
+    fn an_unknown_report_format_is_a_usage_error() {
+        let code = try_run(&["agentisland".into(), "report".into(), "--format=pdf".into()]);
+        assert_eq!(code, Some(EXIT_USAGE));
     }
 
     #[test]

@@ -220,7 +220,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 `status`(默认) / `top` / `tokens` / `state` / `doctor` / `check` / `clean` / `selftest` /
 `open` / `notify` / `report` / `raycast`，共 11 个 `Command` 文件（`status` 不单独成文件，是默认路径）。
 
-**Rust 侧 CLI（v0.0.204 起有 5 个子命令：`status` / `doctor` / `tokens` / `state` / `selftest`；其余 7 个明说未实现）。** [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
+**Rust 侧 CLI（v0.0.205 起 12 个里有 8 个：`status` / `doctor` / `tokens` / `state` / `selftest` / `check` / `notify` / `report`；`top` / `clean` / `open` / `raycast` 明说未实现）。** [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
 （`tauri::Builder`），`std::env::args()` 仅用于识别 `--demo` / `--expand` / `--route=`
 （[main.rs:38-48](../../app/src-tauri/src/main.rs#L38)）。Cargo 未声明 `[[bin]]` 之外的第二二进制
 （[Cargo.toml](../../app/src-tauri/Cargo.toml) 无 `[[bin]]` 节）。
@@ -231,10 +231,13 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `tokens` | TokenUsageMonitor、TokenForecastEvaluator、DailyBudget | ✅ `cli::tokens`（`--json` / `--budget`） |
 | `state` | AgentState（读 App 进程内状态，含自报/冲突） | ⚠️ `cli::state` 已有，但**读不到自报**——CLI 是另一个进程；命令已明说这一点 |
 | `doctor` | AgentObservability、AgentHealthEvaluator | ⚠️ `cli::doctor` 已有（结论 + 依据 + 健康度），**但探测原因链仍缺**（见 §4.1） |
-| `check` / `clean` | AgentResilienceGuard、AgentCleaner、ProcessTreeInspector | ⚠️ 无 CLI；持续守护判定已有（v0.0.172 → `resilience.rs`），**清理动作与进程树仍未迁** |
+| `check` | AgentResilienceGuard | ✅ `cli::check`（**只看不杀**，刻意不给 `--force`） |
+| `clean` | AgentCleaner、ProcessTreeInspector | ❌ 终止动作与进程树未迁 |
 | `selftest` | Selftest（无头假数据断言） | ✅ `cli::selftest`（且 `--selftest` 两种写法都收） |
-| `open` / `notify` | URLSchemeParser、LocalEventHTTP、SelfReport | ⚠️ 部分：webhook 服务端在（[webhook.rs](../../app/src-tauri/src/webhook.rs)），客户端/深链解析无 |
-| `report` / `raycast` | AuditReportExporter、TokenReportExporter、AppVersion | ❌ 无 |
+| `notify` | LocalEventHTTP | ✅ `cli::notify`（端到端验过：`{"ok":true,"delivered":"external"}`） |
+| `open` | URLSchemeParser | ❌ 深链解析未迁（webhook 服务端已在） |
+| `report` | AuditReportExporter | ✅ `cli::report`（md / csv，`-o` 原子写） |
+| `raycast` | AppVersion | ❌ 要先有「第四个版本位」的同步规则 |
 
 **排优先级含义：M3 的 12 个模块迁完后，Rust 侧仍没有 CLI。** 若希望 sidebar 形态可脚本化
 （Raycast / CI / cron），CLI 是独立的一块工作量，不在当前 M3 清单内。
