@@ -10,8 +10,11 @@ pub struct ProcessMonitor {
     last_refresh: Option<Instant>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProcHit {
     pub pid: u32,
+    /// 父进程 PID（进程树要用它；`0` = 没有父，即系统级）
+    pub ppid: u32,
     pub name: String,
     pub exe_path: String,
     pub memory: u64,
@@ -92,6 +95,7 @@ impl ProcessMonitor {
             };
             hits.push(ProcHit {
                 pid: pid.as_u32(),
+                ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
                 name,
                 exe_path: exe,
                 memory: proc_.memory(),
@@ -99,6 +103,38 @@ impl ProcessMonitor {
             });
         }
         hits
+    }
+
+    /// 整张进程表（不做档案匹配）。
+    ///
+    /// 进程树要用它：树是「谁派生谁」的结构，只给匹配到的那些进程建不出树来
+    /// （中间往往夹着 npm / node 这类不属于任何档案的进程）。
+    /// 名字归一化与 [`ProcessMonitor::match_profile`] 同一套（去 `.exe`、转小写）。
+    pub fn table(&self) -> Vec<ProcHit> {
+        let mut table: Vec<ProcHit> = Vec::with_capacity(self.sys.processes().len());
+        for (pid, proc_) in self.sys.processes() {
+            let raw = proc_.name().to_string_lossy().to_lowercase();
+            let name = raw.strip_suffix(".exe").unwrap_or(&raw).to_string();
+            let cpu = if self.last_refresh.is_some() {
+                Some(proc_.cpu_usage() as f64)
+            } else {
+                None
+            };
+            table.push(ProcHit {
+                pid: pid.as_u32(),
+                ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
+                name,
+                exe_path: proc_
+                    .exe()
+                    .map(|e| e.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                memory: proc_.memory(),
+                cpu,
+            });
+        }
+        // 顺序固定：sysinfo 的 HashMap 迭代顺序不保证，而树的同层顺序会反映到界面上
+        table.sort_by_key(|hit| hit.pid);
+        table
     }
 
     /// 供调试：全部进程名

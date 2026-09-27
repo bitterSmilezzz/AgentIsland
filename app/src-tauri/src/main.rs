@@ -25,6 +25,7 @@ mod audit;
 mod budget;
 mod forecast;
 mod tokens;
+mod trees;
 mod transport;
 mod webhook;
 
@@ -395,6 +396,25 @@ fn audit_report_csv(state: State<SharedEngine>) -> crate::audit::Export {
     crate::audit::csv_export(&engine.snapshots, crate::tokens::now_ms())
 }
 
+/// 某个 Agent 的派生进程树（详情页「谁在吃 CPU」那一块）。
+///
+/// 现场扫一拍进程表：树是**当下**的结构，用引擎里那份快照拼不出「谁派生了谁」——
+/// 快照里只有匹配到档案的那些进程，中间夹着的 npm / node 不在其中。
+#[tauri::command]
+fn agent_process_tree(state: State<SharedEngine>, agent_id: String) -> Option<crate::trees::TreeReport> {
+    let pid = {
+        let engine = state.lock().unwrap();
+        engine
+            .snapshots
+            .iter()
+            .find(|s| s.id == agent_id)?
+            .pid?
+    };
+    let mut monitor = crate::procmon::ProcessMonitor::new();
+    monitor.refresh();
+    Some(crate::trees::build_tree(pid, &monitor.table()))
+}
+
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
     // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
@@ -556,6 +576,7 @@ fn main() {
             token_forecast,
             audit_report_markdown,
             audit_report_csv,
+            agent_process_tree,
             remote_secret_set,
             remote_secret_delete,
             set_dock_edge,

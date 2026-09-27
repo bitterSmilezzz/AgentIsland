@@ -25,7 +25,8 @@
 > v0.0.180 迁入钥匙串（`secret.rs`：同 service/条目名、「闸门放行后才读」、存在性不取数据），并接出 `remote_secret_set`/`remote_secret_delete`。**外发组迁完**。
 > v0.0.181 迁入 Token 预算告警（`budget.rs`，含滞回与「只有跨级才报」）与月末预估（`forecast.rs`），> v0.0.181 迁入 Token 预算告警（`budget.rs`）与月末预估（`forecast.rs`），并把两份语义不同的 `compact` 统一到 Swift 的 `TokenUsage.compact`。
 > v0.0.182 迁入审计报告导出（`audit.rs`：Markdown/CSV、表格转义、`—`≠`0`、跨源口径差额），并给事件补上 `duration`（报告「耗时」列与完成摘要从此有真值）。
-> 「导出与自检」组还剩 `TokenReportExporter` / `Selftest` / `ProcessTreeInspector`。
+> v0.0.183 迁入派生进程树（`trees.rs`：防环、根不算自己的后代、全程不递归；`procmon::table()` 提供整张表）。
+> 「导出与自检」组还剩 `TokenReportExporter` / `Selftest`。
 > 顺序按 ADR 0010：token 明细 → 判定增强 → 外发 → 导出与自检。
 > `scripts/release.sh` 现在执行脱敏守护、`cargo test --locked` 和 Swift 测试。
 
