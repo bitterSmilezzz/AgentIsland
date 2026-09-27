@@ -189,6 +189,10 @@ pub struct AgentSnapshot {
     /// 任务效能统计（过去 24 小时；[`crate::duration::TaskDurationTracker`]）。
     /// 排版文本也在里面，界面不必再拼一遍
     pub work_stats: crate::duration::Stats,
+    /// 这句话凭什么：自报 / 观测 / 推断 / 冲突（`None` = 离线，那时「它说了什么」不成立）
+    pub provenance: Option<crate::selfreport::Provenance>,
+    /// 副标题那一小截（` · 自报` / ` · 自报冲突` / 空串），**由 Rust 拼好**
+    pub provenance_suffix: String,
     pub memory_bytes: u64,
     pub memory_text: String,
     pub last_activity_text: String,
@@ -436,6 +440,8 @@ mod tests {
             health: crate::health::Report::not_running(),
             process_running: true,
             work_stats: crate::duration::Stats::empty(),
+            provenance: None,
+            provenance_suffix: String::new(),
             cpu_percent: Some(1.0),
             memory_bytes: 0,
             memory_text: "—".into(),

@@ -155,6 +155,8 @@ mod tests {
             health: crate::health::Report::not_running(),
             process_running: running,
             work_stats: crate::duration::Stats::empty(),
+            provenance: None,
+            provenance_suffix: String::new(),
             cpu_percent: Some(1.0),
             memory_bytes: memory,
             memory_text: memory_text.into(),

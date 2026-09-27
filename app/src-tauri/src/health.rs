@@ -232,6 +232,8 @@ mod tests {
             },
             process_running: running,
             work_stats: crate::duration::Stats::empty(),
+            provenance: None,
+            provenance_suffix: String::new(),
             is_hung,
             health: Report::not_running(),
             cpu_percent: cpu,

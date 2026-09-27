@@ -267,8 +267,10 @@ export function agentRowModel(snap) {
     id: snap.id,
     name: snap.name,
     level: snap.level,
-    /** 状态那一格显示什么：判不出时**不能**说「空闲」——那会把「读不到」说成「闲着」 */
-    statusText: uncertainty ?? snap.level_label,
+    /** 状态那一格显示什么：判不出时**不能**说「空闲」——那会把「读不到」说成「闲着」。
+     *  出处后缀（` · 自报` / ` · 自报冲突`）由 Rust 拼好，界面只做拼接——
+     *  「观测/推断是常态，不挂标签」这条规则只在 Rust 侧有一份。 */
+    statusText: (uncertainty ?? snap.level_label) + (snap.provenance_suffix ?? ''),
     statusColor: uncertainty ? 'var(--warning)' : colors.fg,
     statusBackground: uncertainty ? 'color-mix(in srgb, var(--warning) 10%, transparent)' : colors.bg,
     statusBorder: uncertainty ? 'color-mix(in srgb, var(--warning) 25%, transparent)' : colors.border,

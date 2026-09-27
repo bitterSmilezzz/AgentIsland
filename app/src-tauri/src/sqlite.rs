@@ -56,13 +56,11 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// 沙箱取名统一走 `testutil`：并行跑时 `as_nanos()` 会撞名，两个用例共用一个目录，
+    /// 先结束的那个把另一个的文件删掉——症状是「偶发挂几条」。
     fn temp_path(name: &str) -> String {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir()
-            .join(format!("agentisland-sqlite-{}-{stamp}-{name}", std::process::id()))
+        crate::testutil::temp_dir("sqlite")
+            .join(name)
             .to_string_lossy()
             .to_string()
     }

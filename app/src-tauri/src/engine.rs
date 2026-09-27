@@ -56,6 +56,8 @@ pub struct ActivityEngine {
     /// 现在一条一条地展示、确认一条推下一条，**不丢**。
     pending_events: VecDeque<AgentTaskEvent>,
     pub grand_total: TokenUsage,
+    /// 可信自报（Swift `ActivityEngine.selfReports`）：令牌放行、TTL 内的那些话
+    pub self_reports: crate::selfreport::Registry,
     /// 任务耗时与效率统计（Swift `ActivityEngine.durationTracker`）
     pub durations: crate::duration::TaskDurationTracker,
     /// Token 预算告警状态机（Swift `ActivityEngine.budgetTracker`）
@@ -90,6 +92,7 @@ impl ActivityEngine {
             latest_event: None,
             pending_events: VecDeque::new(),
             grand_total: TokenUsage::default(),
+            self_reports: crate::selfreport::Registry::new(),
             durations: crate::duration::TaskDurationTracker::new(),
             budget: crate::budget::BudgetTracker::new(),
             budget_status: crate::budget::BudgetStatus::Disabled,
@@ -116,8 +119,13 @@ impl ActivityEngine {
         let working_window = 60.0;
         let min_working_hold = 10.0;
 
+
         self.procmon.refresh();
         let now = now_ms();
+
+        // 自报到期：**只盖戳，不删记录**，且放在采样里而不是另开定时器——
+        // 到期与否只取决于墙钟，而采样每拍本来就在读同一个 `now`（Swift 同一条理由）
+        self.self_reports.sweep_expired(now);
         let mut list: Vec<AgentSnapshot> = Vec::new();
         let mut total24 = 0i64;
         let mut total_all = 0i64;
@@ -154,6 +162,17 @@ impl ActivityEngine {
                 &probe,
                 pid,
             );
+
+            // 对外那一拍：有可信自报就采信自报；与**强语义观测**对不上时标冲突并仍按观测走。
+            // `has_session_signal` 直接从这一拍的 probe 拿，不需要 decide_level 回传
+            // （它本来就把 probe 交给了调用方）。
+            let report = self
+                .self_reports
+                .believable(&profile.id, now)
+                .cloned();
+            let has_session_signal = probe.signal.is_some();
+            let (level, provenance) =
+                crate::selfreport::resolve(level, has_session_signal, report.as_ref());
 
             let token_usage = self.token_usage_cached(&profile);
             let observability = observability::evaluate(Evidence {
@@ -217,11 +236,20 @@ impl ActivityEngine {
                 last_activity_text: time_ago_text(last_ago),
                 token_usage,
                 pid,
-                current_action: match &probe.signal {
-                    Some(Signal::Active(_, action)) => action.clone(),
-                    Some(Signal::Attention(_, msg)) => Some(msg.clone()),
-                    _ => None,
+                // 冲突那一拍不许拿自报的句子去填动作行：那等于在两处（副标题与动作条）
+                // 各替用户挑了一次，而这一维存在的理由就是「两条都给」
+                current_action: if provenance == Some(crate::selfreport::Provenance::Conflict) {
+                    None
+                } else {
+                    match &probe.signal {
+                        Some(Signal::Active(_, action)) => action.clone(),
+                        Some(Signal::Attention(_, msg)) => Some(msg.clone()),
+                        _ => report.as_ref().and_then(|r| r.ask.clone().or_else(|| r.detail.clone())),
+                    }
                 },
+                provenance,
+                // 后缀由 Rust 拼好（" · 自报" / " · 自报冲突" / 空）：界面各自拼一遍就会漂
+                provenance_suffix: crate::selfreport::Provenance::badge_suffix(provenance),
                 subagent_count: probe.subagent_count,
             };
             snapshot.health = health::evaluate(&snapshot);
@@ -760,6 +788,8 @@ impl ActivityEngine {
                 health: health::Report::not_running(),
                 process_running: true,
                 work_stats: crate::duration::Stats::empty(),
+                provenance: None,
+                provenance_suffix: String::new(),
                 cpu_percent: Some(if level == ActivityLevel::Working { 34.0 } else { 1.2 }),
                 memory_bytes: mem,
                 memory_text: memory_text(mem),

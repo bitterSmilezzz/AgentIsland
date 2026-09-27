@@ -330,12 +330,8 @@ mod tests {
     /// 反过来那条（写坏时原文件不动）由 `atomicfile` 的用例直接覆盖。
     #[test]
     fn save_to_replaces_settings_atomically_and_leaves_no_staging_file() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("agentisland-settings-{}-{stamp}", std::process::id()));
-        fs::create_dir(&dir).unwrap();
+        let sandbox = crate::testutil::Sandbox::new("settings");
+        let dir = sandbox.path().to_path_buf();
         let mut s = Settings::default();
         s.appearance = "dark".into();
         s.disabled_agents = vec!["codex".into()];

@@ -4,6 +4,9 @@
 mod atomicfile;
 mod cost;
 mod duration;
+mod selfreport;
+#[cfg(test)]
+mod testutil;
 mod todos;
 mod engine;
 mod filemon;
@@ -823,8 +826,9 @@ fn main() {
             std::thread::spawn(move || engine_loop(shared2, handle));
 
             // 本地 Webhook（127.0.0.1:41999）
+            let shared_for_webhook = shared.clone();
             std::thread::spawn(move || {
-                let _server = webhook::LocalEventServer::start(tx);
+                let _server = webhook::LocalEventServer::start(tx, shared_for_webhook);
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(3600));
                 }

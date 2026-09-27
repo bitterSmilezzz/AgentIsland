@@ -181,7 +181,7 @@ pub fn generate_markdown(
         md.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
             cell(&snap.name),
-            snap.level_label,
+            status_with_provenance(snap),
             pid,
             cpu,
             memory,
@@ -266,6 +266,15 @@ pub fn generate_markdown(
 }
 
 /// 生成标准 CSV 报表（与 Swift 同表头、同列序）
+/// 报表里那一格状态 = 状态标签 + 出处后缀（` · 自报` / ` · 自报冲突` / 空）。
+///
+/// 为什么必须带上：不带的话，报告里那份「工作中」可能来自**带令牌的自报**，
+/// 而读者无从分辨——这正是对照表里记着的那条缺口（Swift 的 `AgentProvenance` 后缀）。
+/// 后缀由 `selfreport` 拼好，报表不自己拼。
+fn status_with_provenance(snap: &AgentSnapshot) -> String {
+    format!("{}{}", snap.level_label, snap.provenance_suffix)
+}
+
 pub fn generate_csv(snapshots: &[AgentSnapshot], now_ms: i64) -> String {
     let mut csv = String::from(
         "Timestamp,AgentID,AgentName,Level,PID,CPU_Percent,Memory_Bytes,HealthScore,Grade,\
@@ -315,7 +324,7 @@ fn cost_text(cost: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ActivityLevel, AgentProfile, TokenUsage};
+    use crate::models::{ActivityLevel, TokenUsage};
 
     fn usage(tokens24h: i64, cost24h: f64) -> TokenUsage {
         TokenUsage {
@@ -351,6 +360,8 @@ mod tests {
             },
             process_running: true,
             work_stats: crate::duration::Stats::empty(),
+            provenance: None,
+            provenance_suffix: String::new(),
             cpu_percent: Some(3.5),
             memory_bytes: 1024 * 1024 * 512,
             memory_text: "512 MB".into(),
@@ -374,6 +385,31 @@ mod tests {
             duration,
             externally_delivered: false,
         }
+    }
+
+    /// 报表的状态列必须**带上出处后缀**：不带的话，报告里那份「工作中」可能来自
+    /// 带令牌的自报，而读者无从分辨（这正是对照表里记着的那条缺口）。
+    #[test]
+    fn the_status_column_carries_the_provenance_suffix() {
+        use crate::selfreport::Provenance;
+        let mut self_reported = snapshot("claude", ActivityLevel::Working);
+        self_reported.provenance = Some(Provenance::SelfReported);
+        self_reported.provenance_suffix = Provenance::badge_suffix(self_reported.provenance);
+        let observed = snapshot("claude", ActivityLevel::Working);
+
+        // 夹具的 `level_label` 用的是机器串（`as_str`），生产侧用的是显示标签
+        // （`level.label()`）——后缀拼接与这两者无关，所以这里按夹具的口径断言。
+        assert_eq!(status_with_provenance(&self_reported), "working · 自报");
+        assert_eq!(
+            status_with_provenance(&observed),
+            "working",
+            "观测是常态：不该给它挂标签"
+        );
+        // 冲突那一拍也一样要能看出来
+        let mut conflicted = snapshot("claude", ActivityLevel::Working);
+        conflicted.provenance = Some(Provenance::Conflict);
+        conflicted.provenance_suffix = Provenance::badge_suffix(conflicted.provenance);
+        assert_eq!(status_with_provenance(&conflicted), "working · 自报冲突");
     }
 
     #[test]

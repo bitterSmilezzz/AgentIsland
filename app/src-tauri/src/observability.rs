@@ -188,14 +188,9 @@ mod tests {
 
     #[test]
     fn existing_file_instead_of_session_directory_is_unreadable() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "agentisland-observability-{}-{stamp}",
-            std::process::id()
-        ));
+        // 沙箱取名统一走 `testutil`（它保证并行时也不撞名，并负责清理）
+        let sandbox = crate::testutil::Sandbox::new("observability");
+        let path = sandbox.path().join("not-a-directory");
         fs::write(&path, b"synthetic").unwrap();
         let profile = AgentProfile {
             id: "fixture".into(),
