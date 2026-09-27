@@ -12,6 +12,8 @@ use serde::Serialize;
 /// `runawayDurationThreshold = 300`）；Rust 此前把这两个数写成 `engine.rs` 里的
 /// `70.0` 与 `300_000` 字面量，判定与告警各写一遍——改一处就会让「告警会响」与
 /// 「健康度说卡死」对不上。
+/// 唯一保留的常量：它只是**出厂值**。实际取值来自 `settings.runaway_cpu_threshold`，
+/// 引擎在攒 `high_cpu_since` 时用它——所以模块里不该再有第二处硬编码。
 pub const RUNAWAY_CPU_THRESHOLD: f64 = 70.0;
 pub const RUNAWAY_DURATION_MS: i64 = 300_000;
 
@@ -93,18 +95,24 @@ impl Report {
 ///
 /// 资格由 `observed_running_since` 给出，**不靠调用方自报**：Swift 侧上一版让调用方传
 /// `sustainedObservation`，漏传一处的症状是静默谎报（v0.0.119 的异常扫描就是这个坑）。
+/// `runaway_duration_ms` **必须**与告警侧用的是同一个数。
+///
+/// 这不是洁癖：把持续时长做成可配之后，如果这里仍读模块常量，
+/// 用户把时长调成 60 秒就会看到「告警响了、健康度却还说不卡死」——
+/// 同一个事实由两处各自判定，且**都不会报错**。该常量已从本函数移除。
 pub fn is_hung(
     observed_running_since: Option<i64>,
     high_cpu_since: Option<i64>,
     now_ms: i64,
+    runaway_duration_ms: i64,
 ) -> Option<bool> {
     let since = observed_running_since?;
-    if now_ms - since < RUNAWAY_DURATION_MS {
+    if now_ms - since < runaway_duration_ms {
         return None;
     }
     Some(
         high_cpu_since
-            .map(|high| now_ms - high >= RUNAWAY_DURATION_MS)
+            .map(|high| now_ms - high >= runaway_duration_ms)
             .unwrap_or(false),
     )
 }
@@ -351,28 +359,47 @@ mod tests {
         assert_eq!(Report::not_running().score, 100);
     }
 
+    /// 卡死判定与告警**必须用同一个持续时长**。
+    ///
+    /// 防的症状：把持续时长做成可配之后，如果 `is_hung` 仍读模块常量，
+    /// 用户把时长调成 60 秒就会看到「告警响了、健康度却还说不卡死」——
+    /// 同一个事实由两处各自判定，且**两边都不会报错**。
+    #[test]
+    fn the_hung_verdict_honours_the_configured_duration_not_a_baked_in_one() {
+        let now = 10_000_000i64;
+        // 观测与高 CPU 都只有 90 秒：按出厂 300s 不够，按调小的 60s 已经够了
+        let ninety = now - 90_000;
+        assert_eq!(is_hung(Some(ninety), Some(ninety), now, 300_000), None);
+        assert_eq!(is_hung(Some(ninety), Some(ninety), now, 60_000), Some(true));
+    }
+
     #[test]
     fn is_hung_needs_a_sustained_observation_window_not_just_high_cpu() {
         let now = 10_000_000i64;
         // 观测窗口还没凑够：哪怕 CPU 一直高，也只能说「没测」
-        assert_eq!(is_hung(Some(now - 60_000), Some(now - 60_000), now), None);
+        assert_eq!(is_hung(Some(now - 60_000), Some(now - 60_000), now, RUNAWAY_DURATION_MS), None);
         // 观测够久了，但高 CPU 是刚起来的 → 明确 false（不是 None）
         assert_eq!(
-            is_hung(Some(now - RUNAWAY_DURATION_MS), Some(now - 1_000), now),
+            is_hung(Some(now - RUNAWAY_DURATION_MS), Some(now - 1_000), now, RUNAWAY_DURATION_MS),
             Some(false)
         );
         // 两个窗口都够 → true
         assert_eq!(
-            is_hung(Some(now - RUNAWAY_DURATION_MS), Some(now - RUNAWAY_DURATION_MS), now),
+            is_hung(
+                Some(now - RUNAWAY_DURATION_MS),
+                Some(now - RUNAWAY_DURATION_MS),
+                now,
+                RUNAWAY_DURATION_MS,
+            ),
             Some(true)
         );
         // 观测够久但从来没高过 CPU → false
-        assert_eq!(is_hung(Some(now - RUNAWAY_DURATION_MS), None, now), Some(false));
+        assert_eq!(is_hung(Some(now - RUNAWAY_DURATION_MS), None, now, RUNAWAY_DURATION_MS), Some(false));
         // 从来没观测过 → None（不是 false）
-        assert_eq!(is_hung(None, Some(now - RUNAWAY_DURATION_MS), now), None);
+        assert_eq!(is_hung(None, Some(now - RUNAWAY_DURATION_MS), now, RUNAWAY_DURATION_MS), None);
         // 边界取等号：恰好 5 分钟算「够」
         assert_eq!(
-            is_hung(Some(now - RUNAWAY_DURATION_MS + 1), None, now),
+            is_hung(Some(now - RUNAWAY_DURATION_MS + 1), None, now, RUNAWAY_DURATION_MS),
             None,
             "差 1ms 不算够"
         );

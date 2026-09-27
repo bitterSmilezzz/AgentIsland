@@ -313,21 +313,21 @@ pub fn run() -> Report {
     }
 
     // 10. 卡死三态：观测不足时必须说「判不出」，不能宣布健康（本仓最容易被写坏的一条）
-    let unqualified = crate::health::is_hung(None, None, now);
+    let unqualified = crate::health::is_hung(None, None, now, crate::health::RUNAWAY_DURATION_MS);
     runner.check(
         "从未观测到运行 ⇒ 卡死判为「判不出」而不是「没有卡死」",
         unqualified.is_none(),
         Some(format!("{unqualified:?}")),
     );
     // 观测了但不足阈值：同样必须是「判不出」
-    let too_short = crate::health::is_hung(Some(now - 60_000), None, now);
+    let too_short = crate::health::is_hung(Some(now - 60_000), None, now, crate::health::RUNAWAY_DURATION_MS);
     runner.check(
         "观测窗口不足阈值 ⇒ 仍然是「判不出」",
         too_short.is_none(),
         Some(format!("{too_short:?}")),
     );
     // 观测够久 + 持续高 CPU ⇒ 明确判成卡死
-    let runaway = crate::health::is_hung(Some(now - 600_000), Some(now - 600_000), now);
+    let runaway = crate::health::is_hung(Some(now - 600_000), Some(now - 600_000), now, crate::health::RUNAWAY_DURATION_MS);
     runner.check(
         "连续 10 分钟高 CPU ⇒ 明确判成卡死",
         runaway == Some(true),

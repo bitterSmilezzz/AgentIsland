@@ -456,3 +456,57 @@
 .shell-sidebar .sb-warn {
   color: var(--danger, #dc2626);
 }
+
+/* 远程通知页与 Agent 启停页。
+   同样每条挂 .shell-sidebar —— `models.rs` 的哨兵会逐条扫这张表。 */
+.shell-sidebar .sb-set-ctl input[type='text'],
+.shell-sidebar .sb-set-ctl input[type='password'] {
+  width: 130px;
+}
+
+.shell-sidebar .sb-foot {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.shell-sidebar .sb-note pre {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.shell-sidebar .sb-agent-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+.shell-sidebar .sb-agent-toggle .name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text, #0f172a);
+}
+
+.shell-sidebar .sb-agent-toggle .meta {
+  font-size: 10px;
+  color: var(--text-faint, #64748b);
+}
+
+.shell-sidebar .sb-agent-toggle input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--working, #30d158);
+}

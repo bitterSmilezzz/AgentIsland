@@ -163,7 +163,7 @@ Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（�
 | 中文 label | 离线/待机/已完成/工作中/待确认 :52-58 | 同 :26-32 | ✅ |
 | 双信号判定 | `working = 进程在 && (workingWindow 内有写入 \|\| CPU >= max(cpuFloor, cpuThreshold))`（[ActivityEngine.swift:8-12](../../Sources/AgentIslandCore/ActivityEngine.swift#L8)、:659） | 同一公式（[engine.rs:254-278](../../app/src-tauri/src/engine.rs#L254)） | ✅ 算法一致；但 `workingWindow=60` 在 Rust 是**硬编码字面量**（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)），Swift 来自可钳制的 `EngineConfig.workingWindow` |
 | attention/completed 强语义 | 方言分派 + 有界尾读 + 指纹去重 | id 分派 `probe_claude/codex/cline/zcode` + 指纹去重；Codex 调用配对与完成标记有合成 fixture 守护 | ⚠️ 部分协议行为有守护，方言分派与来源覆盖仍不同，不能宣称整体一致 |
-| CPU 熔断 | `runawayCpuAlert`（70% / 5 分钟，[Models.swift:739-740](../../Sources/AgentIslandCore/Models.swift#L739)） | 70% / 5 分钟，硬编码（[engine.rs:280-296](../../app/src-tauri/src/engine.rs#L280)） | ✅ 数值一致；Swift 可关（`runawayCpuAlert`），Rust 无此开关 |
+| CPU 熔断 | `runawayCpuAlert` + 70% / 5 分钟 | 三个字段同名同默认同区间，v0.0.200 起可配 | ✅ **v0.0.200 起一致**。⚠️ `is_hung` 已改为显式收时长参数——否则「告警响了、健康度还说不卡死」而两边都不报错 |
 | Token 暴涨告警 | 每分钟净增量 > `tokenAlertThreshold`（200k） | 同一口径，注释明说「与 macOS 端口径一致」（[engine.rs:298](../../app/src-tauri/src/engine.rs#L298)） | ✅ |
 | 降频 | 有活动 `sampleInterval` / 闲置 `idleSampleInterval`（5s）/ 全离线 60s / 节电三档（[ActivityEngine.swift:1395-1404](../../Sources/AgentIslandCore/ActivityEngine.swift#L1395)） | 有活动 `sample_interval`；闲置 `×2.5` 夹在 2.0–12.5s（[main.rs:302-310](../../app/src-tauri/src/main.rs#L302)） | ⚠️ 公式不同（`×2.5` vs 独立 `idleSampleInterval` 字段）；无节电三档。**需说清**：两侧耗电量与「岛多久变灰」不同 |
 | 可见口径 | `visibleSnapshots`（只显在线）+ `ringShelfSnapshots`（[ActivityEngine.swift:1472-1483](../../Sources/AgentIslandCore/ActivityEngine.swift#L1472)） | `state()` 直接给全部 snapshot，前端可自行过滤（未逐行比对） | ⚠️ 未逐行比对 |
@@ -273,8 +273,8 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | 死循环告警 | `runawayCpuAlert`(true) + `runawayCpuThreshold`(70, 10…100) + `runawayDurationThreshold`(300, 30…3600) | 三个字段同名同默认同区间 | ✅ **v0.0.200 起一致**。此前 Rust 无开关，用户无法关闭 CPU 熔断 |
 | 启停集合 | `enabledAgents`（键存在=全集语义；空集合是有意全关，:226-229） | `disabled_agents`（**黑名单**） | ❌ | 空集语义相反：Swift 空=全关，Rust 空=全开。**新装用户在两边看到的 agent 数不同** |
 | 自定义档案 | `customAgents`（+ 损坏备份键 :32） | **无** | ❌ |
-| 远程通知**界面** | 设置 → 远程通知（三通道 + 掩码 + 预览） | 命令面齐全（`remote_status` / `remote_secret_set` / `remote_secret_delete`），**界面无入口** | ❌ v0.0.200 已列入待办 |
-| Agent 启停**界面** | 主列表逐项开关 | `disabled_agents` 只有 JSON 能改 | ❌ v0.0.200 已列入待办 | |
+| 远程通知**界面** | 设置 → 远程通知（三通道 + 掩码 + 预览） | ✅ **v0.0.201 起有页面**（通道切换 / 策略 / 密钥 / 发送预览）；`remote::Status` 补 `limitations` 能力边界原文 |
+| Agent 启停**界面** | 主列表逐项开关 | ✅ **v0.0.201 起有页面**。⚠️ 语义相反已写进页头：Swift 存启用名单（空=全关），Rust 存禁用名单（空=全开） | |
 | 通知策略 | `notificationPolicy`（standard/focus/silent，:414-418） | `notification_policy` | ✅ 值域同 | |
 | 完成提示音 | `playCompletionSound` + `completionSoundOption`(Glass/Pop/Ping/Blow/mute) + `alertSoundOption`(Sosumi/…) | `play_completion_sound`（bool） | ⚠️ 开关已有，**音色选择仍无** |
 | 每日 token 预算 | `dailyTokenBudget` + `budgetAlertEnabled`（:43-44，区间 0...10 亿） | **无字段** | ❌ | |

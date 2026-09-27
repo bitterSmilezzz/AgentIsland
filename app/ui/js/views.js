@@ -777,14 +777,21 @@ export function renderSidebar() {
     { key: 'provider', label: 'Codex 档位', count: 0 },
     // 角标是**未完成**数（不是总条数）：勾掉最后一条之后角标就该消失
     { key: 'todo', label: '待办', count: st.todosPending ?? 0, badge: 'todo' },
-    // 03-approach §3：首层极简，重页面（设置 / 分析 / 详情）从这里进
+    // 03-approach §3：首层极简，重页面从这里进
     { key: 'settings', label: '高级设置 ›', count: 0 },
+    { key: 'remote', label: '远程通知', count: 0 },
+    { key: 'agents', label: 'Agent 启停', count: 0 },
   ];
-  const route = ['list', 'tokenAnalytics', 'provider', 'todo', 'settings'].includes(st.route) ? st.route : 'list';
+  const route = ['list', 'tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents']
+    .includes(st.route) ? st.route : 'list';
 
   let body;
   if (route === 'settings') {
     body = pageSettings();
+  } else if (route === 'remote') {
+    body = pageRemote();
+  } else if (route === 'agents') {
+    body = pageAgents();
   } else if (route === 'todo') {
     body = pageTodo();
   } else if (route === 'provider') {
@@ -815,6 +822,10 @@ export function renderSidebar() {
 
   const header = route === 'settings'
     ? { t: '高级设置', s: '改完立即生效 · 越界自动夹回' }
+    : route === 'remote'
+    ? { t: '远程通知', s: '密钥只进系统钥匙串' }
+    : route === 'agents'
+    ? { t: 'Agent 启停', s: '关掉只是不再监控，不会终止进程' }
     : route === 'tokenAnalytics'
     ? { t: 'Token 用量', s: '净消耗 · 不含缓存读取' }
     : route === 'provider'
@@ -849,6 +860,8 @@ export function renderSidebar() {
 
 
   if (route === 'settings') bindSettings();
+  if (route === 'agents') bindAgents();
+  if (route === 'remote') hydrateRemote();
 
   // 量一次布局（在内容就位之后：把度量放在注水之前只会量到「加载中…」的骨架，
   // 我第一版就是这么量的，于是每个路由的数字都一模一样、看起来「都没问题」）。
@@ -862,6 +875,8 @@ export function renderSidebar() {
       if (st.route === 'provider') await hydrateProvider();
       if (st.route === 'todo') await hydrateTodo();
       if (st.route === 'settings') bindSettings();
+      if (st.route === 'agents') bindAgents();
+      if (st.route === 'remote') await hydrateRemote();
     };
   });
   root.querySelectorAll('[data-agent]').forEach((el) => {
@@ -898,6 +913,256 @@ function escapeHtml(text) {
 
 /// 档位页骨架。数据要读 `config.toml` 与档位库（异步），所以先出骨架、
 /// 再由 `hydrateProvider()` 填内容——与报表页同一套路。
+
+
+// MARK: Agent 启停列表
+
+/// 逐项启停。**语义与 macOS 相反，要在这里说清**：
+/// macOS 存的是「启用集合」（空集 = 全部关掉），Rust 存的是「禁用集合」（空集 = 全部开着）。
+/// 两种都能表示同一个用户意图，但**空集的意思正好相反**——所以界面上
+/// 显式写出这一句，而不是让用户对着两个空列表猜。
+export function pageAgents() {
+  const st = getState();
+  const eng = st.engine ?? { snapshots: [] };
+  const disabled = new Set(st.settings?.disabled_agents ?? []);
+  const seen = new Set(eng.snapshots.map((s) => s.id));
+  const rows = eng.snapshots
+    .map((snap) => {
+      const off = disabled.has(snap.id);
+      return `<label class="sb-agent-toggle">
+        <input type="checkbox" data-agent-toggle="${escapeHtml(snap.id)}"${off ? '' : ' checked'}>
+        <span class="name">${escapeHtml(snap.name)}</span>
+        <span class="meta">${off ? '已关' : '开着'}</span>
+      </label>`;
+    })
+    .join('');
+  // 引擎这一拍没出现、但被关掉的档案也要列出来，否则「关掉了就再也找不回来」
+  const orphans = (st.settings?.disabled_agents ?? [])
+    .filter((id) => !seen.has(id))
+    .map((id) => `<label class="sb-agent-toggle">
+        <input type="checkbox" data-agent-toggle="${escapeHtml(id)}">
+        <span class="name">${escapeHtml(id)}</span>
+        <span class="meta">已关（本拍没出现）</span>
+      </label>`)
+    .join('');
+
+  return `<div class="sb-page" data-agents-root>
+    <div class="sb-note">关掉某个 Agent 只是不再监控它，不会终止它的进程。变更立即生效。</div>
+    <div class="sb-hint">存的是**禁用名单**：名单为空 = 全部开着。macOS 那边存的是启用名单（空 = 全关），
+      同一句「空」在两端意思相反，迁移设置时别照抄。</div>
+    ${rows || '<div class="sb-empty">这一拍没有采集到任何 Agent</div>'}
+    ${orphans}
+  </div>`;
+}
+
+export function bindAgents() {
+  const st = getState();
+  st.settings = st.settings ?? {};
+  st.settings.disabled_agents = st.settings.disabled_agents ?? [];
+  document.querySelectorAll('[data-agent-toggle]').forEach((el) => {
+    el.addEventListener('change', async () => {
+      const id = el.dataset.agentToggle;
+      const set = new Set(st.settings.disabled_agents);
+      if (el.checked) set.delete(id); else set.add(id);
+      st.settings.disabled_agents = [...set];
+      await invoke('save_settings', { newSettings: st.settings }).catch(() => {});
+      // 引擎下一拍就会按新集合过滤（状态是 `engine://tick` 推来的）。
+      // 这里立刻重画是为了不让人对着一个已经改了、看起来却没动的界面发愣。
+      renderSidebar();
+    });
+  });
+}
+
+// MARK: 远程通知（三通道 + 钥匙串密钥 + 发送预览）
+
+/// 三个通道的**字段表**：显示名、键、控件类型只有这一份。
+/// 通道枚举的取值（`ntfy` / `customHTTP` / `smtpEmail`）与 Rust `remote::Channel::as_str`
+/// 同值——写错一个，界面就写进了一个 Rust 认不出的通道，而 `normalized()` 会把它
+/// 悄悄回落成 ntfy，用户看到的是「我选了却没生效」而没有任何报错。
+const REMOTE_CHANNELS = [
+  { kind: 'ntfy', label: 'ntfy 推送', fields: [
+    { key: 'topicOrURL', label: '主题名', ph: 'my-agentisland-topic' } ] },
+  { kind: 'customHTTP', label: '自定义 HTTP', fields: [
+    { key: 'url_template', label: '地址', ph: 'https://example.com/send?key={key}' },
+    { key: 'body_template', label: '正文', ph: '{title}\n{body}' },
+    { key: 'useJSONBody', label: '正文用 JSON', type: 'bool' } ] },
+  { kind: 'smtpEmail', label: '邮箱 SMTP（仅 465）', fields: [
+    { key: 'smtp_host', label: 'SMTP 主机' },
+    { key: 'smtp_port', label: '端口', type: 'number', min: 465, max: 465 },
+    { key: 'smtp_user', label: '账号' },
+    { key: 'smtp_to', label: '收件人' } ] },
+];
+
+/// 远程通知页外壳。**能力边界逐字用后端给的那段**（与档位页同一条纪律：
+/// 界面不自己编一句「我们支持什么」——那份文案是约束，编错了就是骗）。
+export function pageRemote() {
+  return `<div class="sb-page" data-remote-root>
+    <div class="sb-empty">加载中…</div>
+  </div>`;
+}
+
+export async function hydrateRemote() {
+  const root = document.querySelector('[data-remote-root]');
+  if (!root) return;
+  const remote = await invoke('remote_status').catch(() => null);
+  if (!remote) {
+    root.innerHTML = '<div class="sb-empty">读不到远程通知状态（命令没接上？）</div>';
+    return;
+  }
+  const st = getState();
+  st.remoteStatus = remote;
+  const channel = REMOTE_CHANNELS.find((c) => c.kind === remote.kind) ?? REMOTE_CHANNELS[0];
+  const cfg = (st.settings?.remote_channels ?? {})[channel.kind] ?? {};
+  const policy = st.settings?.remote_policy ?? remote.policy ?? {};
+
+  // ③ 未配齐 / 不安全端点 / 静默中 / 在场判定——每条都是**独立**的一行，
+  // 不合成一句「有问题」：用户要能分辨「没配」与「配了但不安全」
+  const notices = [];
+  if (remote.readiness) notices.push(`未配齐：${remote.readiness}`);
+  if (remote.insecure_endpoint) notices.push(`端点不安全：${remote.insecure_endpoint}`);
+  if (remote.quiet_now) notices.push('此刻落在静默时段内');
+  if (remote.away_now) notices.push(`在场判定：${remote.away_reason}`);
+  if (remote.unrecognized_kind) notices.push(`设置里的通道「${remote.unrecognized_kind}」认不出，已回落到 ${remote.label}`);
+
+  root.innerHTML = `
+    <div class="sb-note">${escapeHtml(remote.limitations ?? '')}</div>
+    ${notices.map((n) => `<div class="sb-hint sb-warn">${escapeHtml(n)}</div>`).join('')}
+
+    <div class="sb-group">
+      <div class="sb-group-title">通道</div>
+      <label class="sb-set"><span class="sb-set-label">通道</span>
+        <span class="sb-set-ctl"><select data-remote-kind>
+          ${REMOTE_CHANNELS.map((c) => `<option value="${c.kind}"${c.kind === remote.kind ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
+        </select></span></label>
+      ${channel.fields.map((f) => remoteField(channel.kind, f, cfg)).join('')}
+      <label class="sb-set"><span class="sb-set-label">附带最后一条动作</span>
+        <span class="sb-set-ctl"><input type="checkbox" data-remote-cfg="include_action_detail" data-kind="${channel.kind}"${cfg.include_action_detail ? ' checked' : ''}></span></label>
+      <div class="sb-hint">命令内容与文件路径默认**不送出**这台机器。勾上才会一起走。</div>
+    </div>
+
+    <div class="sb-group">
+      <div class="sb-group-title">密钥（存进系统钥匙串）</div>
+      <div class="sb-hint">条目名 <code>${escapeHtml(remote.secret_name)}</code>；界面与日志只显示掩码，读不回真值。</div>
+      <label class="sb-set"><span class="sb-set-label">密钥</span>
+        <span class="sb-set-ctl"><input type="password" data-remote-secret placeholder="留空即清除" autocomplete="off"></span></label>
+      <div class="sb-foot">
+        <span class="mini-btn" data-remote-save-secret>保存密钥</span>
+        <span class="mini-btn" data-remote-del-secret>删除</span>
+        <span class="mini-btn" data-remote-preview>发送预览</span>
+      </div>
+      <div data-remote-out class="sb-note"></div>
+    </div>
+
+    <div class="sb-group">
+      <div class="sb-group-title">发送策略</div>
+      <label class="sb-set"><span class="sb-set-label">总开关</span>
+        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="master_enabled"${policy.master_enabled ? ' checked' : ''}></span></label>
+      <label class="sb-set"><span class="sb-set-label">任务完成</span>
+        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="send_completed"${policy.send_completed ? ' checked' : ''}></span></label>
+      <label class="sb-set"><span class="sb-set-label">等待确认</span>
+        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="send_attention"${policy.send_attention ? ' checked' : ''}></span></label>
+      <label class="sb-set"><span class="sb-set-label">消耗告警</span>
+        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="send_cost_spike"${policy.send_cost_spike ? ' checked' : ''}></span></label>
+      <label class="sb-set"><span class="sb-set-label">同事件节流</span>
+        <span class="sb-set-ctl"><input type="number" data-remote-policy="throttle_seconds" min="15" max="3600"
+          value="${escapeHtml(String(policy.throttle_seconds ?? 90))}"><span class="sb-unit">秒</span></span></label>
+      <label class="sb-set"><span class="sb-set-label">静默时段起</span>
+        <span class="sb-set-ctl"><input type="text" data-remote-policy="quiet_start" placeholder="22:00" value="${escapeHtml(policy.quiet_start ?? '')}"></span></label>
+      <label class="sb-set"><span class="sb-set-label">静默时段止</span>
+        <span class="sb-set-ctl"><input type="text" data-remote-policy="quiet_end" placeholder="08:00" value="${escapeHtml(policy.quiet_end ?? '')}"></span></label>
+      <label class="sb-set"><span class="sb-set-label">只在人不在时发</span>
+        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="only_when_away"${policy.only_when_away ? ' checked' : ''}></span></label>
+      <label class="sb-set"><span class="sb-set-label">无输入判定</span>
+        <span class="sb-set-ctl"><input type="number" data-remote-policy="away_idle_seconds" min="30" max="3600"
+          value="${escapeHtml(String(policy.away_idle_seconds ?? 120))}"><span class="sb-unit">秒</span></span></label>
+      <div class="sb-hint">Rust 侧还没接 macOS 在场信号层，今天「人不在」一律 fail-open 判成已离开。</div>
+    </div>`;
+  bindRemote();
+  scheduleLayoutLog();
+}
+
+function remoteField(kind, field, cfg) {
+  const id = `${kind}.${field.key}`;
+  if (field.type === 'bool') {
+    return `<label class="sb-set"><span class="sb-set-label">${escapeHtml(field.label)}</span>
+      <span class="sb-set-ctl"><input type="checkbox" data-remote-cfg="${escapeHtml(field.key)}" data-kind="${kind}"${cfg[field.key] ? ' checked' : ''}></span></label>`;
+  }
+  const attrs = field.type === 'number' ? ` type="number" min="${field.min}" max="${field.max}"` : ' type="text"';
+  return `<label class="sb-set"><span class="sb-set-label">${escapeHtml(field.label)}</span>
+    <span class="sb-set-ctl"><input${attrs} data-remote-cfg="${escapeHtml(field.key)}" data-kind="${kind}"
+      placeholder="${escapeHtml(field.ph ?? '')}" value="${escapeHtml(String(cfg[field.key] ?? ''))}"></span></label>`;
+}
+
+function bindRemote() {
+  const st = getState();
+  st.settings = st.settings ?? {};
+  st.settings.remote_channels = st.settings.remote_channels ?? {};
+  st.settings.remote_policy = st.settings.remote_policy ?? {};
+
+  const persist = async (out) => {
+    try {
+      await invoke('save_settings', { newSettings: st.settings });
+      out.innerHTML = '<div class="sb-hint">已保存</div>';
+    } catch (error) {
+      out.innerHTML = `<div class="sb-hint sb-warn">保存失败：${escapeHtml(String(error))}</div>`;
+    }
+  };
+  const out = document.querySelector('[data-remote-out]') ?? document.createElement('div');
+
+  document.querySelector('[data-remote-kind]')?.addEventListener('change', async (e) => {
+    st.settings.remote_kind = e.target.value;
+    await persist(out);
+    await hydrateRemote(); // 换通道要重画字段：三个通道的键不一样
+  });
+
+  document.querySelectorAll('[data-remote-cfg]').forEach((el) => {
+    el.addEventListener('change', async () => {
+      const kind = el.dataset.kind;
+      const key = el.dataset.remoteCfg;
+      st.settings.remote_channels[kind] = st.settings.remote_channels[kind] ?? {};
+      st.settings.remote_channels[kind][key] =
+        el.type === 'checkbox' ? el.checked : (el.type === 'number' ? Number(el.value) : el.value);
+      await persist(out);
+    });
+  });
+
+  document.querySelectorAll('[data-remote-policy]').forEach((el) => {
+    el.addEventListener('change', async () => {
+      const key = el.dataset.remotePolicy;
+      st.settings.remote_policy[key] =
+        el.type === 'checkbox' ? el.checked : (el.type === 'number' ? Number(el.value) : el.value);
+      await persist(out);
+    });
+  });
+
+  // 密钥：只往钥匙串写，**永不读回**（后端刻意没有读回命令）
+  document.querySelector('[data-remote-save-secret]')?.addEventListener('click', async () => {
+    const input = document.querySelector('[data-remote-secret]');
+    const result = await invoke('remote_secret_set', { value: input?.value ?? '' })
+      .catch((e) => ({ kind: 'Failed', reason: String(e) }));
+    if (result.kind === 'Ok') {
+      input.value = '';
+      out.innerHTML = '<div class="sb-hint">密钥已写入钥匙串</div>';
+      await hydrateRemote();
+    } else {
+      // 写入被系统拒绝时**把原因显示出来**——本应用是 ad-hoc 签名，
+      // 弹窗点「始终允许」这一步用户必须自己做得到
+      out.innerHTML = `<div class="sb-hint sb-warn">写入被拒：${escapeHtml(result.reason ?? '（无原因）')}</div>`;
+    }
+  });
+  document.querySelector('[data-remote-del-secret]')?.addEventListener('click', async () => {
+    await invoke('remote_secret_delete').catch(() => false);
+    out.innerHTML = '<div class="sb-hint">已请求删除</div>';
+    await hydrateRemote();
+  });
+  document.querySelector('[data-remote-preview]')?.addEventListener('click', async () => {
+    const preview = await invoke('remote_preview', { args: { kind: 'attention', agentName: 'AgentIsland', seconds: 0 } })
+      .catch(() => null);
+    if (!preview) { out.innerHTML = '<div class="sb-hint sb-warn">预览命令没接上</div>'; return; }
+    out.innerHTML = `<div class="sb-note"><pre data-preview>${escapeHtml(preview.text ?? JSON.stringify(preview, null, 2))}</pre></div>`;
+  });
+}
+
 // MARK: 高级设置（03-approach §3 的「高级设置 ›」入口）
 
 /// 设置页的字段表：**显示名、说明、控件类型、取值范围**只有这一份。

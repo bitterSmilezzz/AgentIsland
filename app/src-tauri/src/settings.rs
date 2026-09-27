@@ -95,8 +95,8 @@ impl Default for Settings {
             min_working_hold: 10.0,
             active_session_window: 600.0,
             runaway_cpu_alert: true,
-            runaway_cpu_threshold: 70.0,
-            runaway_duration_threshold: 300.0,
+            runaway_cpu_threshold: crate::health::RUNAWAY_CPU_THRESHOLD,
+            runaway_duration_threshold: crate::health::RUNAWAY_DURATION_MS as f64 / 1000.0,
             cpu_threshold: 6.0,
             battery_saver_enabled: true,
             token_alert_enabled: true,
@@ -636,10 +636,10 @@ mod ui_parity {
     const MANAGED_ELSEWHERE: &[(&str, &str)] = &[
         ("sidebar_width", "侧边栏直接拖拽调整（记宽度），不是滑块"),
         ("dock_anchor", "灵动岛顶栏拖拽 + 松手吸附直接操作，滑块给不出同样的手感"),
-        ("remote_kind", "❌ 远程通知页还没有——待办"),
-        ("remote_policy", "❌ 远程通知页还没有——待办"),
-        ("remote_channels", "❌ 远程通知页还没有——待办"),
-        ("disabled_agents", "❌ Agent 启停列表还没有——待办"),
+        ("remote_kind", "远程通知页有自己的通道选择器（三个通道字段不一样，挤进通用行会很难用）"),
+        ("remote_policy", "远程通知页有「发送策略」分组，含静默时段这类成对字段"),
+        ("remote_channels", "同上：每个通道一份独立配置，不是单个标量"),
+        ("disabled_agents", "Agent 启停页是逐项列表（`List<String>`），不是设置页里的一行控件"),
     ];
 
     #[test]
@@ -669,19 +669,22 @@ mod ui_parity {
         }
     }
 
-    /// 名单只收「真的还没做」的。每补一页就应当少一条；写测试的人会看到它变短。
+    /// 名单里**不许再有「还没做」的条目**。
+    ///
+    /// v0.0.200 时这里有四条标着 ❌（远程通知三件套 + 启停列表），
+    /// 那一版把它们做掉了，于是本条从「盯四条具体字段」变成「❌ 一条都不许有」。
+    /// 形状变了——**这正是它该有的形状**：做掉一批就少一批，
+    /// 而豁免只剩「这里为什么不能是一行控件」这类结构性理由。
     #[test]
-    fn the_exemption_list_has_not_grown_beyond_the_known_gaps() {
-        let unfinished: Vec<&str> = MANAGED_ELSEWHERE
+    fn no_exemption_is_still_an_unfinished_gap() {
+        let unfinished: Vec<(&str, &str)> = MANAGED_ELSEWHERE
             .iter()
             .filter(|(_, why)| why.starts_with('❌'))
-            .map(|(k, _)| *k)
+            .copied()
             .collect();
-        assert_eq!(
-            unfinished,
-            vec!["remote_kind", "remote_policy", "remote_channels", "disabled_agents"],
-            "远程通知页与启停列表一旦做出来，就把对应字段从 MANAGED_ELSEWHERE 移走；\
-             新增条目必须先想清楚为什么它不能进设置页"
+        assert!(
+            unfinished.is_empty(),
+            "这些字段对应的页面还没做，标了 ❌：{unfinished:?}"
         );
     }
 

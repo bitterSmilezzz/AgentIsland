@@ -219,10 +219,13 @@ impl ActivityEngine {
 
             // 卡死三态：资格（连续观测够不够久）与事实（高 CPU 持续够不够久）都来自本引擎的
             // 跨拍状态，所以判定放在这里、由 `health::is_hung` 一处实现
+            // 持续时长与告警侧**同一个数**：可配之后两处各读各的，
+            // 就会出现「告警响了、健康度还说不卡死」而两边都不报错
             let is_hung = health::is_hung(
                 self.observed_running_since.get(&profile.id).copied(),
                 self.high_cpu_since.get(&profile.id).copied(),
                 now,
+                (self.settings.runaway_duration_threshold * 1000.0) as i64,
             );
 
             let work_stats = self.durations.stats(

@@ -500,6 +500,13 @@ pub fn local_minutes_of_day(now_ms: i64) -> Option<u32> {
 /// **不含任何密钥值**：`has_secret` 是布尔，凭据本身永远不经过这里（ADR 0009）。
 /// 把「配齐了没有」「地址是不是明文」「是不是直接粘了密钥」三条**分开**给：
 /// Swift 侧它们是三个独立的红色提示，混成一条会让每条都变模糊。
+/// **能力边界**，逐字上屏（与 Provider 页同一条纪律：界面不自己编一句
+/// 「我们支持什么」——那份文案是约束，编错了就是骗）。
+///
+/// 内容对齐 Swift `RemoteNotifySettingsView` 的三段 help 与默认说明，
+/// 外加 Rust 侧**特有**的一条：在场信号层还没接，那一条必须写出来而不是让人猜。
+pub const REMOTE_LIMITATIONS: &str = "默认只送「哪个 Agent + 什么状态」，不含命令内容、路径与消息原文。三个通道：ntfy（订阅一个主题名）、自定义 HTTP 模板（微信 Server酱 / PushPlus、企微、钉钉、飞书都走这条——密钥写 {key}、标题 {title}、正文 {body}）、邮箱 SMTP。邮箱只支持 465（隐式 TLS）：25/587 的 STARTTLS 需要在已建立的 TCP 上原地升级，本仓不提供，填了会被拦住并说明原因。密钥只进系统钥匙串，界面与日志只显示掩码，设置文件里零密钥。本平台暂未接入屏幕锁定与显示器睡眠信号，「人不在」一律按「已离开」放行（fail-open）。";
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -525,6 +532,8 @@ pub struct Status {
     pub allows: Vec<(&'static str, bool)>,
     /// 当前被节流窗口握住的条目数（由命令层从 notifier 填；判定层不持有节流状态）
     pub throttled: usize,
+    /// 能力边界原文（见 [`REMOTE_LIMITATIONS`]）
+    pub limitations: &'static str,
 }
 
 /// 组装上面那张快照。
@@ -545,6 +554,7 @@ pub fn status(
     let config = channels.get(channel.as_str()).unwrap_or(&empty);
     let policy = policy.normalized();
     Status {
+        limitations: REMOTE_LIMITATIONS,
         kind: channel.as_str().to_string(),
         unrecognized_kind: unrecognized,
         label: channel.label().to_string(),
@@ -903,8 +913,13 @@ mod tests {
         channels.insert(
             "ntfy".to_string(),
             // 下面这条地址是**故意**构造成「像直接粘了密钥」的样子，用来测那条检测本身；
-            // 里面的值不是任何真实凭据
-            ntfy("http://ntfy.sh/island?key=ABCDEFGHIJKLMNOP"), // nosec: 夹具，构造出的假 token 参数
+            // 里面的值不是任何真实凭据。
+            //
+            // 值刻意取**短**：被测的是「有没有用 {key} 占位」，判据是地址里含不含
+            // `key=`，与熵无关。而 12 位以上的值会被脱敏扫描器的 `?key=<12+字符>`
+            // 规则当成真的 token 参数——那会让每次改这个文件都产生一个新 blob、
+            // 要重新备案一次。夹具不该靠豁免活着。
+            ntfy("http://ntfy.sh/island?key=PasteMe"),
         );
         let policy = Policy {
             master_enabled: true,
@@ -930,10 +945,10 @@ mod tests {
         assert!(snapshot.away_now, "取不到在场信号 ⇒ fail-open 判成离开");
         assert_eq!(snapshot.away_reason, "取不到输入时长");
         assert!(snapshot.allows.iter().all(|(_, allowed)| *allowed));
-        // 序列化里不含任何密钥值：`key=ABCDEFGHIJKLMNOP` 只出现在被判定为「明文粘了密钥」
-        // 的**配置**里，而状态快照只带布尔与条目名
+        // 序列化里不含任何密钥值：粘进来的那串只出现在被判定为「明文粘了密钥」的
+        // **配置**里，而状态快照只带布尔与条目名
         let json = serde_json::to_string(&snapshot).unwrap();
-        assert!(!json.contains("ABCDEFGHIJKLMNOP"), "状态快照不许带凭据原文");
+        assert!(!json.contains("PasteMe"), "状态快照不许带凭据原文");
     }
 
     #[test]

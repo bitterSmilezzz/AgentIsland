@@ -603,10 +603,23 @@ mod tests {
             .unwrap(),
         );
 
+        // 远程通知页的 DTO：**与档位页的 `status` 是两个不同的结构**，
+        // 所以它用自己的前缀 `remote.`。两个都登记进哨兵——而不是让其中一个
+        // 逃出检查范围（那正是 DTO 改名时静默失效的那种洞）。
+        let remote: std::collections::BTreeSet<String> = [
+            "kind", "unrecognized_kind", "label", "secret_name", "readiness",
+            "insecure_endpoint", "plaintext_secret", "policy", "quiet_now",
+            "away_now", "away_reason", "allows", "throttled", "limitations",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
         // 前缀 → 该前缀下允许的键
         for (prefix, allowed) in [
             ("profile.", &profile),
             ("status.", &status),
+            ("remote.", &remote),
             ("applied.", &applied),
             ("backup.", &backup),
             ("todo.", &todo),
