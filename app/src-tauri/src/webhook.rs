@@ -127,6 +127,8 @@ fn notify_route(body: &str, untrusted: bool, tx: &Sender<AgentTaskEvent>) -> (u1
         timestamp: crate::tokens::now_ms(),
         message,
         detail,
+        // 外部事件没有「本次任务用时」这个概念：0 = 不适用（报告里印 —，而不是 0 秒）
+        duration: 0.0,
         externally_delivered: true,
     });
     if untrusted {

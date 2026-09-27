@@ -116,6 +116,21 @@ pub fn recent_write(path: Option<&std::time::SystemTime>, now: std::time::System
     })
 }
 
+impl Code {
+    /// 文本出口（CSV/报告）用的写法。**必须与 serde 的 camelCase 表示同值**——
+    /// 否则「用脚本核对报告」的人会发现自己拿到的字段名与 JSON 对不上。
+    /// 有一条用例专门把两者逐个比过。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Code::Observed => "observed",
+            Code::BlindSessionSource => "blindSessionSource",
+            Code::NoLocalData => "noLocalData",
+            Code::SourceNotWired => "sourceNotWired",
+            Code::NotInstalled => "notInstalled",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

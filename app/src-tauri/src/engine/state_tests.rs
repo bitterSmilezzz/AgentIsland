@@ -458,7 +458,8 @@ fn the_pending_queue_is_bounded_and_keeps_the_newest() {
             timestamp: i,
             message: Some(format!("第 {i} 条")),
             detail: None,
-            externally_delivered: false,
+            duration: 0.0,
+                externally_delivered: false,
         });
     }
     assert!(engine.pending_count() <= 64, "待发队列必须有界：{}", engine.pending_count());

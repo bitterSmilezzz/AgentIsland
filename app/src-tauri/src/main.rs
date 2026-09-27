@@ -21,6 +21,7 @@ mod secret;
 mod settings;
 mod smtp;
 mod sqlite;
+mod audit;
 mod budget;
 mod forecast;
 mod tokens;
@@ -373,6 +374,27 @@ fn token_forecast(state: State<SharedEngine>) -> crate::forecast::ForecastReport
     )
 }
 
+/// 导出运维审计报告（Markdown / CSV）。对应 Swift 侧「导出到剪贴板」那条路。
+///
+/// 用的是**这一拍的快照**与面板同源的 `grand_total`（口径差异会在报告里写明），
+/// 不重新聚合：报告与岛对不上时，用户怀疑的是面板。
+#[tauri::command]
+fn audit_report_markdown(state: State<SharedEngine>) -> crate::audit::Export {
+    let engine = state.lock().unwrap();
+    crate::audit::markdown_export(
+        &engine.snapshots,
+        &engine.recent_events(),
+        Some(&engine.grand_total),
+        crate::tokens::now_ms(),
+    )
+}
+
+#[tauri::command]
+fn audit_report_csv(state: State<SharedEngine>) -> crate::audit::Export {
+    let engine = state.lock().unwrap();
+    crate::audit::csv_export(&engine.snapshots, crate::tokens::now_ms())
+}
+
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
     // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
@@ -532,6 +554,8 @@ fn main() {
             remote_status,
             remote_preview,
             token_forecast,
+            audit_report_markdown,
+            audit_report_csv,
             remote_secret_set,
             remote_secret_delete,
             set_dock_edge,

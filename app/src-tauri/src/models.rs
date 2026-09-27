@@ -178,10 +178,26 @@ pub struct AgentTaskEvent {
     pub timestamp: i64,     // unix ms
     pub message: Option<String>,
     pub detail: Option<String>,
+    /// 本次任务用时（秒）。**0 = 不适用**（等待确认、熔断告警、外部事件都填 0）。
+    /// Swift `AgentTaskEvent.duration` 同口径；审计报告的「耗时」列靠它，
+    /// 缺了它那一列只能印 `—`——而「没记」与「零秒」在报告里是两件事。
+    pub duration: f64,
     pub externally_delivered: bool,
 }
 
 impl AgentTaskEvent {
+    /// 时长的展示文本：`3分12秒` / `45秒`（Swift `AgentTaskEvent.durationText` 同口径）。
+    /// 注意它**与通知正文里的时长不同**：那边只说到「分」（`duration_short`），
+    /// 报告里要精确到秒——两者是同一个人在不同场景要的不同粒度，不是重复实现。
+    pub fn duration_text(seconds: f64) -> String {
+        let total = seconds.max(0.0).round() as i64;
+        if total >= 60 {
+            format!("{}分{}秒", total / 60, total % 60)
+        } else {
+            format!("{total}秒")
+        }
+    }
+
     pub fn summary(&self) -> String {
         if let Some(m) = &self.message {
             if !m.is_empty() {
@@ -191,7 +207,13 @@ impl AgentTaskEvent {
         match self.event_type.as_str() {
             "attention" => format!("{} 等待确认操作", self.agent_name),
             "costSpike" => format!("⚠️ {} 资源/Token 消耗突增", self.agent_name),
-            _ => format!("{} 任务完成", self.agent_name),
+            // 完成摘要带时长：Swift `summaryText` 就是这么写的，
+            // 少它一段会让报告里同一件事比岛内文案少一半信息
+            _ => format!(
+                "{} 任务完成 ({})",
+                self.agent_name,
+                Self::duration_text(self.duration)
+            ),
         }
     }
 }

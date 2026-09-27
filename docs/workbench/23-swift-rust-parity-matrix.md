@@ -90,16 +90,17 @@ Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L
 
 | Swift 模块 | 行 | 职责（为什么不能少） |
 | :--- | ---: | :--- |
-| [TokenBudgetTracker.swift](../../Sources/AgentIslandCore/TokenBudgetTracker.swift) | 81 | 每日预算告警；0 = 未设，`> 0` 才启用 |
-| [TokenForecastEvaluator.swift](../../Sources/AgentIslandCore/TokenForecastEvaluator.swift) | 92 | 月末预测——CLI `tokens` 的招牌输出 |
+| <sub>下表是 M3 立项时的现状快照；**已迁的模块在职责列标注 `✅ 已迁 vX`**，逐条口径见 §3.2。</sub> |||
+| [TokenBudgetTracker.swift](../../Sources/AgentIslandCore/TokenBudgetTracker.swift) | 81 | 每日预算告警；0 = 未设，`> 0` 才启用 ✅ 已迁 v0.0.181（`budget.rs`） |
+| [TokenForecastEvaluator.swift](../../Sources/AgentIslandCore/TokenForecastEvaluator.swift) | 92 | 月末预测——CLI `tokens` 的招牌输出 ✅ 已迁 v0.0.181（`forecast.rs`） |
 | [TaskDurationTracker.swift](../../Sources/AgentIslandCore/TaskDurationTracker.swift) | 117 | 单次任务时长记录 |
-| [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) | 387 | 外发调度：策略→渲染→传输→记账（**策略 v0.0.174、渲染 v0.0.175 已迁；闸门/节流/传输/记账未迁**） |
-| [RemoteTransport.swift](../../Sources/AgentIslandCore/RemoteTransport.swift) | 340 | HTTP + SMTP 通道与「发送预览」 |
-| [SMTPSocket.swift](../../Sources/AgentIslandCore/SMTPSocket.swift) | 174 | Network.framework SMTP 会话 |
-| `RemoteNotification.swift` 的钥匙串部分 | ~90 | `RemoteSecret.write/read/exists/delete`（Security.framework；Rust 侧用 `security-framework`，同一个系统框架） |
-| [AuditReportExporter.swift](../../Sources/AgentIslandCore/AuditReportExporter.swift) | 255 | Markdown/CSV/JSON 运维审计报告 |
+| [RemoteNotifier.swift](../../Sources/AgentIslandCore/RemoteNotifier.swift) | 387 | 外发调度：策略→渲染→传输→记账 ✅ 全部已迁（策略 v0.0.174、渲染 v0.0.175、闸门/节流/记账 v0.0.176、重试 v0.0.178、往返传输 v0.0.177/179） |
+| [RemoteTransport.swift](../../Sources/AgentIslandCore/RemoteTransport.swift) | 340 | HTTP + SMTP 通道与「发送预览」 ✅ 已迁 v0.0.175–179 |
+| [SMTPSocket.swift](../../Sources/AgentIslandCore/SMTPSocket.swift) | 174 | Network.framework SMTP 会话 ✅ 已迁 v0.0.179（`smtp.rs`；Rust 用 `native-tls`） |
+| `RemoteNotification.swift` 的钥匙串部分 | ~90 | `RemoteSecret.write/read/exists/delete`（Security.framework） ✅ 已迁 v0.0.180（`secret.rs`） |
+| [AuditReportExporter.swift](../../Sources/AgentIslandCore/AuditReportExporter.swift) | 255 | Markdown/CSV/JSON 运维审计报告 ✅ Markdown+CSV 已迁 v0.0.182（`audit.rs`）；**Raycast 清单未迁**（它要写版本号，而 Rust 的 Cargo 版本未同步，见 §3.2） |
 | [TokenReportExporter.swift](../../Sources/AgentIslandCore/TokenReportExporter.swift) | 84 | Token 账单/会话报表导出 |
-| [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) | 512 | JSONL 工具 token 明细索引（只留时间与计数） |
+| [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) | 512 | JSONL 工具 token 明细索引（只留时间与计数） ✅ 已迁 v0.0.168–170（`sqlite.rs` + `tokens.rs`） |
 | [ProcessTreeInspector.swift](../../Sources/AgentIslandCore/ProcessTreeInspector.swift) | 137 | 进程树构建（详情页「谁在吃 CPU」） |
 | [LogTailReader.swift](../../Sources/AgentIslandCore/LogTailReader.swift) | 201 | 有界尾读 + 截断首行丢弃；Rust 侧 `read_tail_lines`（[session.rs:44](../../app/src-tauri/src/session.rs#L44)）有同类逻辑但只服务 session.rs，未抽公共层 |
 | [LogPatternAnalyzer.swift](../../Sources/AgentIslandCore/LogPatternAnalyzer.swift) | 87 | 实时日志错误模式识别 |
@@ -141,6 +142,7 @@ Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（�
 | 五态枚举 | `ActivityLevel` ∈ offline/idle/completed/working/attention（[Models.swift:44-72](../../Sources/AgentIslandCore/Models.swift#L44)） | `ActivityLevel` 同五名（[models.rs:14-40](../../app/src-tauri/src/models.rs#L14)），测试钉住 serde 名（[models.rs:test](../../app/src-tauri/src/models.rs)） | ✅ **必须一致，已一致** |
 | 健康度与卡死判定 | [AgentHealthEvaluator.swift](../../Sources/AgentIslandCore/AgentHealthEvaluator.swift) 144 行 + `ActivityEngine` 里的 `isHung`（三态、资格来自 `observedRunningSince`） | [health.rs](../../app/src-tauri/src/health.rs)：同扣分表、同 85/70/50 分级、同「判不出的维度不许宣布健康」降级规则；`is_hung` 作为快照字段（[models.rs](../../app/src-tauri/src/models.rs)），界面按分数上屏 | ✅ **v0.0.171 起一致**（含文案逐字相同）。两处有意不同：① Swift 的 `HealthGrade.icon` 是五个 SF Symbol 名，网页渲染不了、**刻意不搬**（见 `health.rs` 注释）② Swift 在详情页展示，Rust 在列表行上只在非「健康」时显示分数徽标 |
 | Token 预算告警 | [TokenBudgetTracker.swift](../../Sources/AgentIslandCore/TokenBudgetTracker.swift) 81 行：80% 预警 / 100% 超额、**只有跨级才报**、<75% 才重新武装 | [budget.rs](../../app/src-tauri/src/budget.rs)：同阈值、同滞回、同文案（含 `compact` 后的数字）；引擎在总量算完后评估，跨级时推 `system` /「Token 预算」/ `costSpike` 事件（预警与超额分开写） | ✅ **v0.0.181 起一致**。两处有意差异：① 负用量钳成 0（Swift 原样打印 `-1`，但那是统计回绕，显示出来等于说谎）② 关掉告警开关时仍给状态（Swift 同分支），但不推事件 |
+| 审计报告导出 | [AuditReportExporter.swift](../../Sources/AgentIslandCore/AuditReportExporter.swift) 255 行：Markdown / CSV（+ Raycast 清单） | [audit.rs](../../app/src-tauri/src/audit.rs)：同表头同列序、同 `cell()` 转义（`|` 与换行）、同 `—`（没查）与 `0`（查了确实是零）之分、同「跨源总量与逐条相加不等时把差额说出来」；两条命令 `audit_report_markdown` / `audit_report_csv` 返回 `{filename, content}` | ⚠️ **v0.0.182 起 Markdown/CSV 一致**。未迁：① **Raycast 清单**（要写版本号，而 `Cargo.toml` 是 `0.1.0`、与 App 版本未同步——先得有「第四个版本位」的同步规则）② Swift 的**状态列带 `AgentProvenance` 后缀**（Rust 没有 provenance 概念，报告里那份「工作中」可能来自带令牌的自报，暂时分辨不出） |
 | 月末预估 | [TokenForecastEvaluator.swift](../../Sources/AgentIslandCore/TokenForecastEvaluator.swift) 92 行：以 24h 为基准日外推到当月 | [forecast.rs](../../app/src-tauri/src/forecast.rs)：同外推、同四段文案、同 `SafeNumber` 的饱和乘与金额上限；接 `token_forecast` 命令 | ✅ **v0.0.181 起一致**（含闰年/月长按本地日历）。一处发现：Swift 的 `else`（「预计月末消耗 …」）在「当天用量 > 日均预算」前提下**数学上不可达**，Rust 保留结构但有不变量用例证明它不会被走到 |
 | token 数缩写（`compact`） | `TokenUsage.compact`（全仓唯一一份，卡片/悬停/热力图/详情页/CLI 都走它） | [tokens.rs](../../app/src-tauri/src/tokens.rs) 的 `compact`：同阈值（1e9 `B` / 1e6 `M` / **1e4** `k`）、同小数位（保留 `12.00M`） | ✅ **v0.0.181 统一**。此前 Rust 另有一份 `engine::compact`：1000 就打 `k`、十亿用 `G`、还剥尾零，而它正用在一句 Swift 用参考函数构造的告警里——**同功能两份实现**是这一轮修掉的真问题 |
 | 异常驻留 / 死锁持续守护 | [AgentResilienceGuard.swift](../../Sources/AgentIslandCore/AgentResilienceGuard.swift) 112 行：卡死 180s / 内存 300s 门槛、600s 冷却，`autoAnomaliesAlertEnabled` 控制 | [resilience.rs](../../app/src-tauri/src/resilience.rs)：同三个数、同「进程消失即作废状态」「条件消失即清冷却」两条规则；事件走 `attention`，文案逐字相同 | ✅ **v0.0.172 起一致**。Rust 侧新增设置项 `auto_anomalies_alert`（默认 `true`，与 Swift 默认一致）。差异：Swift 的事件模型带 `duration`/`pid` 两列，Rust 的 `AgentTaskEvent` 没有，时长放在 `detail` 里 |

@@ -287,6 +287,7 @@ impl ActivityEngine {
                     "⚠️ Token 预算预警".into()
                 }),
                 detail: Some(detail),
+                duration: 0.0,
                 externally_delivered: false,
             });
         }
@@ -344,6 +345,7 @@ impl ActivityEngine {
                     timestamp: now,
                     message: Some(message),
                     detail: None,
+                    duration: 0.0,
                     externally_delivered: false,
                 });
                 if self.alerted_fingerprints.len() > 800 {
@@ -376,6 +378,13 @@ impl ActivityEngine {
                 };
                 if is_new {
                     self.last_completed_fp.insert(key.clone(), fp.clone());
+                    // 本次任务用时：此刻 `work_started_at` 还没被清（下面几行才 remove），
+                    // 与 `notify_outbound` 取的是同一个起点——两处若各算一次就会打架
+                    let seconds = self
+                        .work_started_at
+                        .get(&key)
+                        .map(|started| ((now - *started).max(0) as f64) / 1000.0)
+                        .unwrap_or(0.0);
                     self.push_event(AgentTaskEvent {
                         id: fp,
                         agent_id: key.clone(),
@@ -384,6 +393,7 @@ impl ActivityEngine {
                         timestamp: now,
                         message: None,
                         detail: None,
+                        duration: seconds,
                         externally_delivered: false,
                     });
                 }
@@ -495,8 +505,22 @@ impl ActivityEngine {
             timestamp: now,
             message: Some(message.to_string()),
             detail: None,
+            duration: 0.0,
             externally_delivered: false,
         });
+    }
+
+    /// 最近的事件流水（队首在前，随后是待确认队列）。
+    /// 审计报告要用它做「近期生命周期与告警事件流水」那一节；
+    /// 之所以走访问器而不是把字段开成 `pub`：队列的**顺序语义**（队首=正在上屏的那条）
+    /// 只有这一层知道，让调用方直接读裸 Vec 迟早会有人反着拼。
+    pub fn recent_events(&self) -> Vec<AgentTaskEvent> {
+        let mut events = Vec::new();
+        if let Some(event) = &self.latest_event {
+            events.push(event.clone());
+        }
+        events.extend(self.pending_events.iter().cloned());
+        events
     }
 
     /// 入队一条事件。队首直接上屏，其余排队等确认——见 `pending_events` 的注释。
@@ -588,6 +612,7 @@ impl ActivityEngine {
                 timestamp: now,
                 message: Some(alert.message),
                 detail: Some(format!("kind={} elapsed_ms={}", alert.kind, alert.elapsed_ms)),
+                duration: 0.0,
                 externally_delivered: false,
             });
         }
@@ -749,6 +774,7 @@ impl ActivityEngine {
                 timestamp: now_ms(),
                 message: Some("需要确认: 是否允许执行 swift test".into()),
                 detail: Some("会话请求执行 shell 命令 swift test，等待用户批准。可在岛内直达终端或忽略。".into()),
+                duration: 0.0,
                 externally_delivered: false,
             });
         }
