@@ -2,6 +2,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod atomicfile;
+mod cli;
 mod cost;
 mod duration;
 mod selfreport;
@@ -954,10 +955,12 @@ fn main() {
     // `--selftest` / `selftest`：无头自检（对应 Swift 的 `agentisland selftest`）。
     // 放在最前面：它不该启动 UI、采集或任何后台线程——自检的全部价值是
     // 「在这台机器上，判定逻辑本身还对不对」，被采集的副作用搅进来就不再是那个问题的答案。
-    if std::env::args().any(|arg| arg == "--selftest" || arg == "selftest") {
-        let report = selftest::run();
-        print!("{}", report.text());
-        std::process::exit(report.exit_code());
+    // CLI 子命令（`agentisland status` / `doctor` / `tokens` / `state` …）。
+    // **必须在建引擎、开线程、起窗口之前**：`status` 的全部价值是「快」，
+    // 而拉起 Tauri 再退出比它自己采完一拍慢一个量级。
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(code) = cli::try_run(&argv) {
+        std::process::exit(code);
     }
     let (tx, rx) = mpsc::channel::<models::AgentTaskEvent>();
     let settings = Settings::load();

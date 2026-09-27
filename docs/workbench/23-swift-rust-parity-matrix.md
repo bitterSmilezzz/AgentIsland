@@ -220,19 +220,19 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 `status`(默认) / `top` / `tokens` / `state` / `doctor` / `check` / `clean` / `selftest` /
 `open` / `notify` / `report` / `raycast`，共 11 个 `Command` 文件（`status` 不单独成文件，是默认路径）。
 
-**Rust 侧无 CLI。** [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
+**Rust 侧 CLI（v0.0.204 起有 5 个子命令：`status` / `doctor` / `tokens` / `state` / `selftest`；其余 7 个明说未实现）。** [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
 （`tauri::Builder`），`std::env::args()` 仅用于识别 `--demo` / `--expand` / `--route=`
 （[main.rs:38-48](../../app/src-tauri/src/main.rs#L38)）。Cargo 未声明 `[[bin]]` 之外的第二二进制
 （[Cargo.toml](../../app/src-tauri/Cargo.toml) 无 `[[bin]]` 节）。
 
 | CLI 子命令 | 依赖的 Swift 模块 | Rust 侧状态 |
 | :--- | :--- | :--- |
-| `status` / `top` | LiveSampler、ProcessMonitor、CLIOutput、CLIModels | ❌ 无 |
-| `tokens` | TokenUsageMonitor、TokenForecastEvaluator、TokenCostEstimator、DailyBudget | ❌ 无（Rust 有 `get_report` 供前端，无终端输出） |
-| `state` | AgentState（读 App 进程内状态，含自报/冲突） | ❌ 无；且后端 `AgentSnapshot` 无 provenance 字段 |
-| `doctor` | AgentObservability、AgentHealthEvaluator、SessionProbeHealth | ❌ 无 CLI；Rust 仅有 §4.1 的局部可观测性判定，**健康度已有（v0.0.171）但探测原因链仍缺** |
+| `status` | LiveSampler、CLIOutput | ✅ `cli::status`（`--all` / `--json` / 名称过滤）。**`-w` 动态监控未做** |
+| `tokens` | TokenUsageMonitor、TokenForecastEvaluator、DailyBudget | ✅ `cli::tokens`（`--json` / `--budget`） |
+| `state` | AgentState（读 App 进程内状态，含自报/冲突） | ⚠️ `cli::state` 已有，但**读不到自报**——CLI 是另一个进程；命令已明说这一点 |
+| `doctor` | AgentObservability、AgentHealthEvaluator | ⚠️ `cli::doctor` 已有（结论 + 依据 + 健康度），**但探测原因链仍缺**（见 §4.1） |
 | `check` / `clean` | AgentResilienceGuard、AgentCleaner、ProcessTreeInspector | ⚠️ 无 CLI；持续守护判定已有（v0.0.172 → `resilience.rs`），**清理动作与进程树仍未迁** |
-| `selftest` | Selftest（无头假数据断言） | ❌ 无同名 CLI 子命令；Rust 有 `cargo test --locked` 守护五态和会话解析 |
+| `selftest` | Selftest（无头假数据断言） | ✅ `cli::selftest`（且 `--selftest` 两种写法都收） |
 | `open` / `notify` | URLSchemeParser、LocalEventHTTP、SelfReport | ⚠️ 部分：webhook 服务端在（[webhook.rs](../../app/src-tauri/src/webhook.rs)），客户端/深链解析无 |
 | `report` / `raycast` | AuditReportExporter、TokenReportExporter、AppVersion | ❌ 无 |
 
