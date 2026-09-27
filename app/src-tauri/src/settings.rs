@@ -109,7 +109,13 @@ impl Default for Settings {
             remote_channels: HashMap::new(),
             notification_policy: "standard".into(),
             play_completion_sound: true,
-            disabled_agents: vec![],
+            // 出厂就关掉的档案。与 macOS 侧 `defaultEnabled: false` 同值。
+            //
+            // **语义与 macOS 端相反**（那边存启用名单、空集=全关；这里存禁用名单、
+            // 空集=全开），所以「默认关」在这边必须**显式列进黑名单**，
+            // 否则它会默认开着——而用户在 macOS 上从没见它开着。
+            // 迁移设置时别照抄：两边的空集意思相反。
+            disabled_agents: vec!["continue".into()],
             launch_at_login: false,
             hide_docked_sliver: false,
             compact_view: false,
@@ -308,7 +314,11 @@ mod tests {
         let s: Settings = serde_json::from_str(partial).expect("缺字段应被默认值补齐，而非解析失败");
         assert_eq!(s.appearance, "dark");
         assert_eq!(s.dock_edge, "top", "缺 dock_edge 应落默认值");
-        assert!(s.disabled_agents.is_empty(), "缺禁用列表应落默认值");
+        assert_eq!(
+            s.disabled_agents,
+            vec!["continue".to_string()],
+            "缺禁用列表应落**出厂**值——而出厂不是空的：`continue` 在 macOS 侧默认关闭"
+        );
     }
 
     /// `normalized()` 钳的是**用户可写的脏值**（设置界面是文本/滑块，写坏是常态）。
@@ -697,5 +707,38 @@ mod ui_parity {
             ghost.is_empty(),
             "设置页引用了不存在的字段，界面上有、点下去静默失效：{ghost:?}"
         );
+    }
+}
+
+/// **`continue` 出厂即关闭**（与 macOS 侧 `defaultEnabled: false` 同值）。
+///
+/// 这条钉的是一个**跨端不可见的不一致**：Rust 侧的 `disabled_agents` 是黑名单、
+/// 空集=全开，所以「默认关」必须显式列出来。
+/// 不列的话，Continue 会在新装的 Rust 端**默认开着**，
+/// 而用户在 macOS 上从没见过它开着——一个只在一边出现的幽灵条目。
+#[cfg(test)]
+mod default_off {
+    use super::*;
+
+    #[test]
+    fn continue_is_off_out_of_the_box_and_nothing_else_is() {
+        let d = Settings::default();
+        assert_eq!(
+            d.disabled_agents,
+            vec!["continue".to_string()],
+            "只有 Continue 该默认关闭"
+        );
+        // 且这个档案**必须存在**——把一个不存在的 id 写进黑名单是静默无效的
+        assert!(
+            crate::registry::builtin().iter().any(|p| p.id == "continue"),
+            "黑名单里的 `continue` 必须在注册表里"
+        );
+    }
+
+    /// 归一化**不会**把默认关闭的那些清掉：那是用户的显式选择。
+    #[test]
+    fn normalization_keeps_the_default_off_choice() {
+        let d = Settings::default();
+        assert_eq!(d.normalized().disabled_agents, d.disabled_agents);
     }
 }

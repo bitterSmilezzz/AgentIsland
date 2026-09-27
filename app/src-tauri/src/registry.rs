@@ -21,6 +21,9 @@ pub fn builtin() -> Vec<AgentProfile> {
     };
 
     const DESKTOP_CPU_FLOOR: f64 = 20.0;
+    /// WorkBuddy 的专家团保护下限：日常 3-5 专家并行的高消耗不该误报，
+    /// 而超大规模死循环（远高于此）依然能熔断。
+    const WORKBUDDY_TOKEN_FLOOR: i64 = 1_000_000;
 
     vec![
         AgentProfile {
@@ -38,6 +41,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 用量明细在下面的 usage_ledger 里，不读 JSONL；会话目录与采集根同路径
             // （与 Swift 档案逐字段一致）
             token_roots: vec![p(&[".dimcode", "v2", "data", "sessions"])],
+            token_alert_floor: None,
             session_database: Some(SessionDatabase {
                 path: p(&[".dimcode", "v2", "dimcode.sqlite"]),
                 schema: SessionSchema::DimTasks,
@@ -58,6 +62,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // Model IO is task evidence; CLI log can update for unrelated runtime activity.
             session_dirs: vec![p(&[".zcode", "cli", "rollout"])],
             token_roots: vec![p(&[".zcode", "cli", "rollout"])],
+            token_alert_floor: None,
             session_database: Some(SessionDatabase { path: p(&[".zcode", "v2", "tasks-index.sqlite"]), schema: SessionSchema::StatusIndex }),
             category: "assistant".into(),
         },
@@ -74,6 +79,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".claude", "projects"]), p(&[".claude", "sessions"])],
             token_roots: vec![p(&[".claude", "sessions"]), p(&[".claude", "projects"])],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -90,6 +96,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![p(&[".codex", "sessions"])],
             token_roots: vec![p(&[".codex", "sessions"])],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -106,6 +113,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Cursor", "User", "workspaceStorage"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -122,6 +130,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Code", "User", "workspaceStorage"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -138,6 +147,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "saoudrizwan.claude-dev", "tasks"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -154,6 +164,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![a(&["Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "tasks"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -172,6 +183,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // tokenRoots 空是**刻意的**：这个产品的用量只落在自己的 SQLite 库里
             // （message.data 的 JSON），JSONL 侧没有可用计数。用量走 session_database。
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: Some(SessionDatabase { path: p(&[".local", "share", "opencode", "opencode.db"]), schema: SessionSchema::OpenCode }),
             category: "assistant".into(),
         },
@@ -193,6 +205,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".local", "share", "mimocode"])],
             // 与 OpenCode 同表形（session / message / part），复用同一方言
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: Some(SessionDatabase {
                 path: p(&[".local", "share", "mimocode", "mimocode.db"]),
                 schema: SessionSchema::OpenCode,
@@ -212,6 +225,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![p(&[".config", "goose", "sessions"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -228,6 +242,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![p(&[".aider"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -244,6 +259,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".codeium", "windsurf"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -260,6 +276,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![a(&["Trae", "User", "workspaceStorage"]), a(&["Trae CN", "User", "workspaceStorage"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -288,6 +305,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // tokenRoots **故意留空**：Qoder 落盘的 token 字段全为 0（真值只有 credits）。
             // 接上采集只会多花 1~1.9s 换 0 条数据——那是「编一个看起来正常的零」。
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -304,6 +322,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&["Library", "Application Support", "com.tencent.imamac"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -326,6 +345,9 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".workbuddy", "tasks"])],
             // token 明细在 projects/ 的会话 JSONL 里，与工作信号不同子树
             token_roots: vec![p(&[".workbuddy", "projects"])],
+            // 专家团保护下限：日常 3-5 专家并行的高消耗不该误报，
+            // 而超大规模死循环（远高于此）依然能熔断
+            token_alert_floor: Some(WORKBUDDY_TOKEN_FLOOR),
             session_database: None,
             category: "assistant".into(),
         },
@@ -345,6 +367,9 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".workbuddy-ai", "tasks"])],
             token_roots: vec![p(&[".workbuddy-ai", "projects"])],
+            // 专家团保护下限：日常 3-5 专家并行的高消耗不该误报，
+            // 而超大规模死循环（远高于此）依然能熔断
+            token_alert_floor: Some(WORKBUDDY_TOKEN_FLOOR),
             session_database: None,
             category: "assistant".into(),
         },
@@ -367,6 +392,7 @@ pub fn builtin() -> Vec<AgentProfile> {
                 p(&[".gemini", "antigravity", "brain"]),
             ],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -383,6 +409,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: None,
             session_dirs: vec![p(&[".hermes", "sessions"]), p(&[".hermes", "logs"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -399,6 +426,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&[".continue"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -415,6 +443,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![p(&["Library", "Application Support", "com.openai.codex"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -436,6 +465,7 @@ pub fn builtin() -> Vec<AgentProfile> {
                 p(&[".dsh", "storages", "session_projcache", "sessions"]),
             ],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -455,6 +485,7 @@ pub fn builtin() -> Vec<AgentProfile> {
                 p(&["Library", "Application Support", "ego lite"]),
             ],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -474,6 +505,7 @@ pub fn builtin() -> Vec<AgentProfile> {
                 p(&["Library", "Application Support", "Vibe Usage"]),
             ],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },
@@ -498,6 +530,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 实测占全量扫描最大的一块
             session_dirs: vec![p(&[".openviking"])],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         },

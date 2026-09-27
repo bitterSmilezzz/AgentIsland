@@ -160,6 +160,13 @@ pub struct AgentProfile {
     pub cpu_floor: Option<f64>,
     pub session_dirs: Vec<String>,
     pub token_roots: Vec<String>,
+    /// 该档案的 token 暴涨告警**下限**；实际阈值 = `max(本值, 全局设置)`。
+    ///
+    /// 为多专家团架构而设（WorkBuddy 日常 3-5 专家并行的高消耗不该误报），
+    /// 而超大规模死循环、或用户自己设了更高档位时依然能熔断。
+    /// `None` = 不设下限，走全局阈值（绝大多数档案如此）。
+    #[serde(default)]
+    pub token_alert_floor: Option<i64>,
     /// 会话 / 明细库。**库路径只在这一处声明**——别处再写一遍字面量，
     /// 档案换目录或改名以后只有一半会生效（`dimcode.sqlite` 与 WorkBuddy 的
     /// `projects/` 上各踩过一次，见 ADR 0004）。

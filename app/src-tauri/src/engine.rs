@@ -22,6 +22,9 @@ use std::time::{Duration, SystemTime};
 /// · 进程在 + 写入 60s 内 或 CPU≥阈值 → working
 /// · 进程在但静默                      → idle
 /// · 进程不在                          → offline（可见口径隐藏）
+/// 连续多少档超阈值才发 token 暴涨告警。与 Swift `ActivityEngine.tokenSpikeConfirmations` 同值。
+pub const TOKEN_SPIKE_CONFIRMATIONS: u32 = 3;
+
 pub struct ActivityEngine {
     pub settings: Settings,
     pub demo_mode: bool,
@@ -48,6 +51,9 @@ pub struct ActivityEngine {
     pub notifier: notifier::Notifier,
     last_cost_spike: HashMap<String, i64>,
     token_rate: HashMap<String, (i64, i64)>,
+    /// 连续多少档超阈值才发 token 暴涨告警（Swift `tokenSpikeConfirmations`）。
+    /// 没有它，一次性账本补写就会误报成「消耗突增」。
+    token_spike_streak: HashMap<String, u32>,
     probe_cache: HashMap<String, (u64, SystemTime, Option<Signal>, usize)>,
     token_cache: HashMap<String, (i64, TokenReport)>,
     pub event_rx: Option<Receiver<AgentTaskEvent>>,
@@ -93,6 +99,7 @@ impl ActivityEngine {
             notifier: notifier::Notifier::new(),
             last_cost_spike: HashMap::new(),
             token_rate: HashMap::new(),
+            token_spike_streak: HashMap::new(),
             probe_cache: HashMap::new(),
             token_cache: HashMap::new(),
             event_rx: Some(event_rx),
@@ -538,18 +545,39 @@ impl ActivityEngine {
                 if elapsed_min >= 1.0 {
                     let rate = (t - entry.1) as f64 / elapsed_min;
                     *entry = (now, t);
-                    if rate > self.settings.token_alert_threshold as f64 {
-                        self.raise_cost_spike(
-                            profile,
-                            pid,
-                            &format!(
-                                "Token 消耗突增（近 {:.0} 分钟约 {} tokens/分钟）",
-                                elapsed_min,
-                                crate::tokens::compact(rate as i64)
-                            ),
-                            now,
-                            "token-rate",
-                        );
+                    // 实际阈值 = max(档案专属下限, 全局设置)。WorkBuddy 日常 3-5 专家并行
+                    // 的高消耗不该误报，而超大规模死循环或用户自设更高档位仍能熔断。
+                    let floor = profile.token_alert_floor.unwrap_or(0);
+                    let effective = floor.max(self.settings.token_alert_threshold) as f64;
+                    let streak = self.token_spike_streak.entry(key.clone()).or_insert(0);
+                    if rate >= effective {
+                        *streak += 1;
+                        // **需连续多档超阈值才告警**：滤掉单次账本补写
+                        // （长任务结束时一次性落盘会让那一拍的速率虚高）
+                        if *streak >= TOKEN_SPIKE_CONFIRMATIONS {
+                            self.raise_cost_spike(
+                                profile,
+                                pid,
+                                &format!(
+                                    "Token 消耗突增（近 {:.0} 分钟约 {} tokens/分钟）{}",
+                                    elapsed_min,
+                                    crate::tokens::compact(rate as i64),
+                                    if floor > self.settings.token_alert_threshold {
+                                        format!(
+                                            "，含 {} 专家团保护下限 {}",
+                                            profile.name,
+                                            crate::tokens::compact(floor)
+                                        )
+                                    } else {
+                                        String::new()
+                                    }
+                                ),
+                                now,
+                                "token-rate",
+                            );
+                        }
+                    } else {
+                        *streak = 0;
                     }
                 }
             }
@@ -778,6 +806,7 @@ impl ActivityEngine {
             cpu_floor: None,
             session_dirs: vec![],
             token_roots: vec![],
+            token_alert_floor: None,
             session_database: None,
             category: "assistant".into(),
         };
@@ -914,5 +943,72 @@ fn demo_report() -> TokenReport {
         models24h: models.clone(),
         models_total: models,
         hourly30d: hourly,
+    }
+}
+
+/// token 暴涨告警的两条规则：档案专属下限 + 连续多档确认。
+///
+/// 这两条 Swift 侧都有、Rust 侧此前都没有，而它们各自防一种误报：
+/// · **下限**（WorkBuddy 1M）：日常 3-5 专家并行的高消耗不该红。
+/// · **连续三档**：长任务结束时一次性补写账本，那一拍的速率会虚高到爆表。
+#[cfg(test)]
+mod token_spike_rules {
+    use super::*;
+
+    fn profile_with_floor(floor: Option<i64>) -> AgentProfile {
+        let mut p = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "workbuddy")
+            .expect("注册表里应当有 workbuddy");
+        p.token_alert_floor = floor;
+        p
+    }
+
+    /// 实际阈值 = **max**(档案下限, 全局设置)。
+    ///
+    /// 方向不能反：档案下限只能**抬高**门槛，不能把用户自设的高档位拉低——
+    /// 否则「我把阈值调到 100 万防误报」会被档案的 50 万下限反过来架空。
+    #[test]
+    fn the_effective_threshold_is_the_max_of_profile_floor_and_global_setting() {
+        let cases: [(i64, Option<i64>, i64); 4] = [
+            // (全局设置, 档案下限, 实际阈值)
+            (200_000, Some(1_000_000), 1_000_000), // 档案下限更高 ⇒ 取它
+            (200_000, None, 200_000),              // 无下限 ⇒ 取全局
+            (2_000_000, Some(1_000_000), 2_000_000), // 全局更高 ⇒ 取全局
+            (200_000, Some(100_000), 200_000),      // 下限更低 ⇒ 取全局
+        ];
+        for (global, floor, want) in cases {
+            let got = floor.unwrap_or(0).max(global);
+            assert_eq!(got, want, "global={global} floor={floor:?}");
+        }
+    }
+
+    /// 注册表里**只有 WorkBuddy 两家**该有下限。
+    ///
+    /// 给别的档案加下限等于替用户决定「这个 Agent 不值得告警」——
+    /// 那是个不该由我们做的判断。
+    #[test]
+    fn only_the_multi_agent_architectures_carry_a_token_floor() {
+        let with_floor: Vec<String> = crate::registry::builtin()
+            .into_iter()
+            .filter(|p| p.token_alert_floor.is_some())
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(
+            with_floor,
+            vec!["workbuddy".to_string(), "workbuddy-ai".to_string()],
+            "带专家团保护下限的应当只有 WorkBuddy 两家"
+        );
+        assert_eq!(profile_with_floor(None).token_alert_floor, None);
+    }
+
+    /// 连续确认的档数与 Swift 同值。改成 1 的话，一次性账本补写就会误报。
+    #[test]
+    fn the_spike_needs_three_consecutive_samples_and_not_one() {
+        assert_eq!(TOKEN_SPIKE_CONFIRMATIONS, 3);
+        assert!(
+            TOKEN_SPIKE_CONFIRMATIONS > 1,
+            "单档就告警 ⇒ 长任务结束时一次性落盘会直接误报成消耗突增"
+        );
     }
 }

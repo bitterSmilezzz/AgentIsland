@@ -168,7 +168,7 @@ Swift 侧对应能力在 `Sources/AgentIsland/IslandPanelPositioning.swift`（�
 | 双信号判定 | `working = 进程在 && (workingWindow 内有写入 \|\| CPU >= max(cpuFloor, cpuThreshold))`（[ActivityEngine.swift:8-12](../../Sources/AgentIslandCore/ActivityEngine.swift#L8)、:659） | 同一公式（[engine.rs:254-278](../../app/src-tauri/src/engine.rs#L254)） | ✅ 算法一致；但 `workingWindow=60` 在 Rust 是**硬编码字面量**（[engine.rs:82](../../app/src-tauri/src/engine.rs#L82)），Swift 来自可钳制的 `EngineConfig.workingWindow` |
 | attention/completed 强语义 | 方言分派 + 有界尾读 + 指纹去重 | id 分派 `probe_claude/codex/cline/zcode` + 指纹去重；Codex 调用配对与完成标记有合成 fixture 守护 | ⚠️ 部分协议行为有守护，方言分派与来源覆盖仍不同，不能宣称整体一致 |
 | CPU 熔断 | `runawayCpuAlert` + 70% / 5 分钟 | 三个字段同名同默认同区间，v0.0.200 起可配 | ✅ **v0.0.200 起一致**。⚠️ `is_hung` 已改为显式收时长参数——否则「告警响了、健康度还说不卡死」而两边都不报错 |
-| Token 暴涨告警 | 每分钟净增量 > `tokenAlertThreshold`（200k） | 同一口径，注释明说「与 macOS 端口径一致」（[engine.rs:298](../../app/src-tauri/src/engine.rs#L298)） | ✅ |
+| Token 暴涨告警 | 每分钟净增量 > `max(tokenAlertFloor ?? 0, tokenAlertThreshold)`（200k）+ **连续 3 档**确认 | 同公式（`max` 方向一致）+ `TOKEN_SPIKE_CONFIRMATIONS = 3` + 档案 `token_alert_floor`（WorkBuddy 两家 1M） | ✅ **v0.0.210 起一致**。此前 Rust「一超就报」，长任务收尾的一次性账本补写会误报 |
 | 降频 | 有活动 `sampleInterval` / 闲置 `idleSampleInterval`（5s）/ 全离线 60s / 节电三档（[ActivityEngine.swift:1395-1404](../../Sources/AgentIslandCore/ActivityEngine.swift#L1395)） | 有活动 `sample_interval`；闲置 `×2.5` 夹在 2.0–12.5s（[main.rs:302-310](../../app/src-tauri/src/main.rs#L302)） | ⚠️ 公式不同（`×2.5` vs 独立 `idleSampleInterval` 字段）；无节电三档。**需说清**：两侧耗电量与「岛多久变灰」不同 |
 | 可见口径 | `visibleSnapshots`（只显在线）+ `ringShelfSnapshots`（[ActivityEngine.swift:1472-1483](../../Sources/AgentIslandCore/ActivityEngine.swift#L1472)） | `state()` 直接给全部 snapshot，前端可自行过滤（未逐行比对） | ⚠️ 未逐行比对 |
 
