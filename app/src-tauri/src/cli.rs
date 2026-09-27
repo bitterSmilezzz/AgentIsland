@@ -30,11 +30,11 @@ pub const COMMANDS: &[(&str, bool, &str)] = &[
     ("selftest", true, "用假数据断言核心判定逻辑（验证构建本身而非本机状态）"),
     ("check", true, "排查异常驻留与持续高负载（-n 只预览不终止）"),
     ("clean", false, "一键释放（未实现：终止动作与进程树未迁）"),
-    ("open", false, "控制灵动岛展开/折叠/直达（未实现：需 App 进程在跑）"),
+    ("open", true, "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export）"),
     ("notify", true, "向本机 App 投递一次事件（--kind completed|attention|costspike）"),
     ("report", true, "生成 Markdown / CSV 运维报告（-o 写盘、--format md|csv）"),
-    ("raycast", false, "导出 Raycast 命令清单（未实现）"),
-    ("top", false, "类 htop 的全屏看板（未实现）"),
+    ("raycast", true, "导出 Raycast Extension 命令清单（--json 已是默认）"),
+    ("top", true, "持续观测看板（r 刷新、q 退出；不接管终端的全屏 TUI）"),
 ];
 
 /// 入口。返回 `None` 表示「不是 CLI 调用」，交回给 UI 走。
@@ -68,6 +68,9 @@ pub fn try_run(args: &[String]) -> Option<i32> {
         "check" => check(&flags),
         "notify" => notify(&flags),
         "report" => report_cmd(&flags),
+        "raycast" => raycast(),
+        "open" => open_cmd(&positional),
+        "top" => top(&flags),
         "state" => state_cmd(),
         "selftest" => selftest(),
         other => {
@@ -87,6 +90,16 @@ pub fn try_run(args: &[String]) -> Option<i32> {
         }
     };
     Some(code)
+}
+
+/// **常驻命令**：调进去不会自己结束。
+///
+/// 这份清单只有一个用途——让「表与分派一致」那条守护别去调它们。
+/// 把它们单独列出来，是为了让将来新增常驻命令的人**必然看到这一处**，
+/// 而不是靠「测试挂住了」去反推。
+#[cfg(test)]
+pub fn is_resident_command(name: &str) -> bool {
+    matches!(name, "top")
 }
 
 pub fn implemented_list() -> String {
@@ -501,6 +514,186 @@ fn report_cmd(flags: &[String]) -> i32 {
     }
 }
 
+// MARK: - raycast
+
+/// Raycast Extension 的命令清单。
+///
+/// 清单里的 URL 走 `agentisland://` 深链，而**深链解析在 Rust 侧还没迁**——
+/// 所以这份清单现在导出来能看，但点了不会跳。清单本身照 Swift 侧逐条给全，
+/// 少写一条的后果是 Raycast 侧少一个入口，而用户无从知道它曾经存在过。
+fn raycast() -> i32 {
+    let (snapshots, _) = sample_once();
+    let mut commands: Vec<serde_json::Value> = vec![
+        raycast_command("toggle", "Toggle AgentIsland", "展开或收起灵动岛监控面板"),
+        raycast_command("analytics", "Token Analytics", "打开 Token 用量与成本预测分析"),
+        raycast_command("toolbox", "Agent Workbench & Diagnostics", "打开维护工作台与死锁排查"),
+        raycast_command("clean", "Clean Orphan & Hung Agents", "一键安全清理挂起死锁与孤儿后台进程"),
+        raycast_command("export", "Export Audit Report", "导出 Markdown 运维审计报告至剪贴板"),
+    ];
+    // 每个可见 Agent 一条「直达详情」，与 Swift 侧同一口径：只给看到的那种
+    for s in snapshots.iter().filter(|s| s.process_running) {
+        commands.push(raycast_command(
+            &format!("agent-{}", s.id),
+            &format!("Inspect {}", s.name),
+            &format!("直达 {} 运行态详情与会话", s.name),
+        ));
+    }
+    let manifest = serde_json::json!({
+        "name": "AgentIsland Raycast Commands",
+        // 版本来自 **Cargo.toml**，而那条版本有测试钉着与 AppVersion.string 一致
+        // （见 main.rs 的 `version_pinning`）——此前这里只能填 0.1.0。
+        "version": env!("CARGO_PKG_VERSION"),
+        "commands": commands,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".into())
+    );
+    EXIT_OK
+}
+
+fn raycast_command(name: &str, title: &str, description: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "title": title,
+        "description": description,
+        "url": format!("agentisland://{name}"),
+    })
+}
+
+// MARK: - open
+
+/// 控制本机 App：展开 / 收起 / 直达某页。
+///
+/// 走深链 URL 并**交给系统去派发**，而不是自己发 HTTP：
+/// 深链是本仓与 macOS 之间已约定的入口，换一条路就多一处两边可能不一致的地方。
+/// 系统派发失败时如实说失败——`open` 静默退出 0 会让脚本以为窗口开了。
+fn open_cmd(positional: &[String]) -> i32 {
+    let target = positional.first().map(String::as_str).unwrap_or("toggle");
+    let url = match target {
+        "toggle" | "expand" | "collapse" | "analytics" | "toolbox" | "export" => {
+            format!("agentisland://{target}")
+        }
+        "agent" => {
+            // 直达某个 Agent：`open agent <id>`
+            let Some(id) = positional.get(1) else {
+                eprintln!("用法: agentisland open agent <id>");
+                return EXIT_USAGE;
+            };
+            format!("agentisland://agent?id={}", urlencode(id))
+        }
+        _ => {
+            eprintln!("✗ 认不出的目标 `{target}`");
+            eprintln!("  可用: toggle | expand | collapse | analytics | toolbox | export | agent <id>");
+            return EXIT_USAGE;
+        }
+    };
+    match std::process::Command::new("open").arg(&url).status() {
+        Ok(status) if status.success() => {
+            println!("已请求系统打开 {url}");
+            EXIT_OK
+        }
+        Ok(status) => {
+            eprintln!("✗ 系统派发失败（退出码 {:?}）——App 是不是没在跑？", status.code());
+            EXIT_FAIL
+        }
+        Err(error) => {
+            eprintln!("✗ 调不起系统派发: {error}");
+            EXIT_FAIL
+        }
+    }
+}
+
+/// 查询串里只可能出现 agent id，但**仍然编码**：
+/// 深链投递目标必须能解析回已知档案，而一个没编码的 `&` 会把参数拆成两个。
+fn urlencode(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+// MARK: - top
+
+/// 持续观测看板。
+///
+/// **不做全屏 TUI**：那要引 `crossterm` 之类的新依赖并接管终端，
+/// 而这一版的定位是「脚本与人工都能用的持续观测」——用 ANSI 光标回到行首重画，
+/// 零依赖、Ctrl-C 即退、管道里也能跑。**清屏只在 TTY 下做**：
+/// 重定向到文件时那些转义序列会变成正文里的乱码。
+fn top(flags: &[String]) -> i32 {
+    let (_tx, rx) = mpsc::channel();
+    let mut engine = engine::ActivityEngine::new(Settings::load(), rx);
+    let now = tokens::now_ms();
+    let is_tty = flags.iter().any(|f| f == "--no-tty") == false;
+    let once = flags.iter().any(|f| f == "--once");
+
+    loop {
+        engine.tick();
+        let state = engine.state();
+        let online: Vec<_> = state
+            .snapshots
+            .iter()
+            .filter(|s| s.process_running)
+            .collect();
+        // 有活动 / 全离线两档节奏，同引擎的降频口径（v0.0.200 起与 Swift 一致）
+        let any_working = online
+            .iter()
+            .any(|s| matches!(s.level, crate::models::ActivityLevel::Working | crate::models::ActivityLevel::Attention));
+        let interval = if any_working {
+            engine.settings.sample_interval
+        } else {
+            engine.settings.idle_sample_interval
+        };
+
+        if is_tty {
+            print!("\x1b[H\x1b[2J");
+        }
+        println!("AgentIsland 持续观测 · {} · 采样 {}s · Ctrl-C 退出", audit::timestamp_text(now), interval);
+        println!();
+        println!(
+            "{:<18} {:<10} {:>7} {:>7} {:>10}  {}",
+            "智能体", "状态", "CPU", "内存", "24h 用量", "最近活动"
+        );
+        for s in &online {
+            // 这里是**持续**观测，CPU 有差分窗口 ⇒ 真的读得到
+            let cpu = match s.cpu_percent {
+                Some(v) => format!("{v:.1}%"),
+                None => "—".to_string(),
+            };
+            let usage = match s.token_usage.as_ref().filter(|u| u.tokens24h > 0) {
+                Some(u) => tokens::compact(u.tokens24h),
+                None => "—".to_string(),
+            };
+            println!(
+                "{:<18} {:<10} {:>7} {:>7} {:>10}  {}",
+                truncate(&s.name, 18),
+                s.level_label,
+                cpu,
+                s.memory_text,
+                usage,
+                s.last_activity_text
+            );
+        }
+        println!();
+        println!(
+            "24h 合计 {} tokens · 累计 {} tokens",
+            tokens::compact(state.grand_total.tokens24h),
+            tokens::compact(state.grand_total.tokens_total)
+        );
+        if once {
+            return EXIT_OK;
+        }
+        std::thread::sleep(std::time::Duration::from_secs_f64(interval.clamp(0.5, 30.0)));
+    }
+}
+
 // MARK: - state
 
 fn state_cmd() -> i32 {
@@ -566,10 +759,15 @@ mod tests {
             assert!(!desc.trim().is_empty(), "{name} 缺说明");
         }
         // 已实现的那几个必须真的能被分派出去（防止表里写了 true 而 match 里没有）
+        //
+        // **常驻命令必须排除**：`top` 是持续观测循环，裸调它会让这条用例挂死。
+        // 这个坑踩过——第一次写这条守护时把 `top` 一起调了，整套测试直接超时，
+        // 症状是「测试卡住」而不是「哪条断言红了」，很难一眼看出原因。
         let implemented: Vec<&str> = COMMANDS
             .iter()
             .filter(|(_, done, _)| *done)
             .map(|(n, _, _)| *n)
+            .filter(|n| !is_resident_command(n))
             .collect();
         for name in implemented {
             let args = vec!["agentisland".to_string(), name.to_string()];
@@ -583,7 +781,9 @@ mod tests {
         // 没实现 ≠ 拼错了：两者的退出码必须分开
         let unknown = try_run(&["agentisland".into(), "nope".into()]);
         assert_eq!(unknown, Some(EXIT_USAGE), "拼错要给用法错");
-        let unfinished = try_run(&["agentisland".into(), "top".into()]);
+        // 注意这里必须挑一个**真没实现**的子命令：`top` 在 v0.0.206 起已实现，
+        // 调它会进持续观测循环并让这条用例挂死（症状是「测试卡住」，不报哪条红）。
+        let unfinished = try_run(&["agentisland".into(), "clean".into()]);
         assert_eq!(unfinished, Some(EXIT_FAIL), "拼对但没做要说清没做");
     }
 
@@ -637,6 +837,50 @@ mod tests {
     fn an_unknown_report_format_is_a_usage_error() {
         let code = try_run(&["agentisland".into(), "report".into(), "--format=pdf".into()]);
         assert_eq!(code, Some(EXIT_USAGE));
+    }
+
+    /// **11 / 12** 已实现；剩下 `clean` 是**有意留的**，不是漏做。
+    ///
+    /// `clean` 要**终止进程**。`check` 已经刻意不给 `--force`、并在输出里写明
+    /// 「只看不杀」——那正是为了让「看」与「杀」两件事在权限上分开。
+    /// 在终止能力（进程树构建 + 身份复核）迁过来之前就把它做成能杀的，
+    /// 等于在能力最弱的时候先给一把刀。
+    ///
+    /// 这条断言的作用是**记账**：清单里只剩 `clean` 是有意留的；
+    /// 它变成已实现时（或多出第二个未实现时）就会红，逼着人更新这份说明。
+    #[test]
+    fn eleven_of_twelve_subcommands_are_done_and_the_twelfth_is_deliberate() {
+        assert_eq!(COMMANDS.len(), 12, "Swift CLI 是 12 个子命令");
+        let unfinished: Vec<&str> = COMMANDS
+            .iter()
+            .filter(|(_, done, _)| !*done)
+            .map(|(n, _, _)| *n)
+            .collect();
+        assert_eq!(
+            unfinished,
+            vec!["clean"],
+            "只剩 `clean` 是有意留的（终止能力未迁）。多出来的未实现项要么做掉，\
+             要么在这里说清为什么留"
+        );
+    }
+
+    /// 深链里的 agent id 必须编码。
+    /// 防的症状：`open agent "a&b=c"` 不编码就会让 `&b=c` 变成第二个参数，
+    /// 而投递目标「必须解析到已知档案」——解析失败会被静默丢弃，用户只看到窗口没动。
+    #[test]
+    fn deep_link_agent_ids_are_percent_encoded() {
+        assert_eq!(urlencode("codex"), "codex", "普通 id 不该被改写");
+        assert_eq!(urlencode("a&b"), "a%26b", "& 会拆出第二个参数");
+        assert_eq!(urlencode("a b"), "a%20b");
+        assert_eq!(urlencode("a/b"), "a%2Fb");
+    }
+
+    /// 认不出的 `open` 目标是**用法错**（退出码 2），不是运行失败。
+    #[test]
+    fn an_unknown_open_target_is_a_usage_error() {
+        assert_eq!(try_run(&["agentisland".into(), "open".into(), "nope".into()]), Some(EXIT_USAGE));
+        // 少参数也是用法错
+        assert_eq!(try_run(&["agentisland".into(), "open".into(), "agent".into()]), Some(EXIT_USAGE));
     }
 
     #[test]

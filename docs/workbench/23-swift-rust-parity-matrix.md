@@ -220,7 +220,9 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 `status`(默认) / `top` / `tokens` / `state` / `doctor` / `check` / `clean` / `selftest` /
 `open` / `notify` / `report` / `raycast`，共 11 个 `Command` 文件（`status` 不单独成文件，是默认路径）。
 
-**Rust 侧 CLI（v0.0.205 起 12 个里有 8 个：`status` / `doctor` / `tokens` / `state` / `selftest` / `check` / `notify` / `report`；`top` / `clean` / `open` / `raycast` 明说未实现）。** [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
+**Rust 侧 CLI（v0.0.206 起 12 个里 11 个已实现**：`status` / `top` / `tokens` / `state` / `doctor` / `check` / `notify` / `report` / `raycast` / `open` / `selftest`。
+**只剩 `clean` 未做，是有意的**——它要终止进程，而 `check` 已刻意不给 `--force`；
+在终止能力（进程树 + 身份复核）迁过来之前不做，等于在能力最弱时先给一把刀。 [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
 （`tauri::Builder`），`std::env::args()` 仅用于识别 `--demo` / `--expand` / `--route=`
 （[main.rs:38-48](../../app/src-tauri/src/main.rs#L38)）。Cargo 未声明 `[[bin]]` 之外的第二二进制
 （[Cargo.toml](../../app/src-tauri/Cargo.toml) 无 `[[bin]]` 节）。
@@ -232,12 +234,12 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `state` | AgentState（读 App 进程内状态，含自报/冲突） | ⚠️ `cli::state` 已有，但**读不到自报**——CLI 是另一个进程；命令已明说这一点 |
 | `doctor` | AgentObservability、AgentHealthEvaluator | ⚠️ `cli::doctor` 已有（结论 + 依据 + 健康度），**但探测原因链仍缺**（见 §4.1） |
 | `check` | AgentResilienceGuard | ✅ `cli::check`（**只看不杀**，刻意不给 `--force`） |
-| `clean` | AgentCleaner、ProcessTreeInspector | ❌ 终止动作与进程树未迁 |
+| `clean` | AgentCleaner、ProcessTreeInspector | ❌ 终止动作与进程树未迁（**有意**，见本节开头） |
 | `selftest` | Selftest（无头假数据断言） | ✅ `cli::selftest`（且 `--selftest` 两种写法都收） |
 | `notify` | LocalEventHTTP | ✅ `cli::notify`（端到端验过：`{"ok":true,"delivered":"external"}`） |
-| `open` | URLSchemeParser | ❌ 深链解析未迁（webhook 服务端已在） |
+| `open` | URLSchemeParser | ⚠️ `cli::open` 已走系统派发打开 URL，但 **Rust App 侧收到 `agentisland://` 后的处理未迁** |
 | `report` | AuditReportExporter | ✅ `cli::report`（md / csv，`-o` 原子写） |
-| `raycast` | AppVersion | ❌ 要先有「第四个版本位」的同步规则 |
+| `raycast` | AppVersion | ✅ `cli::raycast`。**第四个版本位已收口**：`Cargo.toml` 与 `AppVersion.string` 由一条用例对账（此前一直是 0.1.0） |
 
 **排优先级含义：M3 的 12 个模块迁完后，Rust 侧仍没有 CLI。** 若希望 sidebar 形态可脚本化
 （Raycast / CI / cron），CLI 是独立的一块工作量，不在当前 M3 清单内。

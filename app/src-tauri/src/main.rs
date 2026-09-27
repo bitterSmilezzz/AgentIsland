@@ -1211,3 +1211,33 @@ mod hotkey_tests {
         );
     }
 }
+
+/// **版本位的唯一真相源**：四个地方写着同一个版本号。
+///
+/// Swift 侧 `AppVersion.string`、CHANGELOG 首条、README 的「本文档描述 vX.Y.Z」
+/// 三处早就在 `scripts/release.sh` 里做过一致性预检；`Cargo.toml` 是**第四处**，
+/// 此前一直是 0.1.0，而 `raycast` 清单要把版本写进去——照抄 Cargo 的会得到 0.1.0。
+///
+/// 写法是「读源码」而不是各写各的：`AppVersion.string` 是 Swift 源文本，
+/// `CARGO_PKG_VERSION` 是编译期常量。四处对不上时这条用例红，
+/// 而发版脚本会在 commit 之前就挡住前两处。
+#[cfg(test)]
+mod version_pinning {
+    #[test]
+    fn the_cargo_version_matches_the_swift_app_version() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let swift = std::path::Path::new(manifest)
+            .join("../../Sources/AgentIslandCore/AppVersion.swift");
+        let text = std::fs::read_to_string(&swift).expect("应当读得到 AppVersion.swift");
+        let want = text
+            .split("string = \"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("AppVersion.string 应当是 \"X.Y.Z\" 形状");
+        assert_eq!(
+            env!("CARGO_PKG_VERSION"),
+            want,
+            "Cargo.toml 的版本与 AppVersion.string 不一致——raycast 清单会把 Cargo 的那个写进去"
+        );
+    }
+}
