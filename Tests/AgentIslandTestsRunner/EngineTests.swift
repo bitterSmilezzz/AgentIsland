@@ -1568,6 +1568,7 @@ enum EngineTests {
             // 设置页开关此前触发主线程同步采样（snapshot+匹配+探测 ~10ms 全主线程）。
             // 真正的可测面是「全表扫描发生在哪条线程、什么时刻」：
             // 同步路径会在 setEnabled 返回**之前**就把表扫完，异步路径不会。
+            // 判据用**标记**而不是时间：见 `CountingProcessProvider.markCallerReturned` 的注释。
             let provider = CountingProcessProvider(names: ["DimAgent"])
             let engine = makeEngine(processNames: [], writes: [:], processMonitor: provider)
             engine.start()                       // start 内含一拍同步采样，作为主线程基线
@@ -1575,10 +1576,12 @@ enum EngineTests {
             try expectTrue(before >= 1, "前置不成立：start 未采样，下面的「未增加」会假绿")
             try expectEqual(provider.mainThreadSnapshotCalls, before,
                             "前置不成立：基线那一拍本就在主线程，计数需对齐")
+            provider.resetBeforeReturnCount()    // 基线发生在标记语义之外，先清零再测
 
             engine.setEnabled(["dim"])
-            try expectEqual(provider.snapshotCalls, before,
-                            "setEnabled 返回前就扫了全表：主线程同步采样路径回来了")
+            provider.markCallerReturned()
+            try expectEqual(provider.mainThreadSnapshotCallsBeforeReturn, 0,
+                            "setEnabled 期间在主线程扫了全表：主线程同步采样路径回来了")
 
             let deadline = Date().addingTimeInterval(3.0)
             while provider.snapshotCalls == before && Date() < deadline {

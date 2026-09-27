@@ -26,7 +26,9 @@
 /* 两栏骨架：左导航固定宽、右内容自适应 */
 .shell-sidebar .sb {
   display: grid;
-  grid-template-columns: 168px 1fr;
+  /* 导航 132px：168 时内容列只剩 192px，装不下档位页那类表单（截图实测）。
+     侧边栏的价值就是「信息容量」，把一半宽度给导航与本意相反。 */
+  grid-template-columns: 132px 1fr;
   height: 100vh;
 }
 

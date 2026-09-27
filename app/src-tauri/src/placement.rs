@@ -153,7 +153,9 @@ fn fallback_work_area() -> (f64, f64, f64, f64, f64) {
 /// 侧边栏宽度的上下界。下界是「还能读一列信息」，上界是「别盖住整块屏」
 pub const MIN_SIDEBAR_WIDTH: f64 = 280.0;
 pub const MAX_SIDEBAR_WIDTH: f64 = 720.0;
-pub const DEFAULT_SIDEBAR_WIDTH: f64 = 360.0;
+/// 420 而不是 360：360 减去 132 的导航只剩 228px，档位页那类表单会挤成一条
+/// （截图上量出来的）。宽度可拉且**记忆**，所以这个值只决定第一次打开的样子。
+pub const DEFAULT_SIDEBAR_WIDTH: f64 = 420.0;
 
 /// 把侧边栏宽度钳进可用区间。
 ///

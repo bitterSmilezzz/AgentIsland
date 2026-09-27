@@ -811,7 +811,11 @@ export function renderSidebar() {
     ? { t: 'Token 用量', s: '净消耗 · 不含缓存读取' }
     : route === 'provider'
       ? { t: 'Codex 档位', s: '切换本机已有的 provider 配置' }
-      : { t: '智能体', s: attention > 0 ? `${attention} 个等待确认` : '全部正常' };
+      : route === 'todo'
+        // 这条分支是**看着截图补的**：待办页原先落到下面的 else，表头写着「智能体 / 全部正常」。
+        // 静态检查与冒烟都发现不了——它们只看「有没有报错」。
+        ? { t: '待办', s: `未完成 ${st.todosPending ?? 0} 条` }
+        : { t: '智能体', s: attention > 0 ? `${attention} 个等待确认` : '全部正常' };
 
   const root = document.getElementById('root');
   root.innerHTML = `
@@ -832,6 +836,11 @@ export function renderSidebar() {
         <div class="sb-body">${body}</div>
       </main>
     </div>`;
+
+
+  // 量一次布局（在内容就位之后：把度量放在注水之前只会量到「加载中…」的骨架，
+  // 我第一版就是这么量的，于是每个路由的数字都一模一样、看起来「都没问题」）。
+  scheduleLayoutLog();
 
   root.querySelectorAll('[data-nav]').forEach((el) => {
     el.onclick = async () => {
@@ -896,6 +905,7 @@ export async function hydrateProvider() {
   const profiles = await invoke('provider_list_profiles').catch(() => []);
   const backups = await invoke('provider_list_backups').catch(() => []);
   renderProviderPage(root, status, profiles, backups);
+  scheduleLayoutLog();
 }
 
 function renderProviderPage(root, status, profiles, backups) {
@@ -1094,6 +1104,7 @@ export async function hydrateTodo() {
     return;
   }
   renderTodoPage(root, todo);
+  scheduleLayoutLog();
 }
 
 function renderTodoPage(root, todo) {
@@ -1195,4 +1206,53 @@ function showTodoToast(root, text) {
   // Toast 会随下一次重画消失，而**失败信息不该只存在一瞬间**：
   // 同时写进应用日志（`log_from_ui`），事后还能查。
   invoke('log_from_ui', { message: `[todo] ${text}` }).catch(() => {});
+}
+
+/// 下一帧再量：刚 `innerHTML` 完的那一帧尺寸可能还没稳定。
+///
+/// **按签名去抖**：`renderSidebar` 在监控页会随每一次引擎推送重跑（每 2 秒），
+/// 不去抖就会把日志刷成一片。签名（页面 + 窗口尺寸 + 两列宽度）变了才记一行——
+/// 于是「换个页面」或「窗口被拉到别的宽度」都会留证据，而重复渲染不会。
+let lastLayoutSignature = '';
+function scheduleLayoutLog() {
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const signature = [
+        getState().route ?? '',
+        innerWidth,
+        innerHeight,
+        Math.round(document.querySelector('.sb-nav')?.getBoundingClientRect().width ?? 0),
+        Math.round(document.querySelector('.sb-main')?.getBoundingClientRect().width ?? 0),
+      ].join('|');
+      if (signature === lastLayoutSignature) return;
+      lastLayoutSignature = signature;
+      logSidebarLayout();
+    }),
+  );
+}
+
+/// 把侧边栏的布局尺寸写进应用日志（每次首屏一条）
+export function logSidebarLayout() {
+  try {
+    const rect = (selector) => {
+      const el = document.querySelector(selector);
+      if (!el) return `${selector}=缺失`;
+      const box = el.getBoundingClientRect();
+      return `${selector}=${Math.round(box.width)}x${Math.round(box.height)}`;
+    };
+    const rootStyle = getComputedStyle(document.getElementById('root'));
+    // 表单控件也要量：溢出这类失效的根因常常是某个控件的固有最小宽度
+    // 把整列撑开（`min-width: auto` 是 flex/grid 子项的默认值），而不是列本身有问题。
+    const widest = [...document.querySelectorAll('.sb-body input, .sb-body select')]
+      .map((el) => Math.round(el.getBoundingClientRect().width))
+      .sort((a, b) => b - a)[0];
+    invoke('log_from_ui', {
+      message:
+        `sb-layout win=${innerWidth}x${innerHeight} root.display=${rootStyle.display} ` +
+        `${rect('.sb')} ${rect('.sb-nav')} ${rect('.sb-main')} ${rect('.sb-body')} ` +
+        `widestInput=${widest ?? '无'} bodyScrollW=${document.querySelector('.sb-body')?.scrollWidth ?? '?'}`,
+    }).catch(() => {});
+  } catch (error) {
+    // 诊断不该把界面弄坏
+  }
 }

@@ -15,8 +15,36 @@ final class CountingProcessProvider: ProcessProviding, @unchecked Sendable {
     private var calls = 0
     private var mainThreadCalls = 0
     private let names: Set<String>
+    /// 「调用方已经返回」这个**标记**（由用例在 `setEnabled` 返回后置位）。
+    ///
+    /// 为什么不用时间判断：早先这个用例断言「`setEnabled` 返回时扫描次数没变」，
+    /// 而假 provider 的扫描是瞬时的——后台那一拍完全可能在断言之前就落地，
+    /// 于是同一条用例时红时绿（修复前实测 5 次红 3 次）。加人工延迟只是把概率压小
+    /// （仍实测到 1/10），因为测试线程被抢占超过延迟时照样会红。
+    /// 换成标记判断就**与调度无关**了：扫描时如果调用方还没返回、又落在主线程，
+    /// 那就是「同步主线程扫描」——这正是这条用例要守的东西。
+    private var callerReturned = false
+    private var mainThreadCallsBeforeReturn = 0
 
     init(names: Set<String>) { self.names = names }
+
+    /// `setEnabled` 返回之后调用，之后的扫描不算「期间扫描」
+    func markCallerReturned() {
+        lock.lock(); defer { lock.unlock() }
+        callerReturned = true
+    }
+
+    /// 重置「返回前的主线程扫描」计数（基线那一拍发生在标记语义之外，先清零再测）
+    func resetBeforeReturnCount() {
+        lock.lock(); defer { lock.unlock() }
+        mainThreadCallsBeforeReturn = 0
+    }
+
+    /// 调用方返回**之前**就有多少次全表扫描落在主线程上（同步路径的证据）
+    var mainThreadSnapshotCallsBeforeReturn: Int {
+        lock.lock(); defer { lock.unlock() }
+        return mainThreadCallsBeforeReturn
+    }
 
     var snapshotCalls: Int {
         lock.lock(); defer { lock.unlock() }
@@ -32,7 +60,10 @@ final class CountingProcessProvider: ProcessProviding, @unchecked Sendable {
     func snapshot() -> ProcessSnapshot {
         lock.lock()
         calls += 1
-        if Thread.isMainThread { mainThreadCalls += 1 }
+        if Thread.isMainThread {
+            mainThreadCalls += 1
+            if !callerReturned { mainThreadCallsBeforeReturn += 1 }
+        }
         lock.unlock()
         return ProcessSnapshot(entries: names.map {
             ProcessSnapshot.Entry(pid: 777, path: "/Applications/\($0).app/Contents/MacOS/\($0)",

@@ -755,14 +755,19 @@ mod tests {
             "状态文案表必须只有一处"
         );
 
-        // 两个渲染路径都要过这个模型
+        // 两个渲染路径都要过这个模型。
+        // 切「函数体」用**函数边界**（到下一个顶格 `}`），不要用「往后 N 个字符」——
+        // 我第一版用 4000 字符，往函数里加几行注释就把它推过了窗口，于是哨兵误报。
+        // 文本哨兵本来就脆，至少别让它的作用域随注释长度漂移。
         for (func, label) in [("function rowHtml(", "灵动岛的行"), ("export function renderSidebar(", "侧边栏的行")] {
             let start = source
                 .find(func)
                 .unwrap_or_else(|| panic!("views.js 里找不到 {func}——{label} 改名字了？"));
             let rest = &source[start..];
-            // 取该函数往后 4000 字符作为「函数体」近似（JS 源码里这些函数都没那么长）
-            let body = &rest[..rest.len().min(4_000)];
+            let end = rest
+                .find("\n}\n")
+                .unwrap_or_else(|| panic!("{label} 的函数体没找到收尾，切片方式要更新"));
+            let body = &rest[..end];
             assert!(
                 body.contains("agentRowModel("),
                 "{label}没有走共用的显示模型：文案与颜色会各写一份"

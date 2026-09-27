@@ -322,8 +322,11 @@ pub struct ProviderApplyResult {
 ///
 /// 放在 Rust 侧（而不是让界面各写一遍）是因为它必须**逐字**出现：
 /// 用户切了档以为能用别家的模型、结果不能用，是这次改造最容易招来的误解。
+/// 这段文字是**逐字上屏**的，所以它必须是「能直接显示的纯文本」——
+/// 里面不能有 `**` 这类标记（我第一版写了 `**不含跨厂商模型能力**`，
+/// 界面上就把两个星号原样显示出来了，截图才看见）。强调靠排版，不靠标记。
 pub const PROVIDER_LIMITATIONS: &str = "只切换本机已有的 Codex 档位（同厂商多账号、模型与 provider 选择），\
-**不含跨厂商模型能力**：切了档不等于那个模型就能用。API key 不由本应用保存——\
+不含跨厂商模型能力：切了档不等于那个模型就能用。API key 不由本应用保存——\
 档位只记环境变量名，你需要自己把它设进环境变量。切换后需重启正在运行的 Codex 会话才生效。";
 
 // MARK: - 本地档位库（我们自己的文件，不含任何凭据）
@@ -520,6 +523,32 @@ mod tests {
             vec![target_name],
             "staging file leaked: {entries:?}"
         );
+    }
+
+    /// 能力边界那段是**逐字上屏**的，所以它必须同时满足两件事：
+    /// ① 内容是**能直接显示的纯文本**（不能有 `**` 这类标记——我第一版写了粗体标记，
+    ///    界面上原样显示了两个星号，是截图才看见的）；
+    /// ② 边界**确实写到了**（少写一句，界面就少一道防线）。
+    #[test]
+    fn the_capability_boundary_text_is_display_ready_and_says_the_boundary() {
+        let text = PROVIDER_LIMITATIONS;
+        for markup in ["**", "__", "<", ">", "`", "](", "!["] {
+            assert!(
+                !text.contains(markup),
+                "能力边界是逐字显示的，不能带标记 {markup:?}：{text}"
+            );
+        }
+        for must_say in [
+            "Codex",                 // 只做 Codex
+            "不含跨厂商模型能力",     // 最容易误解的那条
+            "环境变量",               // key 不由我们保存
+            "重启",                   // 生效条件
+        ] {
+            assert!(
+                text.contains(must_say),
+                "能力边界少说了 {must_say:?}：{text}"
+            );
+        }
     }
 
     #[test]
