@@ -51,9 +51,55 @@ pub fn open_readonly(path: &str) -> Result<Connection, Failure> {
     Ok(connection)
 }
 
+// MARK: - OpenCode 方言的表名
+
+/// OpenCode 一族（本体与同表结构的 fork，如小米 MiMo Code）的**真实表名**。
+///
+/// **表名在版本之间变过**：老库是 `message` / `session`，当前版本迁到了
+/// `session_message` / `session_v2`（本机 `opencode.db` 实测，最新一条 migration
+/// 为 `20260923013825_project_time_active`）。表名不能绑参，拼进 SQL 是唯一写法，
+/// 所以这里一次查 `sqlite_master` 定下名字，之后所有 SQL 都用 [`Self`] 里的字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenCodeTables {
+    /// 消息表：`session_message` 或 `message`
+    pub message: &'static str,
+    /// 会话表：本方言所有查询都不强制要它，缺了就查不到会话钻取那一层
+    pub session: Option<&'static str>,
+}
+
+/// 表名候选。**只认这些字面量**——不接受任何外部输入，因此拼进 SQL 没有注入面。
+const MESSAGE_TABLES: [&str; 2] = ["session_message", "message"];
+const SESSION_TABLES: [&str; 2] = ["session_v2", "session"];
+
+impl OpenCodeTables {
+    /// 读出这张库里**实际存在**的表名。两种 schema 都能认；
+    /// 两种 message 表都没有 ⇒ 这不是这一族的库，返回 `None`。
+    ///
+    /// 顺序上优先新名：万一某个 fork 同时留着两张表，新的是当前在写的那张。
+    pub fn resolve(connection: &Connection) -> Option<Self> {
+        let message = MESSAGE_TABLES
+            .iter()
+            .find(|name| table_exists(connection, name))?;
+        let session = SESSION_TABLES
+            .iter()
+            .find(|name| table_exists(connection, name))
+            .copied();
+        Some(Self { message, session })
+    }
+}
+
+fn table_exists(connection: &Connection, name: &str) -> bool {
+    connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |_| Ok(()),
+        )
+        .is_ok()
+}
+
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests {    use super::*;
     use std::fs;
 
     /// 沙箱取名统一走 `testutil`：并行跑时 `as_nanos()` 会撞名，两个用例共用一个目录，
@@ -90,6 +136,51 @@ mod tests {
             .query_row("SELECT v FROM t", [], |row| row.get(0))
             .unwrap();
         assert_eq!(value, "ok");
+    }
+
+    #[test]
+    fn both_open_code_schemas_resolve_to_the_table_that_actually_exists() {
+        // 这一族换过表名。只认老名字的话，当前版本的库会**静默读到零**——
+        // 而「读到零」在界面上和「真的没用过」长得一模一样。
+        let legacy = temp_path("legacy.db");
+        {
+            let seed = Connection::open(&legacy).unwrap();
+            seed.execute_batch("CREATE TABLE message (data TEXT); CREATE TABLE session (id TEXT);")
+                .unwrap();
+        }
+        let resolved = OpenCodeTables::resolve(&open_readonly(&legacy).unwrap()).unwrap();
+        assert_eq!(resolved.message, "message");
+        assert_eq!(resolved.session, Some("session"));
+
+        let current = temp_path("current.db");
+        {
+            let seed = Connection::open(&current).unwrap();
+            seed.execute_batch(
+                "CREATE TABLE session_message (data TEXT); CREATE TABLE session_v2 (id TEXT);",
+            )
+            .unwrap();
+        }
+        let resolved = OpenCodeTables::resolve(&open_readonly(&current).unwrap()).unwrap();
+        assert_eq!(resolved.message, "session_message");
+        assert_eq!(resolved.session, Some("session_v2"));
+
+        // 别的 fork（同表结构但只有消息表）也要能用，只是拿不到会话钻取
+        let message_only = temp_path("message-only.db");
+        {
+            let seed = Connection::open(&message_only).unwrap();
+            seed.execute_batch("CREATE TABLE message (data TEXT);").unwrap();
+        }
+        let resolved = OpenCodeTables::resolve(&open_readonly(&message_only).unwrap()).unwrap();
+        assert_eq!(resolved.message, "message");
+        assert_eq!(resolved.session, None);
+
+        // 两张表都没有 ⇒ 不是这一族，返回 None 而不是随便挑一个名字去查
+        let alien = temp_path("alien.db");
+        {
+            let seed = Connection::open(&alien).unwrap();
+            seed.execute_batch("CREATE TABLE kv (k TEXT);").unwrap();
+        }
+        assert!(OpenCodeTables::resolve(&open_readonly(&alien).unwrap()).is_none());
     }
 
     #[test]

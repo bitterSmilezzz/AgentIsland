@@ -1009,6 +1009,62 @@ enum TokenUsageTests {
             try expectEqual(oc.tokens24h, 42, "去掉 48h 前那条")
         }
 
+        TestKit.test("OpenCode 方言: 两种表名（老库 message / 当前 session_message）必须读出同一个数") {
+            // 这一族跨版本换过表名。写死 `FROM message` 时当前版本会**安静地读到零**，
+            // 而「读到零」在界面上与「这个 Agent 真的没用过」完全一样。
+            // 同一份数据、两种表名，读出来的每一项都必须逐位相同。
+            let now = Date()
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+
+            let rows: (String) -> [String] = { table in
+                let row: (TimeInterval, String) -> String = { age, data in
+                    "INSERT INTO \(table) VALUES ('s1', '\(data)', \(TokenFixture.ms(now.addingTimeInterval(age))))"
+                }
+                return [
+                    "CREATE TABLE \(table) (session_id TEXT, data TEXT, time_created INTEGER)",
+                    row(-60, "{\"role\":\"assistant\",\"tokens\":{\"input\":10,\"output\":20,\"reasoning\":5},\"cost\":0.5}"),
+                    row(-48 * 3600, "{\"role\":\"assistant\",\"tokens\":{\"input\":200},\"cost\":2.0}"),
+                    row(-30, "{\"role\":\"assistant\",\"tokens\":{\"input\":7}}"),
+                    row(-60, "{\"role\":\"user\",\"tokens\":{\"input\":50000,\"output\":1},\"cost\":9.9}"),
+                ]
+            }
+
+            let legacy = dir.appendingPathComponent("legacy.db").path
+            try TokenFixture.exec(legacy, rows("message"))
+            let current = dir.appendingPathComponent("current.db").path
+            try TokenFixture.exec(current, rows("session_message"))
+
+            let legacyMonitor = TokenUsageMonitor(
+                dimAgentDB: dir.appendingPathComponent("none.sqlite").path, openCodeDB: legacy)
+            legacyMonitor.refresh(now: now)
+            let currentMonitor = TokenUsageMonitor(
+                dimAgentDB: dir.appendingPathComponent("none.sqlite").path, openCodeDB: current)
+            currentMonitor.refresh(now: now)
+
+            let old = try XCTUnwrap(legacyMonitor.usage["opencode"], "老 schema 源缺席")
+            let new = try XCTUnwrap(currentMonitor.usage["opencode"], "当前 schema 源缺席")
+            try expectEqual("\(new.tokensTotal)", "\(old.tokensTotal)", "累计 token 两边必须相同")
+            try expectEqual("\(new.tokens24h)", "\(old.tokens24h)", "24h token 两边必须相同")
+            try expectEqual("\(new.costTotal)", "\(old.costTotal)", "累计 cost 两边必须相同")
+            try expectEqual("\(new.cost24h)", "\(old.cost24h)", "24h cost 两边必须相同")
+            try expectEqual(new.tokensTotal, 242, "35+200+7，user 角色不计")
+        }
+
+        TestKit.test("OpenCode 方言: 认不出这一族的表时要说读不到，而不是给一片零") {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let alien = dir.appendingPathComponent("alien.db").path
+            try TokenFixture.exec(alien, ["CREATE TABLE kv (k TEXT)"])
+            let m = TokenUsageMonitor(
+                dimAgentDB: dir.appendingPathComponent("none.sqlite").path, openCodeDB: alien)
+            m.refresh(now: Date())
+            try expect(m.usage["opencode"] == nil,
+                       "不是这一族的库必须缺席，而不是报一个全零的统计")
+        }
+
         TestKit.test("结构化Token索引: 无关文件变动不得改变聚合，日志自身变化必须计入（戳备忘录）") {
             // 稳态命中的全库戳备忘录把「摊平 + 全局去重 + 分桶」整套跳过（本机实测
             // 5,778 条记录时快照稳态 8.25ms → 2.70ms）。它只在整棵日志树的戳逐字不变时

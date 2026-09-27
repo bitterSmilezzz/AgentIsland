@@ -653,22 +653,30 @@ fn collect_models(connection: &rusqlite::Connection, sql: &str) -> Vec<ModelUsag
 /// OpenCode 方言（含同表 fork，如小米 MiMo Code）：`message.data` 是 JSON。
 /// 净 token = input + output + reasoning（**cache.read 不参与**），只算
 /// `role='assistant'` 的行。与 Swift 的两条查询逐字段同口径。
+///
+/// **表名由 [`crate::sqlite::OpenCodeTables`] 现查**（老库 `message`，
+/// 当前版本 `session_message`）。写死表名的后果不是报错，是**读到零**——
+/// 那在界面上与「这个 Agent 真的没用过」完全一样。
 fn query_open_code(path: &str, cutoff24: i64) -> Option<UsagePart> {
     let connection = sqlite::open_readonly(path).ok()?;
+    let tables = sqlite::OpenCodeTables::resolve(&connection)?;
     let (tokens_total, cost_total, tokens24, cost24) = connection
         .query_row(
-            "SELECT COALESCE(SUM(t),0), COALESCE(SUM(c),0), \
-                    COALESCE(SUM(CASE WHEN time_created >= ?1 THEN t ELSE 0 END),0), \
-                    COALESCE(SUM(CASE WHEN time_created >= ?1 THEN c ELSE 0 END),0) \
-             FROM ( \
-                 SELECT time_created, \
-                        COALESCE(json_extract(data,'$.cost'),0) AS c, \
-                        COALESCE(json_extract(data,'$.tokens.input'),0) \
-                          + COALESCE(json_extract(data,'$.tokens.output'),0) \
-                          + COALESCE(json_extract(data,'$.tokens.reasoning'),0) AS t \
-                 FROM message \
-                 WHERE json_extract(data,'$.role')='assistant' \
-             )",
+            &format!(
+                "SELECT COALESCE(SUM(t),0), COALESCE(SUM(c),0), \
+                        COALESCE(SUM(CASE WHEN time_created >= ?1 THEN t ELSE 0 END),0), \
+                        COALESCE(SUM(CASE WHEN time_created >= ?1 THEN c ELSE 0 END),0) \
+                 FROM ( \
+                     SELECT time_created, \
+                            COALESCE(json_extract(data,'$.cost'),0) AS c, \
+                            COALESCE(json_extract(data,'$.tokens.input'),0) \
+                              + COALESCE(json_extract(data,'$.tokens.output'),0) \
+                              + COALESCE(json_extract(data,'$.tokens.reasoning'),0) AS t \
+                     FROM {} \
+                     WHERE json_extract(data,'$.role')='assistant' \
+                 )",
+                tables.message
+            ),
             [cutoff24],
             |row| {
                 Ok((
@@ -682,13 +690,16 @@ fn query_open_code(path: &str, cutoff24: i64) -> Option<UsagePart> {
         .ok()?;
     let models = collect_models(
         &connection,
-        "SELECT json_extract(data,'$.modelID') AS model, \
-                COALESCE(SUM(COALESCE(json_extract(data,'$.tokens.input'),0) \
-                  + COALESCE(json_extract(data,'$.tokens.output'),0) \
-                  + COALESCE(json_extract(data,'$.tokens.reasoning'),0)),0), \
-                COALESCE(SUM(json_extract(data,'$.cost')),0) \
-         FROM message WHERE json_extract(data,'$.role')='assistant' \
-         GROUP BY 1 ORDER BY 2 DESC",
+        &format!(
+            "SELECT json_extract(data,'$.modelID') AS model, \
+                    COALESCE(SUM(COALESCE(json_extract(data,'$.tokens.input'),0) \
+                      + COALESCE(json_extract(data,'$.tokens.output'),0) \
+                      + COALESCE(json_extract(data,'$.tokens.reasoning'),0)),0), \
+                    COALESCE(SUM(json_extract(data,'$.cost')),0) \
+             FROM {} WHERE json_extract(data,'$.role')='assistant' \
+             GROUP BY 1 ORDER BY 2 DESC",
+            tables.message
+        ),
     );
     Some(UsagePart {
         tokens24,
@@ -1231,6 +1242,53 @@ mod tests {
         let oc1 = part.models.iter().find(|m| m.model == "oc1").expect("应有 oc1");
         assert_eq!(oc1.tokens, 35);
         assert!(!oc1.cost_estimated);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_current_open_code_schema_reads_the_same_numbers_as_the_legacy_one() {
+        // 同一份数据、两种表名，读出来的数必须**逐项相同**。
+        // 写死 `FROM message` 时当前版本会安静地返回零——那在界面上与
+        // 「这个 Agent 真的没用过」长得一模一样，所以这条要钉住。
+        let rows = [
+            r#"INSERT INTO {T} VALUES ('s1', '{"role":"assistant","modelID":"oc1","tokens":{"input":10,"output":20,"reasoning":5},"cost":0.5}', 1000)"#,
+            r#"INSERT INTO {T} VALUES ('s2', '{"role":"user","modelID":"oc1","tokens":{"input":50000},"cost":9.9}', 1000)"#,
+        ];
+
+        let legacy = temp_db("legacy-oc.db");
+        seed(&legacy, &[
+            "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
+            &rows[0].replace("{T}", "message"),
+            &rows[1].replace("{T}", "message"),
+        ]);
+        let current = temp_db("current-oc.db");
+        seed(&current, &[
+            "CREATE TABLE session_message (session_id TEXT, data TEXT, time_created INTEGER)",
+            &rows[0].replace("{T}", "session_message"),
+            &rows[1].replace("{T}", "session_message"),
+        ]);
+
+        let legacy_part = query_open_code(&legacy, 500).expect("老 schema 应读到");
+        let current_part = query_open_code(&current, 500).expect("当前 schema 也应读到");
+        assert_eq!(current_part.tokens_total, legacy_part.tokens_total);
+        assert_eq!(current_part.tokens24, legacy_part.tokens24);
+        assert_eq!(current_part.cost_total, legacy_part.cost_total);
+        assert_eq!(current_part.models.len(), legacy_part.models.len());
+        assert_eq!(
+            (current_part.tokens_total, current_part.tokens24),
+            (35, 35),
+            "assistant 35 计入、user 行不计"
+        );
+        let _ = std::fs::remove_file(&legacy);
+        let _ = std::fs::remove_file(&current);
+    }
+
+    #[test]
+    fn a_database_without_the_message_table_is_reported_as_unreadable() {
+        // 认不出来要明说「读不到」，而不是给一个全是零的统计——那会被当成「真的零用量」。
+        let path = temp_db("not-oc.db");
+        seed(&path, &["CREATE TABLE kv (k TEXT)"]);
+        assert!(query_open_code(&path, 500).is_none());
         let _ = std::fs::remove_file(&path);
     }
 

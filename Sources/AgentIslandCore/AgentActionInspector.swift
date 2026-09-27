@@ -720,7 +720,11 @@ public enum AgentActionInspector {
             // 两步化：① session 表百行级，ORDER BY time_updated 取最新会话可接受；
             // ② part 用 rowid 定位该会话最新行（插入序 O(1)；rowid 与 time_created 的
             // 毫秒级交错对「最新一条动作」无影响，与 AgentLogStreamer 流水窗口同一取舍）。
-            let sessionSQL = "SELECT id, title, time_updated FROM session ORDER BY time_updated DESC LIMIT 1;"
+            // 表名现查：这一族跨版本换过表名（老库 `session`，当前版本 `session_v2`）。
+            // 拿不到会话表就明说「没有这一项」，不拿猜的表名去查。
+            // `resolve` 成功只保证消息表在，会话表要单独判——少一个就不该有动作可读。
+            guard let tables = OpenCodeTables.resolve(db), let sessionTable = tables.session else { return nil }
+            let sessionSQL = "SELECT id, title, time_updated FROM \(sessionTable) ORDER BY time_updated DESC LIMIT 1;"
             var sessionId: String?
             var sessionTitle: String?
             var timeUpdatedMs: Int64 = 0

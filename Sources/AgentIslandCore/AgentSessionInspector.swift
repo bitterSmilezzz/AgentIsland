@@ -946,18 +946,27 @@ public enum AgentSessionInspector {
                                                 report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
         guard fileAge(path, now: now) <= 24 * 3600 else { return nil }
         return withDB(path, report: report) { db, report in
-            // 1. 终态语义在 `message` 表：这一族（OpenCode 本体与同表结构的 fork，如小米
+            // 表名现查：这一族的表名跨版本变过（老库 `message`/`session`，
+            // 当前版本 `session_message`/`session_v2`）。认不出来就不是这一族的库，
+            // 直接说「读不到」，而不是拿猜的表名去查出一片零。
+            guard let tables = OpenCodeTables.resolve(db) else {
+                report(SessionProbeHealth(failure: .prepareFailed, path: path))
+                return nil
+            }
+            // 1. 终态语义在消息表：这一族（OpenCode 本体与同表结构的 fork，如小米
             //    MiMo Code）把每回合的收尾写进 assistant 行的 `time.completed`。
-            if let signal = openCodeMessageSignal(agentId: agentId, db: db, path: path, now: now,
-                                                  report: report) {
+            if let signal = openCodeMessageSignal(agentId: agentId, db: db, tables: tables, path: path,
+                                                  now: now, report: report) {
                 return signal
             }
             // 2. 回落到内容片段尾窗检测。`part.data` 是 text/reasoning/step-start/step-finish
             //    这类片段，没有 message 信封，通用检测器多半什么都探不到——留着只为不改坏
             //    任何已有形状，不作为本方言的主信号源。
+            //    没有会话表时这一步整体跳过：`part` 按 session_id 关联，没有会话就没有「最新会话」。
+            guard let session = tables.session else { return nil }
             let sql = """
             SELECT data FROM part
-            WHERE session_id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1)
+            WHERE session_id = (SELECT id FROM \(session) ORDER BY time_updated DESC LIMIT 1)
             ORDER BY rowid DESC LIMIT 32;
             """
             var stmt: OpaquePointer?
@@ -983,12 +992,15 @@ public enum AgentSessionInspector {
 
     /// 读最新几条 `message` 行推导语义状态。表不存在（老库/别的 fork）时返回 nil 让调用方
     /// 回落，不报 prepareFailed——那不是一个坏了的源，只是这一族没有这张表。
-    private static func openCodeMessageSignal(agentId: String, db: OpaquePointer, path: String,
+    private static func openCodeMessageSignal(agentId: String, db: OpaquePointer,
+                                              tables: OpenCodeTables.Tables, path: String,
                                               now: Date,
                                               report: (SessionProbeHealth) -> Void) -> AgentSessionSignal? {
+        // 没有会话表就没有「最新会话」这个概念，判不出终态——回落给调用方
+        guard let session = tables.session else { return nil }
         let sql = """
-        SELECT id, data FROM message
-        WHERE session_id = (SELECT id FROM session ORDER BY time_updated DESC LIMIT 1)
+        SELECT id, data FROM \(tables.message)
+        WHERE session_id = (SELECT id FROM \(session) ORDER BY time_updated DESC LIMIT 1)
         ORDER BY rowid DESC LIMIT 8;
         """
         var stmt: OpaquePointer?

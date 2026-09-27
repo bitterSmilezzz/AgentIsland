@@ -860,14 +860,15 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 }
             default:
                 guard let dbPath = openCodeDBPath(for: agentId) else { break }
-                let sql = """
-                SELECT json_extract(data,'$.modelID'), COUNT(*),
-                       COALESCE(SUM(json_extract(data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0),
-                       COALESCE(SUM(json_extract(data,'$.cost')),0)
-                FROM message WHERE json_extract(data,'$.role')='assistant'
-                GROUP BY 1 ORDER BY 3 DESC
-                """
-                rows = rawRows(sql, dbPath: dbPath, cols: 4).map {
+                rows = rawRowsOpenCode({ tables in
+                    """
+                    SELECT json_extract(data,'$.modelID'), COUNT(*),
+                           COALESCE(SUM(json_extract(data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0),
+                           COALESCE(SUM(json_extract(data,'$.cost')),0)
+                    FROM \(tables.message) WHERE json_extract(data,'$.role')='assistant'
+                    GROUP BY 1 ORDER BY 3 DESC
+                    """
+                }, dbPath: dbPath, cols: 4).map {
                     ModelUsage(modelId: $0[0],
                                messages: SafeNumber.parseInt($0[1], source: "\(agentId).model.messages"),
                                tokens: SafeNumber.parseInt($0[2], source: "\(agentId).model.tokens"),
@@ -915,16 +916,21 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 }
             default:
                 guard let dbPath = openCodeDBPath(for: agentId) else { break }
-                let sql = """
-                SELECT m.session_id, COUNT(*),
-                       COALESCE(SUM(json_extract(m.data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.reasoning')),0),
-                       COALESCE(SUM(json_extract(m.data,'$.cost')),0),
-                       MAX(m.time_created), s.directory
-                FROM message m LEFT JOIN session s ON s.id = m.session_id
-                WHERE json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.modelID')='\(modelId.escaped)'
-                GROUP BY m.session_id ORDER BY 5 DESC LIMIT \(Self.sessionDrilldownLimit)
-                """
-                rows = rawRows(sql, dbPath: dbPath, cols: 6).map { r in
+                // 没有会话表时退回「不带目录」的那条：目录是锦上添花，
+                // 拿不到不该让整层钻取消失
+                rows = rawRowsOpenCode({ tables in
+                    let join = tables.session.map { "LEFT JOIN \($0) s ON s.id = m.session_id" } ?? ""
+                    let dir = tables.session == nil ? "''" : "s.directory"
+                    return """
+                    SELECT m.session_id, COUNT(*),
+                           COALESCE(SUM(json_extract(m.data,'$.tokens.input')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.output')),0)+COALESCE(SUM(json_extract(m.data,'$.tokens.reasoning')),0),
+                           COALESCE(SUM(json_extract(m.data,'$.cost')),0),
+                           MAX(m.time_created), \(dir)
+                    FROM \(tables.message) m \(join)
+                    WHERE json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.modelID')='\(modelId.escaped)'
+                    GROUP BY m.session_id ORDER BY 5 DESC LIMIT \(Self.sessionDrilldownLimit)
+                    """
+                }, dbPath: dbPath, cols: 6).map { r in
                     // 与 dim 对齐：目录已删除则置 nil（点击不再显示文件夹图标）
                     let rawDir = r[5]
                     let dir = (!rawDir.isEmpty && FileManager.default.fileExists(atPath: rawDir)) ? rawDir : nil
@@ -976,17 +982,20 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
             let upperMs = Int64(SafeNumber.saturatingInt(
                 now.timeIntervalSince1970 * 1_000, source: "opencode.timeline.upper"
             ))
-            let openCodeSQL = """
-            SELECT time_created,
-                   COALESCE(json_extract(data,'$.tokens.input'),0)
-                     + COALESCE(json_extract(data,'$.tokens.output'),0)
-                     + COALESCE(json_extract(data,'$.tokens.reasoning'),0),
-                   COALESCE(json_extract(data,'$.cost'),0)
-            FROM message
-            WHERE json_extract(data,'$.role')='assistant'
-              AND time_created >= \(lowerMs) AND time_created <= \(upperMs)
-            ORDER BY time_created
-            """
+            // 表名现查（老库 `message` / 当前版本 `session_message`）
+            let openCodeSQL = { (tables: OpenCodeTables.Tables) in
+                """
+                SELECT time_created,
+                       COALESCE(json_extract(data,'$.tokens.input'),0)
+                         + COALESCE(json_extract(data,'$.tokens.output'),0)
+                         + COALESCE(json_extract(data,'$.tokens.reasoning'),0),
+                       COALESCE(json_extract(data,'$.cost'),0)
+                FROM \(tables.message)
+                WHERE json_extract(data,'$.role')='assistant'
+                  AND time_created >= \(lowerMs) AND time_created <= \(upperMs)
+                ORDER BY time_created
+                """
+            }
             let structured = structuredIndex.snapshot(now: now)
             // 每个 OpenCode 方言库各出一份流水记录，agentId 用自己的档案 id：
             // 全塞成 "opencode" 会让 MiMo 的量在分工具占比里挂到 OpenCode 名下
@@ -996,7 +1005,7 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
                 if FileManager.default.fileExists(atPath: source.path) {
                     availableSourceIds.insert(source.agentId)
                 }
-                dialectRecords.append(contentsOf: rawRows(openCodeSQL, dbPath: source.path, cols: 3).compactMap { row -> TokenUsageRecord? in
+                dialectRecords.append(contentsOf: rawRowsOpenCode(openCodeSQL, dbPath: source.path, cols: 3).compactMap { row -> TokenUsageRecord? in
                     guard let time = SafeNumber.date(fromMillisText: row[0], source: "\(source.agentId).timeline.time") else {
                         return nil
                     }
@@ -1074,22 +1083,24 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
         // 「Token汇总: dim 的 24h 与累计合并成单趟后必须逐列等于原两趟」）。
         // cutoffMs 是饱和后的 Int64 字面量（无注入面），24h 条件用 CASE 复用同一次扫描。
         // 净 token 沿用原口径：input+output+reasoning 三项直加（cache.read 不参与）。
-        let sql = """
-        SELECT COALESCE(SUM(t),0),
-               COALESCE(SUM(c),0),
-               COALESCE(SUM(CASE WHEN time_created >= \(cutoffMs) THEN t ELSE 0 END),0),
-               COALESCE(SUM(CASE WHEN time_created >= \(cutoffMs) THEN c ELSE 0 END),0)
-        FROM (
-            SELECT time_created,
-                   COALESCE(json_extract(data,'$.cost'),0) AS c,
-                   COALESCE(json_extract(data,'$.tokens.input'),0)
-                     + COALESCE(json_extract(data,'$.tokens.output'),0)
-                     + COALESCE(json_extract(data,'$.tokens.reasoning'),0) AS t
-            FROM message
-            WHERE json_extract(data,'$.role')='assistant'
-        )
-        """
-        guard let row = rawRows(sql, dbPath: dbPath, cols: 4).first else { return nil }
+        let sql = { (tables: OpenCodeTables.Tables) in
+            """
+            SELECT COALESCE(SUM(t),0),
+                   COALESCE(SUM(c),0),
+                   COALESCE(SUM(CASE WHEN time_created >= \(cutoffMs) THEN t ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN time_created >= \(cutoffMs) THEN c ELSE 0 END),0)
+            FROM (
+                SELECT time_created,
+                       COALESCE(json_extract(data,'$.cost'),0) AS c,
+                       COALESCE(json_extract(data,'$.tokens.input'),0)
+                         + COALESCE(json_extract(data,'$.tokens.output'),0)
+                         + COALESCE(json_extract(data,'$.tokens.reasoning'),0) AS t
+                FROM \(tables.message)
+                WHERE json_extract(data,'$.role')='assistant'
+            )
+            """
+        }
+        guard let row = rawRowsOpenCode(sql, dbPath: dbPath, cols: 4).first else { return nil }
         return TokenUsage(tokens24h: Self.tokenColumn(row[2], source: "\(agentId).24h.tokens"),
                           tokensTotal: Self.tokenColumn(row[0], source: "\(agentId).total.tokens"),
                           cost24h: Self.costColumn(row[3], source: "\(agentId).24h.cost"),
@@ -1113,79 +1124,100 @@ public final class TokenUsageMonitor: TokenUsagePolling, TokenUsageQuerying, @un
 
     /// 通用查询：全部列转字符串返回（数值/文本统一处理，空结果返回 []）
     /// 线程安全：所有查询在 dbQueue 串行执行，连接按路径缓存复用（只读，应用生命周期内不关闭）
+    /// OpenCode 方言的查询入口：SQL 由**这张库里真实存在的表名**拼出来。
+    ///
+    /// 为什么不直接用 `rawRows`：表名不能绑参，必须在拿到连接之后拼；
+    /// 而表名本身要先查一次 `sqlite_master` 才知道。两个动作要共用同一条连接，
+    /// 所以在这里做，而不是让调用方开两次库。
+    private func rawRowsOpenCode(_ makeSQL: (OpenCodeTables.Tables) -> String,
+                                 dbPath: String, cols: Int, textParams: [String] = []) -> [[String]] {
+        dbQueue.sync {
+            guard let db = cachedConnection(dbPath) else { return [] }
+            // 认不出这一族的表 ⇒ 明说「读不到」，返回空行让上层按未覆盖处理。
+            // 绝不能在这里退回一个猜的表名：那会静默读到零。
+            guard let tables = OpenCodeTables.resolve(db) else { return [] }
+            return run(makeSQL(tables), db: db, dbPath: dbPath, cols: cols, textParams: textParams)
+        }
+    }
+
     private func rawRows(_ sql: String, dbPath: String, cols: Int, textParams: [String] = []) -> [[String]] {
         dbQueue.sync {
-            let fm = FileManager.default
-            guard fm.fileExists(atPath: dbPath) else {
-                return []
-            }
-            // inode 失效检测：外部工具原子替换/重建主文件（VACUUM 后 rename、
-            // 备份恢复、删后重建）后，缓存只读句柄永久指向旧 inode，统计静默陈旧。
-            // 命中缓存时对比 systemFileNumber，不一致则关闭重开
-            let db: OpaquePointer
-            if let cached = dbConnections[dbPath] {
-                if isCurrentInode(dbPath, openedInode: dbInodes[dbPath]) {
-                    db = cached
-                } else {
-                    sqlite3_close(cached)
-                    dbConnections[dbPath] = nil
-                    dbInodes[dbPath] = nil
-                    guard let reopened = openReadonly(dbPath) else { return [] }
-                    db = reopened
-                }
-            } else {
-                guard let handle = openReadonly(dbPath) else { return [] }
-                db = handle
-            }
-
-            // 一次性连接（stop 后迟到重建）用毕即关（R34/F9）。注册位置有两处讲究：
-            // ① 必须在 prepare 之前——Swift 的 defer 只对「注册之后」的控制流生效，
-            //    放在 prepare 之后就仍然漏掉 prepare 失败这条 return（而「一直失败」
-            //    恰恰是最需要收句柄的场景）；
-            // ② 必须早于下面 finalize 的 defer——defer 逆序执行，晚注册会先跑，
-            //    在未 finalize 的连接上 sqlite3_close 只会返回 SQLITE_BUSY 并把连接留下，
-            //    而数组已清空，等于永不重试。close_v2 再兜一层。
-            defer {
-                lock.lock()
-                let pending = transientHandles
-                transientHandles.removeAll()
-                lock.unlock()
-                for handle in pending { sqlite3_close_v2(handle) }
-            }
-
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
-                AppLog.warn("TokenUsage: prepare failed: \(String(cString: sqlite3_errmsg(db)))")
-                return []
-            }
-            defer { sqlite3_finalize(stmt) }
-
-            // 文本参数按位绑定（1 起）：汇总查询用同一 SQL 同时出 24h 与累计两个口径，
-            // cutoff 必须以参数进入——字面量拼接会把它写进 SQL 两次（且难以比对）。
-            for (offset, value) in textParams.enumerated() {
-                sqlite3_bind_text(stmt, Int32(offset + 1), value, -1, ReadonlyDB.transientDestructor)
-            }
-
-            var rows: [[String]] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                var row: [String] = []
-                row.reserveCapacity(cols)
-                for i in 0..<cols {
-                    if let c = sqlite3_column_text(stmt, Int32(i)) {
-                        row.append(String(cString: c))
-                    } else {
-                        row.append("")
-                    }
-                }
-                rows.append(row)
-            }
-            // 中途出错（SQLITE_ERROR/BUSY）不应把部分行当完整结果
-            if sqlite3_errcode(db) != SQLITE_OK && sqlite3_errcode(db) != SQLITE_DONE && sqlite3_errcode(db) != SQLITE_ROW {
-                AppLog.warn("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
-                return []
-            }
-            return rows
+            guard let db = cachedConnection(dbPath) else { return [] }
+            return run(sql, db: db, dbPath: dbPath, cols: cols, textParams: textParams)
         }
+    }
+
+    /// 取这条库路径上的只读连接（带 inode 失效检测与一次性句柄登记），
+    /// 必须在 `dbQueue` 内调用。抽出来是为了让两个 `rawRows` 重载共用同一套句柄规则。
+    private func cachedConnection(_ dbPath: String) -> OpaquePointer? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dbPath) else {
+            return nil
+        }
+        // inode 失效检测：外部工具原子替换/重建主文件（VACUUM 后 rename、
+        // 备份恢复、删后重建）后，缓存只读句柄永久指向旧 inode，统计静默陈旧。
+        // 命中缓存时对比 systemFileNumber，不一致则关闭重开
+        if let cached = dbConnections[dbPath] {
+            if isCurrentInode(dbPath, openedInode: dbInodes[dbPath]) {
+                return cached
+            }
+            sqlite3_close(cached)
+            dbConnections[dbPath] = nil
+            dbInodes[dbPath] = nil
+        }
+        return openReadonly(dbPath)
+    }
+
+    /// 已持有连接时的执行段。`rawRows` 两个重载共用。
+    private func run(_ sql: String, db: OpaquePointer, dbPath: String, cols: Int,
+                     textParams: [String]) -> [[String]] {
+        // 一次性连接（stop 后迟到重建）用毕即关（R34/F9）。注册位置有两处讲究：
+        // ① 必须在 prepare 之前——Swift 的 defer 只对「注册之后」的控制流生效，
+        //    放在 prepare 之后就仍然漏掉 prepare 失败这条 return（而「一直失败」
+        //    恰恰是最需要收句柄的场景）；
+        // ② 必须早于下面 finalize 的 defer——defer 逆序执行，晚注册会先跑，
+        //    在未 finalize 的连接上 sqlite3_close 只会返回 SQLITE_BUSY 并把连接留下，
+        //    而数组已清空，等于永不重试。close_v2 再兜一层。
+        defer {
+            lock.lock()
+            let pending = transientHandles
+            transientHandles.removeAll()
+            lock.unlock()
+            for handle in pending { sqlite3_close_v2(handle) }
+        }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            AppLog.warn("TokenUsage: prepare failed: \(String(cString: sqlite3_errmsg(db)))")
+            return []
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        // 文本参数按位绑定（1 起）：汇总查询用同一 SQL 同时出 24h 与累计两个口径，
+        // cutoff 必须以参数进入——字面量拼接会把它写进 SQL 两次（且难以比对）。
+        for (offset, value) in textParams.enumerated() {
+            sqlite3_bind_text(stmt, Int32(offset + 1), value, -1, ReadonlyDB.transientDestructor)
+        }
+
+        var rows: [[String]] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            var row: [String] = []
+            row.reserveCapacity(cols)
+            for i in 0..<cols {
+                if let c = sqlite3_column_text(stmt, Int32(i)) {
+                    row.append(String(cString: c))
+                } else {
+                    row.append("")
+                }
+            }
+            rows.append(row)
+        }
+        // 中途出错（SQLITE_ERROR/BUSY）不应把部分行当完整结果
+        if sqlite3_errcode(db) != SQLITE_OK && sqlite3_errcode(db) != SQLITE_DONE && sqlite3_errcode(db) != SQLITE_ROW {
+            AppLog.warn("TokenUsage: step error \(String(cString: sqlite3_errmsg(db)))")
+            return []
+        }
+        return rows
     }
 
     /// 只读打开并记录 inode

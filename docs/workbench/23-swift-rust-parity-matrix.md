@@ -303,7 +303,14 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
 **未核实 / 需人工确认**：
 
 1. `session.rs` 四个 `probe_*` 与 Swift 同名解析器**未逐行比对语义**（只确认了分派方式与信号种类一致）。
-2. Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读。
+2. ~~Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读~~
+   ✅ **v0.0.198 已核实**：`cpu_percent` 只喂环形仪表的弧长（`?? 0`，对仪表是正确的），
+   **任何出口都没有把它渲染成文字**，不存在「0.0%」；两壳都过滤离线项；
+   24h 用量列的 `—` 规则与 Swift 一致（都是 `tokens24h > 0`）。
+   **但发现一处潜在漂移**：同一条「只显示在线」规则有**三种写法**——灵动岛 `s.process_running`、
+   侧边栏 `snap.process_running || snap.level !== 'offline'`、Swift `snapshots.filter(\.processRunning)`。
+   今天三者等价（`decide_level` 在 `!process_running` 时必定返回 `Offline`），
+   但三种拼法意味着判定层以后加一个分支就会漂。
 3. `Swift 端 25 个档案中` `qoder`/`antigravity`/`dsh`/`workbuddy` 的方言解析与 Rust 无对应，
    无法比对；ZCode 路径已在 v0.0.162 经本机实样核实并修正，但两端状态/动作解析语义
    尚未逐行比对。
@@ -311,8 +318,18 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
 5. `report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对（ADR 0009 相关，需单独看）。
 6. §2.3 表中「token 明细是否需要」一行只对 13 个共有档案核对；12 个 Swift 独有档案的
    `tokenRoots` 现状未逐一列（不影响「两边都有」的判定）。
-7. **Rust 侧 SQLite 读取只在合成夹具上验过**：`tokens.rs` / `sqlite.rs` 的用例现造库、现插行，
-   **未在本机真实的 `opencode.db` / `dimcode.sqlite` 上对拍过**（本机这两个库是否存在、
-   行数与 Swift 侧读数是否逐项相同，尚未取数）。
+7. ~~**Rust 侧 SQLite 读取只在合成夹具上验过**：未在本机真实的 `opencode.db` / `dimcode.sqlite`
+   上对拍过~~ ✅ **v0.0.198 已在真实库上对拍**，结论如下（取证与命令见
+   [opencode 表名失配与真实库对拍](../research/2026-09-27-opencode-schema-and-real-db-check.md)）：
+   - **`dim` 通过，逐位相同**：`dimcode.sqlite`（447MB / 1368 行）上，Rust 公式 = Swift 公式 =
+     `agentisland tokens --json` 实报 = **198,997,695**。顺带证实净口径不是洁癖：
+     不扣缓存读的错口径是 **7,450,151,420（37 倍虚高）**。
+   - **发现一处真 bug（两端都有）**：真实 `opencode.db` 里**没有 `message` / `session` 表**，
+     只有 `session_message` / `session_v2`（最新 migration `20260923013825_project_time_active`）。
+     两端都写死 `FROM message` ⇒ **都读不到 opencode 用量**，而「读到零」与「真的没用过」
+     在界面上完全一样。**v0.0.198 两端都已改为按 `sqlite_master` 现查真表名。**
+   - `mimocode` 仍是旧 schema（`message` + `session` 在），净消耗 48,934，读得到。
+   - **仍未闭合**：`session_message` 里 0 行，所以新 schema 下的**数据层等价性无法用真实数据证明**，
+     只有合成夹具守护。新 schema 要有真实数据，得等 opencode 在这台机器上真跑过一轮。
 
 **本表不含**：性能基准、UI 视觉对照、`app/` 的构建状态（已有 ADR 0010 M1/M2 记录）。

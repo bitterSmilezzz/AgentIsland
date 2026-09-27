@@ -157,3 +157,56 @@ enum ReadonlyDB {
         return (UInt64(truncatingIfNeeded: st.st_dev), UInt64(truncatingIfNeeded: st.st_ino))
     }
 }
+
+// MARK: - OpenCode 方言的表名
+
+/// OpenCode 一族（本体与同表结构的 fork，如小米 MiMo Code）的**真实表名**。
+///
+/// **表名在版本之间变过**：老库是 `message` / `session`，当前版本迁到了
+/// `session_message` / `session_v2`（本机 `opencode.db` 实测，最新一条 migration
+/// 为 `20260923013825_project_time_active`）。
+///
+/// 为什么必须现查而不写死：写死的后果**不是报错，是读到零**——而「读到零」在界面上
+/// 与「这个 Agent 真的没用过」完全一样。本仓宁可说「读不到」，也不能编一个看起来
+/// 正常的数字出来。
+///
+/// 表名不能绑参，拼进 SQL 是唯一写法，所以候选表**只认下面这些字面量**，
+/// 不接受任何外部输入——没有注入面。
+enum OpenCodeTables {
+
+    struct Tables: Equatable {
+        /// 消息表：`session_message` 或 `message`
+        let message: String
+        /// 会话表：本方言的查询不强制要它，缺了就查不到会话钻取那一层
+        let session: String?
+    }
+
+    static let messageCandidates = ["session_message", "message"]
+    static let sessionCandidates = ["session_v2", "session"]
+
+    /// 读出这张库里**实际存在**的表名。两种 schema 都能认；
+    /// 两种 message 表都没有 ⇒ 这不是这一族的库，返回 `nil`。
+    ///
+    /// 顺序上优先新名：万一某个 fork 同时留着两张表，新的是当前在写的那张。
+    static func resolve(_ db: OpaquePointer) -> Tables? {
+        guard let message = messageCandidates.first(where: { tableExists(db, $0) }) else {
+            return nil
+        }
+        return Tables(
+            message: message,
+            session: sessionCandidates.first(where: { tableExists(db, $0) })
+        )
+    }
+
+    private static func tableExists(_ db: OpaquePointer, _ name: String) -> Bool {
+        let sql = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            sqlite3_finalize(stmt)
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, name, -1, ReadonlyDB.transientDestructor)
+        return sqlite3_step(stmt) == SQLITE_ROW
+    }
+}
