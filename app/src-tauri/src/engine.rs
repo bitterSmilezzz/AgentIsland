@@ -56,6 +56,10 @@ pub struct ActivityEngine {
     /// 现在一条一条地展示、确认一条推下一条，**不丢**。
     pending_events: VecDeque<AgentTaskEvent>,
     pub grand_total: TokenUsage,
+    /// Token 预算告警状态机（Swift `ActivityEngine.budgetTracker`）
+    pub budget: crate::budget::BudgetTracker,
+    /// 当前预算状态（界面绑定；Swift 侧是 `@Published budgetStatus`）
+    pub budget_status: crate::budget::BudgetStatus,
     pub snapshots: Vec<AgentSnapshot>,
 }
 
@@ -84,6 +88,8 @@ impl ActivityEngine {
             latest_event: None,
             pending_events: VecDeque::new(),
             grand_total: TokenUsage::default(),
+            budget: crate::budget::BudgetTracker::new(),
+            budget_status: crate::budget::BudgetStatus::Disabled,
             snapshots: vec![],
         }
     }
@@ -233,6 +239,57 @@ impl ActivityEngine {
             cost_total: cost_all,
             cost_estimated,
         };
+
+        // 预算评估放在总量算完、快照落地之后（Swift 侧同位置：`grandTotal` 一更新就评估）。
+        // 单独抽成方法是为了让这段接线的口径能被用例直接观察。
+        self.evaluate_budget(now);
+    }
+
+    /// Token 预算预警与超额告警。
+    ///
+    /// 口径照搬 Swift `ActivityEngine`：
+    /// ① 由 `budgetAlertEnabled` 决定「要不要评估」（关掉只关告警，状态照样给界面）；
+    /// ② 只有**跨级**才推事件（状态机里带滞回，否则只要用量压在线上就每拍推一条）；
+    /// ③ 事件写成 `system` / 「Token 预算」+ `costSpike`，消息按「超额 / 预警」分开，
+    ///    具体数字落在 `detail` 里——界面上标题要短，数字要能查。
+    fn evaluate_budget(&mut self, now: i64) {
+        let settings = self.settings.normalized();
+        let used = self.grand_total.tokens24h;
+        let budget = settings.daily_token_budget;
+        if budget > 0 && !settings.budget_alert_enabled {
+            // 关掉告警时仍要让界面看得到用量与预算（Swift 同分支）
+            self.budget_status = crate::budget::BudgetStatus::Normal {
+                used,
+                budget,
+                ratio: used as f64 / budget as f64,
+            };
+            return;
+        }
+        if budget <= 0 {
+            // 没设预算：把状态机复位（否则用户设上预算的那一刻会莫名报一次）
+            self.budget.reset();
+            self.budget_status = crate::budget::BudgetStatus::Disabled;
+            return;
+        }
+        let (status, alert) = self.budget.evaluate(used, budget, now);
+        let exceeded = status.is_exceeded();
+        self.budget_status = status;
+        if let Some(detail) = alert {
+            self.push_event(AgentTaskEvent {
+                id: crate::webhook::webhook_uuid(),
+                agent_id: "system".into(),
+                agent_name: "Token 预算".into(),
+                event_type: "costSpike".into(),
+                timestamp: now,
+                message: Some(if exceeded {
+                    "🚨 Token 预算超额".into()
+                } else {
+                    "⚠️ Token 预算预警".into()
+                }),
+                detail: Some(detail),
+                externally_delivered: false,
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -406,7 +463,7 @@ impl ActivityEngine {
                             &format!(
                                 "Token 消耗突增（近 {:.0} 分钟约 {} tokens/分钟）",
                                 elapsed_min,
-                                compact(rate as i64)
+                                crate::tokens::compact(rate as i64)
                             ),
                             now,
                             "token-rate",
@@ -713,38 +770,9 @@ impl ActivityEngine {
     }
 }
 
-pub fn compact(tokens: i64) -> String {
-    let n = tokens as f64;
-    if tokens < 0 {
-        return "0".into();
-    }
-    if tokens < 1_000 {
-        format!("{tokens}")
-    } else if tokens < 1_000_000 {
-        format!("{}k", trim_zero(format!("{:.1}", n / 1_000.0)))
-    } else if tokens < 1_000_000_000 {
-        let m = n / 1_000_000.0;
-        if m >= 100.0 {
-            format!("{:.0}M", m)
-        } else {
-            format!("{}M", trim_zero(format!("{m:.2}")))
-        }
-    } else {
-        trim_zero(format!("{:.2}G", n / 1_000_000_000.0))
-    }
-}
-
-/// 只处理纯数字字符串：剥掉尾部的 `.` 与多余的 `0`。
-/// **单位后缀必须由调用方在外层拼**——因为 `trim_end_matches('0')` 遇到
-/// `"1.0k"` 这种末尾是字母的串会直接不匹配，假精度就漏了出去。
-fn trim_zero(s: String) -> String {
-    if s.contains('.') {
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
-    } else {
-        s
-    }
-}
-
+#[cfg(test)]
+#[path = "engine/state_tests.rs"]
+mod state_tests;
 fn demo_report() -> TokenReport {
     let mut hourly = Vec::new();
     let now = now_ms();
@@ -778,57 +806,5 @@ fn demo_report() -> TokenReport {
         models24h: models.clone(),
         models_total: models,
         hourly30d: hourly,
-    }
-}
-
-#[cfg(test)]
-#[path = "engine/state_tests.rs"]
-mod state_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::compact;
-
-    /// `compact` 是 token 数的显示格式化。契约三条：**短、不引入歧义、负数不出现**。
-    /// `1.0k` 这种假精度会让人以为精确到百位；负数来自统计回绕，显示出来等于说谎。
-    #[test]
-    fn compact_short_unambiguous_never_negative() {
-        assert_eq!(compact(0), "0");
-        assert_eq!(compact(999), "999");
-        assert_eq!(compact(-1), "0", "负数是统计回绕，必须显示 0 而不是 -1");
-
-        let one_k = compact(1000);
-        assert!(one_k.contains('k'), "1000 未格式化为 k 形式：{one_k}");
-        assert!(!one_k.contains(".0"), "{one_k} 带了假精度（1.0k 读起来像精确到百位）");
-
-        for raw in [0i64, 1, 999, 1000, 1500, 999_999, 1_000_000, 12_345_678] {
-            let got = compact(raw);
-            assert!(!got.trim().is_empty(), "compact({raw}) 为空");
-            assert!(got.len() <= 8, "compact({raw}) = {got:?} 过长");
-        }
-    }
-
-    /// 量级必须单调不降：`compact` 只做缩写不做取舍，
-    /// 若 a <= b 却 compact(a) 在量级上大于 compact(b)，是分桶边界写错了。
-    #[test]
-    fn compact_magnitude_is_monotonic() {
-        let seq = [500i64, 999, 1000, 1500, 999_999, 1_000_000, 1_500_000, 1_000_000_000];
-        let mut prev_unit = 'd';
-        for &v in &seq {
-            let s = compact(v);
-            let unit = s.chars().rev().find(|c| c.is_ascii_alphabetic()).unwrap_or('d');
-            // k < M < G：单位只能往上升或不变，不能倒退
-            let rank = |u: char| match u {
-                'G' => 3,
-                'M' => 2,
-                'k' => 1,
-                _ => 0,
-            };
-            assert!(
-                rank(unit) >= rank(prev_unit),
-                "量级倒退：{prev_unit} -> {unit}（token={v}）"
-            );
-            prev_unit = unit;
-        }
     }
 }

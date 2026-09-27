@@ -21,6 +21,8 @@ mod secret;
 mod settings;
 mod smtp;
 mod sqlite;
+mod budget;
+mod forecast;
 mod tokens;
 mod transport;
 mod webhook;
@@ -355,6 +357,22 @@ fn remote_secret_delete(state: State<SharedEngine>) -> bool {
     crate::secret::delete(&crate::secret::default_secret_name(channel))
 }
 
+/// 月末预估（对应 Swift CLI `tokens` 的招牌输出与分析页顶部那块）。
+///
+/// 用引擎缓存的总量（`grand_total`）而不是重新聚合：那张卡上写的 24h 用量与
+/// 这里外推的基准必须是**同一个数**，否则界面会自己跟自己打架。
+#[tauri::command]
+fn token_forecast(state: State<SharedEngine>) -> crate::forecast::ForecastReport {
+    let engine = state.lock().unwrap();
+    let settings = engine.settings.normalized();
+    crate::forecast::evaluate(
+        engine.grand_total.tokens24h,
+        engine.grand_total.cost24h,
+        settings.daily_token_budget,
+        crate::tokens::now_ms(),
+    )
+}
+
 #[tauri::command]
 fn clear_latest_event(state: State<SharedEngine>) {
     // 确认这一条、推下一条：覆盖式清除会把同一拍里排队的告警一起丢掉
@@ -513,6 +531,7 @@ fn main() {
             save_settings,
             remote_status,
             remote_preview,
+            token_forecast,
             remote_secret_set,
             remote_secret_delete,
             set_dock_edge,

@@ -471,3 +471,103 @@ fn the_pending_queue_is_bounded_and_keeps_the_newest() {
     }
     assert_eq!(last.as_deref(), Some("ev-199"), "最新的那条不能被丢掉");
 }
+
+// MARK: Token 预算接线（总量 → 状态机 → 事件）
+
+/// 预算评估的接线：跨级推**一条**事件，同级不再推；关掉告警只停事件不停状态。
+#[test]
+fn the_budget_alerts_once_per_level_crossing() {
+    let mut replay = Replay::new();
+    replay.engine.settings.daily_token_budget = 1_000_000;
+    replay.engine.settings.budget_alert_enabled = true;
+    replay.engine.grand_total.tokens24h = 500_000;
+
+    // 50%：正常，不推事件
+    replay.engine.evaluate_budget(1_000);
+    assert!(matches!(
+        replay.engine.budget_status,
+        crate::budget::BudgetStatus::Normal { .. }
+    ));
+    assert!(replay.engine.latest_event.is_none(), "没越线不该有事件");
+
+    // 82%：推一条「预警」，数字落在 detail 里
+    replay.engine.grand_total.tokens24h = 820_000;
+    replay.engine.evaluate_budget(2_000);
+    let event = replay.engine.latest_event.clone().expect("应推预警事件");
+    assert_eq!(event.agent_id, "system", "预算不属于某个 Agent");
+    assert_eq!(event.agent_name, "Token 预算");
+    assert_eq!(event.event_type, "costSpike");
+    assert_eq!(event.message.as_deref(), Some("⚠️ Token 预算预警"));
+    assert_eq!(
+        event.detail.as_deref(),
+        Some("Token 消费已接近预算预警线：82% (820.0k / 1.00M)")
+    );
+
+    // 仍在这一档：不重复推（否则只要用量压在线上就每拍一条）
+    replay.engine.latest_event = None;
+    replay.engine.grand_total.tokens24h = 900_000;
+    replay.engine.evaluate_budget(3_000);
+    assert!(replay.engine.latest_event.is_none(), "同一档不该重复报");
+
+    // 跨到超额：再推一条
+    replay.engine.grand_total.tokens24h = 1_500_000;
+    replay.engine.evaluate_budget(4_000);
+    let event = replay.engine.latest_event.clone().expect("应推超额事件");
+    assert_eq!(event.message.as_deref(), Some("🚨 Token 预算超额"));
+    assert_eq!(
+        event.detail.as_deref(),
+        Some("Token 消费已达预算上限：150% (1.50M / 1.00M)")
+    );
+    assert!(replay.engine.budget_status.is_exceeded());
+}
+
+#[test]
+fn turning_the_alert_off_keeps_the_status_but_stops_the_events() {
+    let mut replay = Replay::new();
+    replay.engine.settings.daily_token_budget = 1_000_000;
+    replay.engine.settings.budget_alert_enabled = false;
+    replay.engine.grand_total.tokens24h = 2_000_000;
+
+    replay.engine.evaluate_budget(1_000);
+    assert!(
+        replay.engine.latest_event.is_none(),
+        "关掉告警就不该推事件（采集与告警解耦）"
+    );
+    // 但状态照样给界面：用户关掉告警不代表不想看用量
+    match replay.engine.budget_status {
+        crate::budget::BudgetStatus::Normal { used, budget, .. } => {
+            assert_eq!(used, 2_000_000);
+            assert_eq!(budget, 1_000_000);
+        }
+        other => panic!("应给正常档的状态，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn clearing_the_budget_rearms_the_tracker_so_the_next_budget_alert_is_honest() {
+    let mut replay = Replay::new();
+    replay.engine.settings.daily_token_budget = 1_000_000;
+    replay.engine.grand_total.tokens24h = 2_000_000;
+    replay.engine.evaluate_budget(1_000);
+    assert!(replay.engine.latest_event.is_some());
+    assert_eq!(replay.engine.budget.level_for_test(), 2);
+
+    // 用户把预算清空：状态机必须复位，否则他再设一个预算时会**立刻**收到一条旧级别的告警
+    replay.engine.settings.daily_token_budget = 0;
+    replay.engine.evaluate_budget(2_000);
+    assert!(matches!(
+        replay.engine.budget_status,
+        crate::budget::BudgetStatus::Disabled
+    ));
+    assert_eq!(replay.engine.budget.level_for_test(), 0, "清空预算要复位");
+}
+
+#[test]
+fn a_negative_or_absurd_budget_from_a_hand_edited_file_is_normalized_away() {
+    // 手改 settings.json 写负预算会让「超额」永远成立；越界值读到即钳制
+    let mut settings = Settings::default();
+    settings.daily_token_budget = -5;
+    assert_eq!(settings.normalized().daily_token_budget, 0);
+    settings.daily_token_budget = 9_999_999_999;
+    assert_eq!(settings.normalized().daily_token_budget, 1_000_000_000);
+}

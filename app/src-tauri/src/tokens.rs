@@ -733,6 +733,90 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 // 费率表已迁到 `crate::cost`（与 Swift `TokenCostEstimator` 同表）。此前这里有一份
 // 5 档粗分档的 `price_lookup`——同一件事两份算法，正是 ADR 0010 明令不许的。
 
+/// 紧凑显示（Swift `TokenUsage.compact` 同口径、同阈值）：
+/// 10 亿以上 `1.23B`、百万以上 `1.23M`、**一万以上** `1.2k`、其余原样整数。
+///
+/// 阈值与卡片、汇总栏共用一处——同一份用量在卡片上写 `1.2M`、在告警里写 `1200000`
+/// 会让人以为是两件事。
+pub fn compact(n: i64) -> String {
+    // 唯一的**有意差异**：负数钳成 0。Swift 原样打印（`-1`），但负用量只可能来自
+    // 统计回绕或数据源写入异常，把它显示出来等于说谎。其余（阈值、后缀、小数位、
+    // `12.00M` 这种保留尾零）一律照搬。
+    let n = n.max(0);
+    let value = n as f64;
+    if n >= 1_000_000_000 {
+        return format!("{:.2}B", value / 1_000_000_000.0);
+    }
+    if n >= 1_000_000 {
+        return format!("{:.2}M", value / 1_000_000.0);
+    }
+    if n >= 10_000 {
+        return format!("{:.1}k", value / 1_000.0);
+    }
+    format!("{n}")
+}
+
+
+#[cfg(test)]
+mod compact_tests {
+    use super::compact;
+
+    /// 阈值、后缀与小数位照搬 Swift `TokenUsage.compact`。
+    ///
+    /// **这一轮修的是一个真实的分歧**：Rust 侧曾另有一份 `engine::compact`
+    /// （1000 就打 `k`、十亿用 `G`、还剥尾零），而 Swift 全仓只有这一个函数，
+    /// 界面上所有 token 文本（卡片、悬停、热力图、详情页、CLI）都走它。
+    /// 两份实现同时存在时，「同一份用量在两处显示不同」只是时间问题——
+    /// 而它当时已经用在一句 Swift 也用参考函数构造的告警里。
+    #[test]
+    fn thresholds_and_suffixes_match_the_swift_reference() {
+        assert_eq!(compact(0), "0");
+        assert_eq!(compact(999), "999");
+        assert_eq!(compact(9_999), "9999", "一万以下不打 k（旧实现从 1000 就打）");
+        assert_eq!(compact(10_000), "10.0k");
+        assert_eq!(compact(820_000), "820.0k");
+        assert_eq!(compact(1_000_000), "1.00M");
+        assert_eq!(
+            compact(12_000_000),
+            "12.00M",
+            "M 固定两位小数（Swift 保留 .00；旧实现会剥成 12M）"
+        );
+        assert_eq!(compact(1_000_000_000), "1.00B", "十亿是 B 不是 G");
+        assert_eq!(compact(2_500_000_000), "2.50B");
+    }
+
+    #[test]
+    fn the_unit_only_ever_goes_up_as_the_number_grows() {
+        let seq = [0i64, 999, 9_999, 10_000, 999_999, 1_000_000, 12_345_678, 1_000_000_000];
+        let rank = |unit: char| match unit {
+            'B' => 3,
+            'M' => 2,
+            'k' => 1,
+            _ => 0,
+        };
+        let mut previous = 0;
+        for value in seq {
+            let text = compact(value);
+            let unit = text.chars().rev().find(|c| c.is_ascii_alphabetic()).unwrap_or(' ');
+            assert!(
+                rank(unit) >= previous,
+                "量级倒退了：{value} → {text}（上一个量级 {previous}）"
+            );
+            previous = rank(unit);
+            assert!(!text.trim().is_empty());
+            assert!(text.len() <= 8, "compact({value}) = {text:?} 过长");
+        }
+    }
+
+    /// 唯一的**有意差异**：负数显示 0。Swift 原样打 `-1`，但负用量只可能来自统计回绕
+    /// 或数据源写入异常，显示出来等于说谎。
+    #[test]
+    fn a_negative_reading_shows_zero_instead_of_a_negative_number() {
+        assert_eq!(compact(-1), "0");
+        assert_eq!(compact(-999_999), "0");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

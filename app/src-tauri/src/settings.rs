@@ -29,6 +29,12 @@ pub struct Settings {
     /// 回来发现 SMTP 全空了。键是通道名（`ntfy` / `customHTTP` / `smtpEmail`）。
     pub remote_channels: HashMap<String, crate::remote::ChannelConfig>,
     pub token_alert_threshold: i64,
+    /// 日预算（token）。**0 = 未设**（与 Swift `dailyTokenBudget` 同键同默认同区间）。
+    /// 口径是滚动 24 小时，不是自然日——见 `budget.rs` 的模块头。
+    pub daily_token_budget: i64,
+    /// 预算告警开关（Swift `budgetAlertEnabled`，默认开）。
+    /// 关掉它只关告警，不影响用量统计与卡片。
+    pub budget_alert_enabled: bool,
     pub notification_policy: String, // standard | focus | silent
     pub play_completion_sound: bool,
     pub disabled_agents: Vec<String>,
@@ -46,6 +52,8 @@ impl Default for Settings {
             token_alert_enabled: true,
             auto_anomalies_alert: true,
             token_alert_threshold: 200_000,
+            daily_token_budget: 0,
+            budget_alert_enabled: true,
             remote_kind: "ntfy".into(),
             remote_policy: crate::remote::Policy::default(),
             remote_channels: HashMap::new(),
@@ -117,6 +125,9 @@ impl Settings {
             s.sample_interval = 0.5;
         }
         s.token_alert_threshold = s.token_alert_threshold.clamp(1_000, 10_000_000);
+        // 与 Swift `SettingLimits.dailyTokenBudgetRange` 同区间（0…1e9）。
+        // 手改 settings.json 写进一个负预算会让「超额」永远成立
+        s.daily_token_budget = s.daily_token_budget.clamp(0, 1_000_000_000);
         s.dock_anchor = s.dock_anchor.clamp(0.0, 1.0);
 
         // 外发配置：读出即归一化。损坏/越界的值在落盘时就可能已经写进去了，
