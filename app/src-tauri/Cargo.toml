@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
-rust-version = "1.77"
+# 真实可用的最低版本。原先写 1.77，但依赖里的 tauri 早已要求远高于此——
+# 只是那些 crate 没写 `rust-version`，cargo 才不报。这条声明早就是 fiction，
+# 真正的代价是：它挡住了两个官方插件（autostart / global-shortcut 要求 1.90），
+# cargo 只好想退到 2.0.0-rc 预发布版。抬到 1.90 让声明与事实一致。
+rust-version = "1.90"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -32,6 +36,12 @@ base64 = "0.21"
 # 用名字而不是 -25308 这种魔数（与 Swift `RemoteSecret.describe` 同一处文案）。
 security-framework = "3"
 security-framework-sys = "2"
+# 开机自启（设置项 `launch_at_login`）与全局热键（`global_hot_key_enabled`）。
+# Tauri 官方一方插件：这两个能力在 Tauri 核心之外，手写要分别碰
+# LaunchAgent / 注册表 与 Carbon / Win32 的 unsafe FFI——用官方插件换掉那份平台代码。
+# 二者都要求 rustc 1.90，见上面 `rust-version` 那条注。
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

@@ -526,3 +526,32 @@ html.shell-island #root.edge-right  { align-items: center;     justify-content: 
 .c-faint { color: var(--text-faint); }
 .c-muted { color: var(--text-muted); }
 .c-cyan { color: var(--cyan); }
+
+/* 「收起时隐藏微细条」（v0.0.202 接进设置页）。
+   只隐藏**视觉条**，热区仍在——见 views.js 里 renderSliver 的注释：
+   微细条是收起态唯一的唤回入口，连热区一起去掉就成了一块看不见也点不到的死区。 */
+html.shell-island .sliver-invisible .sliver-capsule {
+  opacity: 0;
+}
+
+html.shell-island .sliver-invisible {
+  background: transparent;
+  border-color: transparent;
+}
+
+/* 紧凑视图：收紧行高、间距与徽标。两处挂 `html.shell-island` 之下，
+   与 `models.rs` 的 CSS 隔离哨兵同一条规则。 */
+html.shell-island.compact .row {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+html.shell-island.compact .row-sub,
+html.shell-island.compact .activity-dots {
+  display: none;
+}
+
+html.shell-island.compact .card-box {
+  margin-top: 6px;
+  padding: 6px 8px;
+}

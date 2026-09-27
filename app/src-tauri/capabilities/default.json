@@ -2,7 +2,10 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "AgentIsland 两个形态的窗口能力（灵动岛 + 侧边栏）",
-  "windows": ["island", "sidebar"],
+  "windows": [
+    "island",
+    "sidebar"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-set-position",
@@ -19,6 +22,13 @@
     "core:window:allow-show",
     "core:window:allow-close",
     "core:event:default",
-    "core:tray:default"
+    "core:tray:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-unregister-all",
+    "global-shortcut:allow-is-registered"
   ]
 }

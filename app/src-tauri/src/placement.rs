@@ -103,6 +103,67 @@ pub fn work_area_under_window(window: &tauri::WebviewWindow) -> (f64, f64, f64, 
     }
 }
 
+/// 按用户选的**屏幕跟随模式**取工作区（Swift `ScreenFollowMode` 同名四档）。
+///
+/// 四档的取舍是「用户想让它待在哪」：
+/// · `followMouse`（默认）跟着光标走——多屏用户最常见的诉求
+/// · `mainScreen` 固定主屏（带菜单栏的那块）
+/// · `builtInScreen` 优先笔记本内置屏（外接时别把它甩到副屏上）
+/// · `externalScreen` 优先外接屏
+///
+/// **认不出的值按 `followMouse` 走**，与 `Settings::normalized()` 的回落一致。
+/// 取不到目标屏时**逐级回落**（目标屏 → 主屏 → 兜底工作区），
+/// 宁可落在一块能用的屏上，也不要算出落在屏幕之外的坐标——
+/// 那会让窗口整个消失，而界面上没有任何提示。
+pub fn work_area_for_mode(
+    window: &tauri::WebviewWindow,
+    mode: &str,
+) -> (f64, f64, f64, f64, f64) {
+    match mode {
+        "mainScreen" => window
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| {
+                let scale = window.scale_factor().unwrap_or(1.0);
+                physical_rect_to_logical(m.work_area(), if scale > 0.0 { scale } else { 1.0 })
+            })
+            .unwrap_or_else(fallback_work_area),
+        "builtInScreen" | "externalScreen" => {
+            let want_builtin = mode == "builtInScreen";
+            match named_monitor(window, want_builtin) {
+                Some(m) => {
+                    let scale = window.scale_factor().unwrap_or(1.0);
+                    physical_rect_to_logical(m.work_area(), if scale > 0.0 { scale } else { 1.0 })
+                }
+                // 这一档的目标屏现在没插着：退回跟随光标，而不是落在主屏上假装是内置屏
+                None => work_area_under_window(window),
+            }
+        }
+        // `followMouse` 与一切认不出的值
+        _ => work_area_under_window(window),
+    }
+}
+
+/// 找内置屏 / 外接屏。判据是**工作区原点**：`x=0 且 y=0` 的是主屏，
+/// 而 macOS 的内置屏在多屏布局里通常不是原点那块（外接屏挂在左边或上边时更常见）。
+/// 这不是完美判据（外接屏被摆到主位时也会命中），但它不依赖任何平台专有 API，
+/// 且拿不到时的回落是安全的。
+fn named_monitor(window: &tauri::WebviewWindow, want_builtin: bool) -> Option<tauri::Monitor> {
+    let monitors = window.available_monitors().ok()?;
+    let primary = window.primary_monitor().ok().flatten();
+    let primary_origin = primary.as_ref().map(|m| (m.position().x, m.position().y));
+    monitors.into_iter().find(|m| {
+        let is_primary = primary_origin == Some((m.position().x, m.position().y));
+        // 主屏当内置屏用：它就是这块机器上最「本体」的那块
+        if want_builtin {
+            is_primary
+        } else {
+            !is_primary
+        }
+    })
+}
+
 /// 任意逻辑坐标所在的显示器工作区。多显示器 + 不同 DPI 时按坐标选屏，
 /// 不能一律取主屏——否则副屏上的贴边会算到主屏的坐标空间里。
 #[cfg(not(windows))]

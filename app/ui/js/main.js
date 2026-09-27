@@ -30,6 +30,17 @@ export const setState = (patch) => Object.assign(state, patch);
 
 // MARK: 主题
 
+/// 把「形态 / 外观 / 紧凑」三件布局事实一起挂到 `<html>` 的类上。
+///
+/// 收在一个函数里：三者都是**样式层**的事实，各写一处挂类就会漏——
+/// 而漏掉的表现是「开关打了没反应」，最难自查的那种。
+export function applyLayout() {
+  const root = document.documentElement;
+  root.classList.toggle('compact', state.settings?.compact_view === true);
+  applyAppearance(state.settings?.appearance ?? 'system');
+  root.className = `${root.className} ${edgeClass()}`;
+}
+
 export function applyAppearance(mode) {
   const m = (mode ?? 'system').toLowerCase();
   const dark = m === 'dark' || (m !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
@@ -163,7 +174,7 @@ async function boot() {
   // 归一化：Rust/手动改配置可能出现 'Top'/'Dark' 等大小写变体
   state.settings.dock_edge = (state.settings.dock_edge ?? 'top').toLowerCase();
   state.settings.appearance = (state.settings.appearance ?? 'system').toLowerCase();
-  applyAppearance(state.settings.appearance);
+  applyLayout();
 
   // 形态分派：两个窗口加载同一个 index.html，靠 URL 上的 `?shell=` 分辨自己是谁。
   // 侧边栏分支**不再做灵动岛那套事**（细条几何、贴边放置、展开收起、失焦防抖）——

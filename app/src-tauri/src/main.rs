@@ -111,11 +111,132 @@ fn shell_arg_override() -> Option<crate::models::ShellMode> {
     None
 }
 
+/// 按用户选的**屏幕跟随模式**取工作区（`Settings::screen_follow_mode`，四档）。
+///
+/// 收在一处而不是让每个调用点各取一遍：跟随模式换了以后，六个调用点要一起换，
+/// 而漏一个的症状是「岛跟过来了、侧边栏没跟」——**两边都不会报错**。
+/// 锁拿不到时用空串：`work_area_for_mode` 认不出的值一律按「跟随光标」处理，
+/// 那是最不像出错的回落。
+fn work_area_for(win: &tauri::WebviewWindow, state: &State<'_, SharedEngine>) -> (f64, f64, f64, f64, f64) {
+    placement::work_area_for_mode(win, &follow_mode(state))
+}
+
+fn follow_mode(state: &State<'_, SharedEngine>) -> String {
+    state
+        .lock()
+        .map(|e| e.settings.screen_follow_mode.clone())
+        .unwrap_or_default()
+}
+
+/// 全局热键的组合键（Swift `GlobalHotKeyManager` 同口径）。
+/// `Cmd+Shift+I`（macOS）/ `Ctrl+Shift+I`（其他平台）。
+///
+/// 选这组是因为它与本应用既有的快捷键不冲突，且在系统设置里可被用户看到与修改。
+/// 注意：插件的注册单位**就是组合键本身**（没有独立的 id），
+/// 所以「幂等」只能靠 `is_registered` 读回系统状态来判断。
+pub const HOTKEY_ACCEL: &str = if cfg!(target_os = "macos") {
+    "CmdOrCtrl+Shift+I"
+} else {
+    "Ctrl+Shift+I"
+};
+
+/// 解析热键组合键。解析失败是**配置级错误**（用户改了常量），
+/// 与运行期无关，所以单独给一条可断言的错误文本。
+pub fn parse_hotkey() -> Result<tauri_plugin_global_shortcut::Shortcut, String> {
+    HOTKEY_ACCEL
+        .parse()
+        .map_err(|error| format!("组合键 {HOTKEY_ACCEL} 解析失败: {error}"))
+}
+
+/// 让系统里的全局热键注册状态与设置对齐。返回 `Ok(())` 表示**无需动作**或已成功。
+///
+/// **幂等**：已经在想要的状态就什么都不做。这一点很重要——注册是系统级副作用，
+/// 若每 5 秒无条件重注册一次，用户电脑上的这个热键会反复失效又恢复，
+/// 而现象是「偶尔按了没反应」，极难归因。
+pub fn apply_hotkey(app: &AppHandle, want: bool) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let shortcut = parse_hotkey()?;
+    let manager = app.global_shortcut();
+    if want == manager.is_registered(shortcut.clone()) {
+        return Ok(());
+    }
+    if want {
+        manager
+            .register(shortcut)
+            .map_err(|error| format!("注册 {HOTKEY_ACCEL} 失败: {error}"))
+    } else {
+        manager
+            .unregister(shortcut)
+            .map_err(|error| format!("注销 {HOTKEY_ACCEL} 失败: {error}"))
+    }
+}
+
+/// 开机自启（设置项 `launch_at_login`）。
+///
+/// 走 Tauri 官方 `autostart` 插件。**注册失败要如实返回 false**，界面上那一栏
+/// 随即写「系统拒绝了」——静默失败的话，用户下次开机发现没启动，
+/// 只会以为这个开关坏了，而不会想到是系统权限没给。
+#[tauri::command]
+fn set_launch_at_login(app: AppHandle, enabled: bool) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    let outcome = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    if let Err(error) = outcome {
+        log_line(&format!("[launchAtLogin] {} 失败: {error}", if enabled { "启用" } else { "关闭" }));
+    }
+    // 「现在到底注册着没有」以插件的读数为准，而不是以上面那次调用的返回值——
+    // 两者会不一致的情形正是最需要如实告诉用户的那一种
+    manager.is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn launch_at_login_state(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// 托盘徽标文案（Swift `MenuBarBadgeMode` 同名三档）。
+///
+/// 三档的取舍是「菜单栏那一格要不要说话」：
+/// · `iconOnly`（默认）只留图标——菜单栏最贵的是被字占掉的长度
+/// · `activeCount` 显示正在工作的 Agent 数（`⚡️ 2`）
+/// · `tokenUsage` 显示今日 token（`120k`）
+///
+/// **纯函数**：它决定一个会天天出现在用户眼前的字符串，而它能拿到的只有
+/// 一个 `&AgentSnapshot` 列表与一个 24h 总量。写成纯函数是为了能离线断言——
+/// 「没有 Agent 时写什么」「用量怎么缩写」这两件事在真机上很难稳定复现。
+pub fn tray_badge_text(
+    mode: &str,
+    active: usize,
+    tokens24h: i64,
+) -> Option<String> {
+    match mode {
+        "activeCount" => Some(format!("⚡️ {active}")),
+        "tokenUsage" => {
+            // 缩写复用引擎那一套口径（`tokens::compact`）：菜单栏上写 `120.0k`
+            // 而别处也是 `120.0k`——同一件事两种说法是不允许的。
+            // 顺带回答一个查过的问题：菜单栏那格比卡片窄，会不会被挤走？
+            // 不会——`compact` 对任何小于 1e18 的量级都给出 ≤ 8 字符
+            // （`{:.1}k` / `{:.2}M` / `{:.2}B` 各自的小数位定死了整数位长度）。
+            // 再往上的量级是数据源异常，那时该修的是数据源，不是菜单栏。
+            let text = crate::tokens::compact(tokens24h);
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None, // iconOnly 与一切认不出的值：只留图标
+    }
+}
+
 fn place_sidebar_window(app: &AppHandle, edge: crate::models::DockEdge, width: f64) {
     let Some(win) = app.get_webview_window("sidebar") else {
         return; // 配置里没有这个窗口（旧包）：如实什么都不做，而不是 panic
     };
-    let wa = placement::work_area_under_window(&win);
+    // 侧边栏这一路只有 AppHandle：从 Tauri 的状态表里取设置，锁不到就退回默认档
+    let state = app.state::<SharedEngine>();
+    let wa = work_area_for(&win, &state);
     let (left, top, w, h) = placement::sidebar_frame(edge, width, wa);
     let _ = win.set_size(LogicalSize::new(w, h));
     let _ = win.set_position(LogicalPosition::new(left, top));
@@ -235,7 +356,7 @@ fn place_island(
             e.settings.dock_anchor,
         )
     };
-    let wa = placement::work_area_under_window(&window);
+    let wa = work_area_for(&window, &state);
     let (left, top) = placement::place_with(edge, anchor, width, height, wa);
     window
         .set_size(LogicalSize::new(width, height))
@@ -285,7 +406,7 @@ fn snap_nearest_edge(
         s.save();
     }
     let edge = DockEdge::parse(edge_str);
-    let wa = placement::work_area_under_window(&window);
+    let wa = work_area_for(&window, &state);
     let (left, top) = placement::place_with(edge, anchor.clamp(0.0, 1.0), width, height, wa);
     window
         .set_size(LogicalSize::new(width, height))
@@ -305,7 +426,7 @@ fn reposition_now(window: tauri::WebviewWindow, state: State<SharedEngine>, widt
             e.settings.dock_anchor,
         )
     };
-    let wa = placement::work_area_under_window(&window);
+    let wa = work_area_for(&window, &state);
     let (left, top) = placement::place_with(edge, anchor, width, height, wa);
     let _ = window.set_position(LogicalPosition::new(left, top));
 }
@@ -316,7 +437,7 @@ fn reposition(app: &AppHandle, _state: State<SharedEngine>, edge: &DockEdge, anc
         let scale = win.scale_factor().unwrap_or(1.0);
         let w = size.width as f64 / scale;
         let h = size.height as f64 / scale;
-        let wa = placement::work_area_under_window(&win);
+        let wa = work_area_for(&win, &_state);
         let (left, top) = placement::place_with(*edge, anchor, w, h, wa);
         let _ = win.set_position(LogicalPosition::new(left, top));
     }
@@ -774,8 +895,24 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
             for ev in events {
                 e.push_event(ev);
             }
+            let badge_mode = e.settings.menu_bar_badge_mode.clone();
             e.tick();
             let s = e.state();
+            // 托盘徽标：跟随 `menu_bar_badge_mode`（iconOnly 时不设标题）
+            if let Some(tray) = app.tray_by_id("main") {
+                let active = s
+                    .snapshots
+                    .iter()
+                    .filter(|snap| {
+                        matches!(snap.level, models::ActivityLevel::Working | models::ActivityLevel::Attention)
+                    })
+                    .count();
+                if let Some(text) = tray_badge_text(&badge_mode, active, s.grand_total.tokens24h) {
+                    let _ = tray.set_title(Some(&text));
+                } else {
+                    let _ = tray.set_title::<&str>(None);
+                }
+            }
             let active = s
                 .snapshots
                 .iter()
@@ -822,8 +959,46 @@ fn main() {
     log_line("=== boot ===");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(shared.clone())
         .setup(move |app| {
+            // 全局热键：按设置里的开关注册。
+            //
+            // 刻意**不在设置变化时重注册**：热键注册要在主线程做，而设置改完
+            // 立刻生效是本轮的承诺之一——那就在每拍检查一次「开关状态与
+            // 当前注册状态是否一致」，不一致才动。注册失败只记日志，
+            // 不打断引擎循环：热键是锦上添花，不该让它把监控整个拖停。
+            {
+                // 热键回调：与托盘同一个动作（展开 / 收起），不另发明一套
+                if let Ok(shortcut) = parse_hotkey() {
+                    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+                    let _ = app.global_shortcut().on_shortcut(shortcut, move |app, _, event| {
+                        if matches!(event.state(), ShortcutState::Pressed) {
+                            let _ = app.emit("tray://toggle", ());
+                        }
+                    });
+                } else {
+                    log_line("[globalHotKey] 组合键解析失败，未注册");
+                }
+                // 注册状态对齐：每 5 秒比一次「设置要什么」与「系统里是什么」，
+                // 不一致才动。`apply_hotkey` 幂等，所以多跑几次没有副作用
+                let shared3 = shared.clone();
+                let handle3 = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    let want = shared3
+                        .lock()
+                        .map(|e| e.settings.global_hot_key_enabled)
+                        .unwrap_or(false);
+                    if let Err(error) = apply_hotkey(&handle3, want) {
+                        log_line(&format!("[globalHotKey] {error}"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                });
+            }
             // 引擎采样线程
             let shared2 = shared.clone();
             let handle = app.handle().clone();
@@ -920,6 +1095,8 @@ fn main() {
             remote_secret_delete,
             set_dock_edge,
             set_shell_mode,
+            set_launch_at_login,
+            launch_at_login_state,
             set_sidebar_width,
             set_sidebar_edge,
             place_sidebar,
@@ -934,4 +1111,87 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tray_badge_tests {
+    use super::tray_badge_text;
+
+    #[test]
+    fn the_badge_says_one_of_three_things_and_never_invents_a_fourth() {
+        // iconOnly（默认）与一切认不出的值：只留图标，不设标题
+        assert_eq!(tray_badge_text("iconOnly", 3, 123_456), None);
+        assert_eq!(tray_badge_text("", 3, 123_456), None);
+        assert_eq!(tray_badge_text("whatever", 3, 123_456), None);
+
+        // activeCount：正在工作的 Agent 数
+        assert_eq!(tray_badge_text("activeCount", 2, 0), Some("⚡️ 2".to_string()));
+        assert_eq!(tray_badge_text("activeCount", 0, 0), Some("⚡️ 0".to_string()));
+
+        // tokenUsage：复用引擎那一套缩写，菜单栏上不该写 `120.00M`
+        assert_eq!(tray_badge_text("tokenUsage", 0, 120_000), Some("120.0k".to_string()));
+        assert_eq!(tray_badge_text("tokenUsage", 0, 2_500_000), Some("2.50M".to_string()));
+    }
+
+    /// 菜单栏那一格的长度不是小事：它会把旁边的菜单挤走。
+    ///
+    /// 范围**只取真实量级**：上界给到 1e12 而不是 `i64::MAX`。
+    /// 写用例时试过 `i64::MAX / 4`，`compact` 会给它 `2305843009.21B`（14 字符）——
+    /// 但那是 2.3×10^18 个 token，人和模型都造不出来。那种量级是**数据源异常**，
+    /// 该修的是数据源；为它写一套菜单栏专用的收窄逻辑，是拿复杂度换一个不存在的问题。
+    /// 这条断言的职责因此是「**真实量级下不许变长**」，不是「任何输入下都不许变长」。
+    #[test]
+    fn the_badge_never_gets_long_enough_to_push_the_menubar_around() {
+        for mode in ["iconOnly", "activeCount", "tokenUsage"] {
+            for tokens in [0i64, 999, 1_000, 120_000, 2_500_000, 999_999_999, 1_000_000_000_000] {
+                for active in [0usize, 1, 9, 99, 1_000] {
+                    if let Some(text) = tray_badge_text(mode, active, tokens) {
+                        assert!(
+                            text.chars().count() <= 12,
+                            "{mode} active={active} tokens={tokens} ⇒ 徽标过长：{text}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod hotkey_tests {
+    use super::{parse_hotkey, HOTKEY_ACCEL};
+
+    /// 热键组合键必须**真的能被插件解析**。
+    ///
+    /// 这条不是形式检查：`HOTKEY_ACCEL` 是一句字符串常量，写错一个字符
+    /// （比如 `CmdOrCtrl` 拼成 `CmdOrContorl`）编译照过、运行期才在
+    /// `setup` 里失败——而那时候应用已经起来了，用户只看到「按了没反应」。
+    #[test]
+    fn the_hotkey_accelerator_is_something_the_plugin_can_actually_parse() {
+        let shortcut = parse_hotkey().expect("热键组合键必须能解析");
+        // 解析结果里至少要有修饰键：裸字母键会把用户的整个输入法顶掉
+        assert!(
+            !shortcut.mods.is_empty(),
+            "{HOTKEY_ACCEL} 没有修饰键——那不是全局热键，是全局劫持"
+        );
+        // 主键的形状钉住：`I`。写成 Debug 全文比较，键一改就红
+        assert_eq!(format!("{:?}", shortcut.key), "KeyI", "{HOTKEY_ACCEL} 的主键应当是 I");
+    }
+
+    /// 组合键的**形状**要写进断言：改了它，用户肌肉记忆里的快捷键就变了，
+    /// 而这件事不该只在 CHANGELOG 里留一句。
+    #[test]
+    fn the_hotkey_shape_is_pinned_so_a_silent_change_cannot_happen() {
+        let shortcut = parse_hotkey().expect("热键组合键必须能解析");
+        assert!(
+            shortcut.mods.contains(tauri_plugin_global_shortcut::Modifiers::SHIFT),
+            "{HOTKEY_ACCEL} 应当带 Shift（与既有快捷键区分）"
+        );
+        let cmd_or_ctrl = tauri_plugin_global_shortcut::Modifiers::SUPER
+            | tauri_plugin_global_shortcut::Modifiers::CONTROL;
+        assert!(
+            shortcut.mods.intersects(cmd_or_ctrl),
+            "{HOTKEY_ACCEL} 应当带 Cmd 或 Ctrl"
+        );
+    }
 }

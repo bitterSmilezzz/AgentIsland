@@ -1,7 +1,7 @@
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
 import { isIsland } from './shell.js';
-import { getState, setState, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge } from './main.js';
+import { getState, setState, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge, applyLayout } from './main.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -178,8 +178,15 @@ export function renderSliver() {
     : edge === 'left' ? 'hit-left' : 'hit-right';
   const vertical = edge === 'left' || edge === 'right';
 
+  // 「收起时隐藏微细条」：不画那条可见的细条，但**保留热区**。
+  //
+  // 为什么保留：微细条是收起态唯一的唤回入口（`mouseenter` 即展开）。
+  // 连热区一起去掉的话，窗口会变成一块看不见也点不到的死区——
+  // 用户只能靠托盘或快捷键把它叫出来，而那两样在 macOS 侧还要用户自己知道。
+  // 所以「隐藏」隐藏的是**那 6pt 的视觉条**，不是交互面积。
+  const hidden = st.settings?.hide_docked_sliver === true;
   root.innerHTML = `
-    <div class="sliver ${vertical ? 'vertical' : ''} ${hitClass} ${working ? 'working' : ''} ${alert ? 'alert' : ''}" id="sliver">
+    <div class="sliver ${vertical ? 'vertical' : ''} ${hitClass} ${working ? 'working' : ''} ${alert ? 'alert' : ''}${hidden ? ' sliver-invisible' : ''}" id="sliver">
       <div class="sliver-capsule ${working || alert ? 'breathing' : ''}"></div>
     </div>`;
 
@@ -1214,7 +1221,8 @@ const SETTING_FIELDS = [
   { group: '界面与系统', items: [
     { key: 'compact_view', label: '紧凑视图', type: 'bool' },
     { key: 'hide_docked_sliver', label: '收起时隐藏微细条', type: 'bool' },
-    { key: 'global_hot_key_enabled', label: '全局热键', type: 'bool' },
+    { key: 'global_hot_key_enabled', label: '全局热键', type: 'bool',
+      hint: '快捷键 Cmd/Ctrl+Shift+I（展开 / 收起，与托盘同一个动作）' },
     { key: 'launch_at_login', label: '开机自启', type: 'bool' },
     { key: 'menu_bar_badge_mode', label: '菜单栏徽标', type: 'select',
       options: [['iconOnly', '仅图标'], ['activeCount', '活跃任务数'], ['tokenUsage', '今日 Token']] },
@@ -1295,8 +1303,28 @@ export function bindSettings() {
       try {
         await invoke('save_settings', { newSettings: st.settings });
         if (key === 'shell_mode') await invoke('set_shell_mode', { mode: String(value) });
-        if (key === 'appearance') applyAppearance(String(value));
-        if (key === 'dock_edge') applyEdge();
+        // 形态 / 外观 / 紧凑 / 微细条 / 贴边：五件都走同一条布局通道
+        if (key === 'appearance' || key === 'compact_view' || key === 'dock_edge') {
+          applyLayout();
+        }
+        if (key === 'hide_docked_sliver' && isIsland()) renderSliver();
+        // 开机自启：设置项已存，**系统注册**另走一条命令。
+        // 两者的结果可能不一致（系统拒绝了、写权限没了），所以以命令的返回为准回写，
+        // 不让界面上留一个「显示已开、其实没开」的开关。
+        if (key === 'launch_at_login') {
+          const actual = await invoke('set_launch_at_login', { enabled: !!value })
+            .catch((e) => { el.closest('.sb-set')?.appendChild(notice(`系统拒绝：${e}`)); return null; });
+          if (actual === null) return;
+          el.checked = actual;
+          if (!actual && value) {
+            el.closest('.sb-set')?.appendChild(notice('系统没有注册开机自启，开机时不会自动运行'));
+          }
+        }
+        // 全局热键：注册由后端每 5 秒对齐一次，这里只需把组合键写在页面上，
+        // 让用户知道按哪组键——**而不是**让用户自己猜。
+        if (key === 'global_hot_key_enabled' && el.checked) {
+          st.hotkeyAccel = st.hotkeyAccel ?? 'Cmd/Ctrl+Shift+I';
+        }
       } catch (error) {
         el.closest('.sb-set')?.appendChild(notice(`保存失败：${error}`));
       }
