@@ -4,6 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AgentIsland</title>
+  <script>
+    // 形态类必须在**第一次绘制之前**挂到 <html> 上。
+    //
+    // 两个窗口加载同一个 index.html（URL 上带 ?shell=island / ?shell=sidebar），
+    // 而「灵动岛专属样式」是按 `html.shell-island` 收拢的——等 main.js（module，异步执行）
+    // 再挂这个类，中间就会有一次完全没有样式的绘制：一个透明窗口先闪一下无样式内容。
+    //
+    // 出错时回落到 island：那正是 Rust 侧的默认值，所以这条失败路径的行为
+    // 与「没有这段脚本」完全一样，不会把谁弄成打不开界面。
+    try {
+      var shell = new URLSearchParams(location.search).get('shell');
+      document.documentElement.className = shell === 'sidebar' ? 'shell-sidebar' : 'shell-island';
+    } catch (error) {
+      document.documentElement.className = 'shell-island';
+    }
+  </script>
   <link rel="stylesheet" href="css/tokens.css" />
   <link rel="stylesheet" href="css/island.css" />
   <!-- 侧边栏形态专属样式：只在 .shell-sidebar 下生效（同一个 index.html 两个窗口各长各的） -->

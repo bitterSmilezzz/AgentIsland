@@ -157,7 +157,11 @@ async function boot() {
   // 形态分派：两个窗口加载同一个 index.html，靠 URL 上的 `?shell=` 分辨自己是谁。
   // 侧边栏分支**不再做灵动岛那套事**（细条几何、贴边放置、展开收起、失焦防抖）——
   // 那些只为「浮在屏幕边沿的一小块」而存在。
-  document.documentElement.classList.add(`shell-${SHELL}`);
+  // 形态类由 index.html 的内联脚本在第一次绘制前挂好；这里只把它写进日志——
+  // 「收拢的样式到底生效了没有」取决于这个类，而它是运行时事实，值得留一行证据。
+  invoke('log_from_ui', {
+    message: `shell=${document.documentElement.className || '(未设置)'}`,
+  }).catch(() => {});
 
   const { listen } = await import('./tauri.js');
   if (isSidebar()) {

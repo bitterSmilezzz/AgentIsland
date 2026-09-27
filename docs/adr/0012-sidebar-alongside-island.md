@@ -65,9 +65,13 @@ AgentIsland 的界面一直只有一种形态：贴在屏幕边沿的一块浮�
 
 ## 后果
 
-- **两套几何与样式**：`island.css` 的专属部分（notch / sliver / edge-top）只在灵动岛壳下生效，
-  侧边栏的样式全部挂在 `.shell-sidebar` 下（由 `js/shell.js` 按窗口 URL 上的 `?shell=` 挂上）。
-  两条壳不共用根容器，避免样式串味。
+- **两套几何与样式，靠两道不同的墙隔开**：
+  ① **元素级规则**（`html` / `body` / `#root` / `#root.edge-*`）收在 `html.shell-island` 下——
+     它们是真正会漏的那一类（`#root { display: flex }` 漏进侧边栏，会把整列缩成内容宽）；
+  ② **类级规则**靠命名空间：侧边栏一律 `sb-*`，灵动岛用 `.card` / `.row` / `.sliver` 一类，两边不重名。
+  形态类由 `index.html` 的**内联脚本在样式表之前**挂到 `<html>` 上（取不到就回落 `island`，
+  与默认值一致，所以失败路径的行为与没有这段脚本一样）；`js/shell.js` 只负责读它。
+  这三条都由哨兵 `the_two_shells_styles_cannot_bleed_into_each_other` 守着，各自做过反证。
 - **显示内容共用一份模型**：一行 Agent「显示什么、怎么措辞、什么颜色、没读到时写什么」
   只有一处（`agentRowModel`），两种形态各自排版。**排版可以不同，说法必须相同**——
   字段与文案的分叉没有任何编译器会拦，只能靠哨兵

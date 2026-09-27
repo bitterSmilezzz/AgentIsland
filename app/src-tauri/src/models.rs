@@ -618,6 +618,119 @@ mod tests {
         }
     }
 
+    /// **两种形态的样式不许互相串味**——三条结构性事实，各自都做过反证。
+    ///
+    /// 为什么值得守：串味**不报错**，只是长得不对，而这个环境里看不到像素
+    /// （本机截图需要屏幕录制授权）。所以把「不串味」这件事拆成能静态核对的三条：
+    ///
+    /// 1. `sidebar.css` 的每条规则都挂在 `.shell-sidebar` 下 —— 侧边栏的样式不会漏到灵动岛；
+    /// 2. `island.css` 里针对 `html` / `body` / `#root` 的规则都挂在 `html.shell-island` 下
+    ///    —— 灵动岛的布局不会漏到侧边栏窗口（两个窗口加载同一个 index.html！）；
+    /// 3. 形态类在 `index.html` 的**样式表之前**由内联脚本挂上 —— 否则收拢的那批规则
+    ///    会在第一次绘制时还没生效（透明窗口先闪一下无样式内容）。
+    #[test]
+    fn the_two_shells_styles_cannot_bleed_into_each_other() {
+        let read = |name: &str| {
+            std::fs::read_to_string(format!(
+                "{}/../ui/{}",
+                env!("CARGO_MANIFEST_DIR"),
+                name
+            ))
+            .unwrap_or_else(|e| panic!("读不到 {name}：{e}"))
+        };
+        // 先把块注释整段去掉：注释里会出现 `*`、`{`、反引号这些字符，
+        // 不去掉的话「按 { 切选择器」会把注释当规则（我第一版就是这么被绊倒的）。
+        fn strip_css_comments(css: &str) -> String {
+            let mut out = String::with_capacity(css.len());
+            let mut rest = css;
+            while let Some(start) = rest.find("/*") {
+                out.push_str(&rest[..start]);
+                match rest[start..].find("*/") {
+                    Some(end) => rest = &rest[start + end + 2..],
+                    None => return out,
+                }
+            }
+            out.push_str(rest);
+            out
+        }
+        let island_css = strip_css_comments(&read("css/island.css"));
+        let sidebar_css = strip_css_comments(&read("css/sidebar.css"));
+        let html = read("index.html");
+
+        // ① sidebar.css：每条规则的每个选择器都要以 `.shell-sidebar` 开头
+        let mut sidebar_rules = 0;
+        for block in sidebar_css.split('}') {
+            let Some((selectors, _)) = block.split_once('{') else {
+                continue;
+            };
+            // 跳过注释行与 @media 之类的包裹
+            let selectors = selectors
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+                .trim()
+                .to_string();
+            if selectors.is_empty() || selectors.starts_with('@') {
+                continue;
+            }
+            for selector in selectors.split(',') {
+                let selector = selector.trim();
+                if selector.is_empty() {
+                    continue;
+                }
+                sidebar_rules += 1;
+                assert!(
+                    selector.starts_with(".shell-sidebar"),
+                    "sidebar.css 里有一条没收敛的规则会漏到灵动岛：{selector:?}"
+                );
+            }
+        }
+        assert!(sidebar_rules >= 15, "只解析出 {sidebar_rules} 条 sidebar 规则，解析八成坏了");
+
+        // ② island.css：元素级选择器必须挂在 html.shell-island 之下
+        let mut checked = 0;
+        for line in island_css.lines() {
+            let trimmed = line.trim();
+            if !trimmed.contains('{') {
+                continue;
+            }
+            let selector_list = trimmed.split('{').next().unwrap_or("").trim();
+            for selector in selector_list.split(',') {
+                let selector = selector.trim();
+                // `*` 的全清零是**两个形态都要**的，故意不收敛
+                if selector.is_empty() || selector.starts_with('*') {
+                    continue;
+                }
+                // 「元素级」= 选择器的第一段就是 html / body / #root（带不带类都算）
+                let element_level = selector.starts_with("html")
+                    || selector.starts_with("body")
+                    || selector.starts_with("#root");
+                if !element_level {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    selector.starts_with("html.shell-island"),
+                    "island.css 里这条会漏到侧边栏窗口：{selector:?}"
+                );
+            }
+        }
+        assert!(checked >= 6, "只检查了 {checked} 条元素级规则，解析八成坏了");
+
+        // ③ 形态类必须在样式表之前挂上（否则第一次绘制时收拢的规则还没生效）
+        let script_at = html
+            .find("document.documentElement.className")
+            .expect("index.html 里应当有挂形态类的内联脚本");
+        let first_link_at = html
+            .find("<link rel=\"stylesheet\"")
+            .expect("index.html 里应当有样式表");
+        assert!(
+            script_at < first_link_at,
+            "挂形态类的脚本排在样式表之后：收拢的规则会在第一次绘制时缺席"
+        );
+    }
+
     /// 两种形态必须**共用同一份显示模型**（`agentRowModel`）。
     ///
     /// 字段层面的分叉有上面那条哨兵拦（读了不存在的字段会红），但**文案与颜色的分叉没人拦**：

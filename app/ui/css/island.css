@@ -1,7 +1,14 @@
 /* 灵动岛窗口布局与玻璃卡样式 — 对齐 macOS 端视觉密度 */
 
+/* 全部清零：**两个形态都要**，所以这一条不收敛（侧边栏也依赖它） */
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
-html, body {
+
+/* 下面这些是**灵动岛专属**的：收在 `html.shell-island` 之下。
+   不收的话会串到侧边栏窗口——两个窗口加载的是同一个 index.html。
+   最要命的一条是 `#root { display: flex }`：侧边栏的 `.sb` 是它的 flex 子项，
+   于是整列会缩成内容宽（而不是铺满窗口）。这类失效不报错，只是长得不对。
+   形态类由 index.html 里的内联脚本在第一次绘制之前挂上（见那里的注释）。 */
+html.shell-island, html.shell-island body {
   width: 100%;
   height: 100%;
   background: transparent;
@@ -9,17 +16,17 @@ html, body {
   font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
 }
 
-#root {
+html.shell-island #root {
   position: fixed;
   inset: 0;
   display: flex;
 }
 
 /* 对齐方向由 JS 按贴边设置 */
-#root.edge-top    { align-items: flex-start; justify-content: center; }
-#root.edge-bottom { align-items: flex-end;   justify-content: center; }
-#root.edge-left   { align-items: center;     justify-content: flex-start; }
-#root.edge-right  { align-items: center;     justify-content: flex-end; }
+html.shell-island #root.edge-top    { align-items: flex-start; justify-content: center; }
+html.shell-island #root.edge-bottom { align-items: flex-end;   justify-content: center; }
+html.shell-island #root.edge-left   { align-items: center;     justify-content: flex-start; }
+html.shell-island #root.edge-right  { align-items: center;     justify-content: flex-end; }
 
 /* ============ 收起态微细条（DockedSliverCapsule） ============ */
 
