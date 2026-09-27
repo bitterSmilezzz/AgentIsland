@@ -182,14 +182,33 @@ Rust 的 [observability.rs](../../app/src-tauri/src/observability.rs) 现将五�
 `AgentSnapshot.observability`，前端对缺乏证据的在线待机给出诊断标签，并避免顶栏声称
 「全部 Agent 待机」。但这只是**保守的第一层**，不能视为与 Swift 等价：
 
-- Rust 尚无 `InstalledAppsCache`；进程不在时安装状态传 `None`，只确认离线，
-  **不会凭空给出 `notInstalled`**。该代码已有纯函数守护，生产采样暂不会产生。
+- Rust 尚无 ~~`InstalledAppsCache`~~ ✅ **v0.0.197 已补**（`installed.rs`，见上）。
+  进程不在时安装状态不再一律传 `None`：探测能判定就判定，判不了才给 `None`。
 - `blindSessionSource` 目前只证明已登记会话根目录的元数据/列举失败或路径不是目录；
   深层文件读取与解析失败仍可能被吞掉，尚无 Swift 的 `SessionProbeHealth` 原因链。
 - Rust 没有 `activeSessions`，暂以十分钟内有会话文件写入作活动证据。文件新鲜度
   与活跃会话不是同一个量；token 总量大于零也只能说明曾有用量。
 
-因此 M3 后续仍需补齐安装、探测健康和活跃会话来源，再做两端行为对照。
+因此 M3 后续仍需补齐探测健康和活跃会话来源，再做两端行为对照。
+
+**v0.0.197 结掉其中一条（安装判定），另两条仍在**：
+
+- ✅ **安装判定已接**。新增 [installed.rs](../../app/src-tauri/src/installed.rs)（对齐 Swift
+  `InstalledAppsCache`），快照带 `installed: Option<bool>`，引擎按 5 分钟 TTL 刷新。
+  为此给档案补了 `bundle_ids`（14 个内置档案逐条对齐 Swift 声明；`vscode` 为 Rust 独有档案）。
+  **关键口径**：`None` = 没核实，不是「没装」——档案登记了 bundle id 而这趟扫描没有否定能力时
+  （Windows 无应用包概念、`Info.plist` 是 binary plist）给 `None` 而非 `Some(false)`。
+  `notInstalled` 由此从「生产不可达」变成真结论。
+  **未做**：Windows/Linux 未做真机验收（本机只能验 macOS 路径）；`Info.plist` 只认 XML 形状。
+- ❌ **`SessionProbeHealth` 原因链仍缺**：`source_unreadable` 仍是 `bool`，
+  只覆盖元数据/列举失败与「路径不是目录」，深层文件读取与解析失败仍会被吞掉。
+  要迁它得先改 `session.rs` 的探测返回结构，不是加字段的量级。
+- ❌ **`activeSessions` 仍缺**：暂以十分钟内有会话文件写入作活动证据。
+  文件新鲜度与活跃会话不是同一个量；token 总量大于零也只能说明曾有用量。
+- ⚠️ **自报归因已对齐（v0.0.197）**：`Evidence` 带 `provenance`，自报写
+  「状态由带令牌、TTL 内的自报确认」、观测写「本轮读到了会话强语义（<态>）」，
+  与 Swift 逐字相同。此前 Rust 一律写「本轮有活动或任务状态信号」，
+  而那一拍的状态可能完全来自自报——等于拿别人的证据给自己的结论背书。
 
 同理，CPU 的**两态**口径（有值=测到，nil=没测，[Models.swift:415-418](../../Sources/AgentIslandCore/Models.swift#L415)）
 在 Rust 是 `Option<f64>` 且有 `None` 分支（[models.rs](../../app/src-tauri/src/models.rs)）——形式在，但

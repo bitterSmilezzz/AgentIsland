@@ -136,6 +136,13 @@ pub struct AgentProfile {
     pub glyph: String,
     pub emoji: String,
     pub process_names: Vec<String>,
+    /// 桌面应用的 bundle id（macOS/Linux 装在 `/Applications` 的那批）。
+    ///
+    /// **CLI 专用的档案这里是空数组**（`codex`、`aider`、`cline`…）——它们本来就不装应用包。
+    /// 这一列是装机探测（[`crate::installed`]）的一半证据：只看 `process_names` 去 PATH 里找，
+    /// GUI 类档案会永远显示「未安装」，而那不是事实，只是没证据。
+    #[serde(default)]
+    pub bundle_ids: Vec<String>,
     /// 命令行提示：进程名不在名单（如 npm 安装的 CLI 跑在 node.exe 里）时，
     /// 命令行包含提示词即算命中
     #[serde(default)]
@@ -185,6 +192,10 @@ pub struct AgentSnapshot {
     /// 100 分制健康度报告（[`crate::health::evaluate`]，对齐 Swift `AgentHealthEvaluator`）
     pub health: crate::health::Report,
     pub process_running: bool,
+    /// 装机探测的结论。`None` = 没核实（缓存未热、GUI 档案缺否定证据），
+    /// **不是「没装」**——见 [`crate::installed::InstalledApps::is_installed`]。
+    /// 「离线」是关于进程的结论，「未安装」才是关于装没装的结论，两者不能互相顶替。
+    pub installed: Option<bool>,
     pub cpu_percent: Option<f64>,
     /// 任务效能统计（过去 24 小时；[`crate::duration::TaskDurationTracker`]）。
     /// 排版文本也在里面，界面不必再拼一遍
@@ -439,6 +450,7 @@ mod tests {
             is_hung: Some(true),
             health: crate::health::Report::not_running(),
             process_running: true,
+            installed: None,
             work_stats: crate::duration::Stats::empty(),
             provenance: None,
             provenance_suffix: String::new(),

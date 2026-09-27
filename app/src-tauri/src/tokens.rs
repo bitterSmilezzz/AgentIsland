@@ -955,6 +955,7 @@ mod tests {
 
     fn one_root_profile(id: &str, root: &str) -> crate::models::AgentProfile {
         crate::models::AgentProfile {
+            bundle_ids: vec![],
             id: id.into(),
             name: "Fixture".into(),
             glyph: String::new(),
@@ -1295,6 +1296,7 @@ mod tests {
             now_ms()
         )]);
         let profile = crate::models::AgentProfile {
+            bundle_ids: vec![],
             id: "fixture".into(),
             name: "Fixture".into(),
             glyph: String::new(),
@@ -1339,6 +1341,7 @@ mod tests {
         std::fs::write(dir.join("session.jsonl"), format!("{}\n", claude_line("claude-3-7-sonnet")))
             .unwrap();
         let profile = crate::models::AgentProfile {
+            bundle_ids: vec![],
             id: "jsonl-fixture".into(),
             name: "J".into(),
             glyph: String::new(),
@@ -1368,6 +1371,7 @@ mod tests {
         let path = temp_db("status.db");
         seed(&path, &["CREATE TABLE tasks (id TEXT, task_status TEXT, updated_at TEXT)"]);
         let profile = crate::models::AgentProfile {
+            bundle_ids: vec![],
             id: "zcode-fixture".into(),
             name: "Z".into(),
             glyph: String::new(),
@@ -1439,6 +1443,7 @@ mod range_tests {
         let now = real_now;
 
         let profile = AgentProfile {
+            bundle_ids: vec![],
             id: "fixture".into(),
             name: "Fixture".into(),
             glyph: String::new(),
@@ -1478,6 +1483,7 @@ mod range_tests {
     #[test]
     fn a_profile_without_readable_roots_reports_zero_instead_of_panicking() {
         let profile = AgentProfile {
+            bundle_ids: vec![],
             id: "empty".into(),
             name: "Empty".into(),
             glyph: String::new(),

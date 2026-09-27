@@ -20,11 +20,11 @@ pub enum Code {
 pub struct Verdict {
     pub code: Code,
     pub summary: &'static str,
-    pub evidence: Vec<&'static str>,
+    pub evidence: Vec<String>,
 }
 
 impl Verdict {
-    fn new(code: Code, evidence: &'static str) -> Self {
+    fn new(code: Code, evidence: impl Into<String>) -> Self {
         let summary = match code {
             Code::Observed => "结论可信",
             Code::BlindSessionSource => "待机不可信：会话源读不到",
@@ -35,7 +35,7 @@ impl Verdict {
         Self {
             code,
             summary,
-            evidence: vec![evidence],
+            evidence: vec![evidence.into()],
         }
     }
 }
@@ -46,6 +46,9 @@ pub struct Evidence {
     pub process_running: bool,
     /// `None` means installation was not checked; it must not imply absence.
     pub installed: Option<bool>,
+    /// 这一拍的状态是谁说的。与 [`crate::selfreport::Provenance`] 同枚举——
+    /// 自报不是会话强语义，把它写成「本轮有活动信号」等于拿别人的证据给自己的结论背书。
+    pub provenance: Option<crate::selfreport::Provenance>,
     pub source_unreadable: bool,
     pub has_local_detail_source: bool,
     pub recent_session_write: bool,
@@ -55,7 +58,7 @@ pub struct Evidence {
 pub fn evaluate(e: Evidence) -> Verdict {
     if !e.process_running {
         return if e.installed == Some(false) {
-            Verdict::new(Code::NotInstalled, "安装探测与进程表均未发现该智能体")
+            Verdict::new(Code::NotInstalled, "PATH 与 /Applications 均未发现该智能体")
         } else {
             Verdict::new(
                 Code::Observed,
@@ -63,12 +66,20 @@ pub fn evaluate(e: Evidence) -> Verdict {
             )
         };
     }
-    // Same precedence as Swift: non-idle activity has direct work evidence.
+    // Same precedence as Swift: non-idle activity has direct work evidence —
+    // **but say who said it**. 自报与观测是两种来路，把前者写成后者就是伪造出处。
     if matches!(
         e.level,
         ActivityLevel::Attention | ActivityLevel::Completed | ActivityLevel::Working
     ) {
-        return Verdict::new(Code::Observed, "本轮有活动或任务状态信号");
+        return if e.provenance == Some(crate::selfreport::Provenance::SelfReported) {
+            Verdict::new(Code::Observed, "状态由带令牌、TTL 内的自报确认")
+        } else {
+            Verdict::new(
+                Code::Observed,
+                format!("本轮读到了会话强语义（{}）", e.level.label()),
+            )
+        };
     }
     if e.source_unreadable {
         return Verdict::new(
@@ -140,6 +151,7 @@ mod tests {
             level: ActivityLevel::Idle,
             process_running: true,
             installed: None,
+            provenance: None,
             source_unreadable: false,
             has_local_detail_source: true,
             recent_session_write: false,
@@ -176,8 +188,46 @@ mod tests {
     }
 
     #[test]
-    fn outbound_codes_and_evidence_are_stable() {
-        let verdict = evaluate(input());
+    fn a_self_report_is_credited_to_the_self_report_not_to_observation() {
+        // 防的症状：`selfreport` 落地之后，这一拍的状态其实来自带令牌的自报，
+        // 而证据却写「本轮读到了会话强语义」——那是拿别人的证据给自己的结论背书。
+        let mut e = input();
+        e.level = ActivityLevel::Working;
+        e.provenance = Some(crate::selfreport::Provenance::SelfReported);
+        let verdict = evaluate(e);
+        assert_eq!(verdict.code, Code::Observed);
+        assert_eq!(verdict.evidence, vec!["状态由带令牌、TTL 内的自报确认"]);
+
+        e.provenance = Some(crate::selfreport::Provenance::Observed);
+        assert_eq!(
+            evaluate(e).evidence,
+            vec!["本轮读到了会话强语义（工作中）"],
+            "有会话信号时依据要写明是哪一态"
+        );
+    }
+
+    #[test]
+    fn not_installed_needs_a_proven_absence_not_merely_an_unrunning_process() {
+        // 进程不在只说明「离线」；要宣布「未安装」必须有装机的否定证据。
+        let mut e = input();
+        e.level = ActivityLevel::Offline;
+        e.process_running = false;
+        e.installed = None;
+        assert_eq!(
+            evaluate(e).code,
+            Code::Observed,
+            "未核实安装状态时不能宣布未安装"
+        );
+        e.installed = Some(true);
+        assert_eq!(evaluate(e).code, Code::Observed);
+        e.installed = Some(false);
+        let verdict = evaluate(e);
+        assert_eq!(verdict.code, Code::NotInstalled);
+        assert_eq!(verdict.summary, "未安装：不该期待状态");
+    }
+
+    #[test]
+    fn outbound_codes_and_evidence_are_stable() {        let verdict = evaluate(input());
         let json = serde_json::to_value(verdict).unwrap();
         assert_eq!(json["code"], "noLocalData");
         assert_eq!(json["summary"], "无本地明细：读不到会话与用量");
@@ -198,6 +248,7 @@ mod tests {
             glyph: String::new(),
             emoji: String::new(),
             process_names: vec![],
+            bundle_ids: vec![],
             cmdline_hints: vec![],
             path_excludes: vec![],
             cpu_floor: None,

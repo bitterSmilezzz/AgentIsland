@@ -154,6 +154,7 @@ mod tests {
             is_hung,
             health: crate::health::Report::not_running(),
             process_running: running,
+            installed: None,
             work_stats: crate::duration::Stats::empty(),
             provenance: None,
             provenance_suffix: String::new(),

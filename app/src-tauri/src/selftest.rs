@@ -403,6 +403,66 @@ pub fn run() -> Report {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // 装机探测：「没核实」不得降级成「没装」。
+    // 扫描器在这里注入，断言不依赖这台机器装了什么——否则「这台机器刚好没装 X」
+    // 就会让自检在别人的机器上红掉，而红的原因与这个包无关。
+    {
+        use crate::installed::{BundleScanResult, InstalledApps};
+        use std::sync::Arc;
+
+        let blind = |ids: &[&str]| {
+            let ids: std::collections::HashSet<String> =
+                ids.iter().map(|s| (*s).into()).collect();
+            Arc::new(move || BundleScanResult {
+                ids: ids.clone(),
+                // GUI 档案在没有应用包证据的平台上永远拿不到否定结论
+                can_prove_absence: false,
+            })
+        };
+        let cli = |names: &[&str]| {
+            let names: std::collections::HashSet<String> =
+                names.iter().map(|s| (*s).into()).collect();
+            Arc::new(move |_wanted: &[String]| names.clone())
+        };
+
+        let mut cold = InstalledApps::with_scanners(vec!["codex".into()], cli(&[]), blind(&[]));
+        let profile = |id: &str, process: &str, bundle: &str| AgentProfile {
+            id: id.into(),
+            name: id.into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            process_names: vec![process.into()],
+            bundle_ids: vec![bundle.into()],
+            cmdline_hints: vec![],
+            path_excludes: vec![],
+            cpu_floor: None,
+            session_dirs: vec![],
+            token_roots: vec![],
+            session_database: None,
+            category: "assistant".into(),
+        };
+        let cold_state = cold.is_installed(&profile("codex", "codex", "com.openai.codex"));
+
+        cold = InstalledApps::with_scanners(
+            vec!["codex".into()],
+            cli(&["codex"]),
+            blind(&["com.openai.codex"]),
+        );
+        cold.refresh();
+        let warm_state = cold.is_installed(&profile("codex", "codex", "com.openai.codex"));
+
+        let mut unknown_gui =
+            InstalledApps::with_scanners(vec!["code".into()], cli(&[]), blind(&[]));
+        unknown_gui.refresh();
+        let gui = unknown_gui.is_installed(&profile("vscode", "Code", "com.microsoft.VSCode"));
+
+        runner.check(
+            "装机探测：缓存未热给「未核实」、命中才给「已安装」、缺应用包证据不判「未安装」",
+            cold_state == None && warm_state == Some(true) && gui == None,
+            Some(format!("cold={cold_state:?} warm={warm_state:?} gui={gui:?}")),
+        );
+    }
+
     runner.finish()
 }
 

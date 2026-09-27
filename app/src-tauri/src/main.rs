@@ -11,6 +11,7 @@ mod todos;
 mod engine;
 mod filemon;
 mod health;
+mod installed;
 mod models;
 mod notifier;
 mod observability;

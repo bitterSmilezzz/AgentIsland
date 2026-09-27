@@ -389,6 +389,7 @@ mod session_tests {
 
     fn snapshot_with_pid(id: &str, pid: Option<u32>) -> AgentSnapshot {
         let profile = AgentProfile {
+            bundle_ids: vec![],
             id: id.into(),
             name: "Fixture".into(),
             glyph: String::new(),
@@ -404,6 +405,7 @@ mod session_tests {
         };
         let level = ActivityLevel::Idle;
         AgentSnapshot {
+            installed: None,
             id: profile.id.clone(),
             name: profile.name.clone(),
             glyph: String::new(),

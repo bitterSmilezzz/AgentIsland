@@ -1,4 +1,5 @@
 use crate::filemon::{time_ago_text, FileMonitor};
+use crate::installed::{self, InstalledApps};
 use crate::models::*;
 use crate::observability::{self, Evidence};
 use crate::health;
@@ -27,6 +28,9 @@ pub struct ActivityEngine {
     profiles: Vec<AgentProfile>,
     procmon: ProcessMonitor,
     filemon: FileMonitor,
+    /// 装机探测（Swift `InstalledAppsCache`）：TTL 缓存，未热时一律「未核实」。
+    /// 「没核实」不能降级成「没装」——那会给用户一批凭空来的结论。
+    installed: InstalledApps,
     tokens: TokenUsageMonitor,
     /// Last real work evidence, never refreshed by a hysteresis-only sample.
     last_work_signal_at: HashMap<String, i64>,
@@ -69,12 +73,15 @@ pub struct ActivityEngine {
 
 impl ActivityEngine {
     pub fn new(settings: Settings, event_rx: Receiver<AgentTaskEvent>) -> Self {
+        let profiles = crate::registry::builtin();
+        let installed = InstalledApps::new(InstalledApps::cli_names_for(&profiles));
         ActivityEngine {
             settings,
             demo_mode: false,
-            profiles: crate::registry::builtin(),
+            profiles,
             procmon: ProcessMonitor::new(),
             filemon: FileMonitor::new(),
+            installed,
             tokens: TokenUsageMonitor::new(),
             last_work_signal_at: HashMap::new(),
             work_started_at: HashMap::new(),
@@ -122,6 +129,11 @@ impl ActivityEngine {
 
         self.procmon.refresh();
         let now = now_ms();
+
+        // 装机探测按 TTL 刷（默认 5 分钟）：`/Applications` 枚举 + 逐个读 Info.plist
+        // 在应用多时要几十毫秒，不该每拍都做。未热时全部档案的 `installed` 是 `None`，
+        // 也就是「未核实」——这正是我们要的默认：宁可先不给结论。
+        self.installed.refresh_if_needed(installed::DEFAULT_MAX_AGE);
 
         // 自报到期：**只盖戳，不删记录**，且放在采样里而不是另开定时器——
         // 到期与否只取决于墙钟，而采样每拍本来就在读同一个 `now`（Swift 同一条理由）
@@ -175,10 +187,12 @@ impl ActivityEngine {
                 crate::selfreport::resolve(level, has_session_signal, report.as_ref());
 
             let token_usage = self.token_usage_cached(&profile);
+            let installed_state = self.installed.is_installed(&profile);
             let observability = observability::evaluate(Evidence {
                 level,
                 process_running,
-                installed: process_running.then_some(true),
+                installed: installed_state,
+                provenance,
                 source_unreadable: process_running
                     && level == ActivityLevel::Idle
                     && observability::has_unreadable_source(&profile),
@@ -228,6 +242,7 @@ impl ActivityEngine {
                 // 用 not_running() 占位只是为了满足结构体字面量，紧接着就被覆盖
                 health: health::Report::not_running(),
                 process_running,
+                installed: installed_state,
                 cpu_percent: cpu,
                 work_stats,
                 memory_bytes: memory,
@@ -748,6 +763,7 @@ impl ActivityEngine {
             glyph: glyph.into(),
             emoji: emoji.into(),
             process_names: vec!["demo".into()],
+            bundle_ids: vec![],
             cmdline_hints: vec![],
             path_excludes: vec![],
             cpu_floor: None,
@@ -778,6 +794,7 @@ impl ActivityEngine {
                     level,
                     process_running: true,
                     installed: Some(true),
+                    provenance: None,
                     source_unreadable: false,
                     has_local_detail_source: true,
                     recent_session_write: true,
@@ -787,6 +804,7 @@ impl ActivityEngine {
                 is_hung: None,
                 health: health::Report::not_running(),
                 process_running: true,
+                installed: Some(true),
                 work_stats: crate::duration::Stats::empty(),
                 provenance: None,
                 provenance_suffix: String::new(),

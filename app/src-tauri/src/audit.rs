@@ -203,7 +203,7 @@ pub fn generate_markdown(
                 .observability
                 .evidence
                 .first()
-                .copied()
+                .map(String::as_str)
                 .unwrap_or(s.observability.summary);
             format!("- **{}**：{why}", cell(&s.name))
         })
@@ -303,7 +303,7 @@ pub fn generate_csv(snapshots: &[AgentSnapshot], now_ms: i64) -> String {
             usage.map(|u| u.tokens_total.to_string()).unwrap_or_default(),
             usage.map(|u| format!("{:.4}", u.cost_total)).unwrap_or_default(),
             escape_csv(verdict.code.as_str()),
-            escape_csv(verdict.evidence.first().copied().unwrap_or("")),
+            escape_csv(verdict.evidence.first().map_or("", String::as_str)),
         ];
         csv.push_str(&row.join(","));
         csv.push('\n');
@@ -338,6 +338,7 @@ mod tests {
 
     fn snapshot(name: &str, level: ActivityLevel) -> AgentSnapshot {
         AgentSnapshot {
+            installed: None,
             id: name.to_lowercase(),
             name: name.to_string(),
             glyph: String::new(),
@@ -347,7 +348,7 @@ mod tests {
             observability: crate::observability::Verdict {
                 code: Code::Observed,
                 summary: "有本机证据",
-                evidence: vec!["采样到了进程"],
+                evidence: vec!["采样到了进程".into()],
             },
             is_hung: Some(false),
             health: crate::health::Report {
@@ -512,7 +513,7 @@ mod tests {
         blind.observability = crate::observability::Verdict {
             code: Code::BlindSessionSource,
             summary: "会话源读不到",
-            evidence: vec!["session_dirs 存在但当前用户不可读"],
+            evidence: vec!["session_dirs 存在但当前用户不可读".into()],
         };
         let md = generate_markdown(&[blind], &[], None, 1_700_000_000_000);
         assert!(md.contains("### 会话源不可读"), "{md}");
