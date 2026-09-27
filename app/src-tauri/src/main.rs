@@ -16,6 +16,7 @@ mod models;
 mod notifier;
 mod observability;
 mod placement;
+mod power;
 mod procmon;
 mod provider;
 mod registry;
@@ -558,9 +559,10 @@ fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
         &settings.remote_policy,
         has_secret,
         crate::remote::Now::at(now),
-        // Rust 还没接 macOS 的在场信号层（锁屏 / 显示器睡眠 / 无输入时长）：
-        // 传 unavailable ⇒ 按 fail-open 判成「人不在」，依据写在 awayReason 里
-        &crate::remote::PresenceSignals::unavailable(),
+        // 在场信号：锁屏 / 显示器睡眠 / 无输入时长（`power::presence_signals` 采集）。
+        // 「只在人不在时发」靠的其实是第三条——远程桌面连着 Mac 时
+        // 会话既不锁屏也不熄屏，只有无输入这条管用。
+        &power::presence_signals(),
     );
     // 节流状态在 notifier 里，不在判定层：这里补上
     snapshot.throttled = engine.notifier.throttle_keys();
@@ -920,10 +922,21 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
             // 全闲置走**独立字段**（Swift `idleSampleInterval`，默认 5s）。
             // 此前这里写死 `sample_interval × 2.5`——那是另一个公式，
             // 于是两侧的耗电量与「岛多久变灰」对不上。
+            // 节电降频（Swift `BatterySaver` 同口径）：**只拉长闲置那一档**——
+            // 有活动时降频等于直接漏掉工作态，那是拿正确性换电量
             let interval = if active {
                 e.settings.sample_interval
             } else {
-                e.settings.idle_sample_interval.clamp(0.5, 600.0)
+                let base = e.settings.idle_sample_interval.clamp(0.5, 600.0);
+                if power::should_throttle(
+                    e.settings.battery_saver_enabled,
+                    power::is_low_power_mode(),
+                    power::is_on_battery(),
+                ) {
+                    base * power::BATTERY_THROTTLE_FACTOR
+                } else {
+                    base
+                }
             };
             (s, interval)
         };

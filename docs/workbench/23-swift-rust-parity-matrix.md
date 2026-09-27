@@ -278,7 +278,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | 通知策略 | `notificationPolicy`（standard/focus/silent，:414-418） | `notification_policy` | ✅ 值域同 | |
 | 完成提示音 | `playCompletionSound` + `completionSoundOption`(Glass/Pop/Ping/Blow/mute) + `alertSoundOption`(Sosumi/…) | `play_completion_sound`（bool） | ⚠️ 开关已有，**音色选择仍无** |
 | 每日 token 预算 | `dailyTokenBudget` + `budgetAlertEnabled`（:43-44，区间 0...10 亿） | **无字段** | ❌ | |
-| 电池/节电 | `batterySaverEnabled`(true) + `PowerSourceMonitor` | `battery_saver_enabled`(true) | ❌ **字段有了、行为没有**——电源状态探测（电池/插电）未接，这个开关**目前不改变任何行为** | |
+| 电池/节电 | `batterySaverEnabled`(true) + `PowerSourceMonitor` | `battery_saver_enabled`(true) + `power.rs`（`pmset` 探测 + 同规则纯函数） | ✅ **v0.0.203 起一致**（三档降频先落一档：分档收益本机测不到，多一档就多一处可配错的数） | |
 | 异常告警开关 | `autoAnomaliesAlertEnabled`（默认 `true`；只关告警，**不影响** `isHung` 与健康度） | `auto_anomalies_alert`（默认 `true`，v0.0.172 补齐） | ✅ 默认值与语义同（关掉不影响采集） |
 | 启动登录 / 全局热键 / 菜单栏徽标 / 屏幕跟随 / 紧凑视图 / 隐藏停靠条 | `launchAtLogin` `globalHotKeyEnabled` `menuBarBadgeMode` `screenFollowMode` `compactView` `hideDockedSliver` | 六个字段 + 控件 + **引擎消费** | ✅ **v0.0.202 起一致**。开机自启与全局热键用 Tauri 官方插件（为此把 `rust-version` 从 1.77 抬到 1.90——那条声明早已不成立，它挡住插件的代价到这一版才兑现） | ❌ `knownAgents`（新 agent 提示）仍无 |
 | 远程通知通道 | `remote.notify.policy.v1` / `kind.v1` / `channel.<kind>.v1` 三个 UserDefaults 键（明文，非密钥）+ 钥匙串（密钥） | `remote_kind` / `remote_policy` / `remote_channels`（v0.0.174；按 ADR 0011 与其余设置同放 settings.json，**只存非密钥字段**）+ `remote_status` 命令 | ✅ **v0.0.180 起两侧都用钥匙串**（同 service `com.agentisland.remote`、同条目名 `remote.<kind>`，老用户存过的密钥直接可用）。`remote_status` 现在查**真存在性**；写入/删除接成两条命令 `remote_secret_set` / `remote_secret_delete`（刻意**没有**读回密钥的命令：界面只要「存过没有」与掩码） |
