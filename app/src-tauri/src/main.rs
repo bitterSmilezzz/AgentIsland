@@ -1173,6 +1173,17 @@ fn main() {
     log_line("=== boot ===");
 
     tauri::Builder::default()
+        // **页面加载完成时记一笔。**
+        //
+        // 这条钩子的用途很具体：界面是一个 webview，而「webview 里到底发生了什么」
+        // 此前**没有任何 Rust 侧证据**——`[webview]` 日志是 JS 自己写的，
+        // JS 不跑它就必然是空的，于是「没日志」无法区分「页面没加载」与
+        // 「加载了但脚本没执行」。这条钩子把两件事分开：
+        // 它响了 ⇒ 页面确实加载了；它不响 ⇒ 资源或路径有问题。
+        .on_page_load(|webview, payload| {
+            let label = webview.label();
+            crate::log_line(&format!("[page] {label} 加载完成 url={}", payload.url()));
+        })
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -1288,6 +1299,29 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            // **启动痕迹：把真实建出来的窗口逐个记下来。**
+            //
+            // 为什么加这条：v0.0.230 之前，Rust 端「界面不回调」这件事只能从
+            // 「没有 [webview] 日志」反推——而那条日志**本来就是 webview 写的**，
+            // webview 不跑 ⇒ 它必然是空的 ⇒ 这条证据无法自证。
+            // 从 Rust 侧记一份「我建了哪些窗口」，至少能把「窗口没建出来」
+            // 与「窗口建了但里面没跑 JS」分开。
+            let labels: Vec<String> = app
+                .webview_windows()
+                .keys()
+                .cloned()
+                .collect();
+            log_line(&format!("[boot] 建出的窗口：{labels:?}"));
+            for label in &labels {
+                if let Some(w) = app.get_webview_window(label) {
+                    log_line(&format!(
+                        "[boot] {label} url={:?} visible={}",
+                        w.url(),
+                        w.is_visible().unwrap_or(false)
+                    ));
+                }
+            }
 
             // 初始贴边放置
             let win = app.get_webview_window("island").unwrap();
