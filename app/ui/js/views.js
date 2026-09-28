@@ -779,6 +779,15 @@ export async function hydrateReport() {
 //
 // 所以这一页只做一件事：**给出容器**。内容全部由 `hydrateProvider` →
 // `renderProviderPage` 填，措辞与字段名都在那边一处（哨兵盯着字段名）。
+//
+// ⚠️ **这个函数头在 v0.0.200 那次提交里被误删过，潜伏到 v0.0.229 才找回来。**
+// 后果不是「档位页少一块」，而是**整个模块解析失败**：函数体剩下一个顶层
+// `return`，而顶层 `return` 在 ES 模块里是语法错误 ⇒ `views.js` 整个加载不了
+// ⇒ 灵动岛 / 侧边栏 / 工作台**三个形态全是空白**。连续 29 个版本。
+// 它能潜伏这么久，是因为一直用 `node --check app/ui/js/views.js` 验语法——
+// **那是按「脚本」解析的**，而模块是严格模式，两者判定不同（脚本模式不报
+// 「顶层 return」）。正确做法是按 `.mjs` 交给 `node --check` 或直接 `import()`；
+// 那条检查现在是 `ui_symbol_sentinel::every_ui_js_file_parses_as_a_module`。
 // MARK: 报告面板（工作台）
 //
 // 报告**只读不改**：`report` 命令已经能生成 md / csv，而报告是拿去对账的东西，
@@ -916,6 +925,7 @@ function bindReportPanel() {
     } catch (error) {
       box.textContent = `复制失败（${error}）：内容仍在下面，手动选中即可。\n${box.textContent}`;
     }
+  });
 }
 
 /**
@@ -1535,12 +1545,6 @@ export function pageSettingsHeaderLabel() {
   return '高级设置';
 }
 
-
-  return `
-    <div class="sb-page" data-provider-root>
-      <div class="sb-empty">加载中…</div>
-    </div>`;
-}
 
 /// 填档位页。三个数据源各自独立取，**任何一项失败都明说失败**，不静默留空：
 /// 「读不到」与「没有档位」在界面上是两件事，混起来用户会以为自己的配置丢了。

@@ -959,11 +959,26 @@ struct TokenReportPub {
     inner: models::TokenReport,
 }
 
+/// 写一行诊断日志。**打开失败要自报，不能吞掉**。
+///
+/// 此前是 `if let Ok(mut f) = …open(&path)`，失败时什么都不发生——于是
+/// 「打包后的 App 日志一行都没有」这件事本身查不出来：没有日志就没有线索，
+/// 没有线索就只能猜是不是代码没跑到。v0.0.222 我为「工作台为什么没动静」
+/// 卡了很久，根因就在这里：**通道坏了，而它坏得毫无声响**。
+///
+/// 写不出去时退回 stderr：GUI 应用的 stdout 通常没人看，但**总比静默好**——
+/// 从终端 `open` 出来的那一次就能看见。
 fn log_line(msg: &str) {
     let path = std::env::temp_dir().join("agentisland-tauri.log");
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{}", msg);
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => {
+            let _ = writeln!(f, "{}", msg);
+        }
+        Err(error) => {
+            eprintln!("[log] 写不进 {}：{error}", path.display());
+            eprintln!("[log] {msg}");
+        }
     }
 }
 
@@ -1721,6 +1736,80 @@ mod ui_symbol_sentinel {
             missing.is_empty(),
             "UI 调了不存在的命令——运行时只会拿到一个被 catch 吞掉的 null，界面表现为「这块空着」：\n{}",
             missing.join("\n")
+        );
+    }
+
+    /// **每个 UI 的 `.js` 都必须能按 ES 模块解析。**
+    ///
+    /// 这条守护是被一个**已经发布 29 个版本**的 bug 逼出来的：
+    /// v0.0.200 那次提交误删了 `views.js` 里 `pageProvider()` 的**函数头**，
+    /// 函数体剩下一个顶层 `return`——而顶层 `return` 在 ES 模块里是语法错误，
+    /// 于是 `views.js` 整个加载不了，**灵动岛 / 侧边栏 / 工作台三个形态全是空白**。
+    ///
+    /// **它潜伏 29 个版本的唯一原因**：一直用 `node --check app/ui/js/views.js`
+    /// 验语法，而那是按**脚本**解析的——脚本模式不报「顶层 return」，
+    /// 所以它一路绿灯。模块是**严格模式**，两者判定不同。
+    ///
+    /// 正确做法：把文件按 `.mjs` 交给 `node --check`（或直接 `import()`）。
+    /// 本用例就是那么做的：`node --check <临时 .mjs>`，非 0 即红。
+    #[test]
+    fn every_ui_js_file_parses_as_an_es_module() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/js");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("应当读得到 app/ui/js")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "一个 ui/js/*.js 都没找到——检查本身失效了");
+
+        let mut broken = Vec::new();
+        for path in &files {
+            // **必须换成 `.mjs`**：Node 按扩展名决定解析模式，
+            // 保持 `.js` 就退回脚本模式，而脚本模式恰好不报这一类错误。
+            let tmp = std::env::temp_dir().join(format!(
+                "agentisland-parse-{}-{:p}.mjs",
+                path.file_name().unwrap().to_string_lossy(),
+                path
+            ));
+            if std::fs::copy(path, &tmp).is_err() {
+                broken.push(format!("{}: 复制到临时文件失败", path.display()));
+                continue;
+            }
+            let output = std::process::Command::new("node")
+                .arg("--check")
+                .arg(&tmp)
+                .output();
+            let _ = std::fs::remove_file(&tmp);
+            match output {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stderr);
+                    let first = text
+                        .lines()
+                        .find(|l| l.contains("SyntaxError") || l.contains("Error"))
+                        .unwrap_or("")
+                        .trim();
+                    broken.push(format!(
+                        "{}: {}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        first
+                    ));
+                }
+                // 没有 node 就**明说没验**，不能当作通过——
+                // 静默跳过等于把这条守护变成一个永远为真的断言。
+                Err(error) => broken.push(format!(
+                    "{}: 跑不了 node（{error}）——本条守护本次**没有真的验**",
+                    path.file_name().unwrap().to_string_lossy()
+                )),
+            }
+        }
+        assert!(
+            broken.is_empty(),
+            "UI 模块解析失败 ⇒ 整个 webview 是空白的（`node --check` 报的是**脚本**模式，\
+             按 ES 模块解析才能发现这一类）：\n{}",
+            broken.join("\n")
         );
     }
 }
