@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "AgentIsland 两个形态的窗口能力（灵动岛 + 侧边栏）",
+  "description": "AgentIsland 三个形态的窗口能力（灵动岛 + 侧边栏 + 工作台）",
   "windows": [
     "island",
-    "sidebar"
+    "sidebar",
+    "workbench"
   ],
   "permissions": [
     "core:default",

@@ -1812,4 +1812,42 @@ mod ui_symbol_sentinel {
             broken.join("\n")
         );
     }
+
+    /// **每个在 `tauri.conf.json` 里声明的窗口，都必须出现在 capability 的 `windows` 里。**
+    ///
+    /// 少一个的后果**不是报错，是静默失效**：那个窗口的 `invoke` 与 `listen`
+    /// 全被权限层拒绝，于是它一片空白、且点什么都不动。
+    /// 计划里 v0.0.188 已经为侧边档栽过一次（`listen('engine://tick')` 被拒 ⇒ 永不刷新）；
+    /// v0.0.222 加工作台窗口时又栽了一次——**同一个坑，第二次**。
+    ///
+    /// 所以它必须有守护：两份清单（「有哪些窗口」与「哪些窗口有权限」）
+    /// 是两个事实，**必须由一处推导或由一条断言钉住**，不能靠人记得同步。
+    #[test]
+    fn every_declared_window_has_ipc_permission() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let conf = std::fs::read_to_string(root.join("tauri.conf.json"))
+            .expect("应当读得到 tauri.conf.json");
+        let caps = std::fs::read_to_string(root.join("capabilities/default.json"))
+            .expect("应当读得到 capabilities/default.json");
+
+        // 从 tauri.conf.json 里取出所有 "label": "..."
+        let labels: Vec<String> = conf
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("\"label\": \"")?;
+                Some(rest.split('"').next().unwrap_or("").to_string())
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(!labels.is_empty(), "一个窗口标签都没从 tauri.conf.json 里读到——解析失效了");
+
+        for label in &labels {
+            assert!(
+                caps.contains(&format!("\"{label}\"")),
+                "窗口 `{label}` 不在 capabilities/default.json 的 windows 里 ⇒ \
+                 它的 invoke 与 listen 会被**静默拒绝**，界面一片空白且点不动。 \
+                 （v0.0.188 侧边栏栽过一次，v0.0.222 工作台又栽了一次）"
+            );
+        }
+    }
 }
