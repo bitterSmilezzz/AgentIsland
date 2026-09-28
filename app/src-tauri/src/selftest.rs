@@ -131,6 +131,7 @@ impl Harness {
             60.0,
             10.0,
             &FileActivityResult {
+                active_sessions: 0,
                 latest_write,
                 latest_file: None,
             },
@@ -489,7 +490,7 @@ fn temp_probe() -> Result<bool, String> {
         .find(|p| p.id == "dim")
         .ok_or_else(|| "注册表缺 dim".to_string())?;
     profile.session_dirs = vec![dir.to_string_lossy().to_string()];
-    let result = monitor.probe(&profile);
+    let result = monitor.probe(&profile, 600.0);
 
     // 自检不留下任何东西：临时目录用完就删（删失败不算检查失败，只是不干净）
     let _ = std::fs::remove_dir_all(&dir);

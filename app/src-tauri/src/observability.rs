@@ -49,9 +49,14 @@ pub struct Evidence {
     /// 这一拍的状态是谁说的。与 [`crate::selfreport::Provenance`] 同枚举——
     /// 自报不是会话强语义，把它写成「本轮有活动信号」等于拿别人的证据给自己的结论背书。
     pub provenance: Option<crate::selfreport::Provenance>,
+    /// 本轮的活跃会话数（真口径：窗口内有写入的会话文件数）。
+    ///
+    /// 此前 Rust 侧用 `recent_session_write: bool` 顶替它——**文件新鲜度与活跃会话
+    /// 不是同一个量**：一次写入只证明「它动过」，不证明「有几场会话在跑」。
+    /// 而 `noLocalData` 判定的输入正是这个数，所以它必须是真的。
+    pub active_sessions: usize,
     pub source_unreadable: bool,
     pub has_local_detail_source: bool,
-    pub recent_session_write: bool,
     pub has_token_usage: bool,
 }
 
@@ -87,7 +92,7 @@ pub fn evaluate(e: Evidence) -> Verdict {
             "已登记的本地会话源无法读取；待机不代表真的空闲",
         );
     }
-    if !e.recent_session_write && !e.has_token_usage {
+    if e.active_sessions == 0 && !e.has_token_usage {
         return if e.has_local_detail_source {
             Verdict::new(
                 Code::NoLocalData,
@@ -100,7 +105,10 @@ pub fn evaluate(e: Evidence) -> Verdict {
             )
         };
     }
-    Verdict::new(Code::Observed, "有近期会话写入或历史用量记录")
+    Verdict::new(
+        Code::Observed,
+        format!("活跃会话 {} 个", e.active_sessions),
+    )
 }
 
 /// Detect only proven access failures. A missing optional directory is not a
@@ -120,12 +128,8 @@ pub fn has_local_detail_source(profile: &AgentProfile) -> bool {
     !profile.session_dirs.is_empty() || !profile.token_roots.is_empty()
 }
 
-pub fn recent_write(path: Option<&std::time::SystemTime>, now: std::time::SystemTime) -> bool {
-    path.is_some_and(|mtime| {
-        now.duration_since(*mtime)
-            .map_or(true, |age| age.as_secs() < 600)
-    })
-}
+
+
 
 impl Code {
     /// 文本出口（CSV/报告）用的写法。**必须与 serde 的 camelCase 表示同值**——
@@ -154,7 +158,7 @@ mod tests {
             provenance: None,
             source_unreadable: false,
             has_local_detail_source: true,
-            recent_session_write: false,
+            active_sessions: 0,
             has_token_usage: false,
         }
     }
@@ -168,9 +172,9 @@ mod tests {
         e.source_unreadable = false;
         e.has_local_detail_source = false;
         assert_eq!(evaluate(e).code, Code::SourceNotWired);
-        e.recent_session_write = true;
+        e.active_sessions = 2;
         assert_eq!(evaluate(e).code, Code::Observed);
-        e.recent_session_write = false;
+        e.active_sessions = 0;
         e.has_token_usage = true;
         assert_eq!(evaluate(e).code, Code::Observed);
         e.has_token_usage = false;
@@ -185,6 +189,27 @@ mod tests {
         );
         e.installed = Some(false);
         assert_eq!(evaluate(e).code, Code::NotInstalled);
+    }
+
+    /// `noLocalData` 的输入是**活跃会话数**，不是「文件动过没有」。
+    ///
+    /// 防的是一个具体的分叉：拿 `recent_write` 当代理时，
+    /// 「这个 Agent 十分钟内写过会话文件、但此刻没有活跃会话」会被判成
+    /// 「有活跃会话 ⇒ 结论可信」——而真实情况是它只是被动写过。
+    #[test]
+    fn the_no_local_data_verdict_keys_off_active_sessions_not_on_freshness() {
+        let mut e = input();
+        // 没有活跃会话 ⇒ 无本地明细
+        assert_eq!(evaluate(e).code, Code::NoLocalData);
+        // 有活跃会话 ⇒ 结论可信，**依据里要写出那个数**
+        e.active_sessions = 3;
+        let verdict = evaluate(e);
+        assert_eq!(verdict.code, Code::Observed);
+        assert_eq!(verdict.evidence, vec!["活跃会话 3 个"]);
+        // 活跃会话 0 但历史有用量 ⇒ 仍算可信（有过使用是真的）
+        e.active_sessions = 0;
+        e.has_token_usage = true;
+        assert_eq!(evaluate(e).code, Code::Observed);
     }
 
     #[test]
@@ -264,21 +289,4 @@ mod tests {
         assert!(!has_unreadable_source(&profile));
     }
 
-    #[test]
-    fn recent_write_uses_the_sampling_clock_and_accepts_future_mtime() {
-        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
-        assert!(!recent_write(None, now));
-        assert!(recent_write(
-            Some(&(now - std::time::Duration::from_secs(599))),
-            now
-        ));
-        assert!(!recent_write(
-            Some(&(now - std::time::Duration::from_secs(600))),
-            now
-        ));
-        assert!(recent_write(
-            Some(&(now + std::time::Duration::from_secs(1))),
-            now
-        ));
-    }
 }

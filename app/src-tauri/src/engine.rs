@@ -14,7 +14,7 @@ use crate::tokens::now_ms;
 use crate::tokens::TokenUsageMonitor;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// 五态状态机引擎（与 macOS 端 ActivityEngine 同规则）：
 /// · 未解决的确认/授权请求            → attention
@@ -167,7 +167,9 @@ impl ActivityEngine {
                 })
             });
 
-            let file_result = self.filemon.probe(&profile);
+            let file_result = self
+                .filemon
+                .probe(&profile, self.settings.active_session_window);
             let candidates = self.filemon.probe_files(&profile);
             let probe = self.probe_cached_multi(&profile.id, &candidates);
             let level = self.decide_level(
@@ -205,10 +207,7 @@ impl ActivityEngine {
                     && level == ActivityLevel::Idle
                     && observability::has_unreadable_source(&profile),
                 has_local_detail_source: observability::has_local_detail_source(&profile),
-                recent_session_write: observability::recent_write(
-                    file_result.latest_write.as_ref(),
-                    SystemTime::UNIX_EPOCH + Duration::from_millis(now.max(0) as u64),
-                ),
+                active_sessions: file_result.active_sessions,
                 has_token_usage: token_usage.as_ref().is_some_and(|u| u.tokens_total > 0),
             });
             if let Some(u) = &token_usage {
@@ -835,7 +834,7 @@ impl ActivityEngine {
                     provenance: None,
                     source_unreadable: false,
                     has_local_detail_source: true,
-                    recent_session_write: true,
+                    active_sessions: 0,
                     has_token_usage: t24 > 0,
                 }),
                 // 演示数据里的进程在跑，但引擎没为它们采过样：观测窗口凑不够 ⇒ 卡死是「没测」

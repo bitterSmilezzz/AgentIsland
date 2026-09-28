@@ -190,8 +190,9 @@ Rust 的 [observability.rs](../../app/src-tauri/src/observability.rs) 现将五�
   进程不在时安装状态不再一律传 `None`：探测能判定就判定，判不了才给 `None`。
 - `blindSessionSource` 目前只证明已登记会话根目录的元数据/列举失败或路径不是目录；
   深层文件读取与解析失败仍可能被吞掉，尚无 Swift 的 `SessionProbeHealth` 原因链。
-- Rust 没有 `activeSessions`，暂以十分钟内有会话文件写入作活动证据。文件新鲜度
-  与活跃会话不是同一个量；token 总量大于零也只能说明曾有用量。
+- ✅ `activeSessions` **v0.0.211 起是真口径**（窗口内有写入的会话文件数）。此前用
+  「十分钟内有写入」当代理——**文件新鲜度与活跃会话不是同一个量**：
+  一次写入只证明「它动过」，不证明「此刻有几场会话在跑」。
 
 因此 M3 后续仍需补齐探测健康和活跃会话来源，再做两端行为对照。
 
@@ -273,7 +274,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | 采样间隔（有活动） | `sampleInterval`（EngineConfig 默认 2.0） | `sample_interval` 默认 2.0 | ✅ | |
 | 采样间隔（闲置） | `idleSampleInterval` 默认 **5.0** | `idle_sample_interval` 默认 **5.0** | ✅ **v0.0.200 起一致**。此前是 `sample_interval × 2.5`——另一个公式，于是两侧耗电量与「岛多久变灰」对不上 |
 | 工作判定窗口 | `workingWindow` 默认 60，区间 10…300 | `working_window` 默认 60，同区间 | ✅ **v0.0.200 起可配** | |
-| 活跃会话窗口 | `activeSessionWindow` 默认 600，区间 60…3600 | `active_session_window` 默认 600，同区间 | ⚠️ **v0.0.200 字段已补**，但**活跃会话数本身仍未迁**（`activeSessions` 仍是「十分钟内有写入」的代理，见 §4.1） |
+| 活跃会话窗口 | `activeSessionWindow` 默认 600，区间 60…3600 | `active_session_window` 默认 600，同区间 | ✅ **v0.0.211 起一致**：`FileActivityResult.active_sessions` 按目录各数再相加、只数文件、窗口 0 不计数；`noLocalData` 判据改用它，依据写出真实数字 |
 | 工作滞回 | `minWorkingHold` 默认 10，区间 1…300 | `min_working_hold` 默认 10，同区间 | ✅ **v0.0.200 起可配** | |
 | CPU 阈值 | `cpuThreshold` 默认 6，区间 **1...50** | `cpu_threshold` 默认 6，钳 **1...50** | ✅ | 区间一致 |
 | 收起延迟 | `collapseDelay` 默认 0.5，区间 **0.2…5** | `collapse_delay` 默认 0.5，钳 **0.2…5** | ✅ **v0.0.200 起一致**（此前上限 30，脏值能让面板久驻十几秒） |
