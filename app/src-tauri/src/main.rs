@@ -1944,3 +1944,66 @@ mod ui_symbol_sentinel {
         }
     }
 }
+
+/// **构建环境的两个「静默失效」守护。**
+///
+/// 这两条各对应一个**已经付出过代价**的坑，而且两个都不报任何错——
+/// 症状一律是「界面空白」，看起来像前端代码写错了，于是在代码里找了十几轮。
+///
+/// | # | 坑 | 症状 |
+/// | :-- | :--- | :--- |
+/// | 1 | `SDKROOT` 钉死在旧版本 | webview **根本不发起导航**（`on_page_load` 一次都不触发） |
+/// | 2 | `security.csp` 写成 `null` | 页面加载了，但 **JS 一行都不执行**（`[webview]` 永远 0 行） |
+///
+/// 两个都在**构建配置**里，而排查时眼睛盯着代码——这个错配是它们难查的全部原因。
+#[cfg(test)]
+mod build_env_sentinel {
+    use std::path::Path;
+
+    fn tauri_conf() -> String {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(root.join("tauri.conf.json")).expect("应当读得到 tauri.conf.json")
+    }
+
+    /// **`csp` 不能是 `null`。**
+    ///
+    /// 写成 `null` 时 Tauri/wry 会施加一条会拦掉本项目脚本的策略，页面照常加载、
+    /// 画面全白，而**没有任何一行错误**。实测：改成显式 CSP 后，
+    /// `[webview] Tauri API 就绪` 从 0 行变成 3 行（三个窗口各一行）。
+    #[test]
+    fn the_csp_is_explicit_rather_than_null() {
+        let conf = tauri_conf();
+        assert!(
+            !conf.contains("\"csp\": null"),
+            "tauri.conf.json 的 csp 又是 null 了——那会让 webview 里的 JS 一行都不跑，\
+             而症状只是「界面空白」，不报任何错。v0.0.236 的教训。"
+        );
+        assert!(
+            conf.contains("\"csp\": \""),
+            "csp 应当是一段显式策略（写清这份界面允许什么），而不是让它缺省"
+        );
+    }
+
+    /// **`build-app.sh` 里不许再出现钉死的 SDK 路径。**
+    ///
+    /// 拿 26.5 的 SDK 去链 WKWebView、跑在 macOS 27 上 ⇒ webview 静默不导航。
+    /// 错配不报错，所以脚本里**必须**是「挑最新的」，而不是「钉一个」。
+    #[test]
+    fn the_packaging_script_never_pins_an_sdk_version() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/build-app.sh");
+        let text = std::fs::read_to_string(&script).expect("应当读得到 scripts/build-app.sh");
+        // 候选列表里**出现** SDK 名是正常的（那是排序清单）；被钉死的是
+        // 「写死某一个并直接 export」——那正是坑的形状。
+        let pinned = text.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("export SDKROOT=")
+                && !line.contains("candidate")
+                && line.contains("MacOSX")
+        });
+        assert!(
+            !pinned,
+            "build-app.sh 又把 SDKROOT 钉死在某一个版本上——跑在更新的 macOS 上时 \
+             webview 会静默不发起导航。应当从候选清单里挑最新的（v0.0.235 的教训）。"
+        );
+    }
+}

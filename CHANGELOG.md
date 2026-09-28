@@ -4,6 +4,37 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.237] - 2026-09-29
+
+### 把两个「界面空白」的根因钉成守护，换机器时不用重蹈
+
+上一版修掉了两个根因（SDK 钉死、CSP 为 null）。这一版把它们**变成会红的断言**，
+并写了一份取证记录。
+
+两条守护都在 `build_env_sentinel`：
+
+- `the_csp_is_explicit_rather_than_null`——`csp` 写成 `null` 会让 webview 里的 JS
+  一行都不跑，而症状只是「界面空白」，**不报任何错**。
+- `the_packaging_script_never_pins_an_sdk_version`——钉死 `SDKROOT` 会让 webview
+  **根本不发起导航**，同样不报错。
+
+两条都做过**变异验证**：把坑放回去各自精确变红，恢复后转绿。
+
+### 一份取证记录
+
+`docs/research/2026-09-29-blank-ui-two-build-config-causes.md` 记下了：
+症状表、两个坑各自的判定方法、**怎么在不依赖 Tauri IPC 的前提下证明
+「页面加载了但 JS 没跑」**（探针页 fetch 本机端口 + Rust 侧记 `[http]`），
+以及一条读法纠正——`CGWindowList` 在没有录屏权限时会把别的进程窗口的
+**尺寸**报成 0，第一版据此误判成「窗口没摆好」。
+
+还有一条更省事的判别法记在里面：遇到「webview 不动」先用**纯 WKWebView** 测同一台机器。
+它好而 Tauri 坏 ⇒ 问题在 Tauri 这条链上；它也坏 ⇒ 才去查系统。
+
+### 门禁
+
+Rust 488 条通过（+2）/ 0 失败，Swift 556 条通过 / 0 失败，编译警告 15。
+
 ## [0.0.236] - 2026-09-29
 
 ### 🔴 第二个根因：`"csp": null` 反而让 webview 里的 JS 一行都不跑
