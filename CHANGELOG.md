@@ -4,6 +4,54 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.233] - 2026-09-28
+
+### 🔴 交付物整个换成 Rust/Tauri 端
+
+用户拍板。在此之前**每一次发版，用户装到机器上、每天打开的都是 Swift 那个二进制**，
+Rust 端只以 `Contents/Helpers/agentisland`（CLI）的身份搭车。
+
+这件事的口径代价比功能代价大：「迁移进行到哪一步」从**用户视角根本看不出来**——
+README 写「当前交付物是 Swift 本体」，GitHub Release 挂着 Swift 版的 zip，
+而代码库里百分之八十的工作发生在另一个从不被打包的二进制上。
+
+`build-app.sh` 的产出随之改变：
+
+| 路径 | 是什么 |
+| :--- | :--- |
+| `dist/AgentIsland.app` | **Rust/Tauri 端**（主交付物，主名归它） |
+| `dist/agentisland` | Rust CLI（不变） |
+| `dist/AgentIsland-Swift.app` | **Swift 本体（回退用）**——本机保留，**不进发布包** |
+| `dist/AgentIsland.app/Contents/Helpers/agentisland` | Rust CLI（与 Swift 版同路径同名字，外部接入方不用改） |
+
+`SKIP_SWIFT=1` 可跳过 Swift 构建（快很多）；出问题时 `open dist/AgentIsland-Swift.app`
+一秒钟退回去。**一个不留退路的切换不是切换，是砸东西。**
+
+### 顺带补上一个一直漏着的版本号
+
+`tauri.conf.json` 的 `version` 写死 `0.1.0`，而它是
+**`CFBundleShortVersionString` 的来源**——换过去之后，用户「关于本机」里就会写着
+0.1.0，而 tag 是 0.0.233。
+
+而原有的 `version_pinning` 只查 `Cargo.toml` 与 `AppVersion.swift`，
+**三处版本号里最容易漂的一处反而没被钉住**。已补上
+`the_tauri_bundle_reports_the_same_version_as_everything_else`（变异验证过）。
+
+### ⚠️ 换之前必须说清的一件事
+
+**Rust 端的页面至今没有加载完成过**（`[page]` 钩子从不触发），
+所以这一版换上主名之后，**装在机器上的应用可能是一片空白**。
+
+证据链（v0.0.232 已记）：三个窗口都建出来了、URL 正确、前端已嵌进二进制、
+`app/ui` 九个文件都在版本控制里、按窗口元数据查**窗口确实在屏幕上**
+（`CGWindowList` 不需要录屏权限）。缺的是画面本身——我这边看不到。
+
+回退方式在上面那张表里，一秒钟的事。
+
+### 门禁
+
+Rust 486 条通过（+1）/ 0 失败，Swift 556 条通过 / 0 失败，编译警告 15。
+
 ## [0.0.232] - 2026-09-28
 
 ### 「窗口到底显示没有」其实不需要录屏权限——我之前判断错了

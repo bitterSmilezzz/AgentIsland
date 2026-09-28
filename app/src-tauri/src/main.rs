@@ -1507,6 +1507,8 @@ mod hotkey_tests {
 /// 而发版脚本会在 commit 之前就挡住前两处。
 #[cfg(test)]
 mod version_pinning {
+    use std::path::Path;
+
     #[test]
     fn the_cargo_version_matches_the_swift_app_version() {
         let manifest = env!("CARGO_MANIFEST_DIR");
@@ -1522,6 +1524,31 @@ mod version_pinning {
             env!("CARGO_PKG_VERSION"),
             want,
             "Cargo.toml 的版本与 AppVersion.string 不一致——raycast 清单会把 Cargo 的那个写进去"
+        );
+    }
+
+    /// `tauri.conf.json` 的 `version` 也要跟上——**它决定用户看到的
+    /// `CFBundleShortVersionString`**。
+    ///
+    /// 这条是被「交付物整个换成 Rust 端」这件事逼出来的：换过去之后，用户
+    /// 「关于本机」的窗口里写着 **0.1.0**，而 tag 是 0.0.232。
+    /// 而原来的 `version_pinning` 只查 Cargo.toml 与 AppVersion.swift，
+    /// **漏了这一处**——三处版本号里最容易漂的一处，反而没被钉住。
+    #[test]
+    fn the_tauri_bundle_reports_the_same_version_as_everything_else() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let conf = std::fs::read_to_string(root.join("tauri.conf.json"))
+            .expect("应当读得到 tauri.conf.json");
+        // 只取顶层那个 "version"（bundle 段里没有同名键，缩进不同）
+        let want = env!("CARGO_PKG_VERSION");
+        let found = conf
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("\"version\": \""))
+            .and_then(|rest| rest.split('"').next());
+        assert_eq!(
+            found,
+            Some(want),
+            "tauri.conf.json 的 version 与 Cargo.toml 不一致——它是 `CFBundleShortVersionString` 的来源"
         );
     }
 }

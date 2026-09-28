@@ -45,51 +45,33 @@ if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
     .build/debug/AgentIslandTestsRunner
 fi
 
-echo "==> Release 构建 v${VERSION}（主产品与 CLI 工具）"
-swift build -c release --product AgentIsland
-swift build -c release --product AgentIslandCLI
-
 echo "==> 生成图标"
 ICON_DIR="/tmp/agentisland-icon.iconset"
 rm -rf "$ICON_DIR"
 swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
 iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
 
-# Rust/Tauri 端：打成**第二个** .app，名字带 -Rust 后缀。
+# Swift 版：降级为**回退产物**（本机保留，不进发布包）。
 #
-# 为什么要单独打而不是替换主产物：
-#   · `dist/AgentIsland.app` 是 **Swift GUI**（主产品，README 里写明的那一个）
-#   · 迁移中的 Rust GUI 此前**从未被打包**，于是「Rust 界面能不能跑」这件事
-#     从来没有被验证过——v0.0.229 那次查出的 `views.js` 语法错之所以能潜伏
-#     29 个版本，根子就在这里：**没有人跑过它**。
-# 两个 app 的 bundle id 相同，所以**不要同时开**；要测 Rust 端就先退出 Swift 那个。
-if [[ "${SKIP_RUST_APP:-0}" != "1" ]]; then
-    echo "==> 构建 Rust/Tauri 端（第二个 .app；SKIP_RUST_APP=1 可跳过）"
-    ( cd app/src-tauri && cargo tauri build --bundles app )
-    RUST_SRC="app/src-tauri/target/release/bundle/macos/AgentIsland.app"
-    if [[ -d "$RUST_SRC" ]]; then
-        rm -rf "dist/AgentIsland-Rust.app"
-        cp -R "$RUST_SRC" "dist/AgentIsland-Rust.app"
-        echo "==> Rust 端已就位：dist/AgentIsland-Rust.app"
-    else
-        # 静默跳过 = 「构建失败但看起来成功」，那正是上面那个坑的同款
-        echo "!! Rust 端 .app 未产出：$RUST_SRC 不存在" >&2
-        exit 1
-    fi
-fi
-
-echo "==> 组装 .app 与 CLI 工具"
-rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "dist"
-cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/"
-cp "$ICON_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
-cp "$BUILD_DIR/AgentIslandCLI" "dist/agentisland"
-chmod +x "dist/agentisland"
-mkdir -p "$APP_DIR/Contents/Helpers"
-cp "$BUILD_DIR/AgentIslandCLI" "$APP_DIR/Contents/Helpers/agentisland"
-chmod +x "$APP_DIR/Contents/Helpers/agentisland"
-
-cat > "$APP_DIR/Contents/Info.plist" <<PLIST
+# v0.0.233 起用户拍板把交付物整个换成 Rust 端。理由不是「新写的更好」，
+# 而是**口径**：在换之前，每次发版用户装到机器上、每天打开的都是 Swift 那个
+# 二进制，Rust 端只以 CLI 的身份搭车——「迁移已完成到哪」这件事，
+# 从用户视角根本看不出来。
+#
+# 仍然构建它，是为了**留一条回退路**：一个不留退路的切换不是切换，是砸东西。
+# 出问题就 `open dist/AgentIsland-Swift.app`，一秒钟退回去。
+if [[ "${SKIP_SWIFT:-0}" != "1" ]]; then
+    echo "==> 构建 Swift 版（回退产物：dist/${APP_NAME}-Swift.app；SKIP_SWIFT=1 可跳过）"
+    swift build -c release --product AgentIsland
+    swift build -c release --product AgentIslandCLI
+    SWIFT_DIR="dist/${APP_NAME}-Swift.app"
+    rm -rf "$SWIFT_DIR"
+    mkdir -p "$SWIFT_DIR/Contents/MacOS" "$SWIFT_DIR/Contents/Resources" "$SWIFT_DIR/Contents/Helpers"
+    cp "$BUILD_DIR/$APP_NAME" "$SWIFT_DIR/Contents/MacOS/"
+    cp "$ICON_DIR/AppIcon.icns" "$SWIFT_DIR/Contents/Resources/"
+    cp "$BUILD_DIR/AgentIslandCLI" "$SWIFT_DIR/Contents/Helpers/agentisland"
+    chmod +x "$SWIFT_DIR/Contents/Helpers/agentisland"
+    cat > "$SWIFT_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -116,9 +98,38 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+    codesign --force --deep --sign - "$SWIFT_DIR"
+    echo "==> Swift 版已就位（回退用）：$SWIFT_DIR"
+fi
+
+echo "==> 构建 Rust/Tauri 端（**主交付物**）"
+( cd app/src-tauri && cargo tauri build --bundles app )
+RUST_SRC="app/src-tauri/target/release/bundle/macos/${APP_NAME}.app"
+if [[ ! -d "$RUST_SRC" ]]; then
+    # 静默跳过 = 「构建失败但看起来成功」，那正是 views.js 潜伏 29 个版本的同款坑
+    echo "!! Rust 端 .app 未产出：$RUST_SRC 不存在" >&2
+    exit 1
+fi
+
+# CLI 工具：两边同名同位置，外部接入方（脚本 / Raycast）不用改路径
+swift build -c release --product AgentIslandCLI
+cp "$BUILD_DIR/AgentIslandCLI" "dist/agentisland"
+chmod +x "dist/agentisland"
+mkdir -p "$RUST_SRC/Contents/Helpers"
+cp "$BUILD_DIR/AgentIslandCLI" "$RUST_SRC/Contents/Helpers/agentisland"
+chmod +x "$RUST_SRC/Contents/Helpers/agentisland"
+
+# 主名归 Rust 版。旧的主名此刻是 Swift 那个 bundle，先移开再放。
+if [[ -d "$APP_DIR" ]]; then
+    mv "$APP_DIR" "dist/.previous-${APP_NAME}.app"
+fi
+cp -R "$RUST_SRC" "$APP_DIR"
 
 echo "==> 签名（ad-hoc）"
 codesign --force --sign - "dist/agentisland"
 codesign --force --deep --sign - "$APP_DIR"
 
-echo "==> 完成: $(pwd)/$APP_DIR"
+# ⚠️ 变量后面紧跟中文全角括号会被 bash 当成变量名的一部分
+# （`$APP_DIR（` ⇒ 报 `APP_DIR…: unbound variable`）。这个坑踩了两次，
+# 所以**所有变量与中文之间一律加花括号或空格**。
+echo "==> 完成: $(pwd)/${APP_DIR}  —— Rust/Tauri 端；回退用 dist/${APP_NAME}-Swift.app"

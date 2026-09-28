@@ -2,13 +2,13 @@
 
 一款**跨 Agent 的本机监控工具**：在 macOS 灵动岛中展示 AI 编码 agent 的运行状态、当前动作与可读取的 token 用量。
 
-**当前交付物是 Swift 本体（灵动岛 + 设置窗口）。** 跨平台 Rust/Tauri 端仍在迁移中，但已可运行，并且**多出第二种形态**：侧边栏（连同 Codex 配置档位与待办清单）。两种形态的取舍见 [ADR 0012](docs/adr/0012-sidebar-alongside-island.md)，整个迁移的范围与进度见 [工作台计划](docs/workbench/README.md)。
+**当前交付物是 Rust/Tauri 端。** 三个形态：灵动岛、侧边栏、**工作台**（连同 Codex 配置档位、待办清单与运维报告，五块同时在场）。Swift 本体仍在本机保留为 `dist/AgentIsland-Swift.app` 作为回退。两种形态的取舍见 [ADR 0012](docs/adr/0012-sidebar-alongside-island.md)，整个迁移的范围与进度见 [工作台计划](docs/workbench/README.md)。
 
 **同一个 agent 的五态与可信度，在三个出口永远对得上：灵动岛卡片、`agentisland doctor`、`agentisland state`。** 三处读的是同一份 `AgentObservability.evaluate(snapshot:)`（`state` 直接问运行中的 app，`doctor` 在 CLI 进程里调同一个纯函数）；对不上时三处都显示「有冲突」，而不是各自挑一个数给你看。同理，「没读到」在三个出口都是「没读到」，不是 0。
 
 > **能力边界今天是这样**（不藏）：25 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy / WorkBuddy AI）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
 
-> 本文档描述 **v0.0.232** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.233** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 >
@@ -27,8 +27,8 @@
 
 ## 灵动岛界面（当前交付形态）
 
-> 下面这一节描述的是 **Swift 本体**——也就是今天装在用户机器上的那个应用。
-> Rust 端另有侧边栏形态（见下一节），**尚不是默认交付物**。
+> 下面这一节描述的是 **Swift 本体**——它不是交付物，只保留在
+> `dist/AgentIsland-Swift.app` 作为回退路径。内容仅供对照与回退时参考。
 
 - **四边贴边与 6pt 微细条**：收起时在屏幕上、右、下、左任一边缘留一条 6pt 半透明细条（含工作状态呼吸灯），光标碰触即弹性弹出完整卡片。展开态顶栏按住可自由拖拽，松手按最近距离吸附并持久化该边锚点。
 - **反向倒角一体化**：基于三次 Bézier 的 `SideNotchShape`，边缘向屏幕物理边框平滑过渡，而不是悬空矩形；玻璃卡片与倒角边缘共用同一套几何路径。
