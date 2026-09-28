@@ -94,11 +94,12 @@ pub enum Signal {
 /// 各自都要带会话定位与缓存，见对照表 §3.2），而**档案里已经如实声明了它们**。
 /// 声明与「有解析器」分开记，就是为了让「声明了但还没实现」有一处可查，
 /// 而不是让人以为那条路径已经通了。
-pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 4] = [
+pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 5] = [
     crate::models::SessionDialect::GenericTail,
     crate::models::SessionDialect::ClineTasks,
     crate::models::SessionDialect::QoderTranscript,
     crate::models::SessionDialect::DshProjection,
+    crate::models::SessionDialect::AntigravityBrain,
 ];
 
 /// 方言分派。
@@ -118,6 +119,9 @@ pub fn probe_dialect(
         }
         crate::models::SessionDialect::DshProjection => {
             return probe_dsh_dialect(path);
+        }
+        crate::models::SessionDialect::AntigravityBrain => {
+            return probe_antigravity_dialect(path);
         }
         _ => {}
     }
@@ -178,6 +182,35 @@ fn probe_dsh_dialect(path: &str) -> SessionProbe {
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     probe_dsh(path, age)
+}
+
+fn probe_antigravity_dialect(path: &str) -> SessionProbe {
+    let age = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    if age > 24.0 * 3600.0 {
+        return SessionProbe::default();
+    }
+    match read_tail_lines(path) {
+        Ok(lines) => {
+            if lines.is_empty() {
+                return SessionProbe::default();
+            }
+            probe_antigravity(&lines, path, age)
+        }
+        Err(failure) => SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: Some(SessionProbeHealth {
+                failure,
+                path: path.to_string(),
+                observed_at: 0,
+            }),
+        },
+    }
 }
 
 fn probe_by_id(profile_id: &str, path: &str) -> SessionProbe {
@@ -1553,5 +1586,306 @@ mod dsh_tests {
             Some(SessionProbeFailure::UndecodableFile),
             "读不出来与读不懂要分开"
         );
+    }
+}
+
+// MARK: - Antigravity 方言（`brain/<session>/.system_generated/logs/transcript.jsonl`）
+
+/// Antigravity 的**在途保护期**：只有最近 5 分钟的记录才算「还在跑」。
+const ANTIGRAVITY_ACTIVE_MAX_AGE_SECS: f64 = 300.0;
+/// 完成态窗口（与其他方言同口径）
+const ANTIGRAVITY_COMPLETED_MAX_AGE_SECS: f64 = 15.0 * 60.0;
+
+/// 这些名字都在**等用户**：球在他们这边。
+const ANTIGRAVITY_ASK_TOOLS: [&str; 3] = ["ask_question", "askquestion", "ask_user"];
+
+/// Antigravity 解析器。逐条对应 Swift `detectAntigravitySession` 的**状态判定**部分。
+///
+/// ⚠️ **本版只做状态信号，没做上下文**。Swift 侧还会解析后台任务生命周期、
+/// 子智能体角色/模型、Token 细分，产出 `SessionActiveContext`（后台任务胶囊、
+/// 子任务数、Token 细分那一块）。Rust 侧连那个字段都还没有，
+/// 所以这里先不做——**宁可少显示，不要显示错的**。
+/// 剩余工作量记在对照表 §6.3。
+fn probe_antigravity(lines: &[String], path: &str, file_age_secs: f64) -> SessionProbe {
+    // 预扫：每行的 (step_index, type, 有无 tool_calls)
+    // 用途是回答「这个 ask_question 是不是**已经有人答过**」——尾窗里可能同时
+    // 留着请求与回答，只看当前行会把它当成仍在等。
+    let meta: Vec<(i64, String, bool)> = lines
+        .iter()
+        .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
+        .map(|obj| {
+            (
+                obj.get("step_index").and_then(|v| v.as_i64()).unwrap_or(0),
+                obj.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                obj.get("tool_calls")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|a| !a.is_empty()),
+            )
+        })
+        .collect();
+
+    // 从尾部逆序推导当前状态
+    for obj in lines.iter().rev().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()) {
+        let step_index = obj.get("step_index").and_then(|v| v.as_i64()).unwrap_or(0);
+        let step_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let fp = fingerprint(path, &format!("antigravity-step-{step_index}"));
+        let tool_calls = obj.get("tool_calls").and_then(|v| v.as_array());
+
+        // ① 等待用户选择或确认
+        if let Some(calls) = tool_calls.filter(|c| !c.is_empty()) {
+            if let Some(ask) = calls.iter().find(|c| {
+                let name = c
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                ANTIGRAVITY_ASK_TOOLS.contains(&name.as_str())
+            }) {
+                // 尾窗里若已出现同名的后续调用 ⇒ 那是回答，不是仍在等
+                let answered = meta.iter().any(|(_, ty, has_tc)| {
+                    *has_tc && (ty == "TOOL_OUTPUT" || ty == "SYSTEM_MESSAGE")
+                });
+                if !answered {
+                    let question = ask
+                        .get("args")
+                        .and_then(|a| a.get("questions"))
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                        .and_then(|v| {
+                            v.as_array()
+                                .and_then(|a| a.first())
+                                .and_then(|q| q.get("question"))
+                                .and_then(|q| q.as_str())
+                                .map(str::to_string)
+                        })
+                        .filter(|q| !q.is_empty())
+                        .unwrap_or_else(|| "等待你的确认".into());
+                    return attention_like(path, &format!("ask-{step_index}"), &question);
+                }
+            }
+
+            // ② 正在执行工具调用。**保护期只有 5 分钟**——
+            // 之后那行仍留在文件里，但不代表它还在跑。
+            if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
+                return SessionProbe::default();
+            }
+            let action = tool_calls
+                .and_then(|c| c.first())
+                .and_then(|c| c.get("args"))
+                .and_then(|a| {
+                    a.get("toolAction")
+                        .or_else(|| a.get("toolSummary"))
+                })
+                .and_then(|v| v.as_str())
+                .map(|s| one_line(s, 100))
+                .or_else(|| {
+                    tool_calls
+                        .and_then(|c| c.first())
+                        .and_then(|c| c.get("name"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "执行中".into());
+            return active_like(path, &fp, &action);
+        }
+
+        // ③ 规划响应 / 最终回答：有内容给用户，或明确 DONE 且没有活跃思考
+        let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let thinking = obj.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+        if (!content.is_empty()) || (status == "DONE" && thinking.is_empty()) {
+            if file_age_secs <= ANTIGRAVITY_COMPLETED_MAX_AGE_SECS {
+                return SessionProbe {
+                    signal: Some(Signal::Completed(fp)),
+                    subagent_count: 0,
+                    health: None,
+                };
+            }
+            return SessionProbe::default(); // 15 分钟后自然转入待机
+        }
+
+        // ④ 只有思考、无工具也无最终内容 ⇒ 正在思考规划
+        if !thinking.is_empty() {
+            if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
+                return SessionProbe::default();
+            }
+            return active_like(path, &fp, "思考规划中");
+        }
+
+        // ⑤ 用户刚发完输入，模型正在启动准备
+        if step_type == "USER_INPUT" {
+            if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
+                return SessionProbe::default();
+            }
+            return active_like(path, &fp, "思考规划中");
+        }
+
+        // ⑥ 工具输出返回，等待下一拍调度
+        if step_type == "TOOL_OUTPUT" {
+            if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
+                return SessionProbe::default();
+            }
+            return active_like(path, &fp, "处理中");
+        }
+
+        // ⑦ 系统通知 / 任务完成结果
+        if step_type == "SYSTEM_MESSAGE" {
+            if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
+                return SessionProbe::default();
+            }
+            return active_like(path, &fp, "处理任务结果中");
+        }
+    }
+    SessionProbe::default()
+}
+
+fn active_like(path: &str, fingerprint_key: &str, action: &str) -> SessionProbe {
+    SessionProbe {
+        signal: Some(Signal::Active(
+            fingerprint(path, fingerprint_key),
+            Some(action.to_string()),
+        )),
+        subagent_count: 0,
+        health: None,
+    }
+}
+
+fn attention_like(path: &str, fingerprint_key: &str, message: &str) -> SessionProbe {
+    SessionProbe {
+        signal: Some(Signal::Attention(
+            fingerprint(path, fingerprint_key),
+            message.to_string(),
+        )),
+        subagent_count: 0,
+        health: None,
+    }
+}
+
+/// Antigravity 解析器的分支（对齐 Swift `detectAntigravitySession` 的状态判定部分）。
+#[cfg(test)]
+mod antigravity_tests {
+    use super::*;
+
+    fn lines_of(rows: &[&str]) -> Vec<String> {
+        rows.iter().map(|r| (*r).to_string()).collect()
+    }
+
+    /// ① `ask_question` 没被回答 ⇒ 等确认，且把问题原文带出来。
+    #[test]
+    fn an_unanswered_question_is_attention_with_its_text() {
+        let lines = lines_of(&[r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"ask_question","args":{"questions":"[{\"question\":\"要不要继续？\"}]"}}]}"#]);
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+            Some(Signal::Attention(_, message)) => assert_eq!(message, "要不要继续？"),
+            other => panic!("应当是等确认：{other:?}"),
+        }
+    }
+
+    /// **在途保护期只有 5 分钟**——比完成窗口还短。
+    ///
+    /// 这一族与 DSH 相反：Antigravity 的 transcript 是**持续追加**的，
+    /// 旧行不会消失，所以「文件里有这行」完全不代表「它还在跑」。
+    /// 用 6 分钟的旧行去判在途，就会得到一个永远亮着的指示灯。
+    #[test]
+    fn an_old_tool_call_line_is_not_still_running() {
+        let lines = lines_of(&[r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"run_terminal","args":{"toolAction":"npm test"}}]}"#]);
+        assert!(matches!(
+            probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal,
+            Some(Signal::Active(_, _))
+        ));
+        assert!(
+            probe_antigravity(&lines, "/tmp/x.jsonl", 6.0 * 60.0).signal.is_none(),
+            "超过 5 分钟保护期就不该再说它在跑"
+        );
+    }
+
+    /// ② 有内容给用户 ⇒ 完成，但只保留 15 分钟。
+    #[test]
+    fn a_final_answer_completes_and_then_goes_stale() {
+        let lines = lines_of(&[r#"{"step_index":9,"type":"ASSISTANT","content":"改好了"}"#]);
+        assert!(matches!(
+            probe_antigravity(&lines, "/tmp/x.jsonl", 10.0 * 60.0).signal,
+            Some(Signal::Completed(_))
+        ));
+        assert!(
+            probe_antigravity(&lines, "/tmp/x.jsonl", 16.0 * 60.0).signal.is_none(),
+            "完成态过了 15 分钟就该自然回到待机"
+        );
+    }
+
+    /// **`DONE` 但仍在思考**不算完成——那一行说明模型还没收尾。
+    /// 只看 `status == "DONE"` 会把「正在想」判成「干完了」。
+    #[test]
+    fn done_with_active_thinking_is_not_yet_complete() {
+        let lines = lines_of(&[r#"{"step_index":9,"type":"ASSISTANT","status":"DONE","thinking":"再想想"}"#]);
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+            Some(Signal::Active(_, action)) => {
+                assert_eq!(action.as_deref(), Some("思考规划中"))
+            }
+            other => panic!("应当是「思考规划中」：{other:?}"),
+        }
+    }
+
+    /// ③ `USER_INPUT` 分支 ⇒ 「思考规划中」——
+    /// 但**只在 `content` 为空时**才轮得到它。
+    #[test]
+    fn a_user_input_without_content_counts_as_getting_ready() {
+        let lines = lines_of(&[r#"{"step_index":1,"type":"USER_INPUT"}"#]);
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+            Some(Signal::Active(_, action)) => {
+                assert_eq!(action.as_deref(), Some("思考规划中"))
+            }
+            other => panic!("应当是「思考规划中」：{other:?}"),
+        }
+    }
+
+    /// ④ `TOOL_OUTPUT` 分支 ⇒ 「处理中」——同样只在 `content` 为空时。
+    #[test]
+    fn a_tool_output_without_content_means_waiting_for_the_next_turn() {
+        let lines = lines_of(&[r#"{"step_index":8,"type":"TOOL_OUTPUT"}"#]);
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+            Some(Signal::Active(_, action)) => assert_eq!(action.as_deref(), Some("处理中")),
+            other => panic!("应当是「处理中」：{other:?}"),
+        }
+    }
+
+    /// **如实记录一处继承自 macOS 侧的行为**：带 `content` 的 `USER_INPUT` /
+    /// `TOOL_OUTPUT` 会被判成「完成」，而**不是**走到它们各自的分支。
+    ///
+    /// 原因是 Swift 侧把「内容非空 ⇒ 轮次结束」那条放在**所有类型分支之前**，
+    /// 于是任何带正文的行都先命中它。Rust 照搬了同一顺序——**这一版要的是一致，
+    /// 不是「顺手修好」**；本仓的自由侧与跨平台侧不一样就是分叉的温床。
+    ///
+    /// 语义上它可疑（用户刚发完输入就说「完成」），但要改就得**两端一起改**，
+    /// 那是独立一块，列在对照表 §3.2。这里用用例把它钉住，免得它悄悄漂走。
+    #[test]
+    fn a_typed_line_with_content_is_completed_even_though_its_type_says_otherwise() {
+        for (row, why) in [
+            (
+                r#"{"step_index":1,"type":"USER_INPUT","content":"帮我改一下"}"#,
+                "USER_INPUT",
+            ),
+            (
+                r#"{"step_index":8,"type":"TOOL_OUTPUT","content":"exit 0"}"#,
+                "TOOL_OUTPUT",
+            ),
+        ] {
+            let lines = lines_of(&[row]);
+            assert!(
+                matches!(
+                    probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal,
+                    Some(Signal::Completed(_))
+                ),
+                "{why} 带 content 时被判成完成——这是从 macOS 侧照搬的行为，见本用例注释"
+            );
+        }
+    }
+
+    /// 尾窗里**没有任何能判定的行** ⇒ 无信号，且**不带理由**：
+    /// 读到了、只是没有可判定的东西，与「读不到」是两件事。
+    #[test]
+    fn an_empty_window_is_not_reported_as_unreadable() {
+        let probe = probe_antigravity(&[], "/tmp/x.jsonl", 60.0);
+        assert!(probe.signal.is_none());
+        assert!(probe.health.is_none(), "没有行不等于读不到");
     }
 }

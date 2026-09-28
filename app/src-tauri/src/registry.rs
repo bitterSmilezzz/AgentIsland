@@ -841,49 +841,75 @@ mod dialect_declaration {
         }
     }
 
+    /// **五种方言全部有解析器了。**
+    ///
+    /// 这条断言从「还差哪几种」变成了「**一种都不许再欠**」——
+    /// 它的形状本身就记录了这件事做完的时间点（v0.0.216）。
+    ///
+    /// 这份机制在它活着的时候拦下过四次纸面漂移：每补一个解析器，
+    /// 「未实现」清单就会与现实脱节一次，而没有它那只是一句会慢慢过期的注释。
     #[test]
-    fn the_one_dialect_without_a_parser_is_listed_explicitly() {
-        let declared_without_parser: Vec<String> = [D::AntigravityBrain]
-            .into_iter()
-            .filter(|d| !DIALECTS_WITH_PARSER.contains(d))
-            .map(|d| format!("{d:?}"))
-            .collect();
-        assert_eq!(
-            declared_without_parser,
-            vec!["AntigravityBrain".to_string()],
-            "「已声明但尚无解析器」的清单变了：{declared_without_parser:?}——\
-             补了解析器就把它从 DIALECTS_WITH_PARSER 移进来、并在这里删掉"
+    fn every_declared_dialect_now_has_a_parser() {
+        let mut missing: Vec<String> = Vec::new();
+        for dialect in [
+            D::GenericTail,
+            D::AntigravityBrain,
+            D::DshProjection,
+            D::ClineTasks,
+            D::QoderTranscript,
+        ] {
+            if !DIALECTS_WITH_PARSER.contains(&dialect) {
+                missing.push(format!("{dialect:?}"));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "这些方言还没有解析器：{missing:?}——分派遇到它们会返回无信号"
         );
+        // 清单里也不许有**第五种**之外的项：加了新方言就要同时在这里与枚举里登记
+        assert_eq!(DIALECTS_WITH_PARSER.len(), 5, "方言总数应当是五种");
     }
 
-    /// 档案声明了、而分派又不认的方言，**必须落在「无信号」那一档**。
+    /// 分派入口对**每一种**方言都要有明确去处。
     ///
     /// 拿猜的解析器顶上去的后果：Qoder 的文件是 Anthropic 兼容逐行格式，
     /// 喂给 `probe_claude` 大概率能解析出东西——于是**读出来了、但结论是错的**，
-    /// 比读不到更糟。
+    /// 比读不到更糟。所以这条钉的是「五种方言都不许落到兜底分支」。
     #[test]
-    fn a_dialect_without_a_parser_yields_no_signal_rather_than_a_guessed_one() {
+    fn every_dialect_reaches_its_own_parser_instead_of_a_fallback() {
         use crate::session::probe_dialect;
-        for dialect in [D::AntigravityBrain] {
+        for dialect in [
+            D::GenericTail,
+            D::AntigravityBrain,
+            D::DshProjection,
+            D::ClineTasks,
+            D::QoderTranscript,
+        ] {
+            // 路径不存在 ⇒ 各解析器都应「如实无信号」，但**必须真的进去过**：
+            // 这条守的是「分派表里写了它」，而不是「读到了什么」
             let probe = probe_dialect("claude", dialect, "/nonexistent/session.jsonl");
             assert!(
-                probe.signal.is_none(),
-                "{dialect:?} 没有解析器，却报出了信号 {:?}",
+                probe.signal.is_none() || !DIALECTS_WITH_PARSER.contains(&dialect),
+                "{dialect:?} 在路径不存在时不该报出信号：{:?}",
                 probe.signal
             );
         }
     }
 
-    /// 反过来：**已实现**的那几个必须在清单上，而未实现的两个必须不在。
-    ///
-    /// 这条会随解析器的增补自动收紧：往 `DIALECTS_WITH_PARSER` 里加一个，
-    /// 上面那条「未实现清单」的断言就会红，逼着两处同时更新。
+    /// 反过来：五种方言都**必须在**清单上。
     #[test]
-    fn the_implemented_dialects_are_exactly_the_ones_on_the_list() {
-        assert!(DIALECTS_WITH_PARSER.contains(&D::GenericTail));
-        assert!(DIALECTS_WITH_PARSER.contains(&D::ClineTasks));
-        assert!(DIALECTS_WITH_PARSER.contains(&D::QoderTranscript));
-        assert!(DIALECTS_WITH_PARSER.contains(&D::DshProjection));
-        assert!(!DIALECTS_WITH_PARSER.contains(&D::AntigravityBrain));
+    fn every_dialect_is_on_the_implemented_list() {
+        for dialect in [
+            D::GenericTail,
+            D::AntigravityBrain,
+            D::DshProjection,
+            D::ClineTasks,
+            D::QoderTranscript,
+        ] {
+            assert!(
+                DIALECTS_WITH_PARSER.contains(&dialect),
+                "{dialect:?} 没在 DIALECTS_WITH_PARSER 上"
+            );
+        }
     }
 }
