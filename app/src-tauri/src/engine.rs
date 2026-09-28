@@ -177,7 +177,8 @@ impl ActivityEngine {
                 .filemon
                 .probe(&profile, self.settings.active_session_window);
             let candidates = self.filemon.probe_files(&profile);
-            let probe = self.probe_cached_multi(&profile.id, profile.session_dialect, &candidates);
+            let (probe, context) =
+                self.probe_cached_multi(&profile.id, profile.session_dialect, &candidates);
             let level = self.decide_level(
                 &profile,
                 now,
@@ -305,6 +306,10 @@ impl ActivityEngine {
                 provenance_suffix: crate::selfreport::Provenance::badge_suffix(provenance),
                 subagent_count: probe.subagent_count,
                 session_probe_health: None,
+                // 上下文由本轮探测带出（`SessionProbe.context`），不跨拍存表
+                background_tasks: context.background_tasks,
+                subagents: context.subagents,
+                token_breakdown: context.token_breakdown,
             };
             snapshot.health = health::evaluate(&snapshot);
             list.push(snapshot);
@@ -748,12 +753,16 @@ impl ActivityEngine {
 
     /// 按候选顺序（新→旧）逐个探测，返回第一个有信号的；全无信号返回空探测。
     /// 最新的文件不一定是语义文件（如 CLI 日志比 rollout 更新）。
+    #[allow(clippy::type_complexity)]
     fn probe_cached_multi(
         &mut self,
         profile_id: &str,
         dialect: crate::models::SessionDialect,
         paths: &[String],
-    ) -> session::SessionProbe {
+    ) -> (
+        session::SessionProbe,
+        crate::models::SessionActiveContext,
+    ) {
         for path in paths {
             if path.is_empty() {
                 continue;
@@ -766,16 +775,22 @@ impl ActivityEngine {
             if let Some((l, t, signal, sc)) = self.probe_cache.get(path) {
                 if *l == len && *t == mtime {
                     if signal.is_some() {
-                        return session::SessionProbe {
-                            signal: signal.clone(),
-                            subagent_count: *sc,
-                            health: None,
-                        };
+                        // ⚠️ 缓存只存**信号**，上下文一律给空：它是「本轮」的，
+                        // 而缓存命中意味着这一拍其实没重新读文件——把上一轮的
+                        // 后台任务照抄过来，就是让「已经结束的任务」继续亮着
+                        return (
+                            session::SessionProbe {
+                                signal: signal.clone(),
+                                subagent_count: *sc,
+                                health: None,
+                            },
+                            crate::models::SessionActiveContext::default(),
+                        );
                     }
                     continue;
                 }
             }
-            let probe = session::probe_dialect(profile_id, dialect, path);
+            let (probe, context) = session::probe_dialect(profile_id, dialect, path);
             let signal = probe.signal.clone();
             let sc = probe.subagent_count;
             if self.probe_cache.len() > 200 {
@@ -783,10 +798,10 @@ impl ActivityEngine {
             }
             self.probe_cache.insert(path.clone(), (len, mtime, signal.clone(), sc));
             if signal.is_some() {
-                return probe;
+                return (probe, context);
             }
         }
-        session::SessionProbe { signal: None, subagent_count: 0, health: None }
+        (session::SessionProbe { signal: None, subagent_count: 0, health: None }, crate::models::SessionActiveContext::default())
     }
 
     fn token_usage_cached(&mut self, profile: &AgentProfile) -> Option<TokenUsage> {
@@ -893,6 +908,9 @@ impl ActivityEngine {
                 current_action: action,
                 subagent_count: 0,
                 session_probe_health: None,
+                background_tasks: vec![],
+                subagents: vec![],
+                token_breakdown: None,
             })
             .map(|mut snapshot| {
                 snapshot.health = health::evaluate(&snapshot);

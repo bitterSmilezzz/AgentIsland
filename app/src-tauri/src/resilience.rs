@@ -167,6 +167,9 @@ mod tests {
             current_action: None,
             subagent_count: 0,
             session_probe_health: None,
+            background_tasks: vec![],
+            subagents: vec![],
+            token_breakdown: None,
         }
     }
 

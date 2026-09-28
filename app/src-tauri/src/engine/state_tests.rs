@@ -108,6 +108,9 @@ impl Replay {
             current_action: None,
             subagent_count: 0,
             session_probe_health: None,
+            background_tasks: vec![],
+            subagents: vec![],
+            token_breakdown: None,
         }];
         level
     }
@@ -461,6 +464,9 @@ fn alarming_snapshot(running: bool) -> AgentSnapshot {
         current_action: None,
         subagent_count: 0,
         session_probe_health: None,
+        background_tasks: vec![],
+        subagents: vec![],
+        token_breakdown: None,
     }
 }
 

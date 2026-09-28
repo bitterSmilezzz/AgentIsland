@@ -887,7 +887,7 @@ mod dialect_declaration {
         ] {
             // 路径不存在 ⇒ 各解析器都应「如实无信号」，但**必须真的进去过**：
             // 这条守的是「分派表里写了它」，而不是「读到了什么」
-            let probe = probe_dialect("claude", dialect, "/nonexistent/session.jsonl");
+            let (probe, _context) = probe_dialect("claude", dialect, "/nonexistent/session.jsonl");
             assert!(
                 probe.signal.is_none() || !DIALECTS_WITH_PARSER.contains(&dialect),
                 "{dialect:?} 在路径不存在时不该报出信号：{:?}",

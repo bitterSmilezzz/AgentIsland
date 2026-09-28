@@ -216,6 +216,82 @@ pub struct TokenUsage {
 
 // MARK: - 实时快照
 
+/// 一条**尚未交付**的后台任务（构建 / 测试 / 长耗时命令跑在后台时）。
+///
+/// 只列「还没交付」的：任务结束就该消失，留着会让用户以为机器上还挂着活。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundTask {
+    pub id: String,
+    /// 给界面看的那句（已归一化，不含环境变量前缀与超长参数）
+    pub action: String,
+}
+
+/// 一个正在跑的子智能体。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentInfo {
+    pub conversation_id: String,
+    pub role: String,
+    pub model: Option<String>,
+    pub state: Option<String>,
+}
+
+/// Token 细分。**与总量口径不同**：这里的每一项都是「模型报了什么」，
+/// 不做净消耗折算——`tokensTotal` 那边才是给用户看消耗的那个数。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenBreakdown {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub total_tokens: i64,
+}
+
+impl TokenBreakdown {
+    /// Swift 侧 `totalTokens > 0 ? totalTokens : 五项相加`。
+    ///
+    /// **取最大而非相加**：五项是**分类**（prompt 里含 cache read、
+    /// completion 里含 reasoning），相加会重复计数。源没给 total 时才相加。
+    pub fn new(
+        prompt: i64,
+        completion: i64,
+        cache_read: i64,
+        cache_write: i64,
+        reasoning: i64,
+        total: i64,
+    ) -> Self {
+        Self {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_read_tokens: cache_read,
+            cache_write_tokens: cache_write,
+            reasoning_tokens: reasoning,
+            total_tokens: if total > 0 {
+                total
+            } else {
+                prompt + completion + cache_read + cache_write + reasoning
+            },
+        }
+    }
+}
+
+/// 一轮探测出来的「本轮上下文」：后台任务 + 子智能体 + Token 细分。
+///
+/// ⚠️ **只能随一次探测的返回值活过**，不许存进按 agent id 索引的全局表。
+/// 那样会让 Claude、Codex 的卡片串到 Antigravity 的残留上下文，
+/// 而 Agent 退出后那些残留永不失效（Swift 侧记过这个坑，代码里也留着注记）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionActiveContext {
+    pub background_tasks: Vec<BackgroundTask>,
+    pub subagents: Vec<SubagentInfo>,
+    /// `None` = 这一族不报 Token 细分（与「报 0」不同）
+    pub token_breakdown: Option<TokenBreakdown>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentSnapshot {
     pub id: String,
@@ -257,6 +333,12 @@ pub struct AgentSnapshot {
     /// 各自拼一遍就会出现「岛里说读不到、doctor 说一切正常」那种分叉。
     /// 陈旧的故障由引擎按保质期过滤后才落到这里（见 `observability` 那条）。
     pub session_probe_health: Option<String>,
+    /// 本轮探测出的后台任务（`⚡ 后台N` 胶囊）。未报这一族的档案这里是空数组。
+    pub background_tasks: Vec<BackgroundTask>,
+    /// 本轮探测出的子智能体。`subagent_count` 必须等于它的长度——两者不许各写各的。
+    pub subagents: Vec<SubagentInfo>,
+    /// Token 细分。`None` = 这一族不报——**不是「报 0」**。
+    pub token_breakdown: Option<TokenBreakdown>,
 }
 
 // MARK: - 任务事件
@@ -509,6 +591,9 @@ mod tests {
             current_action: None,
             subagent_count: 0,
             session_probe_health: None,
+            background_tasks: vec![],
+            subagents: vec![],
+            token_breakdown: None,
         };
         let value = serde_json::to_value(&snapshot).expect("快照应能序列化");
         let object = value.as_object().expect("快照应序列化成对象");

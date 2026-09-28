@@ -108,17 +108,23 @@ pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 5] = [
 /// Swift 侧那一个 `detect(lines:)` **按内容**同时吃 claude 与 codex 两种形状，
 /// 而 Rust 侧是三个独立解析器；合成一个内容驱动的检测器是独立一块。
 /// 这一版先让**档案里的声明**成为分派入口，那才是 ADR 0010 要的形状。
+/// 返回 `(信号, 本轮上下文)`。
+///
+/// **上下文不挂在 `SessionProbe` 上**，是刻意的：`SessionProbe` 有一百多处字面量构造，
+/// 给它加字段就得每处都补；而上下文**只有 Antigravity 一族产出**，
+/// 让它走返回值就不会把「每个 Agent 都有上下文」这个错觉写进类型里。
 pub fn probe_dialect(
     profile_id: &str,
     dialect: crate::models::SessionDialect,
     path: &str,
-) -> SessionProbe {
+) -> (SessionProbe, crate::models::SessionActiveContext) {
+    use crate::models::SessionActiveContext as Context;
     match dialect {
         crate::models::SessionDialect::QoderTranscript => {
-            return probe_qoder_dialect(profile_id, path);
+            return (probe_qoder_dialect(profile_id, path), Context::default());
         }
         crate::models::SessionDialect::DshProjection => {
-            return probe_dsh_dialect(path);
+            return (probe_dsh_dialect(path), Context::default());
         }
         crate::models::SessionDialect::AntigravityBrain => {
             return probe_antigravity_dialect(path);
@@ -127,9 +133,9 @@ pub fn probe_dialect(
     }
     if !DIALECTS_WITH_PARSER.contains(&dialect) {
         // 已声明、尚无解析器：如实无信号，**不拿猜的解析器顶上去**
-        return SessionProbe::default();
+        return (SessionProbe::default(), Context::default());
     }
-    probe_by_id(profile_id, path)
+    (probe_by_id(profile_id, path), Context::default())
 }
 
 /// Qoder 的会话定位：取 `session_dirs` 下**最近修改**的那个 `.jsonl`。
@@ -184,32 +190,36 @@ fn probe_dsh_dialect(path: &str) -> SessionProbe {
     probe_dsh(path, age)
 }
 
-fn probe_antigravity_dialect(path: &str) -> SessionProbe {
+fn probe_antigravity_dialect(path: &str) -> (SessionProbe, crate::models::SessionActiveContext) {
     let age = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
+    use crate::models::SessionActiveContext as Context;
     if age > 24.0 * 3600.0 {
-        return SessionProbe::default();
+        return (SessionProbe::default(), Context::default());
     }
     match read_tail_lines(path) {
         Ok(lines) => {
             if lines.is_empty() {
-                return SessionProbe::default();
+                return (SessionProbe::default(), Context::default());
             }
             probe_antigravity(&lines, path, age)
         }
-        Err(failure) => SessionProbe {
-            signal: None,
-            subagent_count: 0,
-            health: Some(SessionProbeHealth {
-                failure,
-                path: path.to_string(),
-                observed_at: 0,
-            }),
-        },
+        Err(failure) => (
+            SessionProbe {
+                signal: None,
+                subagent_count: 0,
+                health: Some(SessionProbeHealth {
+                    failure,
+                    path: path.to_string(),
+                    observed_at: 0,
+                }),
+            },
+            Context::default(),
+        ),
     }
 }
 
@@ -796,7 +806,7 @@ mod health_chain {
     fn an_unreadable_file_carries_a_reason_and_an_empty_one_does_not() {
         // ① 文件在，但内容解析不出任何东西 ⇒ 「读到了、但没信号」：**没有**理由
         let sandbox = write(&[r#"{"type":"user","content":"hi"}"#]);
-        let ok = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap());
+        let ok = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap()).0;
         assert!(ok.signal.is_none());
         assert!(
             ok.health.is_none(),
@@ -806,7 +816,7 @@ mod health_chain {
         // ② 文件读不出来（这里用「路径是目录」构造）⇒ **有**理由
         let dir_sandbox = crate::testutil::Sandbox::new("healthdir");
         std::fs::create_dir_all(dir_sandbox.path().join("s.jsonl")).unwrap();
-        let broken = probe_dialect("claude", crate::models::SessionDialect::GenericTail, dir_sandbox.path().join("s.jsonl").to_str().unwrap());
+        let broken = probe_dialect("claude", crate::models::SessionDialect::GenericTail, dir_sandbox.path().join("s.jsonl").to_str().unwrap()).0;
         assert!(broken.signal.is_none());
         let health = broken.health.expect("读不到就必须留下理由");
         assert_eq!(health.failure, SessionProbeFailure::UnreadableFile);
@@ -823,7 +833,7 @@ mod health_chain {
     #[test]
     fn a_window_with_no_parseable_line_is_reported_as_undecodable() {
         let sandbox = write(&["这不是 JSON", "这也不是"]);
-        let probe = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap());
+        let probe = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap()).0;
         let health = probe.health.expect("读不懂就必须留下理由");
         assert_eq!(health.failure, SessionProbeFailure::UndecodableFile);
         assert!(health.diagnostic_text().contains("格式与解析器不匹配"));
@@ -844,7 +854,7 @@ mod health_chain {
             "[\n  {\n    \"type\": \"ask\", \"ask\": \"command\", \"text\": \"ls\"\n  }\n]",
         )
         .unwrap();
-        let probe = probe_dialect("cline", crate::models::SessionDialect::GenericTail, path.to_str().unwrap());
+        let probe = probe_dialect("cline", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()).0;
         assert!(
             probe.health.is_none(),
             "跨行数组不是「读不懂」：{:?}",
@@ -1159,6 +1169,7 @@ mod qoder_tests {
             crate::models::SessionDialect::QoderTranscript,
             sandbox.path().join("sess-uuid.jsonl").to_str().unwrap(),
         )
+        .0
     }
 
     /// ① 等确认优先于在途执行：球在用户这边的工具先判。
@@ -1606,7 +1617,11 @@ const ANTIGRAVITY_ASK_TOOLS: [&str; 3] = ["ask_question", "askquestion", "ask_us
 /// 子任务数、Token 细分那一块）。Rust 侧连那个字段都还没有，
 /// 所以这里先不做——**宁可少显示，不要显示错的**。
 /// 剩余工作量记在对照表 §6.3。
-fn probe_antigravity(lines: &[String], path: &str, file_age_secs: f64) -> SessionProbe {
+fn probe_antigravity(
+    lines: &[String],
+    path: &str,
+    file_age_secs: f64,
+) -> (SessionProbe, crate::models::SessionActiveContext) {
     // 预扫：每行的 (step_index, type, 有无 tool_calls)
     // 用途是回答「这个 ask_question 是不是**已经有人答过**」——尾窗里可能同时
     // 留着请求与回答，只看当前行会把它当成仍在等。
@@ -1623,6 +1638,93 @@ fn probe_antigravity(lines: &[String], path: &str, file_age_secs: f64) -> Sessio
             )
         })
         .collect();
+
+    // ---- 上下文收集（与状态判定同一次遍历，不额外读文件）----
+    let mut context = crate::models::SessionActiveContext::default();
+    {
+        use crate::models::{BackgroundTask, TokenBreakdown};
+        let mut launched: Vec<(String, String)> = Vec::new(); // (id, 描述)
+        let mut finished: std::collections::HashSet<String> = Default::default();
+        let (mut p, mut c, mut cr, mut cw, mut th, mut tot) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
+        for raw in lines {
+            let Ok(obj) = serde_json::from_str::<Value>(raw) else { continue };
+            let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("");
+
+            // Token 细分：源可能把 usage 放在三个不同的键下
+            for key in ["usageMetadata", "usage", "token_count"] {
+                let Some(usage) = obj.get(key) else { continue };
+                let pick = |names: &[&str]| -> i64 {
+                    names
+                        .iter()
+                        .find_map(|n| usage.get(*n).and_then(|v| v.as_i64()))
+                        .unwrap_or(0)
+                };
+                p += pick(&["promptTokenCount", "prompt_tokens", "input_tokens"]);
+                c += pick(&["candidatesTokenCount", "candidates_tokens", "output_tokens"]);
+                cr += pick(&["cachedContentTokenCount", "cache_read_tokens"]);
+                cw += pick(&["cache_write_tokens"]);
+                th += pick(&["thoughtsTokenCount", "reasoning_tokens"]);
+                tot += pick(&["totalTokenCount", "total_tokens"]);
+            }
+
+            // 后台任务：启动 → 完成 / 取消 / 被杀
+            if content.contains("Tool is running as a background task with task id:") {
+                if let Some(id) = content
+                    .split("task id:")
+                    .nth(1)
+                    .map(|rest| rest.split_whitespace().next().unwrap_or("").to_string())
+                    .filter(|id| !id.is_empty())
+                {
+                    let desc = content
+                        .split("task id:")
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim()
+                        .trim_start_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+                        .to_string();
+                    launched.push((id, antigravity_action_text(&desc)));
+                }
+            }
+            if content.contains("finished with result:")
+                || content.contains("cancelled")
+                || content.contains("was killed")
+                || content.contains("Wait cancelled")
+            {
+                for (id, _) in &launched {
+                    if content.contains(id.as_str()) {
+                        finished.insert(id.clone());
+                    }
+                }
+            }
+            // `manage_task` 的 kill 动作
+            if let Some(calls) = obj.get("tool_calls").and_then(|v| v.as_array()) {
+                for call in calls {
+                    let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                    if (name.contains("managetask") || name.contains("manage_task"))
+                        && call.get("args").and_then(|a| a.get("Action")).and_then(|v| v.as_str())
+                            == Some("kill")
+                    {
+                        if let Some(tid) = call
+                            .get("args")
+                            .and_then(|a| a.get("TaskId"))
+                            .and_then(|v| v.as_str())
+                        {
+                            finished.insert(tid.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        // **只列未交付的**：任务结束就该消失，留着会让用户以为机器上还挂着活
+        context.background_tasks = launched
+            .into_iter()
+            .filter(|(id, _)| !finished.contains(id))
+            .map(|(id, action)| BackgroundTask { id, action })
+            .collect();
+        if tot > 0 || p + c + cr + cw + th > 0 {
+            context.token_breakdown = Some(TokenBreakdown::new(p, c, cr, cw, th, tot));
+        }
+    }
 
     // 从尾部逆序推导当前状态
     for obj in lines.iter().rev().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()) {
@@ -1660,14 +1762,14 @@ fn probe_antigravity(lines: &[String], path: &str, file_age_secs: f64) -> Sessio
                         })
                         .filter(|q| !q.is_empty())
                         .unwrap_or_else(|| "等待你的确认".into());
-                    return attention_like(path, &format!("ask-{step_index}"), &question);
+                    return (attention_like(path, &format!("ask-{step_index}"), &question), context.clone());
                 }
             }
 
             // ② 正在执行工具调用。**保护期只有 5 分钟**——
             // 之后那行仍留在文件里，但不代表它还在跑。
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return SessionProbe::default();
+                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
             }
             let action = tool_calls
                 .and_then(|c| c.first())
@@ -1686,7 +1788,7 @@ fn probe_antigravity(lines: &[String], path: &str, file_age_secs: f64) -> Sessio
                         .map(str::to_string)
                 })
                 .unwrap_or_else(|| "执行中".into());
-            return active_like(path, &fp, &action);
+            return (active_like(path, &fp, &action), context.clone());
         }
 
         // ③ 规划响应 / 最终回答：有内容给用户，或明确 DONE 且没有活跃思考
@@ -1695,48 +1797,51 @@ fn probe_antigravity(lines: &[String], path: &str, file_age_secs: f64) -> Sessio
         let thinking = obj.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
         if (!content.is_empty()) || (status == "DONE" && thinking.is_empty()) {
             if file_age_secs <= ANTIGRAVITY_COMPLETED_MAX_AGE_SECS {
-                return SessionProbe {
-                    signal: Some(Signal::Completed(fp)),
-                    subagent_count: 0,
-                    health: None,
-                };
+                return (
+                    SessionProbe {
+                        signal: Some(Signal::Completed(fp)),
+                        subagent_count: 0,
+                        health: None,
+                    },
+                    context.clone(),
+                );
             }
-            return SessionProbe::default(); // 15 分钟后自然转入待机
+            return (SessionProbe::default(), crate::models::SessionActiveContext::default()); // 15 分钟后自然转入待机
         }
 
         // ④ 只有思考、无工具也无最终内容 ⇒ 正在思考规划
         if !thinking.is_empty() {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return SessionProbe::default();
+                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
             }
-            return active_like(path, &fp, "思考规划中");
+            return (active_like(path, &fp, "思考规划中"), context.clone());
         }
 
         // ⑤ 用户刚发完输入，模型正在启动准备
         if step_type == "USER_INPUT" {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return SessionProbe::default();
+                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
             }
-            return active_like(path, &fp, "思考规划中");
+            return (active_like(path, &fp, "思考规划中"), context.clone());
         }
 
         // ⑥ 工具输出返回，等待下一拍调度
         if step_type == "TOOL_OUTPUT" {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return SessionProbe::default();
+                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
             }
-            return active_like(path, &fp, "处理中");
+            return (active_like(path, &fp, "处理中"), context.clone());
         }
 
         // ⑦ 系统通知 / 任务完成结果
         if step_type == "SYSTEM_MESSAGE" {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return SessionProbe::default();
+                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
             }
-            return active_like(path, &fp, "处理任务结果中");
+            return (active_like(path, &fp, "处理任务结果中"), context.clone());
         }
     }
-    SessionProbe::default()
+    (SessionProbe::default(), context)
 }
 
 fn active_like(path: &str, fingerprint_key: &str, action: &str) -> SessionProbe {
@@ -1774,7 +1879,7 @@ mod antigravity_tests {
     #[test]
     fn an_unanswered_question_is_attention_with_its_text() {
         let lines = lines_of(&[r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"ask_question","args":{"questions":"[{\"question\":\"要不要继续？\"}]"}}]}"#]);
-        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal {
             Some(Signal::Attention(_, message)) => assert_eq!(message, "要不要继续？"),
             other => panic!("应当是等确认：{other:?}"),
         }
@@ -1789,11 +1894,11 @@ mod antigravity_tests {
     fn an_old_tool_call_line_is_not_still_running() {
         let lines = lines_of(&[r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"run_terminal","args":{"toolAction":"npm test"}}]}"#]);
         assert!(matches!(
-            probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal,
+            probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal,
             Some(Signal::Active(_, _))
         ));
         assert!(
-            probe_antigravity(&lines, "/tmp/x.jsonl", 6.0 * 60.0).signal.is_none(),
+            probe_antigravity(&lines, "/tmp/x.jsonl", 6.0 * 60.0).0.signal.is_none(),
             "超过 5 分钟保护期就不该再说它在跑"
         );
     }
@@ -1803,11 +1908,11 @@ mod antigravity_tests {
     fn a_final_answer_completes_and_then_goes_stale() {
         let lines = lines_of(&[r#"{"step_index":9,"type":"ASSISTANT","content":"改好了"}"#]);
         assert!(matches!(
-            probe_antigravity(&lines, "/tmp/x.jsonl", 10.0 * 60.0).signal,
+            probe_antigravity(&lines, "/tmp/x.jsonl", 10.0 * 60.0).0.signal,
             Some(Signal::Completed(_))
         ));
         assert!(
-            probe_antigravity(&lines, "/tmp/x.jsonl", 16.0 * 60.0).signal.is_none(),
+            probe_antigravity(&lines, "/tmp/x.jsonl", 16.0 * 60.0).0.signal.is_none(),
             "完成态过了 15 分钟就该自然回到待机"
         );
     }
@@ -1817,7 +1922,7 @@ mod antigravity_tests {
     #[test]
     fn done_with_active_thinking_is_not_yet_complete() {
         let lines = lines_of(&[r#"{"step_index":9,"type":"ASSISTANT","status":"DONE","thinking":"再想想"}"#]);
-        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal {
             Some(Signal::Active(_, action)) => {
                 assert_eq!(action.as_deref(), Some("思考规划中"))
             }
@@ -1830,7 +1935,7 @@ mod antigravity_tests {
     #[test]
     fn a_user_input_without_content_counts_as_getting_ready() {
         let lines = lines_of(&[r#"{"step_index":1,"type":"USER_INPUT"}"#]);
-        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal {
             Some(Signal::Active(_, action)) => {
                 assert_eq!(action.as_deref(), Some("思考规划中"))
             }
@@ -1842,7 +1947,7 @@ mod antigravity_tests {
     #[test]
     fn a_tool_output_without_content_means_waiting_for_the_next_turn() {
         let lines = lines_of(&[r#"{"step_index":8,"type":"TOOL_OUTPUT"}"#]);
-        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal {
+        match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal {
             Some(Signal::Active(_, action)) => assert_eq!(action.as_deref(), Some("处理中")),
             other => panic!("应当是「处理中」：{other:?}"),
         }
@@ -1872,7 +1977,7 @@ mod antigravity_tests {
             let lines = lines_of(&[row]);
             assert!(
                 matches!(
-                    probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).signal,
+                    probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal,
                     Some(Signal::Completed(_))
                 ),
                 "{why} 带 content 时被判成完成——这是从 macOS 侧照搬的行为，见本用例注释"
@@ -1884,8 +1989,118 @@ mod antigravity_tests {
     /// 读到了、只是没有可判定的东西，与「读不到」是两件事。
     #[test]
     fn an_empty_window_is_not_reported_as_unreadable() {
-        let probe = probe_antigravity(&[], "/tmp/x.jsonl", 60.0);
+        let probe = probe_antigravity(&[], "/tmp/x.jsonl", 60.0).0;
         assert!(probe.signal.is_none());
         assert!(probe.health.is_none(), "没有行不等于读不到");
+    }
+}
+
+/// Antigravity 后台任务的描述归一化：剥掉环境变量前缀（`arch -x86_64 …`），
+/// 只留人能读的那截。
+fn antigravity_action_text(raw: &str) -> String {
+    let cleaned: String = raw
+        .replace("running command:", "")
+        .replace("in background", "")
+        .trim()
+        .to_string();
+    let mut text: String = one_line(&cleaned, 40);
+    // 剥掉开头的工具链前缀
+    for prefix in ["arch ", "/usr/bin/arch ", "env ", "SDKROOT=", "TIMER=periodic "] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            text = rest.trim_start().to_string();
+        }
+    }
+    if text.is_empty() {
+        "执行后台任务中".to_string()
+    } else {
+        text
+    }
+}
+
+/// Antigravity 的**上下文**（后台任务 / Token 细分）。
+///
+/// 上一版把上下文做成「跟 `SessionProbe` 走的一个字段」时，得给一百多处字面量
+/// 补字段；改成**方言入口返回一对**之后，只动了入口与引擎各一处。
+/// 那条弯路记在这里，是因为它换来的设计更好：
+/// 上下文**只有 Antigravity 一族产出**，让它走返回值就不会把
+/// 「每个 Agent 都有上下文」这个错觉写进类型里。
+#[cfg(test)]
+mod antigravity_context_tests {
+    use super::*;
+
+    fn ctx_of(lines: &[&str]) -> crate::models::SessionActiveContext {
+        probe_antigravity(
+            &lines.iter().map(|l| (*l).to_string()).collect::<Vec<_>>(),
+            "/tmp/x.jsonl",
+            60.0,
+        )
+        .1
+    }
+
+    /// **只列未交付的后台任务**。
+    ///
+    /// 交付了就该消失——留着会让用户以为机器上还挂着活，而那正是它显示这个胶囊的目的。
+    #[test]
+    fn only_undelivered_background_tasks_are_listed() {
+        let running = ctx_of(&[r#"{"content":"Tool is running as a background task with task id: t-1 running command: npm test"}"#]);
+        assert_eq!(running.background_tasks.len(), 1, "在跑的要列出来");
+        assert_eq!(running.background_tasks[0].id, "t-1");
+        assert!(
+            running.background_tasks[0].action.contains("npm test"),
+            "描述要带得上去：{:?}",
+            running.background_tasks[0].action
+        );
+
+        let done = ctx_of(&[
+            r#"{"content":"Tool is running as a background task with task id: t-1 running command: npm test"}"#,
+            r#"{"content":"background task t-1 finished with result: ok"}"#,
+        ]);
+        assert!(
+            done.background_tasks.is_empty(),
+            "已交付的不该还在列表里：{:?}",
+            done.background_tasks
+        );
+    }
+
+    /// 被 `manage_task` 杀掉的任务也算交付。
+    #[test]
+    fn a_task_killed_through_manage_task_stops_being_listed() {
+        let ctx = ctx_of(&[
+            r#"{"content":"Tool is running as a background task with task id: t-9 running command: make"}"#,
+            r#"{"tool_calls":[{"name":"manage_task","args":{"Action":"kill","TaskId":"t-9"}}]}"#,
+        ]);
+        assert!(ctx.background_tasks.is_empty());
+    }
+
+    /// Token 细分只在**真的读到**时给值；读不到是 `None`，不是「全 0」。
+    #[test]
+    fn the_token_breakdown_is_absent_rather_than_zero_when_nothing_is_reported() {
+        let none = ctx_of(&[r#"{"step_index":1,"content":"没有 usage 字段"}"#]);
+        assert!(
+            none.token_breakdown.is_none(),
+            "没报细分 ≠ 报 0：{:?}",
+            none.token_breakdown
+        );
+
+        let some = ctx_of(&[r#"{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":30,"thoughtsTokenCount":5,"totalTokenCount":155}}"#]);
+        let tb = some.token_breakdown.expect("读到了就该有");
+        assert_eq!(tb.prompt_tokens, 100);
+        assert_eq!(tb.completion_tokens, 20);
+        assert_eq!(tb.cache_read_tokens, 30);
+        assert_eq!(tb.reasoning_tokens, 5);
+        assert_eq!(tb.total_tokens, 155, "源给了 total 就用它");
+    }
+
+    /// `total` 缺失时**相加**——但那五项是**分类**（prompt 含 cache read、
+    /// completion 含 reasoning），所以相加只在源没给总数时才是唯一选择。
+    #[test]
+    fn the_total_falls_back_to_the_sum_only_when_the_source_omits_it() {
+        let tb = crate::models::TokenBreakdown::new(100, 20, 30, 5, 5, 0);
+        assert_eq!(tb.total_tokens, 160, "源没给 total 时才相加");
+        // 源给了就以源为准，**不与相加取大**——
+        // 源报 50 而五项相加是 160，说明它用的是另一套分类口径，
+        // 取大等于把两套口径混起来
+        let given = crate::models::TokenBreakdown::new(100, 20, 30, 5, 5, 50);
+        assert_eq!(given.total_tokens, 50, "源给了 total 就用它");
     }
 }
