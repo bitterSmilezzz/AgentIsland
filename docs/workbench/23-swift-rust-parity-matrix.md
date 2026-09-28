@@ -457,24 +457,35 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
      对应 Swift 侧 `EngineTests` / `AntigravityTracking` / `QoderTracking` / `DSHTracking` 四个文件的 133 条。
      所以下面用的是**另一种对照**。
    - **按「被测的对外函数」对照**（客观、可复跑）：
-     扫 `app/src-tauri/src/**/*.rs` 里所有 `pub fn`，减去在 `#[cfg(test)]` 段里
-     出现过的那些 ⇒ **29 个 `pub fn` 没有任何用例提到**。清单按后果排序：
+     扫 `app/src-tauri/src/**/*.rs` 里所有 `pub fn`，沿调用图做闭包
+     （被用例直接调到、或被「被用例调到的东西」调用 ⇒ 算覆盖）⇒
+     **13 个 `pub fn` 真的没有任何用例覆盖**。
+     ⚠️ **v0.0.224 初版写的是 29 个，是错的**——那版只按「名字在测试代码里出现过」
+     判定，于是 `selfreport::is_believable`、`provider::plan_codex_apply`、
+     `filemon::probe_files`、`remote::contains_placeholder`、
+     `webhook::token_file_path` 全被误报成「未覆盖」（它们的用例是通过调用方间接触发的），
+     还把 `extern` 声明与 `#[cfg]` 重复的同名函数各算了一次。
+     **一份会骗人的覆盖率清单比没有更糟**——它让人以为已经看过了。
+   - 本轮补掉的（13 → 11）：
 
-     | 函数 | 错了会怎样 | 处理 |
+     | 函数 | 为什么它值得有用例 | 状态 |
      | :--- | :--- | :--- |
-     | `audit::escape_csv` | 报告里的公式被电子表格执行 | ✅ **v0.0.224 已补**（CSV 公式注入，两端同步修） |
-     | `selfreport::is_believable` | 过期自报仍被采信 | 记录，待补 |
-     | `provider::plan_codex_apply` | 切档位写错文件 | 记录，待补 |
-     | `filemon::probe_files` | 探测候选错 ⇒ 会话信号静默为空 | 记录，待补 |
-     | `remote::contains_placeholder` | 占位密钥被当成真密钥 | 记录，待补 |
-     | `budget::is_exceeded` / `reset` | 预算告警不触发 | 记录，待补 |
-     | `forecast::saturating_product` / `cost_product` | 月末预测算错 | 记录，待补 |
-     | `placement::*`（4 个）、`procmon::{core_count, all_names}`、`models::duration_text`、`webhook::event_port`、`engine::pending_count`、`audit::file_timestamp_text`、`provider::store_dir`、`webhook::token_file_path`、`webhook::webhook_uuid` | 见各文件注释 | 记录，待补 |
+     | `audit::escape_csv` | 报告里的公式被电子表格执行 | ✅ v0.0.224 |
+     | `power::is_screen_locked` | **恒为 `false` 这个取舍没人守**——而那段手写 FFI 曾 SIGSEGV，任何一次「顺手优化」都会把它请回来 | ✅ v0.0.225（连带 `idle_seconds` 不得返回假的 0） |
+     | `observability::has_local_detail_source` | 它是**关于证据的断言**，会出现在「结论可信吗」那句话里 | ✅ v0.0.225 |
 
-   - **`power.rs` 的 7 个几乎全空**：屏幕锁判定与显示休眠判定**一个用例都没有**。
-     `is_screen_locked` 的注释写着「手写 CoreFoundation FFI 曾 SIGSEGV 而整段删除，
-     恒为 `false`」——那么至少「它恒为 false」这件事该有用例钉住，否则哪天有人
-     「顺手修一下」就会把那段危险代码请回来。**这条优先级最高。**
+   - **剩下 11 个**（本轮没补，按后果排序）：
+     `session::for_each_line`（尾读；也是一条编译警告的来源）、
+     `tokens::parse_iso_ms_pub`（ISO 时间戳解析，喂 `probe_zcode` 的新鲜度判定）、
+     `webhook::webhook_uuid`（id 生成，v0.0.223 刚换过熵源）、
+     `budget::{is_exceeded, reset}`、`models::{duration_text, summary}`、
+     `placement::{place, work_area_at, work_area_under_cursor}`、
+     `procmon::{core_count, all_names}`。
+
+   - **`power.rs` 那条已处理**（见上表）。它原先被列为「7 个零覆盖」是误计：
+     其中三个是 `extern` 声明（不是函数）、两个是 `#[cfg]` 两分支的同名函数，
+     真正没覆盖的只有 `is_screen_locked`（v0.0.225 已钉）与 `is_display_asleep`（被
+     `presence_signals` 的真机冒烟间接覆盖）。
    - **没做的**：Swift 侧也做一份同样的「未被用例覆盖的 `public func`」扫描，
      然后做**双向**对照（哪边有哪边没有）。本轮只扫了 Rust 一侧。
 5. ~~`report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对~~

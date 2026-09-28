@@ -258,3 +258,90 @@ mod tests {
         let _ = presence_signals();
     }
 }
+
+/// 锁屏判定这一段的行为**逐字钉住**。
+///
+/// 防的不是「锁屏没判对」，是「有人把它改回去」。曾经按 Swift 的形状手写过
+/// 一版从会话字典读锁屏标记的实现，**段错误**（把字典值当成 `CFBoolean`
+/// 调 `CFBooleanGetValue`），于是整段删掉、恒为 `false`。
+///
+/// 恒为 `false` 的代价是「人锁屏了也照发外发通知」，比反过来好——
+/// 上层按 fail-open 处理，判成「人还在」只是多发一条；返回一个猜的 `true`
+/// 会让「只在人不在时发」永远不发。**但这个取舍必须有人守着**：
+/// 「删掉了一段会崩的 unsafe」在代码里只表现为「这个函数有点简单」，
+/// 任何一次「顺手优化一下」都可能把它请回来，而它一回来就是段错误。
+///
+/// 所以这条用例同时钉住**行为**与**实现**两件事。
+#[test]
+fn the_screen_lock_probe_stays_pinned_to_false() {
+    assert!(
+        !is_screen_locked(),
+        "锁屏判定恒为 false 是刻意的取舍；改它之前先读模块头里那段 SIGSEGV 的记录"
+    );
+    // 扫的是**实现段**，两处都要处理：
+    // ① 先剥掉注释——这个文件自己的模块头就写着「把字典值当成 CFBoolean 调
+    //    CFBooleanGetValue」，那是我要记下的**证据**；直接扫原文会把它当成
+    //    「危险代码回来了」（第一版就栽在这儿，红色报的是模块头那行记录）。
+    // ② 再截到第一个 `#[cfg(test)]` 之前——否则**这条用例自己的禁用词表**
+    //    也会被扫进去，于是它必然把自己判红。自指的守护等于没有守护。
+    let implementation: String = include_str!("power.rs")
+        .split_once("#[cfg(test)]")
+        .map(|(head, _)| head)
+        .unwrap_or("")
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source = implementation.as_str();
+    for forbidden in [
+        "CFBooleanGetValue",
+        "CFDictionaryGetValue",
+        "CFDictionaryCreate",
+        "kCFBooleanTrue",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "power.rs 里出现了 {forbidden}——那正是段错误过的那条路"
+        );
+    }
+}
+
+/// 取信号那几条在真机上必须自洽，**但不断言这台机器此刻的状态**
+/// （那是环境，不是产品行为）。断言的是「不会返回一个假的 0」。
+///
+/// 「一整天没碰键盘」与「取不到」是两件事，函数必须能分开——
+/// 上层看到 `Some(0)` 会判成「刚刚动过 ⇒ 人一直在」，那与事实相反。
+#[test]
+fn idle_seconds_never_reports_a_false_zero() {
+    match idle_seconds() {
+        None => {} // 取不到 ⇒ fail-open，正确
+        Some(seconds) => {
+            assert!(seconds >= 0.0, "负数时长是荒谬的：{seconds}");
+            assert!(
+                seconds < 24.0 * 3600.0,
+                "过了 24h 应当返回 None 而不是那个数，收到 {seconds}"
+            );
+            // 0 只有一种合法含义：这一拍刚动过。它不该是「读数缺失被折成零」，
+            // 而那正是我们防的谎报。真机上「恰好 0」几乎不可能，
+            // 出现就说明底层取不到而代码折成了 0。
+            assert!(
+                seconds > 0.0,
+                "idle_seconds 返回了 0：这是「取不到」被折成「刚刚动过」的形态"
+            );
+        }
+    }
+}
+
+/// `presence_signals` 是上层唯一入口，三项必须同时可用且形状自洽。
+#[test]
+fn the_presence_snapshot_is_internally_consistent() {
+    let signals = presence_signals();
+    // 锁屏恒 false ⇒ 显示器休眠是唯一的「人不在」硬信号
+    assert!(!signals.screen_locked, "见 is_screen_locked 那条：恒为 false");
+    // 三项都由真机 API 取，任何一项 panic 都是事故
+    let _ = signals.display_asleep;
+    let _ = signals.idle_seconds;
+}

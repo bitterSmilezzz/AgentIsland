@@ -321,3 +321,78 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod local_detail_tests {
+    use super::*;
+    use crate::models::AgentProfile;
+
+    fn profile(id: &str, dirs: Vec<&str>, roots: Vec<&str>) -> AgentProfile {
+        AgentProfile {
+            id: id.into(),
+            name: id.into(),
+            glyph: "x".into(),
+            emoji: "x".into(),
+            process_names: vec![],
+            bundle_ids: vec![],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: None,
+            session_dirs: dirs.into_iter().map(String::from).collect(),
+            token_roots: roots.into_iter().map(String::from).collect(),
+            token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
+            session_database: None,
+            category: "assistant".into(),
+        }
+    }
+
+    /// 「有没有本地明细源」是一条**关于证据的断言**——它会出现在
+    /// 「结论可信吗」那句话里。判错的后果是把「读不到」说成「没有明细」。
+    #[test]
+    fn having_any_declared_source_means_the_claim_is_honest() {
+        assert!(has_local_detail_source(&profile("a", vec!["/x"], vec![])));
+        assert!(has_local_detail_source(&profile("b", vec![], vec!["/y"])));
+        assert!(
+            !has_local_detail_source(&profile("c", vec![], vec![])),
+            "两处都没声明 ⇒ 不能声称有本地明细源"
+        );
+    }
+
+    /// **「声明了」不等于「读得到」**：目录可能压根不存在。
+    ///
+    /// 这一条要分清是因为它与 `is_observable` 的其它判据方向相反——
+    /// 那边是「读不到就不给结论」，而这条只回答「有没有声明过来源」。
+    /// 把两者混起来会得到一句既不真也不假的「本地无明细」。
+    #[test]
+    fn a_declared_but_absent_directory_still_counts_as_a_source() {
+        let absent = profile("d", vec!["/definitely/not/here/xyz"], vec![]);
+        assert!(
+            has_local_detail_source(&absent),
+            "这条只回答「有没有声明过来源」，不回答「现在读不读得到」"
+        );
+        // `evaluate` 那条路才产出「可不可观测」的结论。
+        // 声明了来源但一条都没读到时，结论必须落到 `NoLocalData`——
+        // 「有来源」与「有数据」是两件事，把前者当成后者就会说出一句谎话。
+        let verdict = evaluate(&Evidence {
+            // **必须是非空闲态的对面**：level 若是 Working / Attention / Completed，
+            // `evaluate` 会在更早一支直接判「已观测」而根本走不到这条规则。
+            // 这也是为什么这条断言要放在最后 —— 它钉的是「空闲 + 声明了来源」这一格。
+            level: crate::models::ActivityLevel::Idle,
+            process_running: true,
+            installed: Some(true),
+            provenance: None,
+            active_sessions: 0,
+            probe_health: None,
+            probe_health_fresh: true,
+            has_local_detail_source: true,
+            has_token_usage: false,
+        });
+        assert_eq!(
+            verdict.code,
+            Code::NoLocalData,
+            "声明了来源却没有任何数据时，不该说成「已观测」"
+        );
+    }
+}
