@@ -46,6 +46,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_database: Some(SessionDatabase {
                 path: p(&[".dimcode", "v2", "dimcode.sqlite"]),
                 schema: SessionSchema::DimTasks,
+                status_sql: None,
             }),
             category: "assistant".into(),
         },
@@ -65,7 +66,15 @@ pub fn builtin() -> Vec<AgentProfile> {
             token_roots: vec![p(&[".zcode", "cli", "rollout"])],
             token_alert_floor: None,
             session_dialect: SessionDialect::GenericTail,
-            session_database: Some(SessionDatabase { path: p(&[".zcode", "v2", "tasks-index.sqlite"]), schema: SessionSchema::StatusIndex }),
+            session_database: Some(SessionDatabase {
+                path: p(&[".zcode", "v2", "tasks-index.sqlite"]),
+                schema: SessionSchema::StatusIndex,
+                // 真库实测：`tasks` 的主键是 (workspace_key, task_id)，**没有 `id` 列**
+                status_sql: Some(
+                    "SELECT task_id, task_status, updated_at FROM tasks WHERE deleted = 0 AND archived = 0 ORDER BY updated_at DESC LIMIT 1;"
+                        .into(),
+                ),
+            }),
             category: "assistant".into(),
         },
         AgentProfile {
@@ -193,7 +202,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             token_roots: vec![],
             token_alert_floor: None,
             session_dialect: SessionDialect::GenericTail,
-            session_database: Some(SessionDatabase { path: p(&[".local", "share", "opencode", "opencode.db"]), schema: SessionSchema::OpenCode }),
+            session_database: Some(SessionDatabase { path: p(&[".local", "share", "opencode", "opencode.db"]), schema: SessionSchema::OpenCode, status_sql: None }),
             category: "assistant".into(),
         },
         AgentProfile {
@@ -219,6 +228,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_database: Some(SessionDatabase {
                 path: p(&[".local", "share", "mimocode", "mimocode.db"]),
                 schema: SessionSchema::OpenCode,
+                status_sql: None,
             }),
             category: "assistant".into(),
         },
@@ -365,7 +375,16 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 而超大规模死循环（远高于此）依然能熔断
             token_alert_floor: Some(WORKBUDDY_TOKEN_FLOOR),
             session_dialect: SessionDialect::GenericTail,
-            session_database: None,
+            // 状态索引在真库上验过（2026-09：`~/.workbuddy/workbuddy.db`
+            // 的 `sessions` 表确有 id/status/updated_at/deleted_at 四列）
+            session_database: Some(SessionDatabase {
+                path: p(&[".workbuddy", "workbuddy.db"]),
+                schema: SessionSchema::StatusIndex,
+                status_sql: Some(
+                    "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
+                        .into(),
+                ),
+            }),
             category: "assistant".into(),
         },
         AgentProfile {
@@ -388,7 +407,15 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 而超大规模死循环（远高于此）依然能熔断
             token_alert_floor: Some(WORKBUDDY_TOKEN_FLOOR),
             session_dialect: SessionDialect::GenericTail,
-            session_database: None,
+            // 与国内版同一张表形（真库验过，列名一致）
+            session_database: Some(SessionDatabase {
+                path: p(&[".workbuddy-ai", "workbuddy.db"]),
+                schema: SessionSchema::StatusIndex,
+                status_sql: Some(
+                    "SELECT id, status, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1;"
+                        .into(),
+                ),
+            }),
             category: "assistant".into(),
         },
         AgentProfile {

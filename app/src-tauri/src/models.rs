@@ -114,6 +114,17 @@ impl DockEdge {
 pub struct SessionDatabase {
     pub path: String,
     pub schema: SessionSchema,
+    /// [`SessionSchema::StatusIndex`] 那一族的查询语句（`None` = 该表名与状态列不由档案给出）。
+    ///
+    /// **必须由档案声明，不能在代码里写死**：同一张 `statusIndex` 表形下，
+    /// 列名逐个产品不同（workbuddy 的 `sessions.id/status/deleted_at` 与
+    /// zcode 的 `tasks.task_id/task_status/deleted` 毫无共同点），
+    /// 而写死的那份在本机上恒定 prepare 失败——失败是静默的，
+    /// 引擎把它当成「这个 Agent 没有终态」，于是信号永不响、界面看不出异样。
+    ///
+    /// 声明式还有一个好处：新增同形 fork 只改档案，不动代码（ADR 0004）。
+    #[serde(default)]
+    pub status_sql: Option<String>,
 }
 
 /// 表形与方言：查询按**形状**路由，不按产品名——新增同形 fork 只改档案（ADR 0004）

@@ -1374,6 +1374,7 @@ mod tests {
             session_database: Some(crate::models::SessionDatabase {
                 path: path.clone(),
                 schema: SessionSchema::OpenCode,
+                status_sql: None,
             }),
             category: "assistant".into(),
         };
@@ -1455,6 +1456,7 @@ mod tests {
             session_database: Some(crate::models::SessionDatabase {
                 path: path.clone(),
                 schema: SessionSchema::StatusIndex,
+                status_sql: None,
             }),
             category: "assistant".into(),
         };

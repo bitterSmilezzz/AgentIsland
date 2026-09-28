@@ -39,11 +39,19 @@ pub struct SessionProbeHealth {
 impl SessionProbeHealth {
     /// 详情与报告里显示的那一行。先说结论，再说这条结论的边界。
     pub fn diagnostic_text(&self) -> String {
-        format!(
-            "会话源不可读：{}（{}）——此后的「待机」只代表没有读到信号，不代表智能体真的空闲",
-            self.failure.label(),
-            self.path
-        )
+        match &self.failure {
+            // 库查询失败时把 SQLite 的话原样带出来：不给它，用户看到的是
+            // 「这个 Agent 没有待确认」，而真相是「我们连状态都没查到」
+            SessionProbeFailure::UnreadableDatabase(detail) => format!(
+                "会话库查询失败：{detail}（{}）——此后的「待机」只代表没有查到状态，不代表智能体真的空闲",
+                self.path
+            ),
+            other => format!(
+                "会话源不可读：{}（{}）——此后的「待机」只代表没有读到信号，不代表智能体真的空闲",
+                other.label(),
+                self.path
+            ),
+        }
     }
 
     /// 这条故障还新鲜吗。超过 `window_ms` 就当它已经过去——
@@ -53,7 +61,7 @@ impl SessionProbeHealth {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionProbeFailure {
     /// 会话文件在，但读不出来（权限拒绝 / 是目录 / 读取抛错）
     UnreadableFile,
@@ -62,6 +70,14 @@ pub enum SessionProbeFailure {
     /// 与「文件里确实没有待确认事项」是**两件事**，不得混为一谈：
     /// 前者是「我们读不懂」，后者是「读懂了、确实没事」。
     UndecodableFile,
+    /// **会话库**读不出信号，带 SQLite 的诊断文本（Swift 同族也是报 prepare / step 失败）
+    ///
+    /// 为什么单独一个变体而不是塞进上面两个：这一族的问题不是「文件读不了」，
+    /// 而是「查询跑不通」——最常见的是**列名对不上**（真机上 zcode 的 `id`
+    /// 实际叫 `task_id`，那条 SQL 于是恒定 prepare 失败）。
+    /// 这种失败**静默得最彻底**：返回值与「这个 Agent 没有终态」完全一样，
+    /// 于是信号永远不响、界面上看不出异样。诊断文本必须一路带到界面上。
+    UnreadableDatabase(String),
 }
 
 impl SessionProbeFailure {
@@ -69,6 +85,9 @@ impl SessionProbeFailure {
         match self {
             Self::UnreadableFile => "会话文件无法读取",
             Self::UndecodableFile => "会话文件格式与解析器不匹配",
+            // 诊断文本由 `diagnostic_text` 带出去；这里只给一个短标签
+            // （调用方会把 `label()` 塞进定长文案，SQLite 的原文另走一支）
+            Self::UnreadableDatabase(_) => "会话库查询失败",
         }
     }
 }
@@ -668,6 +687,199 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
     SessionProbe { signal: None, subagent_count: 0, health: None }
 }
 
+// MARK: - StatusIndex 方言（Swift `inspectStatusDatabase`）
+
+/// 状态索引这一族只回答一个问题：**最新一条会话现在是什么状态**。
+///
+/// 它不含 token（所以 [`crate::tokens`] 对 `StatusIndex` 返回 `None` 是对的），
+/// 但它是**唯一能报出「等待你批准」的地方**——JSONL 那一族只能看到
+/// 「模型刚跑完一次请求」，看不到「它在等一个人点确认」。
+///
+/// 三条与 Swift 同口径的规则：
+/// · **库文件超过 24h 就当没有**：那份状态索引早就不是「现在」了；
+/// · **completed 只认 15 分钟内**：更早的完成属于历史，不该再报「刚完成」；
+/// · **读不到就说读不到**：prepare / step 失败都留下 `SessionProbeHealth`，
+///   绝不静默返回「没有终态」——那两者在界面上完全一样。
+///
+/// **状态词表与 Swift 同源**（`requestStates` 与完成态列表照搬）。
+/// 词表漂了不会有人报错，只会表现为「一边报等待批准、一边不报」，
+/// 所以 [`status_vocabulary_tests`] 直接读 Swift 源文件比对。
+
+/// 「等一个人」的词表（Swift `requestStates`，**逐条照搬，15 个**）
+///
+/// **不多加词**。第一版这里凭语感补了 `requiresapproval` / `needsapproval` /
+/// `waitingapproval` 三个——听着合理，但 Swift 里没有，而本机 ZCode 实际只写
+/// `running` / `error` / `completed`。**没有任何产生点的词条就是纸面**：
+/// 它只会让「这个词看起来被支持过」成为假印象。
+/// [`status_index_tests::the_vocabulary_matches_the_swift_side`] 双向钉住这份清单。
+const REQUEST_STATES: [&str; 15] = [
+    "approvalrequest",
+    "approvalrequested",
+    "permissionrequest",
+    "permissionrequested",
+    "confirmationrequest",
+    "requiresconfirmation",
+    "needsconfirmation",
+    "pendingapproval",
+    "awaitingapproval",
+    "awaitinguserinput",
+    "waitingforuser",
+    "waitingforuserinput",
+    "userinputrequest",
+    "elicitation",
+    "approvalasked",
+];
+
+/// 完成态词表（Swift 同口径的五个）
+const COMPLETED_STATES: [&str; 5] = [
+    "completed",
+    "complete",
+    "done",
+    "succeeded",
+    "success",
+];
+
+/// 库文件保质期：24h（Swift `fileAge(path) <= 24 * 3600`）
+const STATUS_INDEX_MAX_AGE_SECS: f64 = 24.0 * 3600.0;
+/// 完成态保质期：15 分钟（Swift 同值）
+const STATUS_COMPLETED_MAX_AGE_SECS: f64 = 15.0 * 60.0;
+
+/// 与 Swift `normalized` 同口径：转小写后**只留字母数字**。
+///
+/// 于是 `Awaiting Approval`、`awaiting_approval`、`AWAITINGAPPROVAL`
+/// 三种写法归一化成同一个词。跨产品抄来的状态值大小写与分隔符都不统一，
+/// 不归一化就会逐个产品各写一份 `match`。
+pub fn normalized(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// epoch 秒的「是不是毫秒」分界（Swift 同值）。
+/// 1e10 秒 ≈ 公元 2286 年，所以任何真实时间戳都不会越过它。
+const MILLIS_EPOCH_FLOOR: f64 = 10_000_000_000.0;
+
+/// 探测状态索引。会话库的路径与查询都由档案声明（ADR 0004）。
+///
+/// 返回 `(信号, 失败原因)`——失败原因单独返回而不是塞进 `SessionProbe`，
+/// 是为了让「读不到」在这一层就可见，调用方决定要不要盖到快照上。
+pub fn probe_status_index(
+    database: &crate::models::SessionDatabase,
+    file_age_secs: f64,
+) -> (SessionProbe, Option<SessionProbeFailure>) {
+    if file_age_secs > STATUS_INDEX_MAX_AGE_SECS {
+        return (SessionProbe::default(), None);
+    }
+    let Some(sql) = database.status_sql.as_deref().filter(|s| !s.is_empty()) else {
+        // 档案声明了这一方言却没给查询：**说清是读不到**，而不是当成「没有终态」
+        return (
+            SessionProbe::default(),
+            Some(SessionProbeFailure::UnreadableDatabase("档案声明了 statusIndex 方言却没给 status_sql".into())),
+        );
+    };
+    let connection = match crate::sqlite::open_readonly(&database.path) {
+        Ok(connection) => connection,
+        Err(crate::sqlite::Failure::Missing) => return (SessionProbe::default(), None),
+        Err(crate::sqlite::Failure::OpenFailed(detail)) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(detail)),
+            )
+        }
+    };
+    let mut stmt = match connection.prepare(sql) {
+        Ok(stmt) => stmt,
+        // **prepare 失败是这一族最容易踩的坑**：列名写错时它恒定失败，
+        // 而失败被当成「没有终态」的话，这个 Agent 的信号就永远不响了。
+        // 所以这里必须把 SQLite 的诊断文本带出来。
+        Err(error) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(format!("{} · 查询：{sql}", error))),
+            )
+        }
+    };
+    let mut rows = match stmt.query([]) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(format!("{} · 查询：{sql}", error))),
+            )
+        }
+    };
+    // `rows.next()` 返回 `Result<Option<&Row>>`：**没有行**是这个库还没有会话
+    // （不是失败），**Err** 才是读不出来。两者混为一谈就是我上一轮踩的坑。
+    let row = match rows.next() {
+        Ok(Some(row)) => row,
+        Ok(None) => return (SessionProbe::default(), None),
+        Err(error) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(format!("{error} · 查询：{sql}"))),
+            )
+        }
+    };
+    let id: String = row.get(0).unwrap_or_default();
+    let status: String = row.get::<_, Option<String>>(1).unwrap_or_default().unwrap_or_default();
+    let raw_time: f64 = row.get::<_, Option<f64>>(2).unwrap_or_default().unwrap_or_default();
+
+    // 毫秒 / 秒 epoch 兼容（Swift 同一条）：有的产品写秒，有的写毫秒
+    let epoch = if raw_time > MILLIS_EPOCH_FLOOR {
+        raw_time / 1000.0
+    } else {
+        raw_time
+    };
+    // epoch 缺失或荒谬时退回文件年龄——总得有个「多久之前」
+    let age = if epoch > 0.0 {
+        (now_secs() - epoch).max(0.0)
+    } else {
+        file_age_secs
+    };
+    let fingerprint = fingerprint(&database.path, &if id.is_empty() { &database.path } else { &id });
+    let normalized_status = normalized(&status);
+
+    if REQUEST_STATES.contains(&normalized_status.as_str()) {
+        // 批准类与确认类分开说：用户要的决策不一样
+        let approval = normalized_status.contains("approval")
+            || normalized_status.contains("permission")
+            || normalized_status.contains("confirm");
+        return (
+            SessionProbe {
+                signal: Some(Signal::Attention(
+                    fingerprint,
+                    if approval { "等待你批准操作" } else { "等待你选择或确认" }.into(),
+                )),
+                subagent_count: 0,
+                health: None,
+            },
+            None,
+        );
+    }
+    if COMPLETED_STATES.contains(&normalized_status.as_str())
+        && age <= STATUS_COMPLETED_MAX_AGE_SECS
+    {
+        return (
+            SessionProbe {
+                signal: Some(Signal::Completed(fingerprint)),
+                subagent_count: 0,
+                health: None,
+            },
+            None,
+        );
+    }
+    (SessionProbe::default(), None)
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 // MARK: ZCode rollout JSONL（~/.zcode/cli/rollout/model-io-sess_*.jsonl）
 // 每行 = 一次完成的模型请求：completedAt / durationMs / model.modelId / response.toolCalls。
 // 强语义（待确认/完成）不在此文件里——安全降级为双信号近似（Mac 端同规则）；
@@ -892,10 +1104,16 @@ mod health_chain {
         let cases = [
             (SessionProbeFailure::UnreadableFile, "会话文件无法读取"),
             (SessionProbeFailure::UndecodableFile, "格式与解析器不匹配"),
+            // 库查询失败时**必须**把 SQLite 的话带出来：不给它，用户看到的是
+            // 「这个 Agent 没有待确认」，而真相是「我们连状态都没查到」
+            (
+                SessionProbeFailure::UnreadableDatabase("no such column: id".into()),
+                "no such column: id",
+            ),
         ];
         for (failure, needle) in cases {
             let health = SessionProbeHealth {
-                failure,
+                failure: failure.clone(),
                 path: "/tmp/x".into(),
                 observed_at: 0,
             };
@@ -2321,5 +2539,367 @@ mod subagent_tests {
         let text_only = extract_subagent_ids("Created the following subagents: conv-text-1, subagent-2");
         assert!(text_only.contains(&"conv-text-1".to_string()));
         assert!(text_only.contains(&"subagent-2".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod status_index_tests {
+    use super::*;
+    use crate::models::{SessionDatabase, SessionSchema};
+
+    /// 造一个 zcode 形状的状态索引库（真库 DDL 抄结构，不含真实数据）
+    fn zcode_fixture(tag: &str, ddl: &str, rows: &[(&str, &str, i64)]) -> (crate::testutil::Sandbox, String) {
+        let sandbox = crate::testutil::Sandbox::new(tag);
+        let path = sandbox.path().join("tasks-index.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(ddl).unwrap();
+        for (id, status, updated) in rows {
+            conn.execute(
+                "INSERT INTO tasks (workspace_key, workspace_path, task_id, title, task_status, created_at, updated_at) VALUES ('w','/p',?1,'',?2,0,?3)",
+                rusqlite::params![id, status, updated],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        (sandbox, path.to_string_lossy().into_owned())
+    }
+
+    const ZCODE_DDL: &str = "
+        CREATE TABLE tasks (
+            workspace_key TEXT NOT NULL,
+            workspace_path TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            task_status TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (workspace_key, task_id)
+        );";
+
+    const ZCODE_SQL: &str =
+        "SELECT task_id, task_status, updated_at FROM tasks WHERE deleted = 0 AND archived = 0 ORDER BY updated_at DESC LIMIT 1;";
+
+    fn db(path: &str, sql: &str) -> SessionDatabase {
+        SessionDatabase {
+            path: path.into(),
+            schema: SessionSchema::StatusIndex,
+            status_sql: Some(sql.into()),
+        }
+    }
+
+    fn secs_ago(n: f64) -> f64 {
+        now_secs() - n
+    }
+
+    // ── 这一轮的真问题：坏列名必须**报错**，不能静默 ────────────────
+
+    /// **本轮的核心守护**。
+    ///
+    /// 真机上 zcode 那条 SQL 查的是 `id`，而真实的 `tasks` 表主键是
+    /// `(workspace_key, task_id)`——**没有 `id` 列**。它在 macOS 端恒定 prepare 失败，
+    /// 而失败被当成「这个 Agent 没有终态」：信号永不响、界面看不出异样。
+    ///
+    /// 所以这条断言的方向是「**坏查询必须留下诊断**」，而不是「查询能跑」。
+    /// 一个返回 `(None, None)` 的实现会让它变红——那正是原先的形态。
+    #[test]
+    fn a_query_that_cannot_prepare_reports_the_diagnostic_not_silence() {
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-badcol",
+            ZCODE_DDL,
+            &[("t1", "completed", now_secs() as i64 * 1000)],
+        );
+        // 照搬真机上那条坏 SQL：查 `id`，而表里只有 `task_id`
+        let broken = db(&path, "SELECT id, task_status, updated_at FROM tasks LIMIT 1;");
+        let (probe, failure) = probe_status_index(&broken, 0.0);
+        assert!(probe.signal.is_none(), "坏查询不该凭空造出信号");
+        let failure = failure.expect("prepare 失败必须留下原因，否则它与「没有终态」同形");
+        assert!(
+            matches!(failure, SessionProbeFailure::UnreadableDatabase(ref d) if d.contains("no such column")),
+            "诊断文本必须带 SQLite 的话，实际：{failure:?}"
+        );
+        drop(sandbox);
+    }
+
+    #[test]
+    fn the_fixed_query_actually_reads_the_real_column() {
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-ok",
+            ZCODE_DDL,
+            &[("t1", "completed", now_secs() as i64 * 1000)],
+        );
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+        assert!(failure.is_none(), "查询应当跑得通：{failure:?}");
+        match probe.signal {
+            Some(Signal::Completed(fp)) => assert_eq!(fp, fingerprint(&path, "t1")),
+            other => panic!("应当是 completed，实际 {other:?}"),
+        }
+        drop(sandbox);
+    }
+
+    /// 档案声明了这一方言却没给 SQL ⇒ 说清是读不到，不是当成「没有终态」
+    #[test]
+    fn a_missing_status_sql_is_reported_rather_than_treated_as_no_state() {
+        let (sandbox, path) = zcode_fixture("statusindex-nosql", ZCODE_DDL, &[]);
+        let no_sql = SessionDatabase {
+            path: path.clone(),
+            schema: SessionSchema::StatusIndex,
+            status_sql: None,
+        };
+        let (probe, failure) = probe_status_index(&no_sql, 0.0);
+        assert!(probe.signal.is_none());
+        assert!(
+            matches!(failure, Some(SessionProbeFailure::UnreadableDatabase(_))),
+            "缺 status_sql 必须报出来"
+        );
+        drop(sandbox);
+    }
+
+    /// 库不存在 = 这个 Agent 没跑过，**不是故障**（与 Swift `.missing` 同口径）
+    #[test]
+    fn a_missing_database_is_not_a_failure() {
+        let (probe, failure) =
+            probe_status_index(&db("/nonexistent/tasks-index.sqlite", ZCODE_SQL), 0.0);
+        assert!(probe.signal.is_none());
+        assert!(failure.is_none(), "库不存在不该报「读不到」——那是「没跑过」");
+    }
+
+    // ── 判定语义 ────────────────────────────────────────────────
+
+    #[test]
+    fn an_approval_state_becomes_attention_with_the_right_wording() {
+        for (status, expect) in [
+            ("pending_approval", "等待你批准操作"),
+            ("awaitingUserInput", "等待你选择或确认"),
+            ("elicitation", "等待你选择或确认"),
+        ] {
+            let (sandbox, path) = zcode_fixture(
+                "statusindex-attn",
+                ZCODE_DDL,
+                &[("t1", status, now_secs() as i64 * 1000)],
+            );
+            let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+            assert!(failure.is_none(), "{status} 查询失败：{failure:?}");
+            match probe.signal {
+                Some(Signal::Attention(_, msg)) => {
+                    assert_eq!(msg, expect, "{status} 的措辞不对")
+                }
+                other => panic!("{status} 应当是 attention，实际 {other:?}"),
+            }
+            drop(sandbox);
+        }
+    }
+
+    /// 归一化：大小写与分隔符不一的同义词必须归到同一个词
+    #[test]
+    fn status_vocabulary_is_normalised_before_matching() {
+        assert_eq!(normalized("Awaiting_Approval"), "awaitingapproval");
+        assert_eq!(normalized("AWAITING-APPROVAL"), "awaitingapproval");
+        assert!(REQUEST_STATES.contains(&normalized("Awaiting_Approval").as_str()));
+        assert!(COMPLETED_STATES.contains(&normalized("Succeeded").as_str()));
+    }
+
+    #[test]
+    fn a_completed_state_expires_after_fifteen_minutes() {
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-stale",
+            ZCODE_DDL,
+            &[("t1", "completed", (now_secs() - 20.0 * 60.0) as i64 * 1000)],
+        );
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+        assert!(failure.is_none());
+        assert!(
+            probe.signal.is_none(),
+            "20 分钟前的完成属于历史，不该再报「刚完成」，实际 {:?}",
+            probe.signal
+        );
+        drop(sandbox);
+    }
+
+    /// 库文件超过 24h 就当没有：那份状态早就不是「现在」了
+    #[test]
+    fn a_database_older_than_a_day_is_not_consulted() {
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-old",
+            ZCODE_DDL,
+            &[("t1", "pending_approval", now_secs() as i64 * 1000)],
+        );
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 25.0 * 3600.0);
+        assert!(probe.signal.is_none());
+        assert!(failure.is_none(), "过期不是故障");
+        drop(sandbox);
+    }
+
+    /// 秒 epoch 与毫秒 epoch 都要认（跨产品抄来的时间字段单位不统一）
+    #[test]
+    fn both_second_and_millisecond_epochs_are_understood() {
+        // 两次探测用的是**同一个库、同一行**，只改时间字段的单位，
+        // 所以比的是判定本身。指纹含路径哈希，跨夹具比字符串必然不等——
+        // 那与本条要证的「两种单位等价」无关。
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-epoch",
+            ZCODE_DDL,
+            &[("t1", "completed", now_secs() as i64)], // 秒
+        );
+        let db_ref = db(&path, ZCODE_SQL);
+        let as_seconds = probe_status_index(&db_ref, 0.0).0;
+        assert!(
+            matches!(as_seconds.signal, Some(Signal::Completed(_))),
+            "秒 epoch 应当被认出来，实际 {:?}",
+            as_seconds.signal
+        );
+
+        // 同一行换成毫秒：结果必须一样
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE tasks SET updated_at = ?1 WHERE task_id = 't1'",
+            rusqlite::params![now_secs() * 1000.0],
+        )
+        .unwrap();
+        drop(conn);
+
+        let as_millis = probe_status_index(&db_ref, 0.0).0;
+        assert!(
+            matches!(as_millis.signal, Some(Signal::Completed(_))),
+            "毫秒 epoch 被当成秒就会算成 5 万年前，于是完成态永远过期，实际 {:?}",
+            as_millis.signal
+        );
+        drop(sandbox);
+    }
+
+    /// 一个都没有的状态（真机上 ZCode 的 `running` 就是这样）⇒ 无信号，但**不是故障**
+    #[test]
+    fn an_unrecognised_status_is_neither_a_signal_nor_a_failure() {
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-running",
+            ZCODE_DDL,
+            &[("t1", "running", now_secs() as i64 * 1000)],
+        );
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+        assert!(
+            probe.signal.is_none(),
+            "「running」不在词表里，无信号是对的，实际 {:?}",
+            probe.signal
+        );
+        assert!(failure.is_none(), "「running」是我们不关心的状态，不是读不到");
+        drop(sandbox);
+    }
+
+    /// 词表与 Swift 同源。漂了不会有人报错，只会表现为「一边报等待批准、一边不报」。
+    #[test]
+    fn the_vocabulary_matches_the_swift_side() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../Sources/AgentIslandCore/AgentSessionInspector.swift");
+        let text = std::fs::read_to_string(&path).expect("应当读得到 AgentSessionInspector.swift");
+
+        // **只取 `requestStates` 那一段**（从声明行到它自己的收尾 `]`）：
+        // 往下顺扫会把紧挨着的 `completionTypes` 也吃进来，
+        // 于是用例报「Rust 少了 taskcomplete」——而 taskcomplete 是完成态词，不是等待态。
+        let block: Vec<&str> = {
+            let lines: Vec<&str> = text.lines().collect();
+            let start = lines
+                .iter()
+                .position(|l| l.contains("let requestStates"))
+                .expect("Swift 源里应当有 requestStates");
+            let end = lines[start..]
+                .iter()
+                .position(|l| l.contains(']'))
+                .map(|offset| start + offset)
+                .expect("requestStates 词表应当在本行内收尾");
+            lines[start..=end].to_vec()
+        };
+        let quoted: Vec<String> = block
+            .iter()
+            .flat_map(|l| {
+                l.split('"').skip(1).step_by(2).map(|s| s.to_string()).collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            quoted.len(),
+            REQUEST_STATES.len(),
+            "从 Swift 源里只抽出 {} 个词，Rust 这边 {} 个——取词窗口可能没对准",
+            quoted.len(),
+            REQUEST_STATES.len()
+        );
+        // **双向**。单向（只查「Swift 有而 Rust 没有」）会让「Rust 自己多出几个词」
+        // 溜过去——而我第一版正是这么溜过去的：多补了三个不存在的词。
+        for word in &quoted {
+            assert!(
+                REQUEST_STATES.contains(&word.as_str()),
+                "Swift 的 requestStates 里有 `{word}`，Rust 这边没有——两边会报出不同的 attention"
+            );
+        }
+        for word in REQUEST_STATES {
+            assert!(
+                quoted.iter().any(|q| q == word),
+                "Rust 这边多出了 `{word}`，Swift 源里没有——没有产生点的词条就是纸面"
+            );
+        }
+    }
+
+    /// 对**本机真实状态索引库**跑一遍——`--ignored` 手动探针。
+    ///
+    /// 合成夹具能证明「给定这个 schema 就这么判」，证明不了「真库的 schema
+    /// 还是这样」。v0.0.221 那个 bug 恰恰活在这个缝里：zcode 的 `statusSQL`
+    /// 查 `id`、真表里只有 `task_id`，夹具用的也是同一份错 SQL，于是**测试全绿**。
+    ///
+    /// ```sh
+    /// cargo test --manifest-path app/src-tauri/Cargo.toml -- --ignored real_status_index_probe
+    /// ```
+    ///
+    /// 不做成默认用例：它依赖本机装没装那几个 Agent，而套件必须能在裸机上跑。
+    #[test]
+    #[ignore = "需要本机真实的 statusIndex 库；手动探针"]
+    fn real_status_index_probe() {
+        for profile in crate::registry::builtin() {
+            let Some(database) = &profile.session_database else { continue };
+            if database.schema != SessionSchema::StatusIndex {
+                continue;
+            }
+            let exists = std::path::Path::new(&database.path).is_file();
+            if !exists {
+                println!("· {}：库不存在（该 Agent 没在这台机器上跑过）", profile.id);
+                continue;
+            }
+            let age = std::fs::metadata(&database.path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(f64::INFINITY);
+            let (probe, failure) = probe_status_index(database, age);
+            println!(
+                "· {}：库龄 {:.0}s · 信号 {:?} · 故障 {:?}",
+                profile.id, age, probe.signal, failure
+            );
+            assert!(
+                failure.is_none(),
+                "{} 的真实 statusSQL 跑不通：{:?}——夹具与真库已经不一致，需要重新采集 DDL",
+                profile.id, failure
+            );
+        }
+    }
+
+    /// 每个声明了 `StatusIndex` 的档案都必须给出查询。
+    /// 这条正是本轮 bug 的形状：档案里有一句 SQL，但它查的列不存在。
+    #[test]
+    fn every_status_index_profile_declares_its_query() {
+        for profile in crate::registry::builtin() {
+            let Some(database) = &profile.session_database else { continue };
+            if database.schema != SessionSchema::StatusIndex {
+                continue;
+            }
+            assert!(
+                database.status_sql.as_deref().is_some_and(|s| !s.trim().is_empty()),
+                "{} 声明了 statusIndex 方言却没有 status_sql",
+                profile.id
+            );
+            assert!(
+                database.path.starts_with('/'),
+                "{} 的会话库路径必须是绝对的",
+                profile.id
+            );
+        }
     }
 }

@@ -4,6 +4,77 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.221] - 2026-09-28
+
+### 真库对拍查出一个静默失效的 SQL：ZCode 的完成态信号从来没有生效过
+
+按既定顺序做 `probe_cline` / `probe_zcode` 的逐行比对。ZCode 那一支在真机上取到了实样，
+结果查出**参考实现自己有个 bug**：`AgentRegistry.swift` 里 zcode 那条 `statusSQL`
+查的是 `SELECT id, ...`，而真实的 `tasks` 表主键是 `(workspace_key, task_id)`、
+**没有 `id` 列**。本机实跑：`no such column: id`。
+
+失败被 `inspectStatusDatabase` 报成 `.prepareFailed` 后返回 nil，调用方把它当成
+「这个 Agent 没有终态」——于是 ZCode 的完成态**从来没有响过**，而界面上看不出任何异样。
+已改为 `task_id`，并顺手加 `archived = 0`（今天不影响结果，但归档任务被当成
+「在办会话」是迟早的事）。
+
+取证与交叉核对见
+[statusIndex 状态索引的真库对拍](docs/research/2026-09-28-statusindex-real-db-check.md)。
+
+### 为什么它一直没被发现：守护检查错了方向
+
+原有断言是 `expectTrue(db.statusSQL?.isEmpty == false)` —— 它检查的是
+**「有没有这个字符串」**，不是**「这条查询能不能跑」**。一条恒为真的断言比没有断言更糟：
+它让人以为这里被守着。
+
+换成真建库、真 `sqlite3_prepare_v2` 的用例，DDL 从真库 `sqlite_master` 抄结构
+（**不含任何一行真实数据**）。并做了变异验证：把 SQL 改回原样，用例精确变红，
+报的正是真库那一句 `no such column: id`。
+
+### Rust 侧整块缺失的能力补上
+
+`StatusIndex` 这一族在 Rust 侧此前**完全没有实现**——档案里声明了 schema，
+会话探测却从不读它。它是**唯一能报出「等待你批准」的地方**（JSONL 那一族只看得到
+「模型刚跑完一次请求」，看不到「它在等一个人点确认」）。
+
+- `SessionDatabase.status_sql`：查询由**档案声明**。同一张表形下各产品列名毫无共同点
+  （workbuddy 的 `sessions.id/status/deleted_at` 与 zcode 的 `tasks.task_id/task_status/deleted`），
+  写死的那份在本机恒定失败。
+- `session::probe_status_index`：库龄 24h、完成态 15 分钟、秒与毫秒 epoch 兼容；
+  prepare / step 失败都留下 `SessionProbeFailure::UnreadableDatabase(SQLite 原文)`。
+- **位置**：文件探测全部落空之后才查库，与 Swift `probe` 的最后一步同序。
+  反过来放前面，会让库里的旧状态盖过文件里刚发生的活动。
+- workbuddy / workbuddy-ai 两个档案原先**根本没声明 session_database**，一并补上
+  （两个真库的 `sessions` 表验过，列名与 Swift 那条 SQL 一致）。
+
+### 词表照搬 15 条，不多加——守护当场抓到我编的三个
+
+`REQUEST_STATES` 第一版我凭语感补了 `requiresapproval` / `needsapproval` /
+`waitingapproval`。双向比对 Swift 源的用例把它当场抓出来：Swift 里没有这三个，
+而本机 ZCode 实际只写 `running` / `error` / `completed`。
+**没有产生点的词条就是纸面**——它只会让人以为「这个词被支持过」。
+用例也顺带改成双向（第一版只查「Swift 有而 Rust 没有」，我多补的词就是这么溜过去的）。
+
+### `probe_cline` 比对完成，但**没有据此改任何行为**
+
+本机**没装** Cline/Roo（两个 session 目录都不存在），所以只有代码比对、没有实样。
+四处差异已逐条记进对照表 §7，含严重程度：`command_output` 在两端判成相反方向
+（Swift 等待批准 / Rust 报在跑）、Rust 只看最后一条而 Swift 往回扫、
+**Rust 的签名里根本没有 `file_age_secs` 所以 15 分钟过期门没法实现**、缺三个分支。
+在没有实样的情况下改行为，是在赌——赌错了比留着一条记录更糟。
+
+### 门禁
+
+Rust 454 条通过（+13）/ 0 失败（另有 2 条 `--ignored` 手动探针），Swift 555 条通过（+3）/ 0 失败，编译警告 17（未漂移）。
+
+### 没做的
+
+- **两端在 ZCode 上仍可能给出不同信号**：Swift 的通用检测器对 rollout JSONL 多半读不出
+  东西而落到状态库；Rust 的 `probe_zcode` 能从 `toolCalls` 提炼实时动作，
+  于是「Rust 报在跑 / Swift 报完成」是可能的。要等拿到实样才能定谁是错的。
+- **`collectFacts` 那些事实键的等价覆盖仍未比对**（§7 第 1 条最后一项）。
+- **深链端到端派发仍未证明**，仍需卸载 Swift 版。
+
 ## [0.0.220] - 2026-09-28
 
 ### `clean` 落地：12 个子命令全部实现，而这一版的重点是「之前那份是纸面的」

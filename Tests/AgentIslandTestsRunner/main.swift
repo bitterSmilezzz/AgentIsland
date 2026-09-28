@@ -15,6 +15,7 @@ func runAllTests() -> Int32 {
     TypographyTests.register()
     TokenUsageTests.register()
     RegistryTests.register()
+    RegistryTests.statusIndexSQLRunsAgainstTheRealSchema()
     SettingsTests.register()
     InstalledAppsTests.register()
     IslandMetricsTests.register()

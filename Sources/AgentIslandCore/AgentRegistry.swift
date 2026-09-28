@@ -195,7 +195,7 @@ public enum AgentRegistry {
             ],
             category: .codeEditor,
             emoji: "🧩",
-            sessionDatabase: AgentSessionDatabase(path: home(".zcode/v2/tasks-index.sqlite"), schema: .statusIndex, statusSQL: "SELECT id, task_status, updated_at FROM tasks WHERE deleted = 0 ORDER BY updated_at DESC LIMIT 1;"),
+            sessionDatabase: AgentSessionDatabase(path: home(".zcode/v2/tasks-index.sqlite"), schema: .statusIndex, statusSQL: "SELECT task_id, task_status, updated_at FROM tasks WHERE deleted = 0 AND archived = 0 ORDER BY updated_at DESC LIMIT 1;"),
         ),
         AgentProfile(
             id: "antigravity",

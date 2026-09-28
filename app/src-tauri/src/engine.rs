@@ -186,8 +186,13 @@ impl ActivityEngine {
                 .filemon
                 .probe(&profile, self.settings.active_session_window);
             let candidates = self.filemon.probe_files(&profile);
-            let (probe, context) =
-                self.probe_cached_multi(&profile.id, profile.session_dialect, &candidates);
+            let (probe, context) = self.probe_cached_multi(
+                &profile.id,
+                profile.session_dialect,
+                &candidates,
+                profile.session_database.as_ref(),
+                now,
+            );
             let level = self.decide_level(
                 &profile,
                 now,
@@ -768,6 +773,9 @@ impl ActivityEngine {
         profile_id: &str,
         dialect: crate::models::SessionDialect,
         paths: &[String],
+        database: Option<&crate::models::SessionDatabase>,
+        // 采样时钟：由引擎盖章，不由探测层自己取当前时间
+        now: i64,
     ) -> (
         session::SessionProbe,
         crate::models::SessionActiveContext,
@@ -810,7 +818,37 @@ impl ActivityEngine {
                 return (probe, context);
             }
         }
-        (session::SessionProbe { signal: None, subagent_count: 0, health: None }, crate::models::SessionActiveContext::default())
+        // 文件这条路全落空之后才轮到**状态索引库**（Swift 同顺序：`probe` 的最后一步
+        // 才是 `inspectKnownDatabase`）。它排在后面不是随便定的——部分桌面 Agent 的会话
+        // 只写进 SQLite，FileMonitor 定位到的最新文件就是那个二进制库本身，
+        // 对它做尾窗解析必然读不出东西。反过来把它放前面，则会让库里的旧状态
+        // 盖过文件里刚发生的活动。
+        let Some(database) = database.filter(|db| db.schema == crate::models::SessionSchema::StatusIndex)
+        else {
+            return (
+                session::SessionProbe { signal: None, subagent_count: 0, health: None },
+                crate::models::SessionActiveContext::default(),
+            );
+        };
+        let file_age = std::fs::metadata(&database.path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(f64::INFINITY);
+        let (probe, failure) = session::probe_status_index(database, file_age);
+        (
+            session::SessionProbe {
+                signal: probe.signal,
+                subagent_count: 0,
+                health: failure.map(|failure| session::SessionProbeHealth {
+                    failure,
+                    path: database.path.clone(),
+                    observed_at: now,
+                }),
+            },
+            crate::models::SessionActiveContext::default(),
+        )
     }
 
     fn token_usage_cached(&mut self, profile: &AgentProfile) -> Option<TokenUsage> {

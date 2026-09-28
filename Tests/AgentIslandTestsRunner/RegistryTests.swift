@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 @testable import AgentIslandCore
 
 // MARK: - 注册表 / 动态集合 测试（第二轮审查补：addCustom/removeCustom/setEnabled/
@@ -352,6 +353,107 @@ enum RegistryTests {
                                 "\(path) 又回到按 id 硬分派：新的 OpenCode 方言 fork 会静默没有动作/流水")
                 try expectTrue(text.contains("schema == .openCode"),
                                "\(path) 的 OpenCode 方言路由必须建立在档案声明的 schema 上")
+            }
+        }
+    }
+
+    /// `statusIndex` 方言的 `statusSQL` 必须**能在真实 schema 上跑通**。
+    ///
+    /// 这条守护是被一个真 bug 逼出来的：zcode 那条 SQL 查的是 `SELECT id, ...`，
+    /// 而真实的 `tasks` 表主键是 `(workspace_key, task_id)`、**根本没有 `id` 列**。
+    /// 它在真机上恒定 prepare 失败 → 恒定报 `.prepareFailed` → 恒定返回 nil，
+    /// 也就是说 ZCode 的完成态语义**从来没有生效过**，而界面上看不出任何异样。
+    ///
+    /// 而原有的守护（上面那段）只检查 `statusSQL?.isEmpty == false`——
+    /// 它检查的是「有没有这个字符串」，不是「这条查询能不能跑」。
+    /// 一条永远为真的断言比没有断言更糟：它让人以为这里被守着。
+    ///
+    /// **夹具的诚实边界**：下面的建表语句是从本机真库抄的结构（`sqlite_master.sql`），
+    /// 只有列名与类型，**不含任何一行真实数据**。真实 schema 往后演进时，
+    /// 这份夹具会先于现实失真——那时它给的是「需要重新采集」的提示，
+    /// 而不是继续绿灯。
+    @MainActor
+    static func statusIndexSQLRunsAgainstTheRealSchema() {
+        // 真库实测（2026-09）：两个 workbuddy 库共用 `sessions` 结构，
+        // zcode 的 `tasks` 是另一套。表名/列名按各自的真实 DDL 逐字抄。
+        let realSchemas: [String: String] = [
+            "workbuddy": """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'Pending',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                deleted_at INTEGER,
+                archived_at INTEGER
+            )
+            """,
+            "workbuddy-ai": """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'Pending',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                deleted_at INTEGER
+            )
+            """,
+            "zcode": """
+            CREATE TABLE tasks (
+                workspace_key TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                task_status TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (workspace_key, task_id)
+            )
+            """,
+        ]
+
+        for profile in AgentRegistry.builtin {
+            guard let db = profile.sessionDatabase, db.schema == .statusIndex else { continue }
+            guard let ddl = realSchemas[profile.id] else {
+                TestKit.test("注册表: \(profile.id) 缺 statusIndex 的真实 schema 夹具") {
+                    throw TestError(message: """
+                        \(profile.id) 声明了 statusIndex 方言，但这条用例没有它的真实建表语句。
+                        加档案时要一并补夹具，否则这条 SQL 永远没人跑过。
+                        """)
+                }
+                continue
+            }
+            guard let sql = db.statusSQL, !sql.isEmpty else { continue }
+
+            TestKit.test("注册表: \(profile.id) 的 statusSQL 能在真实 schema 上 prepare") {
+                let path = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("statusindex-\(UUID().uuidString).db").path
+                defer { try? FileManager.default.removeItem(atPath: path) }
+
+                var handle: OpaquePointer?
+                guard sqlite3_open(path, &handle) == SQLITE_OK, let handle else {
+                    throw TestError(message: "夹具库创建失败")
+                }
+                defer { sqlite3_close(handle) }
+                sqlite3_exec(handle, ddl, nil, nil, nil)
+
+                var stmt: OpaquePointer?
+                let code = sqlite3_prepare_v2(handle, sql, -1, &stmt, nil)
+                let message = code == SQLITE_OK ? "" : String(cString: sqlite3_errmsg(handle))
+                sqlite3_finalize(stmt)
+
+                try expectEqual(code, SQLITE_OK,
+                                """
+                                \(profile.id) 的 statusSQL 在真实 schema 上 prepare 失败：\(message)
+                                查询：\(sql)
+                                「查不到列」这一类失败是静默的——引擎会把它当成「没有终态」，
+                                于是这个 Agent 的完成/待确认信号永远不响，而界面上看不出异样。
+                                """)
             }
         }
     }

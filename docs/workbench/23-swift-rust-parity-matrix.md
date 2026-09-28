@@ -364,8 +364,32 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
    - **两处差异记录未修**：① 在途判定范围——Swift 只拦终端执行类工具，
      Rust 拦**任何**未收口 `tool_use`（多报方向）② 尾部窗口 96 行/256KB vs 600 行/8MB。
    - **两处未确认**：完成态 15 分钟过期在引擎层是否有等价物；更宽窗口会不会捞出旧 attention。
-   - **仍未比对**：`probe_cline` / `probe_zcode` 与 Swift 对应实现，以及 `collectFacts`
-     那些事实键的等价覆盖。
+   - **v0.0.221 比对了 `probe_zcode`**（→ 转到上面第 3 条，那一支查出了真 bug）。
+   - **v0.0.221 比对了 `probe_cline`**（Swift `detectClineOrRoo`，686-737 行），
+     **本机没装 Cline/Roo，所以只有代码比对、没有实样——没有据此改任何行为**。
+     四处差异，按严重程度：
+     1. **反向扫描 vs 只看最后一条**（最重）：Swift `for msg in messages.reversed()`
+        一直往回扫到命中为止；Rust `arr.last()` **只看最后一条**。
+        最后一条是未知形状时，Swift 会回退到更早的一条并报出信号，Rust 直接返回无信号。
+        ⇒ **Rust 少报**。
+     2. **`command_output` 判反了方向**：Swift 里 `ask == "command_output"`
+        归入「等待你批准命令」（attention）；Rust 把它放在 `say` 分支的
+        「运行中」（active）。⇒ **Rust 在用户其实被挡住时报告「在跑」**。
+        另外 Rust 完全不看 `type` 字段（Swift 是 `type == "ask"` 再看 `ask` 值）。
+     3. **15 分钟完成态过期门在 Rust 侧不存在**：`fn probe_cline(lines, path)`
+        **签名里没有 `file_age_secs`**，而 Swift 每个 `say == "completion_result"` /
+        `"text"` 分支都有 `fileAge <= 15 * 60`。
+        ⇒ Rust 对一份几小时前的会话文件仍会报「刚完成」。
+        （管道上没有障碍：各方言包装器本来就自己 `metadata` 算年龄，
+        `probe_qoder` / `probe_dsh` / `probe_antigravity` 都是这么拿的。）
+     4. **Rust 缺三个分支**：Swift 有 `say == "browser_action"`（执行浏览器操作）、
+        `say == "task_completed"`、`say == "text"`；Rust 只认
+        `command` / `command_output` / `tool` / `completion_result`。⇒ **Rust 少报**。
+     - 另：Swift 的指纹是 `cline-{ts}`（逐条消息时间戳），Rust 是
+       `fingerprint(path, "{ask}{msg.len()}")` —— **不含时间戳**，
+       于是「两个长度相同的新问题」会撞同一个指纹，第二条 attention 被去重掉。
+       这一条**未在上表编号**，因为要先确认指纹在引擎层的去重语义才能定它是不是缺陷。
+   - **`collectFacts` 那些事实键的等价覆盖仍未比对**。
 2. ~~Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读~~
    ✅ **v0.0.198 已核实**：`cpu_percent` 只喂环形仪表的弧长（`?? 0`，对仪表是正确的），
    **任何出口都没有把它渲染成文字**，不存在「0.0%」；两壳都过滤离线项；
@@ -374,9 +398,36 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
    侧边栏 `snap.process_running || snap.level !== 'offline'`、Swift `snapshots.filter(\.processRunning)`。
    今天三者等价（`decide_level` 在 `!process_running` 时必定返回 `Offline`），
    但三种拼法意味着判定层以后加一个分支就会漂。
-3. `Swift 端 25 个档案中` `qoder`/`antigravity`/`dsh`/`workbuddy` 的方言解析与 Rust 无对应，
-   无法比对；ZCode 路径已在 v0.0.162 经本机实样核实并修正，但两端状态/动作解析语义
-   尚未逐行比对。
+3. ~~`Swift 端 25 个档案中` `qoder`/`antigravity`/`dsh`/`workbuddy` 的方言解析与 Rust 无对应，
+   无法比对；ZCode 路径两端状态/动作解析语义尚未逐行比对~~
+   ✅ **v0.0.221 比对了 ZCode 一族，并在真库上查出一个静默失效的 bug**。取证记录见
+   [statusIndex 状态索引的真库对拍](../research/2026-09-28-statusindex-real-db-check.md)：
+   - **Swift 侧那条 `statusSQL` 恒定失效**：查的是 `id`，而真实的
+     `~/.zcode/v2/tasks-index.sqlite` 里 `tasks` 的主键是 `(workspace_key, task_id)`，
+     **没有 `id` 列**（本机实跑：`no such column: id`）。失败被当成「这个 Agent 没有终态」，
+     于是 **ZCode 的完成态信号从来没有生效过**，而界面上看不出任何异样。
+     已改为 `task_id`（并顺手加 `archived = 0`，避免归档任务被当成在办会话）。
+   - **根因是守护写错了方向**：原有断言只检查 `statusSQL?.isEmpty == false`——
+     它检查的是「有没有这个字符串」，不是「这条查询能不能跑」。现换成**真建库、真 prepare**
+     的用例（DDL 从真库 `sqlite_master` 抄结构，不含数据），并做过变异验证：
+     改回坏 SQL 会精确变红，报的正是真库那句 `no such column: id`。
+   - **Rust 侧整块缺失已补上**：`probe_status_index` + 档案级 `status_sql` 声明。
+     位置按 Swift 的顺序放在**文件探测全部落空之后**（不是优先）。
+     本机实跑三个真实库全部查询成功、零故障；zcode 库实报 `Completed`，
+     与原生 SQL 交叉核对一致（`completed` @ 13:10:29，探测时 100 秒前，在 15 分钟窗内）。
+   - **Rust 侧 workbuddy / workbuddy-ai 原先根本没声明 session_database**，这一版补上
+     （两个真库的 `sessions` 表验过，列名与 Swift 那条 SQL 一致）。
+   - **词表照搬 15 条，不多加**：第一版凭语感补了 `requiresapproval` 等 3 个词，
+     被双向比对的用例当场抓出来——Swift 里没有，而本机 ZCode 实际只写
+     `running`/`error`/`completed`，**没有产生点的词条就是纸面**。
+   - **仍在的差异（未修，如实记下）**：
+     ① Swift 的通用检测器对 ZCode 的 rollout JSONL 多半读不出东西，
+     而 Rust 的 `probe_zcode` 能从 `toolCalls` 提炼出实时动作（Active）——
+     所以**同一时刻两端可能给出不同信号**（Rust 报在跑，Swift 报完成/无信号）；
+     ② `running` / `error` 两个状态两边都不映射成任何信号（与 Swift 同口径）。
+   - **未验证**：Cline / Roo 在本机**没装**（`…/globalStorage/saoudrizwan.claude-dev/tasks`
+     与 `~/Library/Application Support/Cline/tasks` 均不存在），
+     所以 `probe_cline` 的差异只有代码比对、没有实样，**没有据此改行为**。
 4. Swift 与 Rust 测试的**内容覆盖对照**未做。v0.0.159 增补五态回放与三方言合成 fixture 后，可执行测试数已变化；以 `cargo test --locked` 输出为准。
 5. `report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对（ADR 0009 相关，需单独看）。
 6. §2.3 表中「token 明细是否需要」一行只对 13 个共有档案核对；12 个 Swift 独有档案的
