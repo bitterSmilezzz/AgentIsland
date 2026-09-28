@@ -1323,6 +1323,33 @@ fn main() {
                 }
             }
 
+            // **直接问一遍嵌进来的资源里到底有什么。**
+            //
+            // 为什么非问不可：此前「资源已嵌入」这个判断只是**在二进制里搜到了
+            // 资源路径字符串**——而那些路径同样来自内嵌的 tauri.conf.json，
+            // 搜到它们**不能证明资源本体在里面**。界面白屏时，最可能的原因就是
+            // `frontendDist` 压根没被打进去（`generate_context!` 在找不到目录时
+            // 会安静地嵌一个空的资源表），而那时从外面看**一切正常**。
+            //
+            // 资源表是**压缩**的，所以正文搜不到；只能问解析器本人。
+            {
+                let resolver = app.asset_resolver();
+                let mut seen: Vec<String> = Vec::new();
+                for key in [
+                    "index.html",
+                    "js/main.js",
+                    "js/views.js",
+                    "css/tokens.css",
+                    "css/workbench.css",
+                ] {
+                    match resolver.get(key.to_string()) {
+                        Some(asset) => seen.push(format!("{key}={}B/{}", asset.bytes.len(), asset.mime_type)),
+                        None => seen.push(format!("{key}=**缺失**")),
+                    }
+                }
+                log_line(&format!("[boot] 资源表：{seen:?}"));
+            }
+
             // 初始贴边放置
             let win = app.get_webview_window("island").unwrap();
             let _ = win.set_ignore_cursor_events(false);
