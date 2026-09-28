@@ -459,8 +459,8 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
    - **按「被测的对外函数」对照**（客观、可复跑）：
      扫 `app/src-tauri/src/**/*.rs` 里所有 `pub fn`，沿调用图做闭包
      （被用例直接调到、或被「被用例调到的东西」调用 ⇒ 算覆盖）⇒
-     **13 个 `pub fn` 真的没有任何用例覆盖**（v0.0.226 已补掉 5 个，剩 8 个）。
-     ⚠️ **v0.0.224 初版写的是 29 个，是错的**——那版只按「名字在测试代码里出现过」
+     **13 个 `pub fn` 真的没有任何用例覆盖**（脚本初版；v0.0.227 逐个核实后修正）。
+     ⚠️ **v0.0.224 初版写的是 29 个，是错的**（v0.0.227 第三次修正，见下）——那版只按「名字在测试代码里出现过」
      判定，于是 `selfreport::is_believable`、`provider::plan_codex_apply`、
      `filemon::probe_files`、`remote::contains_placeholder`、
      `webhook::token_file_path` 全被误报成「未覆盖」（它们的用例是通过调用方间接触发的），
@@ -483,13 +483,22 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
      | `webhook::webhook_uuid` | v0.0.223 刚把熵源从时钟换成 `/dev/urandom`；「两次取值不同」是那次改动**唯一**能自动证明的部分 |
      | `budget::{is_exceeded, reset}` | `is_exceeded` 是唯一驱动「要不要发告警」的判据，而它此前的覆盖全来自 `evaluate` 的返回值比对——**把方法本身改成恒 `true` 也能让那些用例全绿** |
 
-   - **剩下 8 个**（本轮没补）：
-     `models::{duration_text, summary}`（排版）、
-     `placement::{place, work_area_at, work_area_under_cursor}`（窗口定位）、
-     `procmon::{core_count, all_names}`（诊断用）、
-     `observability::has_unreadable_source`（判定「读不到」，与已补的
-     `has_local_detail_source` 成对——补了后者没补前者是**半截**，
-     下轮优先）。
+   - **v0.0.227 逐个核实了剩余 8 个，并再次推翻扫描器的结论**：
+     脚本漏报了 `has_unreadable_source`（它**有**用例，`existing_file_instead_of_session_directory_is_unreadable`
+     直接调它）。**这已是这份脚本第三次给错答案**（29 → 13 → 仍不准），
+     所以下面的清单改成**逐个 grep 核实**的结果，不再采信自动扫描。
+     真正的发现不是「未覆盖」，而是另一件事：
+
+     | 函数 | 实际情况 | 处理 |
+     | :--- | :--- | :--- |
+     | `placement::place` | **真死代码**：自称「唯一可测的入口」，而真正可测的 `place_with` 已在用，它只是把工作区写死成 1440×900 的壳 | ✅ v0.0.227 删掉 |
+     | `procmon::core_count` / `all_names` | 真死代码（诊断用，无任何调用方） | ✅ v0.0.227 删掉 |
+     | `placement::work_area_under_cursor` / `work_area_at` | **`#[cfg(windows)]`，本机构建够不到**——这不是死代码 | ⚠️ **保留**，并在文件头写明「不要用『零引用』一刀切删平台函数」 |
+     | `models::duration_text` / `summary` | 有调用方（audit.rs），只是无用例 | 记录 |
+     | `observability::has_unreadable_source` | **有用例**（扫描器误报） | ✅ v0.0.227 补上与 `has_local_detail_source` 成对的用例 |
+
+     **教训**：`#[cfg]` 分支够不到 ≠ 死代码。判据是「同平台可达却没人调用」，
+     而脚本的「零引用」判据分不开这两者。
 
    - **`power.rs` 那条已处理**（见上表）。它原先被列为「7 个零覆盖」是误计：
      其中三个是 `extern` 声明（不是函数）、两个是 `#[cfg]` 两分支的同名函数，

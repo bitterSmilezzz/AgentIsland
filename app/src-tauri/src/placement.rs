@@ -2,6 +2,12 @@ use crate::models::DockEdge;
 
 /// 屏幕工作区（任务栏/Dock/菜单栏以外）+ DPI 缩放。
 /// Win32 返回物理像素；Tauri set_position/set_size 用逻辑坐标（DIP），必须换算。
+///
+/// ⚠️ **本文件里下面两个 `#[cfg(windows)]` 函数在 macOS 构建上零引用**，
+/// 而「零引用」不等于死代码——它们是 Windows 端的取工作区入口。
+/// 判据是 `#[cfg]`：跨平台构建够不到的那一支是**平台代码**，
+/// 而同平台可达却没人调用的才是死代码（那个叫 `place`，v0.0.227 已删）。
+/// **不要用「零引用」一刀切去删平台函数**。
 #[cfg(windows)]
 pub fn work_area_under_cursor() -> (f64, f64, f64, f64, f64) {
     use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
@@ -299,19 +305,6 @@ pub fn place_with(edge: DockEdge, anchor: f64, width: f64, height: f64, wa: (f64
         top = top.max(wy);
     }
     (left, top)
-}
-
-/// 纯几何版：不碰任何显示器 API，拿调用方给定的工作区算位置。
-/// **这是唯一可测的入口**——测试不需要窗口、不需要真机屏幕，
-/// 四边 × 越界 × 窗口大于工作区三条边界都在这里守。
-pub fn place(edge: DockEdge, anchor: f64, width: f64, height: f64) -> (f64, f64) {
-    place_with(
-        edge,
-        anchor,
-        width,
-        height,
-        (0.0, 0.0, 1440.0, 900.0, 1.0),
-    )
 }
 
 #[cfg(test)]

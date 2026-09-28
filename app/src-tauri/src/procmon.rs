@@ -43,10 +43,6 @@ impl ProcessMonitor {
         self.last_refresh = Some(Instant::now());
     }
 
-    pub fn core_count(&self) -> usize {
-        self.sys.cpus().len()
-    }
-
     /// 按档案匹配进程（名字前缀族 + 命令行提示 + 路径排除）。
     pub fn match_profile(&self, profile: &AgentProfile) -> Vec<ProcHit> {
         let mut hits: Vec<ProcHit> = Vec::new();
@@ -121,14 +117,6 @@ impl ProcessMonitor {
         table
     }
 
-    /// 供调试：全部进程名
-    pub fn all_names(&self) -> Vec<String> {
-        self.sys
-            .processes()
-            .values()
-            .map(|p: &Process| p.name().to_string_lossy().to_string())
-            .collect()
-    }
 }
 
 /// 一个进程是否属于某个档案。**纯函数**：只看名字 / 可执行路径 / 命令行三个字符串。
