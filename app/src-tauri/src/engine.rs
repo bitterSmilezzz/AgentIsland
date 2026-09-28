@@ -34,6 +34,13 @@ pub const TOKEN_SPIKE_CONFIRMATIONS: u32 = 3;
 pub struct ActivityEngine {
     pub settings: Settings,
     pub demo_mode: bool,
+    /// **这一轮要不要真去取 token 用量。**
+    ///
+    /// 常驻引擎是 `true`（界面上要显示用量）；而 CLI 的**单拍**入口
+    /// （`status` / `report`）默认 `false`——同步解析全部会话索引本机实测多花 5 秒，
+    /// 对 Raycast / 脚本调用不划算。不取时那一列印「—」**明说没取**，
+    /// 而不是印 0（0 是「查了确实是零」，那是两件事）。
+    pub refresh_usage: bool,
     profiles: Vec<AgentProfile>,
     procmon: ProcessMonitor,
     filemon: FileMonitor,
@@ -90,6 +97,8 @@ impl ActivityEngine {
         ActivityEngine {
             settings,
             demo_mode: false,
+            // 默认开；CLI 单拍入口按需关掉
+            refresh_usage: true,
             profiles,
             procmon: ProcessMonitor::new(),
             filemon: FileMonitor::new(),
@@ -805,7 +814,7 @@ impl ActivityEngine {
     }
 
     fn token_usage_cached(&mut self, profile: &AgentProfile) -> Option<TokenUsage> {
-        if profile.token_roots.is_empty() {
+        if !self.refresh_usage || profile.token_roots.is_empty() {
             return None;
         }
         if let Some((fetched, report)) = self.token_cache.get(&profile.id) {
@@ -824,6 +833,8 @@ impl ActivityEngine {
             return Some(demo_report());
         }
         let profile = self.profiles.iter().find(|p| p.id == agent_id)?.clone();
+        // `get_report` 是**按需**取（分析页点进来才要），所以它**不受 `refresh_usage` 约束**——
+        // 调用它的人已经明确要这一份数据了，再加一道开关只会让分析页永远是空的
         if profile.token_roots.is_empty() {
             return None;
         }

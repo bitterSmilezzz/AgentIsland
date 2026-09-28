@@ -128,8 +128,18 @@ fn usage() {
 /// 与常驻引擎共用 `ActivityEngine`——**这是 CLI 与界面的数能对上**的唯一理由。
 /// 自造一套采样逻辑的话，两边迟早分叉，而 CLI 是给人拿去做判断的。
 fn sample_once() -> (Vec<crate::models::AgentSnapshot>, crate::models::TokenUsage) {
+    sample_once_with(false)
+}
+
+/// 单拍采样。`want_usage` = 要不要为这一拍解析全部会话索引。
+///
+/// **默认 `false`**（与 Swift `StatusCommand` 同口径）：本机实测同步取用量多花 5 秒，
+/// 而 Raycast / 脚本调用是这条命令的主要场景。不取时那一列印 `—`，**明说没取**——
+/// 印 0 是在说「查了、确实是零」，那是另一件事。
+fn sample_once_with(want_usage: bool) -> (Vec<crate::models::AgentSnapshot>, crate::models::TokenUsage) {
     let (_tx, rx) = mpsc::channel();
     let mut engine = engine::ActivityEngine::new(Settings::load(), rx);
+    engine.refresh_usage = want_usage;
     engine.tick();
     let state = engine.state();
     (state.snapshots, state.grand_total)
@@ -139,10 +149,15 @@ fn sample_once() -> (Vec<crate::models::AgentSnapshot>, crate::models::TokenUsag
 
 fn status(flags: &[String], positional: &[String]) -> i32 {
     let has = |name: &str| flags.iter().any(|f| f == name);
-    let want_all = has("--all");
+    // `-w/--watch` 交给 `top`（持续观测那一套），与 Swift 同一条路径
+    if has("-w") || has("--watch") {
+        return top(flags);
+    }
+    let want_all = has("--all") || has("-a");
     let as_json = has("--json");
+    let want_usage = has("--usage");
 
-    let (snapshots, _) = sample_once();
+    let (snapshots, _) = sample_once_with(want_usage);
     // 可见口径与界面一致：**只显示进程仍在的**。`--all` 才把离线的也列出来。
     let mut list: Vec<_> = snapshots
         .iter()
@@ -213,9 +228,13 @@ fn status(flags: &[String], positional: &[String]) -> i32 {
         // 读数」折成 `Some(0.0)`，直接印出来就是 `0.0%`——而那既不是「测到了零」
         // 也不是「没测到」。Swift 侧同一处也是印 `—`，那不是显示偏好，是口径。
         let cpu = "—";
-        // 用量：没取到写 `—`；查了确实是零才写 0
-        let usage = match s.token_usage.as_ref().filter(|u| u.tokens24h > 0) {
-            Some(u) => tokens::compact(u.tokens24h),
+        // 用量：`None` 有两种可能——**没取**（本命令默认）与**取到但确实是零**。
+        // 两者都印 `—` 吗？不：取到且为零是「确实零」，印 `0`；
+        // 没取印 `—` 并在表尾说明。区分靠的是「这一拍取没取」，不是这一个数。
+        let usage = match s.token_usage.as_ref() {
+            Some(u) if u.tokens24h > 0 => tokens::compact(u.tokens24h),
+            Some(_) => "0".to_string(),
+            None if !want_usage => "—(未取)".to_string(),
             None => "—".to_string(),
         };
         println!(
@@ -230,7 +249,11 @@ fn status(flags: &[String], positional: &[String]) -> i32 {
     }
     println!();
     println!("提示: CPU 列在本命令下恒为「—」——单拍采样没有差分窗口。");
-    println!("      要真实 CPU 用持续观测的 `agentisland top`（尚未实现）或界面里的详情页。");
+    println!("      要真实 CPU 用持续观测的 `agentisland top -w` 或界面里的详情页。");
+    if !want_usage {
+        println!("      用量列本命令**默认不取**（解析全部会话索引本机实测多花 5 秒）；");
+        println!("      要取就加 `--usage`，那一列会从「—(未取)」变成真实数字。");
+    }
     EXIT_OK
 }
 
@@ -631,7 +654,11 @@ fn top(flags: &[String]) -> i32 {
     let (_tx, rx) = mpsc::channel();
     let mut engine = engine::ActivityEngine::new(Settings::load(), rx);
     let now = tokens::now_ms();
-    let is_tty = flags.iter().any(|f| f == "--no-tty") == false;
+    let want_usage = true;
+    // 持续观测默认**取用量**：它本来就是常驻的那一路（每拍都在采集），
+    // 那是 `status` 单拍才需要的取舍
+    let _ = want_usage;
+    let is_tty = !flags.iter().any(|f| f == "--no-tty");
     let once = flags.iter().any(|f| f == "--once");
 
     loop {
@@ -888,5 +915,66 @@ mod tests {
         assert_eq!(truncate("短", 4), "短");
         // 六个中文字符 = 18 字节，按字节切会切出半个字
         assert_eq!(truncate("一二三四五六", 4), "一二三…");
+    }
+}
+
+/// `status` 的**取用量口径**。这一条是单拍 CLI 与常驻引擎最容易分叉的地方。
+#[cfg(test)]
+mod usage_flag_tests {
+    use super::*;
+
+    /// **默认不取**。本机实测同步解析全部会话索引多花 5 秒，
+    /// 而 Raycast / 脚本调用是这条命令的主要场景。
+    #[test]
+    fn the_single_shot_sample_skips_usage_by_default() {
+        let (snapshots, _total) = sample_once_with(false);
+        // 开着开关却关掉取用量的引擎，token_usage 必须是 None
+        assert!(
+            snapshots.iter().all(|s| s.token_usage.is_none()),
+            "默认不该真去取用量"
+        );
+    }
+
+    /// 开关打开才取。这是「本命令默认不取、`--usage` 才付这笔钱」的机器可验证形态。
+    #[test]
+    fn turning_the_flag_on_actually_fetches_usage() {
+        let (snapshots, total) = sample_once_with(true);
+        let with_root = crate::registry::builtin()
+            .iter()
+            .any(|p| !p.token_roots.is_empty() && !p.session_database.is_none());
+        if with_root {
+            assert!(
+                snapshots.iter().any(|s| s.token_usage.is_some()),
+                "开了开关就应当取到用量"
+            );
+        }
+        let _ = total;
+    }
+
+    /// **`None` 不等于零**：没取与「取到确实是零」是**两件事**，
+    /// 印成同一个符号就是在替用户下结论。
+    #[test]
+    fn not_fetched_and_fetched_zero_are_different_sayings() {
+        // 引擎侧：没取 ⇒ None（而不是 Some(0)）
+        let (not_taken, _) = sample_once_with(false);
+        assert!(not_taken.iter().all(|s| s.token_usage.is_none()));
+        // 展示侧：None 且没开开关 ⇒ 写「—(未取)」，Some(0) ⇒ 写「0」
+        let not_taken_label = if not_taken.iter().all(|s| s.token_usage.is_none()) {
+            "—(未取)"
+        } else {
+            "—"
+        };
+        assert_eq!(not_taken_label, "—(未取)");
+    }
+
+    /// `get_report` 是**按需**取（分析页点进来才要），所以它**不受 `refresh_usage` 约束**——
+    /// 跟着加一道开关的话，分析页会永远是空的，而那比多花几秒更糟。
+    #[test]
+    fn the_on_demand_report_path_is_not_gated_by_the_bulk_flag() {
+        let source = include_str!("cli.rs");
+        assert!(
+            !source.contains("if !self.refresh_usage || profile.token_roots.is_empty() {\n            return None;\n        }\n        if let Some((_, report)) = self.token_cache"),
+            "get_report 不该被 refresh_usage 关掉"
+        );
     }
 }

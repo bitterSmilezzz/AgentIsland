@@ -236,7 +236,7 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 
 | CLI 子命令 | 依赖的 Swift 模块 | Rust 侧状态 |
 | :--- | :--- | :--- |
-| `status` | LiveSampler、CLIOutput | ✅ `cli::status`（`--all` / `--json` / 名称过滤）。**`-w` 动态监控未做** |
+| `status` | LiveSampler、CLIOutput | ✅ `cli::status`（`--all` / `--json` / `--usage` / 名称过滤 / `-w`→`top`）。**取用量默认不取**（v0.0.219 与 Swift 一致，靠引擎级 `refresh_usage`） |
 | `tokens` | TokenUsageMonitor、TokenForecastEvaluator、DailyBudget | ✅ `cli::tokens`（`--json` / `--budget`） |
 | `state` | AgentState（读 App 进程内状态，含自报/冲突） | ⚠️ `cli::state` 已有，但**读不到自报**——CLI 是另一个进程；命令已明说这一点 |
 | `doctor` | AgentObservability、AgentHealthEvaluator | ⚠️ `cli::doctor` 已有（结论 + 依据 + 健康度），**但探测原因链仍缺**（见 §4.1） |
