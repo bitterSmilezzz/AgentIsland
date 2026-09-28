@@ -40,7 +40,7 @@ impl Verdict {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Evidence {
     pub level: ActivityLevel,
     pub process_running: bool,
@@ -55,12 +55,20 @@ pub struct Evidence {
     /// 不是同一个量**：一次写入只证明「它动过」，不证明「有几场会话在跑」。
     /// 而 `noLocalData` 判定的输入正是这个数，所以它必须是真的。
     pub active_sessions: usize,
-    pub source_unreadable: bool,
+    /// 本轮「会话源读不到」的**原文**（`SessionProbeHealth.diagnostic_text`）。
+    ///
+    /// 此前这里是个 `bool`，只覆盖「元数据/列举失败」与「路径不是目录」，
+    /// 深层文件读取与解析失败仍被吞掉——而 `None` 与 `Some(false)` 在界面上
+    /// 长得一模一样，`doctor` 也会照着说「结论可信」。
+    pub probe_health: Option<String>,
+    /// 旧故障是否还有效。超过保质期就当它已经过去：挂着一条几小时前的
+    /// 「读不到」而源早已修好，那是**另一种谎报**。
+    pub probe_health_fresh: bool,
     pub has_local_detail_source: bool,
     pub has_token_usage: bool,
 }
 
-pub fn evaluate(e: Evidence) -> Verdict {
+pub fn evaluate(e: &Evidence) -> Verdict {
     if !e.process_running {
         return if e.installed == Some(false) {
             Verdict::new(Code::NotInstalled, "PATH 与 /Applications 均未发现该智能体")
@@ -86,10 +94,10 @@ pub fn evaluate(e: Evidence) -> Verdict {
             )
         };
     }
-    if e.source_unreadable {
+    if e.probe_health.is_some() && e.probe_health_fresh {
         return Verdict::new(
             Code::BlindSessionSource,
-            "已登记的本地会话源无法读取；待机不代表真的空闲",
+            e.probe_health.clone().unwrap_or_default(),
         );
     }
     if e.active_sessions == 0 && !e.has_token_usage {
@@ -156,39 +164,61 @@ mod tests {
             process_running: true,
             installed: None,
             provenance: None,
-            source_unreadable: false,
+            probe_health: None,
+            probe_health_fresh: false,
             has_local_detail_source: true,
             active_sessions: 0,
             has_token_usage: false,
         }
     }
 
+    /// 探测层给的原文。抽成常量是因为下面两条用例都要用它，
+    /// 而「界面逐字用它」正是要钉住的那件事。
+    const HEALTHY_TEXT: &str =
+        "会话源不可读：会话文件无法读取（/tmp/x.jsonl）——此后的「待机」只代表没有读到信号，不代表智能体真的空闲";
+
     #[test]
     fn five_verdicts_follow_the_swift_precedence_without_guessing_installation() {
         let mut e = input();
-        assert_eq!(evaluate(e).code, Code::NoLocalData);
-        e.source_unreadable = true;
-        assert_eq!(evaluate(e).code, Code::BlindSessionSource);
-        e.source_unreadable = false;
+        assert_eq!(evaluate(&e).code, Code::NoLocalData);
+        e.probe_health = Some(HEALTHY_TEXT.into());
+        e.probe_health_fresh = true;
+        let blind = evaluate(&e);
+        assert_eq!(blind.code, Code::BlindSessionSource);
+        assert_eq!(
+            blind.evidence,
+            vec![HEALTHY_TEXT.to_string()],
+            "依据必须**逐字**用探测层给的那句，界面不自己再编一句"
+        );
+        // 陈旧的故障不参与判定：源早已修好却挂着一小时前的「读不到」，
+        // 那是另一种谎报
+        e.probe_health_fresh = false;
+        assert_eq!(
+            evaluate(&e).code,
+            Code::NoLocalData,
+            "过期的那条不算数"
+        );
+        e.probe_health_fresh = true;
+        e.probe_health = None;
         e.has_local_detail_source = false;
-        assert_eq!(evaluate(e).code, Code::SourceNotWired);
+        assert_eq!(evaluate(&e).code, Code::SourceNotWired);
         e.active_sessions = 2;
-        assert_eq!(evaluate(e).code, Code::Observed);
+        assert_eq!(evaluate(&e).code, Code::Observed);
         e.active_sessions = 0;
         e.has_token_usage = true;
-        assert_eq!(evaluate(e).code, Code::Observed);
+        assert_eq!(evaluate(&e).code, Code::Observed);
         e.has_token_usage = false;
         e.level = ActivityLevel::Attention;
-        assert_eq!(evaluate(e).code, Code::Observed);
+        assert_eq!(evaluate(&e).code, Code::Observed);
         e.level = ActivityLevel::Idle;
         e.process_running = false;
         assert_eq!(
-            evaluate(e).code,
+            evaluate(&e).code,
             Code::Observed,
             "unknown install state is not absent"
         );
         e.installed = Some(false);
-        assert_eq!(evaluate(e).code, Code::NotInstalled);
+        assert_eq!(evaluate(&e).code, Code::NotInstalled);
     }
 
     /// `noLocalData` 的输入是**活跃会话数**，不是「文件动过没有」。
@@ -200,16 +230,16 @@ mod tests {
     fn the_no_local_data_verdict_keys_off_active_sessions_not_on_freshness() {
         let mut e = input();
         // 没有活跃会话 ⇒ 无本地明细
-        assert_eq!(evaluate(e).code, Code::NoLocalData);
+        assert_eq!(evaluate(&e).code, Code::NoLocalData);
         // 有活跃会话 ⇒ 结论可信，**依据里要写出那个数**
         e.active_sessions = 3;
-        let verdict = evaluate(e);
+        let verdict = evaluate(&e);
         assert_eq!(verdict.code, Code::Observed);
         assert_eq!(verdict.evidence, vec!["活跃会话 3 个"]);
         // 活跃会话 0 但历史有用量 ⇒ 仍算可信（有过使用是真的）
         e.active_sessions = 0;
         e.has_token_usage = true;
-        assert_eq!(evaluate(e).code, Code::Observed);
+        assert_eq!(evaluate(&e).code, Code::Observed);
     }
 
     #[test]
@@ -219,13 +249,13 @@ mod tests {
         let mut e = input();
         e.level = ActivityLevel::Working;
         e.provenance = Some(crate::selfreport::Provenance::SelfReported);
-        let verdict = evaluate(e);
+        let verdict = evaluate(&e);
         assert_eq!(verdict.code, Code::Observed);
         assert_eq!(verdict.evidence, vec!["状态由带令牌、TTL 内的自报确认"]);
 
         e.provenance = Some(crate::selfreport::Provenance::Observed);
         assert_eq!(
-            evaluate(e).evidence,
+            evaluate(&e).evidence,
             vec!["本轮读到了会话强语义（工作中）"],
             "有会话信号时依据要写明是哪一态"
         );
@@ -239,20 +269,20 @@ mod tests {
         e.process_running = false;
         e.installed = None;
         assert_eq!(
-            evaluate(e).code,
+            evaluate(&e).code,
             Code::Observed,
             "未核实安装状态时不能宣布未安装"
         );
         e.installed = Some(true);
-        assert_eq!(evaluate(e).code, Code::Observed);
+        assert_eq!(evaluate(&e).code, Code::Observed);
         e.installed = Some(false);
-        let verdict = evaluate(e);
+        let verdict = evaluate(&e);
         assert_eq!(verdict.code, Code::NotInstalled);
         assert_eq!(verdict.summary, "未安装：不该期待状态");
     }
 
     #[test]
-    fn outbound_codes_and_evidence_are_stable() {        let verdict = evaluate(input());
+    fn outbound_codes_and_evidence_are_stable() {        let verdict = evaluate(&input());
         let json = serde_json::to_value(verdict).unwrap();
         assert_eq!(json["code"], "noLocalData");
         assert_eq!(json["summary"], "无本地明细：读不到会话与用量");

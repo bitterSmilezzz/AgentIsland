@@ -66,6 +66,7 @@ impl Replay {
                 latest_file: None,
             },
             &session::SessionProbe {
+                health: None,
                 signal,
                 subagent_count: 0,
             },
@@ -79,13 +80,14 @@ impl Replay {
             emoji: String::new(),
             level,
             level_label: level.label().into(),
-            observability: crate::observability::evaluate(crate::observability::Evidence {
+            observability: crate::observability::evaluate(&crate::observability::Evidence {
                 provenance: None,
                 active_sessions: 0,
                 level,
                 process_running: running,
                 installed: running.then_some(true),
-                source_unreadable: false,
+                probe_health: None,
+                probe_health_fresh: false,
                 has_local_detail_source: false,
                 has_token_usage: false,
             }),
@@ -104,6 +106,7 @@ impl Replay {
             pid: None,
             current_action: None,
             subagent_count: 0,
+            session_probe_health: None,
         }];
         level
     }
@@ -430,13 +433,14 @@ fn alarming_snapshot(running: bool) -> AgentSnapshot {
         emoji: String::new(),
         level: ActivityLevel::Working,
         level_label: "工作中".into(),
-        observability: crate::observability::evaluate(crate::observability::Evidence {
+        observability: crate::observability::evaluate(&crate::observability::Evidence {
             provenance: None,
             active_sessions: 0,
             level: ActivityLevel::Working,
             process_running: running,
             installed: Some(true),
-            source_unreadable: false,
+            probe_health: None,
+                probe_health_fresh: false,
             has_local_detail_source: false,
             has_token_usage: false,
         }),
@@ -455,6 +459,7 @@ fn alarming_snapshot(running: bool) -> AgentSnapshot {
         pid: Some(4242),
         current_action: None,
         subagent_count: 0,
+        session_probe_health: None,
     }
 }
 

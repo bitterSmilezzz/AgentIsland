@@ -226,6 +226,13 @@ pub struct AgentSnapshot {
     pub pid: Option<u32>,
     pub current_action: Option<String>,
     pub subagent_count: usize,
+    /// 「会话源读不到」的那一行原文（`SessionProbeHealth.diagnostic_text`），
+    /// `None` = 本轮探测本身没问题。
+    ///
+    /// 排版与措辞**只在探测层有一份**（与 Swift 同纪律）：卡片、侧边栏、报表
+    /// 各自拼一遍就会出现「岛里说读不到、doctor 说一切正常」那种分叉。
+    /// 陈旧的故障由引擎按保质期过滤后才落到这里（见 `observability` 那条）。
+    pub session_probe_health: Option<String>,
 }
 
 // MARK: - 任务事件
@@ -477,6 +484,7 @@ mod tests {
             pid: None,
             current_action: None,
             subagent_count: 0,
+            session_probe_health: None,
         };
         let value = serde_json::to_value(&snapshot).expect("快照应能序列化");
         let object = value.as_object().expect("快照应序列化成对象");

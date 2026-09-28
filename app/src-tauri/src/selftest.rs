@@ -136,6 +136,7 @@ impl Harness {
                 latest_file: None,
             },
             &session::SessionProbe {
+                health: None,
                 signal,
                 subagent_count: 0,
             },

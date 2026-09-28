@@ -433,6 +433,7 @@ mod session_tests {
             pid,
             current_action: None,
             subagent_count: 0,
+            session_probe_health: None,
         }
     }
 

@@ -22,6 +22,12 @@ use std::time::SystemTime;
 /// · 进程在 + 写入 60s 内 或 CPU≥阈值 → working
 /// · 进程在但静默                      → idle
 /// · 进程不在                          → offline（可见口径隐藏）
+/// 「读不到」这条故障的保质期。
+///
+/// 挂了 10 分钟：源恢复之后若没有新写入（探测被跳过），旧故障会一直挂着，
+/// 于是「读不到」反过来伪装成「坏了」——同样是 CONTEXT.md 反对的谎报。
+const HEALTH_TTL_MS: i64 = 10 * 60 * 1000;
+
 /// 连续多少档超阈值才发 token 暴涨告警。与 Swift `ActivityEngine.tokenSpikeConfirmations` 同值。
 pub const TOKEN_SPIKE_CONFIRMATIONS: u32 = 3;
 
@@ -192,20 +198,42 @@ impl ActivityEngine {
                 .self_reports
                 .believable(&profile.id, now)
                 .cloned();
+            // 探测健康**由引擎按采样时钟盖章**（不是构造点取当前时间）：
+            // 合成时间的测试才能稳定判定保质期
+            let mut probe = probe;
+            if let Some(mut health) = probe.health.take() {
+                health.observed_at = now;
+                probe.health = Some(health);
+            }
             let has_session_signal = probe.signal.is_some();
             let (level, provenance) =
                 crate::selfreport::resolve(level, has_session_signal, report.as_ref());
 
             let token_usage = self.token_usage_cached(&profile);
             let installed_state = self.installed.is_installed(&profile);
-            let observability = observability::evaluate(Evidence {
+            let observability = observability::evaluate(&Evidence {
                 level,
                 process_running,
                 installed: installed_state,
                 provenance,
-                source_unreadable: process_running
-                    && level == ActivityLevel::Idle
-                    && observability::has_unreadable_source(&profile),
+                // 原因链：**原文**带上，并按保质期判断它还算不算数。
+                // 目录层那道粗判（元数据/列举失败）作为兜底——它覆盖不到深层读取失败，
+                // 但那也不是「一切正常」的证据
+                probe_health: probe
+                    .health
+                    .as_ref()
+                    .map(|h| h.diagnostic_text())
+                    .or_else(|| {
+                        (process_running
+                            && level == ActivityLevel::Idle
+                            && observability::has_unreadable_source(&profile))
+                        .then(|| "已登记的本地会话源无法枚举；待机不代表真的空闲".to_string())
+                    }),
+                probe_health_fresh: probe
+                    .health
+                    .as_ref()
+                    .map(|h| h.is_fresh(now, HEALTH_TTL_MS))
+                    .unwrap_or(true),
                 has_local_detail_source: observability::has_local_detail_source(&profile),
                 active_sessions: file_result.active_sessions,
                 has_token_usage: token_usage.as_ref().is_some_and(|u| u.tokens_total > 0),
@@ -276,6 +304,7 @@ impl ActivityEngine {
                 // 后缀由 Rust 拼好（" · 自报" / " · 自报冲突" / 空）：界面各自拼一遍就会漂
                 provenance_suffix: crate::selfreport::Provenance::badge_suffix(provenance),
                 subagent_count: probe.subagent_count,
+                session_probe_health: None,
             };
             snapshot.health = health::evaluate(&snapshot);
             list.push(snapshot);
@@ -739,6 +768,7 @@ impl ActivityEngine {
                         return session::SessionProbe {
                             signal: signal.clone(),
                             subagent_count: *sc,
+                            health: None,
                         };
                     }
                     continue;
@@ -755,7 +785,7 @@ impl ActivityEngine {
                 return probe;
             }
         }
-        session::SessionProbe { signal: None, subagent_count: 0 }
+        session::SessionProbe { signal: None, subagent_count: 0, health: None }
     }
 
     fn token_usage_cached(&mut self, profile: &AgentProfile) -> Option<TokenUsage> {
@@ -827,12 +857,13 @@ impl ActivityEngine {
                 emoji: p.emoji.clone(),
                 level,
                 level_label: level.label().to_string(),
-                observability: observability::evaluate(Evidence {
+                observability: observability::evaluate(&Evidence {
                     level,
                     process_running: true,
                     installed: Some(true),
                     provenance: None,
-                    source_unreadable: false,
+                    probe_health: None,
+                    probe_health_fresh: false,
                     has_local_detail_source: true,
                     active_sessions: 0,
                     has_token_usage: t24 > 0,
@@ -859,6 +890,7 @@ impl ActivityEngine {
                 pid: Some(0),
                 current_action: action,
                 subagent_count: 0,
+                session_probe_health: None,
             })
             .map(|mut snapshot| {
                 snapshot.health = health::evaluate(&snapshot);

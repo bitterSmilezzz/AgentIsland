@@ -7,11 +7,70 @@ use std::path::Path;
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone)]
+/// 一次会话探测的完整产出：强语义信号 + 探测失败原因。
+///
+/// **「读不到」与「读到但没事」必须分开**（与 Swift `AgentSessionProbe` 同一条纪律）：
+/// 此前 `read_tail_lines` 的每个失败都经 `.ok()?` 塌成 `None`，而 `probe` 把 `None`
+/// 映射成「无信号、无理由」——于是「会话源读不到」在界面上与「这个 Agent 真没在忙」
+/// 长得一模一样，`doctor` 也会照着说「结论可信」。
+#[derive(Debug, Clone, Default)]
 pub struct SessionProbe {
     /// attention: Some(message) | completed: Some(()) | active: Some(action)
     pub signal: Option<Signal>,
     pub subagent_count: usize,
+    /// 本轮为什么没读成（`None` = 探测本身没问题）
+    pub health: Option<SessionProbeHealth>,
+}
+
+/// 这一轮「读不到」是哪一拍观测到的。
+///
+/// 是**最近值而不是事件**，所以必须能过期：源恢复之后若长时间没有新写入
+/// （探测被跳过），旧故障会一直挂着，于是「读不到」反过来伪装成「坏了」——
+/// 同样是 CONTEXT.md 反对的谎报。保质期见 [`SessionProbeHealth::is_fresh`]。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionProbeHealth {
+    pub failure: SessionProbeFailure,
+    pub path: String,
+    /// 由**引擎按采样时钟盖章**（不是构造点取当前时间）：
+    /// 合成时间的测试才能稳定判定保质期。
+    pub observed_at: i64,
+}
+
+impl SessionProbeHealth {
+    /// 详情与报告里显示的那一行。先说结论，再说这条结论的边界。
+    pub fn diagnostic_text(&self) -> String {
+        format!(
+            "会话源不可读：{}（{}）——此后的「待机」只代表没有读到信号，不代表智能体真的空闲",
+            self.failure.label(),
+            self.path
+        )
+    }
+
+    /// 这条故障还新鲜吗。超过 `window_ms` 就当它已经过去——
+    /// 挂着一条几小时前的「读不到」，而源早已修好，那是另一种谎报。
+    pub fn is_fresh(&self, now_ms: i64, window_ms: i64) -> bool {
+        (now_ms - self.observed_at).max(0) <= window_ms
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionProbeFailure {
+    /// 会话文件在，但读不出来（权限拒绝 / 是目录 / 读取抛错）
+    UnreadableFile,
+    /// 读出来了，但**没有一行**是解析器认识的形状（改版、顶层类型漂移）
+    ///
+    /// 与「文件里确实没有待确认事项」是**两件事**，不得混为一谈：
+    /// 前者是「我们读不懂」，后者是「读懂了、确实没事」。
+    UndecodableFile,
+}
+
+impl SessionProbeFailure {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::UnreadableFile => "会话文件无法读取",
+            Self::UndecodableFile => "会话文件格式与解析器不匹配",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -29,33 +88,56 @@ pub enum Signal {
 /// 会话尾部强语义解析（genericTail 方言族）。
 /// 只读尾部有界字节；解析失败返回无信号，绝不谎报待机。
 pub fn probe(profile_id: &str, path: &str) -> SessionProbe {
+    // 「读不到」**必须**留下理由：此前这里把每种失败都塌成「无信号」，
+    // 于是界面上「会话源读不到」与「这个 Agent 真没在忙」完全一样
     let lines = match read_tail_lines(path) {
-        Some(l) => l,
-        None => return SessionProbe { signal: None, subagent_count: 0 },
+        Ok(l) => l,
+        Err(failure) => {
+            return SessionProbe {
+                signal: None,
+                subagent_count: 0,
+                health: Some(SessionProbeHealth {
+                    failure,
+                    path: path.to_string(),
+                    observed_at: 0, // 由引擎按采样时钟盖章
+                }),
+            }
+        }
     };
     if lines.is_empty() {
-        return SessionProbe { signal: None, subagent_count: 0 };
+        return SessionProbe::default();
     }
     match profile_id {
         "claude" => probe_claude(&lines, path),
         "codex" => probe_codex(&lines, path),
+        // Cline / Roo Code 的 `ui_messages.json` 是**一个跨行 JSON 数组**，
+        // 逐行解析必然失败——所以「整窗无一行解析得出来」这条只对
+        // **逐行方言**成立，不能在这里统一判
         "cline" | "roo-code" | "roo" => probe_cline(&lines, path),
         "zcode" => probe_zcode(&lines, path),
-        _ => SessionProbe { signal: None, subagent_count: 0 },
+        _ => SessionProbe { signal: None, subagent_count: 0, health: None },
     }
 }
 
-fn read_tail_lines(path: &str) -> Option<Vec<String>> {
+fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
     // model-io 一类的会话文件单行可达数 MB（请求体全量内嵌），
     // 固定小窗口里可能没有完整行。改为：读末尾大缓冲 → 以最后一个 \n 为界，
     // 只保留缓冲内的完整行（首段残行丢弃）。
     const MAX_TAIL: u64 = 8 * 1024 * 1024;
-    let mut f = File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
+    // **每一类失败给出不同的理由**（与 Swift `SessionProbeFailure` 同形）：
+    // 打不开、读不了、太大，是三件事——「都是读不到」会把修法也一起丢掉
+    let mut f = File::open(path).map_err(|_| SessionProbeFailure::UnreadableFile)?;
+    let len = f
+        .metadata()
+        .map_err(|_| SessionProbeFailure::UnreadableFile)?
+        .len();
+    // 超出上限是**有意的降级**而非故障：单行可达数 MB，固定小窗口里可能没有完整行
     let start = len.saturating_sub(MAX_TAIL);
-    f.seek(SeekFrom::Start(start)).ok()?;
+    f.seek(SeekFrom::Start(start))
+        .map_err(|_| SessionProbeFailure::UnreadableFile)?;
     let mut buf = String::new();
-    f.read_to_string(&mut buf).ok()?;
+    f.read_to_string(&mut buf)
+        .map_err(|_| SessionProbeFailure::UnreadableFile)?;
 
     let complete: &[&str] = if start == 0 {
         &buf.lines().collect::<Vec<_>>()
@@ -74,7 +156,7 @@ fn read_tail_lines(path: &str) -> Option<Vec<String>> {
     while lines.len() > 600 {
         lines.remove(0);
     }
-    Some(lines)
+    Ok(lines)
 }
 
 fn fingerprint(path: &str, key: &str) -> String {
@@ -103,6 +185,12 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
     //
     // 语义与 Swift 一致：**只撤销中断之前**的调用。中断之后重新发起的命令仍然是在途。
     let last_interruption = lines.iter().rposition(|l| is_interruption_notice(l));
+
+    // 读到了一堆行、却**没有一行**解析得出 JSON ⇒ 「我们读不懂这份文件」，
+    // 而不是「读懂了、确实没事」。这两件事在 `doctor` 里必须分开说。
+    if !lines.iter().any(|l| serde_json::from_str::<Value>(l).is_ok()) {
+        return undecodable(path);
+    }
 
     // 自尾向前找最新一条 assistant 条目
     for (index, line) in lines.iter().enumerate().rev() {
@@ -155,12 +243,14 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
                     return SessionProbe {
                         signal: Some(Signal::Attention(fingerprint(path, tool_id), question)),
                         subagent_count: sidechains,
+                        health: None,
                     };
                 }
                 let action = describe_claude_tool(tool_name, &tool_input);
                 return SessionProbe {
                     signal: Some(Signal::Active(fingerprint(path, tool_id), action)),
                     subagent_count: sidechains,
+                    health: None,
                 };
             }
             // 工具已收口：继续向前找更早的未收口调用
@@ -172,10 +262,11 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
             return SessionProbe {
                 signal: Some(Signal::Completed(fp)),
                 subagent_count: sidechains,
+                health: None,
             };
         }
     }
-    SessionProbe { signal: None, subagent_count: sidechains }
+    SessionProbe { signal: None, subagent_count: sidechains, health: None }
 }
 
 /// 中断短语表。与 Swift `AgentSessionInspector.interruptionPhrases` 逐条同值——
@@ -307,6 +398,9 @@ fn claude_question_text(input: &Value) -> Option<String> {
 fn probe_codex(lines: &[String], path: &str) -> SessionProbe {
     // Read the bounded tail in order: tool outputs are only meaningful when they
     // resolve a call with the same ID. Accounting and ordinary messages are neutral.
+    if !lines.iter().any(|l| serde_json::from_str::<Value>(l).is_ok()) {
+        return undecodable(path);
+    }
     let mut open: HashMap<String, (usize, String, bool, String)> = HashMap::new();
     let mut completion: Option<String> = None;
     for (index, line) in lines.iter().enumerate() {
@@ -362,23 +456,37 @@ fn probe_codex(lines: &[String], path: &str) -> SessionProbe {
         } else {
             Signal::Active(id, Some(description.clone()))
         };
-        return SessionProbe { signal: Some(signal), subagent_count: 0 };
+        return SessionProbe { signal: Some(signal), subagent_count: 0, health: None };
     }
-    SessionProbe { signal: completion.map(Signal::Completed), subagent_count: 0 }
+    SessionProbe { signal: completion.map(Signal::Completed), subagent_count: 0, health: None }
 }
 
 // MARK: Cline / Roo ui_messages.json（JSON 数组投影）
 
+/// 「读到了一堆行，却一行都不是我们认识的形状」。抽出成一个函数是因为
+/// 逐行方言有三条（claude / codex / zcode），而它们要报**同一种**理由。
+fn undecodable(path: &str) -> SessionProbe {
+    SessionProbe {
+        signal: None,
+        subagent_count: 0,
+        health: Some(SessionProbeHealth {
+            failure: SessionProbeFailure::UndecodableFile,
+            path: path.to_string(),
+            observed_at: 0,
+        }),
+    }
+}
+
 fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
     let joined: String = lines.concat();
     let Ok(doc) = serde_json::from_str::<Value>(&joined) else {
-        return SessionProbe { signal: None, subagent_count: 0 };
+        return SessionProbe { signal: None, subagent_count: 0, health: None };
     };
     let Some(arr) = doc.as_array() else {
-        return SessionProbe { signal: None, subagent_count: 0 };
+        return SessionProbe { signal: None, subagent_count: 0, health: None };
     };
     let Some(el) = arr.last() else {
-        return SessionProbe { signal: None, subagent_count: 0 };
+        return SessionProbe { signal: None, subagent_count: 0, health: None };
     };
     let ask = el.get("ask").and_then(|v| v.as_str()).unwrap_or("");
     let say = el.get("say").and_then(|v| v.as_str()).unwrap_or("");
@@ -396,6 +504,7 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
                 msg,
             )),
             subagent_count: 0,
+            health: None,
         };
     }
     if matches!(say, "command" | "command_output" | "tool") {
@@ -410,15 +519,17 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
                 action,
             )),
             subagent_count: 0,
+            health: None,
         };
     }
     if say == "completion_result" {
         return SessionProbe {
             signal: Some(Signal::Completed(fingerprint(path, &text.chars().take(64).collect::<String>()))),
             subagent_count: 0,
+            health: None,
         };
     }
-    SessionProbe { signal: None, subagent_count: 0 }
+    SessionProbe { signal: None, subagent_count: 0, health: None }
 }
 
 // MARK: ZCode rollout JSONL（~/.zcode/cli/rollout/model-io-sess_*.jsonl）
@@ -453,10 +564,11 @@ fn probe_zcode(lines: &[String], path: &str) -> SessionProbe {
                         action,
                     )),
                     subagent_count: 0,
+                    health: None,
                 };
             }
             // 最近请求已陈旧：回到双信号近似（进程 + 文件写入/CPU）
-            return SessionProbe { signal: None, subagent_count: 0 };
+            return SessionProbe { signal: None, subagent_count: 0, health: None };
         }
         // 该行无工具调用（纯推理/回答）：看时间戳决定是否算活动
         let ts_ms = doc
@@ -468,11 +580,12 @@ fn probe_zcode(lines: &[String], path: &str) -> SessionProbe {
             return SessionProbe {
                 signal: Some(Signal::Active(fingerprint(path, "zcode-reasoning"), Some("正在推理".into()))),
                 subagent_count: 0,
+                health: None,
             };
         }
-        return SessionProbe { signal: None, subagent_count: 0 };
+        return SessionProbe { signal: None, subagent_count: 0, health: None };
     }
-    SessionProbe { signal: None, subagent_count: 0 }
+    SessionProbe { signal: None, subagent_count: 0, health: None }
 }
 
 // MARK: 供 Token 监控复用的按行读取
@@ -535,4 +648,123 @@ pub fn for_each_complete_line<F: FnMut(&str)>(
         }
     }
     Some((consumed, ended_with_newline))
+}
+
+/// 探测失败**必须留下理由**——这是本轮改动的全部要点。
+#[cfg(test)]
+mod health_chain {
+    use super::*;
+
+    fn write(lines: &[&str]) -> crate::testutil::Sandbox {
+        let sandbox = crate::testutil::Sandbox::new("healthchain");
+        std::fs::write(sandbox.path().join("s.jsonl"), lines.join("\n")).unwrap();
+        sandbox
+    }
+
+    /// **读不到**与**读到但没事**是两件事，必须能分开。
+    ///
+    /// 此前 `read_tail_lines` 的每个失败都经 `.ok()?` 塌成 `None`，
+    /// 而 `probe` 把 `None` 映射成「无信号、无理由」——于是界面上
+    /// 「会话源读不到」与「这个 Agent 真没在忙」完全一样。
+    #[test]
+    fn an_unreadable_file_carries_a_reason_and_an_empty_one_does_not() {
+        // ① 文件在，但内容解析不出任何东西 ⇒ 「读到了、但没信号」：**没有**理由
+        let sandbox = write(&[r#"{"type":"user","content":"hi"}"#]);
+        let ok = probe("claude", sandbox.path().join("s.jsonl").to_str().unwrap());
+        assert!(ok.signal.is_none());
+        assert!(
+            ok.health.is_none(),
+            "读到了只是没信号，不该报「读不到」"
+        );
+
+        // ② 文件读不出来（这里用「路径是目录」构造）⇒ **有**理由
+        let dir_sandbox = crate::testutil::Sandbox::new("healthdir");
+        std::fs::create_dir_all(dir_sandbox.path().join("s.jsonl")).unwrap();
+        let broken = probe("claude", dir_sandbox.path().join("s.jsonl").to_str().unwrap());
+        assert!(broken.signal.is_none());
+        let health = broken.health.expect("读不到就必须留下理由");
+        assert_eq!(health.failure, SessionProbeFailure::UnreadableFile);
+        assert!(health.diagnostic_text().contains("会话文件无法读取"));
+        assert!(health.diagnostic_text().contains("不代表智能体真的空闲"));
+    }
+
+    /// 故障是**最近值而不是事件**，所以必须会过期。
+    ///
+    /// 源恢复之后若长时间没有新写入（探测被跳过），旧故障会一直挂着，
+    /// 于是「读不到」反过来伪装成「坏了」——同样是 CONTEXT.md 反对的谎报。
+    /// 读到一堆行却**一行 JSON 都解析不出** ⇒ 「我们读不懂」，
+    /// 不是「读懂了、确实没事」。`doctor` 里这两句必须分开。
+    #[test]
+    fn a_window_with_no_parseable_line_is_reported_as_undecodable() {
+        let sandbox = write(&["这不是 JSON", "这也不是"]);
+        let probe = probe("claude", sandbox.path().join("s.jsonl").to_str().unwrap());
+        let health = probe.health.expect("读不懂就必须留下理由");
+        assert_eq!(health.failure, SessionProbeFailure::UndecodableFile);
+        assert!(health.diagnostic_text().contains("格式与解析器不匹配"));
+    }
+
+    /// 「整窗无一行解析得出来」**只对逐行方言成立**。
+    ///
+    /// Cline / Roo Code 的 `ui_messages.json` 是**一个跨行 JSON 数组**，
+    /// 逐行解析必然失败——统一判的话会把这一族全打成「读不懂」，
+    /// 而它们其实读得好好的。
+    #[test]
+    fn a_json_array_split_across_lines_is_not_mistaken_for_undecodable() {
+        let sandbox = crate::testutil::Sandbox::new("cline-array");
+        let path = sandbox.path().join("ui_messages.json");
+        // 跨行的 JSON 数组
+        std::fs::write(
+            &path,
+            "[\n  {\n    \"type\": \"ask\", \"ask\": \"command\", \"text\": \"ls\"\n  }\n]",
+        )
+        .unwrap();
+        let probe = probe("cline", path.to_str().unwrap());
+        assert!(
+            probe.health.is_none(),
+            "跨行数组不是「读不懂」：{:?}",
+            probe.health
+        );
+    }
+
+    #[test]
+    fn a_stale_health_report_goes_stale() {
+        let now = 1_000_000i64;
+        let health = SessionProbeHealth {
+            failure: SessionProbeFailure::UnreadableFile,
+            path: "/tmp/x.jsonl".into(),
+            observed_at: now,
+        };
+        assert!(health.is_fresh(now, 10 * 60 * 1000), "刚观测到的算新鲜");
+        assert!(health.is_fresh(now + 10 * 60 * 1000, 10 * 60 * 1000), "边界取等号");
+        assert!(
+            !health.is_fresh(now + 10 * 60 * 1000 + 1, 10 * 60 * 1000),
+            "超过保质期就不再算数"
+        );
+        // 时钟回拨不得让它变成「负龄」
+        assert!(health.is_fresh(now - 5000, 10 * 60 * 1000));
+    }
+
+    /// 每种失败各有各的**修法**，「都是读不到」会把修法一起丢掉。
+    ///
+    /// 枚举里**只列真有的产生点**。Swift 侧还有三种（会话库打不开 / 结构变了 /
+    /// 查询被中断），它们要等 SQLite 会话路径迁过来才用得上；文件超限那种
+    /// 在 Rust 侧是**有意的降级而非故障**（单行可达数 MB，尾读本就按 8MB 窗口走），
+    /// 不该报成「读不到」。
+    /// 先摆在那儿只会让下一个人以为这些已经覆盖了。
+    #[test]
+    fn every_failure_carries_its_own_reason() {
+        let cases = [
+            (SessionProbeFailure::UnreadableFile, "会话文件无法读取"),
+            (SessionProbeFailure::UndecodableFile, "格式与解析器不匹配"),
+        ];
+        for (failure, needle) in cases {
+            let health = SessionProbeHealth {
+                failure,
+                path: "/tmp/x".into(),
+                observed_at: 0,
+            };
+            let text = health.diagnostic_text();
+            assert!(text.contains(needle), "{failure:?} 的文案缺「{needle}」：{text}");
+        }
+    }
 }
