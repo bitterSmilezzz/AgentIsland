@@ -94,9 +94,10 @@ pub enum Signal {
 /// 各自都要带会话定位与缓存，见对照表 §3.2），而**档案里已经如实声明了它们**。
 /// 声明与「有解析器」分开记，就是为了让「声明了但还没实现」有一处可查，
 /// 而不是让人以为那条路径已经通了。
-pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 2] = [
+pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 3] = [
     crate::models::SessionDialect::GenericTail,
     crate::models::SessionDialect::ClineTasks,
+    crate::models::SessionDialect::QoderTranscript,
 ];
 
 /// 方言分派。
@@ -110,11 +111,47 @@ pub fn probe_dialect(
     dialect: crate::models::SessionDialect,
     path: &str,
 ) -> SessionProbe {
+    if dialect == crate::models::SessionDialect::QoderTranscript {
+        return probe_qoder_dialect(profile_id, path);
+    }
     if !DIALECTS_WITH_PARSER.contains(&dialect) {
         // 已声明、尚无解析器：如实无信号，**不拿猜的解析器顶上去**
         return SessionProbe::default();
     }
     probe_by_id(profile_id, path)
+}
+
+/// Qoder 的会话定位：取 `session_dirs` 下**最近修改**的那个 `.jsonl`。
+///
+/// 定位是这一族独有的——Qoder 的目录结构是
+/// `projects/<项目 slug>/<会话 uuid>.jsonl`，两层，所以不能沿用别的方言的「根下最深一层」。
+/// `session_key` 取**文件名**（去扩展名）：它是会话的稳定身份，
+/// 而完成态指纹在认不出人类轮次时要退到它（见 [`probe_qoder`] 的注）。
+fn probe_qoder_dialect(_profile_id: &str, path: &str) -> SessionProbe {
+    // 传入的 path 就是本拍由 filemon 定位到的候选文件；文件名即会话身份
+    let file = std::path::Path::new(path);
+    let session_key = file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let file_age = std::fs::metadata(file)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    match read_tail_lines(path) {
+        Ok(lines) => probe_qoder(&lines, path, file_age, &session_key),
+        Err(failure) => SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: Some(SessionProbeHealth {
+                failure,
+                path: path.to_string(),
+                observed_at: 0,
+            }),
+        },
+    }
 }
 
 fn probe_by_id(profile_id: &str, path: &str) -> SessionProbe {
@@ -796,5 +833,437 @@ mod health_chain {
             let text = health.diagnostic_text();
             assert!(text.contains(needle), "{failure:?} 的文案缺「{needle}」：{text}");
         }
+    }
+}
+
+// MARK: - Qoder 方言（`~/.qoder/projects/<slug>/<uuid>.jsonl`，Anthropic 兼容逐行）
+
+/// 从 tool_use 的 `input` 里取一条**能给人看**的线索（命令 / 文件名 / 任务描述）。
+///
+/// 取的键**按顺序**而不是「随便哪个有值」：一份 input 里可能同时有
+/// `path`（目录）与 `file_path`（文件），而用户想知道的是「在改哪个文件」。
+/// 顺序与 Swift 侧逐条一致。
+fn qoder_tool_hint(input: &Value) -> String {
+    for key in [
+        "command", "file_path", "path", "pattern", "prompt", "description", "toolName",
+    ] {
+        if let Some(text) = input.get(key).and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                return one_line(text, 40);
+            }
+        }
+    }
+    String::new()
+}
+
+fn qoder_action_text(name: &str, hint: &str) -> String {
+    let name = name.to_lowercase();
+    match (name.as_str(), hint.is_empty()) {
+        ("bash", true) => "执行终端命令".into(),
+        ("bash", false) => format!("运行: {hint}"),
+        ("edit" | "write" | "multiedit", true) => "修改文件".into(),
+        ("edit" | "write" | "multiedit", false) => format!("修改: {hint}"),
+        ("read" | "grep" | "glob", true) => "读取代码".into(),
+        ("read" | "grep" | "glob", false) => format!("读取: {hint}"),
+        ("agent", true) => "派生子任务处理中".into(),
+        ("agent", false) => format!("子任务: {hint}"),
+        ("mcp_call", true) => "调用外部工具".into(),
+        ("mcp_call", false) => format!("调用工具: {hint}"),
+        (_, true) => format!("正在执行 {name}"),
+        (_, false) => format!("{name}: {hint}"),
+    }
+}
+
+/// Qoder 的「等确认」类工具（**球在用户这边**的那些）。
+///
+/// 与 Claude Code 侧那两个（`AskUserQuestion` / `ExitPlanMode`）同义，
+/// 但 Qoder 用的是**自己的**一组名字，缺一条就漏报一种确认请求。
+const QODER_REQUEST_TOOLS: [&str; 4] = [
+    "askuserquestion",
+    "ask_question",
+    "exitplanmode",
+    "exit_plan_mode",
+];
+
+/// Qoder 解析器。逐条对应 Swift `detectQoder`。
+///
+/// **完成态的指纹是「最近一次人类指令的身份」**，不是那条 assistant 消息的 id：
+/// Qoder 每次模型调用都换 id，而一个长任务里模型会 `end_turn` 很多次
+/// （等后台构建、等并发会话回话、被通知唤醒后续跑）——按消息 id 记的话，
+/// 「同一件活」每续跑一轮就再弹一次「任务完成」。用户 2026-09-25 报的就是这个。
+///
+/// 指纹认不出来时退到**会话文件**的身份（`session_key`）而不是当前轮次 id：
+/// 按轮次退会让每一次续跑都换个新指纹，等于把这条修复要治的病原地复发。
+fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &str) -> SessionProbe {
+    struct Row {
+        id: String,
+        role: String,
+        stop_reason: String,
+        uses: Vec<(String, String, String)>, // (name, id, hint)
+        results: Vec<String>,
+        prompt_id: String,
+        is_human_input: bool,
+    }
+
+    let mut rows: Vec<Row> = Vec::with_capacity(lines.len());
+    for raw in lines {
+        let Ok(doc) = serde_json::from_str::<Value>(raw) else { continue };
+        let Some(message) = doc.get("message") else { continue };
+        let Some(role) = message.get("role").and_then(|v| v.as_str()) else { continue };
+
+        let mut uses = Vec::new();
+        let mut results = Vec::new();
+        if let Some(blocks) = message.get("content").and_then(|v| v.as_array()) {
+            for block in blocks {
+                match block.get("type").and_then(|v| v.as_str()) {
+                    Some("tool_use") => {
+                        let Some(name) = block.get("name").and_then(|v| v.as_str()) else { continue };
+                        let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let hint = qoder_tool_hint(
+                            block.get("input").unwrap_or(&Value::Null),
+                        );
+                        uses.push((name.to_string(), id, hint));
+                    }
+                    Some("tool_result") => {
+                        if let Some(src) = block.get("tool_use_id").and_then(|v| v.as_str()) {
+                            results.push(src.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        rows.push(Row {
+            id: message.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            role: role.to_string(),
+            stop_reason: message
+                .get("stop_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            uses,
+            results,
+            prompt_id: doc.get("promptId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            is_human_input: doc.get("humanInput").is_some(),
+        });
+    }
+    if rows.is_empty() {
+        return SessionProbe::default();
+    }
+
+    // 哪些 tool_use 已经拿到结果
+    let mut answered: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for row in &rows {
+        for id in &row.results {
+            if !id.is_empty() {
+                answered.insert(id);
+            }
+        }
+    }
+
+    let Some(last_assistant) = rows.iter().rev().find(|r| r.role == "assistant") else {
+        return SessionProbe::default();
+    };
+
+    let turn_id = rows
+        .iter()
+        .rev()
+        .find(|r| !r.prompt_id.is_empty())
+        .map(|r| r.prompt_id.clone())
+        .unwrap_or_default();
+    // 「谁起的头」：一轮的**首行**才带 humanInput（真人敲的）或 isMeta（系统注入）
+    let human_turn = rows
+        .iter()
+        .rev()
+        .find(|r| r.is_human_input && !r.prompt_id.is_empty())
+        .map(|r| r.prompt_id.clone())
+        .unwrap_or_default();
+    let completion_identity = if !human_turn.is_empty() {
+        human_turn
+    } else if !session_key.is_empty() {
+        session_key.to_string()
+    } else if !turn_id.is_empty() {
+        turn_id.clone()
+    } else {
+        last_assistant.id.clone()
+    };
+    let completion_fingerprint = format!("qoder-{completion_identity}");
+
+    // 真人刚敲完、模型一个字都还没回：最后一条是带 humanInput 的 user 行。
+    // 这时最后那条 assistant 还是**上一轮**的 end_turn——按它判就是
+    // 「你一发出指令，岛就说上一件事完成了」，而它等的正是这条新指令。
+    if let Some(last) = rows.last() {
+        if last.role == "user" && last.is_human_input {
+            let id = if turn_id.is_empty() { last.id.clone() } else { turn_id };
+            return SessionProbe {
+                signal: Some(Signal::Active(
+                    fingerprint(path, &format!("qoder-turn-{id}")),
+                    Some("正在处理你的新指令".into()),
+                )),
+                subagent_count: 0,
+                health: None,
+            };
+        }
+    }
+
+    let pending: Vec<&(String, String, String)> = last_assistant
+        .uses
+        .iter()
+        .filter(|(_, id, _)| !id.is_empty() && !answered.contains(id.as_str()))
+        .collect();
+
+    // ① 等确认（球在用户这边）优先于 ② 在途执行
+    if let Some((name, id, _)) = pending
+        .iter()
+        .find(|(name, _, _)| QODER_REQUEST_TOOLS.contains(&name.to_lowercase().as_str()))
+    {
+        let message = if name.to_lowercase().contains("plan") {
+            "等你确认下一步方案"
+        } else {
+            "等待你回答或选择"
+        };
+        return SessionProbe {
+            signal: Some(Signal::Attention(
+                fingerprint(path, &format!("qoder-{id}")),
+                message.into(),
+            )),
+            subagent_count: 0,
+            health: None,
+        };
+    }
+    // ② 还在途
+    if let Some((name, id, hint)) = pending.first() {
+        return SessionProbe {
+            signal: Some(Signal::Active(
+                fingerprint(path, &format!("qoder-{id}")),
+                Some(qoder_action_text(name, hint)),
+            )),
+            subagent_count: 0,
+            health: None,
+        };
+    }
+    // ③ 工具都收口了：看模型是怎么停的
+    if last_assistant.stop_reason == "end_turn"
+        || last_assistant.stop_reason == "stop_sequence"
+    {
+        // 完成态只保留一小段时间，之后自然回到「待机」——与其他方言同口径
+        if file_age_secs > 15.0 * 60.0 {
+            return SessionProbe::default();
+        }
+        return SessionProbe {
+            signal: Some(Signal::Completed(fingerprint(path, &completion_fingerprint))),
+            subagent_count: 0,
+            health: None,
+        };
+    }
+    // ④ 没停、也没在途 ⇒ 继续处理中
+    SessionProbe {
+        signal: Some(Signal::Active(
+            fingerprint(path, &format!("qoder-cont-{}", last_assistant.id)),
+            Some("继续处理中".into()),
+        )),
+        subagent_count: 0,
+        health: None,
+    }
+}
+
+/// Qoder 解析器的四条分支（对齐 Swift `detectQoder`）。
+#[cfg(test)]
+mod qoder_tests {
+    use super::*;
+
+    /// 造一份 Qoder 会话文件。`rows` 是 (role, stop_reason, prompt_id, human_input, blocks)
+    fn session(rows: &[(&str, &str, &str, bool, &str)]) -> crate::testutil::Sandbox {
+        let sandbox = crate::testutil::Sandbox::new("qoder");
+        let body: String = rows
+            .iter()
+            .map(|(role, stop, pid, human, blocks)| {
+                let human_field = if *human { r#","humanInput":true"# } else { "" };
+                let pid_field = if pid.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#","promptId":"{pid}""#)
+                };
+                format!(
+                    r#"{{"promptId":"{pid}"{human_field},"message":{{"id":"m-{role}-{stop}","role":"{role}","stop_reason":"{stop}","content":[{blocks}]}}}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(sandbox.path().join("sess-uuid.jsonl"), body).unwrap();
+        sandbox
+    }
+
+    fn run(sandbox: &crate::testutil::Sandbox) -> SessionProbe {
+        probe_dialect(
+            "qoder",
+            crate::models::SessionDialect::QoderTranscript,
+            sandbox.path().join("sess-uuid.jsonl").to_str().unwrap(),
+        )
+    }
+
+    /// ① 等确认优先于在途执行：球在用户这边的工具先判。
+    #[test]
+    fn an_unanswered_ask_question_is_attention_not_activity() {
+        let s = session(&[(
+            "assistant",
+            "",
+            "p1",
+            false,
+            r#"{"type":"tool_use","id":"ask1","name":"AskUserQuestion","input":{}}"#,
+        )]);
+        let probe = run(&s);
+        match probe.signal {
+            Some(Signal::Attention(_, message)) => assert_eq!(message, "等待你回答或选择"),
+            other => panic!("应当是等确认：{other:?}"),
+        }
+    }
+
+    /// plan 那一族给的是另一句话——**两个确认工具不能共用一句文案**，
+    /// 否则用户分不清自己是在被问还是在被要求批准方案。
+    #[test]
+    fn the_plan_family_gets_its_own_wording() {
+        let s = session(&[(
+            "assistant",
+            "",
+            "p1",
+            false,
+            r#"{"type":"tool_use","id":"ask2","name":"exit_plan_mode","input":{}}"#,
+        )]);
+        match run(&s).signal {
+            Some(Signal::Attention(_, message)) => assert_eq!(message, "等你确认下一步方案"),
+            other => panic!("应当是等确认：{other:?}"),
+        }
+    }
+
+    /// ② 工具已收口 + 模型 `end_turn` ⇒ 完成。
+    #[test]
+    fn a_finished_turn_with_all_results_answered_completes() {
+        let s = session(&[
+            ("user", "", "p1", true, ""),
+            (
+                "assistant",
+                "end_turn",
+                "p1",
+                false,
+                r#"{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}"#,
+            ),
+            (
+                "assistant",
+                "end_turn",
+                "p1",
+                false,
+                r#"{"type":"tool_result","tool_use_id":"tu1"}"#,
+            ),
+        ]);
+        assert!(matches!(run(&s).signal, Some(Signal::Completed(_))));
+    }
+
+    /// ③ 完成态**只保留一小段时间**（15 分钟），之后自然回到待机——
+    /// 与其他方言同口径，否则岛会一直显示「已完成」。
+    #[test]
+    fn a_completion_goes_stale_after_fifteen_minutes() {
+        let lines = vec![r#"{"promptId":"p1","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[]}}"#.to_string()];
+        let fresh = probe_qoder(&lines, "/tmp/x.jsonl", 10.0 * 60.0, "sess");
+        assert!(matches!(fresh.signal, Some(Signal::Completed(_))), "15 分钟内应当仍是完成态");
+        let stale = probe_qoder(&lines, "/tmp/x.jsonl", 16.0 * 60.0, "sess");
+        assert!(stale.signal.is_none(), "过了 15 分钟就该自然回到待机");
+    }
+
+    /// ④ 真人刚敲完、模型还没回：按**上一轮**的 end_turn 判就是
+    /// 「你一发出指令，岛就说上一件事完成了」——而它等的正是这条新指令。
+    #[test]
+    fn a_fresh_human_turn_is_handled_before_the_previous_completion() {
+        let s = session(&[
+            (
+                "assistant",
+                "end_turn",
+                "p1",
+                false,
+                r#"{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}}"#,
+            ),
+            (
+                "assistant",
+                "end_turn",
+                "p1",
+                false,
+                r#"{"type":"tool_result","tool_use_id":"tu1"}"#,
+            ),
+            // 用户又敲了一条
+            ("user", "", "p2", true, ""),
+        ]);
+        match run(&s).signal {
+            Some(Signal::Active(_, action)) => assert_eq!(action.as_deref(), Some("正在处理你的新指令")),
+            other => panic!("应当是「正在处理新指令」：{other:?}"),
+        }
+    }
+
+    /// **完成指纹是「最近一次人类指令的身份」，不是 assistant 消息 id。**
+    ///
+    /// Qoder 每次模型调用都换 id，而长任务里模型会 `end_turn` 很多次
+    /// （等后台构建、等并发会话回话）——按消息 id 记的话，
+    /// 「同一件活」每续跑一轮就再弹一次「任务完成」。用户 2026-09-25 报的就是这个。
+    #[test]
+    fn the_completion_fingerprint_tracks_the_human_turn_not_the_assistant_message() {
+        // ⚠️ 必须带一条**真人**（`humanInput`）的 user 行：
+        // 「谁起的头」是靠它认的，没有它两次都会合法地回退到会话身份——
+        // 那样测的就不是「换轮次会不会重新响」，而是「回退稳不稳定」了。
+        let make = |pid: &str, msg: &str| {
+            vec![
+                format!(
+                    r#"{{"promptId":"{pid}","humanInput":true,"message":{{"id":"u-{pid}","role":"user","content":[]}}}}"#
+                ),
+                format!(
+                    r#"{{"promptId":"{pid}","message":{{"id":"{msg}","role":"assistant","stop_reason":"end_turn","content":[]}}}}"#
+                ),
+            ]
+        };
+        // 同一轮（同一个 promptId）、两次模型调用（两个消息 id）⇒ 指纹必须相同
+        let first = probe_qoder(&make("p1", "m-A"), "/tmp/x.jsonl", 60.0, "sess");
+        let second = probe_qoder(&make("p1", "m-B"), "/tmp/x.jsonl", 60.0, "sess");
+        let second_fp = match &second.signal {
+            Some(Signal::Completed(fp)) => fp.clone(),
+            other => panic!("应是完成态：{other:?}"),
+        };
+        match (first.signal, Some(Signal::Completed(second_fp.clone()))) {
+            (Some(Signal::Completed(a)), Some(Signal::Completed(b))) => {
+                assert_eq!(a, b, "同一件活续跑一轮不该再响一次完成");
+            }
+            other => panic!("两条都应是完成态：{other:?}"),
+        }
+        // 换了人类轮次 ⇒ 指纹必须变
+        let next = probe_qoder(&make("p2", "m-C"), "/tmp/x.jsonl", 60.0, "sess");
+        match (Some(Signal::Completed(second_fp)), next.signal) {
+            (Some(Signal::Completed(a)), Some(Signal::Completed(b))) => {
+                assert_ne!(a, b, "用户真敲了新指令，就该重新响一次");
+            }
+            other => panic!("两条都应是完成态：{other:?}"),
+        }
+    }
+
+    /// 认不出人类轮次时退到**会话文件**的身份，而不是当前轮次 id：
+    /// 按轮次退会让每一次续跑都换个新指纹，等于把上面那条修复要治的病原地复发。
+    #[test]
+    fn an_unrecognised_turn_falls_back_to_the_session_identity() {
+        let lines = vec![r#"{"message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[]}}"#.to_string()];
+        let a = probe_qoder(&lines, "/tmp/x.jsonl", 60.0, "sess-A");
+        let b = probe_qoder(&lines, "/tmp/x.jsonl", 60.0, "sess-A");
+        match (a.signal, b.signal) {
+            (Some(Signal::Completed(x)), Some(Signal::Completed(y))) => assert_eq!(x, y),
+            other => panic!("应退到会话身份：{other:?}"),
+        }
+    }
+
+    /// 动作文案按工具名分类，缺一类就少一句可读的话。
+    #[test]
+    fn the_action_text_covers_the_main_tool_families() {
+        assert_eq!(qoder_action_text("Bash", "ls"), "运行: ls");
+        assert_eq!(qoder_action_text("Edit", "a.rs"), "修改: a.rs");
+        assert_eq!(qoder_action_text("Read", "b.rs"), "读取: b.rs");
+        assert_eq!(qoder_action_text("Agent", "查日志"), "子任务: 查日志");
+        assert_eq!(qoder_action_text("mcp_call", "search"), "调用工具: search");
+        // 没有线索时也要给一句话，不能是空的
+        assert_eq!(qoder_action_text("Bash", ""), "执行终端命令");
+        assert_eq!(qoder_action_text("Whatever", ""), "正在执行 whatever");
     }
 }

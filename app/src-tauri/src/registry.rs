@@ -842,20 +842,19 @@ mod dialect_declaration {
     }
 
     #[test]
-    fn the_three_dialects_without_a_parser_are_listed_explicitly() {
+    fn the_two_dialects_without_a_parser_are_listed_explicitly() {
         let declared_without_parser: Vec<String> = [
             D::AntigravityBrain,
             D::DshProjection,
-            D::QoderTranscript,
         ]
         .into_iter()
         .filter(|d| !DIALECTS_WITH_PARSER.contains(d))
         .map(|d| format!("{d:?}"))
         .collect();
         assert_eq!(
-            declared_without_parser.len(),
-            3,
-            "「已声明但尚无解析器」的方言数变了：{declared_without_parser:?}——\
+            declared_without_parser,
+            vec!["AntigravityBrain".to_string(), "DshProjection".to_string()],
+            "「已声明但尚无解析器」的清单变了：{declared_without_parser:?}——\
              补了解析器就把它从 DIALECTS_WITH_PARSER 移进来、并在这里删掉"
         );
     }
@@ -868,7 +867,7 @@ mod dialect_declaration {
     #[test]
     fn a_dialect_without_a_parser_yields_no_signal_rather_than_a_guessed_one() {
         use crate::session::probe_dialect;
-        for dialect in [D::AntigravityBrain, D::DshProjection, D::QoderTranscript] {
+        for dialect in [D::AntigravityBrain, D::DshProjection] {
             let probe = probe_dialect("claude", dialect, "/nonexistent/session.jsonl");
             assert!(
                 probe.signal.is_none(),
@@ -878,11 +877,16 @@ mod dialect_declaration {
         }
     }
 
-    /// 反过来：`GenericTail` 与 `ClineTasks` 是**有**解析器的。
+    /// 反过来：**已实现**的那几个必须在清单上，而未实现的两个必须不在。
+    ///
+    /// 这条会随解析器的增补自动收紧：往 `DIALECTS_WITH_PARSER` 里加一个，
+    /// 上面那条「未实现清单」的断言就会红，逼着两处同时更新。
     #[test]
-    fn the_two_implemented_dialects_are_the_ones_on_the_list() {
+    fn the_implemented_dialects_are_exactly_the_ones_on_the_list() {
         assert!(DIALECTS_WITH_PARSER.contains(&D::GenericTail));
         assert!(DIALECTS_WITH_PARSER.contains(&D::ClineTasks));
-        assert!(!DIALECTS_WITH_PARSER.contains(&D::QoderTranscript));
+        assert!(DIALECTS_WITH_PARSER.contains(&D::QoderTranscript));
+        assert!(!DIALECTS_WITH_PARSER.contains(&D::AntigravityBrain));
+        assert!(!DIALECTS_WITH_PARSER.contains(&D::DshProjection));
     }
 }
