@@ -4,52 +4,90 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.230] - 2026-09-28
+
+### 更正上一版：那个「界面空白」没有影响你装着的应用
+
+v0.0.229 我把它写成「界面空了 29 个版本」。**那句话是错的。**
+
+`scripts/build-app.sh` 里**没有一处 cargo/tauri**——它只从 `.build/release`
+（SwiftPM 产物）拷主二进制，再把 Rust 的 **CLI** 塞进 `Contents/Helpers/`：
+
+| 路径 | 是什么 |
+| :--- | :--- |
+| `dist/AgentIsland.app/Contents/MacOS/AgentIsland` | **Swift GUI**（含 `swift_allocObject`，零 tauri 痕迹） |
+| `dist/agentisland`、`Contents/Helpers/agentisland` | **Rust CLI** |
+| `app/src-tauri/target/release/agentisland` | **Rust Tauri GUI**——存在，但从未被打包 |
+
+⇒ 你装的、每天启动的那个 App 是 **Swift 版，界面没白屏**。白屏的是那个
+**从未交付过**的 Rust 界面。README 其实一直写着「当前交付物是 Swift 本体……」——
+是**我的表述**越过了这条。
+
+### 但根子比那个语法错更要紧：Rust 端从来没有作为「应用」被跑过一次
+
+所以「Rust 界面可用」这句话，一直缺一次实跑来兜底。v0.0.229 那个
+`views.js` 语法错之所以能潜伏 29 个版本，正是因为**没有人跑过它**。
+
+这一版把 Rust GUI 接进打包流程，作为**第二个可运行产物**：
+
+- `dist/AgentIsland-Rust.app`（`cargo tauri build` 产出）
+- **不替换主产物**——`AgentIsland.app` 仍是 Swift 本体，那是 README 写明的交付物
+- **构建失败即 exit 1**，不静默跳过——静默跳过就是「构建失败但看起来成功」，
+  和那个潜伏 29 个版本的坑是同一款
+
+两个 app 的 bundle id 相同，**不要同时开**；要测 Rust 端就先退出 Swift 那个。
+
+### 仍然没有验证到的
+
+Rust 端现在**能作为应用启动**（日志写出 `=== boot ===` 与 webhook 监听、进程存活），
+但 **`[webview]` 日志仍然一条都没有**——也就是它的 webview 至今没有回调过 Rust。
+我没有查到底。它可能是加载失败、也可能是能力/URL 的问题。
+
+**请直接开一下 `AgentIsland-Rust.app` 看一眼**：灵动岛、侧边栏、托盘里的
+「打开工作台」三处。这一眼比我再猜十轮都准。
+
+### 门禁
+
+Rust 485 条通过 / 0 失败，Swift 556 条通过 / 0 失败，编译警告 15。
+
 ## [0.0.229] - 2026-09-28
 
-### 🔴 热修复：v0.0.200 以来界面一直是空白的，连续 29 个版本
+### 热修复：Rust Tauri 界面的两处硬伤（**注意：影响范围与我最初的判断不同，见下**）
 
 `views.js` 里 `pageProvider()` 的**函数头**在 v0.0.200 那次提交里被误删了。
 函数体剩下一个孤立的顶层 `return`——而**顶层 `return` 在 ES 模块里是语法错误**，
-于是 `views.js` 整个加载不了，**灵动岛 / 侧边栏 / 工作台三个形态全是空白**。
+于是 `views.js` 整个加载不了，**Rust Tauri 端的三个形态全是空白**。
 
-受影响的版本：**v0.0.200 – v0.0.228**（29 个）。托盘图标与全部 CLI 不受影响
-（它们不经过 webview），所以「App 在跑」「命令都正常」这些信号**一条都没变**。
-
-### 它为什么能潜伏 29 个版本
-
-**我一直在用错的命令验语法。** 一直跑的是：
+**它潜伏 29 个版本的唯一原因**：一直用
 
 ```sh
 node --check app/ui/js/views.js     # ← 按「脚本」解析
 ```
 
-而 ES 模块是**严格模式**，脚本模式**不报「顶层 return」**。
-同一个文件，两种模式给出相反的答案，而我拿到的永远是那个「OK」。
+验语法。ES 模块是**严格模式**，脚本模式**不报「顶层 return」**——
+同一个文件，两种模式给出相反的答案，而我拿到的永远是 OK。
+正确做法是把文件按 `.mjs` 交给 `node --check`，那一刻它立刻现形。
 
-正确做法是把文件按 `.mjs` 交给 `node --check`（或直接 `import()` 它）：
+### ⚠️ 更正：这个 bug 没有影响用户装着的那个应用
 
-```sh
-cp views.js /tmp/x.mjs && node --check /tmp/x.mjs
-# SyntaxError: Illegal return statement   ← 立刻现形
-```
+我最初把它写成「界面空了 29 个版本」。**那句话是错的。**
 
-已加门禁 `ui_symbol_sentinel::every_ui_js_file_parses_as_an_es_module`：
-把每个 `app/ui/js/*.js` 复制成 `.mjs` 再 `node --check`，非 0 即红。
-**变异验证过**——把那个函数头再删一次，用例精确报出 `Illegal return statement`。
-**没有 `node` 时它会明说「本次没真的验」，而不是当作通过**：
-静默跳过等于把这条守护变成一个永远为真的断言。
+`scripts/build-app.sh` 里**没有一处 cargo/tauri**——它只从 `.build/release`
+（SwiftPM 的产物）拷主二进制，再把 Rust 的 **CLI**（`AgentIslandCLI`）塞进
+`Contents/Helpers/`。所以：
 
-### 我之前那句话是错的
+| 路径 | 是什么 |
+| :--- | :--- |
+| `dist/AgentIsland.app/Contents/MacOS/AgentIsland` | **Swift GUI**（含 `swift_allocObject`，零 tauri 痕迹） |
+| `dist/agentisland`、`Contents/Helpers/agentisland` | **Rust CLI** |
+| `app/src-tauri/target/release/agentisland` | **Rust Tauri GUI**——存在，但**从未被打包，也从未运行过** |
 
-v0.0.222 我写过「工作台的像素渲染没有正面证据」。那句话本身没错，
-但它掩盖了更糟的事实：**不是没验证，是整个界面根本就是坏的**。
-而我当时手里已经有线索——`[webview]` 日志一条都不出现，我把它当成了
-「本机既有现象」记下来继续往前推。**那条线索就是界面全白的声音**。
+⇒ **用户装的、每天启动的那个 App 是 Swift 版，它的界面没白屏。**
+白屏的是那个从未交付过的 Rust 界面。README 其实一直写着
+「当前交付物是 Swift 本体……Rust 端尚不是默认交付物」——是**我的表述**越过了这条。
 
-顺带修掉一处会掩盖同类问题的东西：`log_line` 此前是
-`if let Ok(mut f) = …open(&path)`，**打开失败什么都不发生**。
-于是「日志通道坏了」这件事本身查不出来——没有日志就没有线索。
-现在它退回 stderr 并说明原因。
+这件事本身比那个语法错更要紧：**Rust 端从来没有作为「应用」被真正跑过一次**，
+所以迁移进度里「Rust 界面可用」这句话，一直缺一次实跑来兜底。
 
 ### 同一轮里还查出第二个：工作台窗口没有 IPC 权限
 

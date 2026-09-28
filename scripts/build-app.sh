@@ -55,6 +55,29 @@ rm -rf "$ICON_DIR"
 swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
 iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
 
+# Rust/Tauri 端：打成**第二个** .app，名字带 -Rust 后缀。
+#
+# 为什么要单独打而不是替换主产物：
+#   · `dist/AgentIsland.app` 是 **Swift GUI**（主产品，README 里写明的那一个）
+#   · 迁移中的 Rust GUI 此前**从未被打包**，于是「Rust 界面能不能跑」这件事
+#     从来没有被验证过——v0.0.229 那次查出的 `views.js` 语法错之所以能潜伏
+#     29 个版本，根子就在这里：**没有人跑过它**。
+# 两个 app 的 bundle id 相同，所以**不要同时开**；要测 Rust 端就先退出 Swift 那个。
+if [[ "${SKIP_RUST_APP:-0}" != "1" ]]; then
+    echo "==> 构建 Rust/Tauri 端（第二个 .app；SKIP_RUST_APP=1 可跳过）"
+    ( cd app/src-tauri && cargo tauri build --bundles app )
+    RUST_SRC="app/src-tauri/target/release/bundle/macos/AgentIsland.app"
+    if [[ -d "$RUST_SRC" ]]; then
+        rm -rf "dist/AgentIsland-Rust.app"
+        cp -R "$RUST_SRC" "dist/AgentIsland-Rust.app"
+        echo "==> Rust 端已就位：dist/AgentIsland-Rust.app"
+    else
+        # 静默跳过 = 「构建失败但看起来成功」，那正是上面那个坑的同款
+        echo "!! Rust 端 .app 未产出：$RUST_SRC 不存在" >&2
+        exit 1
+    fi
+fi
+
 echo "==> 组装 .app 与 CLI 工具"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "dist"
