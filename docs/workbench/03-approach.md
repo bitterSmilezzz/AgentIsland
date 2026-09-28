@@ -22,23 +22,40 @@ app/ui/
                       js/main.js      读 shell_mode，装载对应壳
 ```
 
-## 2. 双形态并存（核心设计）
+## 2. 形态并存（核心设计）
+
+> **v0.0.222 起是三个形态**，不是两个。工作台是用户拍板加的第三个独立窗口
+> （把散在侧边栏各页的东西收进一块大面板）。下表最右列是 v0.0.222 补的。
 
 ### 2.1 对照
 
-| | 灵动岛（保留） | 侧边栏（新增） |
-| :--- | :--- | :--- |
-| 窗口 | 372×520，`focus: false`，透明无边框 | 窄高可拉伸，`focus: true`，半透明无边框 |
-| 定位 | `placement.rs` 四边吸附 + 轴向锚点 | 贴左 / 贴右 + 记忆宽度 |
-| 收起态 | 6pt 微细条 + 呼吸绿灯 | 折叠为纯竖条图标轨 |
-| 键盘输入 | 不接 | 接 |
-| 模块 | 仅监控（列表 / 分析 / 详情） | 监控 + Provider + 待办 + 高级设置 |
-| 样式 | `island.css` | `sidebar.css` + 共用组件 |
+| | 灵动岛（保留） | 侧边栏（新增） | 工作台（v0.0.222） |
+| :--- | :--- | :--- | :--- |
+| 窗口 | 372×520，`focus: false`，透明无边框 | 窄高可拉伸，`focus: true`，半透明无边框 | 1120×760，可缩放，`skipTaskbar: false` |
+| 定位 | `placement.rs` 四边吸附 + 轴向锚点 | 贴左 / 贴右 + 记忆宽度 | 居中，不贴边；**隐藏而非关闭**（再开要回到刚才的位置） |
+| 收起态 | 6pt 微细条 + 呼吸绿灯 | 折叠为纯竖条图标轨 | 无收起态——它本身就是「停下来读」的那一块 |
+| 键盘输入 | 不接 | 接 | 接 |
+| 模块 | 仅监控（列表 / 分析 / 详情） | 监控 + Provider + 待办 + 高级设置 | **监控 + 用量 + 档位 + 待办 + 报告，五块同时在场** |
+| 样式 | `island.css` | `sidebar.css` + 共用组件 | `workbench.css` + **同一批页面函数** |
+
+**工作台的定位是「同时在场」，不是「再抄一遍」**：它调的全是侧边栏那几页的**同一个**
+页面函数（`pageAnalytics` / `pageProvider` / `pageTodo` / `pageReport`），
+由 `ui_symbol_sentinel::the_workbench_reuses_pages_instead_of_reimplementing_them` 钉住。
+抄一遍的后果不是多几行代码，而是侧边栏改一处措辞、工作台留在旧话上，且没有任何断言会响。
 
 ### 2.2 切换点
 
-`settings.rs` 增 `shell_mode: "island" | "sidebar"`，**默认 `island`**。
-`main.js` 启动时读取，装载对应壳。模块页（`views.js` 抽出的部分）两边共用。
+`settings.rs` 的 `shell_mode: "island" | "sidebar"`，**默认 `island`**。
+`main.js` 启动时读取，装载对应壳。模块页（`views.js` 抽出的部分）三个壳共用。
+
+**工作台不在 `shell_mode` 里**：它是**按需出现**的第三个窗口，不是「停在哪一形态」的
+第四个答案。所以它有三条入口（托盘 / 深链 `agentisland://workbench` /
+`--shell=workbench` 启动参数），而**没有**对应的 settings 字段——
+往 `shell_mode` 里加它会让「上次关在哪一形态」这个问题本身变得没有意义。
+
+**`--shell=workbench` 为什么要有**：与 `--shell=sidebar` 同一个理由——
+验证一个形态不该靠改用户的设置（改了还得记得改回来，那是最容易留下脏状态的做法）。
+工作台平时靠托盘进入，没有启动参数就没法无头验证。
 
 > **为什么默认 island**：老用户首屏零感知。若希望新用户直接看到侧边栏，
 > 需要额外的「版本迁移」逻辑（老用户读旧设置、新用户默认 sidebar）——列为开放项。
@@ -51,8 +68,14 @@ as an upgrade compatibility shim and are not shown in the current UI"*）。
 ### 2.3 CSS 隔离（硬要求）
 
 `.edge-top`、`--notch-inset`、sliver 等 island 专属规则**只在 island 形态下挂载**。
-做法：两个壳各自持有独立根容器与样式表，**不共用 `#root`**。
+做法：三个壳各自持有独立根容器与样式表，**不共用 `#root`**。
 否则侧边栏会出现 notch 预留缩进、顶部倒角等串味布局。
+
+形态类挂在 `<html>` 上（`shell-island` / `shell-sidebar` / `shell-workbench`），
+由 `index.html` 的内联脚本在第一次绘制前挂好；`shell.js` 是唯一的判定处。
+**认不出的值退回 `island`**（默认形态），而不是当成一种新形态——
+URL 上的东西是外部输入，第四个分支只会多一个「拼错了却渲染出别的东西」的面。
+`ui_symbol_sentinel::three_shells_are_recognised_with_a_default_fallback` 盯着这一条。
 
 ## 3. 侧边栏信息架构
 

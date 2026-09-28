@@ -15,15 +15,22 @@
     // 与「没有这段脚本」完全一样，不会把谁弄成打不开界面。
     try {
       var shell = new URLSearchParams(location.search).get('shell');
-      document.documentElement.className = shell === 'sidebar' ? 'shell-sidebar' : 'shell-island';
+      // 三个形态各自一个类。**认不出的值退回灵动岛**（那是默认形态），
+      // 而不是新开一个第四种形态——URL 上的东西是外部输入。
+      document.documentElement.className =
+        shell === 'workbench' ? 'shell-workbench'
+        : shell === 'sidebar' ? 'shell-sidebar'
+        : 'shell-island';
     } catch (error) {
       document.documentElement.className = 'shell-island';
     }
   </script>
   <link rel="stylesheet" href="css/tokens.css" />
   <link rel="stylesheet" href="css/island.css" />
-  <!-- 侧边栏形态专属样式：只在 .shell-sidebar 下生效（同一个 index.html 两个窗口各长各的） -->
+  <!-- 侧边栏形态专属样式：只在 .shell-sidebar 下生效（同一个 index.html 各窗口各长各的） -->
   <link rel="stylesheet" href="css/sidebar.css" />
+  <!-- 工作台形态：第三个窗口，大而全面板 -->
+  <link rel="stylesheet" href="css/workbench.css" />
 </head>
 <body>
   <div id="root" class="edge-top"></div>

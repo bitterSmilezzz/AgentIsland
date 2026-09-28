@@ -40,6 +40,23 @@
         "visible": false,
         "focus": false,
         "url": "index.html?shell=sidebar"
+      },
+      {
+        "label": "workbench",
+        "title": "AgentIsland 工作台",
+        "width": 1120,
+        "height": 760,
+        "minWidth": 880,
+        "minHeight": 560,
+        "transparent": false,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "shadow": true,
+        "resizable": true,
+        "visible": false,
+        "focus": false,
+        "url": "index.html?shell=workbench"
       }
     ],
     "security": {

@@ -24,6 +24,9 @@ pub enum Action {
     Agent(String),
     Analytics,
     Toolbox,
+    /// 工作台（第三个独立窗口）。与 `Toolbox` 的区别：
+    /// `Toolbox` 是「跳到工具箱那一块」，而它是**把整块面板叫到前面**。
+    Workbench,
     /// 设置页（独立窗口，不经岛内路由）
     Settings(String),
     /// 跳到工作台的清理区——**不直接杀进程**
@@ -78,6 +81,7 @@ pub fn parse(url: &str) -> Option<Action> {
         "collapse" => Action::Collapse,
         "analytics" => Action::Analytics,
         "toolbox" => Action::Toolbox,
+        "workbench" => Action::Workbench,
         "clean" => Action::Clean,
         "export" => Action::Export,
         "agent" => {
@@ -198,6 +202,8 @@ mod tests {
         assert_eq!(parse("agentisland://collapse"), Some(Action::Collapse));
         assert_eq!(parse("agentisland://analytics"), Some(Action::Analytics));
         assert_eq!(parse("agentisland://toolbox"), Some(Action::Toolbox));
+        // 工作台深链：三个窗口都在时，这条必须能把面板叫到前面
+        assert_eq!(parse("agentisland://workbench"), Some(Action::Workbench));
         assert_eq!(parse("agentisland://clean"), Some(Action::Clean));
         assert_eq!(parse("agentisland://export"), Some(Action::Export));
     }

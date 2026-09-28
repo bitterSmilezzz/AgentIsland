@@ -2,17 +2,23 @@
 import {
   hydrateProvider,
   hydrateReport,
+  hydrateReportPanel,
   hydrateTodo,
   renderCard,
   renderSidebar,
   renderSidebarDetail,
   renderSliver,
+  renderWorkbench,
+  renderWorkbenchMonitorOnly,
   sliverSize,
 } from './views.js';
 import { invoke } from './tauri.js';
-import { isSidebar, SHELL } from './shell.js';
+import { isSidebar, isWorkbench, SHELL } from './shell.js';
 
 const $root = () => document.getElementById('root');
+
+/** 把工作台窗口叫到前面。深链与托盘共用这一条。 */
+const showWorkbench = () => invoke('show_workbench').catch(() => {});
 
 const state = {
   expanded: false,
@@ -186,6 +192,18 @@ async function boot() {
   }).catch(() => {});
 
   const { listen } = await import('./tauri.js');
+  if (isWorkbench()) {
+    // 工作台：**大而全** ⇒ 五块同时在场，不是一个路由。
+    // 所以这里没有 `state.route` 的分支，只做「进来填一次」——
+    // 数据型面板各自 hydrate 一次，之后只重画监控列表
+    // （理由与侧边栏那条相同：每 2 秒重画会把面板打回「加载中」）。
+    renderWorkbench();
+    await listen('engine://tick', (e) => {
+      state.engine = e.payload;
+      renderWorkbenchMonitorOnly();
+    });
+    return;
+  }
   if (isSidebar()) {
     await invoke('place_sidebar').catch(() => {});
     // 启动路由也认（与灵动岛同一条约定：`--route=provider` 这类参数由托盘/命令行走）。
@@ -218,6 +236,23 @@ async function boot() {
     // （两份规则迟早只改一处）。
     await listen('deeplink://navigate', async (e) => {
       const intent = String(e.payload?.action ?? '');
+      if (isWorkbench()) {
+        // 工作台是**常驻大面板**，深链推进来而不是替换掉它：
+        // 用户已经开着这块面板了，为一个链接把整个窗口换掉是反的。
+        await showWorkbench();
+        if (intent.startsWith('Agent(')) {
+          const id = intent.slice('Agent('.length).replace(')', '');
+          state.route = `agentDetail:${id}`;
+          renderWorkbench();
+          await hydrateReport();
+        } else if (intent.startsWith('Analytics')) {
+          // 分析就在左栏，不需要切页；重新生成报告让它落在面板上
+          await hydrateReport();
+        } else if (intent.startsWith('Toolbox') || intent.startsWith('Clean') || intent.startsWith('Export')) {
+          await hydrateReportPanel('md');
+        }
+        return;
+      }
       if (isSidebar()) {
         // 侧边栏是常驻的，没有展开/收起——只有路由有意义
         if (intent.startsWith('Analytics')) {

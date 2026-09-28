@@ -1,0 +1,176 @@
+/* 工作台形态（第三个窗口）：大而全面板。
+ *
+ * 排版口径：标题 13/600、正文 12/400、弱化 11——与侧边栏同一档，
+ * 只是**行距与留白放大**，因为这块是要「停下来读」而不是「扫一眼」。
+ *
+ * 颜色全部走 tokens.css 的变量，工作台不自己定义颜色：
+ * 三个壳共用一套色板是既定纪律，例外只会让主题切换漏掉一块。
+ */
+
+.shell-workbench {
+  --wb-gap: 14px;
+  --wb-radius: 10px;
+}
+
+.shell-workbench body {
+  background: var(--bg-app, #14161a);
+  color: var(--fg, #e8eaed);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.wb {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ── 顶栏：拖拽区 + 状态 + 动作 ───────────────────────────── */
+
+.wb-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-chrome, #1b1e23);
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  /* 整个顶栏都是拖拽区：窗口 decorations:false，没有系统标题栏可用 */
+  -webkit-app-region: drag;
+  flex: 0 0 auto;
+}
+
+/* 按钮必须把拖拽让出去，否则点不动 */
+.wb-head-actions,
+.wb-head .mini-btn {
+  -webkit-app-region: no-drag;
+}
+
+.wb-brand {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.wb-sub {
+  font-weight: 400;
+  font-size: 11px;
+  opacity: 0.55;
+  margin-left: 4px;
+}
+
+.wb-status {
+  flex: 1 1 auto;
+  font-size: 11px;
+  opacity: 0.7;
+  text-align: right;
+}
+
+/* ── 主体两栏 ─────────────────────────────────────────────── */
+
+.wb-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(360px, 1fr);
+  gap: var(--wb-gap);
+  padding: var(--wb-gap);
+  overflow: auto;
+  flex: 1 1 auto;
+  align-items: start;
+}
+
+/* 窗口不够宽时并成单栏，而不是把两栏压到读不了字 */
+@media (max-width: 900px) {
+  .wb-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.wb-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-gap);
+  min-width: 0;
+}
+
+.wb-section {
+  background: var(--bg-panel, #1b1e23);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--wb-radius);
+  overflow: hidden;
+}
+
+.wb-section-title {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+
+.wb-section-body {
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+/* ── 监控列表 ─────────────────────────────────────────────── */
+
+.wb-agent {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+  cursor: pointer;
+}
+
+.wb-agent:last-child {
+  border-bottom: none;
+}
+
+.wb-agent:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.wb-agent .name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wb-agent .tokens {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-agent .meta {
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+
+.wb-empty {
+  padding: 18px 0;
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.5;
+}
+
+/* ── 报告 ─────────────────────────────────────────────────── */
+
+.wb-report-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.wb-report-body {
+  margin: 0;
+  padding: 10px;
+  max-height: 320px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  opacity: 0.85;
+}

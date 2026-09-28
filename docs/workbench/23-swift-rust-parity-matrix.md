@@ -221,6 +221,28 @@ Rust 的 [observability.rs](../../app/src-tauri/src/observability.rs) 现将五�
 在 Rust 是 `Option<f64>` 且有 `None` 分支（[models.rs](../../app/src-tauri/src/models.rs)）——形式在，但
 前端是否把 `null` 印成 `0.0%` **未逐行比对**。
 
+## 4.5 形态与窗口（Rust 侧）
+
+| 形态 | 窗口 | 状态 |
+| :--- | :--- | :--- |
+| 灵动岛 | `island` 372×520 透明 | ✅ v0.0.184 起 |
+| 侧边栏 | `sidebar` 窄高可拉伸 | ✅ v0.0.201 起 |
+| **工作台** | `workbench` 1120×760 可缩放 | ✅ **v0.0.222**（用户拍板的第三个独立窗口） |
+
+工作台的「五块同时在场」全部复用侧边栏的页面函数（`pageAnalytics` / `pageProvider` /
+`pageTodo` / `pageReport`），不另写一份——由
+`ui_symbol_sentinel::the_workbench_reuses_pages_instead_of_reimplementing_them` 钉住。
+
+**这一轮顺带查出并修掉一个真 bug**：`pageProvider()` 与 `pageReport()` **被调用但从未定义**，
+于是侧边栏点「Codex 档位」抛 `ReferenceError`（白屏）。静态检查与冒烟都发现不了——
+它们只看「有没有报错」，而这一页从来没被测过。
+新加的 `ui_symbol_sentinel::every_page_and_hydrate_call_has_a_definition` 直接扫源码防这一类，
+并做过变异验证（去掉 `pageProvider` 的定义 ⇒ 用例精确点名 `pageProvider()`）。
+
+同一轮还加了 `every_invoke_has_a_backing_command`：`invoke('X')` 必须有对应的
+`#[tauri::command] fn X`。因为那些调用后面都跟着 `.catch(() => null)`——
+拼错命令名的运行时症状是**界面上一块空着**，而不是报错。
+
 ## 5. CLI 能力对照
 
 Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIslandCLI/main.swift#L19)）：

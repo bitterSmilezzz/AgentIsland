@@ -769,6 +769,200 @@ export async function hydrateReport() {
 /// 与灵动岛的**数据与页面函数完全共用**，只是容器不同——这就是「监控模块不依赖容器尺寸」
 /// 这句要求的最小落地：`pageAnalytics` / `pageAgentDetail` 原样复用，
 /// 侧边栏自己只负责导航与列表。
+// MARK: Provider 页（Codex 档位切换）
+//
+// **这一页原先只有注水函数、没有页面本身**：导航项在、`hydrateProvider` 在、
+// `renderProviderPage` 在，可是渲染页面的 `pageProvider()` 从没被定义过——
+// 于是点「Codex 档位」直接抛 `ReferenceError`。
+// 一条只有产生点、没有声明的链路会让人以为「页面做完了」，
+// 而实际点进去就是白屏——静态检查与冒烟都发现不了，它们只看「有没有报错」。
+//
+// 所以这一页只做一件事：**给出容器**。内容全部由 `hydrateProvider` →
+// `renderProviderPage` 填，措辞与字段名都在那边一处（哨兵盯着字段名）。
+// MARK: 报告面板（工作台）
+//
+// 报告**只读不改**：`report` 命令已经能生成 md / csv，而报告是拿去对账的东西，
+// 从界面上写盘会多出一条「写到哪去了」的路径。所以这里只生成 + 复制，
+// 要落盘用 CLI——那条路已经验过（原子写、写失败 exit 1）。
+export function pageReport() {
+  return `
+    <div class="sb-page" data-report-panel>
+      <div class="wb-report-actions">
+        <span class="mini-btn" data-report-format="md">Markdown</span>
+        <span class="mini-btn" data-report-format="csv">CSV</span>
+        <span class="mini-btn" data-report-copy>复制</span>
+      </div>
+      <pre class="wb-report-body" data-report-text>点上面任一格式生成。</pre>
+    </div>`;
+}
+
+/** 生成报告文本。取数走 `report_text` 命令，与 CLI 的 `agentisland report` 同一对函数。 */
+export async function hydrateReportPanel(format) {
+  const box = document.querySelector('[data-report-text]');
+  if (!box) return;
+  if (!format) return;
+  box.textContent = '生成中…';
+  const text = await invoke('report_text', { format }).catch((error) => `生成失败：${error}`);
+  box.textContent = text ?? '';
+}
+
+export function pageProvider() {
+  return `
+    <div class="sb-page" data-provider-root>
+      <div class="sb-empty">加载中…</div>
+    </div>`;
+}
+
+// MARK: 工作台形态（第三个窗口）
+//
+// 「大而全」的含义是**五块同时在场**，不是把侧边栏那七页再抄一遍——
+// 所以这里调的全是上面那些**同一个**页面函数。抄一遍的话，
+// 侧边栏改一处措辞、工作台就会留在旧话上，而且没有任何断言会响。
+
+/** 工作台左栏：监控列表。与侧边栏同一份显示模型（`agentRowModel`）。 */
+function workbenchMonitor(eng) {
+  const running = eng.snapshots.filter((snap) => snap.process_running || snap.level !== 'offline');
+  const attention = eng.snapshots.filter((snap) => snap.level === 'attention').length;
+  if (running.length === 0) {
+    return '<div class="wb-empty">还没有检测到运行中的智能体</div>';
+  }
+  return running
+    .map((snap) => {
+      const model = agentRowModel(snap);
+      const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
+      return `<div class="wb-agent" data-agent="${model.id}">
+        <div class="name">${escapeHtml(model.name)}</div>
+        <div class="tokens" style="color:${model.statusColor}">${escapeHtml(model.tokensText)}</div>
+        <div class="meta">${escapeHtml(detail)}</div>
+      </div>`;
+    })
+    .join('');
+}
+
+/**
+ * 工作台：大而全面板。
+ *
+ * 分栏是刻意的：左边一列监控（要扫），右边一列放**读**的东西（用量 / 档位 /
+ * 待办 / 报告）。把五块平铺成五个等宽格会让每块都窄到读不了字。
+ */
+export function renderWorkbench() {
+  const st = getState();
+  const eng = st.engine ?? {
+    snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
+    latest_event: null, any_working: false, has_attention: false,
+  };
+  const attention = eng.snapshots.filter((snap) => snap.level === 'attention').length;
+  const root = document.getElementById('root');
+  root.innerHTML = `
+    <div class="wb">
+      <header class="wb-head" data-tauri-drag-region>
+        <div class="wb-brand">AgentIsland <span class="wb-sub">工作台</span></div>
+        <div class="wb-status">${attention > 0 ? `${attention} 个等待确认` : '全部正常'}</div>
+        <div class="wb-head-actions">
+          <span class="mini-btn" data-wb-hide>隐藏</span>
+        </div>
+      </header>
+      <div class="wb-grid">
+        <section class="wb-col wb-col-main">
+          <div class="wb-section">
+            <div class="wb-section-title">监控</div>
+            <div class="wb-section-body" data-wb-monitor>${workbenchMonitor(eng)}</div>
+          </div>
+        </section>
+        <section class="wb-col">
+          <div class="wb-section">
+            <div class="wb-section-title">Token 用量</div>
+            <div class="wb-section-body">${pageAnalytics(eng)}</div>
+          </div>
+          <div class="wb-section">
+            <div class="wb-section-title">Codex 档位</div>
+            <div class="wb-section-body">${pageProvider()}</div>
+          </div>
+          <div class="wb-section">
+            <div class="wb-section-title">待办</div>
+            <div class="wb-section-body">${pageTodo()}</div>
+          </div>
+          <div class="wb-section">
+            <div class="wb-section-title">报告</div>
+            <div class="wb-section-body">${pageReport()}</div>
+          </div>
+        </section>
+      </div>
+    </div>`;
+
+  // 注水各走各的既有函数：它们各自 `querySelector` 自己的 root，
+  // 所以这里只要容器在位就行，不需要为工作台另写一份取数逻辑。
+  hydrateReport();
+  hydrateProvider();
+  hydrateTodo();
+
+  bindWorkbench();
+}
+
+/** 报告面板的交互：生成（两种格式）与复制。 */
+function bindReportPanel() {
+  const root = document.getElementById('root');
+  root.querySelectorAll('[data-report-format]').forEach((el) => {
+    el.onclick = () => {
+      hydrateReportPanel(el.dataset.reportFormat);
+    };
+  });
+  root.querySelector('[data-report-copy]')?.addEventListener('click', async () => {
+    const box = root.querySelector('[data-report-text]');
+    if (!box?.textContent) return;
+    // 复制走剪贴板 API；失败要说出来，不能让按钮「点了没反应」
+    try {
+      await navigator.clipboard.writeText(box.textContent);
+    } catch (error) {
+      box.textContent = `复制失败（${error}）：内容仍在下面，手动选中即可。\n${box.textContent}`;
+    }
+}
+
+/**
+ * 只重画监控那一块。
+ *
+ * **整页重画会毁掉别的东西**：Provider 面板里正在填的表单、待办的输入框光标，
+ * 每 2 秒被冲一次就没法用了。所以推送只动监控列表的 innerHTML。
+ * 同一个坑在侧边栏上踩过一次（那里是「只有列表页随推送重画」）。
+ */
+export function renderWorkbenchMonitorOnly() {
+  const box = document.querySelector('[data-wb-monitor]');
+  if (!box) return;
+  const eng = getState().engine;
+  if (!eng) return;
+  box.innerHTML = workbenchMonitor(eng);
+  bindWorkbenchAgentClicks();
+}
+
+/** 点 Agent 进详情。监控列表在整页与局部重画两条路上都要绑，只写一处。 */
+function bindWorkbenchAgentClicks() {
+  const root = document.getElementById('root');
+  root.querySelectorAll('[data-agent]').forEach((el) => {
+    el.onclick = () => {
+      getState().route = `agentDetail:${el.dataset.agent}`;
+      renderWorkbench();
+      hydrateReport();
+    };
+  });
+}
+
+/** 工作台自己的交互：关掉自己、报告面板、点 Agent 进详情。 */
+function bindWorkbench() {
+  const root = document.getElementById('root');
+  root.querySelector('[data-wb-hide]')?.addEventListener('click', () => {
+    invoke('hide_workbench').catch(() => {});
+  });
+  bindReportPanel();
+  root.querySelectorAll('[data-agent]').forEach((el) => {
+    el.onclick = () => {
+      st.route = `agentDetail:${el.dataset.agent}`;
+      renderWorkbench();
+      // 详情复用同一个页面函数（与侧边栏、灵动岛三处共用）
+      hydrateReport();
+    };
+  });
+}
+
 export function renderSidebar() {
   const st = getState();
   const eng = st.engine ?? {
@@ -1350,7 +1544,8 @@ export function pageSettingsHeaderLabel() {
 
 /// 填档位页。三个数据源各自独立取，**任何一项失败都明说失败**，不静默留空：
 /// 「读不到」与「没有档位」在界面上是两件事，混起来用户会以为自己的配置丢了。
-export async function hydrateProvider() {  const root = document.querySelector('[data-provider-root]');
+export async function hydrateProvider() {
+  const root = document.querySelector('[data-provider-root]');
   if (!root) return;
   const status = await invoke('provider_status').catch(() => null);
   if (!status) {

@@ -97,6 +97,22 @@ fn save_settings(state: State<SharedEngine>, new_settings: Settings) {
 /// 两者共用一个 `place_with` 只会让两边都别扭。
 /// 命令行里的 `--shell=<mode>`（也接受 `--shell <mode>`）。给不了就返回 `None`，
 /// 于是「用户没写」与「用户写了 island」不会混为一谈。
+/// `--shell=workbench` / `--shell workbench`（**只认 workbench**，其余走
+/// [`shell_arg_override`] 那条形态枚举）。与设置无关，只影响这一次运行。
+fn boot_arg_is(name: &str) -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    let mut index = 0;
+    while index < args.len() {
+        let matched = args[index].strip_prefix("--shell=").is_some_and(|v| v == name)
+            || (args[index] == "--shell" && args.get(index + 1).is_some_and(|v| v == name));
+        if matched {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 fn shell_arg_override() -> Option<crate::models::ShellMode> {
     let args: Vec<String> = std::env::args().collect();
     let mut index = 0;
@@ -876,6 +892,59 @@ fn terminate_agent(state: State<SharedEngine>, pid: Option<u32>, agent_id: Strin
     crate::cleaner::terminate(pid, std::time::Duration::from_millis(300));
 }
 
+/// 运维报告文本（工作台的「报告」面板用）。
+///
+/// **与 CLI 的 `agentisland report` 走同一对函数**（`audit::markdown_export` /
+/// `audit::csv_export`）。界面自己拼一份报告的话，两边的表头与口径迟早漂移，
+/// 而报告是给人拿去对账的，对不上比没有更糟。
+#[tauri::command]
+fn report_text(state: State<SharedEngine>, format: String) -> Result<String, String> {
+    let snapshots = {
+        let e = state.lock().unwrap();
+        let s = e.state();
+        (s.snapshots.clone(), s.grand_total.clone())
+    };
+    let now = crate::tokens::now_ms();
+    match format.as_str() {
+        "csv" => Ok(crate::audit::csv_export(&snapshots.0, now).content),
+        "md" | "markdown" => Ok(crate::audit::markdown_export(
+            &snapshots.0,
+            &[],
+            Some(&snapshots.1),
+            now,
+        )
+        .content),
+        other => Err(format!("--format 只认 md 与 csv（收到 {other}）")),
+    }
+}
+
+/// 隐藏工作台窗口（**只隐藏，不销毁**——内容与滚���位置都留着）。
+///
+/// 与关窗口分开是有意的：工作台是「随时瞄一眼」的面板，
+/// 隐藏再打开时用户期望的是回到刚才的位置，而不是一个刚加载完的空白页。
+#[tauri::command]
+fn hide_workbench(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("workbench") {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+fn show_workbench(app: AppHandle) {
+    reveal_workbench_window(&app);
+}
+
+/// 把工作台窗口叫到前面。**托盘、深链、前端三处共用这一段**——
+/// 三处各写一份显隐规则的话，迟早只有一处会带 `unminimize`。
+fn reveal_workbench_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("workbench") {
+        let _ = window.show();
+        // 隐藏后再打开时窗口可能是最小化的；只 `show` 会得到一个「在 Dock 里但看不见」的窗口
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 #[tauri::command]
 fn collapse_to_tray(window: tauri::WebviewWindow) {
     let _ = window.emit_to("island", "ui://collapse", ());
@@ -1047,6 +1116,13 @@ pub fn handle_deep_link(app: &AppHandle, url: &str) -> bool {
         let _ = app.emit("deeplink://navigate", serde_json::json!({
             "action": format!("{action:?}"),
         }));
+    } else if matches!(action, deeplink::Action::Workbench) {
+        // 工作台是独立窗口：把它叫到前面。**同时**把意图发给前端，
+        // 这样「已开着工作台时收到一个 agent 深链」会推进内容而不是白等一次显隐。
+        reveal_workbench_window(app);
+        let _ = app.emit("deeplink://navigate", serde_json::json!({
+            "action": format!("{action:?}"),
+        }));
     } else if let deeplink::Action::Settings(tab) = &action {
         // 设置是独立窗口：先把它显示出来，岛保持当前形态
         if let Some(win) = app.get_webview_window("settings") {
@@ -1170,8 +1246,12 @@ fn main() {
 
             // 托盘
             let toggle = MenuItem::with_id(app, "toggle", "展开 / 收起灵动岛", true, None::<&str>)?;
+            // 工作台是**第三个窗口**，不能只靠深链进：深链在这台机器上被
+            // Swift 版抢走的可能性是真实存在的（两个应用都声明了同一个 scheme），
+            // 所以它必须有一条不经过 URL scheme 的入口。
+            let workbench = MenuItem::with_id(app, "workbench", "打开工作台", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 AgentIsland", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle, &quit])?;
+            let menu = Menu::with_items(app, &[&toggle, &workbench, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("AgentIsland")
@@ -1181,6 +1261,8 @@ fn main() {
                         "toggle" => {
                             let _ = app.emit("tray://toggle", ());
                         }
+                        // 与深链那条路径共用同一个命令，不另写一份显隐规则
+                        "workbench" => reveal_workbench_window(app),
                         "quit" => app.exit(0),
                         _ => {}
                     }
@@ -1217,6 +1299,16 @@ fn main() {
                     let _ = sidebar.show();
                 }
                 let _ = win.hide();
+            }
+            // `--shell=workbench`：同样**只影响这一次运行，不写回设置**。
+            // 存在的理由与 `--shell=sidebar` 一样——验证第三个形态不该靠改用户的设置，
+            // 而工作台平时是按需才出现的（托盘 / 深链），没有启动参数就没法无头验证它。
+            if boot_arg_is("workbench") {
+                reveal_workbench_window(app.handle());
+                let _ = win.hide();
+                if let Some(sidebar) = app.get_webview_window("sidebar") {
+                    let _ = sidebar.hide();
+                }
             }
             Ok(())
         })
@@ -1263,6 +1355,9 @@ fn main() {
             clear_latest_event,
             log_from_ui,
             terminate_agent,
+            report_text,
+            hide_workbench,
+            show_workbench,
             collapse_to_tray
         ])
         .run(tauri::generate_context!())
@@ -1378,6 +1473,254 @@ mod version_pinning {
             env!("CARGO_PKG_VERSION"),
             want,
             "Cargo.toml 的版本与 AppVersion.string 不一致——raycast 清单会把 Cargo 的那个写进去"
+        );
+    }
+}
+
+/// UI 的静态哨兵：**每个 `pageXxx` / `hydrateXxx` / `renderXxx` 调用点都必须有定义**。
+///
+/// 这条是被真 bug 逼出来的：侧边栏的 Provider 页**只有注水函数、没有页面本身**——
+/// 导航项在、`hydrateProvider` 在、`renderProviderPage` 在，可是渲染页面的
+/// `pageProvider()` 从没被定义过。于是点「Codex 档位」直接抛 `ReferenceError`，
+/// 那一页就是白屏。
+///
+/// 静态检查与冒烟都发现不了：它们只看「有没有报错」，而这一页**从来没被测过**
+/// （谁会去点它），运行时错误也只落在那一个窗口的前端控制台里。
+///
+/// 所以这里直接扫源码：调用的名字必须在某个 `app/ui/js/*.js` 里被定义出来。
+#[cfg(test)]
+mod ui_symbol_sentinel {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    fn ui_js_files() -> Vec<PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/js");
+        let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("应当读得到 app/ui/js")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// 收集被**定义**出来的名字：`export function X` / `function X` / `export const X`
+    fn defined_symbols(text: &str) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for line in text.lines() {
+            let line = line.trim_start();
+            for prefix in ["export function ", "export async function ", "function ", "async function "] {
+                if let Some(rest) = line.strip_prefix(prefix) {
+                    if let Some(name) = rest.split(['(', '<', ' ']).next() {
+                        if !name.is_empty() {
+                            out.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+            for prefix in ["export const ", "const "] {
+                if let Some(rest) = line.strip_prefix(prefix) {
+                    if let Some(name) = rest.split([' ', '=']).next() {
+                        if !name.is_empty() {
+                            out.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 只扫这一族名字：它们是「页面 / 注水 / 渲染」这一层的约定。
+    /// 把所有标识符都扫进来会把内置对象和 DOM 全卷进来，噪声压过信号。
+    const PREFIXES: [&str; 3] = ["page", "hydrate", "render"];
+
+    #[test]
+    fn every_page_and_hydrate_call_has_a_definition() {
+        let files = ui_js_files();
+        let mut defined: HashSet<String> = HashSet::new();
+        let mut sources: Vec<(String, String)> = Vec::new();
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("应当读得到 ui/js 下的 js");
+            defined.extend(defined_symbols(&text));
+            sources.push((
+                path.file_name().unwrap().to_string_lossy().into_owned(),
+                text,
+            ));
+        }
+
+        let mut missing: Vec<String> = Vec::new();
+        for (file, text) in &sources {
+            for line in text.lines() {
+                // 跳过注释行：文档里提到某个函数名不算调用
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") || trimmed.starts_with("*") || trimmed.starts_with("/*") {
+                    continue;
+                }
+                let mut rest = trimmed;
+                while let Some(at) = rest.find(|c: char| c.is_alphanumeric() || c == '_') {
+                    // 取标识符及其前缀位置
+                    let start = at;
+                    let tail = &rest[start..];
+                    let name: String = tail
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    let ends_with_paren = tail[name.len()..].starts_with('(');
+                    if ends_with_paren
+                        && PREFIXES.iter().any(|p| name.starts_with(p))
+                        && !defined.contains(&name)
+                    {
+                        missing.push(format!("{file}: 调用了 `{name}()` 但没有任何定义"));
+                    }
+                    rest = &tail[name.len()..];
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "UI 调用了没有定义的页面/注水函数——点进去就是白屏：\n{}",
+            missing.join("\n")
+        );
+    }
+
+    /// 工作台必须**复用**既有页面函数，而不是自己再抄一份。
+    ///
+    /// 抄一遍的后果不是「多写了几行」，而是侧边栏改一处措辞、工作台留在旧话上，
+    /// 而没有任何断言会响。所以这里钉住「工作台调用的名字都在别处定义过」。
+    #[test]
+    fn the_workbench_reuses_pages_instead_of_reimplementing_them() {
+        let views = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/js/views.js"),
+        )
+        .expect("应当读得到 views.js");
+        let start = views
+            .find("export function renderWorkbench(")
+            .expect("views.js 里应当有 renderWorkbench");
+        let body = &views[start..];
+        for name in ["pageAnalytics", "pageProvider", "pageTodo", "pageReport"] {
+            // 只查**调用形状** `${name(`，不查 `${name()}`：实际调用都带参
+            // （`${pageAnalytics(eng)}`），按无参写会把「调用了」误判成「没调用」。
+            assert!(
+                body.contains(&format!("${{{name}(")),
+                "工作台应当复用 `{name}(…)`——它现在要么没被调用，要么被换成了另一份实现"
+            );
+        }
+    }
+
+    /// 三种形态都要能判定，且**认不出的值退回默认形态**。
+    /// URL 上的东西是外部输入，四个分支只会多一个「拼错了却渲染出别的东西」的面。
+    #[test]
+    fn three_shells_are_recognised_with_a_default_fallback() {
+        let shell = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/js/shell.js"),
+        )
+        .expect("应当读得到 shell.js");
+        for name in ["island", "sidebar", "workbench"] {
+            assert!(
+                shell.contains(&format!("'{name}'")),
+                "shell.js 不认 `{name}` 这个形态"
+            );
+        }
+        assert!(
+            shell.contains("KNOWN.includes(raw)"),
+            "认不出的 shell 值必须退回默认形态，而不是被当成一种新形态"
+        );
+    }
+
+    /// UI 调用的每个 `invoke('X')` 都必须有一个 `#[tauri::command] fn X`。
+    ///
+    /// 同 [`every_page_and_hydrate_call_has_a_definition`] 的理由：命令名拼错、
+    /// 或者调了一个还没写的命令，运行时只会得到一个被 `.catch(() => null)`
+    /// 吞掉的 null——**界面表现为「这一块空着」，不报错**。
+    /// 那个 `.catch` 是为了不让某个源读不到时整个界面崩掉，
+    /// 代价就是它同时把「我调错了」也一起吞了。
+    #[test]
+    fn every_invoke_has_a_backing_command() {
+        let mut commands: HashSet<String> = HashSet::new();
+        for entry in std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+            .unwrap_or_else(|_| panic!("应当读得到 src")) {
+            let path = entry.expect("目录项应当可读").path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let mut lines = text.lines().peekable();
+            while let Some(line) = lines.next() {
+                if line.trim() != "#[tauri::command]" {
+                    continue;
+                }
+                // 命令函数名在下一行：`fn name(` / `fn name<T>(`
+                if let Some(next) = lines.peek() {
+                    let trimmed = next.trim().strip_prefix("fn ").unwrap_or("");
+                    if let Some(name) = trimmed.split(['(', '<']).next() {
+                        if !name.is_empty() {
+                            commands.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            !commands.is_empty(),
+            "一条 #[tauri::command] 都没扫到——下面的断言会永远为真，等于没有守护"
+        );
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/js");
+        let mut missing: Vec<String> = Vec::new();
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("应当读得到 app/ui/js")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
+            .collect();
+        files.sort();
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("应当读得到 ui/js 下的 js");
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            for line in text.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") || trimmed.starts_with("*") {
+                    continue;
+                }
+                // **只看 `invoke(` 后面的第一个参数**。
+                // 早期版本把文件里所有引号字符串都当命令名，于是
+                // `invoke('save_settings', { compact_view: … })` 里的字段名
+                // 全被报成「不存在的命令」——一条刷满噪声的守护等于没有。
+                let mut rest = trimmed;
+                while let Some(at) = rest.find("invoke(") {
+                    let after = &rest[at + "invoke(".len()..];
+                    let after = after.trim_start();
+                    let Some(inner) = after.strip_prefix('\'') else {
+                        rest = &rest[at + "invoke(".len()..];
+                        continue;
+                    };
+                    let Some(end) = inner.find('\'') else { break };
+                    let word = &inner[..end];
+                    // 允许大写：IPC 层对命令名是**精确匹配**，
+                    // 所以 `get_Settings` 这种大小写拼错是真实会发生的错误，
+                    // 而一条只认小写的过滤规则会把它悄悄放过去
+                    //（第一版就栽在这里：我用 `todos_listX` 做变异，守护没响，
+                    //  一度以为规则有洞——其实是规则自己把大写挡在了门外）。
+                    let looks_like_command = word.contains('_')
+                        && word.contains(|c: char| c.is_ascii_lowercase())
+                        && word
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+                    if looks_like_command && !commands.contains(word) {
+                        missing.push(format!("{name}: `invoke('{word}')` 没有对应的 #[tauri::command]"));
+                    }
+                    rest = &inner[end + 1..];
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "UI 调了不存在的命令——运行时只会拿到一个被 catch 吞掉的 null，界面表现为「这块空着」：\n{}",
+            missing.join("\n")
         );
     }
 }

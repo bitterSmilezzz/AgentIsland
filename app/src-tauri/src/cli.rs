@@ -31,7 +31,7 @@ pub const COMMANDS: &[(&str, bool, &str)] = &[
     ("selftest", true, "用假数据断言核心判定逻辑（验证构建本身而非本机状态）"),
     ("check", true, "排查异常驻留与持续高负载（只读，不终止任何进程）"),
     ("clean", true, "终止异常进程（-n 只预览；孤儿须逐条点名）"),
-    ("open", true, "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export）"),
+    ("open", true, "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export|workbench）"),
     ("notify", true, "向本机 App 投递一次事件（--kind completed|attention|costspike）"),
     ("report", true, "生成 Markdown / CSV 运维报告（-o 写盘、--format md|csv）"),
     ("raycast", true, "导出 Raycast Extension 命令清单（--json 已是默认）"),
@@ -854,7 +854,7 @@ fn raycast_command(name: &str, title: &str, description: &str) -> serde_json::Va
 fn open_cmd(positional: &[String]) -> i32 {
     let target = positional.first().map(String::as_str).unwrap_or("toggle");
     let url = match target {
-        "toggle" | "expand" | "collapse" | "analytics" | "toolbox" | "export" => {
+        "toggle" | "expand" | "collapse" | "analytics" | "toolbox" | "export" | "workbench" => {
             format!("agentisland://{target}")
         }
         "agent" => {
@@ -867,7 +867,7 @@ fn open_cmd(positional: &[String]) -> i32 {
         }
         _ => {
             eprintln!("✗ 认不出的目标 `{target}`");
-            eprintln!("  可用: toggle | expand | collapse | analytics | toolbox | export | agent <id>");
+            eprintln!("  可用: toggle | expand | collapse | analytics | toolbox | export | workbench | agent <id>");
             return EXIT_USAGE;
         }
     };
@@ -1235,6 +1235,37 @@ mod tests {
         assert_eq!(urlencode("a&b"), "a%26b", "& 会拆出第二个参数");
         assert_eq!(urlencode("a b"), "a%20b");
         assert_eq!(urlencode("a/b"), "a%2Fb");
+    }
+
+    /// `workbench` 是第三个窗口的入口，必须能分派出去。
+    ///
+    /// 它曾经**不存在**：`tauri.conf.json` 里只有 island 与 sidebar 两个窗口，
+    /// 而方案里「工具箱 / 工作台」一直作为一个概念被深链和 CLI 引用着——
+    /// 引用着一个没有落地的东西，文档与代码都读不出问题。
+    #[test]
+    fn the_workbench_window_is_declared_and_reachable() {
+        // ① 窗口在配置里（三个形态，不是两个）
+        let conf = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json"),
+        )
+        .expect("应当读得到 tauri.conf.json");
+        for label in ["island", "sidebar", "workbench"] {
+            assert!(
+                conf.contains(&format!("\"label\": \"{label}\"")),
+                "缺少 {label} 窗口声明"
+            );
+        }
+        // ② 深链认得它
+        assert_eq!(
+            crate::deeplink::parse("agentisland://workbench"),
+            Some(crate::deeplink::Action::Workbench)
+        );
+        // ③ CLI 的 `open` 能构造出那条 URL（不真派发系统）
+        let code = try_run(&["agentisland".into(), "open".into(), "workbench".into()]);
+        assert!(
+            code.is_some(),
+            "`open workbench` 应当被接受（认不出的目标是用法错，会返回 2）"
+        );
     }
 
     /// 认不出的 `open` 目标是**用法错**（退出码 2），不是运行失败。
