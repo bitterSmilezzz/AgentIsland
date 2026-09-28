@@ -189,11 +189,32 @@ public enum AuditReportExporter {
         return csv
     }
 
+    /// 这个单元会不会被电子表格当成**公式**执行（OWASP 列的五个触发字符）。
+    /// `-` 只在紧跟数字时危险，而本函数只处理文本字段，数字走的是别的列。
+    private static func startsLikeFormula(_ str: String) -> Bool {
+        guard let first = str.first else { return false }
+        if first == "=" || first == "+" || first == "-" || first == "@" { return true }
+        return str.hasPrefix("\t") || str.hasPrefix("\r")
+    }
+
+    /// CSV 字段转义，两件事：
+    ///
+    /// 1. **结构**：含逗号、引号或换行时整体加引号，内部引号加倍（RFC 4180）。
+    /// 2. **公式注入**：以 `=` `+` `-` `@` 或 tab/CR 开头的单元前面加一个单引号。
+    ///
+    /// 第 2 条不是洁癖：本函数覆盖的字段里有 `profile.id` / `profile.name`
+    /// （**自定义 Agent 的 id 与名字是自由文本**）与观测证据（含文件路径）。
+    /// 不加这一层，一个叫 `=HYPERLINK("http://…","点我")` 的 Agent
+    /// 会让打开报告的人点一下就跳出去，而报告是自动生成、直接双击打开的文件。
+    ///
+    /// **与 Rust `audit::escape_csv` 逐字节一致** —— 改一边会让同一个 Agent
+    /// 导出两个内容不同的文件，而报告是要拿去对账的。
     private static func escapeCSV(_ str: String) -> String {
-        if str.contains(",") || str.contains("\"") || str.contains("\n") {
-            return "\"\(str.replacingOccurrences(of: "\"", with: "\"\""))\""
+        let guarded = Self.startsLikeFormula(str) ? "'" + str : str
+        if guarded.contains(",") || guarded.contains("\"") || guarded.contains("\n") {
+            return "\"\(guarded.replacingOccurrences(of: "\"", with: "\"\""))\""
         }
-        return str
+        return guarded
     }
 
     /// 生成 Raycast Extension 命令定义清单 (v0.0.78)

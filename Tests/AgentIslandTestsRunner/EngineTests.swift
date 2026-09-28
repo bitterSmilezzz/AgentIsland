@@ -327,6 +327,50 @@ enum EngineTests {
             try expectTrue(csv.contains("dim,DimAgent,working,54321,12.5"), "csv row values")
         }
 
+        TestKit.test("CSV 公式注入: 名字像公式的 Agent 不该在报告里变成可点的链接") {
+            // 覆盖的字段里有 profile.id / profile.name——**自定义 Agent 的这两项是自由文本**。
+            // 一个叫 `=HYPERLINK("http://…","点我")` 的 Agent 会让打开报告的人点一下就跳出去，
+            // 而报告是自动生成、直接双击打开的文件。
+            // 夹具照抄上面那条用例的造法（同一个 AgentSnapshot 初值表），
+            // 只换 profile —— 自造一个 helper 反而多一处构造口径。
+            func snapshot(profile: AgentProfile) -> AgentSnapshot {
+                AgentSnapshot(
+                    profile: profile,
+                    level: .working,
+                    processRunning: true,
+                    cpuPercent: 12.5,
+                    installed: true,
+                    activeSessions: 2,
+                    lastActivityAgo: 5,
+                    lastActivityText: "5秒前",
+                    tokenUsage: nil,
+                    pid: 54321,
+                    currentAction: nil,
+                    memoryBytes: 0,
+                    isHung: false
+                )
+            }
+
+            for hostile in ["=1+1", "+1+1", "-1+1", "@SUM(A1)", "=HYPERLINK(\"http://example.com\")"] {
+                let profile = AgentProfile(id: "evil", name: hostile, icon: "x",
+                                          bundleIDs: [], processNames: ["evil"],
+                                          sessionDirs: [], isCustom: true)
+                let csv = AuditReportExporter.generateCSV(snapshots: [snapshot(profile: profile)], now: Date())
+                // **第二行才是数据行**（第一行是表头）——取第一行的话
+                // 第 3 列正好是表头的 `AgentName`，断言会拿表头去比，恒不相等。
+                let row = csv.split(separator: "\n").dropFirst().first.map(String.init) ?? ""
+                let cell = row.components(separatedBy: ",").dropFirst(2).first.map(String.init) ?? ""
+                let content = cell.hasPrefix("\"") ? String(cell.dropFirst()) : cell
+                try expectTrue(content.hasPrefix("'"),
+                               "名字 \(hostile) 应当被加上前导单引号，实际该单元为 \(cell)")
+            }
+
+            // 普通值不许被无端改写：报告里绝大多数单元都长这样
+            let plain = snapshot(profile: EngineTests.dim)
+            let csv = AuditReportExporter.generateCSV(snapshots: [plain], now: Date())
+            try expectTrue(csv.contains(",DimAgent,"), "普通名字不该被改写：\(csv.prefix(120))")
+        }
+
         TestKit.test("ScreenFollowMode 与 SoundOption 枚举及健壮性") {
             let screens = ScreenFollowMode.allCases
             try expectEqual(screens.count, 4)

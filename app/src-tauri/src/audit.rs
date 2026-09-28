@@ -69,12 +69,43 @@ pub fn cell(text: &str) -> String {
     text.replace('|', "\\|").replace(['\r', '\n'], " ")
 }
 
-/// CSV 字段转义：含逗号、引号或换行时整体加引号，内部引号加倍
+/// 这个单元会不会被电子表格当成**公式**执行。
+///
+/// 触发字符是 OWASP 列的那五个：开头的 `=` `+` `-` `@`，以及 tab / CR。
+/// `=` 与 `@` 是各家都认的；`-` 只在**紧跟数字**时才危险，但我们这一列全是
+/// 文本字段（id / name / 等级 / 证据），数字走的是不走 `escape_csv` 的那些列，
+/// 所以按文本判就够。
+fn starts_like_formula(text: &str) -> bool {
+    matches!(text.chars().next(), Some('=') | Some('+') | Some('-') | Some('@'))
+        || text.starts_with('\t')
+        || text.starts_with('\r')
+}
+
+/// CSV 字段转义，两件事：
+///
+/// 1. **结构**：含逗号、引号或换行时整体加引号，内部引号加倍（RFC 4180）。
+/// 2. **公式注入**：以 `=` `+` `-` `@` 或 tab/CR 开头的单元前面加一个单引号。
+///
+/// 第 2 条不是洁癖。本函数覆盖的字段里有 `snap.id` / `snap.name`
+/// （**自定义 Agent 的 id 与名字是自由文本**）与 `verdict.evidence`
+/// （含文件路径与诊断原文）。不加这一层的话，一个叫
+/// `=HYPERLINK("http://…","点我")` 的 Agent 会让打开报告的人**点一下就跳出去**，
+/// 而报告是自动生成、给人直接双击打开的文件。
+///
+/// **两端逐字节一致**：Swift `AuditReportExporter.escapeCSV` 是同一个函数，
+/// 改一边会让同一个 Agent 导出两个内容不同的文件——而报告是要拿去对账的。
+/// 注意单引号是**加在引号之外**的：`'=x` 不会被引号转义规则再改一遍，
+/// 而表格软件把它当「这是文本」的开头，显示时不带这个撇号。
 pub fn escape_csv(text: &str) -> String {
-    if text.contains(',') || text.contains('"') || text.contains('\n') {
-        format!("\"{}\"", text.replace('"', "\"\""))
+    let guarded = if starts_like_formula(text) {
+        format!("'{text}")
     } else {
         text.to_string()
+    };
+    if guarded.contains(',') || guarded.contains('"') || guarded.contains('\n') {
+        format!("\"{}\"", guarded.replace('"', "\"\""))
+    } else {
+        guarded
     }
 }
 
@@ -590,5 +621,82 @@ mod tests {
         assert!(!md.contains("## 3."), "没有事件就不该有第 3 节：{md}");
         let csv = generate_csv(&[], 1_700_000_000_000);
         assert_eq!(csv.lines().count(), 1, "只有表头：{csv}");
+    }
+}
+
+#[cfg(test)]
+mod csv_tests {
+    use super::*;
+
+    /// 结构转义的老口径不许退化：引号加倍、含分隔符才加引号。
+    #[test]
+    fn structural_quoting_is_unchanged() {
+        assert_eq!(escape_csv("plain"), "plain");
+        assert_eq!(escape_csv("a,b"), "\"a,b\"");
+        assert_eq!(escape_csv("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(escape_csv("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    /// 公式注入：一个叫 `=HYPERLINK(...)` 的自定义 Agent 不该让打开报告的人
+    /// 点一下就跳出去。这一条是 v0.0.224 的重点。
+    #[test]
+    fn a_formula_shaped_agent_name_is_neutralised() {
+        for hostile in [
+            "=1+1",
+            "+1+1",
+            "-1+1",
+            "@SUM(A1)",
+            "=HYPERLINK(\"http://example.com\",\"点我\")",
+            "\t=1+1",
+            "\r=1+1",
+        ] {
+            let out = escape_csv(hostile);
+            // 结构引号可能在外面裹一层，所以判的是**内容**的首字符。
+            // 直接 `starts_with('\'')` 会对同时含分隔符的值误报——
+            // 而那种值的实际输出 `"'=…"` 恰恰是正确的。
+            let content = out.strip_prefix('"').unwrap_or(&out);
+            assert!(
+                content.starts_with('\''),
+                "{hostile:?} 应当被加上前导单引号，实际 {out:?}"
+            );
+        }
+    }
+
+    /// 加了撇号之后**仍然要正常走结构转义**——两者是叠加的，不是二选一。
+    #[test]
+    fn the_guard_still_quotes_when_the_value_also_needs_it() {
+        // `=a,b` 同时是公式和含分隔符 ⇒ 既有撇号也有引号，且引号包住撇号
+        assert_eq!(escape_csv("=a,b"), "\"'=a,b\"");
+    }
+
+    /// 正常值不许被无端加撇号：报告里绝大多数单元都不该变。
+    #[test]
+    fn ordinary_values_are_left_alone() {
+        for ordinary in ["Codex", "claude-dev", "工作中", "512", "1.5", "等待你批准操作"] {
+            assert_eq!(escape_csv(ordinary), ordinary, "{ordinary:?} 不该被改写");
+        }
+    }
+
+    /// **两端必须逐字节一致**。改一边会让同一个 Agent 导出两个内容不同的文件，
+    /// 而报告是拿去对账的——对不上的报告比没有更糟。
+    #[test]
+    fn the_swift_side_uses_the_same_rule() {
+        let swift = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../Sources/AgentIslandCore/AuditReportExporter.swift"),
+        )
+        .expect("应当读得到 AuditReportExporter.swift");
+        for needle in [
+            "startsLikeFormula",
+            "\"=\"",
+            "\"+\"",
+            "\"-\"",
+            "\"@\"",
+        ] {
+            assert!(
+                swift.contains(needle),
+                "Swift 侧应当也有同一套公式注入判据（缺 {needle}）——只有一边防就等于没防"
+            );
+        }
     }
 }

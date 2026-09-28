@@ -450,7 +450,33 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
    - **未验证**：Cline / Roo 在本机**没装**（`…/globalStorage/saoudrizwan.claude-dev/tasks`
      与 `~/Library/Application Support/Cline/tasks` 均不存在），
      所以 `probe_cline` 的差异只有代码比对、没有实样，**没有据此改行为**。
-4. Swift 与 Rust 测试的**内容覆盖对照**未做。v0.0.159 增补五态回放与三方言合成 fixture 后，可执行测试数已变化；以 `cargo test --locked` 输出为准。
+4. ~~Swift 与 Rust 测试的**内容覆盖对照**未做~~
+   ✅ **v0.0.224 做了一半，明确说清「一半」是什么意思**。
+   - **条数**（v0.0.224 实测）：Swift **556**（31 个文件）／Rust **470**（`#[test]` 计数，含 2 条 `--ignored`）。
+     两边模块划分不同，**条数不可直接相比**——Rust 的 `session` 一家就 68 条，
+     对应 Swift 侧 `EngineTests` / `AntigravityTracking` / `QoderTracking` / `DSHTracking` 四个文件的 133 条。
+     所以下面用的是**另一种对照**。
+   - **按「被测的对外函数」对照**（客观、可复跑）：
+     扫 `app/src-tauri/src/**/*.rs` 里所有 `pub fn`，减去在 `#[cfg(test)]` 段里
+     出现过的那些 ⇒ **29 个 `pub fn` 没有任何用例提到**。清单按后果排序：
+
+     | 函数 | 错了会怎样 | 处理 |
+     | :--- | :--- | :--- |
+     | `audit::escape_csv` | 报告里的公式被电子表格执行 | ✅ **v0.0.224 已补**（CSV 公式注入，两端同步修） |
+     | `selfreport::is_believable` | 过期自报仍被采信 | 记录，待补 |
+     | `provider::plan_codex_apply` | 切档位写错文件 | 记录，待补 |
+     | `filemon::probe_files` | 探测候选错 ⇒ 会话信号静默为空 | 记录，待补 |
+     | `remote::contains_placeholder` | 占位密钥被当成真密钥 | 记录，待补 |
+     | `budget::is_exceeded` / `reset` | 预算告警不触发 | 记录，待补 |
+     | `forecast::saturating_product` / `cost_product` | 月末预测算错 | 记录，待补 |
+     | `placement::*`（4 个）、`procmon::{core_count, all_names}`、`models::duration_text`、`webhook::event_port`、`engine::pending_count`、`audit::file_timestamp_text`、`provider::store_dir`、`webhook::token_file_path`、`webhook::webhook_uuid` | 见各文件注释 | 记录，待补 |
+
+   - **`power.rs` 的 7 个几乎全空**：屏幕锁判定与显示休眠判定**一个用例都没有**。
+     `is_screen_locked` 的注释写着「手写 CoreFoundation FFI 曾 SIGSEGV 而整段删除，
+     恒为 `false`」——那么至少「它恒为 false」这件事该有用例钉住，否则哪天有人
+     「顺手修一下」就会把那段危险代码请回来。**这条优先级最高。**
+   - **没做的**：Swift 侧也做一份同样的「未被用例覆盖的 `public func`」扫描，
+     然后做**双向**对照（哪边有哪边没有）。本轮只扫了 Rust 一侧。
 5. ~~`report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对~~
    ✅ **v0.0.223 逐条比对了，并查出 Rust 侧一条会自我否定的安全实现**
    （取证见 [report.token 的形态校验]((../research/2026-09-28-report-token-shape-check.md)）：
