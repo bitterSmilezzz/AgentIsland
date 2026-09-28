@@ -451,7 +451,33 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
      与 `~/Library/Application Support/Cline/tasks` 均不存在），
      所以 `probe_cline` 的差异只有代码比对、没有实样，**没有据此改行为**。
 4. Swift 与 Rust 测试的**内容覆盖对照**未做。v0.0.159 增补五态回放与三方言合成 fixture 后，可执行测试数已变化；以 `cargo test --locked` 输出为准。
-5. `report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对（ADR 0009 相关，需单独看）。
+5. ~~`report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对~~
+   ✅ **v0.0.223 逐条比对了，并查出 Rust 侧一条会自我否定的安全实现**
+   （取证见 [report.token 的形态校验]((../research/2026-09-28-report-token-shape-check.md)）：
+   Swift `SelfReportTokenStore` 做五件事，Rust 侧 `webhook::ensure_token` **一件都没做**：
+   | 校验 | Swift | Rust（v0.0.222 及以前） |
+   | :--- | :--- | :--- |
+   | 令牌来源 | `SecRandomCopyBytes(24)` | **`as_nanos() * 常数 rotate`**——由系统时钟推导，读一次 `date` 就能算出同一串 |
+   | 文件 0600 | 有，且**写完再收一次**（防 umask） | **从不设权限** |
+   | 目录 0700 | 有 | **从不设权限** |
+   | 非常规文件（符号链接） | 判 `notRegular`，写入走 `createFile` | **不检查**，且 `fs::write` **穿过符号链接写** |
+   | 属主是当前用户 | 判 `foreignOwner` | **不检查** |
+   | 组/其他权限位 | 判 `looseMode`（`mode & 0o077`） | **不检查** |
+   | 缺陷分类与告警 | 5 类 `SelfReportTokenDefect` + 告警 | **静默重写** |
+   - **最严重的是令牌来源**：令牌的全部价值就是「猜不到」，而时钟播种等于把这件事
+     直接取消。次严重的是符号链接——`fs::write` 会跟着链接写进它指向的文件。
+   - v0.0.223 起 Rust 侧五条全部补齐（`inspect_token` 用 `symlink_metadata` 而非
+     `metadata`，写入用 `create_new` 保证不穿过任何已存在路径，熵源走 `/dev/urandom`，
+     6 条用例覆盖每一种缺陷分支，含「宽 umask 下仍是 0600」）。
+   - **`ensure_token` 的返回类型从 `String` 改成 `Option<String>`**：
+     `None` = 拿不到可信通道，`/session` 必须答 401 `noToken`。
+     不可退化成「拿请求里的串比对」——那会让「服务端没令牌」变成「谁都能自报」。
+   - **真机验证**：现有那份令牌是 **Swift 版建的**（48 字节 / 0600 / 目录 0700）。
+     新逻辑跑过之后文件**未变、日志无缺陷**——也就是说从 Swift 升到 Rust 不会让
+     令牌失效。这一条很重要：换了令牌，已配置的每一个接入方都得重配。
+   - **没有验证的**：真实令牌文件上的缺陷分支（0644 / 符号链接）**没有在真机上跑过**
+     ——那需要改动用户正在用的凭据文件，我不在没问的情况下动它。
+     六条用例是在沙箱里用临时目录覆盖的。
 6. §2.3 表中「token 明细是否需要」一行只对 13 个共有档案核对；12 个 Swift 独有档案的
    `tokenRoots` 现状未逐一列（不影响「两边都有」的判定）。
 7. ~~**Rust 侧 SQLite 读取只在合成夹具上验过**：未在本机真实的 `opencode.db` / `dimcode.sqlite`
