@@ -182,6 +182,7 @@ mod tests {
             exe_path: format!("/usr/local/bin/{name}"),
             memory,
             cpu,
+            is_zombie: false,
         }
     }
 

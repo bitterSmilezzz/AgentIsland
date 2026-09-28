@@ -19,6 +19,12 @@ pub struct ProcHit {
     pub exe_path: String,
     pub memory: u64,
     pub cpu: Option<f64>,
+    /// **僵尸**（已退出、父进程还没 `wait` 回收）。
+    ///
+    /// 进程表里必须带这一位，而不是让调用方另外去 `ps` 问一次：清干净了没
+    /// 是个**判定**，而判定用到的两个事实（存活、是不是僵尸）得来自同一张表，
+    /// 否则「问存活的那一拍」和「问僵尸的那一拍」之间进程可以已经变了。
+    pub is_zombie: bool,
 }
 
 impl ProcessMonitor {
@@ -76,6 +82,7 @@ impl ProcessMonitor {
                 exe_path: exe,
                 memory: proc_.memory(),
                 cpu,
+                is_zombie: proc_.status() == sysinfo::ProcessStatus::Zombie,
             });
         }
         hits
@@ -106,6 +113,7 @@ impl ProcessMonitor {
                     .unwrap_or_default(),
                 memory: proc_.memory(),
                 cpu,
+                is_zombie: proc_.status() == sysinfo::ProcessStatus::Zombie,
             });
         }
         // 顺序固定：sysinfo 的 HashMap 迭代顺序不保证，而树的同层顺序会反映到界面上

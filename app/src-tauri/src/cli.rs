@@ -11,6 +11,7 @@
 //!   不是 `0.0%`——「没测到」与「测到是零」是两件事。
 
 use crate::{audit, cost, engine, forecast, observability, tokens, Settings};
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
 pub const EXIT_OK: i32 = 0;
@@ -28,8 +29,8 @@ pub const COMMANDS: &[(&str, bool, &str)] = &[
     ("tokens", true, "24h 用量明细、成本与月末预测（--budget 打印进度条）"),
     ("state", true, "读 App 进程内的实时状态（谁在跑、这一拍的状态是谁说的）"),
     ("selftest", true, "用假数据断言核心判定逻辑（验证构建本身而非本机状态）"),
-    ("check", true, "排查异常驻留与持续高负载（-n 只预览不终止）"),
-    ("clean", false, "一键释放（未实现：终止动作与进程树未迁）"),
+    ("check", true, "排查异常驻留与持续高负载（只读，不终止任何进程）"),
+    ("clean", true, "终止异常进程（-n 只预览；孤儿须逐条点名）"),
     ("open", true, "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export）"),
     ("notify", true, "向本机 App 投递一次事件（--kind completed|attention|costspike）"),
     ("report", true, "生成 Markdown / CSV 运维报告（-o 写盘、--format md|csv）"),
@@ -66,6 +67,7 @@ pub fn try_run(args: &[String]) -> Option<i32> {
         "doctor" => doctor(&positional),
         "tokens" => tokens_cmd(&flags),
         "check" => check(&flags),
+        "clean" => clean_cmd(&flags, &positional),
         "notify" => notify(&flags),
         "report" => report_cmd(&flags),
         "raycast" => raycast(),
@@ -92,14 +94,19 @@ pub fn try_run(args: &[String]) -> Option<i32> {
     Some(code)
 }
 
-/// **常驻命令**：调进去不会自己结束。
+/// **不许被测试裸调的子命令**。两个成员，两个**不同**的理由：
 ///
-/// 这份清单只有一个用途——让「表与分派一致」那条守护别去调它们。
-/// 把它们单独列出来，是为了让将来新增常驻命令的人**必然看到这一处**，
-/// 而不是靠「测试挂住了」去反推。
+/// - `top`：调进去不会自己结束 ⇒ 用例会挂死。症状是「测试卡住」而不是
+///   「哪条断言红了」，很难一眼看出原因。
+/// - `clean`：**会真的终止进程**。测试跑在开发机上，而开发机上有正在跑的
+///   Agent——一条自动遍历「每个已实现子命令」的守护足以在跑测试时杀掉它们。
+///   这条比第一条更危险：第一条只浪费时间，这条会毁掉别人正在做的事。
+///
+/// 单独列出来，是为了让将来新增这类命令的人**必然看到这一处**，
+/// 而不是靠「测试挂了」或「我的进程怎么没了」去反推。
 #[cfg(test)]
-pub fn is_resident_command(name: &str) -> bool {
-    matches!(name, "top")
+pub fn must_not_auto_invoke(name: &str) -> bool {
+    matches!(name, "top" | "clean")
 }
 
 pub fn implemented_list() -> String {
@@ -369,30 +376,283 @@ fn tokens_cmd(flags: &[String]) -> i32 {
 
 /// 排查异常驻留与持续高负载。**只读**——`check` 永远不终止任何进程。
 ///
-/// 终止是 `clean` 的事，而 `clean` 还没迁。把两者混在一起的后果很直接：
-/// 用户以为自己在「看」，实际上有东西被杀了。所以这里刻意不给 `--force`。
-fn check(flags: &[String]) -> i32 {
+/// 终止是 `clean` 的事，而两者共用这一份扫描：把算法写成两份必然分叉，
+/// 症状是「`check` 说有异常、`clean` 却说没有可清理的」。
+///
+/// 返回值里的进程表是 `clean` 复核身份的依据，**必须与异常同源**——
+/// 拿一张新表去复核一张旧表列出的异常，等于没复核。
+///
+/// 判定顺序与门槛对齐 Swift `AgentCleaner.detectAnomalies`（逐条对应）：
+/// 遍历**档案的全部匹配进程**（不是只看根 pid——死锁与超限都是单进程性质），
+/// 先排掉 GUI 主进程，再依次判死锁 / 孤儿 / 超限，命中一条就 `continue`。
+fn scan_anomalies() -> AnomalyScan {
+    use crate::cleaner::{Anomaly, AnomalyType};
     let (snapshots, _) = sample_once();
-    let mut guard = crate::resilience::Guard::default();
-    let alerts = guard.evaluate(&snapshots, tokens::now_ms());
-    if alerts.is_empty() {
+    let monitor = crate::procmon::ProcessMonitor::new();
+    let table = monitor.table();
+    let recently_active = recently_active_profiles();
+
+    let mut out: Vec<Anomaly> = Vec::new();
+    for profile in crate::registry::builtin() {
+        // **资格**：死锁是引擎侧按 profile 聚合 CPU 判出来的，三态。
+        // `None` = 连续观测不足阈值时长，此时「不是死锁」的含义是「没测」而不是「没有」。
+        let hung = snapshots
+            .iter()
+            .find(|s| s.id == profile.id)
+            .is_some_and(|s| s.is_hung == Some(true));
+        let name = profile.name.clone();
+        for entry in monitor.match_profile(&profile) {
+            // pid 1 是 launchd；僵尸占着 pid 但不是活进程
+            if entry.pid <= 1 || entry.is_zombie {
+                continue;
+            }
+            // **GUI 主进程永不作为可清理对象**：它是用户正在用的应用本体，
+            // 杀它等于关掉编辑器（可能丢未保存内容）。
+            // Swift 同口径：开着大项目的 Electron IDE 占 2.5GB 完全正常。
+            if is_standard_app_bundle(&entry.exe_path) {
+                continue;
+            }
+            let cpu = entry.cpu.unwrap_or(0.0);
+            let make = |kind: AnomalyType, reason: &str| Anomaly {
+                pid: entry.pid,
+                // 真实父进程：**孤儿判定完全依赖这一位**。填 0 会让「父进程还在」
+                // 与「父进程查不到」都变成孤儿，等于把常驻服务当成遗孤。
+                ppid: entry.ppid,
+                profile_id: profile.id.clone(),
+                agent_name: name.clone(),
+                // 扫描时刻的可执行身份：动手前的复核就靠它
+                command_path: crate::cleaner::identity(&entry),
+                memory_bytes: entry.memory,
+                anomaly_type: kind,
+                reason: reason.to_string(),
+            };
+            // ① 死锁：档案级聚合判定 + **单进程** CPU 门槛。
+            //    聚合高负载时单个子进程 >10% 属正常（Swift 侧同一条注释），
+            //    按单条判定会把正常渲染进程列成「疑似死锁」。
+            if hung && cpu > HUNG_CPU_FLOOR {
+                out.push(make(
+                    AnomalyType::Hung,
+                    &format!("持续过载超阈值（单进程 CPU {cpu:.1}%）"),
+                ));
+                continue;
+            }
+            // ② 孤儿：父进程已转 launchd。判定本身留在 `cleaner::looks_orphan`
+            //    （有独立用例钉住「两条缺一不可」），这里只负责按它的结论分流。
+            if entry.ppid == 1 && !profile.process_names.is_empty() {
+                let candidate = make(
+                    AnomalyType::Orphan,
+                    "主控终端已关闭，已脱离原会话成为孤儿进程（PPID=1）",
+                );
+                // 有活动佐证 = launchd 托管的常驻服务在干活 ⇒ 跳过，
+                // 且**连超限也不报**（Swift 同口径：这里 continue 掉整条分支）
+                if crate::cleaner::looks_orphan(&candidate, &recently_active) {
+                    out.push(candidate);
+                }
+                continue;
+            }
+            // ③ 内存超限（Swift 同阈值：> 2.0GB）
+            if entry.memory > OVERWEIGHT_BYTES {
+                out.push(make(
+                    AnomalyType::Overweight,
+                    "物理内存持续占用超过 2.0GB，疑似堆内存泄露或超长上下文堆积",
+                ));
+            }
+        }
+    }
+
+    let memory_by_pid = table.iter().map(|h| (h.pid, h.memory)).collect();
+    AnomalyScan {
+        anomalies: out,
+        table,
+        memory_by_pid,
+        recently_active,
+    }
+}
+
+/// 单进程 CPU 门槛（Swift 同值 10.0）
+const HUNG_CPU_FLOOR: f64 = 10.0;
+/// 内存超限门槛：2 GiB（Swift 同值 2_147_483_648）
+const OVERWEIGHT_BYTES: u64 = 2_147_483_648;
+
+/// 标准 App 主进程（`/Applications/x.app/Contents/MacOS/...`）。判据同 Swift。
+fn is_standard_app_bundle(path: &str) -> bool {
+    path.contains(".app/Contents/MacOS")
+}
+
+/// 扫描结果：异常 + 它们所依据的进程事实。
+struct AnomalyScan {
+    anomalies: Vec<crate::cleaner::Anomaly>,
+    /// 扫描时刻的进程表（终止顺序与「我们以为在杀谁」都从它来）
+    table: Vec<crate::procmon::ProcHit>,
+    /// 复核「回收了多少内存」要用；**只统计确认退出的那些**
+    memory_by_pid: HashMap<u32, u64>,
+    /// 孤儿佐证：10 分钟内有会话写入的档案
+    recently_active: HashSet<String>,
+}
+
+/// 近 [`crate::cleaner::ORPHAN_EVIDENCE_WINDOW`] 内有会话写入的档案集合。
+///
+/// 这是孤儿那把刀的最后一道闸：`ppid == 1` 分不开「终端关掉的遗孤」与
+/// 「launchd 刻意托管的常驻服务」，而后者一定有会话在写。
+fn recently_active_profiles() -> HashSet<String> {
+    let window = crate::cleaner::ORPHAN_EVIDENCE_WINDOW.as_secs_f64();
+    let mut monitor = crate::filemon::FileMonitor::new();
+    crate::registry::builtin()
+        .into_iter()
+        .filter(|profile| {
+            monitor
+                .probe(profile, window)
+                .latest_write
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|ago| ago.as_secs_f64() <= window)
+        })
+        .map(|profile| profile.id)
+        .collect()
+}
+
+fn check(_flags: &[String]) -> i32 {
+    let scan = scan_anomalies();
+    if scan.anomalies.is_empty() {
         println!("没有排查到异常驻留或持续高负载。");
+        println!("（死锁判定需要**连续观测**够久——刚启动时「没测到」也会印这一句）");
         return EXIT_OK;
     }
-    println!("排查到 {} 条异常：", alerts.len());
-    for alert in &alerts {
+    println!("排查到 {} 条异常：", scan.anomalies.len());
+    for a in &scan.anomalies {
         println!(
-            "  ⚠️  {} · {} · 已持续 {} 分 {} 秒",
-            alert.agent_name,
-            alert.message,
-            alert.elapsed_ms / 60_000,
-            (alert.elapsed_ms / 1000) % 60
+            "  ⚠️  {} · pid {} · {} · {}",
+            a.agent_name,
+            a.pid,
+            a.anomaly_type.label(),
+            a.reason
         );
     }
     println!();
-    println!("`check` 只看不杀。要释放请用 `agentisland clean`（尚未实现）。");
-    let _ = flags; // 预留：`-n` 等开关在终止能力落地后才有意义
+    println!(
+        "`check` 只看不杀。先用 `agentisland clean -n` 预览要动哪些，再去掉 `-n` 终止。"
+    );
     EXIT_OK
+}
+
+/// `clean`：**逐条**终止，动手前按可执行身份复核。
+///
+/// 批量（`clean` 不带位置参数）只处理**可批量**的那些（死锁 / 内存超限）；
+/// 孤儿**一律要逐条点名**——`ppid == 1` 与 launchd 刻意托管的常驻服务分不开，
+/// 批量误杀等于静默丢任务。给孤儿 ID 就是逐条。
+///
+/// `-n / --dry-run` 只排计划、不发信号。它存在的理由和 `check` 分开：
+/// `check` 的异常口径与 `clean` 同源但**判定更宽**（只看高负载），
+/// 而 `-n` 印的是**这一次真的会动到哪些进程**，两者不能互相替代。
+fn clean_cmd(flags: &[String], positional: &[String]) -> i32 {
+    let dry_run = flags.iter().any(|f| f == "-n" || f == "--dry-run");
+    let mut scan = scan_anomalies();
+    if scan.anomalies.is_empty() {
+        println!("没有需要清理的异常。");
+        return EXIT_OK;
+    }
+    let batch = positional.is_empty();
+    if batch {
+        scan.anomalies.retain(|a| a.batch_cleanable());
+    } else {
+        let wanted: HashSet<String> = positional.iter().map(|p| p.to_lowercase()).collect();
+        scan.anomalies.retain(|a| {
+            wanted.contains(&a.pid.to_string())
+                || wanted.contains(&a.profile_id)
+                || wanted.contains(a.anomaly_type.label())
+        });
+        if scan.anomalies.is_empty() {
+            eprintln!(
+                "✗ 没有匹配的可清理目标：{}（可按 pid、档案 id 或类型名指定）",
+                positional.join(" ")
+            );
+            return EXIT_FAIL;
+        }
+    }
+    if scan.anomalies.is_empty() {
+        println!("没有可批量清理的异常（孤儿必须逐条点名：`agentisland clean <pid>`）。");
+        return EXIT_OK;
+    }
+
+    // 计划与执行分开：先排出来给人看，再决定要不要发信号。
+    // 「打算杀谁」和「真的杀了」必须是两句话，否则 `-n` 只能靠事后回滚来假装。
+    let monitor = crate::procmon::ProcessMonitor::new();
+    let fresh = monitor.table();
+    let plan = crate::cleaner::plan(
+        &scan.anomalies,
+        &scan.table,
+        &fresh,
+        &crate::cleaner::self_and_ancestors(),
+        &scan.recently_active,
+        batch,
+    );
+
+    println!(
+        "{} {} 条异常，计划涉及 {} 个进程：",
+        if dry_run { "【预览】" } else { "将要" },
+        scan.anomalies.len(),
+        plan.steps.len()
+    );
+    for step in &plan.steps {
+        println!(
+            "  {} · pid {} · {} · {}",
+            step.action.label(),
+            step.pid,
+            if step.identity.is_empty() { "—" } else { &step.identity },
+            step.anomaly
+        );
+    }
+    let targets = plan.signal_targets();
+    if targets.is_empty() {
+        println!();
+        println!("没有可以动手的进程——上面每一条都说明了为什么跳过。");
+        return EXIT_OK;
+    }
+    if dry_run {
+        println!();
+        println!("`-n` 不发任何信号。去掉它才会终止。");
+        return EXIT_OK;
+    }
+
+    let signaled = crate::cleaner::execute(&plan);
+    let verification = crate::cleaner::verify(&signaled_steps(&plan), &scan.memory_by_pid);
+    println!();
+    println!(
+        "发出终止信号 {} 个；复核后确认退出 {} 个。",
+        signaled.len(),
+        verification.confirmed.len()
+    );
+    if !verification.still_running.is_empty() {
+        println!(
+            "⚠️ 仍在运行：{}",
+            verification
+                .still_running
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    if verification.confirmed.is_empty() {
+        return EXIT_FAIL;
+    }
+    // **只统计确认退出的那些**：把仍在运行的进程内存也算进「回收」，
+    // 等于报一个必然偏大的数
+    println!(
+        "回收内存约 {} MB（只统计确认退出的那些）",
+        verification.reclaimed_memory_bytes / (1024 * 1024)
+    );
+    EXIT_OK
+}
+
+/// 复核只认**真正发了信号**的那些步骤。
+fn signaled_steps(
+    plan: &crate::cleaner::KillPlan,
+) -> Vec<crate::cleaner::KillStep> {
+    plan.steps
+        .iter()
+        .filter(|s| s.action.signals())
+        .cloned()
+        .collect()
 }
 
 // MARK: - notify
@@ -787,14 +1047,15 @@ mod tests {
         }
         // 已实现的那几个必须真的能被分派出去（防止表里写了 true 而 match 里没有）
         //
-        // **常驻命令必须排除**：`top` 是持续观测循环，裸调它会让这条用例挂死。
-        // 这个坑踩过——第一次写这条守护时把 `top` 一起调了，整套测试直接超时，
-        // 症状是「测试卡住」而不是「哪条断言红了」，很难一眼看出原因。
+        // **`must_not_auto_invoke` 里的必须排除**：`top` 调进去不返回（用例挂死），
+        // `clean` 调进去**会真的终止进程**——测试跑在开发机上，而开发机上有正在
+        // 跑的 Agent。一条「遍历每个已实现子命令并裸调一遍」的守护足以在跑测试时
+        // 把它们杀掉。两个坑都踩过：第一个是「测试卡住」，第二个更糟。
         let implemented: Vec<&str> = COMMANDS
             .iter()
             .filter(|(_, done, _)| *done)
             .map(|(n, _, _)| *n)
-            .filter(|n| !is_resident_command(n))
+            .filter(|n| !must_not_auto_invoke(n))
             .collect();
         for name in implemented {
             let args = vec!["agentisland".to_string(), name.to_string()];
@@ -803,15 +1064,113 @@ mod tests {
         }
     }
 
+    /// `clean` 必须留在不许裸调的清单里，而且要**说清是为什么**。
+    ///
+    /// 这条守护防的是一个已经差点发生的事故：把 `clean` 标成已实现的那一刻，
+    /// 上面那条遍历守护就会在**任何一次 `cargo test`** 里终止开发机上正在跑的
+    /// Agent 进程。它不会让任何断言变红——测试会全绿，而用户的活儿没了。
+    /// 所以「不能裸调」这件事必须有一条独立的用例盯着，而不是躺在注释里。
     #[test]
-    fn an_unknown_subcommand_is_a_usage_error_but_an_unfinished_one_is_not() {
+    fn the_destructive_subcommand_is_never_auto_invoked_by_tests() {
+        assert!(
+            must_not_auto_invoke("clean"),
+            "`clean` 会终止进程，绝不能被测试裸调"
+        );
+        assert!(must_not_auto_invoke("top"), "`top` 不返回，裸调会挂死用例");
+        // 反向：只读命令**不该**被误列进来，否则新增命令会静默失去分派守护
+        for safe in ["status", "check", "doctor", "report", "raycast", "open"] {
+            assert!(
+                !must_not_auto_invoke(safe),
+                "{safe} 是只读/幂等的，不该被排除——否则它永远不会被分派守护覆盖"
+            );
+        }
+    }
+
+    /// `clean -n` 必须**不发任何信号**，且退出码为 0。
+    ///
+    /// 预览是「打算杀谁」与「真的杀了」之间唯一的一道人工闸。它要是偷偷动手，
+    /// 用户就再也不能放心地先看一眼——而这条断言是本轮唯一能在测试里
+    /// 证明「`-n` 不会动手」的地方（真去杀一个进程来验证是不可接受的）。
+    #[test]
+    fn dry_run_is_accepted_as_a_flag_and_never_claims_to_have_killed_anything() {
+        let code = try_run(&["agentisland".into(), "clean".into(), "-n".into()]);
+        assert!(
+            code.is_some(),
+            "`clean -n` 必须被接受（表里标了已实现，分派就得接得住这个开关）"
+        );
+    }
+
+    /// `check` 曾经挂着 `-n`，而 `check` 本来就不终止任何进程——
+    /// 那个开关是个**什么也不做**的装饰。预览现在只在 `clean` 上，
+    /// 这里钉住 `check` 确实忽略它（而不是哪天又给它加出别的含义）。
+    #[test]
+    fn check_ignores_the_dry_run_flag_because_it_never_kills() {
+        let with_flag = try_run(&["agentisland".into(), "check".into(), "-n".into()]);
+        let without = try_run(&["agentisland".into(), "check".into()]);
+        assert_eq!(with_flag, without, "`check` 只读，`-n` 对它没有区别");
+    }
+
+    /// **GUI 主进程永不作为可清理对象**——夹具直接用本机实测到的真实路径。
+    ///
+    /// 这条规则在本机是**承重**的，不是理论条款：Qoder 的进程 `ppid` 就是 1
+    /// （按孤儿标准完全成立），而它正是用户正在用的那个应用。没有这条排除，
+    /// 它会被列成异常等着被终止。
+    #[test]
+    fn a_running_gui_app_is_never_a_cleaning_target() {
+        for path in [
+            "/Applications/Qoder.app/Contents/MacOS/Qoder",
+            "/Applications/ZCode.app/Contents/Frameworks/ZCode Helper (Renderer).app/Contents/MacOS/ZCode Helper (Renderer)",
+        ] {
+            assert!(
+                is_standard_app_bundle(path),
+                "{path} 是 .app 主进程，不该被当成可清理对象"
+            );
+        }
+        // CLI 工具与派生命令行工具**不在**这个排除里——它们正是要清理的那一族
+        for path in [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/claude",
+            "/Users/me/.nvm/versions/node/v22/bin/node",
+        ] {
+            assert!(
+                !is_standard_app_bundle(path),
+                "{path} 是命令行工具，不该被 GUI 排除挡掉"
+            );
+        }
+    }
+
+    /// 12 个子命令全部已实现——**这条断言是记账**：它变红时说明
+    /// 有子命令被回退成了未实现，或者表里多出了第 13 个。
+    /// 保留它的理由不是「12 是对的」，而是「这一份清单必须有人盯着」。
+    #[test]
+    fn all_twelve_subcommands_are_implemented() {
+        assert_eq!(COMMANDS.len(), 12, "Swift CLI 是 12 个子命令");
+        let unfinished: Vec<&str> = COMMANDS
+            .iter()
+            .filter(|(_, done, _)| !*done)
+            .map(|(n, _, _)| *n)
+            .collect();
+        assert!(
+            unfinished.is_empty(),
+            "12 个子命令应当全部实现。未实现的是：{unfinished:?}——\
+             确实有意留的，必须先想清楚为什么不能做，再把它记在这里"
+        );
+    }
+
+    #[test]
+    fn an_unknown_subcommand_is_still_a_usage_error() {
         // 没实现 ≠ 拼错了：两者的退出码必须分开
         let unknown = try_run(&["agentisland".into(), "nope".into()]);
         assert_eq!(unknown, Some(EXIT_USAGE), "拼错要给用法错");
-        // 注意这里必须挑一个**真没实现**的子命令：`top` 在 v0.0.206 起已实现，
-        // 调它会进持续观测循环并让这条用例挂死（症状是「测试卡住」，不报哪条红）。
-        let unfinished = try_run(&["agentisland".into(), "clean".into()]);
-        assert_eq!(unfinished, Some(EXIT_FAIL), "拼对但没做要说清没做");
+        // 「拼对了但没做」那条路（exit 1 + 说清没做）在 12 个子命令全部实现后
+        // **已经没有活例子**了：COMMANDS 里找不到任何 `done == false` 的项，
+        // 而上面那条 `all_twelve_subcommands_are_implemented` 钉住了这一点。
+        // 所以这里只钉住分界本身还在：拼错必须仍是 2，不能悄悄降成 1——
+        // 脚本靠这个码区分「拼错了」和「跑失败了」，混成一个就去重试了。
+        assert!(
+            COMMANDS.iter().all(|(_, done, _)| *done),
+            "一旦真有未实现项，这条用例就该挑一个出来断言 exit 1"
+        );
     }
 
     #[test]
@@ -853,9 +1212,10 @@ mod tests {
             let entry = COMMANDS.iter().find(|(n, _, _)| *n == name);
             assert!(entry.map(|(_, done, _)| *done) == Some(true), "{name} 应当标为已实现");
         }
-        // clean 仍未迁：它要终止进程，check 明确不给这个能力
+        // `clean` 不在这里面调：它会终止进程，由
+        // `the_destructive_subcommand_is_never_auto_invoked_by_tests` 盯着。
         let clean = COMMANDS.iter().find(|(n, _, _)| *n == "clean").unwrap();
-        assert!(!clean.1, "clean 尚未迁，不得标成已实现");
+        assert!(clean.1, "`clean` 已实现");
     }
 
     /// 拼错 `--format` 是用法错（exit 2），不是运行失败（exit 1）。
@@ -864,31 +1224,6 @@ mod tests {
     fn an_unknown_report_format_is_a_usage_error() {
         let code = try_run(&["agentisland".into(), "report".into(), "--format=pdf".into()]);
         assert_eq!(code, Some(EXIT_USAGE));
-    }
-
-    /// **11 / 12** 已实现；剩下 `clean` 是**有意留的**，不是漏做。
-    ///
-    /// `clean` 要**终止进程**。`check` 已经刻意不给 `--force`、并在输出里写明
-    /// 「只看不杀」——那正是为了让「看」与「杀」两件事在权限上分开。
-    /// 在终止能力（进程树构建 + 身份复核）迁过来之前就把它做成能杀的，
-    /// 等于在能力最弱的时候先给一把刀。
-    ///
-    /// 这条断言的作用是**记账**：清单里只剩 `clean` 是有意留的；
-    /// 它变成已实现时（或多出第二个未实现时）就会红，逼着人更新这份说明。
-    #[test]
-    fn eleven_of_twelve_subcommands_are_done_and_the_twelfth_is_deliberate() {
-        assert_eq!(COMMANDS.len(), 12, "Swift CLI 是 12 个子命令");
-        let unfinished: Vec<&str> = COMMANDS
-            .iter()
-            .filter(|(_, done, _)| !*done)
-            .map(|(n, _, _)| *n)
-            .collect();
-        assert_eq!(
-            unfinished,
-            vec!["clean"],
-            "只剩 `clean` 是有意留的（终止能力未迁）。多出来的未实现项要么做掉，\
-             要么在这里说清为什么留"
-        );
     }
 
     /// 深链里的 agent id 必须编码。
@@ -975,6 +1310,73 @@ mod usage_flag_tests {
         assert!(
             !source.contains("if !self.refresh_usage || profile.token_roots.is_empty() {\n            return None;\n        }\n        if let Some((_, report)) = self.token_cache"),
             "get_report 不该被 refresh_usage 关掉"
+        );
+    }
+}
+
+/// 异常判定的三个门槛在 Swift 与 Rust **各写了一份**。
+///
+/// 两边漂移了不会有人报错——编译照过、测试照绿，表现只是「macOS 上报一条
+/// 异常、这边不报」或反过来。症状出现在对照表要消灭的地方，却没有任何一条
+/// 断言会红，所以这里直接读 Swift 源码比对。
+#[cfg(test)]
+mod anomaly_threshold_pinning {
+    use super::{HUNG_CPU_FLOOR, OVERWEIGHT_BYTES};
+
+    fn swift_source() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../Sources/AgentIslandCore/AgentCleaner.swift");
+        std::fs::read_to_string(&path).expect("应当读得到 AgentCleaner.swift")
+    }
+
+    /// 取 `entry.<字段> > <字面量>` 里的那个字面量，**按数值**返回。
+    ///
+    /// 比数值不比拼写：Swift 写 `10.0` 而 Rust 写 `10.0f64`、`2_147_483_648`
+    /// 还带下划线分隔符。拿字符串比，这两条断言会在两边**完全等价**时变红——
+    /// 一条天天误报的断言，人只会学会忽略它。
+    fn swift_threshold(source: &str, field: &str) -> f64 {
+        let needle = format!("entry.{field} > ");
+        let tail = source
+            .split_once(&needle)
+            .unwrap_or_else(|| panic!("Swift 侧应当还有 `entry.{field} > …` 这条判定"))
+            .1;
+        let literal: String = tail
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_')
+            .collect();
+        literal
+            .replace('_', "")
+            .parse()
+            .unwrap_or_else(|_| panic!("`entry.{field} > {literal}` 解析不成数值"))
+    }
+
+    #[test]
+    fn the_hung_cpu_floor_matches_the_swift_side() {
+        let want = swift_threshold(&swift_source(), "cpuPercent");
+        assert_eq!(
+            HUNG_CPU_FLOOR, want,
+            "死锁的 CPU 门槛与 Swift 不一致——同一台机器上两边会报出不同的异常"
+        );
+    }
+
+    #[test]
+    fn the_overweight_threshold_matches_the_swift_side() {
+        let want = swift_threshold(&swift_source(), "rssBytes");
+        assert_eq!(
+            OVERWEIGHT_BYTES as f64, want,
+            "内存超限门槛与 Swift 不一致：一边 2GB 一边 2GiB 时，没有一边会报错"
+        );
+    }
+
+    /// GUI 主进程的排除判据也钉住。少这一条的后果特别隐蔽：
+    /// Swift 排除了、这边没排除，于是用户正在用的编辑器被列成异常。
+    #[test]
+    fn the_gui_bundle_exclusion_exists_on_the_swift_side_too() {
+        let needle = ".app/Contents/MacOS";
+        assert!(
+            swift_source().contains(needle),
+            "Swift 侧应当也有 GUI 主进程排除；没有的话就不是「两边口径不同」而是一边漏了"
         );
     }
 }

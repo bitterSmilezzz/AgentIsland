@@ -227,9 +227,12 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 `status`(默认) / `top` / `tokens` / `state` / `doctor` / `check` / `clean` / `selftest` /
 `open` / `notify` / `report` / `raycast`，共 11 个 `Command` 文件（`status` 不单独成文件，是默认路径）。
 
-**Rust 侧 CLI（v0.0.206 起 12 个里 11 个已实现**：`status` / `top` / `tokens` / `state` / `doctor` / `check` / `notify` / `report` / `raycast` / `open` / `selftest`。
-**只剩 `clean` 未做，是有意的**——它要终止进程，而 `check` 已刻意不给 `--force`；
-在终止能力（进程树 + 身份复核）迁过来之前不做，等于在能力最弱时先给一把刀。 [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
+**Rust 侧 CLI：12 个子命令 v0.0.220 起全部已实现**（`status` / `top` / `tokens` / `state` /
+`doctor` / `check` / `clean` / `notify` / `report` / `raycast` / `open` / `selftest`）。
+
+`clean` 此前是**有意留的**：它要终止进程，而 `check` 已刻意不给 `--force`；
+在终止能力（进程树 + 身份复核）迁过来之前不做，等于在能力最弱时先给一把刀。
+v0.0.220 把它做掉，做法见 §5.1。 [main.rs:323](../../app/src-tauri/src/main.rs#L323) 的 `main()` 只建 Tauri 应用
 （`tauri::Builder`），`std::env::args()` 仅用于识别 `--demo` / `--expand` / `--route=`
 （[main.rs:38-48](../../app/src-tauri/src/main.rs#L38)）。Cargo 未声明 `[[bin]]` 之外的第二二进制
 （[Cargo.toml](../../app/src-tauri/Cargo.toml) 无 `[[bin]]` 节）。
@@ -241,11 +244,44 @@ Swift CLI 有 **12 个子命令**（[main.swift:19-73](../../Sources/AgentIsland
 | `state` | AgentState（读 App 进程内状态，含自报/冲突） | ⚠️ `cli::state` 已有，但**读不到自报**——CLI 是另一个进程；命令已明说这一点 |
 | `doctor` | AgentObservability、AgentHealthEvaluator | ⚠️ `cli::doctor` 已有（结论 + 依据 + 健康度），**但探测原因链仍缺**（见 §4.1） |
 | `check` | AgentResilienceGuard | ✅ `cli::check`（**只看不杀**，刻意不给 `--force`） |
-| `clean` | AgentCleaner、ProcessTreeInspector | ❌ 终止动作与进程树未迁（**有意**，见本节开头） |
+| `clean` | AgentCleaner、ProcessTreeInspector | ✅ `cli::clean`（v0.0.220）。判定门槛逐条对齐 Swift（GUI 主进程排除 / CPU>10% / RSS>2GiB / PPID=1 + 活动佐证），见 §5.1 |
 | `selftest` | Selftest（无头假数据断言） | ✅ `cli::selftest`（且 `--selftest` 两种写法都收） |
 | `notify` | LocalEventHTTP | ✅ `cli::notify`（端到端验过：`{"ok":true,"delivered":"external"}`） |
 | `open` | URLSchemeParser | ⚠️ `deeplink.rs` 九类动作 + 官方插件（v0.0.207）。**v0.0.208 补上 `src-tauri/Info.plist` 的 URL scheme 声明**——此前 Rust bundle 根本没声明，深链在这台机器上不可达。**端到端派发仍未证明**：本机两个应用都声明该 scheme，系统只路由给一个 |
 | `report` | AuditReportExporter | ✅ `cli::report`（md / csv，`-o` 原子写） |
+
+### 5.1 `clean`：终止能力怎么迁过来的（v0.0.220）
+
+**做法是拆成「排计划」与「执行」两层**——`cleaner::plan()` 是纯函数，输入两份进程表
+（扫描时刻 / 动手前）与异常列表，输出「对每个 pid 做什么」；`execute` / `verify` 只照着
+计划发信号与复核，**一个决定都不自己下**。这样每一条安全规则都能用构造出来的表离线断言，
+不必在真机上等一个死锁进程发生。
+
+判定门槛与 Swift `AgentCleaner.detectAnomalies` 逐条对应（顺序也对应）：
+遍历**档案的全部匹配进程** → 排掉 GUI 主进程（`.app/Contents/MacOS`）→ 依次判
+死锁（档案级 `is_hung` + 单进程 CPU > 10%）/ 孤儿（PPID=1 + 无活动佐证）/ 超限（RSS > 2GiB），
+命中一条即 `continue`。三个门槛由 `cli::anomaly_threshold_pinning` **直接读 Swift 源码比对**。
+
+| 安全规则 | 怎么保证的 | 用例 |
+| :--- | :--- | :--- |
+| 身份复核 | 根进程用 `Anomaly.command_path`（异常里记的那份），后代用扫描表；动手前与新采的表比 basename | `a_pid_reused_between_scan_and_kill_is_refused` |
+| 没记到身份就不动手 | 空身份判 `NoIdentity`，**不是**「无从比较所以放行」 | `an_anomaly_without_a_recorded_identity_is_never_killed` |
+| 僵尸不算存活 | `ProcHit.is_zombie`（sysinfo 状态位）；复核里僵尸算已退出，不报「杀不掉」 | `a_zombie_is_not_alive` / `a_zombie_after_termination_counts_as_gone` |
+| 进程树先子后父 | 复用 `trees::build_tree` 的遍历（环、脏数据、5000 层栈都已在那边扛过） | `children_die_before_their_parent` |
+| 不重复发信号 | 两条异常共享子进程时保序去重 | `a_tree_is_never_double_signalled_when_two_anomalies_share_a_child` |
+| 孤儿要活动佐证 | `looks_orphan`：PPID=1 **且**近 10 分钟无会话写入 | `an_orphan_needs_both_a_launchd_parent_and_no_activity_evidence` |
+| 批量不碰孤儿 | 批量模式孤儿一律 `OrphanNeedsNaming` | `batch_mode_refuses_orphans_and_naming_one_explicitly_still_needs_evidence` |
+| 保护自己与终端 | `self_and_ancestors()` 覆盖本进程及全部祖先，命中即 `OwnProcess` | `we_never_signal_ourselves_or_our_terminal` |
+
+**顺带修掉的一处不一致**：界面上那个「终止 Agent」按钮此前是裸 `kill -9`——无身份复核、
+无进程树、无僵尸判定，而且「kill 完之后才复核」的那段代码建了个 `ProcessMonitor` 就丢掉
+（`let _ = pm;`），什么也没做。它现在也走 `cleaner` 那一条。
+
+**本机实测**：Qoder 的进程 `ppid` 就是 1（按孤儿标准完全成立），它靠 **GUI 主进程排除**
+活下来——而它 9 分钟前还在写会话，活动佐证是第二道独立的闸。两条排除都在承重，不是理论条款。
+
+**没有做到的**：进程树的**跨档案**共享子进程仍按 pid 去重，可能跳过某个兄弟树的先子后母
+顺序（信号先到谁不确定）。这条不修，因为当前扫描里一个 pid 只属于一个档案。
 | `raycast` | AppVersion | ✅ `cli::raycast`。**第四个版本位已收口**：`Cargo.toml` 与 `AppVersion.string` 由一条用例对账（此前一直是 0.1.0） |
 
 **排优先级含义：M3 的 12 个模块迁完后，Rust 侧仍没有 CLI。** 若希望 sidebar 形态可脚本化

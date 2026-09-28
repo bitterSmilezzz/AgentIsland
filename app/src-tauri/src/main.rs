@@ -2,6 +2,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod atomicfile;
+mod cleaner;
 mod cli;
 mod cost;
 mod deeplink;
@@ -834,34 +835,45 @@ fn clear_latest_event(state: State<SharedEngine>) {
     state.lock().unwrap().ack_latest_event();
 }
 
+/// 界面上的「终止这个 Agent」。
+///
+/// **不再自己发信号**——走 [`crate::cleaner`] 那一条，与 CLI 的 `clean`
+/// 同一套规则。此前这里是裸 `kill -9`：没有身份复核、没有进程树、
+/// 没有僵尸判定，而且「kill 完之后才复核」的那段代码建了个 ProcessMonitor
+/// 就丢掉了（`let _ = pm;`），什么也没做。
+///
+/// 界面和 CLI 各杀一套的后果不是「有两份代码」，而是**两把不同的刀**：
+/// CLI 里那把知道怎么避开 PID 复用，界面上那把不知道，而用户看不出区别。
 #[tauri::command]
 fn terminate_agent(state: State<SharedEngine>, pid: Option<u32>, agent_id: String) {
     let Some(pid) = pid else { return };
+    if pid < crate::cleaner::MIN_TARGET_PID {
+        return;
+    }
     let profile = {
-        let e = state.lock().unwrap();
-        crate::registry::builtin().into_iter().find(|p| p.id == agent_id)
+        let _guard = state.lock().unwrap();
+        crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == agent_id)
     };
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .status();
+    let Some(profile) = profile else { return };
+    let monitor = crate::procmon::ProcessMonitor::new();
+    let table = monitor.table();
+
+    // 身份复核：这个 pid 上的进程**确实是这个档案**吗？
+    // 用档案的 `process_names` 去比对当前进程，而不是拿进程表里的名字与它自己比——
+    // 后者是恒真式，复核就成了摆设。
+    let Some(hit) = crate::cleaner::find(&table, pid) else {
+        return; // pid 已经不在了
+    };
+    if !crate::procmon::profile_matches(&profile, &hit.name, &hit.exe_path, "") {
+        return;
     }
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .status();
+    if hit.is_zombie {
+        return;
     }
-    // 身份复核：pid 复用防护（进程名仍须匹配档案）
-    if let Some(p) = profile {
-        if !p.process_names.is_empty() {
-            let mut pm = procmon::ProcessMonitor::new();
-            pm.refresh();
-            let _ = pm;
-        }
-    }
+    // SIGTERM + 优雅期，仍在就 SIGKILL；不再是无条件 `-9`。
+    crate::cleaner::terminate(pid, std::time::Duration::from_millis(300));
 }
 
 #[tauri::command]
