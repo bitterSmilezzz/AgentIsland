@@ -77,14 +77,14 @@ fn claude_question_is_attention_until_its_result() {
 
 #[test]
 fn claude_final_response_completes_via_public_file_probe() {
-    completed_fingerprint(probe("claude", &fixture_path("claude-lifecycle.jsonl")));
+    completed_fingerprint(probe_dialect("claude", crate::models::SessionDialect::GenericTail, &fixture_path("claude-lifecycle.jsonl")));
 }
 
 #[test]
 fn roo_code_id_uses_cline_session_dialect() {
     let path = fixture_path("cline-lifecycle.json");
-    let aligned = completed_fingerprint(probe("roo-code", &path));
-    let legacy = completed_fingerprint(probe("roo", &path));
+    let aligned = completed_fingerprint(probe_dialect("roo-code", crate::models::SessionDialect::GenericTail, &path));
+    let legacy = completed_fingerprint(probe_dialect("roo", crate::models::SessionDialect::GenericTail, &path));
     assert_eq!(aligned, legacy);
 }
 
@@ -114,7 +114,7 @@ fn codex_completion_survives_accounting_but_new_user_turn_clears_it() {
     let completed = completed_fingerprint(probe_codex(&prefix(CODEX, 8), FIXTURE_PATH));
     assert_eq!(completed_fingerprint(probe_codex(&prefix(CODEX, 9), FIXTURE_PATH)), completed);
     assert_no_signal(probe_codex(&prefix(CODEX, 10), FIXTURE_PATH));
-    assert_no_signal(probe("codex", &fixture_path("codex-lifecycle.jsonl")));
+    assert_no_signal(probe_dialect("codex", crate::models::SessionDialect::GenericTail, &fixture_path("codex-lifecycle.jsonl")));
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn codex_ordinary_user_and_assistant_messages_never_claim_completion() {
     for line in CODEX_MESSAGES.lines() {
         assert_no_signal(probe_codex(&[line.to_owned()], FIXTURE_PATH));
     }
-    assert_no_signal(probe("codex", &fixture_path("codex-messages.jsonl")));
+    assert_no_signal(probe_dialect("codex", crate::models::SessionDialect::GenericTail, &fixture_path("codex-messages.jsonl")));
 }
 
 #[test]
@@ -156,23 +156,23 @@ fn cline_command_is_active_and_approval_replaces_it() {
 #[test]
 fn cline_output_clears_old_approval_and_completion_ends_work() {
     active_fingerprint(probe_cline(&cline_prefix(4), FIXTURE_PATH), "Synthetic build output.");
-    completed_fingerprint(probe("cline", &fixture_path("cline-lifecycle.json")));
+    completed_fingerprint(probe_dialect("cline", crate::models::SessionDialect::GenericTail, &fixture_path("cline-lifecycle.json")));
 }
 
 #[test]
 fn broken_jsonl_tail_does_not_hide_last_complete_record() {
-    active_fingerprint(probe("codex", &fixture_path("codex-broken-tail.jsonl")), "cargo check");
+    active_fingerprint(probe_dialect("codex", crate::models::SessionDialect::GenericTail, &fixture_path("codex-broken-tail.jsonl")), "cargo check");
 }
 
 #[test]
 fn empty_malformed_missing_and_unknown_sessions_have_no_signal() {
     for profile in ["claude", "codex", "cline"] {
         for name in ["empty.jsonl", "invalid.jsonl", "fixture-does-not-exist.jsonl"] {
-            assert_no_signal(probe(profile, &fixture_path(name)));
+            assert_no_signal(probe_dialect(profile, crate::models::SessionDialect::GenericTail, &fixture_path(name)));
         }
     }
-    assert_no_signal(probe("cline", &fixture_path("cline-malformed.json")));
-    assert_no_signal(probe("unknown-fixture-dialect", &fixture_path("claude-lifecycle.jsonl")));
+    assert_no_signal(probe_dialect("cline", crate::models::SessionDialect::GenericTail, &fixture_path("cline-malformed.json")));
+    assert_no_signal(probe_dialect("unknown-fixture-dialect", crate::models::SessionDialect::GenericTail, &fixture_path("claude-lifecycle.jsonl")));
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn output_records_without_requests_do_not_recreate_work_or_attention() {
         let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
         let interrupt = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
         std::fs::write(&path, format!("{bash}\n{interrupt}\n")).unwrap();
-        assert_no_signal(crate::session::probe("claude", path.to_str().unwrap()));
+        assert_no_signal(crate::session::probe_dialect("claude", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()));
     }
 
     /// 撤销只作用于中断之前的调用——中断之后重新发起的命令仍然是在途。
@@ -212,7 +212,7 @@ fn output_records_without_requests_do_not_recreate_work_or_attention() {
         let swift = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu2","name":"Bash","input":{"command":"swift test"}}]}}"#;
         std::fs::write(&path, format!("{bash}\n{interrupt}\n{swift}\n")).unwrap();
         active_fingerprint(
-            crate::session::probe("claude", path.to_str().unwrap()),
+            crate::session::probe_dialect("claude", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()),
             "swift test",
         );
     }
@@ -230,7 +230,7 @@ fn output_records_without_requests_do_not_recreate_work_or_attention() {
         );
         std::fs::write(&path, format!("{bash}\n{long_quote}\n")).unwrap();
         active_fingerprint(
-            crate::session::probe("claude", path.to_str().unwrap()),
+            crate::session::probe_dialect("claude", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()),
             "sleep 999",
         );
     }

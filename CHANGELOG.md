@@ -4,6 +4,38 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.213] - 2026-09-28
+
+### 会话语义格式变成**档案里的声明**：ADR 0010 那一块的第一级
+
+`session_dialect` 补上了（上一轮说「要改解析层、不该混着带过」的那一项）。
+新增 `SessionDialect` 枚举（五档，与 macOS 侧同名同值）与 `AgentProfile` 字段，
+`probe` 改为 `probe_dialect(profile_id, dialect, path)`——**分派的入口是档案里的声明**，
+不再是解析器内部的 id 梯子。
+
+**五个档案如实声明**（与 macOS 侧那五处 `sessionDialect:` 逐条对齐）：
+Qoder → `qoderTranscript`、Antigravity → `antigravityBrain`、DSH → `dshProjection`、
+Cline 与 Roo Code → `clineTasks`。最后那一对正是「按格式分派」要解决的问题：
+**两个 Agent 共用一个格式**，按 id 分派就得在解析器里写 `cline | roo-code | roo` 的梯子。
+
+**「已声明」与「有解析器」是两份清单，这里把它们钉在一起。**
+后三种方言的解析器还没迁（各自都要带会话定位与缓存），分派遇到它们**如实返回无信号**——
+不拿猜的解析器顶上去。这一点很要紧：Qoder 的文件是 Anthropic 兼容逐行格式，
+喂给 `probe_claude` **大概率能解析出东西**，于是「读出来了、但结论是错的」，
+那比读不到更糟。四条用例把这份边界钉住：三种未实现的方言必须无信号、
+`GenericTail` 与 `ClineTasks` 在实现清单上、
+以及「没实现的方言数变了」就会红——补一个解析器就从清单移一条，名单空了自动收紧。
+
+顺带删掉 `probe` 这个薄包装：分派已经在 `probe_dialect`，
+留一个没人调的 `probe(profile_id, path)` 只会让人以为还有第二条入口。
+
+**`GenericTail` 内部仍按 id 分流**——这是尚未消掉的一处偏差，写在函数头注释里：
+Swift 侧那一个 `detect(lines:)` **按内容**同时吃 claude 与 codex 两种形状，
+Rust 侧是三个独立解析器；合成一个内容驱动的检测器是独立一块，见对照表 §3.2。
+这一版先让**档案里的声明**成为入口，那才是 ADR 0010 要的形状。
+
+测试 Rust 373 → **377**（+4 方言边界），编译警告保持 **17**，Swift 侧零改动。
+
 ## [0.0.212] - 2026-09-28
 
 ### 「读不到」终于带上了理由：对照表 §4.1 那一栏清空

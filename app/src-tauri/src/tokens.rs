@@ -979,6 +979,7 @@ mod tests {
             session_dirs: vec![],
             token_roots: vec![root.to_string()],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         }
@@ -1369,6 +1370,7 @@ mod tests {
             session_dirs: vec![],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: Some(crate::models::SessionDatabase {
                 path: path.clone(),
                 schema: SessionSchema::OpenCode,
@@ -1416,6 +1418,7 @@ mod tests {
             session_dirs: vec![],
             token_roots: vec![dir.to_string_lossy().to_string()],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         };
@@ -1448,6 +1451,7 @@ mod tests {
             session_dirs: vec![],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: Some(crate::models::SessionDatabase {
                 path: path.clone(),
                 schema: SessionSchema::StatusIndex,
@@ -1522,6 +1526,7 @@ mod range_tests {
             session_dirs: vec![],
             token_roots: vec![dir.to_string_lossy().to_string()],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         };
@@ -1564,6 +1569,7 @@ mod range_tests {
             session_dirs: vec![],
             token_roots: vec!["/nonexistent/agentisland-range".into()],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         };

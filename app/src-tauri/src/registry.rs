@@ -1,4 +1,4 @@
-use crate::models::{AgentProfile, SessionDatabase, SessionSchema};
+use crate::models::{AgentProfile, SessionDatabase, SessionDialect, SessionSchema};
 
 /// Agent 注册表：内置集（按平台路径）。与 macOS AgentRegistry 同构；
 /// 新增复用既有方言的 Agent 只改这里。
@@ -42,6 +42,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // （与 Swift 档案逐字段一致）
             token_roots: vec![p(&[".dimcode", "v2", "data", "sessions"])],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: Some(SessionDatabase {
                 path: p(&[".dimcode", "v2", "dimcode.sqlite"]),
                 schema: SessionSchema::DimTasks,
@@ -63,6 +64,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".zcode", "cli", "rollout"])],
             token_roots: vec![p(&[".zcode", "cli", "rollout"])],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: Some(SessionDatabase { path: p(&[".zcode", "v2", "tasks-index.sqlite"]), schema: SessionSchema::StatusIndex }),
             category: "assistant".into(),
         },
@@ -80,6 +82,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".claude", "projects"]), p(&[".claude", "sessions"])],
             token_roots: vec![p(&[".claude", "sessions"]), p(&[".claude", "projects"])],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -97,6 +100,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".codex", "sessions"])],
             token_roots: vec![p(&[".codex", "sessions"])],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -114,6 +118,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![a(&["Cursor", "User", "workspaceStorage"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -131,6 +136,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![a(&["Code", "User", "workspaceStorage"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -148,6 +154,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![a(&["Code", "User", "globalStorage", "saoudrizwan.claude-dev", "tasks"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::ClineTasks,
             session_database: None,
             category: "assistant".into(),
         },
@@ -165,6 +172,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![a(&["Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "tasks"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::ClineTasks,
             session_database: None,
             category: "assistant".into(),
         },
@@ -184,6 +192,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // （message.data 的 JSON），JSONL 侧没有可用计数。用量走 session_database。
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: Some(SessionDatabase { path: p(&[".local", "share", "opencode", "opencode.db"]), schema: SessionSchema::OpenCode }),
             category: "assistant".into(),
         },
@@ -206,6 +215,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 与 OpenCode 同表形（session / message / part），复用同一方言
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: Some(SessionDatabase {
                 path: p(&[".local", "share", "mimocode", "mimocode.db"]),
                 schema: SessionSchema::OpenCode,
@@ -226,6 +236,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".config", "goose", "sessions"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -243,6 +254,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".aider"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -260,6 +272,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".codeium", "windsurf"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -277,6 +290,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![a(&["Trae", "User", "workspaceStorage"]), a(&["Trae CN", "User", "workspaceStorage"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -306,6 +320,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 接上采集只会多花 1~1.9s 换 0 条数据——那是「编一个看起来正常的零」。
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::QoderTranscript,
             session_database: None,
             category: "assistant".into(),
         },
@@ -323,6 +338,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&["Library", "Application Support", "com.tencent.imamac"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -348,6 +364,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 专家团保护下限：日常 3-5 专家并行的高消耗不该误报，
             // 而超大规模死循环（远高于此）依然能熔断
             token_alert_floor: Some(WORKBUDDY_TOKEN_FLOOR),
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -370,6 +387,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             // 专家团保护下限：日常 3-5 专家并行的高消耗不该误报，
             // 而超大规模死循环（远高于此）依然能熔断
             token_alert_floor: Some(WORKBUDDY_TOKEN_FLOOR),
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -393,6 +411,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             ],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::AntigravityBrain,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -410,6 +429,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".hermes", "sessions"]), p(&[".hermes", "logs"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -427,6 +447,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".continue"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "codeEditor".into(),
         },
@@ -444,6 +465,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&["Library", "Application Support", "com.openai.codex"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -466,6 +488,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             ],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::DshProjection,
             session_database: None,
             category: "assistant".into(),
         },
@@ -486,6 +509,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             ],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -506,6 +530,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             ],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -531,6 +556,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             session_dirs: vec![p(&[".openviking"])],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -776,5 +802,87 @@ mod parity {
             !qoder.session_dirs.is_empty(),
             "但会话目录是真的：那是它的工作信号来源"
         );
+    }
+}
+
+/// **方言声明与解析器落地是两份清单**，这里把它们钉在一起。
+///
+/// 为什么要有这条：档案里已经如实声明了 `antigravityBrain` / `dshProjection` /
+/// `qoderTranscript`，而这三个解析器**还没迁**。分派遇到它们会如实返回无信号——
+/// 这是对的（不拿猜的解析器顶上去）。但「已声明」与「已实现」一旦各写各的注释，
+/// 就会在某个时候悄悄脱节，让人以为那条路径通了。
+///
+/// 所以这里把**没实现的方言**逐个列出：每补一个解析器就从这里移走一条，
+/// 名单空了这条断言自动收紧成「全部已实现」。
+#[cfg(test)]
+mod dialect_declaration {
+    use super::*;
+    use crate::models::SessionDialect as D;
+    use crate::session::DIALECTS_WITH_PARSER;
+
+    #[test]
+    fn the_five_agents_that_share_a_format_declare_it_rather_than_being_special_cased() {
+        // 与 macOS 侧 `sessionDialect:` 的五处声明逐条对齐
+        let expected = [
+            ("qoder", D::QoderTranscript),
+            ("antigravity", D::AntigravityBrain),
+            ("dsh", D::DshProjection),
+            // Cline 与 Roo Code 同源——这正是「按格式分派」要解决的那一对
+            ("cline", D::ClineTasks),
+            ("roo-code", D::ClineTasks),
+        ];
+        for (id, dialect) in expected {
+            let profile = builtin().into_iter().find(|p| p.id == id).expect("档案应当在");
+            assert_eq!(
+                profile.session_dialect,
+                dialect,
+                "{id} 的方言声明与 macOS 端不一致"
+            );
+        }
+    }
+
+    #[test]
+    fn the_three_dialects_without_a_parser_are_listed_explicitly() {
+        let declared_without_parser: Vec<String> = [
+            D::AntigravityBrain,
+            D::DshProjection,
+            D::QoderTranscript,
+        ]
+        .into_iter()
+        .filter(|d| !DIALECTS_WITH_PARSER.contains(d))
+        .map(|d| format!("{d:?}"))
+        .collect();
+        assert_eq!(
+            declared_without_parser.len(),
+            3,
+            "「已声明但尚无解析器」的方言数变了：{declared_without_parser:?}——\
+             补了解析器就把它从 DIALECTS_WITH_PARSER 移进来、并在这里删掉"
+        );
+    }
+
+    /// 档案声明了、而分派又不认的方言，**必须落在「无信号」那一档**。
+    ///
+    /// 拿猜的解析器顶上去的后果：Qoder 的文件是 Anthropic 兼容逐行格式，
+    /// 喂给 `probe_claude` 大概率能解析出东西——于是**读出来了、但结论是错的**，
+    /// 比读不到更糟。
+    #[test]
+    fn a_dialect_without_a_parser_yields_no_signal_rather_than_a_guessed_one() {
+        use crate::session::probe_dialect;
+        for dialect in [D::AntigravityBrain, D::DshProjection, D::QoderTranscript] {
+            let probe = probe_dialect("claude", dialect, "/nonexistent/session.jsonl");
+            assert!(
+                probe.signal.is_none(),
+                "{dialect:?} 没有解析器，却报出了信号 {:?}",
+                probe.signal
+            );
+        }
+    }
+
+    /// 反过来：`GenericTail` 与 `ClineTasks` 是**有**解析器的。
+    #[test]
+    fn the_two_implemented_dialects_are_the_ones_on_the_list() {
+        assert!(DIALECTS_WITH_PARSER.contains(&D::GenericTail));
+        assert!(DIALECTS_WITH_PARSER.contains(&D::ClineTasks));
+        assert!(!DIALECTS_WITH_PARSER.contains(&D::QoderTranscript));
     }
 }

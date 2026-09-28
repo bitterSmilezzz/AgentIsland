@@ -128,6 +128,27 @@ pub enum SessionSchema {
     OpenCode,
 }
 
+/// 会话记录的存放**格式**。
+///
+/// 与 macOS 侧 `AgentSessionDialect` 同名同值。分派按**格式**而不是按 agent id：
+/// 格式数量远少于 Agent 数量（Cline 与 Roo Code 同源、WorkBuddy 两版同 schema），
+/// 新增一个复用既有格式的 Agent 时只改档案，不必再动解析器里的 id 梯子。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionDialect {
+    /// 通用 JSONL/文本尾部（活动文件 + 有界尾读）
+    #[default]
+    GenericTail,
+    /// Antigravity：`brain/<session>/…/transcript.jsonl` + 同名 tasks 目录
+    AntigravityBrain,
+    /// DSH：`session_projcache/sessions/<id>.json` 投影缓存
+    DshProjection,
+    /// Cline / Roo Code：`tasks/<taskId>/ui_messages.json`（**一个跨行 JSON 数组**）
+    ClineTasks,
+    /// Qoder：`~/.qoder/projects/<slug>/<uuid>.jsonl`（Anthropic 兼容逐行）
+    QoderTranscript,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {
     pub id: String,
@@ -167,6 +188,9 @@ pub struct AgentProfile {
     /// `None` = 不设下限，走全局阈值（绝大多数档案如此）。
     #[serde(default)]
     pub token_alert_floor: Option<i64>,
+    /// 该档案的会话语义**格式**（见 [`SessionDialect`]）。默认 `genericTail`。
+    #[serde(default)]
+    pub session_dialect: SessionDialect,
     /// 会话 / 明细库。**库路径只在这一处声明**——别处再写一遍字面量，
     /// 档案换目录或改名以后只有一半会生效（`dimcode.sqlite` 与 WorkBuddy 的
     /// `projects/` 上各踩过一次，见 ADR 0004）。

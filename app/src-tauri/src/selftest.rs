@@ -442,6 +442,7 @@ pub fn run() -> Report {
             session_dirs: vec![],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         };

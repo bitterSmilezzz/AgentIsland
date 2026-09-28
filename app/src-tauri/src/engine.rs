@@ -177,7 +177,7 @@ impl ActivityEngine {
                 .filemon
                 .probe(&profile, self.settings.active_session_window);
             let candidates = self.filemon.probe_files(&profile);
-            let probe = self.probe_cached_multi(&profile.id, &candidates);
+            let probe = self.probe_cached_multi(&profile.id, profile.session_dialect, &candidates);
             let level = self.decide_level(
                 &profile,
                 now,
@@ -751,6 +751,7 @@ impl ActivityEngine {
     fn probe_cached_multi(
         &mut self,
         profile_id: &str,
+        dialect: crate::models::SessionDialect,
         paths: &[String],
     ) -> session::SessionProbe {
         for path in paths {
@@ -774,7 +775,7 @@ impl ActivityEngine {
                     continue;
                 }
             }
-            let probe = session::probe(profile_id, path);
+            let probe = session::probe_dialect(profile_id, dialect, path);
             let signal = probe.signal.clone();
             let sc = probe.subagent_count;
             if self.probe_cache.len() > 200 {
@@ -836,6 +837,7 @@ impl ActivityEngine {
             session_dirs: vec![],
             token_roots: vec![],
             token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         };

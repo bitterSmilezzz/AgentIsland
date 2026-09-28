@@ -87,7 +87,37 @@ pub enum Signal {
 
 /// 会话尾部强语义解析（genericTail 方言族）。
 /// 只读尾部有界字节；解析失败返回无信号，绝不谎报待机。
-pub fn probe(profile_id: &str, path: &str) -> SessionProbe {
+/// **已经有解析器的方言**。
+///
+/// 摆成常量而不是写在注释里，是因为注释会与现实悄悄脱节：三种方言的解析器
+/// 还没迁（`antigravityBrain` / `dshProjection` / `qoderTranscript`，
+/// 各自都要带会话定位与缓存，见对照表 §3.2），而**档案里已经如实声明了它们**。
+/// 声明与「有解析器」分开记，就是为了让「声明了但还没实现」有一处可查，
+/// 而不是让人以为那条路径已经通了。
+pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 2] = [
+    crate::models::SessionDialect::GenericTail,
+    crate::models::SessionDialect::ClineTasks,
+];
+
+/// 方言分派。
+///
+/// ⚠️ `GenericTail` 内部**仍按 id 分流**——这是尚未消掉的一处偏差：
+/// Swift 侧那一个 `detect(lines:)` **按内容**同时吃 claude 与 codex 两种形状，
+/// 而 Rust 侧是三个独立解析器；合成一个内容驱动的检测器是独立一块。
+/// 这一版先让**档案里的声明**成为分派入口，那才是 ADR 0010 要的形状。
+pub fn probe_dialect(
+    profile_id: &str,
+    dialect: crate::models::SessionDialect,
+    path: &str,
+) -> SessionProbe {
+    if !DIALECTS_WITH_PARSER.contains(&dialect) {
+        // 已声明、尚无解析器：如实无信号，**不拿猜的解析器顶上去**
+        return SessionProbe::default();
+    }
+    probe_by_id(profile_id, path)
+}
+
+fn probe_by_id(profile_id: &str, path: &str) -> SessionProbe {
     // 「读不到」**必须**留下理由：此前这里把每种失败都塌成「无信号」，
     // 于是界面上「会话源读不到」与「这个 Agent 真没在忙」完全一样
     let lines = match read_tail_lines(path) {
@@ -670,7 +700,7 @@ mod health_chain {
     fn an_unreadable_file_carries_a_reason_and_an_empty_one_does_not() {
         // ① 文件在，但内容解析不出任何东西 ⇒ 「读到了、但没信号」：**没有**理由
         let sandbox = write(&[r#"{"type":"user","content":"hi"}"#]);
-        let ok = probe("claude", sandbox.path().join("s.jsonl").to_str().unwrap());
+        let ok = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap());
         assert!(ok.signal.is_none());
         assert!(
             ok.health.is_none(),
@@ -680,7 +710,7 @@ mod health_chain {
         // ② 文件读不出来（这里用「路径是目录」构造）⇒ **有**理由
         let dir_sandbox = crate::testutil::Sandbox::new("healthdir");
         std::fs::create_dir_all(dir_sandbox.path().join("s.jsonl")).unwrap();
-        let broken = probe("claude", dir_sandbox.path().join("s.jsonl").to_str().unwrap());
+        let broken = probe_dialect("claude", crate::models::SessionDialect::GenericTail, dir_sandbox.path().join("s.jsonl").to_str().unwrap());
         assert!(broken.signal.is_none());
         let health = broken.health.expect("读不到就必须留下理由");
         assert_eq!(health.failure, SessionProbeFailure::UnreadableFile);
@@ -697,7 +727,7 @@ mod health_chain {
     #[test]
     fn a_window_with_no_parseable_line_is_reported_as_undecodable() {
         let sandbox = write(&["这不是 JSON", "这也不是"]);
-        let probe = probe("claude", sandbox.path().join("s.jsonl").to_str().unwrap());
+        let probe = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap());
         let health = probe.health.expect("读不懂就必须留下理由");
         assert_eq!(health.failure, SessionProbeFailure::UndecodableFile);
         assert!(health.diagnostic_text().contains("格式与解析器不匹配"));
@@ -718,7 +748,7 @@ mod health_chain {
             "[\n  {\n    \"type\": \"ask\", \"ask\": \"command\", \"text\": \"ls\"\n  }\n]",
         )
         .unwrap();
-        let probe = probe("cline", path.to_str().unwrap());
+        let probe = probe_dialect("cline", crate::models::SessionDialect::GenericTail, path.to_str().unwrap());
         assert!(
             probe.health.is_none(),
             "跨行数组不是「读不懂」：{:?}",
