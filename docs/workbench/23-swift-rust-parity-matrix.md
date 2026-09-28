@@ -459,7 +459,7 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
    - **按「被测的对外函数」对照**（客观、可复跑）：
      扫 `app/src-tauri/src/**/*.rs` 里所有 `pub fn`，沿调用图做闭包
      （被用例直接调到、或被「被用例调到的东西」调用 ⇒ 算覆盖）⇒
-     **13 个 `pub fn` 真的没有任何用例覆盖**。
+     **13 个 `pub fn` 真的没有任何用例覆盖**（v0.0.226 已补掉 5 个，剩 8 个）。
      ⚠️ **v0.0.224 初版写的是 29 个，是错的**——那版只按「名字在测试代码里出现过」
      判定，于是 `selfreport::is_believable`、`provider::plan_codex_apply`、
      `filemon::probe_files`、`remote::contains_placeholder`、
@@ -474,13 +474,22 @@ settings 全部字段与钳制区间、CLI 子命令清单、模块文件清单�
      | `power::is_screen_locked` | **恒为 `false` 这个取舍没人守**——而那段手写 FFI 曾 SIGSEGV，任何一次「顺手优化」都会把它请回来 | ✅ v0.0.225（连带 `idle_seconds` 不得返回假的 0） |
      | `observability::has_local_detail_source` | 它是**关于证据的断言**，会出现在「结论可信吗」那句话里 | ✅ v0.0.225 |
 
-   - **剩下 11 个**（本轮没补，按后果排序）：
-     `session::for_each_line`（尾读；也是一条编译警告的来源）、
-     `tokens::parse_iso_ms_pub`（ISO 时间戳解析，喂 `probe_zcode` 的新鲜度判定）、
-     `webhook::webhook_uuid`（id 生成，v0.0.223 刚换过熵源）、
-     `budget::{is_exceeded, reset}`、`models::{duration_text, summary}`、
-     `placement::{place, work_area_at, work_area_under_cursor}`、
-     `procmon::{core_count, all_names}`。
+   - 本轮（v0.0.226）又补掉四个，并把清单从 13 降到 **8**：
+
+     | 函数 | 为什么值得有用例 |
+     | :--- | :--- |
+     | `tokens::parse_iso_ms` | 喂**新鲜度判定**——算错不是数字难看，是几小时前的会话被判成正在活动。含闰年 / 世纪闰年 / 月末的换算 |
+     | `session::for_each_line` | 它**没有任何调用方**，`for_each_complete_line` 已取代它 ⇒ **v0.0.226 删掉了**（`never used` 警告的来源，也是「这里有两个读法」的选择题） |
+     | `webhook::webhook_uuid` | v0.0.223 刚把熵源从时钟换成 `/dev/urandom`；「两次取值不同」是那次改动**唯一**能自动证明的部分 |
+     | `budget::{is_exceeded, reset}` | `is_exceeded` 是唯一驱动「要不要发告警」的判据，而它此前的覆盖全来自 `evaluate` 的返回值比对——**把方法本身改成恒 `true` 也能让那些用例全绿** |
+
+   - **剩下 8 个**（本轮没补）：
+     `models::{duration_text, summary}`（排版）、
+     `placement::{place, work_area_at, work_area_under_cursor}`（窗口定位）、
+     `procmon::{core_count, all_names}`（诊断用）、
+     `observability::has_unreadable_source`（判定「读不到」，与已补的
+     `has_local_detail_source` 成对——补了后者没补前者是**半截**，
+     下轮优先）。
 
    - **`power.rs` 那条已处理**（见上表）。它原先被列为「7 个零覆盖」是误计：
      其中三个是 `extern` 声明（不是函数）、两个是 `#[cfg]` 两分支的同名函数，

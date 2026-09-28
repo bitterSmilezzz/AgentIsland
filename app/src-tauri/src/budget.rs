@@ -282,3 +282,50 @@ mod tests {
         );
     }
 }
+
+/// `is_exceeded` 是**唯一**驱动「要不要发告警」的判据，
+/// 而它此前的覆盖只来自 `evaluate` 的返回值比对——也就是说
+/// 「这个方法本身对不对」从没被单独问过。改成一个恒为 `true` 的实现
+/// 也能让那些用例全绿。
+#[cfg(test)]
+mod status_predicate_tests {
+    use super::*;
+
+    fn status(kind: BudgetStatus) -> BudgetStatus {
+        kind
+    }
+
+    #[test]
+    fn only_the_exceeded_level_counts_as_exceeded() {
+        assert!(BudgetStatus::Exceeded { used: 101, budget: 100, ratio: 1.01 }.is_exceeded());
+        // 预警**不是**超限：80% 那一档要发的是预警而不是「已超」
+        assert!(!BudgetStatus::Warning { used: 85, budget: 100, ratio: 0.85 }.is_exceeded());
+        assert!(!BudgetStatus::Normal { used: 10, budget: 100, ratio: 0.1 }.is_exceeded());
+        assert!(!BudgetStatus::Disabled.is_exceeded(), "没设预算时不谈超限");
+        let _ = status;
+    }
+
+    /// `reset` 清的是**级别记忆**，不是预算数字。
+    ///
+    /// 不清的后果写在那条函数的注释里：用户刚设上预算的那一刻会莫名报一次旧级别。
+    /// 而如果它顺手把 `used` 也清零，下一次 `evaluate` 就会凭空说「你只用了 0」。
+    #[test]
+    fn reset_clears_the_level_memory_so_a_freshly_set_budget_does_not_replay_an_old_alert() {
+        let mut tracker = BudgetTracker::new();
+        let (state, alert) = tracker.evaluate(200, 100, 0);
+        assert!(state.is_exceeded());
+        assert!(alert.is_some(), "第一次越线要报");
+        assert_eq!(tracker.level_for_test(), 2);
+
+        // 同一级别不重复报
+        let (_, again) = tracker.evaluate(201, 100, 1);
+        assert!(again.is_none(), "同一级别不该连着报第二次");
+
+        tracker.reset();
+        assert_eq!(tracker.level_for_test(), 0, "reset 之后级别记忆归零");
+        // 数字没被动过：仍在越线，所以仍报得出来
+        let (state, alert) = tracker.evaluate(200, 100, 2);
+        assert!(state.is_exceeded());
+        assert!(alert.is_some(), "reset 之后应当允许再报一次");
+    }
+}

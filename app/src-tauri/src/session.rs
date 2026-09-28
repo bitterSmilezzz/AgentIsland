@@ -938,31 +938,17 @@ fn probe_zcode(lines: &[String], path: &str) -> SessionProbe {
 
 // MARK: 供 Token 监控复用的按行读取
 
-pub fn for_each_line<F: FnMut(&str)>(path: &Path, start_offset: u64, mut f: F) -> Option<u64> {
-    use std::io::BufRead;
-    let mut file = File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    if len < start_offset {
-        file.seek(SeekFrom::Start(0)).ok()?;
-    } else {
-        file.seek(SeekFrom::Start(start_offset)).ok()?;
-    }
-    let reader = std::io::BufReader::new(file);
-    for line in reader.lines() {
-        match line {
-            Ok(l) => f(&l),
-            Err(_) => break,
-        }
-    }
-    Some(len)
-}
-
 /// 按行读取，**只承认到最后一条完整行**，并回吐 `(真正承认到的字节数, 文件是否以换行结尾)`。
 ///
-/// 与 `for_each_line` 的差别是刻意的，不是重复实现：
-/// 会话尾读每轮重读尾部窗口，末尾半行解析失败也无所谓；而 token 明细是**续读游标**——
-/// 一旦把半个 JSON 行承认下来并前进游标，那条记录下一次就再也读不回来了
-/// （下一次从更后面开始）。所以这里宁可停在上一个换行处，等它写完再读。
+/// **为什么不能图省事写成「逐行读完就算」**：会话尾读每轮重读尾部窗口，
+/// 末尾半行解析失败也无所谓；而 token 明细是**续读游标**——一旦把半个 JSON 行
+/// 承认下来并前进游标，那条记录下一次就再也读不回来了（下一次从更后面开始）。
+/// 所以这里宁可停在上一个换行处，等它写完再读。
+///
+/// 此前这里还有一个更简单的 `for_each_line`（逐行读完、返回文件长度）。
+/// 它**没有任何调用方**，`for_each_complete_line` 取代了它——留着它只多出一条
+/// 编译警告（`never used`）与一个「这里有两个读法」的选择题。**没有产生点的
+/// 公开函数就是纸面**，删掉比留着让人猜好。
 pub fn for_each_complete_line<F: FnMut(&str)>(
     path: &Path,
     start_offset: u64,

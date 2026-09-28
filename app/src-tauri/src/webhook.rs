@@ -926,3 +926,32 @@ mod token_tests {
         token
     }
 }
+
+/// `webhook_uuid` 换过熵源（v0.0.223：时钟播种 ⇒ `/dev/urandom`），
+/// 所以「两次取值不同」这件事值得单独钉住——
+/// 它是那次改动**唯一**能被自动证明的部分。
+#[cfg(test)]
+mod uuid_tests {
+    use super::*;
+
+    #[test]
+    fn two_calls_do_not_collide() {
+        let a = webhook_uuid();
+        let b = webhook_uuid();
+        assert_ne!(a, b, "连着取两次撞了 ⇒ 熵源没有生效（时钟播种的两个相邻值极可能相同）");
+        assert_eq!(a.len(), b.len());
+    }
+
+    /// 形状稳定：日志与「按 id 查事件」都依赖它。
+    #[test]
+    fn the_shape_is_stable() {
+        let id = webhook_uuid();
+        assert!(id.contains('-'), "应当保留分段：{id}");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+            "只该有小写十六进制与连字符：{id}"
+        );
+        // 两次形状一致 ⇒ 分段数不变
+        assert_eq!(id.matches('-').count(), webhook_uuid().matches('-').count());
+    }
+}

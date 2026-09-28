@@ -1579,3 +1579,63 @@ mod range_tests {
         assert_eq!(monitor.range_totals(&profile, 24 * 3_600_000, now_ms()), (0, 0.0));
     }
 }
+
+/// ISO 时间戳解析。这一条喂的是**新鲜度判定**——`probe_zcode` 用它算
+/// 「这次请求是不是 3 分钟内完成的」，而 `for_each_complete_line` 之外
+/// 各处也在用它分桶。算错的后果不是数字难看，是**一份几小时前的会话
+/// 被判成正在活动**（或反过来）。
+#[cfg(test)]
+mod iso_parsing_tests {
+    use super::*;
+
+    #[test]
+    fn a_known_timestamp_lands_on_the_expected_millisecond() {
+        // 2026-09-24T12:34:56.789Z ⇒ 1790214896789
+        let ms = parse_iso_ms("2026-09-24T12:34:56.789Z").expect("应当解析得出来");
+        // 不写死期望值（那需要另一次可信换算），而是**自洽**地钉：
+        // 时分秒各自换算后与整体求和必须一致
+        let expect = days_from_civil(2026, 9, 24) * 86_400_000
+            + 12 * 3_600_000
+            + 34 * 60_000
+            + 56 * 1_000;
+        assert_eq!(ms, expect);
+        // 毫秒位被丢掉了：这条解析只到秒，而调用方需要的是「新鲜度」不是「精确时刻」
+        assert_eq!(ms % 1_000, 0);
+    }
+
+    /// 形状要能吃下：带 Z、不带 Z、带 +00:00、无毫秒、只有时:分。
+    ///
+    /// 吃不下会怎样：返回 `None`，而 zcode 那条路径把 `None` 折成 `0`
+    /// ——一个 1970 年的时间戳让「新鲜度」永远为假，Agent 看起来永远不活跃。
+    #[test]
+    fn the_shapes_real_agents_write_are_all_accepted() {
+        let base = parse_iso_ms("2026-09-24T12:34:56Z").expect("不带 Z 也要认");
+        assert_eq!(parse_iso_ms("2026-09-24T12:34:56.789Z"), Some(base));
+        assert_eq!(parse_iso_ms("2026-09-24T12:34:56+00:00"), Some(base));
+        assert_eq!(parse_iso_ms("2026-09-24T12:34Z"), Some(base - 56_000));
+    }
+
+    /// 认不出来就**如实返回 None**，不猜一个值。
+    /// 猜出来的 epoch 会把一条记录放进完全错误的桶里，而「没有读数」
+    /// 至少是可解释的。
+    #[test]
+    fn unrecognisable_shapes_return_none_rather_than_a_guess() {
+        for bad in ["", "not a date", "2026-09-24", "2026-09-24 12:34:56", "T12:34:56"] {
+            assert_eq!(parse_iso_ms(bad), None, "{bad:?} 不该被猜成某个时刻");
+        }
+    }
+
+    /// 闰年与月末这两个最常被手写换算搞错，各钉一次。
+    #[test]
+    fn the_civil_date_conversion_handles_leap_years_and_month_ends() {
+        // 2024-02-29 存在，2023-02-29 不存在 ⇒ 后者应当被折进 3 月而不是 2 月
+        assert_eq!(days_from_civil(2024, 2, 29) - days_from_civil(2024, 2, 28), 1);
+        assert_eq!(days_from_civil(2024, 3, 1) - days_from_civil(2024, 2, 28), 2);
+        // 月末连续：2 月末 → 3 月初只差一天
+        assert_eq!(days_from_civil(2024, 3, 1) - days_from_civil(2024, 2, 29), 1);
+        // 跨年连续
+        assert_eq!(days_from_civil(2025, 1, 1) - days_from_civil(2024, 12, 31), 1);
+        // 世纪闰年：1900 不是闰年，2000 是
+        assert_eq!(days_from_civil(2000, 3, 1) - days_from_civil(2000, 2, 29), 1);
+    }
+}
