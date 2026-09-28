@@ -214,6 +214,15 @@ impl LocalEventServer {
                 let method = request.method().clone();
                 let url = request.url().to_string();
                 let path = url.split('?').next().unwrap_or("/").to_string();
+                // **每收到一个请求都记一行。**
+                //
+                // 这条不是为了排查服务本身，而是为了给「webview 里的 JS 到底跑没跑」
+                // 提供一个**不经过 Tauri IPC** 的观测点：`log_from_ui` 走的是
+                // `__TAURI__.core.invoke`，而 invoke 正是可能失败的那一环，
+                // 用它证明「JS 跑过」是循环论证。走 HTTP 就完全独立了——
+                // 探针页 fetch 一下本机端口，这里就会留下一行。
+                crate::log_line(&format!("[http] 收到 {method} {path}"));
+
                 let token_header = request
                     .headers()
                     .iter()

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>P0-boot</title>
+<style>
+  body { margin: 0; font: 600 34px/1.5 -apple-system, system-ui, sans-serif;
+         background: #101216; color: #7ee787; }
+  #r { padding: 20px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="r">探针已加载（HTML 生效）</div>
+<script>
+  // 这是一个**不依赖任何模块**的探针页：它只用内联脚本。
+  // 目的：把「页面有没有被导航」与「模块图有没有跑起来」分开——
+  // 之前这两件事混在一起，而我从外面看到的现象（空白）同时符合两者。
+  const r = document.getElementById('r');
+  const lines = [];
+  const set = (t) => { document.title = t; lines.push(t); r.textContent = lines.join('\n'); };
+  set('P0-html-ok');
+  // ① 页面真的被导航了吗？——能执行到这里就说明是
+  console.log('probe: booted');
+  // ② Tauri 的全局 API 在不在
+  const hasTauri = !!(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+  set('P1-tauri-' + (hasTauri ? 'yes' : 'no'));
+  // ③ 主模块图能不能跑起来
+  import('./js/main.js')
+    .then(() => set('P2-main-OK'))
+    .catch((error) => set('P2-main-FAIL ' + ((error && error.message) || String(error))));
+  // ④ **独立于 Tauri IPC** 的存活信号：打一下本机 HTTP 端口。
+  //    Rust 侧每收到一个请求就记一行 `[http]`，所以这一行出现在日志里
+  //    就等于「这段 JS 确实跑过了」——而 invoke 失败时什么也证明不了。
+  fetch('http://127.0.0.1:42000/__probe__', { mode: 'no-cors' })
+    .then(() => set('P3-fetch-OK'))
+    .catch((error) => set('P3-fetch-FAIL ' + ((error && error.message) || String(error))));
+</script>
+</body>
+</html>

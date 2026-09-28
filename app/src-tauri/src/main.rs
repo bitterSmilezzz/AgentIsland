@@ -1315,10 +1315,15 @@ fn main() {
             log_line(&format!("[boot] 建出的窗口：{labels:?}"));
             for label in &labels {
                 if let Some(w) = app.get_webview_window(label) {
+                    // **尺寸与位置也要记**：配置里 island 是 372×520，
+                    // 而实测到的是 0×0 —— 「窗口建出来」和「窗口按配置摆好」是两件事，
+                    // 只记 url 与 visible 看不见后者。
                     log_line(&format!(
-                        "[boot] {label} url={:?} visible={}",
+                        "[boot] {label} url={:?} visible={} size={:?} pos={:?}",
                         w.url(),
-                        w.is_visible().unwrap_or(false)
+                        w.is_visible().unwrap_or(false),
+                        w.outer_size(),
+                        w.outer_position()
                     ));
                 }
             }

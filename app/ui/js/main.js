@@ -155,6 +155,13 @@ export async function resizeToContent() {
 // MARK: 启动
 
 async function boot() {
+  // **先等 Tauri 的全局 API 就绪**，再动任何 invoke（理由见 tauri.js 的注释）。
+  const { waitForTauri } = await import('./tauri.js');
+  const gate = await waitForTauri();
+  invoke('log_from_ui', {
+    message: `Tauri API ${gate.ready ? '就绪' : '**未就绪**'}（等了 ${gate.waitedMs}ms）`,
+  }).catch(() => {});
+
   const boot = await invoke('get_boot_args').catch(() => ({ demo: false, expand: false, route: '' }));
   state.demo = !!boot.demo;
   state.bootRoute = boot.route || '';
