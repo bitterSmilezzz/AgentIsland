@@ -842,18 +842,15 @@ mod dialect_declaration {
     }
 
     #[test]
-    fn the_two_dialects_without_a_parser_are_listed_explicitly() {
-        let declared_without_parser: Vec<String> = [
-            D::AntigravityBrain,
-            D::DshProjection,
-        ]
-        .into_iter()
-        .filter(|d| !DIALECTS_WITH_PARSER.contains(d))
-        .map(|d| format!("{d:?}"))
-        .collect();
+    fn the_one_dialect_without_a_parser_is_listed_explicitly() {
+        let declared_without_parser: Vec<String> = [D::AntigravityBrain]
+            .into_iter()
+            .filter(|d| !DIALECTS_WITH_PARSER.contains(d))
+            .map(|d| format!("{d:?}"))
+            .collect();
         assert_eq!(
             declared_without_parser,
-            vec!["AntigravityBrain".to_string(), "DshProjection".to_string()],
+            vec!["AntigravityBrain".to_string()],
             "「已声明但尚无解析器」的清单变了：{declared_without_parser:?}——\
              补了解析器就把它从 DIALECTS_WITH_PARSER 移进来、并在这里删掉"
         );
@@ -867,7 +864,7 @@ mod dialect_declaration {
     #[test]
     fn a_dialect_without_a_parser_yields_no_signal_rather_than_a_guessed_one() {
         use crate::session::probe_dialect;
-        for dialect in [D::AntigravityBrain, D::DshProjection] {
+        for dialect in [D::AntigravityBrain] {
             let probe = probe_dialect("claude", dialect, "/nonexistent/session.jsonl");
             assert!(
                 probe.signal.is_none(),
@@ -886,7 +883,7 @@ mod dialect_declaration {
         assert!(DIALECTS_WITH_PARSER.contains(&D::GenericTail));
         assert!(DIALECTS_WITH_PARSER.contains(&D::ClineTasks));
         assert!(DIALECTS_WITH_PARSER.contains(&D::QoderTranscript));
+        assert!(DIALECTS_WITH_PARSER.contains(&D::DshProjection));
         assert!(!DIALECTS_WITH_PARSER.contains(&D::AntigravityBrain));
-        assert!(!DIALECTS_WITH_PARSER.contains(&D::DshProjection));
     }
 }

@@ -94,10 +94,11 @@ pub enum Signal {
 /// 各自都要带会话定位与缓存，见对照表 §3.2），而**档案里已经如实声明了它们**。
 /// 声明与「有解析器」分开记，就是为了让「声明了但还没实现」有一处可查，
 /// 而不是让人以为那条路径已经通了。
-pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 3] = [
+pub const DIALECTS_WITH_PARSER: [crate::models::SessionDialect; 4] = [
     crate::models::SessionDialect::GenericTail,
     crate::models::SessionDialect::ClineTasks,
     crate::models::SessionDialect::QoderTranscript,
+    crate::models::SessionDialect::DshProjection,
 ];
 
 /// 方言分派。
@@ -111,8 +112,14 @@ pub fn probe_dialect(
     dialect: crate::models::SessionDialect,
     path: &str,
 ) -> SessionProbe {
-    if dialect == crate::models::SessionDialect::QoderTranscript {
-        return probe_qoder_dialect(profile_id, path);
+    match dialect {
+        crate::models::SessionDialect::QoderTranscript => {
+            return probe_qoder_dialect(profile_id, path);
+        }
+        crate::models::SessionDialect::DshProjection => {
+            return probe_dsh_dialect(path);
+        }
+        _ => {}
     }
     if !DIALECTS_WITH_PARSER.contains(&dialect) {
         // 已声明、尚无解析器：如实无信号，**不拿猜的解析器顶上去**
@@ -152,6 +159,25 @@ fn probe_qoder_dialect(_profile_id: &str, path: &str) -> SessionProbe {
             }),
         },
     }
+}
+
+/// DSH 那一族要**定位**投影文件，而不是尾读——投影目录实测有 500+ 会话文件，
+/// 一趟 stat 约 15ms，每拍在主线程上重走不现实。
+///
+/// 这里走 `filemon` 已经定位好的候选（`session_dirs` 下按 mtime 排过序），
+/// 取**最新的那个 `.json`**；定位不到就如实无信号。
+fn probe_dsh_dialect(path: &str) -> SessionProbe {
+    let file = std::path::Path::new(path);
+    if file.extension().and_then(|e| e.to_str()) != Some("json") {
+        return SessionProbe::default();
+    }
+    let age = std::fs::metadata(file)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    probe_dsh(path, age)
 }
 
 fn probe_by_id(profile_id: &str, path: &str) -> SessionProbe {
@@ -1265,5 +1291,267 @@ mod qoder_tests {
         // 没有线索时也要给一句话，不能是空的
         assert_eq!(qoder_action_text("Bash", ""), "执行终端命令");
         assert_eq!(qoder_action_text("Whatever", ""), "正在执行 whatever");
+    }
+}
+
+// MARK: - DSH 方言（`session_projcache/sessions/<id>.json` 投影缓存）
+
+/// 活跃保护期：文件 30 分钟内有更新就算「还在跑」。
+///
+/// 为什么是 30 分钟而完成态是 15 分钟：活跃期覆盖的是「投影缓存还在刷新」，
+/// 完成后投影不再更新，所以活跃窗口必须**比完成窗口长**，否则一个跑了 20 分钟
+/// 的任务会在第 15 分钟被判成「完成」，而它明明还在跑。
+const DSH_ACTIVE_MAX_AGE_SECS: f64 = 30.0 * 60.0;
+/// 完成态保留窗口（与其他方言同口径）
+const DSH_COMPLETED_MAX_AGE_SECS: f64 = 15.0 * 60.0;
+
+/// DSH 解析器。逐条对应 Swift `inspectDSHSession`。
+///
+/// 输入是**一个投影 JSON**（不是 JSONL）：`{"record":{"rows":{…}}}`，
+/// 里面是投影缓存已经把这一轮的状态算好的结果。
+/// 换句话说这一族**不做会话重放**——那正是它叫「投影」的原因。
+fn probe_dsh(path: &str, file_age_secs: f64) -> SessionProbe {
+    if file_age_secs > 24.0 * 3600.0 {
+        return SessionProbe::default();
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: Some(SessionProbeHealth {
+                failure: SessionProbeFailure::UnreadableFile,
+                path: path.to_string(),
+                observed_at: 0,
+            }),
+        };
+    };
+    let Ok(root) = serde_json::from_str::<Value>(&text) else {
+        return SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: Some(SessionProbeHealth {
+                failure: SessionProbeFailure::UndecodableFile,
+                path: path.to_string(),
+                observed_at: 0,
+            }),
+        };
+    };
+    // 投影文件名的 `<id>.json` 就是会话 id
+    let session_id = std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let Some(rows) = root
+        .get("record")
+        .and_then(|r| r.get("rows"))
+    else {
+        return SessionProbe::default();
+    };
+
+    // 任务标题（`rows.title.val`）
+    let raw_title = rows
+        .get("title")
+        .and_then(|t| t.get("val"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let clean_title = one_line(raw_title, 26);
+
+    // ① 等确认：投影里挂着待批准的 id
+    if let Some(pending) = rows
+        .get("approval")
+        .and_then(|a| a.get("val"))
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+    {
+        if !pending.is_empty() {
+            let tool = rows
+                .get("approval")
+                .and_then(|a| a.get("val"))
+                .and_then(|v| v.get("toolName"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("操作");
+            return SessionProbe {
+                signal: Some(Signal::Attention(
+                    fingerprint(path, pending),
+                    format!("等待你批准执行: {tool}"),
+                )),
+                subagent_count: 0,
+                health: None,
+            };
+        }
+    }
+
+    // ② 轮次与步骤
+    let open_turn_start_seq = rows
+        .get("turnBoundary")
+        .and_then(|t| t.get("val"))
+        .and_then(|v| v.get("openTurnStartSeq"));
+    let stats = rows.get("sessionStats").and_then(|s| s.get("val"));
+    let open_step = stats.and_then(|v| v.get("openStep"));
+    let as_int = |v: Option<&Value>| -> Option<i64> { v.and_then(|v| v.as_i64()) };
+    let current_step = as_int(open_step.and_then(|o| o.get("step")))
+        .or_else(|| as_int(stats.and_then(|v| v.get("steps"))));
+    let current_turn = as_int(open_step.and_then(|o| o.get("turn")))
+        .or_else(|| as_int(stats.and_then(|v| v.get("lastTurn"))))
+        .unwrap_or(1);
+    let is_open = open_turn_start_seq.is_some() || open_step.is_some();
+
+    if is_open {
+        // ③ 活跃：投影还在刷新。**过了保护期就退回无信号**——
+        // 一个半小时没刷新的投影不代表任务还在跑，只代表它还躺在盘上。
+        if file_age_secs > DSH_ACTIVE_MAX_AGE_SECS {
+            return SessionProbe::default();
+        }
+        let action = match (clean_title.is_empty(), current_step.filter(|s| *s > 0)) {
+            (false, Some(step)) => format!("执行中: {clean_title} (第 {step} 步)"),
+            (false, None) => format!("执行中: {clean_title}"),
+            (true, Some(step)) => format!("执行任务中 (第 {step} 步)"),
+            (true, None) => "执行任务中".to_string(),
+        };
+        return SessionProbe {
+            signal: Some(Signal::Active(
+                fingerprint(path, &format!("dsh-{session_id}-turn{current_turn}")),
+                Some(action),
+            )),
+            subagent_count: 0,
+            health: None,
+        };
+    }
+
+    // ④ 轮次已结束
+    if file_age_secs > DSH_COMPLETED_MAX_AGE_SECS {
+        return SessionProbe::default();
+    }
+    let total_steps = as_int(stats.and_then(|v| v.get("steps"))).unwrap_or(0);
+    SessionProbe {
+        signal: Some(Signal::Completed(fingerprint(
+            path,
+            &format!("dsh-{session_id}-t{current_turn}-s{total_steps}"),
+        ))),
+        subagent_count: 0,
+        health: None,
+    }
+}
+
+/// DSH 解析器的四个分支（对齐 Swift `inspectDSHSession`）。
+#[cfg(test)]
+mod dsh_tests {
+    use super::*;
+
+    /// 造一份投影文件。`rows` 直接就是 `record.rows` 那个对象。
+    fn projection(rows: &str) -> crate::testutil::Sandbox {
+        let sandbox = crate::testutil::Sandbox::new("dsh");
+        std::fs::write(
+            sandbox.path().join("sess-42.json"),
+            format!(r#"{{"record":{{"rows":{rows}}}}}"#),
+        )
+        .unwrap();
+        sandbox
+    }
+
+    fn run(sandbox: &crate::testutil::Sandbox) -> SessionProbe {
+        probe_dsh(
+            sandbox.path().join("sess-42.json").to_str().unwrap(),
+            60.0,
+        )
+    }
+
+    /// ① 等确认优先：投影里挂着待批准的 id 就先问用户，
+    /// 哪怕同一次还记着 `openStep`（那只是它还没来得及清）。
+    #[test]
+    fn a_pending_approval_beats_everything_else() {
+        let s = projection(
+            r#"{"approval":{"val":{"id":"ap-1","toolName":"Bash"}},
+                "sessionStats":{"val":{"openStep":{"step":2,"turn":3}}}}"#,
+        );
+        match run(&s).signal {
+            Some(Signal::Attention(_, message)) => {
+                assert_eq!(message, "等待你批准执行: Bash")
+            }
+            other => panic!("应当是等确认：{other:?}"),
+        }
+    }
+
+    /// ② 活跃态：把标题与步骤都写进动作行。
+    #[test]
+    fn an_open_turn_reports_the_title_and_step() {
+        let s = projection(
+            r#"{"title":{"val":"修复登录崩溃"},
+                "sessionStats":{"val":{"openStep":{"step":2,"turn":3}}}}"#,
+        );
+        match run(&s).signal {
+            Some(Signal::Active(_, action)) => {
+                assert_eq!(action.as_deref(), Some("执行中: 修复登录崩溃 (第 2 步)"))
+            }
+            other => panic!("应当是在途：{other:?}"),
+        }
+    }
+
+    /// 标题里可能有换行——它会撑破单行动作行。
+    #[test]
+    fn a_multiline_title_is_flattened() {
+        let s = projection(
+            "{\"title\":{\"val\":\"第一行\\n第二行\"},\"sessionStats\":{\"val\":{\"openStep\":{\"step\":1}}}}",
+        );
+        match run(&s).signal {
+            Some(Signal::Active(_, action)) => {
+                let action = action.unwrap();
+                assert!(!action.contains('\n'), "动作行里不该有换行：{action:?}");
+            }
+            other => panic!("应当是在途：{other:?}"),
+        }
+    }
+
+    /// ③ 活跃保护期 30 分钟，比完成窗口长。
+    ///
+    /// 反过来（活跃窗口短于完成窗口）会让一个跑了 20 分钟的任务在第 15 分钟
+    /// 被判成「完成」，而它明明还在跑——这是这类判定最典型的错法。
+    #[test]
+    fn the_active_window_is_longer_than_the_completed_one() {
+        assert!(
+            DSH_ACTIVE_MAX_AGE_SECS > DSH_COMPLETED_MAX_AGE_SECS,
+            "活跃窗口必须比完成窗口长，否则长任务会被中途判成完成"
+        );
+        let s = projection(r#"{"sessionStats":{"val":{"openStep":{"step":1}}}}"#);
+        let path = s.path().join("sess-42.json").to_string_lossy().into_owned();
+        // 20 分钟：活跃窗口内、在完成窗口外 —— 必须是「在途」而不是「完成」
+        let probe = probe_dsh(&path, 20.0 * 60.0);
+        assert!(matches!(probe.signal, Some(Signal::Active(_, _))));
+        // 35 分钟：两个窗口都过了 —— 必须无信号，而不是继续说它在跑
+        let probe = probe_dsh(&path, 35.0 * 60.0);
+        assert!(probe.signal.is_none(), "过了保护期就该退回无信号");
+    }
+
+    /// ④ 轮次已结束 ⇒ 完成，且指纹带会话 id / 轮次 / 总步数。
+    #[test]
+    fn a_finished_turn_completes_with_its_session_identity() {
+        let s = projection(r#"{"sessionStats":{"val":{"steps":7,"lastTurn":3}}}"#);
+        let a = run(&s).signal;
+        let b = run(&s).signal;
+        match (a, b) {
+            (Some(Signal::Completed(x)), Some(Signal::Completed(y))) => assert_eq!(x, y),
+            other => panic!("应两次都是完成态：{other:?}"),
+        }
+    }
+
+    /// 投影文件读不出来 / 形状不对 ⇒ **都要带理由**，
+    /// 不能与「读到、确实没事」混成同一个空信号。
+    #[test]
+    fn a_broken_projection_carries_a_reason() {
+        let sandbox = crate::testutil::Sandbox::new("dsh-broken");
+        let path = sandbox.path().join("sess-9.json");
+        // 形状不对（`record.rows` 不在）⇒ 读到了但读不懂，**不得**报出信号
+        std::fs::write(&path, r#"{"record":{"nope":1}}"#).unwrap();
+        let probe = probe_dsh(path.to_str().unwrap(), 60.0);
+        assert!(probe.signal.is_none(), "形状不对时不得报出信号");
+        // 完全不是 JSON
+        std::fs::write(&path, "这不是 JSON").unwrap();
+        let probe = probe_dsh(path.to_str().unwrap(), 60.0);
+        assert_eq!(
+            probe.health.map(|h| h.failure),
+            Some(SessionProbeFailure::UndecodableFile),
+            "读不出来与读不懂要分开"
+        );
     }
 }
