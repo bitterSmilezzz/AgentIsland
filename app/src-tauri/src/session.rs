@@ -1672,7 +1672,8 @@ fn probe_antigravity(
                 if let Some(id) = content
                     .split("task id:")
                     .nth(1)
-                    .map(|rest| rest.split_whitespace().next().unwrap_or("").to_string())
+                    .map(|rest| rest.split_whitespace().next().unwrap_or(""))
+                    .map(normalize_task_id)
                     .filter(|id| !id.is_empty())
                 {
                     let desc = content
@@ -1715,6 +1716,73 @@ fn probe_antigravity(
                 }
             }
         }
+        // ---- 子智能体 ----
+        // 生命周期同样是「创建 → 收口」，**只列还在跑的**：
+        // 已完成的子智能体继续占着胶囊，用户会以为还有活。
+        {
+            use crate::models::SubagentInfo;
+            let mut sub_ids: Vec<String> = Vec::new();
+            let mut sub_roles: Vec<(String, String)> = Vec::new();
+            let mut sub_finished: std::collections::HashSet<String> = Default::default();
+            for raw in lines {
+                let Ok(obj) = serde_json::from_str::<Value>(raw) else { continue };
+                let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("");
+
+                if content.contains("Created the following subagents:") {
+                    for id in extract_subagent_ids(content) {
+                        if !sub_ids.contains(&id) {
+                            sub_ids.push(id);
+                        }
+                    }
+                }
+                // 角色/模型在 `tool_calls[].args.Subagents` 里，**不在 content 里**——
+                // 只扫 content 会永远拿不到角色，于是每个子智能体都落回「子智能体」
+                if let Some(calls) = obj.get("tool_calls").and_then(|v| v.as_array()) {
+                    for call in calls {
+                        let args = call.get("args").cloned().unwrap_or(Value::Null);
+                        let text = args.to_string();
+                        let found = extract_subagent_roles(&text);
+                        if !found.is_empty() {
+                            sub_roles = found;
+                        }
+                    }
+                }
+                // `sender=<id>` 或 id + finished ⇒ 收口
+                if !sub_finished.is_empty() || !content.contains("finished") {
+                    for id in &sub_ids {
+                        if content.contains(&format!("sender={id}")) {
+                            sub_finished.insert(id.clone());
+                        }
+                    }
+                }
+                if content.contains("Created the following subagents:")
+                    || content.contains("subagent") && content.contains("finished")
+                {
+                    for id in &sub_ids {
+                        if content.contains(id.as_str()) && content.contains("finished") {
+                            sub_finished.insert(id.clone());
+                        }
+                    }
+                }
+            }
+            // 角色/模型**按顺序配对**：调用参数里的 `Subagents` 顺序与文本里列出的 id 顺序一致，
+            // 而角色/模型在文本那一侧根本不存在——按 id 查是查不到的
+            let mut roles = sub_roles.into_iter();
+            context.subagents = sub_ids
+                .into_iter()
+                .filter(|id| !sub_finished.contains(id))
+                .map(|id| {
+                    let (role, model) = roles.next().unwrap_or(("子智能体".into(), "inherit".into()));
+                    SubagentInfo {
+                        conversation_id: id,
+                        role,
+                        model: Some(model),
+                        state: None,
+                    }
+                })
+                .collect();
+        }
+
         // **只列未交付的**：任务结束就该消失，留着会让用户以为机器上还挂着活
         context.background_tasks = launched
             .into_iter()
@@ -2102,5 +2170,156 @@ mod antigravity_context_tests {
         // 取大等于把两套口径混起来
         let given = crate::models::TokenBreakdown::new(100, 20, 30, 5, 5, 50);
         assert_eq!(given.total_tokens, 50, "源给了 total 就用它");
+    }
+}
+
+// MARK: - Antigravity 子智能体
+
+/// 任务 id 归一化：剥掉包裹的引号与空白，再只取最后一段路径。
+///
+/// Antigravity 偶尔把 id 写成 `tasks/t-1` 这种带路径的形式，而完成消息里写的是
+/// `t-1`——不归一化就永远配不上对，于是「已完成的任务」继续挂在胶囊上。
+fn normalize_task_id(raw: &str) -> String {
+    let trimmed = raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ' ') || c.is_whitespace());
+    trimmed
+        .rsplit('/')
+        .next()
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// 从 `conversationId` 字段里抽子智能体 id；抽不到再退回「按文本猜」。
+///
+/// 首选结构化字段是**有理由的**：自由文本那一路有 `count >= 8` 这种宽口径启发式，
+/// 它会把描述里任何够长的词当成 id——宁可少认一个，也不要凭空多一个子任务胶囊。
+fn extract_subagent_ids(content: &str) -> Vec<String> {
+    const MARKER: &str = "\"conversationId\":";
+    let mut ids = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(at) = content[cursor..].find(MARKER) {
+        let after = &content[cursor + at + MARKER.len()..];
+        if let Some(first) = after.find('"') {
+            let rest = &after[first + 1..];
+            if let Some(second) = rest.find('"') {
+                let cid = &rest[..second];
+                if !cid.is_empty() {
+                    ids.push(cid.to_string());
+                }
+            }
+        }
+        cursor += at + MARKER.len();
+    }
+    if ids.is_empty() {
+        if let Some(at) = content.find("Created the following subagents:") {
+            let after = &content[at + "Created the following subagents:".len()..];
+            for token in after.split(|c: char| {
+                matches!(c, ' ' | ',' | ';' | '\n' | '\r' | '\t' | '[' | ']' | '(' | ')' | '{' | '}' | '"')
+            }) {
+                let trimmed = token.trim();
+                if !trimmed.is_empty()
+                    && (trimmed.contains("conv-") || trimmed.contains("subagent-") || trimmed.len() >= 8)
+                {
+                    ids.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// `invoke_subagent` 的参数里带着每个子智能体的角色与模型。
+///
+/// **按顺序配对**（而不是按 id 查）：调用方给的 `Subagents` 数组顺序
+/// 与 `Created the following subagents:` 文本里列出的 id 顺序一致，
+/// 而角色/模型在文本那一侧根本不存在。按顺序配对是这个格式唯一可行的做法。
+fn extract_subagent_roles(content: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    // 该字段在同一行 JSON 里，形如 "Subagents":[{"Role":"…","Model":"…"}]
+    for chunk in content.split("\"Subagents\"").skip(1) {
+        let Some(role) = quoted_field(chunk, "Role") else { continue };
+        let model = quoted_field(chunk, "Model").unwrap_or_else(|| "inherit".into());
+        out.push((role, model));
+    }
+    out
+}
+
+fn quoted_field(text: &str, key: &str) -> Option<String> {
+    let marker = format!("\"{key}\":");
+    let at = text.find(&marker)?;
+    let after = &text[at + marker.len()..];
+    let first = after.find('"')?;
+    let rest = &after[first + 1..];
+    let second = rest.find('"')?;
+    Some(rest[..second].to_string())
+}
+
+/// Antigravity 子智能体：id 抽取、角色配对、生命周期收口。
+#[cfg(test)]
+mod subagent_tests {
+    use super::*;
+
+    fn ctx_of(rows: &[&str]) -> crate::models::SessionActiveContext {
+        probe_antigravity(
+            &rows.iter().map(|r| (*r).to_string()).collect::<Vec<_>>(),
+            "/tmp/x.jsonl",
+            60.0,
+        )
+        .1
+    }
+
+    /// **只列还在跑的**——已完成/被收口的子智能体继续占着胶囊，
+    /// 用户会以为还有活。
+    #[test]
+    fn only_unfinished_subagents_are_listed() {
+        let running = ctx_of(&[r#"{"content":"Created the following subagents: [{\"conversationId\":\"conv-a\"},{\"conversationId\":\"conv-b\"}]"}"#]);
+        assert_eq!(running.subagents.len(), 2, "两个都该列出来");
+        assert_eq!(running.subagents[0].conversation_id, "conv-a");
+
+        let one_done = ctx_of(&[
+            r#"{"content":"Created the following subagents: [{\"conversationId\":\"conv-a\"},{\"conversationId\":\"conv-b\"}]"}"#,
+            r#"{"content":"subagent conv-a finished"}"#,
+        ]);
+        assert_eq!(
+            one_done.subagents.len(),
+            1,
+            "收口的那个不该还在：{:?}",
+            one_done.subagents
+        );
+        assert_eq!(one_done.subagents[0].conversation_id, "conv-b");
+    }
+
+    /// 角色/模型**按顺序配对**——文本那一侧没有角色，按 id 查是查不到的。
+    #[test]
+    fn the_role_and_model_are_paired_by_position() {
+        let ctx = ctx_of(&[r#"{"content":"Created the following subagents: [{\"conversationId\":\"conv-a\"},{\"conversationId\":\"conv-b\"}]","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"Role":"查日志","Model":"gpt-x"}]}}]}"#]);
+        assert_eq!(ctx.subagents[0].role, "查日志");
+        assert_eq!(ctx.subagents[0].model.as_deref(), Some("gpt-x"));
+        // 第二个没有对应角色 ⇒ 落回「子智能体 / inherit」，不硬凑
+        assert_eq!(ctx.subagents[1].role, "子智能体");
+        assert_eq!(ctx.subagents[1].model.as_deref(), Some("inherit"));
+    }
+
+    /// 任务 id 归一化：带路径的 `tasks/t-1` 与完成消息里的 `t-1` 是**同一个**。
+    /// 不归一化就配不上对，「已完成的任务」会继续挂在胶囊上。
+    #[test]
+    fn a_task_id_written_with_a_path_still_matches_its_completion() {
+        assert_eq!(normalize_task_id("\"t-1\""), "t-1");
+        assert_eq!(normalize_task_id("  tasks/t-1  "), "t-1");
+        assert_eq!(normalize_task_id("t-1"), "t-1");
+    }
+
+    /// 自由文本那一路是**宽口径启发式**（够长就算），
+    /// 所以结构化字段优先：它没给出 id 时才退到文本。
+    #[test]
+    fn the_structured_field_wins_over_the_guessing_fallback() {
+        // 结构化字段给出 id ⇒ 不再走宽口径
+        let with_struct = extract_subagent_ids(
+            r#"Created the following subagents: [{"conversationId":"conv-real"}] 这一段描述文字也够长"#,
+        );
+        assert_eq!(with_struct, vec!["conv-real".to_string()]);
+        // 没有结构化字段才按文本猜
+        let text_only = extract_subagent_ids("Created the following subagents: conv-text-1, subagent-2");
+        assert!(text_only.contains(&"conv-text-1".to_string()));
+        assert!(text_only.contains(&"subagent-2".to_string()));
     }
 }
