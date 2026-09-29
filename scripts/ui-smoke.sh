@@ -15,7 +15,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 LOG="${TMPDIR:-/tmp}agentisland-tauri.log"
-RUN_MS="${UI_SMOKE_RUN_MS:-11000}"
+RUN_MS="${UI_SMOKE_RUN_MS:-15000}"
 
 # 用哪个二进制：默认取**新一点**的那个。发布产物比源码旧时（刚改完还没重打包）
 # 会自动退回 debug——否则会拿一个不带 --ui-smoke 的二进制去跑，冒烟静默不执行。
@@ -49,7 +49,7 @@ sleep 1
 # `[smoke]` 行当成本次结果 —— 这个坑在 main.rs 的 [run] 注释里记过一次。
 : > "$LOG"
 
-"$BIN" --ui-smoke >/dev/null 2>&1 &
+"$BIN" --ui-smoke --expand >/dev/null 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null' EXIT
 
@@ -103,12 +103,14 @@ for label in island sidebar workbench; do
     # 点到了几个可点元素。**一个都没点到**时上面三条照样会「通过」——
     # state 仍是 done、errs 仍是空、步骤里也没有点不动的记录。
     # 所以这条得单独判，否则「三扇门后面都空着」会被算成绿灯。
+    #
+    # 灵动岛**同样适用**：冒烟会先发一条 `tray://toggle`（点托盘图标那条真实路径）
+    # 把岛展开，所以它应该有卡片里的可点元素。此前这里对灵动岛开了豁免，
+    # 理由是「收起态本来就没有可点元素」——现在驱动会先展开，豁免也就没必要了。
     found=$(echo "$line" | grep -o '"found":{[^}]*}' | grep -o ':[0-9]\+' | tr -d ':' | paste -sd+ - | bc 2>/dev/null || echo 0)
     echo "    ${label}  点到 ${found} 个可点元素"
-    if [[ "$found" == "0" && "$label" != "island" ]]; then
-        # 灵动岛收起时只有一个窄条，本来就没有可点元素，这是形态决定的。
-        # 侧边栏与工作台不是这样：它们一个元素都点不到 ⇒ 界面没渲染出来。
-        echo "✗ ${label}：一个可点元素都没有 ⇒ 界面没渲染出来"
+    if [[ "$found" == "0" ]]; then
+        echo "✗ ${label}：一个可点元素都没有 ⇒ 界面没渲染出来，或冒烟的展开/驱动没生效"
         fail=1
     fi
 done

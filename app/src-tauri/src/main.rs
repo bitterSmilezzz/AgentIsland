@@ -1217,9 +1217,64 @@ const UI_SMOKE_JS: &str = r#"(function () {
     });
     return chain;
   };
+  // **等 DOM 稳下来再点**，而不是靠固定延时。
+  //
+  // 原来的写法是「等到 root 非空」，而收起态的窄条已经让 root 非空了——
+  // 于是这个等待等于没等。改成「连续两次采样长度不变」才算稳，
+  // 灵动岛展开那一下（renderCard + place_island + resize）才等得到。
+  var settle = function () {
+    var last = -1, stable = 0;
+    var step = function (i) {
+      if (i >= 45) { return Promise.resolve(false); }
+      var r = root();
+      var now = r ? r.innerHTML.length : -1;
+      if (now > 0 && now === last) {
+        if (++stable >= 2) { return Promise.resolve(true); }
+      } else {
+        stable = 0;
+      }
+      last = now;
+      return wait(200).then(function () { return step(i + 1); });
+    };
+    return step(0);
+  };
   (async function () {
     try {
-      for (var i = 0; i < 80 && (!root() || !root().children.length); i++) { await wait(100); }
+      // **岛的 boot 第一件事就是 `place_island`。**
+      //
+      // 它在 `boot()` 里是 `await` 的，而它后面才轮到两个事件订阅与 `--expand`
+      // 的定时器——所以它一旦不 resolve，整条 boot 链就停在那里，
+      // 表现为「岛永远是那条 101B 的窄条、一个可点元素都没有」，
+      // 而且**没有任何报错**。
+      window.__uiSmoke.bootArgs = 'n/a（非灵动岛）';
+      if (document.documentElement.className.indexOf('shell-island') >= 0) {
+        // 只问**只读**的 `get_boot_args`：它在 main.js 里是 `.catch(() => ({expand:false}))`
+        // **静默兜底**的，一旦失败岛就无声地不展开，而什么都不会报。
+        //
+        // 曾经顺手在这里也调一次 `place_island`「顺便验一下它通不通」——
+        // **那是自伤**：它会把岛窗口改成 330×120，在测量途中改掉了被测状态。
+        // 诊断动作只要动了一点状态，它测出来的就不是原来那个东西了
+        // （同类的还有：在 +2.6s 补发一次 `tray://toggle`，把刚展开的岛又收了回去）。
+        window.__uiSmoke.bootArgs = await Promise.race([
+          window.__TAURI__.core.invoke('get_boot_args')
+            .then(function (a) { return JSON.stringify(a); })
+            .catch(function (e) { return 'rejected: ' + e; }),
+          new Promise(function (r) { setTimeout(function () { r('**3s 未 resolve**'); }, 3000); })
+        ]);
+      }
+      await settle();
+      // 灵动岛额外验一件具体的事：**卡片有没有出现过，多久出现的**。
+      // 「DOM 长度稳定」分不清「一直是窄条」与「卡片闪过又被收回去了」，
+      // 而这两种要查的地方完全不同。-1 表示 6 秒内一次都没出现过。
+      if (document.documentElement.className.indexOf('shell-island') >= 0) {
+        var t0 = Date.now(), appeared = -1;
+        while (Date.now() - t0 < 6000) {
+          if (document.querySelector('.card')) { appeared = Date.now() - t0; break; }
+          await wait(100);
+        }
+        window.__uiSmoke.cardAfterMs = appeared;
+      }
+      window.__uiSmoke.cards = document.querySelectorAll('.card').length;
       snap('起点');
       await clickAll('[data-nav]');
       await clickAll('[data-analytics]');
@@ -1249,7 +1304,24 @@ const UI_SMOKE_READ_JS: &str = "JSON.stringify(window.__uiSmoke || { state: 'nev
 fn schedule_ui_smoke(app: &tauri::AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1200));
+        // 灵动岛必须**展开**了才点得到卡片里的东西：收起态下 root 里只有一个
+        // 101B 的窄条，`[data-analytics]` / `[data-agent]` / `[data-search]` /
+        // `[data-theme]` / `[data-collapse]` 一个都点不到。
+        //
+        // 展开走 `--expand` 启动参数（`get_boot_args` → `boot.expand` → 开机 1.5s 后
+        // `expand()`），也就是深链 `Expand` 与演示模式用的**同一条产品路径**。
+        // 曾经试过在这里 `emit_to("island", "tray://toggle")`，不可靠：页面会加载
+        // 两次（日志里「Tauri API 就绪」出现 6 次 = 两轮 × 三窗口），定时发出的
+        // 事件正好落在两次加载的间隙里，那一刻没有监听者——事件石沉大海。
+        // 启动参数没有这个竞态。
+        // 展开只走 `--expand` 启动参数这一条路（产品路径，与深链 `Expand`、演示模式同一条）。
+        //
+        // 曾经在这里补发一次 `tray://toggle`「保险一下」——**那是把测量动作变成了扰动**：
+        // 此时 `state.expanded` 已经是 true，toggle 语义于是把岛又收了回去，
+        // 于是「已展开」明明打过、`cards` 却是 0。
+        // 诊断动作只要改了一点被测状态，它测出来的就不是原来那个东西了。
+        std::thread::sleep(std::time::Duration::from_millis(2600));
+
         for label in ["island", "sidebar", "workbench"] {
             if let Some(w) = app.get_webview_window(label) {
                 let _ = w.eval(UI_SMOKE_JS);

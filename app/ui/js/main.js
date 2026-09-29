@@ -313,9 +313,17 @@ async function boot() {
 
   applyEdge();
   renderSliver();
+  // **岛的 boot 链进度标记。**
+  //
+  // 为什么需要：这一串里有三个 `await`，任何一个不 resolve，后面全部代码
+  // （两个事件订阅、`--expand` 的定时器）都不会执行，而症状只是
+  // 「岛永远是那条窄条」——**一条错误都不报**。
+  // 空白界面那件事查了十几轮还查不到，正是因为「启动走到哪一步」根本看不见。
+  invoke('log_from_ui', { message: 'island boot：窄条已渲染' }).catch(() => {});
 
   const size = sliverSize(state.settings.dock_edge);
   await invoke('place_island', { width: size.w, height: size.h });
+  invoke('log_from_ui', { message: 'island boot：place_island 已返回' }).catch(() => {});
 
   // 引擎推送
   await listen('engine://tick', (e) => {
@@ -323,10 +331,19 @@ async function boot() {
     scheduleRender();
   });
   await listen('tray://toggle', () => (state.expanded ? collapse() : expand()));
+  invoke('log_from_ui', { message: 'island boot：事件已订阅' }).catch(() => {});
 
   if (boot.expand) {
+    invoke('log_from_ui', { message: `island boot：安排展开（expand=${boot.expand}）` }).catch(() => {});
     setTimeout(async () => {
-      await expand();
+      try {
+        await expand();
+        invoke('log_from_ui', { message: 'island boot：已展开' }).catch(() => {});
+      } catch (error) {
+        // 展开失败原本只会变成一条 unhandledrejection；这里补一句带上下文的，
+        // 否则「岛没展开」这件事在日志里没有任何指向
+        invoke('log_from_ui', { message: `island boot：展开失败 ${(error && error.message) || error}` }).catch(() => {});
+      }
       const r = state.bootRoute;
       if (r === 'tokenAnalytics' || r.startsWith('agentDetail:')) {
         state.route = r;
