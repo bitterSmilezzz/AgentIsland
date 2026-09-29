@@ -15,10 +15,16 @@ M3 的 12 个模块已全部迁入（v0.0.161–186），**§4.1 仍在补证据
 `activeSessions` 真口径尚未迁。
 
 Phase 0/0'/1/2/3/4 已收尾（逐条状态见 [04 · 实施计划](04-plan.md)）。
-Rust 端是 island + sidebar 双形态，默认 island。
+Rust 端是 **island + sidebar + workbench 三个窗口**（v0.0.222 起第三个形态落地），
+默认 island。
 
-Swift 是原生灵动岛实现；Rust 端当前**两种形态都已实现**
-（`app/ui/` 仅供 Rust 使用），`shell_mode` 或 `--shell=sidebar` 切换。
+Swift 是原生灵动岛实现；Rust 端当前**三种形态都已实现**
+（`app/ui/` 仅供 Rust 使用），`shell_mode` 或 `--shell=sidebar` 切侧边栏，
+`--shell=workbench` 或深链 / 托盘叫出**工作台**（第三个形态：大而全面板，
+监控 + 用量分析 + Provider + 待办 + 报告**五块同时在场**，不是一个路由）。
+
+⚠️ 本文其余段落里仍写「双形态」的地方是**当时的计划记录**（Phase 表、技术方案），
+按时间点证据保留原样；**当前实际形态以本节与根 README 为准**。
 
 ## 产品目标与调查背景
 
