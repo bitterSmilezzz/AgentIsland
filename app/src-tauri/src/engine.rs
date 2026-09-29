@@ -823,7 +823,12 @@ impl ActivityEngine {
         // 只写进 SQLite，FileMonitor 定位到的最新文件就是那个二进制库本身，
         // 对它做尾窗解析必然读不出东西。反过来把它放前面，则会让库里的旧状态
         // 盖过文件里刚发生的活动。
-        let Some(database) = database.filter(|db| db.schema == crate::models::SessionSchema::StatusIndex)
+        let Some(database) = database.filter(|db| {
+            matches!(
+                db.schema,
+                crate::models::SessionSchema::StatusIndex | crate::models::SessionSchema::DimTasks
+            )
+        })
         else {
             return (
                 session::SessionProbe { signal: None, subagent_count: 0, health: None },
@@ -836,7 +841,15 @@ impl ActivityEngine {
             .and_then(|t| t.elapsed().ok())
             .map(|d| d.as_secs_f64())
             .unwrap_or(f64::INFINITY);
-        let (probe, failure) = session::probe_status_index(database, file_age);
+        // **DimAgent 不是 statusIndex 那一族**：它的会话表不带终态 status，
+        // 「本轮封没封口」只能从最新一条 assistant 消息最后一个 part 的 `endTime` 读。
+        // 走错函数的话，DimAgent 会永远没有信号——而界面上看不出异样。
+        let (probe, failure) = if database.schema == crate::models::SessionSchema::DimTasks {
+            session::probe_dim(database, file_age)
+        } else {
+            session::probe_status_index(database, file_age)
+        };
+
         (
             session::SessionProbe {
                 signal: probe.signal,

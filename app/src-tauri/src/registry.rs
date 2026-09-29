@@ -952,17 +952,17 @@ mod dialect_declaration {
 /// 它是一道棘轮：新增档案若落进缺口而没被 conscious 登记，守护会精确变红。
 ///
 /// 两条**性质不同**，别混着看：
-/// · 15 个是**对拍缺口**——Swift 侧有路径（通用检测器或专用库），Rust 没有；
+/// · 14 个是**对拍缺口**——Swift 侧有路径（通用检测器或专用库），Rust 没有；
 /// · `vscode` 是 **Rust 独有**的档案，Swift 侧压根没有这个 profile，
 ///   所以它不是对拍缺口，而是**新功能没做完**（声明了 workspaceStorage 却没写解析器）。
 ///
-/// 本机可观测性（2026-09-29 实测）：对拍那 15 个里有 6 个的 `session_dirs`
+/// 本机可观测性（2026-09-29 实测）：对拍那 14 个里有 6 个的 `session_dirs`
 /// 在这台机器上存在，但**没有一个含 Swift 通用检测器读得动的会话文件**
 /// （copilot 指向的是 Chromium 配置目录、chatgpt 只有一个 appcast、ego 是空目录），
 /// 所以**今天两端表现一致**。缺口对**真的装了这些 Agent 且攒下了会话**的用户才成立。
 #[cfg(test)]
-const KNOWN_UNCOVERED: [&str; 16] = [
-    "aider", "chatgpt", "continue", "copilot", "cursor", "dim", "ego-browser", "goose", "hermes",
+const KNOWN_UNCOVERED: [&str; 15] = [
+    "aider", "chatgpt", "continue", "copilot", "cursor", "ego-browser", "goose", "hermes",
     "mimocode", "openviking", "opencode", "trae", "vibe-usage", "windsurf",
     // Rust 独有档案，不是对拍缺口（见表头注释）
     "vscode",
@@ -984,10 +984,12 @@ fn covered_by_rust(p: &AgentProfile) -> bool {
             matches!(p.id.as_str(), "claude" | "codex" | "cline" | "roo-code" | "roo" | "zcode")
         }
     };
-    let by_database = p
-        .session_database
-        .as_ref()
-        .is_some_and(|db| db.schema == S::StatusIndex);
+    // 库路现在认两种 schema：`StatusIndex`（会话表自带终态 status）与
+    // `DimTasks`（不看 status，看最新一条 assistant 的末个 part 有没有 `endTime`）。
+    // 认错函数的话那个 Agent 就永远没信号，而界面看不出异样。
+    let by_database = p.session_database.as_ref().is_some_and(|db| {
+        matches!(db.schema, S::StatusIndex | S::DimTasks)
+    });
     by_file || by_database
 }
 

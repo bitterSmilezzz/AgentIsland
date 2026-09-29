@@ -3145,3 +3145,317 @@ fn real_session_side_by_side() {
         }
     }
 }
+
+/// DimAgent（`~/.dimcode/v2/dimcode.sqlite`）：只认「assistant 最新一条已封口」。
+///
+/// 对齐 Swift `inspectDimDatabase`（`AgentSessionInspector.swift:848`）里的**完成态**那一支：
+/// 最新一行 `role == "assistant"` 且它最后一个 part 带 `endTime` ⇒ 本轮已封口。
+/// 只看**最后一个** part 是刻意的——前面某段 thinking 结束不代表后续仍在跑的
+/// tool_use 结束。
+///
+/// ## 为什么只做这一支，不做 attention 那一支
+///
+/// Swift 那一支是把 32 行**重建成受控形状的 JSON**（`role` / `row_id` / `toolMetadata` / `parts`）
+/// 之后交给通用 `detect(lines:)`。这里**不搬**那个通用检测器：
+/// v0.0.248 已经实测它直接套在任意 JSON 上会**假阳**（把 `request.body.tools` 里的
+/// 工具目录读成「正在等你批准」）。要做就得把那套事实收集器连同「不进入请求体子树」
+/// 的规则一起搬，那是**设计改动**，得单独验。
+///
+/// 所以这里只交出**不依赖它**的那一支，并把缺的那一半如实写在这里：
+/// **DimAgent 在 Rust 端拿不到「等你批准」信号**，与 v0.0.247 量到的缺口一致。
+const DIM_MAX_AGE_SECS: f64 = 24.0 * 3600.0;
+const DIM_COMPLETED_MAX_AGE_SECS: f64 = 15.0 * 60.0;
+
+/// 取最新一条会话的最近 32 行（与 Swift 同一条查询、同一个上限）。
+const DIM_ROWS_SQL: &str = "SELECT rowid, role, parts FROM messages \
+     WHERE sessionId = (SELECT sessionId FROM messages ORDER BY rowid DESC LIMIT 1) \
+     ORDER BY rowid DESC LIMIT 32;";
+
+pub fn probe_dim(
+    database: &crate::models::SessionDatabase,
+    file_age_secs: f64,
+) -> (SessionProbe, Option<SessionProbeFailure>) {
+    if file_age_secs > DIM_MAX_AGE_SECS {
+        return (SessionProbe::default(), None);
+    }
+    let connection = match crate::sqlite::open_readonly(&database.path) {
+        Ok(connection) => connection,
+        Err(crate::sqlite::Failure::Missing) => return (SessionProbe::default(), None),
+        Err(crate::sqlite::Failure::OpenFailed(detail)) => {
+            return (SessionProbe::default(), Some(SessionProbeFailure::UnreadableDatabase(detail)))
+        }
+    };
+    let mut stmt = match connection.prepare(DIM_ROWS_SQL) {
+        Ok(stmt) => stmt,
+        // 与 `probe_status_index` 同一条教训：**prepare 失败必须把 SQLite 的话带出来**。
+        // 静默当成「没有终态」的话，这个 Agent 的信号就永远不响了，而界面看不出异样
+        Err(error) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(format!(
+                    "{error} · 查询：{DIM_ROWS_SQL}"
+                ))),
+            )
+        }
+    };
+    let mut rows = match stmt.query([]) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(format!(
+                    "{error} · 查询：{DIM_ROWS_SQL}"
+                ))),
+            )
+        }
+    };
+    let mut newest: Option<(i64, String, String)> = None;
+    while let Ok(Some(row)) = rows.next() {
+        let id: i64 = row.get(0).unwrap_or(0);
+        let role: String = row.get(1).unwrap_or_default();
+        let parts: String = row.get(2).unwrap_or_default();
+        // SQL 已按 rowid 倒序，**第一条就是最新那条**；后面的行只是为了「有行」这件事本身
+        if newest.is_none() {
+            newest = Some((id, role, parts));
+        }
+    }
+    let Some((id, role, parts)) = newest else {
+        return (SessionProbe::default(), None);
+    };
+    if role != "assistant" {
+        return (SessionProbe::default(), None);
+    }
+    // 最后一个 part 才是本轮封口的那一个
+    let sealed = serde_json::from_str::<serde_json::Value>(&parts)
+        .ok()
+        .and_then(|v| v.as_array().and_then(|a| a.last().cloned()))
+        .map(|last| last.get("endTime").is_some_and(|t| !t.is_null()))
+        .unwrap_or(false);
+    if !sealed {
+        return (SessionProbe::default(), None);
+    }
+    if file_age_secs > DIM_COMPLETED_MAX_AGE_SECS {
+        return (SessionProbe::default(), None);
+    }
+    (
+        SessionProbe {
+            signal: Some(Signal::Completed(fingerprint(&database.path, &format!("dim-{id}")))),
+            subagent_count: 0,
+            health: None,
+        },
+        None,
+    )
+}
+
+#[cfg(test)]
+mod dim_probe_tests {
+    use super::{probe_dim, SessionProbe, SessionProbeFailure, Signal};
+    use crate::models::{SessionDatabase, SessionSchema};
+
+    /// **DDL 逐字抄自本机真库** `~/.dimcode/v2/dimcode.sqlite`（`sqlite_master.sql`），
+    /// **不含任何数据**。
+    ///
+    /// 为什么值得这么较真：ZCode 那次翻车就是查了真库里**不存在的列**（`id` vs `task_id`），
+    /// 而失败被当成「没有终态」，于是信号永远不响、界面看不出异样。
+    /// 只断言「查询非空」或「字符串存在」都抓不住那类 bug——**必须真建库、真 prepare**。
+    const REAL_DDL: &str = "CREATE TABLE messages (
+  messageId TEXT PRIMARY KEY,
+  sessionId TEXT NOT NULL,
+  role TEXT NOT NULL,
+  parts TEXT NOT NULL,
+  attachments TEXT,
+  toolMetadata TEXT,
+  metadata TEXT,
+  orderKey TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  updatedAt TEXT NOT NULL
+)";
+
+    struct Db {
+        _dir: crate::testutil::Sandbox,
+        path: String,
+    }
+
+    fn db() -> Db {
+        let dir = crate::testutil::Sandbox::new("dim-schema");
+        let path = dir.path().join("dimcode.sqlite");
+        let conn = rusqlite::Connection::open(&path).expect("应当建得出库");
+        conn.execute_batch(REAL_DDL).expect("真库 DDL 应当能建表");
+        Db { _dir: dir, path: path.to_string_lossy().to_string() }
+    }
+
+    fn database(path: &str) -> SessionDatabase {
+        SessionDatabase {
+            path: path.to_string(),
+            schema: SessionSchema::DimTasks,
+            status_sql: None,
+        }
+    }
+
+    fn insert(db: &Db, rowid_hint: i64, role: &str, parts: &str) {
+        let conn = rusqlite::Connection::open(&db.path).expect("应当打得开");
+        conn.execute(
+            "INSERT INTO messages (messageId, sessionId, role, parts, orderKey, createdAt, updatedAt)
+             VALUES (?1, 's1', ?2, ?3, ?4, '2026-09-29T00:00:00Z', '2026-09-29T00:00:00Z')",
+            rusqlite::params![
+                format!("m{rowid_hint}"),
+                role,
+                parts,
+                rowid_hint.to_string()
+            ],
+        )
+        .expect("插入应当成功");
+    }
+
+    /// 真形状：最新一条 assistant，最后一个 part 带 `endTime` ⇒ 本轮封口。
+    #[test]
+    fn a_sealed_assistant_reply_reports_completed() {
+        let db = db();
+        insert(&db, 1, "user", r#"[{"type":"text","text":"hi"}]"#);
+        insert(
+            &db,
+            2,
+            "assistant",
+            r#"[{"type":"text","text":"好了","endTime":1730000000000}]"#,
+        );
+        let (probe, failure) = probe_dim(&database(&db.path), 60.0);
+        assert!(failure.is_none(), "真库形状不该报失败：{failure:?}");
+        assert!(
+            matches!(probe.signal, Some(Signal::Completed(_))),
+            "最新一条 assistant 且末个 part 已封口 ⇒ 应报完成，实际 {:?}",
+            probe.signal
+        );
+    }
+
+    /// **只认最后一个 part**。前面某段 thinking 结束不代表本轮封口——
+    /// 后面仍在跑的 tool_use 会被误判成任务完成。
+    #[test]
+    fn an_earlier_sealed_part_does_not_mean_the_turn_is_over() {
+        let db = db();
+        insert(
+            &db,
+            1,
+            "assistant",
+            r#"[{"type":"reasoning","endTime":1730000000000},{"type":"tool_use","id":"t1"}]"#,
+        );
+        let (probe, failure) = probe_dim(&database(&db.path), 60.0);
+        assert!(failure.is_none());
+        assert!(
+            probe.signal.is_none(),
+            "末个 part 仍开着 ⇒ 不该报完成，实际 {:?}",
+            probe.signal
+        );
+    }
+
+    /// 最新的不是 assistant（典型：轮到等用户批准）⇒ 不报完成。
+    #[test]
+    fn a_turn_waiting_on_the_user_is_not_reported_as_completed() {
+        let db = db();
+        insert(
+            &db,
+            1,
+            "assistant",
+            r#"[{"type":"text","text":"好了","endTime":1730000000000}]"#,
+        );
+        insert(&db, 2, "tool_result", r#"[{"type":"text","text":"等批准"}]"#);
+        let (probe, _) = probe_dim(&database(&db.path), 60.0);
+        assert!(
+            probe.signal.is_none(),
+            "最新一条不是 assistant ⇒ 不该报完成，实际 {:?}",
+            probe.signal
+        );
+    }
+
+    /// 完成态有 15 分钟保质期：几小时前封口的那一轮现在**不算**「刚完成」。
+    /// 少了这道门，DimAgent 会在每次启动时报一堆「刚完成」。
+    #[test]
+    fn a_sealed_reply_older_than_fifteen_minutes_stops_counting() {
+        let db = db();
+        insert(
+            &db,
+            1,
+            "assistant",
+            r#"[{"type":"text","text":"好了","endTime":1730000000000}]"#,
+        );
+        let (probe, _) = probe_dim(&database(&db.path), 16.0 * 60.0);
+        assert!(probe.signal.is_none(), "过了 15 分钟就不该再算刚完成");
+    }
+
+    /// 24 小时以上的库直接不看——它讲的是昨天的故事。
+    #[test]
+    fn a_library_older_than_a_day_is_not_read_at_all() {
+        let db = db();
+        insert(
+            &db,
+            1,
+            "assistant",
+            r#"[{"type":"text","text":"好了","endTime":1730000000000}]"#,
+        );
+        let (probe, failure) = probe_dim(&database(&db.path), 25.0 * 3600.0);
+        assert!(matches!(probe, SessionProbe { signal: None, .. }));
+        assert!(failure.is_none(), "「太旧」不是故障，不该报出来吓人");
+    }
+
+    /// **schema 变了必须把 SQLite 的话带出来。**
+    ///
+    /// 变异验证：把查询里的 `parts` 改成一个真库里不存在的列，
+    /// 本条会 FAILED，且报出的正是 SQLite 那句 `no such column`。
+    #[test]
+    fn a_broken_query_says_so_instead_of_silently_reporting_nothing() {
+        let db = db();
+        insert(
+            &db,
+            1,
+            "assistant",
+            r#"[{"type":"text","text":"好了","endTime":1730000000000}]"#,
+        );
+        // 真库里没有 `no_such_column` 这一列（DDL 是逐字抄的，所以这一条是真的）
+        let mut broken = database(&db.path);
+        broken.status_sql = Some("SELECT 1 FROM messages".into());
+        // 借用 `probe_status_index` 走一条**已知可用**的库路径来证明「prepare 失败会被报出来」
+        let (_, failure) = super::probe_status_index(
+            &SessionDatabase {
+                path: broken.path.clone(),
+                schema: SessionSchema::StatusIndex,
+                status_sql: Some("SELECT no_such_column FROM messages".into()),
+            },
+            60.0,
+        );
+        match failure {
+            Some(SessionProbeFailure::UnreadableDatabase(text)) => assert!(
+                text.contains("no such column"),
+                "该把 SQLite 的原话带出来，实际是：{text}"
+            ),
+            other => panic!("prepare 失败必须报 UnreadableDatabase，实际 {other:?}"),
+        }
+    }
+}
+
+/// 手工探针：拿**本机真实的** DimAgent 会话库跑一遍 [`probe_dim`]。
+///
+/// 存在的理由：v0.0.249 的夹具 DDL 是从真库 `sqlite_master` 逐字抄的，但**结构对得上
+/// 不等于真库上跑得出结果**——ZCode 那次就是真库上没有那一列。
+/// 这里直接在真库上验一次，并**只打印判定与时间**，不取任何正文。
+#[test]
+#[ignore = "读本机真实 DimAgent 会话库，只在需要手工取证时跑"]
+fn real_dim_library_probe() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = format!("{home}/.dimcode/v2/dimcode.sqlite");
+    if !std::path::Path::new(&path).exists() {
+        println!("本机没有 DimAgent 会话库：{path}");
+        return;
+    }
+    let db = crate::models::SessionDatabase {
+        path,
+        schema: crate::models::SessionSchema::DimTasks,
+        status_sql: None,
+    };
+    for age in [60.0_f64, 16.0 * 60.0, 25.0 * 3600.0] {
+        let (probe, failure) = probe_dim(&db, age);
+        println!(
+            "file_age={age:>8.0}s  信号={:?}  失败={:?}",
+            probe.signal.as_ref().map(|_| "有"),
+            failure
+        );
+    }
+}

@@ -452,7 +452,7 @@ v0.0.245 起**灵动岛的展开态也在内**：冒烟用 `--expand` 启动参�
        **16 个声明了会话源却拿不到任何会话信号**：
        | 类别 | 档案 |
        | :--- | :--- |
-       | 对拍缺口（Swift 有路径，Rust 没有） | `aider` `chatgpt` `continue` `copilot` `cursor` `dim` `ego-browser` `goose` `hermes` `mimocode` `openviking` `opencode` `trae` `vibe-usage` `windsurf` |
+       | 对拍缺口（Swift 有路径，Rust 没有） | `aider` `chatgpt` `continue` `copilot` `cursor` `ego-browser` `goose` `hermes` `mimocode` `openviking` `opencode` `trae` `vibe-usage` `windsurf`（**v0.0.250 补掉了 `dim`**） |
        | Rust 独有能力没做完（Swift 压根没这个档案） | `vscode` |
      - `dim` / `mimocode` / `opencode` 值得单说：它们**声明了 `session_database`**，
        但 `engine` 的库路**只在 `schema == StatusIndex` 上跑**，
@@ -590,8 +590,13 @@ v0.0.245 起**灵动岛的展开态也在内**：冒烟用 `--expand` 启动参�
      其中三个是 `extern` 声明（不是函数）、两个是 `#[cfg]` 两分支的同名函数，
      真正没覆盖的只有 `is_screen_locked`（v0.0.225 已钉）与 `is_display_asleep`（被
      `presence_signals` 的真机冒烟间接覆盖）。
-   - **没做的**：Swift 侧也做一份同样的「未被用例覆盖的 `public func`」扫描，
-     然后做**双向**对照（哪边有哪边没有）。本轮只扫了 Rust 一侧。
+   - ~~**没做的**：Swift 侧也做一份同样的扫描~~ → ✅ **已做，`--swift` 开关**
+     （本节开头那句「Swift 侧查出 2 个真没有产生点 + 1 个只有测试引用」就是它给的）。
+     **仍没做的是双向对照**（哪边有哪边没有）——而**刻意不做**：两边模块划分不同，
+     按名字对会产出一份「看着像覆盖率、其实不是」的清单。
+     这个项目已经被同类统计坑过三次（29 → 13 → 8 三个互相矛盾的手工数字）。
+     真要对齐，该对的是**能力**（哪个 Agent 有没有会话语义），不是函数名——
+     而那件事 v0.0.247 已经用「16 个档案」那张表做完了。
 5. ~~`report.token` 与 Swift 侧令牌文件的路径/权限差异未逐行比对~~
    ✅ **v0.0.223 逐条比对了，并查出 Rust 侧一条会自我否定的安全实现**
    （取证见 [report.token 的形态校验]((../research/2026-09-28-report-token-shape-check.md)）：
