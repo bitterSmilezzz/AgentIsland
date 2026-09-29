@@ -4,6 +4,66 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.244] - 2026-09-29
+
+### 更正上一版那份取证：Swift 应用 target **曾经**编译成功过
+
+v0.0.243 写下的「这台机器没装 Xcode ⇒ Swift 应用 target 从来编不出来」是**错的**。
+同机在 **2026-09-28 20:32** 确实编译成功过：
+
+```sh
+$ ls -lT .build/…/Objects-normal/arm64/*.o
+Sep 28 20:32:31 2026  ActivitySearchFilter.o / DiagnosticsSnapshot.o
+Sep 28 20:32:35 2026  SettingsView.o / TokenAnalyticsView.o   # 约 40 个文件，前后 4 秒
+```
+
+那是**真实编译**、不是残留缓存（`.o` 时间戳分散在 4 秒内、且与
+`dist/AgentIsland-Swift.app` 及 `.build/out/Products/Release/AgentIsland` 同一时刻）。
+同机、同 SDK（`MacOSX27.0.sdk`，8 月 31 日就在）、无备用 toolchain，
+09-28 能编、09-29 不能。
+
+**已排除**：SDK 选择顺序、显式 `SDKROOT`、备用 toolchain、
+源码（`Sources/AgentIsland/` 最后一次改动是 v0.0.135 / 09-25，在两次编译之间没动过）。
+
+**推断（未证实，已标注）**：`pkgutil --pkgs` 里仍有 `com.apple.pkg.Xcode` 收据而
+`/Applications` 下已无 Xcode.app——Xcode 曾经装过、后来被移除。
+`SwiftUIMacros` 是 Xcode 闭源插件，CLT 不带。这能解释全部现象，
+但**没有证据**证明 Xcode 何时被谁移除。
+
+文档已按「验到 / 没验到」重写：
+[docs/research/2026-09-29-swift-app-target-needs-xcode.md](docs/research/2026-09-29-swift-app-target-needs-xcode.md)
+
+### 顺带修掉 v0.0.243 那道前置检查的两个问题
+
+① 它把插件目录写死成 `/Library/Developer/CommandLineTools/…`。
+**装好 Xcode 并 `xcode-select -s` 之后，那道检查仍然找不到插件，会误报成「没装 Xcode」。**
+改成跟着 `$(xcode-select -p)` 走。
+
+② 它只守了 release 那一段。**实测下来先炸的其实是测试门禁**——
+`swift build --build-tests` 会连带编译应用 target，同样撞上缺插件。
+只守一处等于没守。现在提到脚本前面，两条路径都过同一道检查，
+而且在任何编译开始**之前**就失败（原先要等 swift-frontend 跑一轮才炸）。
+
+### 修掉 UI 冒烟自己的一处证据污染
+
+`ui-smoke.sh` 原先只在**跑完之后**才 `pkill`，于是上一次冒烟留在后台的实例
+会和新实例一起往同一个累积日志里写：新实例撞上「42000 绑定失败」，
+而 `/__probe__` 那些兜底请求**记到了别人的日志里**——实测踩过一次，
+表现是三个窗口一个结果都没有。
+
+改成开跑前先清理。（端口被占本身不影响冒烟：驱动与读回都走 eval、不走 HTTP；
+但它让日志里的证据不再可信。）修完连跑两次，结果稳定一致（侧边栏 7 / 工作台 3）。
+
+### 一条要说明白的事
+
+`dist/AgentIsland-Swift.app` 里现存的是 **09-28 那份旧产物**，
+**不是**当前源码能重新构建出来的。别把它当成「随时可以退回去」的保证——
+`SKIP_SWIFT=1` 的代价正是在这里。
+
+### 门禁
+
+Rust 502 条通过 / 0 失败，release 编译警告 14，UI 冒烟通过，脱敏扫描零新增。
+
 ## [0.0.243] - 2026-09-29
 
 ### UI 冒烟：第一次真的把界面点一遍

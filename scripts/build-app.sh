@@ -75,6 +75,45 @@ if [[ "$CODE_VERSION" != "$VERSION" ]]; then
     exit 1
 fi
 
+# Swift 工具链前置检查。
+#
+# `@State` / `@Binding` 这些 SwiftUI 属性包装器是**宏**，由 `SwiftUIMacros` 插件实现，
+# 而它是 **Xcode 闭源提供的**——CommandLineTools 的 host/plugins 里只有
+# libObservationMacros 与 libSwiftMacros。没有它，整棵 SwiftUI 视图层编不出来，
+# 而且报错长得极不像这件事：
+#   先报「SwiftUIMacros.StateMacro could not be found」，再连锁出几十条
+#   「cannot find '$state' in scope」「self is immutable」「类型检查超时」，
+#   最后把一整条 4000 字符的 swift-frontend 命令行糊在脸上。
+# 那些 `self is immutable` **不是**代码写错了——先排掉这一层再去看代码。
+#
+# **两条 Swift 构建路径都要守**：`swift build --build-tests`（测试门禁）会连带编译
+# 应用 target，只守 release 那一段等于没守——实测正是测试门禁先炸的。
+check_swift_toolchain() {
+    local need_tests="${SKIP_TESTS:-0}" need_swift="${SKIP_SWIFT:-0}"
+    [[ "$need_tests" != "1" || "$need_swift" != "1" ]] || return 0
+    # 插件目录**必须跟着 `xcode-select -p` 走**。写死 CommandLineTools 的话，
+    # 装好 Xcode 并 `xcode-select -s` 之后这里仍然找不到插件 → 误报成「没装 Xcode」。
+    local dev_dir plugin_dir
+    dev_dir=$(xcode-select -p 2>/dev/null || echo /Library/Developer/CommandLineTools)
+    plugin_dir="$dev_dir/usr/lib/swift/host/plugins"
+    if ls "$plugin_dir" 2>/dev/null | grep -q SwiftUIMacros; then
+        return 0
+    fi
+    echo "✗ 当前 Swift 工具链里没有 SwiftUIMacros 插件，Swift 版编不出来。" >&2
+    echo "  xcode-select -p ⇒ $dev_dir" >&2
+    echo "  该插件由 Xcode 提供，只有 CommandLineTools 时没有它；" >&2
+    echo "  于是所有用 @State/@Binding 的 SwiftUI 视图都编不出来。" >&2
+    echo >&2
+    echo "  三选一：" >&2
+    echo "    ① 装 Xcode（xcode-select -s /Applications/Xcode.app）后重跑；" >&2
+    echo "    ② SKIP_SWIFT=1 SKIP_TESTS=1 跳过——代价是**没有 dist/${APP_NAME}-Swift.app" >&2
+    echo "       这条回退路，也跑不了 Swift 测试门禁**；" >&2
+    echo "    ③ 确认不再需要回退路，把 Swift 那几段从脚本里删掉。" >&2
+    exit 1
+}
+
+check_swift_toolchain
+
 # 测试门禁：打包前全量测试（SKIP_TESTS=1 跳过，仅供快速冒烟）
 if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
     echo "==> 测试门禁（SKIP_TESTS=1 可跳过）"
@@ -98,27 +137,8 @@ iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
 # 仍然构建它，是为了**留一条回退路**：一个不留退路的切换不是切换，是砸东西。
 # 出问题就 `open dist/AgentIsland-Swift.app`，一秒钟退回去。
 if [[ "${SKIP_SWIFT:-0}" != "1" ]]; then
-    # **前置检查**：`@State` / `@Binding` 这些 SwiftUI 属性包装器是**宏**，
-    # 由 `SwiftUIMacros` 插件实现，而它是 **Xcode 闭源提供的**——
-    # CommandLineTools 的 host/plugins 里只有 libObservationMacros 与 libSwiftMacros。
-    # 没有它，整棵 SwiftUI 视图层编不出来，而且报错长得极不像这件事：
-    # 先报「SwiftUIMacros.StateMacro could not be found」，再连锁出几十条
-    # 「cannot find '$state' in scope」「self is immutable」「类型检查超时」，
-    # 最后把一整条 4000 字符的 swift-frontend 命令行糊在脸上。
-    # 那些 `self is immutable` **不是**代码写错了——先排掉这一层再去看代码。
-    PLUGIN_DIR="/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins"
-    if ! ls "$PLUGIN_DIR" 2>/dev/null | grep -q SwiftUIMacros; then
-        echo "✗ 这台机器的 Swift 工具链里没有 SwiftUIMacros 插件，Swift 版编不出来。" >&2
-        echo "  xcode-select -p ⇒ $(xcode-select -p 2>/dev/null || echo '(未设置)')" >&2
-        echo "  该插件由 Xcode 提供，只装了 CommandLineTools 时没有它；" >&2
-        echo "  于是所有用 @State/@Binding 的 SwiftUI 视图都编不出来。" >&2
-        echo >&2
-        echo "  三选一：" >&2
-        echo "    ① 装 Xcode（xcode-select -s /Applications/Xcode.app）后重跑；" >&2
-        echo "    ② SKIP_SWIFT=1 跳过——代价是**没有 dist/${APP_NAME}-Swift.app 这条回退路**；" >&2
-        echo "    ③ 确认不再需要回退路，然后把这一步从脚本里删掉。" >&2
-        exit 1
-    fi
+    # 工具链前置检查在上面已经统一做过了（`check_swift_toolchain`），
+    # 这里不再重复——两处各写一份，迟早只改一处。
     echo "==> 构建 Swift 版（回退产物：dist/${APP_NAME}-Swift.app；SKIP_SWIFT=1 可跳过）"
     swift build -c release --product AgentIsland
     swift build -c release --product AgentIslandCLI
