@@ -784,9 +784,13 @@ const MILLIS_EPOCH_FLOOR: f64 = 10_000_000_000.0;
 ///
 /// 返回 `(信号, 失败原因)`——失败原因单独返回而不是塞进 `SessionProbe`，
 /// 是为了让「读不到」在这一层就可见，调用方决定要不要盖到快照上。
+/// `now_ms` 同样由**引擎**盖章（理由同 [`probe_opencode`]）。
+/// 第一版在这里调 `now_secs()` 自己取墙上时钟，于是拿行里的 epoch
+/// 与「另一个钟」比——同一次采样里混两口钟，测试也就没法钉住任何时间相关行为。
 pub fn probe_status_index(
     database: &crate::models::SessionDatabase,
     file_age_secs: f64,
+    now_ms: i64,
 ) -> (SessionProbe, Option<SessionProbeFailure>) {
     if file_age_secs > STATUS_INDEX_MAX_AGE_SECS {
         return (SessionProbe::default(), None);
@@ -853,7 +857,7 @@ pub fn probe_status_index(
     };
     // epoch 缺失或荒谬时退回文件年龄——总得有个「多久之前」
     let age = if epoch > 0.0 {
-        (now_secs() - epoch).max(0.0)
+        (now_ms as f64 / 1000.0 - epoch).max(0.0)
     } else {
         file_age_secs
     };
@@ -892,6 +896,13 @@ pub fn probe_status_index(
     (SessionProbe::default(), None)
 }
 
+/// 探测层测试用的**固定时钟**（2025-09-28T09:46:40Z）。
+/// 有了它，时间相关的断言不再依赖「跑测试的那一刻」——
+/// 否则同一份代码在慢机器上会偶尔变红，而那与代码对错无关。
+#[cfg(test)]
+const FIXED_NOW_MS: i64 = 1_757_000_000_000;
+
+#[cfg(test)]
 fn now_secs() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2638,7 +2649,7 @@ mod status_index_tests {
     }
 
     fn secs_ago(n: f64) -> f64 {
-        now_secs() - n
+        FIXED_NOW_MS as f64 / 1000.0 - n
     }
 
     // ── 这一轮的真问题：坏列名必须**报错**，不能静默 ────────────────
@@ -2656,11 +2667,11 @@ mod status_index_tests {
         let (sandbox, path) = zcode_fixture(
             "statusindex-badcol",
             ZCODE_DDL,
-            &[("t1", "completed", now_secs() as i64 * 1000)],
+            &[("t1", "completed", FIXED_NOW_MS)],
         );
         // 照搬真机上那条坏 SQL：查 `id`，而表里只有 `task_id`
         let broken = db(&path, "SELECT id, task_status, updated_at FROM tasks LIMIT 1;");
-        let (probe, failure) = probe_status_index(&broken, 0.0);
+        let (probe, failure) = probe_status_index(&broken, 0.0, FIXED_NOW_MS);
         assert!(probe.signal.is_none(), "坏查询不该凭空造出信号");
         let failure = failure.expect("prepare 失败必须留下原因，否则它与「没有终态」同形");
         assert!(
@@ -2675,9 +2686,9 @@ mod status_index_tests {
         let (sandbox, path) = zcode_fixture(
             "statusindex-ok",
             ZCODE_DDL,
-            &[("t1", "completed", now_secs() as i64 * 1000)],
+            &[("t1", "completed", FIXED_NOW_MS)],
         );
-        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0, FIXED_NOW_MS);
         assert!(failure.is_none(), "查询应当跑得通：{failure:?}");
         match probe.signal {
             Some(Signal::Completed(fp)) => assert_eq!(fp, fingerprint(&path, "t1")),
@@ -2695,7 +2706,7 @@ mod status_index_tests {
             schema: SessionSchema::StatusIndex,
             status_sql: None,
         };
-        let (probe, failure) = probe_status_index(&no_sql, 0.0);
+        let (probe, failure) = probe_status_index(&no_sql, 0.0, FIXED_NOW_MS);
         assert!(probe.signal.is_none());
         assert!(
             matches!(failure, Some(SessionProbeFailure::UnreadableDatabase(_))),
@@ -2708,7 +2719,7 @@ mod status_index_tests {
     #[test]
     fn a_missing_database_is_not_a_failure() {
         let (probe, failure) =
-            probe_status_index(&db("/nonexistent/tasks-index.sqlite", ZCODE_SQL), 0.0);
+            probe_status_index(&db("/nonexistent/tasks-index.sqlite", ZCODE_SQL), 0.0, FIXED_NOW_MS);
         assert!(probe.signal.is_none());
         assert!(failure.is_none(), "库不存在不该报「读不到」——那是「没跑过」");
     }
@@ -2725,9 +2736,9 @@ mod status_index_tests {
             let (sandbox, path) = zcode_fixture(
                 "statusindex-attn",
                 ZCODE_DDL,
-                &[("t1", status, now_secs() as i64 * 1000)],
+                &[("t1", status, FIXED_NOW_MS)],
             );
-            let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+            let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0, FIXED_NOW_MS);
             assert!(failure.is_none(), "{status} 查询失败：{failure:?}");
             match probe.signal {
                 Some(Signal::Attention(_, msg)) => {
@@ -2753,9 +2764,9 @@ mod status_index_tests {
         let (sandbox, path) = zcode_fixture(
             "statusindex-stale",
             ZCODE_DDL,
-            &[("t1", "completed", (now_secs() - 20.0 * 60.0) as i64 * 1000)],
+            &[("t1", "completed", FIXED_NOW_MS - 20 * 60 * 1000)],
         );
-        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0, FIXED_NOW_MS);
         assert!(failure.is_none());
         assert!(
             probe.signal.is_none(),
@@ -2771,9 +2782,9 @@ mod status_index_tests {
         let (sandbox, path) = zcode_fixture(
             "statusindex-old",
             ZCODE_DDL,
-            &[("t1", "pending_approval", now_secs() as i64 * 1000)],
+            &[("t1", "pending_approval", FIXED_NOW_MS)],
         );
-        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 25.0 * 3600.0);
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 25.0 * 3600.0, FIXED_NOW_MS);
         assert!(probe.signal.is_none());
         assert!(failure.is_none(), "过期不是故障");
         drop(sandbox);
@@ -2788,10 +2799,10 @@ mod status_index_tests {
         let (sandbox, path) = zcode_fixture(
             "statusindex-epoch",
             ZCODE_DDL,
-            &[("t1", "completed", now_secs() as i64)], // 秒
+            &[("t1", "completed", FIXED_NOW_MS / 1000)], // 秒
         );
         let db_ref = db(&path, ZCODE_SQL);
-        let as_seconds = probe_status_index(&db_ref, 0.0).0;
+        let as_seconds = probe_status_index(&db_ref, 0.0, FIXED_NOW_MS).0;
         assert!(
             matches!(as_seconds.signal, Some(Signal::Completed(_))),
             "秒 epoch 应当被认出来，实际 {:?}",
@@ -2807,7 +2818,7 @@ mod status_index_tests {
         .unwrap();
         drop(conn);
 
-        let as_millis = probe_status_index(&db_ref, 0.0).0;
+        let as_millis = probe_status_index(&db_ref, 0.0, FIXED_NOW_MS).0;
         assert!(
             matches!(as_millis.signal, Some(Signal::Completed(_))),
             "毫秒 epoch 被当成秒就会算成 5 万年前，于是完成态永远过期，实际 {:?}",
@@ -2824,7 +2835,7 @@ mod status_index_tests {
             ZCODE_DDL,
             &[("t1", "running", now_secs() as i64 * 1000)],
         );
-        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0);
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0, FIXED_NOW_MS);
         assert!(
             probe.signal.is_none(),
             "「running」不在词表里，无信号是对的，实际 {:?}",
@@ -2916,7 +2927,7 @@ mod status_index_tests {
                 .and_then(|t| t.elapsed().ok())
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(f64::INFINITY);
-            let (probe, failure) = probe_status_index(database, age);
+            let (probe, failure) = probe_status_index(database, age, FIXED_NOW_MS);
             println!(
                 "· {}：库龄 {:.0}s · 信号 {:?} · 故障 {:?}",
                 profile.id, age, probe.signal, failure
@@ -3420,6 +3431,7 @@ mod dim_probe_tests {
                 status_sql: Some("SELECT no_such_column FROM messages".into()),
             },
             60.0,
+            super::FIXED_NOW_MS,
         );
         match failure {
             Some(SessionProbeFailure::UnreadableDatabase(text)) => assert!(

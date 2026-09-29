@@ -1366,6 +1366,30 @@ const UI_SMOKE_JS: &str = r#"(function () {
       window.__uiSmoke.fatal = String((error && error.message) || error);
     }
     window.__uiSmoke.errs = window.__aiErrs || [];
+    // **驱动自己把结果发出去**。
+    //
+    // 原来是由 Rust 在固定时刻（+10.6s）eval 一次读回，而驱动的耗时是**可变的**
+    // （灵动岛多出「等展开」与「搜索」两段）。机器一忙，读回就落在驱动跑完之前，
+    // 于是日志里留下 `"state":"running"`、判据随之变红——实测偶发。
+    //
+    // 定时读回不该和被测对象赛跑。**让被测对象自己报告**就没有竞态了；
+    // 固定读回保留着，只当诊断用。
+    try {
+      var shell = document.documentElement.className.indexOf('shell-sidebar') >= 0
+        ? 'sidebar' : (document.documentElement.className.indexOf('shell-workbench') >= 0 ? 'workbench' : 'island');
+      window.__TAURI__.core.invoke('log_from_ui', {
+        message: 'SMOKE_RESULT ' + shell + ' ' + JSON.stringify({
+          state: window.__uiSmoke.state,
+          found: window.__uiSmoke.found,
+          steps: window.__uiSmoke.steps,
+          bootArgs: window.__uiSmoke.bootArgs,
+          cards: window.__uiSmoke.cards,
+          search: window.__uiSmoke.search,
+          emptyState: window.__uiSmoke.emptyState,
+          errs: window.__uiSmoke.errs
+        })
+      }).catch(function () {});
+    } catch (e) { /* 发不出去就算了，定时读回还在 */ }
   })();
   return 'started';
 })()"#;
@@ -2726,5 +2750,76 @@ mod visibility_rule_sentinel {
             .filter(|l| l.contains("export const isVisible") || l.contains("function isVisible"))
             .count();
         assert_eq!(definitions, 1, "`isVisible` 被定义了 {definitions} 次");
+    }
+}
+
+/// **采样时钟只能由引擎盖章，探测层不许自己取当前时间。**
+///
+/// 这条规矩写在 `engine.rs` 的 `probe_cached_multi` 上（`now: i64` 注释）。
+/// 破它的代价不是难看，是**测不出来**：探测层拿行里的 epoch 与另一个钟比，
+/// 测试里写死的历史时间戳必然落到保质期外，那一支永远走不到。
+/// v0.0.258 前后一共有两个地方破过（`probe_opencode`、`probe_status_index`）。
+///
+/// 这条守护只看**生产段**（第一个测试模块 `mod tests;` 之前的部分），
+/// 并允许 `#[cfg(test)]` 覆盖的零星例外——`FIXED_NOW_MS` 那种测试常量就住在那里。
+/// 假设：本文件的测试模块都在生产代码之后（现状如此）；若哪天不是了，
+/// 本条会误报——**那时要改的是这条守护，不是把探测层改回去取墙上时钟**。
+#[cfg(test)]
+mod sampling_clock_sentinel {
+    fn session_rs() -> String {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session.rs");
+        std::fs::read_to_string(&p).expect("应当读得到 src/session.rs")
+    }
+
+    /// 变异验证：第一版只看**调用点**的 `SystemTime::now()` 字面量，
+    /// 于是 `now_secs()` 这个住在 `#[cfg(test)]` 区域（被当成「测试常量」放行）
+    /// 的辅助函数可以**被生产代码调**而完全隐形——**间接调用看不见**。
+    /// 所以除了字面量，还必须盯住「取墙上时钟的辅助函数被调用」。
+    #[test]
+    fn the_probe_layer_never_reads_the_wall_clock() {
+        const CLOCK_READS: [&str; 3] = ["SystemTime::now()", "Utc::now()", "now_secs()"];
+        let src = session_rs();
+        // 边界 = **第一个内联测试模块**（带花括号的那个）。
+        //
+        // ⚠️ 第一版错用 `split("mod tests;")`，而那句在**第 8 行**
+        // ——它是独立测试文件的声明，于是「生产段」只剩 7 行，
+        // 守护**结构上就抓不到任何东西**、也永远不会红。
+        // 第三次栽在同一件事上：造门禁 ≠ 门禁有效。
+        let boundary = src
+            .lines()
+            .position(|l| l.starts_with("mod ") && l.trim_end().ends_with('{'))
+            .unwrap_or(0);
+        assert!(
+            boundary > 200,
+            "session.rs 的内联测试模块没找到（边界落在第 {boundary} 行）——             守护的有效范围已经失效，**先修守护**，别当成探测层出了问题"
+        );
+        let production: String = src.lines().take(boundary).collect::<Vec<_>>().join("\n");
+        let lines: Vec<&str> = production.lines().collect();
+        let mut offenders: Vec<String> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            // 注释里提到这些名字是**散文**，不是调用——「文档说这里曾经取过墙上时钟」
+            // 会被当成「这里在取墙上时钟」，那是误报。
+            let t = line.trim_start();
+            if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                continue;
+            }
+            let hit = CLOCK_READS.iter().find(|p| line.contains(*p));
+            let Some(needle) = hit else { continue };
+            // 往前 4 行里若有 `#[cfg(test)]`，那是测试常量，允许
+            let covered = lines[i.saturating_sub(4)..i]
+                .iter()
+                .any(|l| l.contains("#[cfg(test)]"));
+            if !covered {
+                offenders.push(format!("第 {} 行：{}", i + 1, line.trim()));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "探测层不许自己取当前时间 —— 时钟由引擎盖章传进来：\n{}\n\
+             破它的后果不是难看，是**测不出来**：测试里写死的时间戳必然落到保质期外，\
+             那一支永远走不到。\n\
+             （辅助函数也算：定义放在 cfg(test) 区、被生产代码调用，一样是破规矩。）",
+            offenders.join("\n")
+        );
     }
 }

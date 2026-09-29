@@ -852,7 +852,7 @@ impl ActivityEngine {
         let (probe, failure) = match database.schema {
             crate::models::SessionSchema::DimTasks => session::probe_dim(database, file_age),
             crate::models::SessionSchema::OpenCode => session::probe_opencode(database, file_age, now),
-            _ => session::probe_status_index(database, file_age),
+            _ => session::probe_status_index(database, file_age, now),
         };
 
         (

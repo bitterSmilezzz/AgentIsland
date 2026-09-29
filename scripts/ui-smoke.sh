@@ -65,7 +65,10 @@ if [[ -d "dist/AgentIsland.app" ]]; then
 fi
 
 echo "==> 冒烟结果"
-SMOKE=$(grep '\[smoke\]' "$LOG" || true)
+# 优先用**驱动自报**的结果（`SMOKE_RESULT`）——它没有定时读回那个竞态。
+# `island/smoke` 那一行是固定时刻的 eval 读回，**只当诊断**，不作判据。
+SMOKE=$(grep '\[webview\] SMOKE_RESULT' "$LOG" | sed 's/^\[webview\] //' || true)
+[[ -n "$SMOKE" ]] || SMOKE=$(grep '\[smoke\]' "$LOG" || true)
 if [[ -z "$SMOKE" ]]; then
     echo "✗ 一行 [smoke] 都没有——冒烟压根没跑起来"
     echo "  日志里前 20 行："
@@ -82,7 +85,7 @@ FLAT=$(echo "$SMOKE" | tr -d '\\')
 
 fail=0
 for label in island sidebar workbench; do
-    line=$(echo "$FLAT" | grep -F "${label}/smoke" || true)
+    line=$(echo "$FLAT" | grep -F "SMOKE_RESULT ${label} " || true)
     if [[ -z "$line" ]]; then
         echo "✗ ${label}：没有结果"
         fail=1
