@@ -1282,6 +1282,52 @@ const UI_SMOKE_JS: &str = r#"(function () {
       await clickAll('[data-back]');
       await clickAll('[data-report-format]');
       await clickAll('[data-search]');
+      // **真打一个字进去**：点开搜索框不等于搜索能用。
+      //
+      // `[data-search]` 只把输入框显示出来；真正干活的是 `#searchInput` 的
+      // `input` 事件 → 写 `st.searchText` → 重画并过滤列表。这三步任何一步断掉，
+      // 界面都只是「多了一个输入框」而**不报任何错**——点它的人看不出搜索坏了。
+      //
+      // 这里派发真实的 `input` 事件（与用户敲键盘走的是同一条路），
+      // 再验过滤**真的跑了**：空态里会出现「未找到匹配「…」的智能体」。
+      //
+      // ⚠️ 边界：本机没有正在跑的 Agent，所以**只有「无匹配」这一支可观测**；
+      // 「有匹配时列表变短」那一支要等真有 Agent 时才验得到。
+      //
+      // ⚠️ 位置也重要：这一段必须排在 `clickAll('[data-collapse]')` **之前**——
+      // 收起之后卡片连同输入框一起没了，第一版就栽在这儿（点开过、找不到输入框，
+      // 于是「输入框不存在」和「我没在正确时机找」看起来一模一样）。
+      window.__uiSmoke.search = { inputFound: false, filtered: false };
+      var searchInput = document.querySelector('#searchInput');
+      if (searchInput) {
+        window.__uiSmoke.search.inputFound = true;
+        var probe = 'zz-不存在的名字';
+        searchInput.value = probe;
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await wait(240);
+        // ⚠️ **这里刻意不做通过/失败的判定。**
+        //
+        // 试过两次都失败，两次的原因都记在这儿，因为它们**不是**同一类问题：
+        // ① 判据写成 `indexOf('未找到匹配') >= 0 || indexOf('empty') >= 0`——
+        //    后半句会匹配 HTML 里**任何**含 "empty" 的子串 ⇒ 假阳性。
+        // ② 收紧成只认「未找到匹配」之后，**去掉输入事件它照样通过**。
+        //    真因不是判据松，而是**这台机器上没有正在跑的 Agent**：
+        //    `visible` 本来就是空的，于是搜索框一打开空态就渲染，
+        //    跟打了什么字**无法区分**。
+        //
+        // 所以「过滤真的生效了」这件事**在本机不可验**。一个证不了失败的门禁
+        // 比没有门禁更糟——它看起来像覆盖。所以这里只**跑这一步**：
+        // 它仍能抓到崩溃（异常会进 `errs`），但不假装验过了什么。
+        var html = root().innerHTML;
+        window.__uiSmoke.search.emptyStateRendered = html.indexOf('未找到匹配') >= 0;
+        window.__uiSmoke.search.verdict = '未验：本机没有在跑的 Agent，空态与「过滤生效」无法区分';
+        window.__uiSmoke.search.value = searchInput.value;
+        snap('搜索过滤「' + probe + '」');
+        // 还原，别把「搜索开着」的状态留给后面的人看
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await wait(120);
+      }
       await clickAll('[data-theme]');
       await clickAll('[data-collapse]');
       window.__uiSmoke.state = 'done';
