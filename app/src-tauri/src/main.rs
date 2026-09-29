@@ -378,12 +378,21 @@ fn place_island(
     };
     let wa = work_area_for(&window, &state);
     let (left, top) = placement::place_with(edge, anchor, width, height, wa);
+    log_line(&format!(
+        "[place] 请求 {width}×{height} 算得 ({left},{top})；改之前 {:?}",
+        window.outer_size()
+    ));
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
     window
         .set_position(LogicalPosition::new(left, top))
         .map_err(|e| e.to_string())?;
+    log_line(&format!(
+        "[place] 改之后 {:?} / {:?}",
+        window.outer_size(),
+        window.outer_position()
+    ));
     Ok(())
 }
 
@@ -1120,6 +1129,15 @@ const WEBVIEW_PROBE_JS: &str = r#"(function () {
       errs: window.__aiErrs || [],
       rootChildren: root ? root.children.length : -1,
       rootHtmlLen: root ? root.innerHTML.length : -1,
+      // 窗口在屏幕上的几何。⚠️ **这些字段在本项目的 WKWebView 里是空的**：
+      // 三个窗口（含隐藏的）一律报 `outerWidth/outerHeight = 0`、
+      // `screenX/screenY` 恒为 `0/956`（= 屏幕高度，像填充物的默认值）。
+      // 拿它下「窗口被推出屏幕了」这种结论会踩空——权威值在 Rust 侧，
+      // 见 setup 里 place 之后的 `[boot] 落位`。
+      win: {
+        x: screenX, y: screenY, w: outerWidth, h: outerHeight,
+        iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio
+      },
       res: (performance.getEntriesByType('resource') || []).map(function (e) {
         return e.name.replace('tauri://localhost/', '') + '|' + e.responseStatus + '|' + Math.round(e.duration);
       }),
@@ -1711,6 +1729,26 @@ fn main() {
             probe_webviews(app.handle(), 0);
             probe_webviews(app.handle(), 1500);
             probe_webviews(app.handle(), 5000);
+            // **落位之后再报一次几何**：上面 `[boot]` 那组是**初始配置值**，
+            // 发生在重定位之前——想知道岛此刻究竟在屏幕哪里，只能看这一行。
+            // （webview 里的 `screenX/outerWidth` 在本项目里是空的，不可信。）
+            {
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                    for label in ["island", "sidebar", "workbench"] {
+                        let Some(w) = app.get_webview_window(label) else {
+                            continue;
+                        };
+                        let visible = w.is_visible().unwrap_or(false);
+                        log_line(&format!(
+                            "[boot] 落位 {label}：pos={:?} size={:?} visible={visible}",
+                            w.outer_position(),
+                            w.outer_size()
+                        ));
+                    }
+                });
+            }
             if ui_smoke_requested() {
                 log_line("[smoke] 已按 --ui-smoke 打开界面冒烟");
                 schedule_ui_smoke(app.handle());
