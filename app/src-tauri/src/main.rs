@@ -1346,6 +1346,20 @@ const UI_SMOKE_JS: &str = r#"(function () {
       }
       await clickAll('[data-theme]');
       await clickAll('[data-collapse]');
+      // **工作台监控栏的空态到底在不在**。
+      //
+      // 拍图时左栏看着是空的，而代码里写着 `还没有检测到运行中的智能体`。
+      // 分不清是「没进 DOM」还是「11px + opacity .5 太暗」——前者是 bug、后者是观感，
+      // 修法完全不同。直接问 DOM，不靠眼睛。
+      var monitorBox = document.querySelector('[data-wb-monitor]');
+      var emptyEl = document.querySelector('.wb-empty');
+      window.__uiSmoke.emptyState = {
+        monitorBox: !!monitorBox,
+        emptyEl: !!emptyEl,
+        text: emptyEl ? (emptyEl.textContent || '').slice(0, 30) : '',
+        // 元素在但看不见 ⇒ 尺寸或颜色有问题，一并量出来
+        box: emptyEl ? emptyEl.getBoundingClientRect().height : -1
+      };
       window.__uiSmoke.state = 'done';
     } catch (error) {
       window.__uiSmoke.state = 'threw';

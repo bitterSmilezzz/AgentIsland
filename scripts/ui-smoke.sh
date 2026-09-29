@@ -113,6 +113,22 @@ for label in island sidebar workbench; do
     # 因为本机没有在跑的 Agent，空态与「过滤生效」**无法区分**。
     # 证不了失败的门禁比没有门禁更糟（它看起来像覆盖），所以只保留这一步本身：
     # 它仍能抓到崩溃（异常进 errs），但不假装验过什么。
+    # 工作台监控栏在**没有 Agent 在跑**时必须给出空态文案。
+    #
+    # 这条是被拍图引出来的：整窗截图里左栏看着是空的，而代码写着
+    # `还没有检测到运行中的智能体`。分不清「没进 DOM」（bug）与「太暗看不见」（观感）——
+    # 直接问 DOM 就分清了：**元素在、52px 高、文案正确** ⇒ 不是缺陷。
+    # 判据因此只钉「在不在」，不钉「看不看得清」——后者是观感，不该由门禁裁决。
+    # **只有工作台有监控栏**——灵动岛与侧边栏压根没有 `[data-wb-monitor]`，
+    # 它们报 `emptyEl:false` 是正确的。第一版没按形态收窄，于是三个窗口一起判失败。
+    if [[ "$label" == "workbench" ]] && echo "$line" | grep -q '"emptyState"'; then
+        if ! echo "$line" | grep -q '"emptyEl":true'; then
+            echo "✗ ${label}：监控栏没有 Agent 在跑，却没有空态文案 —— 一片空白会被看成「界面没加载」"
+            fail=1
+        else
+            echo "    ${label}  监控栏空态在场（$(echo "$line" | grep -o '"box":[0-9-]*' | head -1 | tr -d '\n')）"
+        fi
+    fi
     if echo "$line" | grep -q '"inputFound":true'; then
         echo "    ${label}  搜索已走到（输入框 → 派发输入事件 → 重画）｜**过滤是否生效未验**，见驱动注释"
     fi
