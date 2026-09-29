@@ -10,9 +10,13 @@
 和 [23 · 两端口径对照表](23-swift-rust-parity-matrix.md)，再读 [04 · 实施计划](04-plan.md)。
 M1 的五态回放、三方言 fixture 与 `provider.rs` 原子写/掩码守护现已完成；
 M2 本机构建及真工作区实现已完成，M5 对照表已建立。
-M3 的 12 个模块已全部迁入（v0.0.161–186），**§4.1 仍在补证据**：
-安装判定与自报归因已于 v0.0.197 对齐，`SessionProbeHealth` 原因链与
-`activeSessions` 真口径尚未迁。
+M3 的 12 个模块已全部迁入（v0.0.161–186）。
+安装判定与自报归因已于 v0.0.197 对齐；
+`SessionProbeHealth` 原因链（`SessionProbeFailure`）与 `activeSessions` 真口径
+（`FileActivityResult::active_sessions`，按 `active_session_window` 数会话文件个数）
+**也已迁入**——原先这里写着「尚未迁」，是 v0.0.221 之后没清掉的旧文字
+（2026-09-29 逐条核实：`session.rs` 里 `SessionProbeFailure` 有 39 处引用，
+`filemon.rs` 有 `count_active_sessions` 的真实计算）。
 
 Phase 0/0'/1/2/3/4 已收尾（逐条状态见 [04 · 实施计划](04-plan.md)）。
 Rust 端是 **island + sidebar + workbench 三个窗口**（v0.0.222 起第三个形态落地），

@@ -8,7 +8,9 @@
 > 不允许「两边都有但算法不同」。** 本表的用途就是把第二类逐条揪出来——
 > 迁移 Phase 1/2/3 的优先级由它决定：先修「不一致」，再补「只在 Swift 有」。
 >
-> Swift 端使用原生 SwiftUI；Rust 端使用自己的 `app/ui/`，其 sidebar 尚未实现。
+> Swift 端使用原生 SwiftUI；Rust 端使用自己的 `app/ui/`。
+> ~~其 sidebar 尚未实现~~ → ✅ **v0.0.187–193 已实现**（三个形态：灵动岛 / 侧边栏 / 工作台，
+> 2026-09-29 核实：`tauri.conf.json` 三个窗口俱在，`app/ui/js/shell.js` 按形态分派）。
 > 本表最初写于 v0.0.158，所列文件行数和行号保留调查时的快照；v0.0.161–162 的口径修正标在 §2.3。
 
 ## 1. 总览：规模差
@@ -129,7 +131,7 @@ Rust 侧 14 个 id 见 [registry.rs:5-238](../../app/src-tauri/src/registry.rs#L
 | 进程监控 | [ProcessMonitor.swift](../../Sources/AgentIslandCore/ProcessMonitor.swift) 700 行：libproc 直读进程表 | [procmon.rs](../../app/src-tauri/src/procmon.rs) 129 行：`sysinfo` 0.33 | Swift 直读 `/dev` 级接口 + 自定义匹配（pathContains/pathExcludes/hostBundleIDs）；Rust 的 `AgentProfile` **没有 pathContains / hostBundleIDs 字段**——见 §2.3 与 §6 |
 | 文件活动 | [FileMonitor.swift](../../Sources/AgentIslandCore/FileMonitor.swift) 634 行：后台递归 + O(1) 缓存 + 限深 | [filemon.rs](../../app/src-tauri/src/filemon.rs) 138 行：同步遍历 | Rust 无后台队列、无深度缓存分层；`max_depth 4` + 扩展名白名单（[filemon.rs:105](../../app/src-tauri/src/filemon.rs#L105)） |
 | 会话解析 | [AgentSessionInspector.swift](../../Sources/AgentIslandCore/AgentSessionInspector.swift) 1687 行：5 种方言 + 专有协议 | [session.rs](../../app/src-tauri/src/session.rs) 414 行：4 个 id 专属 `probe_*` | | 分派方式 | Swift 按**档案声明的方言** | ⚠️ **v0.0.213 起按方言分派**（`SessionDialect` 五档 + `AgentProfile.session_dialect`，五个档案已声明）。**`GenericTail` 内部仍按 id 分流**——Swift 那一个 `detect` 按内容吃两种形状，Rust 是三个独立解析器，合成内容驱动检测器是独立一块 | |
-| Token 用量 | [TokenUsageMonitor.swift](../../Sources/AgentIslandCore/TokenUsageMonitor.swift) 1295 行 + [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) 512 行 + [ReadonlyDB.swift](../../Sources/AgentIslandCore/ReadonlyDB.swift) 159 行：SQLite + JSONL 双源 | [tokens.rs](../../app/src-tauri/src/tokens.rs) 1244 行 + [sqlite.rs](../../app/src-tauri/src/sqlite.rs) 113 行：JSONL + **两类 SQLite 方言** | ⚠️ **已对齐**：v0.0.168 起也读 SQLite（OpenCode 的 `message.data` 与 DimAgent 的 `usage_ledger`，净口径逐条照搬）；v0.0.169 起 JSONL 净口径、记录形状与响应级去重对齐；v0.0.170 起**保留口径对齐**（70 天窗口 / 折入保和 / 单文件 20,000 条上限 / 戳判定 / 只承认完整行的续读游标）。**仍缺**：① `statusIndex` 不含 token（设计如此）② Rust 侧没有 workbuddy/workbuddy-ai 档案，那两家的 JSONL 用量读不到 |
+| Token 用量 | [TokenUsageMonitor.swift](../../Sources/AgentIslandCore/TokenUsageMonitor.swift) 1295 行 + [StructuredTokenUsageIndex.swift](../../Sources/AgentIslandCore/StructuredTokenUsageIndex.swift) 512 行 + [ReadonlyDB.swift](../../Sources/AgentIslandCore/ReadonlyDB.swift) 159 行：SQLite + JSONL 双源 | [tokens.rs](../../app/src-tauri/src/tokens.rs) 1244 行 + [sqlite.rs](../../app/src-tauri/src/sqlite.rs) 113 行：JSONL + **两类 SQLite 方言** | ⚠️ **已对齐**：v0.0.168 起也读 SQLite（OpenCode 的 `message.data` 与 DimAgent 的 `usage_ledger`，净口径逐条照搬）；v0.0.169 起 JSONL 净口径、记录形状与响应级去重对齐；v0.0.170 起**保留口径对齐**（70 天窗口 / 折入保和 / 单文件 20,000 条上限 / 戳判定 / 只承认完整行的续读游标）。**仍缺**：① `statusIndex` 不含 token（设计如此）② **workbuddy / workbuddy-ai 的 **JSONL token 用量读不到**——档案本身 v0.0.221 已补上（`registry.rs` 两个 id 俱在，并各带 `status_sql`），所以「Rust 侧没有这两个档案」是旧文字；但 `tokens.rs` 里 **0 处** workbuddy 引用，**token 源仍未接**（2026-09-29 逐条核实，别把这半句一起改成已完成） |
 | Token 估价 | [TokenCostEstimator.swift](../../Sources/AgentIslandCore/TokenCostEstimator.swift) 113 行：37 条官方费率 + 3:1 混合加权；估不出来返回 nil | [cost.rs](../../app/src-tauri/src/cost.rs)：同表、同顺序、同算法、同边界（估不出来就不报） | ✅ **已对齐（v0.0.166）**：Rust 原 `price_lookup` 的 5 档粗分档已删。`cost::tests::swift_table_parity` 在 Rust 测试里**直接解析 Swift 源表**逐值逐序比对，改一个数就红（已双向验证）。成本是估的还是记录的由 `cost_estimated` 显式标出 |
 | 本地 HTTP 入口 | [LocalEventHTTP.swift](../../Sources/AgentIslandCore/LocalEventHTTP.swift) 179 行 + `Sources/AgentIsland/LocalEventServer.swift` | [webhook.rs](../../app/src-tauri/src/webhook.rs) 152 行 | 端口/路由一致（41999，`/notify` `/event` `/session`）；**Token 落盘位置不同**：Swift 与引擎同进程管理，Rust 写 `config_dir()/report.token`（[webhook.rs:16-18](../../app/src-tauri/src/webhook.rs#L16)）。ADR 0009 口径需复核 |
 
