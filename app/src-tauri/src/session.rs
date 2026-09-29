@@ -3459,3 +3459,276 @@ fn real_dim_library_probe() {
         );
     }
 }
+
+/// OpenCode 及其同表 fork（小米 MiMo Code / mimocode）：`messages.time` 里有 `created` / `completed`。
+///
+/// 对齐 Swift `inspectOpenCodeDatabase` + `openCodeSignal`
+/// （`AgentSessionInspector.swift:945` / `:1022`）。**这一族是完整搬过来的**，
+/// 与 [`probe_dim`] 不同——Dim 那边缺的是通用检测器，这里不依赖它。
+///
+/// | 最新一行 | 判定 |
+/// | :--- | :--- |
+/// | `assistant` 且 `time.completed` 在 15 分钟内 | 已完成 |
+/// | `assistant` 只有 `time.created` 且在 5 分钟内 | 在途「正在生成回复」 |
+/// | `user` 且 `time.created` 在 5 分钟内 | 在途「思考规划中」 |
+/// | 其余 | 无信号 |
+///
+/// **在途只给 5 分钟上限**：崩溃留下的未完成行不该把岛永久钉在工作态
+/// —— 与其它方言同一取舍。完成态给 15 分钟，之后回到待机。
+///
+/// ## 表名必须现查
+///
+/// 这一族的表名跨版本变过（老库 `message` / `session`，当前版本
+/// `session_message` / `session_v2`）。认不出来就如实说「不是这一族的库」，
+/// **不拿猜的表名去查**——那会查出一片零，看起来像「没有会话」而其实是自己瞎了。
+const OPENCODE_MAX_AGE_SECS: f64 = 24.0 * 3600.0;
+const OPENCODE_COMPLETED_MAX_AGE_SECS: f64 = 15.0 * 60.0;
+const OPENCODE_ACTIVE_MAX_AGE_SECS: f64 = 300.0;
+
+fn table_exists(connection: &rusqlite::Connection, name: &str) -> bool {
+    connection
+        .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1",
+        )
+        .and_then(|mut stmt| stmt.query([name]).map(|mut rows| rows.next().is_ok_and(|r| r.is_some())))
+        .unwrap_or(false)
+}
+
+/// 纯函数版判定（形状与真机一致）。`rows` 按 rowid 降序，**第一条就是最新一条**。
+fn opencode_signal(
+    rows: &[(String, String)],
+    agent_id: &str,
+    now_ms: i64,
+) -> Option<Signal> {
+    let (id, json) = rows.first()?;
+    let object: serde_json::Value = serde_json::from_str(json).ok()?;
+    let moment = |key: &str| -> Option<i64> {
+        object
+            .get("time")?
+            .get(key)?
+            .as_i64()
+    };
+    let fingerprint = format!("{agent_id}-msg-{id}");
+    match object.get("role").and_then(|r| r.as_str()).unwrap_or("") {
+        "assistant" => {
+            if let Some(completed) = moment("completed") {
+                if now_ms - completed <= OPENCODE_COMPLETED_MAX_AGE_SECS as i64 * 1000 {
+                    return Some(Signal::Completed(fingerprint));
+                }
+                return None;
+            }
+            let created = moment("created")?;
+            if now_ms - created <= OPENCODE_ACTIVE_MAX_AGE_SECS as i64 * 1000 {
+                return Some(Signal::Active(fingerprint, Some("正在生成回复".into())));
+            }
+            None
+        }
+        "user" => {
+            let created = moment("created")?;
+            if now_ms - created <= OPENCODE_ACTIVE_MAX_AGE_SECS as i64 * 1000 {
+                return Some(Signal::Active(fingerprint, Some("思考规划中".into())));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+pub fn probe_opencode(
+    database: &crate::models::SessionDatabase,
+    file_age_secs: f64,
+) -> (SessionProbe, Option<SessionProbeFailure>) {
+    if file_age_secs > OPENCODE_MAX_AGE_SECS {
+        return (SessionProbe::default(), None);
+    }
+    let connection = match crate::sqlite::open_readonly(&database.path) {
+        Ok(connection) => connection,
+        Err(crate::sqlite::Failure::Missing) => return (SessionProbe::default(), None),
+        Err(crate::sqlite::Failure::OpenFailed(detail)) => {
+            return (SessionProbe::default(), Some(SessionProbeFailure::UnreadableDatabase(detail)))
+        }
+    };
+    let message_table = ["session_message", "message"]
+        .into_iter()
+        .find(|t| table_exists(&connection, t));
+    let session_table = ["session_v2", "session"]
+        .into_iter()
+        .find(|t| table_exists(&connection, t));
+    // 认不出来就说「不是这一族的库」，而不是拿猜的表名去查
+    let (Some(message_table), Some(session_table)) = (message_table, session_table) else {
+        return (
+            SessionProbe::default(),
+            Some(SessionProbeFailure::UnreadableDatabase(format!(
+                "既没有 session_message/message，也没有 session_v2/session —— 不是这一族的库：{}",
+                database.path
+            ))),
+        );
+    };
+    let sql = format!(
+        "SELECT id, data FROM {message_table} \
+         WHERE session_id = (SELECT id FROM {session_table} ORDER BY time_updated DESC LIMIT 1) \
+         ORDER BY rowid DESC LIMIT 8;"
+    );
+    let mut stmt = match connection.prepare(&sql) {
+        Ok(stmt) => stmt,
+        Err(error) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(format!("{error} · 查询：{sql}"))),
+            )
+        }
+    };
+    let mut rows_out: Vec<(String, String)> = Vec::new();
+    {
+        let mut rows = match stmt.query([]) {
+            Ok(rows) => rows,
+            Err(error) => {
+                return (
+                    SessionProbe::default(),
+                    Some(SessionProbeFailure::UnreadableDatabase(format!("{error} · 查询：{sql}"))),
+                )
+            }
+        };
+        while let Ok(Some(row)) = rows.next() {
+            let id: String = row.get(0).unwrap_or_default();
+            let data: String = row.get(1).unwrap_or_default();
+            if !id.is_empty() && !data.is_empty() {
+                rows_out.push((id, data));
+            }
+        }
+    }
+    // 「now」用**消息里的时间轴**推不出来时退回当前时间——
+    // 而这里必须有一个确定值，否则 15 分钟 / 5 分钟两道门无从判断。
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    match opencode_signal(&rows_out, &database.path, now_ms) {
+        Some(signal) => (
+            SessionProbe { signal: Some(signal), subagent_count: 0, health: None },
+            None,
+        ),
+        None => (SessionProbe::default(), None),
+    }
+}
+
+#[cfg(test)]
+mod opencode_signal_tests {
+    use super::{opencode_signal, Signal, OPENCODE_ACTIVE_MAX_AGE_SECS, OPENCODE_COMPLETED_MAX_AGE_SECS};
+
+    const MIN: i64 = 60_000;
+    fn now() -> i64 {
+        1_800_000_000_000
+    }
+    fn rows(role: &str, time: &str) -> Vec<(String, String)> {
+        vec![(
+            "msg_1".to_string(),
+            format!(r#"{{"role":"{role}","time":{time}}}"#),
+        )]
+    }
+
+    /// **DDL 与形状都逐字抄自本机真库** `~/.local/share/mimocode/mimocode.db`
+    /// （`message(id, session_id, agent_id, time_created, time_updated, data)`，
+    /// 实测最新一行 `role=assistant` 且 `time.completed` 是整数）。
+    #[test]
+    fn a_finished_assistant_reply_within_fifteen_minutes_is_completed() {
+        let t = now() - 3 * MIN;
+        let signal = opencode_signal(&rows("assistant", &format!(r#"{{"completed":{t}}}"#)), "mimocode", now());
+        assert!(
+            matches!(signal, Some(Signal::Completed(ref f)) if f == "mimocode-msg-msg_1"),
+            "应报完成且指纹带 agent 与消息 id，实际 {signal:?}"
+        );
+    }
+
+    /// 完成态有 15 分钟保质期——少一道门，mimocode 每次启动都会报一堆「刚完成」。
+    #[test]
+    fn a_completion_older_than_fifteen_minutes_stops_counting() {
+        let t = now() - (OPENCODE_COMPLETED_MAX_AGE_SECS as i64 + 60) * 1000;
+        assert!(
+            opencode_signal(&rows("assistant", &format!(r#"{{"completed":{t}}}"#)), "mimocode", now()).is_none(),
+            "过了 15 分钟就不该再算刚完成"
+        );
+    }
+
+    /// assistant 只有 `created`（还在生成）⇒ 在途。
+    #[test]
+    fn an_assistant_row_that_is_still_generating_is_active() {
+        let t = now() - 30_000;
+        let signal = opencode_signal(&rows("assistant", &format!(r#"{{"created":{t}}}"#)), "mimocode", now());
+        assert!(
+            matches!(signal, Some(Signal::Active(_, ref a)) if a.as_deref() == Some("正在生成回复")),
+            "实际 {signal:?}"
+        );
+    }
+
+    /// **在途只给 5 分钟**：崩溃留下的未完成行不该把岛永久钉在工作态。
+    /// 这是与其它方言同一取舍，少了它一个崩掉的会话能一直显示「在跑」。
+    #[test]
+    fn a_stalled_generation_stops_being_active_after_five_minutes() {
+        let t = now() - (OPENCODE_ACTIVE_MAX_AGE_SECS as i64 + 30) * 1000;
+        assert!(
+            opencode_signal(&rows("assistant", &format!(r#"{{"created":{t}}}"#)), "mimocode", now()).is_none(),
+            "卡住的生成超过 5 分钟就不该再报在途"
+        );
+    }
+
+    /// 最新一行是 user ⇒ 模型还没开口，在途但说的是「思考规划中」。
+    #[test]
+    fn a_fresh_user_row_is_thinking() {
+        let t = now() - 20_000;
+        let signal = opencode_signal(&rows("user", &format!(r#"{{"created":{t}}}"#)), "mimocode", now());
+        assert!(
+            matches!(signal, Some(Signal::Active(_, ref a)) if a.as_deref() == Some("思考规划中")),
+            "实际 {signal:?}"
+        );
+    }
+
+    /// 没有可认的行（空表、坏 JSON、不认识的 role）⇒ 如实无信号，不猜。
+    #[test]
+    fn nothing_readable_means_no_signal() {
+        assert!(opencode_signal(&[], "mimocode", now()).is_none(), "空表");
+        assert!(
+            opencode_signal(&[("m".into(), "not json".into())], "mimocode", now()).is_none(),
+            "坏 JSON"
+        );
+        let t = now();
+        assert!(
+            opencode_signal(&rows("tool", &format!(r#"{{"created":{t}}}"#)), "mimocode", now()).is_none(),
+            "不认识的 role 不该被猜成某种状态"
+        );
+    }
+}
+
+/// 手工探针：在**本机真实**的 OpenCode / MiMo Code 会话库上跑一遍 [`probe_opencode`]。
+///
+/// 与 v0.0.250 的 Dim 探针同一个理由：夹具形状对得上不等于真库跑得出结果。
+/// 只打印判定与库大小，**不取任何正文**。
+#[test]
+#[ignore = "读本机真实 OpenCode/MiMo Code 会话库，只在需要手工取证时跑"]
+fn real_opencode_library_probe() {
+    let home = std::env::var("HOME").unwrap_or_default();
+    for (label, path) in [
+        ("opencode", format!("{home}/.local/share/opencode/opencode.db")),
+        ("mimocode", format!("{home}/.local/share/mimocode/mimocode.db")),
+    ] {
+        if !std::path::Path::new(&path).exists() {
+            println!("{label}: 本机没有这个库");
+            continue;
+        }
+        let db = crate::models::SessionDatabase {
+            path,
+            schema: crate::models::SessionSchema::OpenCode,
+            status_sql: None,
+        };
+        for age in [60.0_f64, 16.0 * 60.0, 25.0 * 3600.0] {
+            let (probe, failure) = probe_opencode(&db, age);
+            let kind = match &probe.signal {
+                None => "无".to_string(),
+                Some(Signal::Attention(_, m)) => format!("attention · {m}"),
+                Some(Signal::Active(_, a)) => format!("active · {}", a.clone().unwrap_or_default()),
+                Some(Signal::Completed(_)) => "completed".to_string(),
+            };
+            println!("{label:<9} file_age={age:>8.0}s  {kind:<22} 失败={:?}", failure.is_some());
+        }
+    }
+}

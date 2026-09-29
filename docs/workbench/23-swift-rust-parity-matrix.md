@@ -452,11 +452,16 @@ v0.0.245 起**灵动岛的展开态也在内**：冒烟用 `--expand` 启动参�
        **16 个声明了会话源却拿不到任何会话信号**：
        | 类别 | 档案 |
        | :--- | :--- |
-       | 对拍缺口（Swift 有路径，Rust 没有） | `aider` `chatgpt` `continue` `copilot` `cursor` `ego-browser` `goose` `hermes` `mimocode` `openviking` `opencode` `trae` `vibe-usage` `windsurf`（**v0.0.250 补掉了 `dim`**） |
+       | 对拍缺口（Swift 有路径，Rust 没有） | `aider` `chatgpt` `continue` `copilot` `cursor` `ego-browser` `goose` `hermes` `openviking` `trae` `vibe-usage` `windsurf`（**v0.0.250 补掉 `dim`，v0.0.251 补掉 `mimocode` + `opencode`**） |
        | Rust 独有能力没做完（Swift 压根没这个档案） | `vscode` |
      - `dim` / `mimocode` / `opencode` 值得单说：它们**声明了 `session_database`**，
-       但 `engine` 的库路**只在 `schema == StatusIndex` 上跑**，
+       而 `engine` 的库路原先**只在 `schema == StatusIndex` 上跑**——
        `DimTasks` / `OpenCode` 两个 schema 声明了也拿不到信号。
+       → ✅ **v0.0.250 / v0.0.251 全部接上**（`StatusIndex` / `DimTasks` / `OpenCode`
+       三种 schema 各走各的函数，分派写成 match 并注明每种为什么不一样）。
+       ⚠️ **两个的覆盖深度不同，别当成一样**：`probe_dim` **只交出完成态那一支**，
+       它的 attention 分支依赖通用检测器（v0.0.248 已证不能直接搬）；
+       `probe_opencode` 则是**整条搬完**的（完成 + 在途 + 表名动态解析）。
      - **本机今天观察不到**：15 个对拍缺口里有 6 个的 `session_dirs` 在这台机器上存在，
        但**没有一个含 Swift 通用检测器读得动的会话文件**（copilot 指向的是 Chromium 配置目录、
        chatgpt 只有一个 appcast、ego 是空目录、continue 只有一个 `sessions.json`），

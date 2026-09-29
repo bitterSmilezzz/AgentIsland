@@ -826,7 +826,9 @@ impl ActivityEngine {
         let Some(database) = database.filter(|db| {
             matches!(
                 db.schema,
-                crate::models::SessionSchema::StatusIndex | crate::models::SessionSchema::DimTasks
+                crate::models::SessionSchema::StatusIndex
+                    | crate::models::SessionSchema::DimTasks
+                    | crate::models::SessionSchema::OpenCode
             )
         })
         else {
@@ -841,13 +843,16 @@ impl ActivityEngine {
             .and_then(|t| t.elapsed().ok())
             .map(|d| d.as_secs_f64())
             .unwrap_or(f64::INFINITY);
-        // **DimAgent 不是 statusIndex 那一族**：它的会话表不带终态 status，
-        // 「本轮封没封口」只能从最新一条 assistant 消息最后一个 part 的 `endTime` 读。
-        // 走错函数的话，DimAgent 会永远没有信号——而界面上看不出异样。
-        let (probe, failure) = if database.schema == crate::models::SessionSchema::DimTasks {
-            session::probe_dim(database, file_age)
-        } else {
-            session::probe_status_index(database, file_age)
+        // **不是所有 schema 都走同一个函数**，走错的话那个 Agent 就永远没有信号——
+        // 而界面上看不出异样：
+        // · `DimTasks`：会话表不带终态 status，「封没封口」看最新一条 assistant
+        //   最后一个 part 的 `endTime`；
+        // · `OpenCode`：看消息行 `time.completed` / `time.created`，且表名要现查
+        //   （这一族跨版本改过名）。
+        let (probe, failure) = match database.schema {
+            crate::models::SessionSchema::DimTasks => session::probe_dim(database, file_age),
+            crate::models::SessionSchema::OpenCode => session::probe_opencode(database, file_age),
+            _ => session::probe_status_index(database, file_age),
         };
 
         (
