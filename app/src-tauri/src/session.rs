@@ -2889,3 +2889,139 @@ mod status_index_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod zcode_probe_tests {
+    use super::*;
+
+    /// 把「距今多久」写成 ZCode 真实的 `completedAt` 形状。
+    ///
+    /// 形状取自本机实拍（`~/.zcode/cli/rollout/model-io-sess_*.jsonl`）：
+    /// `2026-09-29T01:24:04.581Z`。**实测形状**很重要——早先按「几秒/分钟数」自造，
+    /// 而 `parse_iso_ms` 要的是 `年-月-日T时:分:秒[.毫秒]Z`，
+    /// 形状不对时解析返回 0 ⇒ 「新鲜度」恒为假 ⇒ 测试会绿而功能是坏的。
+    fn completed_at(offset_secs: i64) -> String {
+        let secs = super::super::tokens::now_ms() / 1000 + offset_secs;
+        // epoch → 民用日期（days_from_civil 的逆运算）
+        let days = secs.div_euclid(86_400);
+        let rem = secs.rem_euclid(86_400);
+        // 分钟与月份**必须两个变量**：写成同一个 `m` 之后，格式串里第二个
+        // `{m:02}` 印的是月份——于是「01:43:47」被写成「01:09:47」，
+        // 而且它不编译失败、不 panic，只是让下游全部用例莫名其妙地红。
+        let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if mo <= 2 { y + 1 } else { y };
+        // **自校验**：这个逆算法是我手写的，写错时不会编译失败、也不会 panic，
+        // 只会让下游全部用例莫名其妙地红。所以在这里当场往返一次：
+        // 把刚生成的串解回来，必须等于原 epoch——差一秒就当场说清楚。
+        let iso = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.581Z");
+        let back = super::super::tokens::parse_iso_ms_pub(&iso)
+            .expect("自己生成的 ISO 串必须能被自己的解析器读回来");
+        assert_eq!(
+            back / 1000, secs,
+            "epoch→ISO 的逆算法写错了：{iso} 解回来是 {back}，而原值是 {secs}"
+        );
+        iso
+    }
+
+    fn line(tools: &str, request_id: &str, completed: &str) -> String {
+        format!(
+            r#"{{"type":"model-io","requestId":"{request_id}","completedAt":"{completed}","response":{{"toolCalls":{tools},"text":"ok"}}}}"#
+        )
+    }
+
+
+    /// 三分钟内的、带工具调用 ⇒ 在活动，动作取自**最后一个**工具调用。
+    #[test]
+    fn a_fresh_response_with_a_tool_call_is_active() {
+        let tools = r#"[{"name":"Bash","input":{"command":"ls -la"}},{"name":"Read","input":{"file_path":"/tmp/x"}}]"#;
+        let l = line(tools, "req-1", &completed_at(-10));
+        let probe = probe_zcode(&[l], "/p.jsonl");
+        match probe.signal {
+            Some(Signal::Active(_, Some(action))) => {
+                assert!(!action.is_empty(), "在活动却说不出在干什么");
+            }
+            other => panic!("三分钟内的工具调用应当是 Active，实际 {other:?}"),
+        }
+    }
+
+    /// 三分钟内的、**没有**工具调用 ⇒ 纯推理，也算在活动。
+    ///
+    /// 这一支容易被忽略：真实文件里 `toolCalls` 经常是**空数组**（本机实拍就是），
+    /// 空数组走的是「for 循环一次都不进」的路径，落到底部按时间戳判定。
+    #[test]
+    fn a_fresh_response_without_tool_calls_is_reasoning() {
+        let l = line("[]", "req-2", &completed_at(-5));
+        let probe = probe_zcode(&[l], "/p.jsonl");
+        match probe.signal {
+            Some(Signal::Active(_, action)) => {
+                assert_eq!(action.as_deref(), Some("正在推理"), "无工具调用时的措辞");
+            }
+            other => panic!("应当判为「正在推理」，实际 {other:?}"),
+        }
+    }
+
+    /// **陈旧**的请求 ⇒ 无信号（回落到进程 + 文件写入/CPU 的双信号近似）。
+    ///
+    /// 这条是整个函数的核心：没有它，一份几小时前的会话文件会让 ZCode
+    /// 永远显示「在跑」。
+    #[test]
+    fn a_stale_response_gives_no_signal() {
+        for offset in [-600, -3600, -86_400] {
+            let l = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "req-3", &completed_at(offset));
+            let probe = probe_zcode(&[l], "/p.jsonl");
+            assert!(
+                probe.signal.is_none(),
+                "{offset} 秒前的请求不该算活动，实际 {:?}",
+                probe.signal
+            );
+        }
+    }
+
+    /// 只看**最后一次**请求：最后一条陈旧就不该回退去报更早的。
+    ///
+    /// 反了的话，用户会看到「刚跑完一次请求」而其实那次是很久以前的。
+    #[test]
+    fn only_the_lastest_request_counts() {
+        let fresh = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "new", &completed_at(-10));
+        let old = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "old", &completed_at(-3600));
+        // 文件里按时间先后追加，所以「旧」在前
+        let probe = probe_zcode(&[old.clone(), fresh.clone()], "/p.jsonl");
+        assert!(probe.signal.is_some(), "最后一条是新鲜的 ⇒ 应当有信号");
+
+        let probe = probe_zcode(&[fresh, old], "/p.jsonl");
+        assert!(probe.signal.is_none(), "最后一条是陈旧的 ⇒ 不该回退去报新鲜的");
+    }
+
+    /// 认不出的行要跳过，而不是让整条解析失败。
+    ///
+    /// 实拍文件里混着不同形状的行（`type` 有别的值、没有 `response` 字段）。
+    /// 一行坏就整份放弃的话，用户会看到「没有会话信号」而不是真实的活动。
+    #[test]
+    fn unrecognised_lines_are_skipped() {
+        let good = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "req-4", &completed_at(-10));
+        let lines = vec![
+            "不是 JSON".to_string(),
+            r#"{"type":"other"}"#.to_string(),
+            r#"{"response":{}}"#.to_string(),
+            r#"{"response":{"toolCalls":"不是数组"}}"#.to_string(),
+            good,
+        ];
+        let probe = probe_zcode(&lines, "/p.jsonl");
+        assert!(probe.signal.is_some(), "坏行应被跳过，好行仍要生效");
+    }
+
+    #[test]
+    fn an_empty_file_gives_no_signal() {
+        assert!(probe_zcode(&[], "/p.jsonl").signal.is_none());
+        assert!(probe_zcode(&["".to_string()], "/p.jsonl").signal.is_none());
+    }
+}

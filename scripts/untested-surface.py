@@ -67,7 +67,7 @@ TEST_FILES = {"testutil.rs", "state_tests.rs"}
 
 
 def strip_comments_only(text: str) -> str:
-    """只把**注释**抹成空格，字符串内容原样保留。
+    r"""只把**注释**抹成空格，字符串内容原样保留。
 
     为什么要单独一个版本：Swift 的字符串插值 `\(expr)` 里是**可执行代码**
     （`"\(...) \(Foo.statusLabel(x))"` 是真实调用），把字符串内容抹掉等于
