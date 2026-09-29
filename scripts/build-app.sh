@@ -178,6 +178,21 @@ if [[ "${SKIP_SWIFT:-0}" != "1" ]]; then
 PLIST
     codesign --force --deep --sign - "$SWIFT_DIR"
     echo "==> Swift 版已就位（回退用）：$SWIFT_DIR"
+
+fi
+
+# **跳过了 Swift 构建 ⇒ dist 里那个回退包是旧的，而且没有任何东西会提醒你。**
+# 本机上正是这样：dist/AgentIsland-Swift.app 是几天前的产物，比源码老，
+# 而 `SKIP_SWIFT=1` 既不刷新它也不提它——看 dist 的人会以为「随时可以退回去」，
+# 那是个假保证（这正是 AgentIsland 拍板「留一条回退路」时要防的事）。
+if [[ "${SKIP_SWIFT:-0}" == "1" && -d "dist/${APP_NAME}-Swift.app" ]]; then
+    NEWEST_SRC=$(find Sources -type f -name '*.swift' -newer "dist/${APP_NAME}-Swift.app" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$NEWEST_SRC" != "0" ]]; then
+        echo "" >&2
+        echo "!! dist/${APP_NAME}-Swift.app 比 $NEWEST_SRC 个 Swift 源文件**旧**。" >&2
+        echo "!! 它**不是**当前源码构建出来的，拿它回退等于回到几天前的行为。" >&2
+        echo "!! 要真实的回退产物：装 Xcode 后不带 SKIP_SWIFT 重跑。" >&2
+    fi
 fi
 
 echo "==> 构建 Rust/Tauri 端（**主交付物**）"
