@@ -4,6 +4,67 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.242] - 2026-09-29
+
+### 界面空白：启动阶段 AB-BA 死锁
+
+拖了很久的「Rust 端界面全白」找到真因了。**不是前端、不是资源、不是 CSP、不是 SDK。**
+
+```text
+引擎线程：持引擎锁 ──等主线程──▶ （写托盘徽标）
+主线程  ：要引擎锁 ──等引擎线程──▶ （放锁）
+```
+
+macOS 的托盘是 AppKit 的 `NSStatusItem`，Tauri 写它必须回主线程，
+而且是**同步等结果**的（实测栈：`mpsc::recv` → `Thread::park` →
+`_dispatch_semaphore_wait_slow`）。引擎循环每个 tick 都要写徽标，
+而 `setup` 紧接着就要读设置——于是**每次启动必然互等**。
+
+`setup` 永不返回 ⇒ Tauri 不进事件循环 ⇒ WKWebView 从不发起导航 ⇒ 窗口在、页面不在。
+`on_page_load` 一次不响、`[webview]` 零行日志，都是这一个原因的下游现象。
+
+取证：`docs/research/2026-09-29-blank-ui-deadlock.md`（含两条线程的完整栈）。
+
+**修法**：临界区里只做纯计算（`tray_badge_text`），写入挪到锁外（`apply_tray_badge`）。
+这个项目**本来就有这条规矩**——命令侧（`set_shell_mode` / `set_sidebar_width` …）
+一直用 `{ let e = state.lock()…; }` 作用域块，在碰窗口之前就放了锁。唯独引擎循环漏了。
+
+### 挖出它的方法：换一个不会被死锁波及的观测面
+
+`on_page_load` 与 `[webview]` 日志**都长在事件循环上**。事件循环死了它们当然沉默，
+所以「零日志」既可能是「没发生」也可能是「发生不了」——分不开时，
+用它们判断「前端坏没坏」是**循环论证**。
+
+改用 `WebviewWindow::eval_with_callback`：从 Rust 侧问真实 webview「你现在什么状态」，
+返回值直接进日志。修好的那一版长这样：
+
+```json
+{"ready":"complete","tauri":true,"invoke":true,"errs":[],"rootChildren":1,"rootHtmlLen":8013}
+```
+
+外加一条**不走 Tauri IPC** 的兜底（`fetch` 本机 42000 端口），
+因为 `invoke` 正是可能坏掉的那一环，用它证明「JS 跑过」也是循环论证。
+
+`eval` 本身留在代码里（`WEBVIEW_TRAP_JS` / `WEBVIEW_PROBE_JS`，启动后 0/1.5/5s 各一次）：
+它是目前**唯一**能看见 webview 内部的观测面。
+
+### 守护
+
+`main_thread_dispatch_sentinel` 两条：引擎循环源码里 `shared.lock()` 与
+`apply_tray_badge(` 之间**不许**出现 `set_title` / `tray_by_id`；徽标不能被静默丢掉。
+**变异验证过**——把写入塞回临界区，第一条精确变红。
+
+### 撤回两条不成立的「根因」
+
+v0.0.235 / v0.0.236 声称空白源于 `SDKROOT` 钉死与 `security.csp: null`，**两个都不成立**。
+两处配置该修（显式 CSP、别钉 SDK 都是对的），但修完之后 `[page]` 在发布版里
+**一次都没响过**，直到本次修掉死锁才第一次出现 3 行。
+旧文档正文按当时的样子保留作为时间点证据，顶部加了撤回横幅。
+
+### 门禁
+
+Rust 502 条通过（+2）/ 0 失败，编译警告 14（−1），脱敏扫描零新增。
+
 ## [0.0.241] - 2026-09-29
 
 ### 补上「只补了一半」的另一半

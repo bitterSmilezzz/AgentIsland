@@ -989,7 +989,8 @@ fn log_line(msg: &str) {
 
 fn engine_loop(shared: SharedEngine, app: AppHandle) {
     loop {
-        let (state, interval) = {
+        // 徽标文本在临界区里**算好**，写托盘留到锁外（理由见 `apply_tray_badge`）。
+        let (state, interval, badge) = {
             let mut e = shared.lock().unwrap();
             let mut events = Vec::new();
             if let Some(rx) = e.event_rx.as_ref() {
@@ -1003,21 +1004,15 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
             let badge_mode = e.settings.menu_bar_badge_mode.clone();
             e.tick();
             let s = e.state();
-            // 托盘徽标：跟随 `menu_bar_badge_mode`（iconOnly 时不设标题）
-            if let Some(tray) = app.tray_by_id("main") {
-                let active = s
-                    .snapshots
-                    .iter()
-                    .filter(|snap| {
-                        matches!(snap.level, models::ActivityLevel::Working | models::ActivityLevel::Attention)
-                    })
-                    .count();
-                if let Some(text) = tray_badge_text(&badge_mode, active, s.grand_total.tokens24h) {
-                    let _ = tray.set_title(Some(&text));
-                } else {
-                    let _ = tray.set_title::<&str>(None);
-                }
-            }
+            let working = s
+                .snapshots
+                .iter()
+                .filter(|snap| {
+                    matches!(snap.level, models::ActivityLevel::Working | models::ActivityLevel::Attention)
+                })
+                .count();
+            // 跟随 `menu_bar_badge_mode`（iconOnly 时不设标题）
+            let badge = tray_badge_text(&badge_mode, working, s.grand_total.tokens24h);
             let active = s
                 .snapshots
                 .iter()
@@ -1041,16 +1036,139 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
                     base
                 }
             };
-            (s, interval)
+            (s, interval, badge)
         };
+        // 锁已释放，才轮到托盘——顺序不能反，见 `apply_tray_badge` 的注释。
+        apply_tray_badge(&app, badge);
         let _ = app.emit("engine://tick", &state);
         std::thread::sleep(std::time::Duration::from_secs_f64(interval));
     }
 }
 
+/// 把托盘徽标写上去。**只能在释放引擎锁之后调用**，所以唯一调用点在 `engine_loop`。
+///
+/// macOS 的托盘是 AppKit 的 `NSStatusItem`，Tauri 写它必须回到主线程，而且是
+/// **同步等结果**的（实测栈：`mpsc::recv` → `Condvar::wait` → `Thread::park`
+/// → `_dispatch_semaphore_wait_slow`）。引擎循环是后台线程，于是：
+///
+/// ```text
+/// 引擎线程：持锁 → 等主线程执行完托盘写入
+/// 主线程  ：要锁（setup 读设置、任何命令都要）→ 等引擎线程放锁
+/// ```
+///
+/// 互等 ⇒ 应用永远停在「启动中」。而 Tauri 的 `setup` 没返回，事件循环就不会转，
+/// WKWebView 于是从不导航：窗口在、尺寸对、资源嵌好了，`on_page_load` 一次不响，
+/// 界面全白。改 URL / 改 CSP / 换 SDK 全都不起作用，因为它们都不在这条链上。
+///
+/// 取证：`docs/research/2026-09-29-blank-ui-deadlock.md`
+fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+    let _ = match badge {
+        Some(text) => tray.set_title(Some(&text)),
+        None => tray.set_title::<&str>(None),
+    };
+}
+
 #[tauri::command]
 fn log_from_ui(message: String) {
     log_line(&format!("[webview] {}", message));
+}
+
+/// 装在真实 webview 里的**错误陷阱**：先把 `error` / `unhandledrejection`
+/// 收进 `window.__aiErrs`，后面的快照才有得读。
+///
+/// 为什么单独一份而不是并进快照：模块求值阶段的错误**早于**第一次快照发生。
+/// 陷阱晚一步装，`__aiErrs` 就永远是空的——而「空的错误列表」与「没有错误」
+/// 在日志上长得一模一样，这正是我此前多轮误判的形状。
+const WEBVIEW_TRAP_JS: &str = r#"(function () {
+  if (window.__aiTrap) { return 'already'; }
+  window.__aiTrap = true;
+  window.__aiErrs = [];
+  function push(s) { if (window.__aiErrs.length < 20) { window.__aiErrs.push(String(s)); } }
+  window.addEventListener('error', function (e) {
+    push('ERR ' + (e.message || '') + ' @' + (e.filename || '') + ':' + (e.lineno || 0));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    push('REJ ' + ((r && r.message) || r));
+  });
+  return 'trap-installed';
+})()"#;
+
+/// 一次 webview 自省。返回的 JSON 覆盖三个**互斥**分支：
+///
+/// | 现象 | 结论 |
+/// | :--- | :--- |
+/// | 回调一行都不触发 | webview 里 JS 引擎压根没在跑 |
+/// | `ready=complete` 且 `invoke=false` | 页面活着，是全局 Tauri API 没注入 |
+/// | `errs` 非空 | 页面活着但脚本抛了错，原文就在这里 |
+///
+/// 附带一份 `performance` 资源时序。「资源表里有」与「webview 真的去取过、
+/// 并取成功了」是两件事——前者只证明二进制里嵌了字节。
+const WEBVIEW_PROBE_JS: &str = r#"(function () {
+  var out;
+  try {
+    var t = window.__TAURI__;
+    var root = document.getElementById('root');
+    out = {
+      href: String(location.href),
+      ready: document.readyState,
+      tauri: !!t,
+      invoke: !!(t && t.core && t.core.invoke),
+      errs: window.__aiErrs || [],
+      rootChildren: root ? root.children.length : -1,
+      rootHtmlLen: root ? root.innerHTML.length : -1,
+      res: (performance.getEntriesByType('resource') || []).map(function (e) {
+        return e.name.replace('tauri://localhost/', '') + '|' + e.responseStatus + '|' + Math.round(e.duration);
+      }),
+      nav: (performance.getEntriesByType('navigation') || []).map(function (e) {
+        return e.name + '|' + e.responseStatus + '|' + Math.round(e.duration) + '|' + e.transferSize;
+      })
+    };
+  } catch (e) {
+    out = { throw: String((e && e.message) || e) };
+  }
+  // **不经过 Tauri IPC 的兜底通道**：`eval_with_callback` 的回调万一在某个
+  // 平台上不回值，这一下仍然会落到本机 webhook 服务器的 `[http]` 日志里。
+  // 载荷放进 **path 而不是 query**——那边记日志前会 `split('?')` 把 query 丢掉。
+  try {
+    fetch('http://127.0.0.1:42000/__probe__/' + out.ready
+      + '-tauri' + (out.tauri ? 1 : 0) + '-invoke' + (out.invoke ? 1 : 0)
+      + '-errs' + (out.errs || []).length, { mode: 'no-cors' });
+  } catch (e2) { /* 兜底也失败就算了，回调那条路还在 */ }
+  return JSON.stringify(out);
+})()"#;
+
+/// 往每个窗口塞一次陷阱、读一次快照。
+///
+/// 分三个时刻（启动即刻 / +1.5s / +5s）是有意为之：模块求值、首个事件、
+/// 首个 tick 各在不同时刻，**只取一个快照就等于在猜哪一步坏了**。
+fn probe_webviews(app: &tauri::AppHandle, delay_ms: u64) {
+    if delay_ms > 0 {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            probe_webviews(&app, 0);
+        });
+        return;
+    }
+    for label in ["island", "sidebar", "workbench"] {
+        let Some(w) = app.get_webview_window(label) else {
+            continue;
+        };
+        // 陷阱必须先于快照下单：eval 是异步派发，同一 webview 上保序。
+        if let Err(e) = w.eval(WEBVIEW_TRAP_JS) {
+            log_line(&format!("[eval] {label} 陷阱装不上：{e}"));
+        }
+        let tag = label.to_string();
+        if let Err(e) = w.eval_with_callback(WEBVIEW_PROBE_JS, move |result| {
+            log_line(&format!("[eval] {tag} {result}"));
+        }) {
+            log_line(&format!("[eval] {label} 快照取不到：{e}"));
+        }
+    }
 }
 
 /// 深链投递的事件落进事件队列。
@@ -1362,6 +1480,13 @@ fn main() {
                 }
                 log_line(&format!("[boot] 资源表：{seen:?}"));
             }
+
+            // **webview 自省**（上面那两个常量的注释解释了为什么非它不可）。
+            // 三个时刻各来一次，作用域是 app handle 而不是局部 `app`，
+            // 因为后面两次是从新建线程里发的。
+            probe_webviews(app.handle(), 0);
+            probe_webviews(app.handle(), 1500);
+            probe_webviews(app.handle(), 5000);
 
             // 初始贴边放置
             let win = app.get_webview_window("island").unwrap();
@@ -2095,3 +2220,68 @@ mod build_env_sentinel {
     }
 }
 
+/// **主线程派发死锁**的守护。
+///
+/// 规矩：任何会回到主线程并**同步等结果**的 Tauri 调用，都不许出现在持有
+/// `SharedEngine` 锁的临界区里。引擎循环踩过这条——它就是界面全白的**确切原因**，
+/// 而现象（窗口建好、尺寸正确、资源嵌好、脚本一行不跑）看起来像前端坏了，
+/// 于是前一轮全部力气都花在 URL / CSP / SDK 上，全都不在这条链上。
+///
+/// 命令侧（`set_shell_mode` / `set_sidebar_width` / …）一直是对的：它们用
+/// `{ let e = state.lock()…; }` 作用域块，在碰窗口之前就把锁放了。
+/// 这条守护盯的就是引擎循环——那个当时漏掉的地方。
+#[cfg(test)]
+mod main_thread_dispatch_sentinel {
+    /// 本文件源码。编译期嵌入，所以**永远**与正在跑的代码一致。
+    const SRC: &str = include_str!("main.rs");
+
+    fn engine_loop_body() -> &'static str {
+        let start = SRC
+            .find("fn engine_loop(")
+            .expect("engine_loop 改名或没了？守护需要跟着改");
+        let rest = &SRC[start + 1..];
+        let end = rest.find("\nfn ").map(|i| i + 1).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// **托盘写入必须排在引擎锁的临界区之外。**
+    ///
+    /// 变异验证：把 `apply_tray_badge(&app, badge);` 挪回 `{ … }` 块里，
+    /// 本条会失败——它不是靠注释通过的。
+    #[test]
+    fn tray_writes_happen_outside_the_engine_lock() {
+        let body = engine_loop_body();
+        let lock_at = body.find("shared.lock()").expect("engine_loop 不再锁引擎了？守护需要跟着改");
+        let badge_at = body
+            .find("apply_tray_badge(")
+            .expect("engine_loop 不再写托盘徽标了？徽标会静默消失");
+        assert!(lock_at < badge_at, "写托盘必须排在拿锁之后，实际是 {lock_at} vs {badge_at}");
+
+        let critical = &body[lock_at..badge_at];
+        for forbidden in ["set_title", "tray_by_id"] {
+            assert!(
+                !critical.contains(forbidden),
+                "托盘是 AppKit 的 NSStatusItem，写它会被同步派发到主线程并等结果。\n\
+                 它出现在引擎锁与 `apply_tray_badge` 之间 ⇒ 引擎线程持锁等主线程、\n\
+                 主线程要锁 ⇒ 互等 ⇒ setup 不返回 ⇒ 事件循环不转 ⇒ WKWebView 不导航 ⇒ 界面全白。\n\
+                 修法：把计算放进锁内（`tray_badge_text`），把写入挪到锁外（`apply_tray_badge`）。"
+            );
+        }
+    }
+
+    /// 徽标不能为了躲开死锁就被悄悄丢掉——写入点仍在引擎循环里、且每轮都调。
+    #[test]
+    fn the_badge_is_still_written_every_tick() {
+        let body = engine_loop_body();
+        assert_eq!(
+            body.matches("apply_tray_badge(&app").count(),
+            1,
+            "引擎循环里应当恰好有一处写入托盘徽标"
+        );
+        assert!(
+            body.find("apply_tray_badge(").unwrap_or(usize::MAX)
+                < body.find("app.emit(").unwrap_or(usize::MAX),
+            "徽标写入排在事件推送之前"
+        );
+    }
+}
