@@ -1968,6 +1968,34 @@ mod ui_symbol_sentinel {
 mod build_env_sentinel {
     use std::path::Path;
 
+    /// 最小 DOM 桩。**故意不完整**：`querySelector` 恒为 null、元素只有壳子。
+    /// 它只够让模块**加载**与 boot 的同步段跑起来，不足以渲染任何东西。
+    const DOM_STUB: &str = r#"
+    const noop = () => {};
+    const mk = () => ({
+      className: 'shell-island', style: {}, dataset: {}, children: [], innerHTML: '',
+      classList: { contains: () => false, add: noop, remove: noop, toggle: noop },
+      appendChild: noop, setAttribute: noop, removeAttribute: noop, addEventListener: noop,
+      querySelector: () => null, querySelectorAll: () => [],
+      getBoundingClientRect: () => ({ width: 0, height: 0 }), focus: noop, remove: noop,
+    });
+    globalThis.document = {
+      documentElement: mk(), body: mk(), getElementById: () => mk(), createElement: mk,
+      querySelector: () => null, querySelectorAll: () => [], addEventListener: noop,
+      createTextNode: () => mk(),
+    };
+    globalThis.window = { innerWidth: 400, innerHeight: 800, devicePixelRatio: 2, getComputedStyle: () => ({}) };
+    globalThis.location = { search: '?shell=island' };
+    Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async () => {} } }, configurable: true });
+    globalThis.addEventListener = noop; globalThis.removeEventListener = noop;
+    globalThis.matchMedia = () => ({ matches: false, addEventListener: noop, removeEventListener: noop });
+    globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+    globalThis.cancelAnimationFrame = (h) => clearTimeout(h);
+    globalThis.localStorage = { getItem: () => null, setItem: noop, removeItem: noop };
+    globalThis.innerWidth = 400; globalThis.innerHeight = 800;
+    "#;
+
+
     fn tauri_conf() -> String {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(root.join("tauri.conf.json")).expect("应当读得到 tauri.conf.json")
@@ -2014,4 +2042,56 @@ mod build_env_sentinel {
              webview 会静默不发起导航。应当从候选清单里挑最新的（v0.0.235 的教训）。"
         );
     }
+
+    /// **`views.js` 必须能在 Node 里真的求值**（不只是 `node --check` 的语法检查）。
+    ///
+    /// 语法层的检查在 `every_ui_js_file_parses_as_an_es_module`；这里管第三件：
+    /// **顶层求值就抛异常**。那种异常的表现是**整个界面空白、且浏览器控制台
+    /// 之外没有任何痕迹**——而「页面没加载」与「脚本抛了」在界面上一模一样。
+    /// v0.0.229 那次 `pageProvider` 的函数头被删，正是这一类。
+    ///
+    /// **只验 `views.js`，不验 `main.js` 的 boot**：boot() 在 import 时就执行，
+    /// 而本测试的 DOM 桩是**故意不完整**的（`querySelector` 恒为 null），
+    /// boot 摸到真实元素必然炸——那是**桩的失败，不是代码的失败**，
+    /// 混在一起报红只会让人学会忽略它。main.js 的 boot 路径要验需要真 DOM 或屏幕。
+    #[test]
+    fn the_view_module_evaluates() {
+        let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/js");
+        let stub = std::env::temp_dir().join("agentisland-dom-stub.mjs");
+        std::fs::write(&stub, DOM_STUB).expect("应当写得出 DOM 桩");
+
+        // 末尾的 `/` 不是装饰：`new URL('views.js', base)` 在没有尾斜杠的 base 下
+        // 会解析到**上一级**目录，于是报「找不到 app/ui/views.js」——
+        // 一个和代码毫无关系的失败。
+        let script = format!(
+            "await import('{}');\
+             const base = new URL('file://{}/');\
+             const m = await import(new URL('views.js', base).href);\
+             console.log('EVALUATED:' + Object.keys(m).length);",
+            stub.canonicalize().expect("桩文件应当存在").display(),
+            ui.canonicalize().expect("app/ui/js 应当存在").display()
+        );
+        let out = std::process::Command::new("node")
+            .arg("--input-type=module")
+            .arg("--eval")
+            .arg(&script)
+            .output();
+        let _ = std::fs::remove_file(&stub);
+
+        match out {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    stdout.contains("EVALUATED"),
+                    "views.js 在求值时抛异常 ⇒ 整个界面会空白而外部毫无痕迹。\n\
+                     stdout: {stdout}\nstderr: {stderr}"
+                );
+            }
+            Err(error) => {
+                panic!("跑不了 node（{error}）——本条守护**没有真的验**，不是通过")
+            }
+        }
+    }
 }
+
