@@ -3087,3 +3087,61 @@ mod zcode_probe_tests {
         assert!(probe_zcode(&["".to_string()], "/p.jsonl").signal.is_none());
     }
 }
+
+/// 手工探针：拿**本机真实**的 Codex / ZCode 会话文件，
+/// 把 `probe_codex` / `probe_zcode` 的判定逐条打出来，供与 Swift 侧
+/// 通用 `detect(lines:)` 的判定**并排对照**。
+///
+/// 存在的理由：v0.0.247 量出「16 个档案声明了会话源却读不出信号」，
+/// 而 Swift 那边是**一个**按内容的通用检测器覆盖全部。要不要把它移植过来，
+/// 先决条件是「它和手写解析器在真实数据上判不判得一样」——这个问题只能用真文件回答，
+/// 造夹具回答不了。
+///
+/// 默认不跑（依赖本机装了这些 Agent，且会读用户的会话文件）：
+/// `cargo test --bin agentisland real_session_side_by_side -- --ignored --nocapture`
+#[test]
+#[ignore = "读本机真实会话文件，只在需要手工取证时跑"]
+fn real_session_side_by_side() {
+    use std::path::{Path, PathBuf};
+    fn newest(dir: &str, ext: &str, limit: usize) -> Vec<PathBuf> {
+        let mut out: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+        fn walk(dir: &Path, ext: &str, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
+            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, ext, out);
+                } else if p.extension().and_then(|s| s.to_str()) == Some(ext) {
+                    if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
+                        out.push((m, p));
+                    }
+                }
+            }
+        }
+        walk(Path::new(dir), ext, &mut out);
+        out.sort_by(|a, b| b.0.cmp(&a.0));
+        out.into_iter().take(limit).map(|(_, p)| p).collect()
+    }
+    fn verdict(signal: &Option<Signal>) -> String {
+        match signal {
+            None => "None".to_string(),
+            Some(Signal::Attention(_, m)) => format!("attention · {m}"),
+            Some(Signal::Active(_, a)) => format!("active · {}", a.clone().unwrap_or_default()),
+            Some(Signal::Completed(_)) => "completed".to_string(),
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    for (label, dir, probe) in [
+        ("codex", format!("{home}/.codex/sessions"), 0usize),
+        ("zcode", format!("{home}/.zcode/cli/rollout"), 0usize),
+    ] {
+        println!("===== {label} =====");
+        for path in newest(&dir, "jsonl", 8) {
+            let p = path.to_string_lossy().to_string();
+            let lines = crate::session::read_tail_lines(&p).unwrap_or_default();
+            let signal = if label == "codex" { probe_codex(&lines, &p) } else { probe_zcode(&lines, &p) };
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            println!("  {:<10} {:<40} 行数 {}", verdict(&signal.signal), &name[..40.min(name.len())], lines.len());
+        }
+    }
+}

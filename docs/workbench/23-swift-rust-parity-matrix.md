@@ -461,11 +461,26 @@ v0.0.245 起**灵动岛的展开态也在内**：冒烟用 `--expand` 启动参�
        但**没有一个含 Swift 通用检测器读得动的会话文件**（copilot 指向的是 Chromium 配置目录、
        chatgpt 只有一个 appcast、ego 是空目录、continue 只有一个 `sessions.json`），
        所以**今天两端表现一致**。缺口对**真的装了这些 Agent 且攒下了会话**的用户才成立。
-     - **不是「补 16 个解析器」**：Swift 那边是一个通用收集器覆盖全部，
-       所以正解是**把那个通用检测器移植过来**，而不是照着 id 再手写 16 遍。
+     - ~~正解是把那个通用检测器移植过来~~ → ❌ **v0.0.248 用真数据证伪，见
+       [通用检测器移植前的真数据对拍](../research/2026-09-29-generic-detector-port-check.md)**
+       - 把 Swift 的 `detect` + `collectFacts` + 全部词表照搬成离线脚本，
+         与 `probe_codex` / `probe_zcode` 跑**同一批本机真实文件**：
+         codex **8/8 一致**；zcode **2/3**，1 处**假阳**。
+       - 假阳定位到具体一行：subagent 文件**第 0 行**的
+         `request.body.tools[].function.name == "AskUserQuestion"`——
+         那是**发给模型的工具目录（schema）**，不是一次真实提问，
+         而 `collectFacts` 把整棵树都走了一遍（含 `request.body.tools`），
+         于是把工具声明读成「正在等你批准」并**锁死**在文件末尾。
+       - ⚠️ **顺带修正本节上面那句过头话**：通用检测器**只被用在 `genericTail` 那一族**，
+         而这一族恰好都是 Claude / Codex 形状；ZCode / Qoder / Antigravity / DSH / Cline
+         在 Swift 侧**各自有专用路径**。移植 = 把它从没设计过的形状上硬用。
+       - 所以那 16 个档案**仍然得逐格式补**；或给通用检测器加「不进入请求体子树」的规则，
+         那是**设计改动**，得单独验。
      - 已加棘轮守护 `registry::session_coverage_sentinel`（两条）：缺口清单必须与代码现状
        **逐条相符**（多一条是陈旧登记、少一条就是有档案悄悄落进缺口），
        且清单**不许被清空成空壳**。**变异验证**：把 `claude` 从覆盖集合里去掉，第一条精确变红并点名。
+     - 留下的工具：`session::real_session_side_by_side`（`#[ignore]`，读本机真实文件），
+       并排打出两种判定的对照。取证只取**键名与判定**，不取任何正文。
 2. ~~Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读~~
    ✅ **v0.0.198 已核实**：`cpu_percent` 只喂环形仪表的弧长（`?? 0`，对仪表是正确的），
    **任何出口都没有把它渲染成文字**，不存在「0.0%」；两壳都过滤离线项；
