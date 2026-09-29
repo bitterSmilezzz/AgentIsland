@@ -3,6 +3,8 @@
 > 这份记录补上 [`2026-09-29-blank-ui-two-build-config-causes.md`](./2026-09-29-blank-ui-two-build-config-causes.md)
 > 没能定位的那一层。前一份把 `SDKROOT` 与 CSP 当成根因，**两个都不成立**（见文末「被推翻的说法」）。
 
+> **长期口径已沉淀**：[ADR 0014 持锁时不调回主线程的 API；探针只读](../adr/0014-no-main-thread-dispatch-while-locked.md)。
+
 ## 一句话
 
 **引擎线程持有引擎锁去写托盘，而写托盘必须回到主线程同步执行；
