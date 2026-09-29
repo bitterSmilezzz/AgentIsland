@@ -970,6 +970,11 @@ struct TokenReportPub {
 /// 从终端 `open` 出来的那一次就能看见。
 fn log_line(msg: &str) {
     let path = std::env::temp_dir().join("agentisland-tauri.log");
+    // 说明：日志文件是**累积**的（同一路径、按运行叠加），所以每次启动
+    // 都先写一行 `[run]` 标记。没有它就没法把「这一次跑出来的行」与
+    // 「历史遗留的行」分开——我为此误判过好几轮：把累积日志里的
+    // `[page] / [webview]` 当成当次运行的证据。
+
     use std::io::Write;
     match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         Ok(mut f) => {
@@ -1170,6 +1175,9 @@ fn main() {
     std::panic::set_hook(Box::new(|info| {
         log_line(&format!("[panic] {}", info));
     }));
+    // **每次启动一行 run 标记**：日志文件是累积的，只有它能把当次运行切出来。
+    // 少了这一行，「某类日志没出现」这个结论就不可信——而我恰好靠它下了好几轮结论。
+    log_line(&format!("[run] pid={} 启动", std::process::id()));
     log_line("=== boot ===");
 
     tauri::Builder::default()
