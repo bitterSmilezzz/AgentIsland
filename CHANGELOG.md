@@ -4,6 +4,36 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.260] - 2026-09-29
+
+### 修掉一个事实：`release.sh` 在这台机器上**一次都跑不完**
+
+v0.0.243 把 UI 冒烟加进了 `release.sh`，但那之后我一直**手动分步**发版，
+所以那条路径从未被真正执行过。今天去看，发现它根本跑不完：
+
+`release.sh:50` 调 `scripts/build-app.sh "$VERSION"` **没带 `SKIP_SWIFT`**，
+而 `build-app.sh` 会在 Swift 构建那段因缺 `SwiftUIMacros` 直接退出；
+`set -euo pipefail` 之下，**后面所有步骤都到不了**——包括第 73 行那段冒烟。
+
+也就是说：**我加进去的那段代码，从未运行过。**
+「加进脚本」和「跑过」是两件事，而后者当时没有任何东西能证明。
+
+修法：`release.sh` 在调 `build-app.sh` 之前做一次工具链探测
+（判据与 `build-app.sh` 里那道前置检查同源：那个宏插件是 Xcode 闭源提供的），
+缺就导出 `SKIP_SWIFT=1` 并**明说代价**：
+
+- 产不出 `dist/AgentIsland-Swift.app` 这条回退路；
+- 也跑不了 Swift 测试门禁。
+
+顺带记一条操作教训：这次连续两次撞上 280 秒上限才搞明白
+`cargo build --release` 的预热**对 `build-app.sh` 无效**，
+因为它跑的是 `cargo tauri build --bundles app`，**不是同一套参数**。
+项目早先就记下过「发版要分步、先 `cargo tauri build` 预热」，我这次忘了用。
+
+### 门禁
+
+Rust 527 条通过 / 0 失败，release 编译警告 14，UI 冒烟通过，脱敏扫描零新增。
+
 ## [0.0.259] - 2026-09-29
 
 ### 第二个破时钟规矩的地方，以及一条**改了三次才真正有效**的守护

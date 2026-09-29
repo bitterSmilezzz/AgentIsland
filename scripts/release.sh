@@ -47,6 +47,22 @@ scripts/test-scan-secrets.sh
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml
 
 step "Swift 测试门禁与打包"
+# **工具链缺 SwiftUIMacros 时自动 SKIP_SWIFT=1。**
+#
+# 不这么做的话，`build-app.sh` 会在 Swift 构建那段直接退出，`set -e` 之下
+# **后面所有步骤都到不了**——包括下一段的 UI 冒烟。
+# 实测踩过：`release.sh` 在这台机器（只装了 CommandLineTools）上一次都跑不完，
+# 而 UI 冒烟是排在它后面的，于是那段代码从未被执行过——
+# **「加进脚本」不等于「跑过」**。
+#
+# 判据与 `build-app.sh` 里那道前置检查同源：那个宏插件是 Xcode 闭源提供的。
+DEV_DIR=$(xcode-select -p 2>/dev/null || echo /Library/Developer/CommandLineTools)
+if ! ls "$DEV_DIR/usr/lib/swift/host/plugins" 2>/dev/null | grep -q SwiftUIMacros; then
+    echo "!! 工具链里没有 SwiftUIMacros（$DEV_DIR）⇒ 自动 SKIP_SWIFT=1"
+    echo "!! 代价：**产不出 dist/${APP_NAME}-Swift.app 那条回退路**，也跑不了 Swift 测试门禁。"
+    export SKIP_SWIFT=1
+fi
+
 scripts/build-app.sh "$VERSION"
 
 # 界面这一层在 v0.0.242 之前**完全没被验证过**（界面从来没渲染过）。
