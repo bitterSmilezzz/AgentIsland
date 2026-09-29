@@ -378,21 +378,19 @@ fn place_island(
     };
     let wa = work_area_for(&window, &state);
     let (left, top) = placement::place_with(edge, anchor, width, height, wa);
-    log_line(&format!(
-        "[place] 请求 {width}×{height} 算得 ({left},{top})；改之前 {:?}",
-        window.outer_size()
-    ));
+    // ⚠️ **只记「请求去哪儿」，不要在这里回读窗口几何当证据。**
+    // `outer_size()` / `outer_position()` 在本应用里**恒等于 tauri.conf.json 的配置值**、
+    // 且从不随 `set_size` 变化（2026-09-29 实测：窗口真被缩到 18×132 贴到右沿之后，
+    // 它依然报 372×520 与 (1098,216)）。曾据此得出「窗口压根没被缩」的错误结论，
+    // v0.0.256 已撤回。**验窗口几何只能截图**：
+    // `screencapture -x -o -R <x>,<y>,<w>,<h>`，并做一次「杀掉进程再拍同一块」的对照。
+    log_line(&format!("[place] 请求 {width}×{height} 算得 ({left},{top})"));
     window
         .set_size(LogicalSize::new(width, height))
         .map_err(|e| e.to_string())?;
     window
         .set_position(LogicalPosition::new(left, top))
         .map_err(|e| e.to_string())?;
-    log_line(&format!(
-        "[place] 改之后 {:?} / {:?}",
-        window.outer_size(),
-        window.outer_position()
-    ));
     Ok(())
 }
 
@@ -1729,9 +1727,11 @@ fn main() {
             probe_webviews(app.handle(), 0);
             probe_webviews(app.handle(), 1500);
             probe_webviews(app.handle(), 5000);
-            // **落位之后再报一次几何**：上面 `[boot]` 那组是**初始配置值**，
-            // 发生在重定位之前——想知道岛此刻究竟在屏幕哪里，只能看这一行。
-            // （webview 里的 `screenX/outerWidth` 在本项目里是空的，不可信。）
+            // ⚠️ **这一行不能当几何证据**：`outer_size()` / `outer_position()`
+            // 在本应用里恒等于 tauri.conf.json 的配置值、从不随 `set_size` 变化。
+            // 它唯一的用处是「窗口在不在、可见不可见」（那两项是真的），
+            // 以及**提醒想要位置的人去截图**。位置与尺寸请看 `[place] 请求…算得…`
+            // 再用 `screencapture` 对那一小块拍一张。
             {
                 let app = app.handle().clone();
                 std::thread::spawn(move || {
