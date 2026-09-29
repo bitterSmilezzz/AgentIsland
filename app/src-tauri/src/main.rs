@@ -1171,6 +1171,112 @@ fn probe_webviews(app: &tauri::AppHandle, delay_ms: u64) {
     }
 }
 
+/// UI 冒烟：把每个窗口里**所有可点的元素**都点一遍，逐步记下 DOM 与错误数。
+///
+/// 为什么现在才做：v0.0.242 之前界面从来没渲染过，任何 UI 验证都无从谈起。
+/// 而侧边栏的 Provider 页历史上就出过「导航项在、注水函数在、页面函数压根没定义」
+/// 的白屏——那一类 bug 只有真的点进去才会现形。
+///
+/// 它是**驱动**而不是断言：结果落在日志里，由 `scripts/ui-smoke.sh` 判定。
+/// 这样驱动脚本本身不用改，判定标准收紧时也不用动 UI。
+const UI_SMOKE_JS: &str = r#"(function () {
+  if (window.__uiSmoke) { return 'already'; }
+  window.__uiSmoke = { state: 'running', found: {}, steps: [] };
+  var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  var root = function () { return document.getElementById('root'); };
+  var snap = function (label) {
+    var r = root();
+    window.__uiSmoke.steps.push({
+      label: label,
+      html: r ? r.innerHTML.length : -1,
+      kids: r ? r.children.length : -1,
+      errs: (window.__aiErrs || []).length
+    });
+  };
+  // 元素取不到**不算失败**：窗口形态不同，可点的东西本就不同。
+  // 但「一个都没取到」必须显形（found 里是 0），否则等于静默通过。
+  var clickAll = function (selector) {
+    var els = Array.prototype.slice.call(document.querySelectorAll(selector));
+    var chain = Promise.resolve();
+    window.__uiSmoke.found[selector] = els.length;
+    els.forEach(function (el, index) {
+      chain = chain.then(function () {
+        var key = el.dataset.nav || el.dataset.agent || el.dataset.reportFormat
+          || (el.textContent || '').trim().slice(0, 20) || ('#' + index);
+        try {
+          el.click();
+        } catch (error) {
+          window.__uiSmoke.steps.push({
+            label: selector + '[' + key + '] 点不动',
+            err: String((error && error.message) || error)
+          });
+          return;
+        }
+        return wait(240).then(function () { snap(selector + ' → ' + key); });
+      });
+    });
+    return chain;
+  };
+  (async function () {
+    try {
+      for (var i = 0; i < 80 && (!root() || !root().children.length); i++) { await wait(100); }
+      snap('起点');
+      await clickAll('[data-nav]');
+      await clickAll('[data-analytics]');
+      await clickAll('[data-agent]');
+      await clickAll('[data-back]');
+      await clickAll('[data-report-format]');
+      await clickAll('[data-search]');
+      await clickAll('[data-theme]');
+      await clickAll('[data-collapse]');
+      window.__uiSmoke.state = 'done';
+    } catch (error) {
+      window.__uiSmoke.state = 'threw';
+      window.__uiSmoke.fatal = String((error && error.message) || error);
+    }
+    window.__uiSmoke.errs = window.__aiErrs || [];
+  })();
+  return 'started';
+})()"#;
+
+/// 读回冒烟结果。`eval` 的返回值是脚本的完成值，所以这里直接序列化。
+const UI_SMOKE_READ_JS: &str = "JSON.stringify(window.__uiSmoke || { state: 'never-ran' })";
+
+/// 冒烟调度：1.2s 后开跑（等 boot 把 DOM 建起来），8s 后读结果。
+///
+/// 每个窗口**各跑一遍**同一个脚本——它按各窗口自己的 DOM 走，
+/// 所以侧边栏点导航、灵动岛点分析页、工作台点报告格式，三条路一次覆盖。
+fn schedule_ui_smoke(app: &tauri::AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        for label in ["island", "sidebar", "workbench"] {
+            if let Some(w) = app.get_webview_window(label) {
+                let _ = w.eval(UI_SMOKE_JS);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8000));
+        for label in ["island", "sidebar", "workbench"] {
+            let Some(w) = app.get_webview_window(label) else {
+                continue;
+            };
+            let tag = format!("{label}/smoke");
+            let tag2 = tag.clone();
+            if let Err(e) = w.eval_with_callback(UI_SMOKE_READ_JS, move |result| {
+                log_line(&format!("[smoke] {tag2} {result}"));
+            }) {
+                log_line(&format!("[smoke] {tag} 读不到：{e}"));
+            }
+        }
+    });
+}
+
+/// `--ui-smoke`：只在这一次运行里打开 UI 冒烟，与设置无关。
+fn ui_smoke_requested() -> bool {
+    std::env::args().any(|a| a == "--ui-smoke")
+}
+
+
 /// 深链投递的事件落进事件队列。
 ///
 /// 标记为**外部投递**（`externally_delivered`）：它来自一条 URL，
@@ -1487,6 +1593,10 @@ fn main() {
             probe_webviews(app.handle(), 0);
             probe_webviews(app.handle(), 1500);
             probe_webviews(app.handle(), 5000);
+            if ui_smoke_requested() {
+                log_line("[smoke] 已按 --ui-smoke 打开界面冒烟");
+                schedule_ui_smoke(app.handle());
+            }
 
             // 初始贴边放置
             let win = app.get_webview_window("island").unwrap();

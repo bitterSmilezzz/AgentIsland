@@ -98,6 +98,27 @@ iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
 # 仍然构建它，是为了**留一条回退路**：一个不留退路的切换不是切换，是砸东西。
 # 出问题就 `open dist/AgentIsland-Swift.app`，一秒钟退回去。
 if [[ "${SKIP_SWIFT:-0}" != "1" ]]; then
+    # **前置检查**：`@State` / `@Binding` 这些 SwiftUI 属性包装器是**宏**，
+    # 由 `SwiftUIMacros` 插件实现，而它是 **Xcode 闭源提供的**——
+    # CommandLineTools 的 host/plugins 里只有 libObservationMacros 与 libSwiftMacros。
+    # 没有它，整棵 SwiftUI 视图层编不出来，而且报错长得极不像这件事：
+    # 先报「SwiftUIMacros.StateMacro could not be found」，再连锁出几十条
+    # 「cannot find '$state' in scope」「self is immutable」「类型检查超时」，
+    # 最后把一整条 4000 字符的 swift-frontend 命令行糊在脸上。
+    # 那些 `self is immutable` **不是**代码写错了——先排掉这一层再去看代码。
+    PLUGIN_DIR="/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins"
+    if ! ls "$PLUGIN_DIR" 2>/dev/null | grep -q SwiftUIMacros; then
+        echo "✗ 这台机器的 Swift 工具链里没有 SwiftUIMacros 插件，Swift 版编不出来。" >&2
+        echo "  xcode-select -p ⇒ $(xcode-select -p 2>/dev/null || echo '(未设置)')" >&2
+        echo "  该插件由 Xcode 提供，只装了 CommandLineTools 时没有它；" >&2
+        echo "  于是所有用 @State/@Binding 的 SwiftUI 视图都编不出来。" >&2
+        echo >&2
+        echo "  三选一：" >&2
+        echo "    ① 装 Xcode（xcode-select -s /Applications/Xcode.app）后重跑；" >&2
+        echo "    ② SKIP_SWIFT=1 跳过——代价是**没有 dist/${APP_NAME}-Swift.app 这条回退路**；" >&2
+        echo "    ③ 确认不再需要回退路，然后把这一步从脚本里删掉。" >&2
+        exit 1
+    fi
     echo "==> 构建 Swift 版（回退产物：dist/${APP_NAME}-Swift.app；SKIP_SWIFT=1 可跳过）"
     swift build -c release --product AgentIsland
     swift build -c release --product AgentIslandCLI

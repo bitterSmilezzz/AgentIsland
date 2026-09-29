@@ -4,6 +4,80 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.243] - 2026-09-29
+
+### UI 冒烟：第一次真的把界面点一遍
+
+v0.0.242 修掉死锁之后，界面**第一次真的渲染出来**。于是一件一直做不了的事变成可做了：
+把三个窗口里所有可点元素各点一遍，看有没有跑出错误。
+
+`--ui-smoke` + `scripts/ui-smoke.sh`，已接进 `release.sh`（打包完立刻点）。
+
+侧边栏 **7 个导航项全部点过**，工作台返回与 md / csv 报告格式各点一次：
+
+| 窗口 | 点到 | 逐步 DOM |
+| :--- | :--: | :--- |
+| sidebar | 7 | list 992 → tokenAnalytics 8881 → **provider 2300** → todo 1213 → settings 8366 → remote 4865 → agents 1442 |
+| workbench | 3 | 8013 → md 11331 → csv 10693 |
+| island | 0 | 收起态只有一个 101B 的窄条，里面没有可点元素 |
+
+全程 **0 个未捕获错误**。
+
+`provider` 那一页正是历史上「导航项在、注水函数在、`pageProvider()` 压根没定义」的
+白屏页。此前只有静态符号检查守着（v0.0.220 补的），现在是被**真实点击**验过的。
+
+### 判定标准写在脚本里，不散落到驱动脚本
+
+驱动（`UI_SMOKE_JS`）只负责点，判定归 `ui-smoke.sh`——这样收紧标准时不用动 UI。
+
+四条：① 三个窗口各自 `state == done`；② 全程零未捕获错误；③ 没有「点不动」的步骤；
+④ **侧边栏与工作台至少点到一个元素**。
+
+第四条是补前三条的漏洞：界面整个没渲染出来时，`state` 仍是 `done`、`errs` 仍是空、
+步骤里也没有点不动的记录——**三条全过而其实什么都没点**。
+灵动岛不在此列：收起态本来就没有可点元素，那是形态决定的。
+
+### 没做的
+
+不判断像素级呈现（DOM 长度非零 ≠ 长得对）；不覆盖灵动岛展开态；
+不覆盖需要真实输入的路径（搜索框、拖动改宽度）。这些仍要人看。
+
+### 踩到的 bash 坑
+
+`set -u` 下 `$VAR` 紧跟**全角字符**会被并进变量名（`$LOG）` → `LOG）: unbound variable`），
+判定整段静默跳过。全部改成 `${VAR}`。
+
+另外 `eval_with_callback` 的回调拿到的是**被 JSON 编码过的字符串**，日志里长这样
+`sidebar/smoke "{\"state\":\"done\"…}"`——直接拿原文匹配 `"state":"done"` 一条都中不了。
+
+### 顺带挖出一个环境坑：Swift 应用 target 编不出来
+
+`build-app.sh` 不传 `SKIP_SWIFT=1` 时必然失败，报的是
+
+```text
+error: external macro implementation type 'SwiftUIMacros.StateMacro' could not be found for macro 'State()'
+```
+
+`@State` / `@Binding` 是**宏**，由 `SwiftUIMacros` 提供，而它是 **Xcode 闭源**的——
+这台机器只装了 CommandLineTools（`xcode-select -p` 指向它，host/plugins 里只有
+`libObservationMacros` 与 `libSwiftMacros`）。**不是代码坏了**，是工具链缺件。
+
+它之所以能骗过十几轮：下游报错是「`cannot find '$state' in scope`」
+「`cannot assign to property: 'self' is immutable`」「类型检查超时」——
+第一条甚至精确落在 `ToolboxView.swift:636` 那个 `verifyCleanup` 闭包里，
+看起来像个标准的「闭包捕获 self 变只读」的真 bug。顺着它改会改错地方。
+
+`build-app.sh` 因此加了**前置检查**：进 Swift 构建段之前先看插件在不在，
+没有就立刻停并给三条出路。其中第 ② 条要说明白——
+**`SKIP_SWIFT=1` 的代价是没有 `dist/AgentIsland-Swift.app` 这条回退路**，
+不能让人以为「跳过也一样」。
+
+取证：`docs/research/2026-09-29-swift-app-target-needs-xcode.md`
+
+### 门禁
+
+Rust 502 条通过 / 0 失败，release 编译警告 14，UI 冒烟通过，脱敏扫描零新增。
+
 ## [0.0.242] - 2026-09-29
 
 ### 界面空白：启动阶段 AB-BA 死锁

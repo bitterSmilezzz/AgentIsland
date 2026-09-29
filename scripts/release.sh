@@ -49,6 +49,13 @@ cargo test --locked --manifest-path app/src-tauri/Cargo.toml
 step "Swift 测试门禁与打包"
 scripts/build-app.sh "$VERSION"
 
+# 界面这一层在 v0.0.242 之前**完全没被验证过**（界面从来没渲染过）。
+# 侧边栏的 Provider 页就出过「导航项在、注水函数在、页面函数压根没定义」的白屏，
+# 而那一类 bug 静态符号检查扫不到、也没有报错可听——只有真的点进去才会现形。
+# 所以打包完立刻点一遍：三个窗口里所有可点元素各点一次，看有没有跑出错误。
+step "UI 冒烟（点遍三个窗口的可点元素）"
+scripts/ui-smoke.sh
+
 step "发布包"
 ZIP="dist/AgentIsland-$VERSION.zip"
 rm -f "$ZIP"
