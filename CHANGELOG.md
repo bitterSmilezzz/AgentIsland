@@ -4,6 +4,54 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.247] - 2026-09-29
+
+### 16 个 Agent 声明了会话源，Rust 端却一条信号都读不出来
+
+对拍文档里挂着一条「`collectFacts` 那些事实键的等价覆盖仍未比对」。这次比对了，
+得到的结论比预期大：**根因是结构性的**。
+
+Swift 侧只有**一个** `detect(lines:)` 通用事实收集器，按**内容**吃所有档案的 JSONL；
+Rust 侧是**逐方言手写**解析器——**没显式移植的就静默变成「无信号」**，
+而界面上看不出异样：那些 Agent 只剩进程级的弱信号（在线/离线 + token），
+没有「等你批准 / 在跑 / 刚完成」。
+
+逐档案拉表（26 个，判定照抄 `session::probe_dialect` 与 `engine` 两条真实路径），
+**16 个声明了会话源却拿不到任何会话信号**：
+
+| 类别 | 档案 |
+| :--- | :--- |
+| 对拍缺口（Swift 有路径，Rust 没有） | `aider` `chatgpt` `continue` `copilot` `cursor` `dim` `ego-browser` `goose` `hermes` `mimocode` `openviking` `opencode` `trae` `vibe-usage` `windsurf` |
+| Rust 独有能力没做完（Swift 压根没这个档案） | `vscode` |
+
+`dim` / `mimocode` / `opencode` 值得单说：它们**声明了 `session_database`**，
+但 `engine` 的库路**只在 `schema == StatusIndex` 上跑**，
+`DimTasks` / `OpenCode` 声明了也拿不到信号。
+
+**本机今天观察不到**：15 个对拍缺口里有 6 个的 `session_dirs` 在这台机器上存在，
+但**没有一个含 Swift 通用检测器读得动的会话文件**（copilot 指向的是 Chromium 配置目录、
+chatgpt 只有一个 appcast、ego 是空目录、continue 只有一个 `sessions.json`），
+所以**今天两端表现一致**。缺口对**真的装了这些 Agent 且攒下了会话**的用户才成立——
+**这条边界必须一起记下来，否则会被读成「现在就在少报」。**
+
+**不是「补 16 个解析器」**：Swift 那边一个通用收集器覆盖全部，
+所以正解是**把那个通用检测器移植过来**，而不是照着 id 再手写 16 遍。
+
+### 棘轮守护
+
+`registry::session_coverage_sentinel` 两条：缺口清单必须与代码现状**逐条相符**
+（多一条是陈旧登记、少一条就是有档案悄悄落进缺口），且清单**不许被清空成空壳**。
+**变异验证**：把 `claude` 从覆盖集合里去掉，第一条精确变红并点名 `["claude"]`。
+
+守护写完第一遍就抓出一个我漏掉的：`vscode`——它是 Rust 独有的档案，
+声明了 `workspaceStorage` 却从没写过解析器。**这是新功能没做完，不是对拍缺口**，
+两类在表里分开写。
+
+### 门禁
+
+Rust 506 条通过（+2）/ 0 失败，release 编译警告 14（补 `#[cfg(test)]` 后回到基线），
+UI 冒烟通过，脱敏扫描零新增。
+
 ## [0.0.246] - 2026-09-29
 
 ### Cline 的 attention 指纹会吃掉第二条提问（少报）

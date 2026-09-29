@@ -940,3 +940,100 @@ mod dialect_declaration {
         }
     }
 }
+
+/// **声明了会话源、却在 Rust 侧拿不到任何会话信号**的档案。
+///
+/// 这不是「已支持」，是**明确知道的缺**。Swift 侧那一个通用
+/// `detect(lines:)` 按内容吃所有档案的 JSONL；Rust 侧是逐方言手写解析器，
+/// **没显式移植的就静默变成「无信号」**——而界面上看不出异样，
+/// 那些 Agent 只会显示进程级的弱信号（在线/离线 + token），没有「等你批准 / 在跑 / 刚完成」。
+///
+/// 每往这个表里加一个 id，等于**承认又多一个 Agent 缺会话语义**。
+/// 它是一道棘轮：新增档案若落进缺口而没被 conscious 登记，守护会精确变红。
+///
+/// 两条**性质不同**，别混着看：
+/// · 15 个是**对拍缺口**——Swift 侧有路径（通用检测器或专用库），Rust 没有；
+/// · `vscode` 是 **Rust 独有**的档案，Swift 侧压根没有这个 profile，
+///   所以它不是对拍缺口，而是**新功能没做完**（声明了 workspaceStorage 却没写解析器）。
+///
+/// 本机可观测性（2026-09-29 实测）：对拍那 15 个里有 6 个的 `session_dirs`
+/// 在这台机器上存在，但**没有一个含 Swift 通用检测器读得动的会话文件**
+/// （copilot 指向的是 Chromium 配置目录、chatgpt 只有一个 appcast、ego 是空目录），
+/// 所以**今天两端表现一致**。缺口对**真的装了这些 Agent 且攒下了会话**的用户才成立。
+#[cfg(test)]
+const KNOWN_UNCOVERED: [&str; 16] = [
+    "aider", "chatgpt", "continue", "copilot", "cursor", "dim", "ego-browser", "goose", "hermes",
+    "mimocode", "openviking", "opencode", "trae", "vibe-usage", "windsurf",
+    // Rust 独有档案，不是对拍缺口（见表头注释）
+    "vscode",
+];
+
+/// 这个档案在 Rust 侧**能不能**拿到会话信号。
+///
+/// 判定照抄两条真实路径，不另立标准：
+/// · 文件路 `session::probe_dialect`——先看方言有没有解析器，
+///   `GenericTail` 内部**仍按 id 分流**（那 6 个）；
+/// · 库路 `engine`——**只在 `schema == StatusIndex` 上跑**，
+///   `DimTasks` / `OpenCode` 声明了库也拿不到信号。
+#[cfg(test)]
+fn covered_by_rust(p: &AgentProfile) -> bool {
+    use crate::models::{SessionDialect as D, SessionSchema as S};
+    let by_file = match p.session_dialect {
+        D::QoderTranscript | D::DshProjection | D::AntigravityBrain | D::ClineTasks => true,
+        D::GenericTail => {
+            matches!(p.id.as_str(), "claude" | "codex" | "cline" | "roo-code" | "roo" | "zcode")
+        }
+    };
+    let by_database = p
+        .session_database
+        .as_ref()
+        .is_some_and(|db| db.schema == S::StatusIndex);
+    by_file || by_database
+}
+
+#[cfg(test)]
+mod session_coverage_sentinel {
+    use super::{builtin, covered_by_rust, KNOWN_UNCOVERED};
+
+    /// 缺口清单必须与代码现状**逐条相符**：多一条是陈旧登记，
+    /// 少一条就是有档案悄悄落进了缺口。
+    #[test]
+    fn the_uncovered_list_matches_the_code_exactly() {
+        let profiles = builtin();
+        let uncovered: Vec<&str> = profiles
+            .iter()
+            .filter(|p| !p.session_dirs.is_empty() || p.session_database.is_some())
+            .filter(|p| !covered_by_rust(p))
+            .map(|p| p.id.as_str())
+            .collect();
+        let mut stale: Vec<&&str> = KNOWN_UNCOVERED
+            .iter()
+            .filter(|id| !uncovered.contains(id))
+            .collect();
+        stale.sort();
+        assert!(
+            stale.is_empty(),
+            "KNOWN_UNCOVERED 里有已经拿到信号、应当删掉的条目：{stale:?}"
+        );
+        let mut missing: Vec<&&str> = uncovered
+            .iter()
+            .filter(|id| !KNOWN_UNCOVERED.contains(id))
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "这些档案声明了会话源却拿不到信号，Rust 端会只剩进程级弱信号：{missing:?}。\n\
+             要么给它写解析器，要么 conscious 登记进 KNOWN_UNCOVERED 并在表头写明理由。"
+        );
+    }
+
+    /// 反向：清单不能是**空壳**。一条不登记的缺口是缺陷，
+    /// 整张表都被清空等于把缺陷藏起来。
+    #[test]
+    fn the_uncovered_list_is_not_a_rubber_stamp() {
+        assert!(
+            !KNOWN_UNCOVERED.is_empty() && KNOWN_UNCOVERED.len() < builtin().len(),
+            "缺口清单要么是空的（= 有缺陷被藏起来），要么大到没意义"
+        );
+    }
+}

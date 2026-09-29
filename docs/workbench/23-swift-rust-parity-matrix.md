@@ -443,7 +443,29 @@ v0.0.245 起**灵动岛的展开态也在内**：冒烟用 `--expand` 启动参�
          「看起来更唯一」的字段之前，先确认去重那一侧拿它做什么。
      - 其余三处（反向扫描、`command_output` 方向、15 分钟过期门、缺三个分支）
        **仍无实样，未据此改任何行为**。
-   - **`collectFacts` 那些事实键的等价覆盖仍未比对**。
+   - ~~`collectFacts` 那些事实键的等价覆盖仍未比对~~ → ✅ **v0.0.247 比对了，得到一个此前没人量过的缺口**
+     - 根因是**结构性的**：Swift 侧只有**一个** `detect(lines:)` 通用事实收集器
+       （`LineFacts`：roles / sources / types / states / identifiers / requestMarker /
+       completionFingerprint / toolCalls / resolvedCallIds），**按内容**吃所有档案的 JSONL；
+       Rust 侧是**逐方言手写**解析器，**没显式移植的就静默变成「无信号」**。
+     - 逐档案拉表实测（26 个档案，判定照抄 `session::probe_dialect` 与 `engine` 两条真实路径），
+       **16 个声明了会话源却拿不到任何会话信号**：
+       | 类别 | 档案 |
+       | :--- | :--- |
+       | 对拍缺口（Swift 有路径，Rust 没有） | `aider` `chatgpt` `continue` `copilot` `cursor` `dim` `ego-browser` `goose` `hermes` `mimocode` `openviking` `opencode` `trae` `vibe-usage` `windsurf` |
+       | Rust 独有能力没做完（Swift 压根没这个档案） | `vscode` |
+     - `dim` / `mimocode` / `opencode` 值得单说：它们**声明了 `session_database`**，
+       但 `engine` 的库路**只在 `schema == StatusIndex` 上跑**，
+       `DimTasks` / `OpenCode` 两个 schema 声明了也拿不到信号。
+     - **本机今天观察不到**：15 个对拍缺口里有 6 个的 `session_dirs` 在这台机器上存在，
+       但**没有一个含 Swift 通用检测器读得动的会话文件**（copilot 指向的是 Chromium 配置目录、
+       chatgpt 只有一个 appcast、ego 是空目录、continue 只有一个 `sessions.json`），
+       所以**今天两端表现一致**。缺口对**真的装了这些 Agent 且攒下了会话**的用户才成立。
+     - **不是「补 16 个解析器」**：Swift 那边是一个通用收集器覆盖全部，
+       所以正解是**把那个通用检测器移植过来**，而不是照着 id 再手写 16 遍。
+     - 已加棘轮守护 `registry::session_coverage_sentinel`（两条）：缺口清单必须与代码现状
+       **逐条相符**（多一条是陈旧登记、少一条就是有档案悄悄落进缺口），
+       且清单**不许被清空成空壳**。**变异验证**：把 `claude` 从覆盖集合里去掉，第一条精确变红并点名。
 2. ~~Rust 前端 `app/ui/js/views.js` 是否把 `cpu_percent: null` 印成 `0.0%`、是否过滤离线 snapshot——未读~~
    ✅ **v0.0.198 已核实**：`cpu_percent` 只喂环形仪表的弧长（`?? 0`，对仪表是正确的），
    **任何出口都没有把它渲染成文字**，不存在「0.0%」；两壳都过滤离线项；
