@@ -396,3 +396,103 @@ mod local_detail_tests {
         );
     }
 }
+
+/// `has_unreadable_source` 与 `has_local_detail_source` **成对**：
+/// 一条问「声明过本地明细源吗」，一条问「读得到吗」。
+/// 只钉一条是半截——而这一对合起来才回答「本机这份数据能不能信」。
+///
+/// 上一版补了 `has_local_detail_source`（它回答「有没有声明」），
+/// 这一条一直没动，于是这个判断链上留了个口子。
+#[cfg(test)]
+mod unreadable_source_tests {
+    use super::*;
+    use crate::testutil::Sandbox;
+
+    fn profile_with(dirs: Vec<String>) -> AgentProfile {
+        AgentProfile {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            process_names: vec![],
+            bundle_ids: vec![],
+            cmdline_hints: vec![],
+            path_contains: vec![],
+            path_excludes: vec![],
+            cpu_floor: None,
+            session_dirs: dirs,
+            token_roots: vec![],
+            token_alert_floor: None,
+            session_dialect: crate::models::SessionDialect::GenericTail,
+            session_database: None,
+            category: "assistant".into(),
+        }
+    }
+
+    /// **没装过 ≠ 读不到。**
+    ///
+    /// 一个压根不存在的可选目录**不是**权限失败（那是 `NotFound`）。
+    /// 把它算成「读不到」会让「这个 Agent 从没在这台机器上跑过」显示成一个故障——
+    /// 而这两种事在界面上完全不像。
+    #[test]
+    fn a_missing_optional_directory_is_not_an_access_failure() {
+        let sandbox = Sandbox::new("unreadable-missing");
+        let absent = sandbox.path().join("never-created");
+        let profile = profile_with(vec![absent.to_string_lossy().into_owned()]);
+        assert!(
+            !has_unreadable_source(&profile),
+            "不存在的目录不是权限失败；判错会让「没装过」显示成「读不到」"
+        );
+    }
+
+    /// 路径存在但**不是目录** ⇒ 读不到（解析器会拿到一个文件而不是目录）。
+    #[test]
+    fn a_path_that_is_a_file_counts_as_unreadable() {
+        let sandbox = Sandbox::new("unreadable-file");
+        let file = sandbox.path().join("a-file");
+        std::fs::write(&file, b"not a directory").unwrap();
+        let profile = profile_with(vec![file.to_string_lossy().into_owned()]);
+        assert!(
+            has_unreadable_source(&profile),
+            "存在却不是目录 ⇒ 明细源读不到"
+        );
+    }
+
+    /// 存在且能列 ⇒ 读得到。
+    #[test]
+    fn an_existing_readable_directory_is_not_unreadable() {
+        let sandbox = Sandbox::new("unreadable-ok");
+        let dir = sandbox.path().join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.jsonl"), b"{}").unwrap();
+        let profile = profile_with(vec![dir.to_string_lossy().into_owned()]);
+        assert!(!has_unreadable_source(&profile));
+    }
+
+    /// **一个**读不到就够 ⇒ 任何一个目录坏了就报读不到。
+    #[test]
+    fn one_bad_directory_among_good_ones_is_enough() {
+        let sandbox = Sandbox::new("unreadable-mixed");
+        let good = sandbox.path().join("sessions");
+        std::fs::create_dir_all(&good).unwrap();
+        let bad = sandbox.path().join("a-file");
+        std::fs::write(&bad, b"x").unwrap();
+        let profile = profile_with(vec![
+            good.to_string_lossy().into_owned(),
+            bad.to_string_lossy().into_owned(),
+        ]);
+        assert!(has_unreadable_source(&profile), "混着一个坏的 ⇒ 整体读不到");
+
+        // 反过来也成立：一个坏的都没有 ⇒ 读得到
+        let ok = profile_with(vec![good.to_string_lossy().into_owned()]);
+        assert!(!has_unreadable_source(&ok));
+    }
+
+    /// 什么都没声明 ⇒ 两条都别说话（不能把「没配置」说成「读不到」）。
+    #[test]
+    fn an_agent_with_no_declared_dirs_is_neither_unreadable_nor_a_source() {
+        let profile = profile_with(vec![]);
+        assert!(!has_unreadable_source(&profile));
+        assert!(!has_local_detail_source(&profile));
+    }
+}
