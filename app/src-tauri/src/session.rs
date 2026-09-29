@@ -3534,9 +3534,16 @@ fn opencode_signal(
     }
 }
 
+/// `now_ms` 由**引擎**盖章传进来，探测层不自己取当前时间——
+/// 这条规矩写在 `engine.rs` 的 `probe_cached_multi` 上：`now` 是采样时钟，
+/// 引擎盖章是为了全链路同一口钟。
+/// 第一版这里图省事在函数内 `SystemTime::now()`，后果是
+/// **这一族没法用受控时钟测**：夹具里写死的历史时间戳必然落在 15 分钟窗外，
+/// 于是「已完成」那一支在测试里永远走不到。
 pub fn probe_opencode(
     database: &crate::models::SessionDatabase,
     file_age_secs: f64,
+    now_ms: i64,
 ) -> (SessionProbe, Option<SessionProbeFailure>) {
     if file_age_secs > OPENCODE_MAX_AGE_SECS {
         return (SessionProbe::default(), None);
@@ -3597,12 +3604,6 @@ pub fn probe_opencode(
             }
         }
     }
-    // 「now」用**消息里的时间轴**推不出来时退回当前时间——
-    // 而这里必须有一个确定值，否则 15 分钟 / 5 分钟两道门无从判断。
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
     match opencode_signal(&rows_out, &database.path, now_ms) {
         Some(signal) => (
             SessionProbe { signal: Some(signal), subagent_count: 0, health: None },
@@ -3707,6 +3708,7 @@ mod opencode_signal_tests {
 #[ignore = "读本机真实 OpenCode/MiMo Code 会话库，只在需要手工取证时跑"]
 fn real_opencode_library_probe() {
     let home = std::env::var("HOME").unwrap_or_default();
+    let now_ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
     for (label, path) in [
         ("opencode", format!("{home}/.local/share/opencode/opencode.db")),
         ("mimocode", format!("{home}/.local/share/mimocode/mimocode.db")),
@@ -3721,7 +3723,7 @@ fn real_opencode_library_probe() {
             status_sql: None,
         };
         for age in [60.0_f64, 16.0 * 60.0, 25.0 * 3600.0] {
-            let (probe, failure) = probe_opencode(&db, age);
+            let (probe, failure) = probe_opencode(&db, age, now_ms());
             let kind = match &probe.signal {
                 None => "无".to_string(),
                 Some(Signal::Attention(_, m)) => format!("attention · {m}"),

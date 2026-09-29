@@ -851,7 +851,7 @@ impl ActivityEngine {
         //   （这一族跨版本改过名）。
         let (probe, failure) = match database.schema {
             crate::models::SessionSchema::DimTasks => session::probe_dim(database, file_age),
-            crate::models::SessionSchema::OpenCode => session::probe_opencode(database, file_age),
+            crate::models::SessionSchema::OpenCode => session::probe_opencode(database, file_age, now),
             _ => session::probe_status_index(database, file_age),
         };
 
@@ -1127,6 +1127,141 @@ mod token_spike_rules {
         assert!(
             TOKEN_SPIKE_CONFIRMATIONS > 1,
             "单档就告警 ⇒ 长任务结束时一次性落盘会直接误报成消耗突增"
+        );
+    }
+}
+
+/// **真的走一遍引擎的库路分派**，而不是在别处把条件复述一遍。
+///
+/// 为什么必须有这条：`registry::session_coverage_sentinel` 里的
+/// `covered_by_rust` 是**照着引擎的 `match database.schema` 重写的一份**。
+/// 两处编码同一个条件，**可以一起漂**——把引擎的路由改错了，守护照样绿。
+///
+/// 这条用例直接把**真 DDL 的库**喂给 `probe_cached_multi`，由引擎自己选函数。
+/// 改了 `match` 的某一支，这里精确变红。
+#[cfg(test)]
+mod database_dispatch_tests {
+    use super::ActivityEngine;
+    use crate::models::{SessionDialect as D, SessionSchema as S};
+    use std::sync::mpsc::channel;
+
+    /// 抄自本机真库 `~/.dimcode/v2/dimcode.sqlite`（只抄结构，不含任何数据）。
+    const DIM_DDL: &str = "CREATE TABLE messages (
+  messageId TEXT PRIMARY KEY, sessionId TEXT NOT NULL, role TEXT NOT NULL,
+  parts TEXT NOT NULL, attachments TEXT, toolMetadata TEXT, metadata TEXT,
+  orderKey TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL)";
+    /// 同表结构的 fork（小米 MiMo Code）用的是**老表名**，表名必须现查。
+    const CLINE_FORK_DDL: &str = "CREATE TABLE session (
+  id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, slug TEXT, directory TEXT,
+  title TEXT, version INTEGER, time_created INTEGER, time_updated INTEGER);\
+  CREATE TABLE message (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent_id TEXT,
+  time_created INTEGER, time_updated INTEGER, data TEXT)";
+
+    fn engine() -> ActivityEngine {
+        ActivityEngine::new(crate::settings::Settings::default(), channel().1)
+    }
+
+    /// `DimTasks` 必须走到 `probe_dim`：assistant 末个 part 已封口 ⇒ 完成。
+    #[test]
+    fn dim_tasks_reaches_the_dim_probe_through_the_engine() {
+        let dir = crate::testutil::Sandbox::new("engine-dispatch-dim");
+        let path = dir.path().join("dimcode.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(DIM_DDL).unwrap();
+            conn.execute(
+                "INSERT INTO messages (messageId, sessionId, role, parts, orderKey, createdAt, updatedAt)
+                 VALUES ('m1','s1','assistant',
+                         '[{\"type\":\"text\",\"text\":\"好了\",\"endTime\":1730000000000}]',
+                         '1','2026-09-29T00:00:00Z','2026-09-29T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+        let db = crate::models::SessionDatabase {
+            path: path.to_string_lossy().to_string(),
+            schema: S::DimTasks,
+            status_sql: None,
+        };
+        let (probe, _) = engine().probe_cached_multi("dim", D::GenericTail, &[], Some(&db), 1_000_000);
+        assert!(
+            matches!(probe.signal, Some(crate::session::Signal::Completed(_))),
+            "DimTasks 库必须由引擎路由到 probe_dim 并报完成，实际 {:?}",
+            probe.signal
+        );
+    }
+
+    /// `OpenCode` 必须走到 `probe_opencode`：走的是**老表名**那一支。
+    #[test]
+    fn open_code_reaches_its_probe_through_the_engine() {
+        let dir = crate::testutil::Sandbox::new("engine-dispatch-opencode");
+        let path = dir.path().join("mimocode.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(CLINE_FORK_DDL).unwrap();
+            let now_ms = 1_757_000_000_000i64;
+            // `session` 表是必需的：查询靠它定位「最新一场会话」，
+            // 缺了它这一族就被判为「不是这一族的库」而拒绝——**这是对的**，
+            // 所以夹具必须两张表都建。
+            conn.execute(
+                "INSERT INTO session (id, slug, time_created, time_updated) VALUES ('s1','s1',?1,?1)",
+                rusqlite::params![now_ms],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO message (id, session_id, agent_id, time_created, time_updated, data)
+                 VALUES ('msg_1','s1','agent',?1,?1,?2)",
+                rusqlite::params![
+                    now_ms,
+                    format!(r#"{{"role":"assistant","time":{{"created":{now_ms},"completed":{now_ms}}}}}"#)
+                ],
+            )
+            .unwrap();
+        }
+        let db = crate::models::SessionDatabase {
+            path: path.to_string_lossy().to_string(),
+            schema: S::OpenCode,
+            status_sql: None,
+        };
+        let (probe, _) =
+            engine().probe_cached_multi("mimocode", D::GenericTail, &[], Some(&db), 1_757_000_000_000);
+        assert!(
+            matches!(probe.signal, Some(crate::session::Signal::Completed(_))),
+            "OpenCode 库必须由引擎路由到 probe_opencode 并报完成，实际 {:?}",
+            probe.signal
+        );
+    }
+
+    /// **反向**：`DimTasks` 的库**不能**被当成状态索引去查。
+    ///
+    /// 做法不是去看内部（分派不返回失败原因），而是**造一个两边结果不同的库**：
+    /// 没有 `messages` 表（`probe_dim` 必然无信号），却有一张 `sessions` 表
+    /// 配一条**能跑通**的 `status_sql`（`probe_status_index` 必然有信号）。
+    /// 于是「无信号」本身就证明了走的是 dim 那一支——
+    /// 路由错了，这个库会冒出信号，而且**界面上看不出异样**。
+    #[test]
+    fn a_dim_library_is_not_read_as_a_status_index() {
+        let dir = crate::testutil::Sandbox::new("engine-dispatch-mixup");
+        let path = dir.path().join("mixup.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            // 故意**不建** `messages` 表
+            conn.execute_batch(
+                "CREATE TABLE sessions (id TEXT PRIMARY KEY, state TEXT);                 INSERT INTO sessions (id, state) VALUES ('s1', 'running');",
+            )
+            .unwrap();
+        }
+        let db = crate::models::SessionDatabase {
+            path: path.to_string_lossy().to_string(),
+            schema: S::DimTasks,
+            status_sql: Some("SELECT id, state FROM sessions LIMIT 1".into()),
+        };
+        let (probe, _) = engine().probe_cached_multi("dim", D::GenericTail, &[], Some(&db), 1_000_000);
+        assert!(
+            probe.signal.is_none(),
+            "DimTasks 的库被当成状态索引查了 —— 查出来的东西根本不是这一族要的：{:?}",
+            probe.signal
         );
     }
 }
