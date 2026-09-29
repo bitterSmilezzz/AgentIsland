@@ -643,6 +643,9 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
     let Some(el) = arr.last() else {
         return SessionProbe { signal: None, subagent_count: 0, health: None };
     };
+    // 当前这条消息在数组里的下标。只有看最后一条时它就是 `len-1`，
+    // 但**要显式取出来**：下面 attention 分支的指纹靠它区分「同一条」与「新一条」。
+    let idx = arr.len() - 1;
     let ask = el.get("ask").and_then(|v| v.as_str()).unwrap_or("");
     let say = el.get("say").and_then(|v| v.as_str()).unwrap_or("");
     let text = el
@@ -655,7 +658,23 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
         let msg = if text.is_empty() { "等待你确认".to_string() } else { one_line(&text, 80) };
         return SessionProbe {
             signal: Some(Signal::Attention(
-                fingerprint(path, &format!("{ask}{}", msg.len())),
+                // **指纹里必须带这条消息在数组里的下标。**
+                //
+                // 引擎层 `alerted_fingerprints` 是**全局 `HashSet`，从不按 Agent 清理**
+                // （只有累计超过 800 条才整表清空），`insert` 返回 false 就不推事件。
+                // 而旧指纹只由 `{ask}{消息字节长度}` 决定，于是：
+                // **同一个文件里两条长度相同的提问会撞同一个指纹，第二条被永久静默。**
+                // 「重试」「继续」「好的」这种长度的提问在真实对话里俯拾皆是。
+                //
+                // 下标正好补上这个洞，而且**不需要对消息形状做任何新假设**
+                // （只依赖 `arr` 是数组——这本来就���前提）：
+                // · 同一条待确认问题反复轮询 ⇒ 下标不变 ⇒ 指纹不变 ⇒ 不重复提醒；
+                // · 换了新问题 ⇒ 下标必变 ⇒ 指纹必变 ⇒ 必然提醒。
+                // 这正是 Swift `cline-{ts}`（逐条消息时间戳）达到的效果。
+                //
+                // 教训：指纹是**去重语义的一部分**，不是随手取个 hash——
+                // 换一个「看起来更唯一」的字段时，要先确认去重那一侧拿它做什么。
+                fingerprint(path, &format!("cline-msg{idx}-{ask}{}", msg.len())),
                 msg,
             )),
             subagent_count: 0,
@@ -1057,6 +1076,49 @@ mod health_chain {
             probe.health.is_none(),
             "跨行数组不是「读不懂」：{:?}",
             probe.health
+        );
+    }
+
+    /// 从探测结果里取出 attention 指纹（只认 `Attention`，其它信号一律算不通过）。
+    fn cline_attention_fp(json: &str) -> String {
+        let probe = probe_cline(&[json.to_string()], "/tmp/ui_messages.json");
+        match probe.signal {
+            Some(Signal::Attention(fp, _)) => fp,
+            other => panic!("期望 attention 指纹，实际是 {other:?}"),
+        }
+    }
+
+    /// **两条长度相同的提问，必须是两把不同的指纹。**
+    ///
+    /// 引擎层 `alerted_fingerprints` 是全局 `HashSet`、从不按 Agent 清理，
+    /// 撞上就永久静默。旧指纹只由 `{ask}{消息字节长度}` 决定，
+    /// 于是「重试」问两遍，第二遍**永远不会提醒**。
+    ///
+    /// 变异验证：把 `cline-msg{idx}-` 从指纹里去掉，本条精确变红。
+    #[test]
+    fn a_second_question_of_the_same_length_is_not_silently_swallowed() {
+        // 注意：**最后一条**才是被看的那条，所以两段夹具都得把提问放在末尾。
+        // 同一条 ask、同样 3 个字节的文本，只是位置不同。
+        let first = r#"[{"say":"text","text":"好"},{"ask":"command","text":"abc"}]"#;
+        let second = r#"[{"ask":"command","text":"abc"},{"say":"text","text":"好"},{"ask":"command","text":"xyz"}]"#;
+        assert_ne!(
+            cline_attention_fp(first),
+            cline_attention_fp(second),
+            "两条长度相同的新提问撞了同一把指纹 ⇒ 第二条被引擎的去重永久吞掉"
+        );
+    }
+
+    /// **同一条待确认问题反复轮询，指纹必须不变。**
+    ///
+    /// 这是上一条的反向约束：指纹是「同一件事只提醒一次」的依据，
+    /// 一旦每轮都变，用户会被同一个问题反复打断——比少报更烦人。
+    #[test]
+    fn the_same_pending_question_keeps_one_fingerprint_across_polls() {
+        let json = r#"[{"say":"text","text":"好"},{"ask":"command","text":"abc"}]"#;
+        assert_eq!(
+            cline_attention_fp(json),
+            cline_attention_fp(json),
+            "同一条问题被反复轮询时指纹不该变，否则每次 tick 都会重新提醒一遍"
         );
     }
 
