@@ -2467,3 +2467,166 @@ mod main_thread_dispatch_sentinel {
         );
     }
 }
+
+/// **「只显示在线」这条规则的契约**。
+///
+/// 前端那条判据（`app/ui/js/views.js` 的 `isVisible`）等价于
+/// `process_running`，而全站可见性都建立在一条 Rust 侧的不变式上：
+///
+/// > `decide_level` 在 `!process_running` 时**无条件**返回 `Offline`。
+///
+/// 这条不变式就是「`level !== 'offline'` 蕴含 `process_running`」的依据。
+/// 它一旦被破坏，前端那条判据就会与界面别处显示的东西对不上，
+/// 而**没有任何别的测试会红**——所以它自己得被钉住。
+#[cfg(test)]
+mod level_contract_sentinel {
+    use super::Settings;
+    use crate::engine::ActivityEngine;
+    use crate::filemon::FileActivityResult;
+    use std::sync::mpsc::channel;
+
+    fn engine() -> ActivityEngine {
+        ActivityEngine::new(Settings::default(), channel().1)
+    }
+
+    /// 进程没在跑 ⇒ 任何情况下都只能是 `Offline`。
+    ///
+    /// 把探测信号设成最强的 attention 也一样：进程不在，状态就不该是「在等你」。
+    #[test]
+    fn a_process_that_is_not_running_is_always_offline() {
+        use crate::models::ActivityLevel;
+        use crate::session::{SessionProbe, Signal};
+        let mut e = engine();
+        let Some(profile) = crate::registry::builtin().into_iter().find(|p| p.id == "claude") else {
+            return;
+        };
+        let mut e = e;
+        let attention = SessionProbe {
+            signal: Some(Signal::Attention("fp".into(), "等你批准".into())),
+            subagent_count: 0,
+            health: None,
+        };
+        let level = e.decide_level(
+            &profile,
+            1_000_000,
+            false, // process_running
+            Some(99.0),
+            0.0,
+            30.0,
+            1.0,
+            &FileActivityResult {
+                latest_write: Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(999)),
+                latest_file: Some("/tmp/x.jsonl".into()),
+                active_sessions: 3,
+            },
+            &attention,
+            Some(4242),
+        );
+        assert_eq!(
+            level,
+            ActivityLevel::Offline,
+            "进程没在跑却给出了非 Offline —— 前端 `isVisible` 会与界面别处对不上"
+        );
+    }
+
+    /// 反向：进程在跑时**可能**是 Offline（那由别的分支决定），
+    /// 但契约只要求「非 Offline ⇒ 在跑」，所以这里只守住进程在跑时不误判。
+    #[test]
+    fn a_running_process_is_not_forced_offline_by_this_contract() {
+        use crate::session::SessionProbe;
+        let mut e = engine();
+        let Some(profile) = crate::registry::builtin().into_iter().find(|p| p.id == "claude") else {
+            return;
+        };
+        let level = e.decide_level(
+            &profile,
+            1_000_000,
+            true,
+            None,
+            0.0,
+            30.0,
+            1.0,
+            &FileActivityResult { latest_write: None, latest_file: None, active_sessions: 0 },
+            &SessionProbe::default(),
+            Some(4242),
+        );
+        assert_ne!(
+            level,
+            crate::models::ActivityLevel::Offline,
+            "进程在跑却被判成 Offline —— 刚启动的 Agent 会一直显示离线"
+        );
+    }
+}
+
+/// **「只显示在线」只能有一处判据。**
+///
+/// 前端此前把同一条规则拼成两种写法、散在 5 个调用点
+/// （`s.process_running` 与 `snap.process_running || snap.level !== 'offline'`）。
+/// 今天它们可证明等价（见 [`level_contract_sentinel`]），所以第二种是**冗余**；
+/// 而冗余长得像有意为之——哪天 `decide_level` 改了，那两处会显示出别处藏着的条目，
+/// 而且**没有任何别的测试会红**。
+///
+/// 这条只认一种形状：`.snapshots.filter(isVisible)`。
+/// 任何内联箭头（`filter((s) => …)`）一律算违规。
+#[cfg(test)]
+mod visibility_rule_sentinel {
+    use std::path::Path;
+
+    fn views_js() -> String {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/js/views.js");
+        std::fs::read_to_string(&p).expect("应当读得到 app/ui/js/views.js")
+    }
+
+    /// **过滤谓词里不许再出现 `process_running`。**
+    ///
+    /// 规则要收得够紧：`filter((snap) => snap.level === 'attention')`
+    /// （数有几个 Agent 在等你）是**另一个问题**，不该被这条守护捎带上。
+    /// 所以盯的不是「所有 filter」，而是**这条被统一的判据本身有没有回流**。
+    #[test]
+    fn the_visibility_rule_never_reappears_inline() {
+        let src = views_js();
+        let mut offenders: Vec<String> = Vec::new();
+        for (number, line) in src.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("*") || trimmed.starts_with("/*") {
+                continue;
+            }
+            // `isVisible` 的定义本身不算回流
+            if line.contains("export const isVisible") || line.contains("function isVisible") {
+                continue;
+            }
+            if line.contains(".filter(") && line.contains("process_running") {
+                offenders.push(format!("第 {} 行：{}", number + 1, trimmed));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "「只显示在线」的判据又自己拼了一遍：\n{}\n\
+             全站只能有 `isVisible` 一处；各拼各的迟早漂（第二种拼法曾与第一种并存数十个版本）。",
+            offenders.join("\n")
+        );
+    }
+
+    /// 反向：共享判据必须**真的在被用**。收成一处之后若没人调它，
+    /// 就等于把「显示哪些条目」这件事删掉了。
+    #[test]
+    fn the_predicate_is_actually_used_at_every_display_site() {
+        let src = views_js();
+        let uses = src.matches("filter(isVisible)").count();
+        assert!(
+            uses >= 4,
+            "只查到 {uses} 处 `filter(isVisible)`——灵动岛两处 + 侧边栏 + 工作台至少 4 处。"
+        );
+    }
+
+    /// `isVisible` 只能**定义一次**。定义两份等于把「唯一判据」又说了一遍。
+    #[test]
+    fn the_predicate_is_defined_exactly_once() {
+        let src = views_js();
+        let definitions = src
+            .lines()
+            .filter(|l| l.contains("export const isVisible") || l.contains("function isVisible"))
+            .count();
+        assert_eq!(definitions, 1, "`isVisible` 被定义了 {definitions} 次");
+    }
+}

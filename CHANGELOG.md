@@ -4,6 +4,46 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.249] - 2026-09-29
+
+### 「只显示在线」从三种写法收成一处
+
+对拍文档挂了一条潜在漂移：同一条「只显示在线」规则散成三种拼法——
+灵动岛 `s.process_running`、侧边栏 `snap.process_running || snap.level !== 'offline'`、
+Swift `snapshots.filter(\.processRunning)`。今天三者等价，但**三种拼法意味着判定层
+以后加一个分支就会漂**。
+
+**先把等价性所依赖的那条不变式核实掉**：`decide_level` 在 `!process_running` 时
+**无条件**返回 `Offline`（`engine.rs:435-441`）。所以 `level !== 'offline'` 蕴含
+`process_running`——第二种拼法是**冗余，不是修正**。
+
+实际调用点比文档记的还多：**5 处**（灵动岛 2、侧边栏 1、工作台 2），两种拼法。
+全部收进 `app/ui/js/views.js` 的 **`isVisible`**。
+
+冗余不是保险，是**伪装成有意为之的隐患**——哪天 `decide_level` 加一个
+「进程没跑但仍给出非 Offline」的分支，那两处就会显示出别处藏着的条目，
+而没有任何测试会红。
+
+### 五条守护
+
+- `level_contract_sentinel`（2 条）钉住 Rust 侧那条不变式：
+  进程没跑 ⇒ 必为 `Offline`（**即使探测信号是 attention**，进程不在就不该是「在等你」）；
+  进程在跑 ⇒ 不被这条契约误判成 `Offline`。
+- `visibility_rule_sentinel`（3 条）守住前端：过滤谓词里**不许再出现 `process_running`**、
+  `isVisible` **只许定义一次**、且**必须真的被用到 ≥4 处**（收成一处后若没人调它，
+  等于把「显示哪些条目」删掉了）。
+
+规则第一版写得太宽——它盯所有 `.filter(`，被
+`filter((snap) => snap.level === 'attention')`（数有几个 Agent 在等你）当场抓出来：
+那是**另一个问题**，不该被捎带上。收窄成只盯被统一的那条判据有没有回流。
+
+**变异验证**：把 `s.process_running` 塞回灵动岛收起态，
+`the_visibility_rule_never_reappears_inline` 精确变红并指到行号。
+
+### 门禁
+
+Rust 511 条通过（+5）/ 0 失败，release 编译警告 14，UI 冒烟通过，脱敏扫描零新增。
+
 ## [0.0.248] - 2026-09-29
 
 ### 真数据对拍：**通用检测器不能直接移植**（推翻 v0.0.247 的「怎么补」）

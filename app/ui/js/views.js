@@ -160,6 +160,24 @@ export function notchPathD(w, h, edge) {
 
 // MARK: 收起态
 
+/**
+ * 「这条快照要不要显示」——**全文件唯一的一处判据**。
+ *
+ * 此前同一规则散成两种拼法：`s.process_running` 与
+ * `snap.process_running || snap.level !== 'offline'`，分布在 5 个调用点。
+ * 今天它们**可证明等价**（Rust `decide_level` 在 `!process_running` 时
+ * 无条件返回 `Offline`，engine.rs:435-441，所以 `level !== 'offline'` 蕴含
+ * `process_running`），所以第二种是冗余而非修正。
+ *
+ * 冗余不是保险，是**伪装成有意为之的隐患**：哪天 `decide_level` 加一个
+ * 「进程没跑但仍给出非 Offline」的分支，这两处就会显示出别处藏着的条目，
+ * 而且没有任何测试会红。收在一处之后，改规则只需要改这里。
+ *
+ * 两侧守护：`registry` 侧验 `decide_level` 的契约（`!running ⇒ Offline`），
+ * `ui_symbol_sentinel` 侧验本文件里**所有**过滤点都走这个函数。
+ */
+export const isVisible = (snap) => snap.process_running === true;
+
 export function sliverSize(edge) {
   return edge === 'left' || edge === 'right'
     ? { w: 18, h: 132 }
@@ -198,7 +216,7 @@ export function renderSliver() {
 // MARK: 顶栏状态摘要（HeaderPresentation）
 
 function headerPresentation(eng) {
-  const visible = eng?.snapshots.filter((s) => s.process_running) ?? [];
+  const visible = eng?.snapshots.filter(isVisible) ?? [];
   if (eng?.latest_event && ['attention', 'costSpike'].includes(eng.latest_event.event_type)) {
     const ev = eng.latest_event;
     const isCost = ev.event_type === 'costSpike';
@@ -347,7 +365,7 @@ export function renderCard() {
   };
   const root = document.getElementById('root');
   const edge = st.settings?.dock_edge ?? 'top';
-  const visible = eng.snapshots.filter((s) => s.process_running);
+  const visible = eng.snapshots.filter(isVisible);
   const dark = document.documentElement.classList.contains('theme-dark');
 
   let content = '';
@@ -704,7 +722,7 @@ function bindCardEvents(eng, st) {
       // 仅刷新列表区
       const listZone = root.querySelector('.list');
       if (listZone) {
-        const visible = (st.engine?.snapshots ?? []).filter((s) => s.process_running);
+        const visible = (st.engine?.snapshots ?? []).filter(isVisible);
         const filtered = visible.filter((s) => s.name.toLowerCase().includes(st.searchText.toLowerCase()) || s.id.includes(st.searchText.toLowerCase()));
         listZone.innerHTML = filtered.length === 0
           ? `<div class="empty" style="padding:24px 0"><span style="font-size:18px">🔍</span><span>未找到匹配「${esc(st.searchText)}」的智能体</span></div>`
@@ -830,7 +848,7 @@ export function pageProvider() {
 
 /** 工作台左栏：监控列表。与侧边栏同一份显示模型（`agentRowModel`）。 */
 function workbenchMonitor(eng) {
-  const running = eng.snapshots.filter((snap) => snap.process_running || snap.level !== 'offline');
+  const running = eng.snapshots.filter(isVisible);
   const attention = eng.snapshots.filter((snap) => snap.level === 'attention').length;
   if (running.length === 0) {
     return '<div class="wb-empty">还没有检测到运行中的智能体</div>';
@@ -979,7 +997,7 @@ export function renderSidebar() {
     snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
     latest_event: null, any_working: false, has_attention: false,
   };
-  const running = eng.snapshots.filter((snap) => snap.process_running || snap.level !== 'offline');
+  const running = eng.snapshots.filter(isVisible);
   const attention = eng.snapshots.filter((snap) => snap.level === 'attention').length;
 
   const nav = [
