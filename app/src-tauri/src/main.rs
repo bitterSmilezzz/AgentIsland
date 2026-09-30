@@ -2979,6 +2979,129 @@ mod log_cap_tests {
     }
 }
 
+/// 守护：**macOS 专属的 crate 不许挂在共享的 `[dependencies]` 里。**
+///
+/// 起因是 v0.0.267 补的 Windows CI **第一次跑就红**，而报错不在本仓任何一行：
+///
+/// ```text
+/// error[E0433]: cannot find `unix` in `os`
+///   --> core-foundation-0.10.1/src/filedescriptor.rs:19
+/// error[E0432]: unresolved import `libc::PATH_MAX`
+///   --> core-foundation-0.10.1/src/url.rs:23
+/// ```
+///
+/// `security-framework` 是本仓的直接依赖（钥匙串），它拉进 `core-foundation`
+/// （Apple Core Foundation 绑定，内部用 `std::os::unix`），而**没有任何 target 门控**
+/// ⇒ Windows 依赖图里也有它 ⇒ 构建死在**依赖自己的源码**上。
+///
+/// 为什么本机看不见：macOS 构建需要它，所以「能编过」完全正常。
+/// `cargo test`、`cargo build`、编译器警告——**全都照不到这条路径**。
+/// 只有 `cargo tree --target x86_64-pc-windows-msvc` 或真正的 Windows runner 能看见。
+///
+/// 所以这里用 `Cargo.toml` 静态判定：读表、检查这些名字在哪个表里。
+/// 它不替代 Windows CI（CI 才是权威判据），但它在**每台 macOS 机器上、每次 `cargo test`
+/// 都会跑**，而 CI 只在 push 时跑。
+#[cfg(test)]
+mod windows_dep_gating_sentinel {
+    use std::path::Path;
+    use toml_edit::DocumentMut;
+
+    /// 内部是 macOS 专属实现的 crate。列在这里的名字**必须**在
+    /// `[target.'cfg(target_os = "macos")'.dependencies]` 下，不得在共享表里。
+    ///
+    /// ⚠️ 这张表是**逐条核实过的**，不是「看起来像 macOS 的都算」——
+    /// 按名字猜会把无害的 crate 误报，久而久之就没人看这条守护了。
+    const MACOS_ONLY: [&str; 2] = ["security-framework", "security-framework-sys"];
+
+    // 路径按 `.` 分段，**段名就是键名本身**：`target` → `cfg(target_os = "macos")` → `dependencies`。
+    // ⚠️ 别把 TOML 的引号语法带进来：键名 `cfg(target_os = "macos")` **不含**那对引号，
+    // 写成 `target."cfg(...)".dependencies` 会按字面量去找一个不存在的键，永远返回空集——
+    // 而空集恰好能让「不许在共享表里」那条恒绿。
+    const MACOS_TABLE: &str = r#"target.cfg(target_os = "macos").dependencies"#;
+
+    fn cargo_toml() -> DocumentMut {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        std::fs::read_to_string(&path)
+            .expect("应当读得到 Cargo.toml")
+            .parse()
+            .expect("Cargo.toml 应当能解析")
+    }
+
+    /// 取一张表的键集合。表不存在时返回空集（`toml_edit` 的索引不会 panic）。
+    fn keys(doc: &DocumentMut, path: &str) -> Vec<String> {
+        let mut node: &dyn toml_edit::TableLike = doc.as_table();
+        for segment in path.split('.') {
+            node = match node.get(segment).and_then(|i| i.as_table_like()) {
+                Some(t) => t,
+                None => return Vec::new(),
+            };
+        }
+        node.iter().map(|(k, _)| k.to_string()).collect()
+    }
+
+    #[test]
+    fn no_macos_only_crate_sits_in_the_shared_dependency_table() {
+        let doc = cargo_toml();
+        let shared = keys(&doc, "dependencies");
+        let offenders: Vec<&str> = MACOS_ONLY
+            .iter()
+            .copied()
+            .filter(|name| shared.iter().any(|k| k == name))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "这些 crate 挂在共享的 [dependencies] 里，会被**无条件**拉进所有平台的依赖图：\n  {}\n\
+             报错会落在依赖自己的源码上（`core-foundation` 内部 `use std::os::unix::…`），\n\
+             本机（macOS）永远看不见——只有 `cargo tree --target x86_64-pc-windows-msvc`\n\
+             或真正的 Windows runner 能发现。改放到 [{}] 下面。",
+            offenders.join("\n  "),
+            MACOS_TABLE,
+        );
+    }
+
+    /// 反向：门控之后**不能把 macOS 那边的能力弄丢**。
+    /// 只查「不在共享表里」不够——全删掉也满足，那就把钥匙串悄悄弄没了。
+    #[test]
+    fn the_macos_only_crates_are_still_declared_for_macos() {
+        let doc = cargo_toml();
+        let macos = keys(&doc, &MACOS_TABLE);
+        let missing: Vec<&str> = MACOS_ONLY
+            .iter()
+            .copied()
+            .filter(|name| !macos.iter().any(|k| k == name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} 里缺了 {:?}——钥匙串在 macOS 上就没有实现了。\n  该表当前的键：{:?}",
+            MACOS_TABLE,
+            missing,
+            macos,
+        );
+    }
+
+    /// 正例控制：证明上面两条真的在读 Cargo.toml 的表，而不是恒绿。
+    /// 拿一段内联的 TOML 走同一个 `keys()`。
+    #[test]
+    fn the_table_reader_actually_finds_keys() {
+        let doc: DocumentMut = r#"
+[dependencies]
+a = "1"
+b = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+"#
+        .parse()
+        .expect("内联 TOML 应当可解析");
+        assert_eq!(keys(&doc, "dependencies"), vec!["a", "b"]);
+        assert_eq!(
+            keys(&doc, &MACOS_TABLE),
+            vec!["security-framework"]
+        );
+        assert!(keys(&doc, "target.\"cfg(windows)\".dependencies").is_empty());
+    }
+}
+
 /// 守护：**shell 脚本里的 `$VAR` 后面不许紧跟非 ASCII 字符。**
 ///
 /// 起因是 v0.0.266 那次发版**真的卡住了**：`release.sh:61` 在这台机器上
@@ -3226,7 +3349,6 @@ mod shell_quoting_sentinel {
                 }
                 i = j;
             }
-            let words: Vec<&str> = line.split_whitespace().collect();
             // `read -r a b c`：只剥掉 `-x` / `--long` 选项，剩下的到分隔符为止全是变量名。
             // ⚠️ 必须按**整行**找 `read` 这个词：早先版本在空白切分出的 token 里 `find`，
             // 却拿那个偏移去切整行，于是切到别处、`read` 的目标一个都没收进来。

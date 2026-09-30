@@ -4,6 +4,74 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.269] - 2026-09-30
+
+### 上一版加的 CI，第一次跑就红了——而错不在我们一行代码上
+
+v0.0.267 补了双平台 CI，并且明说「Windows 第一次跑很可能是红的，那就让它红着」。
+它没说错，而且**快得离谱**：push 之后不到 4 分钟就有答案。
+
+```
+JOB macOS    →  success
+JOB Windows  →  failure   （死在「编译检查」）
+```
+
+```
+error[E0433]: cannot find `unix` in `os`
+  --> core-foundation-0.10.1/src/filedescriptor.rs:19
+error[E0432]: unresolved import `libc::PATH_MAX`
+  --> core-foundation-0.10.1/src/url.rs:23
+```
+
+**注意报错落在哪个文件：`core-foundation`，不是本仓任何一行。** 三层链条：
+
+1. `security-framework`（本仓直接依赖，钥匙串用）拉进 `core-foundation`；
+2. `core-foundation` 内部 `use std::os::unix::…`，是**纯 macOS** crate；
+3. 它挂在共享的 `[dependencies]` 里、**没有任何 target 门控**
+   ⇒ Windows 依赖图里也有它 ⇒ 构建死在**依赖自己的源码**上。
+
+### 为什么本机永远看不见，以及「macOS 上验不了」只对了一半
+
+macOS 构建**需要**这两个 crate，所以「编得过」完全正常。`cargo test`、`cargo build`、
+编译器警告清单——**全都照不到这条路径**。
+
+但上一版写下的「本机验不了」**只对了一半**：`cargo check --target` 确实被 `rusqlite`
+的 bundled C 挡住，可**依赖解析**不需要 C 工具链：
+
+```sh
+cargo tree --target x86_64-pc-windows-msvc -i core-foundation
+# core-foundation v0.10.1
+# └── security-framework v3.7.0
+#     └── agentisland
+```
+
+而这次真正的故障面**恰恰就是依赖解析**。判据选错了地方，结论就错了一半。
+
+修法：把两个 crate 挪进 `[target.'cfg(target_os = "macos")'.dependencies]`。
+`secret.rs` 里对它们的 4 处引用全在 `#[cfg(target_os = "macos")]` 模块内，门控无副作用。
+修完 `cargo tree --target x86_64-pc-windows-msvc -i core-foundation` 报 `nothing to print`。
+
+### 守护：macOS 专属的 crate 不许挂在共享表里
+
+新增 `windows_dep_gating_sentinel`，三条：
+
+- 共享 `[dependencies]` 里不得出现这些名字；
+- **反向**：它们必须**还在** macOS 表里——否则「不在共享表里」这条会被「全删掉」满足，
+  钥匙串在 macOS 上就悄悄没了，而检查照样全绿；
+- 正例控制：证明读表逻辑真的在读 `Cargo.toml`。
+
+变异验证：把两个 crate 挪回 `[dependencies]`，前两条精确变红并点名。
+
+⚠️ 写这条守护时我自己踩了它的反面：路径写成
+`target."cfg(target_os = "macos")".dependencies`——段名带上了 TOML 的**引号语法**，
+而键名 `cfg(target_os = "macos")` **不含**引号，于是查表返回**空集**，第一条恒绿。
+是「反向」那条（要求表里**必须有**东西）先红，才暴露出路径写错。
+**只写正向检查的守护，很容易以「恒绿」的方式坏掉而不被发现。**
+
+### 门禁
+
+Rust 543 条通过（+3）/ 0 失败，release 编译警告 14（无漂移），脱敏扫描零新增。
+
 ## [0.0.268] - 2026-09-30
 
 ### 「每次改动后重启应用」这条指令，从没真的重启过

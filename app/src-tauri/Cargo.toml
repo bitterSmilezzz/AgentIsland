@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.268"
+version = "0.0.269"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -31,11 +31,13 @@ libc = "0.2"
 native-tls = "0.2"
 # SMTP 的 AUTH LOGIN 与 RFC 2047 主题都要 base64；lock 里早有 0.21.7（传递依赖），列为直接依赖不增加下载
 base64 = "0.21"
-# 钥匙串：密钥只进 macOS 钥匙串（本仓红线）。这个 crate 由 native-tls 已经带进来，
-# 列为直接依赖不增加下载；sys 那层是为了两个具名错误码常量，
-# 用名字而不是 -25308 这种魔数（与 Swift `RemoteSecret.describe` 同一处文案）。
-security-framework = "3"
-security-framework-sys = "2"
+# 钥匙串那两个 crate 是 **macOS 专属**，已挪到下面的
+# `[target.'cfg(target_os = "macos")'.dependencies]`。
+# 此前它们挂在 `[dependencies]` 里，于是 `core-foundation`（Apple Core Foundation 绑定，
+# 内部用 `std::os::unix`）被**无条件**拉进 Windows 的依赖图——首次
+# `cargo check --target x86_64-pc-windows-msvc` 直接死在
+# `core-foundation-0.10.1/src/filedescriptor.rs: cannot find 'unix' in 'os'`。
+# 本仓对它们的 4 处引用全在 `#[cfg(target_os = "macos")]` 模块内，门控无副作用。
 # 开机自启（设置项 `launch_at_login`）与全局热键（`global_hot_key_enabled`）。
 # Tauri 官方一方插件：这两个能力在 Tauri 核心之外，手写要分别碰
 # LaunchAgent / 注册表 与 Carbon / Win32 的 unsafe FFI——用官方插件换掉那份平台代码。
@@ -43,6 +45,19 @@ security-framework-sys = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-deep-link = "2.5.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# 钥匙串：密钥只进 macOS 钥匙串（本仓红线）。`security-framework` 由 `native-tls`
+# 已经带进来，列为直接依赖不增加下载；`security-framework-sys` 那层是为了两个
+# 具名错误码常量，用名字而不是 -25308 这种魔数（与 Swift `RemoteSecret.describe`
+# 同一处文案）。
+#
+# ⚠️ **必须按 target 门控。** `core-foundation` 内部 `use std::os::unix::…`，
+# 挂在 `[dependencies]` 里会让整个 Windows 构建在**依赖阶段**就编不过——
+# 错误发生在 `core-foundation` 自己身上，不在本仓任何一行，所以本机（macOS）
+# 永远看不见。判据用 `cargo tree --target x86_64-pc-windows-msvc -i core-foundation`。
+security-framework = "3"
+security-framework-sys = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
