@@ -15,6 +15,7 @@ mod engine;
 mod filemon;
 mod health;
 mod installed;
+mod localclock;
 mod models;
 mod notifier;
 mod observability;
@@ -1113,7 +1114,7 @@ fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
 ///
 /// 覆盖 `app/ui/` 下的**全部**文件——少列一个，那个文件缺失时就查不出来，
 /// 而少一个 CSS 的后果是**整个形态无样式渲染、零报错**。
-const EMBEDDED_ASSET_SAMPLE: [&str; 10] = [
+const EMBEDDED_ASSET_SAMPLE: [&str; 11] = [
     "index.html",
     "probe.html",
     "js/main.js",
@@ -1123,6 +1124,7 @@ const EMBEDDED_ASSET_SAMPLE: [&str; 10] = [
     "css/tokens.css",
     "css/island.css",
     "css/sidebar.css",
+    "css/panels.css",
     "css/workbench.css",
 ];
 
@@ -1688,6 +1690,10 @@ fn main() {
     log_line("=== boot ===");
 
     tauri::Builder::default()
+        // 必须早于其他插件：第二次打开复用现有应用，不再创建窗口与托盘。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            reveal_workbench_window(app);
+        }))
         // **页面加载完成时记一笔。**
         //
         // 这条钩子的用途很具体：界面是一个 webview，而「webview 里到底发生了什么」
@@ -3102,6 +3108,205 @@ security-framework = "3"
     }
 }
 
+/// 守护：**生产代码里的 POSIX-only 用法只能变少，不能变多。**
+///
+/// 起因是 v0.0.269 的实测结论：**这个应用在 Windows 上编不过**——
+/// Windows CI 一次就报出 17 个错误、横跨 13 个文件，而 **macOS 上一切正常**。
+/// 缺口是一整层从未移植的 POSIX 实现（`std::os::unix` 权限位、
+/// `libc::localtime_r` / `getppid` / `kill` / `gethostname`、`SIGKILL` …）。
+///
+/// 「macOS 上正常」完全证明不了什么——那条路需要它们。
+/// CI 是权威判据，但它只在 push 时跑、还要等几分钟；
+/// 这条守护**在每台 macOS 机器的每次 `cargo test` 里都跑**，且秒级出结果。
+///
+/// **它只管方向，不保证正确。** 判定条件是「总数 ≤ 钉死的值」：
+/// 新增会被抓住，减少不会报错。端口做对了会自然下降；
+/// 想一次清零就重写这个常量——那是自觉，不是门禁能替你做的事。
+#[cfg(test)]
+mod posix_port_ratchet {
+    use std::path::{Path, PathBuf};
+
+    /// Windows 上**不存在**的标识符。这张表不是「看起来像 POSIX 的都算」，
+    /// 而是 v0.0.269 的 Windows CI **实际报出来的那些**——按名字猜会误报，
+    /// 误报久了就没人看这条守护了。
+    const POSIX_ONLY: [&str; 6] = [
+        "std::os::unix",
+        "libc::localtime_r",
+        "libc::getppid",
+        "libc::kill",
+        "libc::gethostname",
+        "libc::SIGKILL",
+    ];
+
+    /// 钉死的上限。改它只有一个正当理由：**你把 Windows 那一层真的做完了**，
+    /// 或者有意识地决定不做、并把 `app/README.md` 的口径一并改掉。
+    ///
+    /// v0.0.270：四处本地日历调用归入 `localclock` 的平台门控，基线从 8 降至 **4**。
+    /// 对照 v0.0.269 首次 Windows CI 的 17 个**编译错误**：
+    /// 两者不等价、也不必相等——CI 还报了 `placement.rs` 的
+    /// 「`fallback_work_area` 不在作用域内」那类 **cfg 作用域**问题，
+    /// 以及 `filemon.rs` / `procmon.rs` / `engine.rs` / `main.rs` 的文件级 `#[cfg(unix)] use`，
+    /// **那些一条都不在 `POSIX_ONLY` 这张表里**。
+    ///
+    /// ⚠️ 所以 **4 不是「Windows 还差多少」的全部**，它只是这一类
+    /// （`std::os::unix` + POSIX libc）的数量。别拿它当完成度指标。
+    const PINNED_MAX: usize = 4;
+
+    /// 该处**是否已经被 `#[cfg(unix)]` 正确门控**。
+    ///
+    /// 门控过的在 Windows 上根本不会编译，所以**不算缺口**。漏算的后果是守护误报，
+    /// 而误报久了就没人看它了——比漏算更糟。
+    ///
+    /// 判据是**向上 4 行内**出现 `#[cfg(unix)]` / `#[cfg(not(unix))]`。这是启发式：
+    /// 实测仓里两种写法都覆盖得到——
+    /// `#[cfg(unix)]\n{ use std::os::unix::…; }`（属性在上两行）与
+    /// `#[cfg(unix)]\npub fn f() { use std::os::unix::…; }`（在上三行）。
+    /// 宁可少算（少算只是让上限偏松），不要误报。
+    fn is_unix_gated(lines: &[&str], at: usize) -> bool {
+        let mut looked = 0;
+        for up in (0..at).rev() {
+            let t = lines[up].trim();
+            if t.is_empty() {
+                continue;
+            }
+            looked += 1;
+            if t.contains("cfg(unix)") || t.contains("cfg(not(unix))") {
+                return true;
+            }
+            if looked >= 4 {
+                break;
+            }
+        }
+        false
+    }
+
+    /// 取一个文件的**生产段**：到第一个**内联** `#[cfg(test)]` 模块为止。
+    ///
+    /// ⚠️ `#[cfg(test)] mod tests;` 这种**声明**不算边界——它的内容在别的文件里
+    /// （`session.rs` 第 7 行就是这种情况，而它的生产代码一直到 900 多行）。
+    /// 用「第一个 `#[cfg(test)]`」当边界会把整个 `session.rs` 误判成测试代码，
+    /// 于是读出 0 处、上面那条守护就**恒绿**。
+    fn production_section(text: &str) -> &str {
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() != "#[cfg(test)]" {
+                continue;
+            }
+            // 往后跳过别的属性行（`#[path = "…"]` 之类）
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim_start().starts_with("#[") {
+                j += 1;
+            }
+            let next = lines.get(j).unwrap_or(&"").trim();
+            if next.starts_with("mod ") && next.ends_with(';') {
+                continue; // 声明式：内容在别的文件里，不切
+            }
+            let mut byte_end = 0;
+            for l in &lines[..i] {
+                byte_end += l.len() + 1;
+            }
+            return &text[..byte_end.min(text.len())];
+        }
+        text
+    }
+
+    fn rusted_files() -> Vec<PathBuf> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out: Vec<PathBuf> = walkdir::WalkDir::new(&root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "rs"))
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        out.sort();
+        assert!(out.len() > 20, "只找到 {} 个 .rs，采集器本身失效了", out.len());
+        out
+    }
+
+    fn hits() -> Vec<String> {
+        let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        for path in rusted_files() {
+            let text = std::fs::read_to_string(&path).expect("源文件应可读");
+            let rel = path.strip_prefix(&src_root).unwrap_or(&path).display().to_string();
+            let lines: Vec<&str> = production_section(&text).lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                for needle in POSIX_ONLY {
+                    // 按**出现次数**计，而不是「这行有没有」——同一函数用两次算两处
+                    for _ in 0..line.matches(needle).count() {
+                        if is_unix_gated(&lines, i) {
+                            continue;
+                        }
+                        found.push(format!("{rel}:{}  {needle}", i + 1));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_posix_surface_is_not_allowed_to_grow() {
+        let found = hits();
+        assert!(
+            found.len() <= PINNED_MAX,
+            "生产代码里的 POSIX-only 用法变成 {} 处，超过钉死的上限 {PINNED_MAX}。\n\
+             Windows 上它们**全部编译不过**（v0.0.269 实测 17 个错误 / 13 个文件）。\n\
+             新增一处之前先问：它在 `#[cfg(unix)]` / `#[cfg(windows)]` 后面吗？\n  {}",
+            found.len(),
+            found.join("\n  "),
+        );
+    }
+
+    fn count_in(text: &str) -> usize {
+        let lines: Vec<&str> = production_section(text).lines().collect();
+        let mut n = 0;
+        for (i, line) in lines.iter().enumerate() {
+            for needle in POSIX_ONLY {
+                for _ in 0..line.matches(needle).count() {
+                    if !is_unix_gated(&lines, i) {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        n
+    }
+
+    /// 正例控制 + 边界规则控制。
+    ///
+    /// 这几处都是「守护最容易悄悄坏掉」的地方：
+    /// 采集器读到 0 处、边界切错（把生产段当成测试段）、
+    /// 或把已门控的误算进来，都会让上面那条**恒绿或误报**。
+    #[test]
+    fn the_ratchet_actually_reads_production_code() {
+        // 内联测试模块**之后**的内容不计入
+        let inline =
+            "fn a() { let _ = libc::getppid(); }\n#[cfg(test)]\nmod t { let _ = libc::getppid(); }\n";
+        assert_eq!(count_in(inline), 1, "内联测试模块里的那处不该计入");
+
+        // 声明式 `mod tests;` **不是**边界——它的内容在别的文件里
+        let declared =
+            "#[cfg(test)]\nmod tests;\nfn b() { let _ = libc::getppid(); }\n";
+        assert_eq!(count_in(declared), 1, "声明式模块不该把后面的生产代码切掉");
+
+        // `#[path = …]` 夹在中间也要能跨过去
+        let with_path =
+            "fn c() { let _ = libc::getppid(); }\n#[cfg(test)]\n#[path = \"x.rs\"]\nmod y;\n";
+        assert_eq!(count_in(with_path), 1, "带 #[path] 的声明不该成为边界");
+
+        // 已门控的**不算缺口**——它在 Windows 上不会编译
+        let gated = "fn f() {\n    #[cfg(unix)]\n    {\n        use std::os::unix::fs::PermissionsExt;\n    }\n}\n";
+        assert_eq!(count_in(gated), 0, "已门控的不该计入（否则这条守护会一直误报）");
+        let gated_item =
+            "#[cfg(unix)]\npub fn g() {\n    use std::os::unix::fs::PermissionsExt;\n}\n";
+        assert_eq!(count_in(gated_item), 0, "函数级门控也不该计入");
+
+        // 整个仓当前确实有命中（不是 0）
+        assert!(hits().len() > 0, "读到 0 处——采集器或边界规则坏了，上面那条会恒绿");
+    }
+}
+
 /// 守护：**shell 脚本里的 `$VAR` 后面不许紧跟非 ASCII 字符。**
 ///
 /// 起因是 v0.0.266 那次发版**真的卡住了**：`release.sh:61` 在这台机器上
@@ -3508,5 +3713,14 @@ mod shell_quoting_sentinel {
         assert_eq!(hits, vec!["$APP_NAME".to_string()], "应报出 $APP_NAME");
         // 给它一个定义之后就不报了——证明这条判据确实在看「有没有定义」
         assert!(undefined_in_line(bad, &["APP_NAME".to_string()], &[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod single_tray_tests {
+    #[test]
+    fn configuration_does_not_create_a_second_tray() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert!(config["app"].get("trayIcon").is_none(), "setup 创建带菜单的 main 托盘，配置不能再自动创建一个托盘");
     }
 }

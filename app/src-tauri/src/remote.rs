@@ -477,17 +477,12 @@ impl Now {
 }
 
 /// 本地时间的「当天第几分钟」。Swift 用 `Calendar.current`；Rust 的 std 里没有本地时区，
-/// 所以走 libc 的 `localtime_r`。
+/// 所以由 `localclock` 统一读取系统日历。
 ///
 /// 取不到就返回 `None`，**调用方必须把它当成「不静默」**（fail-open）——这与 Swift
 /// 对写坏的静默时段的降级方向一致：宁可发出去，也不要出现「开关开着却永远不发」。
 pub fn local_minutes_of_day(now_ms: i64) -> Option<u32> {
-    let seconds = now_ms.div_euclid(1000) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let ok = unsafe { !libc::localtime_r(&seconds, &mut tm).is_null() };
-    if !ok {
-        return None;
-    }
+    let tm = crate::localclock::local_time(now_ms)?;
     let (hour, minute) = (tm.tm_hour, tm.tm_min);
     if !(0..24).contains(&hour) || !(0..60).contains(&minute) {
         return None;

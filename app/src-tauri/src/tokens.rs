@@ -814,11 +814,7 @@ pub fn compact(n: i64) -> String {
 /// 本地时间的分量 `(年, 月, 日, 时, 分, 秒)`。审计报告与预估都要按**用户的钟表**说话，
 /// 所以只在这一处读本地时区，别处不许再各写一遍（时区一分散就会有人忘掉偏移）。
 pub fn local_time_parts(now_ms: i64) -> Option<(i32, i32, i32, i32, i32, i32)> {
-    let seconds = now_ms.div_euclid(1000) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
-        return None;
-    }
+    let tm = crate::localclock::local_time(now_ms)?;
     Some((
         tm.tm_year + 1900,
         tm.tm_mon + 1,

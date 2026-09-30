@@ -50,12 +50,10 @@ pub fn cost_product(lhs: f64, days: i64) -> f64 {
 
 /// 当月天数与今天几号（**本地时间**，与 Swift `Calendar.current` 同口径）
 fn local_month_shape(now_ms: i64) -> (i64, i64) {
-    let seconds = now_ms.div_euclid(1000) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
+    let Some(tm) = crate::localclock::local_time(now_ms) else {
         // 取不到本地时间就退回 31 天的保守值：宁可预测偏大，也不要静默给 0
         return (31, 1);
-    }
+    };
     let year = tm.tm_year + 1900;
     let month = tm.tm_mon + 1;
     (days_in_month(year, month), tm.tm_mday.max(1) as i64)

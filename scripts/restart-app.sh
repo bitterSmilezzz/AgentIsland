@@ -37,14 +37,15 @@ fi
 CMDLINE="$APP/Contents/MacOS/$EXE"
 [[ -x "$CMDLINE" ]] || { echo "✗ 包里没有可执行的 $CMDLINE" >&2; exit 1; }
 
-# 杀：按完整命令行，只命中应用实例
-pkill -f "$CMDLINE" 2>/dev/null || true
+# 主产物曾叫 AgentIsland-Rust.app；旧名必须一起清理，CLI 不在匹配范围。
+APP_PATTERN='/AgentIsland(-Rust|-Swift)?[.]app/Contents/MacOS/(agentisland|AgentIsland)([[:space:]]|$)'
+pkill -f "$APP_PATTERN" 2>/dev/null || true
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    pgrep -f "$CMDLINE" >/dev/null || break
+    pgrep -f "$APP_PATTERN" >/dev/null || break
     sleep 0.2
 done
-if pgrep -f "$CMDLINE" >/dev/null; then
-    echo "✗ 旧实例仍在运行，重启没有发生：$(pgrep -f "$CMDLINE" | tr '\n' ' ')" >&2
+if pgrep -f "$APP_PATTERN" >/dev/null; then
+    echo "✗ 旧实例仍在运行，重启没有发生：$(pgrep -f "$APP_PATTERN" | tr '\n' ' ')" >&2
     exit 1
 fi
 
@@ -53,7 +54,7 @@ open "$APP"
 # 起：新实例必须在若干秒内出现，否则这仍是假保证
 NEW=""
 for _ in $(seq 1 40); do
-    NEW=$(pgrep -f "$CMDLINE" | head -1)
+    NEW=$(pgrep -f "$APP_PATTERN" | head -1)
     [[ -n "$NEW" ]] && break
     sleep 0.25
 done

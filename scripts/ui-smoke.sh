@@ -57,7 +57,8 @@ echo "==> UI 冒烟：$BIN --ui-smoke"
 # 于是 `/__probe__` 那些兜底请求记到了**别人**的日志里（实测踩过）。
 # 端口被占这件事本身不影响冒烟（驱动与读回都走 eval，不走 HTTP），
 # 但它会让日志里的证据不再可信。
-pkill -x agentisland 2>/dev/null
+# 只结束应用 bundle 内的实例；同名的 dist/agentisland CLI 可能仍在工作。
+pkill -f '/AgentIsland(-Rust|-Swift)?[.]app/Contents/MacOS/(agentisland|AgentIsland)([[:space:]]|$)' 2>/dev/null
 sleep 1
 
 # 日志是累积的（同一路径按运行叠加），先清空，否则会把历史遗留的
@@ -74,7 +75,6 @@ kill $PID 2>/dev/null
 wait $PID 2>/dev/null
 
 # 让用户手边的岛还在
-pkill -x agentisland 2>/dev/null
 if [[ -d "dist/AgentIsland.app" ]]; then
     open dist/AgentIsland.app 2>/dev/null || true
 fi

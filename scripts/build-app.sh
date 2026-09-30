@@ -227,6 +227,14 @@ if [[ -d "$APP_DIR" ]]; then
 fi
 cp -R "$RUST_SRC" "$APP_DIR"
 
+# 旧名称是同一 Rust 应用的过期副本，留在可见目录会被再次打开。
+# 移入隐藏归档，保留恢复能力；Swift 回退包仍按既有约定保留。
+if [[ -d "dist/${APP_NAME}-Rust.app" ]]; then
+    LEGACY_ARCHIVE=$(mktemp -d "dist/.retired-${APP_NAME}-Rust.XXXXXX")
+    mv "dist/${APP_NAME}-Rust.app" "$LEGACY_ARCHIVE/"
+    echo "==> 旧 Rust 应用已归档：${LEGACY_ARCHIVE}"
+fi
+
 echo "==> 签名（ad-hoc）"
 codesign --force --sign - "dist/agentisland"
 codesign --force --deep --sign - "$APP_DIR"

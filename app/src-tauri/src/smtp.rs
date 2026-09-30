@@ -47,12 +47,11 @@ const MONTHS: [&str; 12] = [
 /// RFC 822 的 `Date:` —— `EEE, dd MMM yyyy HH:mm:ss ±HHMM`，**本地时间带偏移**
 /// （Swift 的 `DateFormatter` 没设 timeZone，用的是当前时区）。
 pub fn rfc822_date(now_ms: i64) -> String {
-    let seconds = now_ms.div_euclid(1000) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
+    let date = crate::localclock::local_time(now_ms)
+        .and_then(|tm| crate::localclock::offset_minutes(now_ms, &tm).map(|offset| (tm, offset)));
+    let Some((tm, offset_minutes)) = date else {
         return "Thu, 01 Jan 1970 00:00:00 +0000".to_string();
-    }
-    let offset_minutes = tm.tm_gmtoff / 60;
+    };
     let sign = if offset_minutes < 0 { '-' } else { '+' };
     let offset = offset_minutes.abs();
     format!(

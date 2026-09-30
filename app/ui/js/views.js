@@ -413,8 +413,8 @@ function listCard(eng, st, visible, dark, edge) {
       <div class="line1">
         <span class="icon" style="color:${ev.event_type === 'costSpike' ? 'var(--danger)' : 'var(--warning)'}">${ev.event_type === 'completed' ? '\uE73E' : '\uE7BA'}</span>
         <span class="title" style="color:${ev.event_type === 'costSpike' ? 'var(--danger)' : 'var(--warning)'}">${esc(bannerTitle(ev))}</span>
-        <span class="mini-btn" data-banner-detail>${st.lastEventDetail ? '原因 ˄' : '原因 ˅'}</span>
-        <span class="mini-btn" data-banner-close style="padding:2px 5px">${ICONS.close}</span>
+        <button type="button" class="mini-btn" data-banner-detail>${st.lastEventDetail ? '原因 ˄' : '原因 ˅'}</button>
+        <button type="button" class="mini-btn" data-banner-close style="padding:2px 5px">${ICONS.close}</button>
       </div>
       ${st.lastEventDetail && ev.detail ? `<div class="detail">${esc(ev.detail)}</div>` : ''}
       <div class="actions"><span class="mini-btn jump" data-agent-jump="${esc(ev.agent_id)}">${ICONS.jump}直达</span></div>
@@ -488,7 +488,7 @@ export function pageAnalytics(eng) {
   return `
     <div class="page" data-page="tokenAnalytics">
       <div class="page-header">
-        <span class="back-btn" data-back>‹</span>
+        <button type="button" class="back-btn" aria-label="返回监控" data-back>‹</button>
         <div class="page-titles">
           <div class="t">Token 用量</div>
           <div class="s">净消耗 · 不含缓存读取</div>
@@ -589,7 +589,7 @@ export function pageAgentDetail(eng, agentId) {
   return `
     <div class="page" data-page="agentDetail">
       <div class="page-header">
-        <span class="back-btn" data-back>‹</span>
+        <button type="button" class="back-btn" aria-label="返回监控" data-back>‹</button>
         <div class="page-titles">
           <div class="t">${esc(name)}</div>
           <div class="s">Agent 详情 · 双口径总览 + 按模型拆分</div>
@@ -815,9 +815,9 @@ export function pageReport() {
   return `
     <div class="sb-page" data-report-panel>
       <div class="wb-report-actions">
-        <span class="mini-btn" data-report-format="md">Markdown</span>
-        <span class="mini-btn" data-report-format="csv">CSV</span>
-        <span class="mini-btn" data-report-copy>复制</span>
+        <button type="button" class="mini-btn" data-report-format="md">Markdown</button>
+        <button type="button" class="mini-btn" data-report-format="csv">CSV</button>
+        <button type="button" class="mini-btn" data-report-copy>复制</button>
       </div>
       <pre class="wb-report-body" data-report-text>点上面任一格式生成。</pre>
     </div>`;
@@ -846,10 +846,18 @@ export function pageProvider() {
 // 所以这里调的全是上面那些**同一个**页面函数。抄一遍的话，
 // 侧边栏改一处措辞、工作台就会留在旧话上，而且没有任何断言会响。
 
+function workbenchStatus(engine) {
+  if (!engine) return '等待采样';
+  const running = engine.snapshots.filter(isVisible);
+  const attention = running.filter((snap) => snap.level === 'attention').length;
+  return attention ? `${attention} 个等待确认` : running.length ? `${running.length} 个在线` : '暂无在线智能体';
+}
+
 /** 工作台左栏：监控列表。与侧边栏同一份显示模型（`agentRowModel`）。 */
 function workbenchMonitor(eng) {
+  const route = getState().route;
+  if (route.startsWith('agentDetail:')) return pageAgentDetail(eng, route.slice('agentDetail:'.length));
   const running = eng.snapshots.filter(isVisible);
-  const attention = eng.snapshots.filter((snap) => snap.level === 'attention').length;
   if (running.length === 0) {
     return '<div class="wb-empty">还没有检测到运行中的智能体</div>';
   }
@@ -857,11 +865,11 @@ function workbenchMonitor(eng) {
     .map((snap) => {
       const model = agentRowModel(snap);
       const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
-      return `<div class="wb-agent" data-agent="${model.id}">
-        <div class="name">${escapeHtml(model.name)}</div>
-        <div class="tokens" style="color:${model.statusColor}">${escapeHtml(model.tokensText)}</div>
-        <div class="meta">${escapeHtml(detail)}</div>
-      </div>`;
+      return `<button type="button" class="wb-agent" data-agent="${model.id}">
+        <span class="name">${escapeHtml(model.name)}</span>
+        <span class="tokens" style="color:${model.statusColor}">${escapeHtml(model.tokensText)}</span>
+        <span class="meta">${escapeHtml(detail)}</span>
+      </button>`;
     })
     .join('');
 }
@@ -869,8 +877,7 @@ function workbenchMonitor(eng) {
 /**
  * 工作台：大而全面板。
  *
- * 分栏是刻意的：左边一列监控（要扫），右边一列放**读**的东西（用量 / 档位 /
- * 待办 / 报告）。把五块平铺成五个等宽格会让每块都窄到读不了字。
+ * 分栏是刻意的：左边一列监控与任务（监控 / 待办 / 报告），右边一列放用量与档位。把五块平铺成五个等宽格会让每块都窄到读不了字。
  */
 export function renderWorkbench() {
   const st = getState();
@@ -878,41 +885,41 @@ export function renderWorkbench() {
     snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
     latest_event: null, any_working: false, has_attention: false,
   };
-  const attention = eng.snapshots.filter((snap) => snap.level === 'attention').length;
   const root = document.getElementById('root');
   root.innerHTML = `
     <div class="wb">
       <header class="wb-head" data-tauri-drag-region>
         <div class="wb-brand">AgentIsland <span class="wb-sub">工作台</span></div>
-        <div class="wb-status">${attention > 0 ? `${attention} 个等待确认` : '全部正常'}</div>
+        <div class="wb-status" data-wb-status>${workbenchStatus(st.engine)}</div>
         <div class="wb-head-actions">
-          <span class="mini-btn" data-wb-hide>隐藏</span>
+          <button type="button" class="mini-btn" data-wb-hide>隐藏</button>
         </div>
       </header>
       <div class="wb-grid">
         <section class="wb-col wb-col-main">
           <div class="wb-section">
-            <div class="wb-section-title">监控</div>
+            <h2 class="wb-section-title">监控</h2>
             <div class="wb-section-body" data-wb-monitor>${workbenchMonitor(eng)}</div>
+          </div>
+          <div class="wb-section">
+            <h2 class="wb-section-title">待办</h2>
+            <div class="wb-section-body">${pageTodo()}</div>
+          </div>
+          <div class="wb-section">
+            <h2 class="wb-section-title">报告</h2>
+            <div class="wb-section-body">${pageReport()}</div>
           </div>
         </section>
         <section class="wb-col">
           <div class="wb-section">
-            <div class="wb-section-title">Token 用量</div>
+            <h2 class="wb-section-title">Token 用量</h2>
             <div class="wb-section-body">${pageAnalytics(eng)}</div>
           </div>
           <div class="wb-section">
-            <div class="wb-section-title">Codex 档位</div>
+            <h2 class="wb-section-title">Codex 档位</h2>
             <div class="wb-section-body">${pageProvider()}</div>
           </div>
-          <div class="wb-section">
-            <div class="wb-section-title">待办</div>
-            <div class="wb-section-body">${pageTodo()}</div>
-          </div>
-          <div class="wb-section">
-            <div class="wb-section-title">报告</div>
-            <div class="wb-section-body">${pageReport()}</div>
-          </div>
+
         </section>
       </div>
     </div>`;
@@ -960,6 +967,8 @@ export function renderWorkbenchMonitorOnly() {
   if (!eng) return;
   box.innerHTML = workbenchMonitor(eng);
   bindWorkbenchAgentClicks();
+  const statusEl = document.querySelector('[data-wb-status]');
+  if (statusEl) statusEl.textContent = workbenchStatus(eng);
 }
 
 /** 点 Agent 进详情。监控列表在整页与局部重画两条路上都要绑，只写一处。 */
@@ -968,9 +977,12 @@ function bindWorkbenchAgentClicks() {
   root.querySelectorAll('[data-agent]').forEach((el) => {
     el.onclick = () => {
       getState().route = `agentDetail:${el.dataset.agent}`;
-      renderWorkbench();
+      renderWorkbenchMonitorOnly();
       hydrateReport();
     };
+  });
+  root.querySelectorAll('[data-back]').forEach((el) => {
+    el.onclick = () => { getState().route = 'list'; renderWorkbenchMonitorOnly(); };
   });
 }
 
@@ -981,17 +993,12 @@ function bindWorkbench() {
     invoke('hide_workbench').catch(() => {});
   });
   bindReportPanel();
-  root.querySelectorAll('[data-agent]').forEach((el) => {
-    el.onclick = () => {
-      st.route = `agentDetail:${el.dataset.agent}`;
-      renderWorkbench();
-      // 详情复用同一个页面函数（与侧边栏、灵动岛三处共用）
-      hydrateReport();
-    };
-  });
+  bindWorkbenchAgentClicks();
 }
 
 export function renderSidebar() {
+  const focusKey = document.activeElement?.dataset?.nav;
+  const scrollTop = document.querySelector('.sb-body')?.scrollTop ?? 0;
   const st = getState();
   const eng = st.engine ?? {
     snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
@@ -1040,11 +1047,11 @@ export function renderSidebar() {
         const model = agentRowModel(snap);
         const tokens = model.tokensText === '—' ? '—' : `${model.tokensText} tokens`;
         const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
-        return `<div class="sb-agent" data-agent="${model.id}">
-          <div class="name">${escapeHtml(model.name)}</div>
-          <div class="tokens" style="color:${model.statusColor}">${tokens}</div>
-          <div class="meta">${escapeHtml(detail)}</div>
-        </div>`;
+        return `<button type="button" class="sb-agent" data-agent="${model.id}">
+          <span class="name">${escapeHtml(model.name)}</span>
+          <span class="tokens" style="color:${model.statusColor}">${tokens}</span>
+          <span class="meta">${escapeHtml(detail)}</span>
+        </button>`;
       })
       .join('');
   }
@@ -1068,16 +1075,16 @@ export function renderSidebar() {
   const root = document.getElementById('root');
   root.innerHTML = `
     <div class="sb">
-      <nav class="sb-nav">
+      <nav class="sb-nav" aria-label="主导航">
         <div class="sb-brand">AgentIsland</div>
         ${nav
           .map(
-            (item) => `<div class="sb-item${item.key === route ? ' is-active' : ''}${item.disabled ? ' is-disabled' : ''}"
-              ${item.disabled ? '' : `data-nav="${item.key}"`}>
+            (item) => `<button type="button" class="sb-item${item.key === route ? ' is-active' : ''}${item.disabled ? ' is-disabled' : ''}"
+              ${item.disabled ? 'disabled' : `data-nav="${item.key}"`} aria-current="${item.key === route ? 'page' : 'false'}">
               <span>${escapeHtml(item.label)}</span>${item.text
                 ? `<span class="sb-count" data-nav-text="${escapeHtml(item.badge ?? '')}">${escapeHtml(item.text)}</span>`
                 : item.count ? `<span class="sb-count" ${item.badge ? `data-nav-count="${item.badge}"` : ''}>${item.count}</span>` : ''}
-            </div>`,
+            </button>`,
           )
           .join('')}
       </nav>
@@ -1088,6 +1095,8 @@ export function renderSidebar() {
     </div>`;
 
 
+  if (focusKey) root.querySelector(`[data-nav="${focusKey}"]`)?.focus({ preventScroll: true });
+  root.querySelector('.sb-body').scrollTop = scrollTop;
   if (route === 'settings') bindSettings();
   if (route === 'agents') bindAgents();
   if (route === 'remote') hydrateRemote();
@@ -1100,6 +1109,7 @@ export function renderSidebar() {
     el.onclick = async () => {
       st.route = el.dataset.nav;
       renderSidebar();
+      root.querySelector('.sb-body').scrollTop = 0;
       if (st.route === 'tokenAnalytics') await hydrateReport();
       if (st.route === 'provider') await hydrateProvider();
       if (st.route === 'todo') await hydrateTodo();
@@ -1128,6 +1138,7 @@ export function renderSidebarDetail() {
   const body = document.querySelector('.sb-body');
   if (!body) return;
   body.innerHTML = `<div class="sb-page">${pageAgentDetail(eng, agentId)}</div>`;
+  body.querySelector('[data-back]')?.addEventListener('click', () => { st.route = 'list'; renderSidebar(); });
 }
 
 function escapeHtml(text) {
@@ -1275,9 +1286,9 @@ export async function hydrateRemote() {
       <label class="sb-set"><span class="sb-set-label">密钥</span>
         <span class="sb-set-ctl"><input type="password" data-remote-secret placeholder="留空即清除" autocomplete="off"></span></label>
       <div class="sb-foot">
-        <span class="mini-btn" data-remote-save-secret>保存密钥</span>
-        <span class="mini-btn" data-remote-del-secret>删除</span>
-        <span class="mini-btn" data-remote-preview>发送预览</span>
+        <button type="button" class="mini-btn" data-remote-save-secret>保存密钥</button>
+        <button type="button" class="mini-btn" data-remote-del-secret>删除</button>
+        <button type="button" class="mini-btn" data-remote-preview>发送预览</button>
       </div>
       <div data-remote-out class="sb-note"></div>
     </div>
@@ -1608,8 +1619,8 @@ function renderProviderPage(root, status, profiles, backups) {
             <div class="meta">${escapeHtml(profile.model)} · ${escapeHtml(profile.provider_id)} · ${escapeHtml(profile.base_url)}</div>
             <div class="meta">key 来自环境变量 <code>${escapeHtml(profile.env_key)}</code></div>
             <div class="actions">
-              ${isActive ? '' : `<span class="mini-btn" data-switch="${escapeHtml(profile.id)}">切换到此档</span>`}
-              <span class="mini-btn" data-delete="${escapeHtml(profile.id)}">删除</span>
+              ${isActive ? '' : `<button type="button" class="mini-btn" data-switch="${escapeHtml(profile.id)}">切换到此档</button>`}
+              <button type="button" class="mini-btn" data-delete="${escapeHtml(profile.id)}">删除</button>
             </div>
           </div>`;
         })
@@ -1623,7 +1634,7 @@ function renderProviderPage(root, status, profiles, backups) {
         .map(
           (backup) => `<div class="sb-backup">
             <span class="name">${escapeHtml(backup.name)}</span>
-            <span class="mini-btn" data-restore="${escapeHtml(backup.name)}">还原</span>
+            <button type="button" class="mini-btn" data-restore="${escapeHtml(backup.name)}">还原</button>
           </div>`,
         )
         .join('');
@@ -1631,15 +1642,15 @@ function renderProviderPage(root, status, profiles, backups) {
   // ⑤ 新增档位：字段与 Rust 侧的 `CodexProfile` 同名（哨兵会盯着这些名字）
   const form = `
     <div class="sb-form">
-      <input data-field="id" placeholder="标识（字母数字 - _ .，例如 work）" />
-      <input data-field="name" placeholder="显示名（可留空，用标识）" />
-      <input data-field="model" placeholder="模型（例如 gpt-5）" />
-      <input data-field="provider_id" placeholder="provider 标识（例如 acme）" />
-      <input data-field="provider_name" placeholder="provider 显示名（可留空）" />
-      <input data-field="base_url" placeholder="base_url（https://…/v1）" />
-      <input data-field="env_key" placeholder="环境变量名（只存名字，不存值，例如 ACME_API_KEY）" />
-      <select data-field="wire_api"><option value="responses">responses</option><option value="chat">chat</option></select>
-      <span class="mini-btn" data-save-profile>保存档位</span>
+      <label class="sb-field"><span>档位标识</span><input aria-label="档位标识" data-field="id" placeholder="标识（字母数字 - _ .，例如 work）" /></label>
+      <label class="sb-field"><span>档位显示名</span><input aria-label="档位显示名" data-field="name" placeholder="显示名（可留空，用标识）" /></label>
+      <label class="sb-field"><span>模型</span><input aria-label="模型" data-field="model" placeholder="模型（例如 gpt-5）" /></label>
+      <label class="sb-field"><span>Provider 标识</span><input aria-label="Provider 标识" data-field="provider_id" placeholder="provider 标识（例如 acme）" /></label>
+      <label class="sb-field"><span>Provider 显示名</span><input aria-label="Provider 显示名" data-field="provider_name" placeholder="provider 显示名（可留空）" /></label>
+      <label class="sb-field"><span>API 地址</span><input aria-label="API 地址" data-field="base_url" placeholder="base_url（https://…/v1）" /></label>
+      <label class="sb-field"><span>密钥环境变量名</span><input aria-label="密钥环境变量名" data-field="env_key" placeholder="环境变量名（只存名字，不存值，例如 ACME_API_KEY）" /></label>
+      <select aria-label="API 协议" data-field="wire_api"><option value="responses">responses</option><option value="chat">chat</option></select>
+      <button type="button" class="mini-btn" data-save-profile>保存档位</button>
     </div>`;
 
   root.innerHTML = `
@@ -1662,7 +1673,7 @@ function bindProviderEvents(root, status, profiles) {
   const askConfirm = (text, onConfirm) => {
     confirmBox.hidden = false;
     confirmBox.innerHTML = `<div class="text">${text}</div>
-      <div class="actions"><span class="mini-btn" data-yes>确认</span><span class="mini-btn" data-no>取消</span></div>`;
+      <div class="actions"><button type="button" class="mini-btn" data-yes>确认</button><button type="button" class="mini-btn" data-no>取消</button></div>`;
     confirmBox.querySelector('[data-yes]').onclick = async () => {
       confirmBox.hidden = true;
       await onConfirm();
@@ -1783,6 +1794,8 @@ export async function hydrateTodo() {
 }
 
 function renderTodoPage(root, todo) {
+  const draft = root.querySelector('[data-todo-input]')?.value ?? '';
+  const focusedToggle = root.contains(document.activeElement) ? document.activeElement?.dataset?.toggle : null;
   // 读坏过就**说出来**：清单看起来是空的，但用户的东西并没有被删掉（留档了）
   const broken = todo.broken_backup
     ? `<div class="sb-note">上次的清单读不出来，已留档为 <code>${escapeHtml(todo.broken_backup)}</code>。当前显示的是空清单。</div>`
@@ -1793,22 +1806,22 @@ function renderTodoPage(root, todo) {
     : todo.items
         .map(
           (item) => `<div class="sb-todo${item.done ? ' is-done' : ''}" data-todo-row="${escapeHtml(item.id)}">
-            <span class="box" data-toggle="${escapeHtml(item.id)}">${item.done ? '✓' : ''}</span>
+            <button type="button" class="box" role="checkbox" aria-checked="${item.done}" aria-label="${escapeHtml(item.text)}" data-toggle="${escapeHtml(item.id)}">${item.done ? '✓' : ''}</button>
             <span class="text">${escapeHtml(item.text)}</span>
-            <span class="x" data-remove="${escapeHtml(item.id)}">×</span>
+            <button type="button" class="x" aria-label="删除待办：${escapeHtml(item.text)}" data-remove="${escapeHtml(item.id)}">×</button>
           </div>`,
         )
         .join('');
 
   const clearBtn = todo.items.some((item) => item.done)
-    ? '<span class="mini-btn" data-clear-done>清除已完成</span>'
+    ? '<button type="button" class="mini-btn" data-clear-done>清除已完成</button>'
     : '';
 
   root.innerHTML = `
     ${broken}
     ${rows}
     <div class="sb-todo-add">
-      <input data-todo-input placeholder="加一条待办，回车确认" maxlength="500" />
+      <input aria-label="新增待办" data-todo-input placeholder="加一条待办，回车确认" maxlength="500" />
     </div>
     <div class="sb-todo-foot">${clearBtn}</div>`;
 
@@ -1817,8 +1830,9 @@ function renderTodoPage(root, todo) {
   // 回车加条：极简列表的全部交互就是这一下
   const input = root.querySelector('[data-todo-input]');
   if (input) {
+    input.value = draft;
     input.onkeydown = async (event) => {
-      if (event.key !== 'Enter') return;
+      if (event.key !== 'Enter' || event.isComposing) return;
       const text = input.value;
       if (!text.trim()) return;
       input.value = ''; // 先清空：命令慢的时候用户不会重复按回车加两条一样的
@@ -1831,7 +1845,7 @@ function renderTodoPage(root, todo) {
       renderTodoPage(root, next);
       root.querySelector('[data-todo-input]')?.focus();
     };
-    input.focus();
+    if (!focusedToggle && document.documentElement.classList.contains('shell-sidebar')) input.focus();
   }
 
   root.querySelectorAll('[data-toggle]').forEach((el) => {
@@ -1850,6 +1864,7 @@ function renderTodoPage(root, todo) {
     };
   });
 
+  if (focusedToggle) root.querySelector(`[data-toggle="${CSS.escape(focusedToggle)}"]`)?.focus({ preventScroll: true });
   const clear = root.querySelector('[data-clear-done]');
   if (clear) {
     // 「清除已完成」不弹确认：它只删已经勾掉的条目，而且删除本身就是用户点出来的

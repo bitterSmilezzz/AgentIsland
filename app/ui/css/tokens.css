@@ -37,6 +37,12 @@
 
 /* ---- 深色（黑曜石） ---- */
 .theme-dark {
+  --surface: #14161a;
+  --surface-raised: #1b1e23;
+  --surface-inset: #101216;
+  --border: rgba(255, 255, 255, 0.14);
+  --control-hover: rgba(255, 255, 255, 0.08);
+  --control-active: rgba(255, 255, 255, 0.14);
   --glass-top: rgba(13, 14, 20, 0.94);
   --glass-bottom: rgba(5, 6, 10, 0.97);
   --specular-top: rgba(255, 255, 255, 0.40);
@@ -85,6 +91,12 @@
 
 /* ---- 浅色（白瓷工控） ---- */
 .theme-light {
+  --surface: #f8fafc;
+  --surface-raised: #ffffff;
+  --surface-inset: #f1f5f9;
+  --border: #cbd5e1;
+  --control-hover: #f1f5f9;
+  --control-active: #e2e8f0;
   --glass-top: rgba(246, 248, 251, 0.97);
   --glass-bottom: rgba(235, 238, 243, 0.985);
   --specular-top: rgba(255, 255, 255, 0.96);

@@ -639,8 +639,7 @@ mod tests {
     fn every_sidebar_class_is_actually_styled() {
         let views = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
             .expect("读不到 views.js");
-        let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/css/sidebar.css"))
-            .expect("读不到 sidebar.css");
+        let css = ["sidebar.css", "panels.css"].map(|name| std::fs::read_to_string(format!("{}/../ui/css/{name}", env!("CARGO_MANIFEST_DIR"))).expect("读不到控件样式")).join("\n");
 
         // 扫**整个** views.js 里 `sb-` 开头的静态类名。
         // 一开始只扫 `renderSidebar` 的函数体，于是「档位页」这种后加的页面不在保护范围内——
