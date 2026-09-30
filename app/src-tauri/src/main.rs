@@ -975,8 +975,35 @@ struct TokenReportPub {
 ///
 /// 写不出去时退回 stderr：GUI 应用的 stdout 通常没人看，但**总比静默好**——
 /// 从终端 `open` 出来的那一次就能看见。
+/// 日志封顶：超过 [`LOG_CAP_BYTES`] 就**整个重来**，并在首行写明截断前有多大。
+///
+/// 为什么需要：日志是**纯 append、无轮转**的，而这个应用是常驻的日历应用
+/// ——天天开着，文件只会一直长。v0.0.243 起每次启动还要多写 6-9KB
+/// （三个窗口 × 三轮 `[eval]` 自省 + 冒烟结果），于是涨得更快。
+///
+/// 整份重来而不是只留尾部：排障时要的是「**这一次运行**从头到尾」，
+/// 而 `[run]` 标记本来就在每次启动时写，所以截断后不会把两次运行混在一起。
+const LOG_CAP_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 超过封顶就把文件清空，返回截断前的字节数（没截断则 `None`）。
+fn truncate_log_if_oversized(path: &std::path::Path) -> Option<u64> {
+    let size = std::fs::metadata(path).ok()?.len();
+    if size <= LOG_CAP_BYTES {
+        return None;
+    }
+    std::fs::write(path, b"").ok()?;
+    Some(size)
+}
+
 fn log_line(msg: &str) {
     let path = std::env::temp_dir().join("agentisland-tauri.log");
+    if let Some(before) = truncate_log_if_oversized(&path) {
+        let line = format!("[run] 上一份日志 {before} 字节，已按 {LOG_CAP_BYTES} 字节封顶清空");
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{line}");
+        }
+    }
     // 说明：日志文件是**累积**的（同一路径、按运行叠加），所以每次启动
     // 都先写一行 `[run]` 标记。没有它就没法把「这一次跑出来的行」与
     // 「历史遗留的行」分开——我为此误判过好几轮：把累积日志里的
@@ -2899,5 +2926,51 @@ mod sampling_clock_sentinel {
              （辅助函数也算：定义放在 cfg(test) 区、被生产代码调用，一样是破规矩。）",
             offenders.join("\n")
         );
+    }
+}
+#[cfg(test)]
+mod log_cap_tests {
+    use super::{truncate_log_if_oversized, LOG_CAP_BYTES};
+
+    /// 没超封顶就**一个字都不许动**。
+    ///
+    /// ⚠️ 夹具大小**必须写死**、不能由 `LOG_CAP_BYTES` 算出来：
+    /// 第一版用 `vec![b'x'; LOG_CAP_BYTES + 1]`，
+    /// 于是**把常量改小夹具跟着变小、测试照样全绿**——
+    /// 钉的是「常量与夹具的关系」而不是行为，**永远不可能失败**。
+    /// 同一类错这一轮犯过好几次，只是这次长在测试自己身上。
+    #[test]
+    fn a_small_log_is_left_byte_for_byte_intact() {
+        let dir = crate::testutil::Sandbox::new("log-cap-small");
+        let path = dir.path().join("small.log");
+        let body = "[run] pid=1 启动\n[boot] 一些内容\n";
+        std::fs::write(&path, body).unwrap();
+        assert_eq!(truncate_log_if_oversized(&path), None, "没超封顶就不该截断");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body, "内容必须原样保留");
+    }
+
+    #[test]
+    fn an_oversized_log_is_wiped_and_the_old_size_is_reported() {
+        let dir = crate::testutil::Sandbox::new("log-cap-big");
+        let path = dir.path().join("big.log");
+        let body = vec![b'x'; (LOG_CAP_BYTES + 1) as usize];
+        std::fs::write(&path, &body).unwrap();
+        let before = truncate_log_if_oversized(&path).expect("超了封顶就该返回原大小");
+        assert_eq!(before, body.len() as u64, "报出来的应是**截断前**的字节数");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "应当被清空");
+    }
+
+    /// **封顶的取值本身要有上下界。**
+    ///
+    /// 上一条用常量算夹具大小，于是把常量调到 `u64::MAX`（或 64）两条仍全绿——
+    /// 变异验证当场证伪了它们「能失败」。这条把取值钉在合理区间，
+    /// 让那类变异**重新变得可抓**。
+    #[test]
+    fn the_cap_stays_in_a_range_that_actually_caps_something() {
+        assert!(
+            LOG_CAP_BYTES <= 16 * 1024 * 1024,
+            "封顶 {LOG_CAP_BYTES} 字节大得没意义：等于没有封顶"
+        );
+        assert!(LOG_CAP_BYTES > 64 * 1024, "封顶太小会把正常运行要的日志也清掉");
     }
 }
