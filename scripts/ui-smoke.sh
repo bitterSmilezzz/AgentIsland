@@ -32,6 +32,21 @@ else
     else
         BIN="$DBG"
     fi
+    # ⚠️ **光比新旧不够**：普通 `cargo build` **不跟踪 `app/ui/`**——
+    # 只改前端文件再 `cargo build`，二进制**不会重新嵌入资源**，
+    # 冒烟于是拿旧资源去验，**验的东西不是当前代码**。
+    # （`cargo tauri build` 会跟踪；`build-app.sh` 走的是那条。）
+    # 所以这里额外要求：二进制必须比 `app/ui/` 下最新的文件新。
+    if [[ -x "$BIN" ]]; then
+        NEWEST_UI=$(find app/ui -type f -newer "$BIN" 2>/dev/null | head -1)
+        if [[ -n "$NEWEST_UI" ]]; then
+            echo "✗ $BIN 比前端文件旧（$NEWEST_UI 还没嵌进去）" >&2
+            echo "  原因：普通 \`cargo build\` 不跟踪 app/ui/，只改前端不会重新嵌入资源。" >&2
+            echo "  修法：用 \`cargo tauri build --bundles app\`（build-app.sh 走的就是那条）" >&2
+            echo "       或本就跑 ./scripts/build-app.sh 让 dist/AgentIsland.app 变新。" >&2
+            exit 1
+        fi
+    fi
 fi
 [[ -x "$BIN" ]] || { echo "✗ 找不到可执行文件（${BIN}）——先构建" >&2; exit 1; }
 
@@ -49,7 +64,7 @@ sleep 1
 # `[smoke]` 行当成本次结果 —— 这个坑在 main.rs 的 [run] 注释里记过一次。
 : > "$LOG"
 
-"$BIN" --ui-smoke --expand >/dev/null 2>&1 &
+"$BIN" --ui-smoke --expand --route=todo >/dev/null 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null' EXIT
 
@@ -124,6 +139,22 @@ for label in island sidebar workbench; do
     # 判据因此只钉「在不在」，不钉「看不看得清」——后者是观感，不该由门禁裁决。
     # **只有工作台有监控栏**——灵动岛与侧边栏压根没有 `[data-wb-monitor]`，
     # 它们报 `emptyEl:false` 是正确的。第一版没按形态收窄，于是三个窗口一起判失败。
+    # **启动路由必须生效**：脚本带 `--route=todo` 起进程，
+    # 所以高亮的导航项**不该**是第一项（`监控`）。逐个点击覆盖了页面，
+    # 但「启动即落在那一页」是另一条分支，从没被单独验过。
+    if [[ "$label" == "sidebar" ]] && echo "$line" | grep -q '"activeNav"'; then
+        active=$(echo "$line" | grep -o '"activeNav":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')
+        first=$(echo "$line" | grep -o '"firstNav":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')
+        if [[ -z "$active" ]]; then
+            echo "✗ ${label}：没有导航项被高亮 ⇒ 整页路由没生效"
+            fail=1
+        elif [[ "$active" == "$first" ]]; then
+            echo "✗ ${label}：带了 --route=todo，落点却还是首项「${first}」⇒ 启动路由被吞了"
+            fail=1
+        else
+            echo "    ${label}  启动路由生效：落点「${active}」（首项是「${first}」）"
+        fi
+    fi
     if [[ "$label" == "workbench" ]] && echo "$line" | grep -q '"emptyState"'; then
         if ! echo "$line" | grep -q '"emptyEl":true'; then
             echo "✗ ${label}：监控栏没有 Agent 在跑，却没有空态文案 —— 一片空白会被看成「界面没加载」"

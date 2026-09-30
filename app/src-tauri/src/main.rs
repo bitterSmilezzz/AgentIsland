@@ -1355,6 +1355,21 @@ const UI_SMOKE_JS: &str = r#"(function () {
       }
       window.__uiSmoke.cards = document.querySelectorAll('.card').length;
       snap('起点');
+      // **启动路由有没有生效**：`--route=xxx` 是托盘 / CLI 用的真实入口，
+      // 而冒烟平时靠**逐个点击**覆盖页面——那是另一条分支。
+      //
+      // ⚠️ 必须在**点击循环之前**读：第一版放在最后，于是读到的是
+      // 「最后点的那一项」，**根本观察不到启动时的落点**——
+      // 于是把启动路由短路掉它照样报「生效」。
+      //
+      // 而这恰恰是「变异验证抓到的」与「我想当然以为没问题的」之间的差别。
+      var activeNav = document.querySelector('.sb-item.is-active');
+      window.__uiSmoke.activeNav = activeNav
+        ? (activeNav.textContent || '').trim().slice(0, 12) : '';
+      window.__uiSmoke.firstNav = (function () {
+        var f = document.querySelector('.sb-item');
+        return f ? (f.textContent || '').trim().slice(0, 12) : '';
+      })();
       await clickAll('[data-nav]');
       await clickAll('[data-analytics]');
       await clickAll('[data-agent]');
@@ -1449,6 +1464,8 @@ const UI_SMOKE_JS: &str = r#"(function () {
           cards: window.__uiSmoke.cards,
           search: window.__uiSmoke.search,
           emptyState: window.__uiSmoke.emptyState,
+          activeNav: window.__uiSmoke.activeNav,
+          firstNav: window.__uiSmoke.firstNav,
           errs: window.__uiSmoke.errs
         })
       }).catch(function () {});
