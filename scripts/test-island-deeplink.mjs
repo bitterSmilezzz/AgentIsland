@@ -68,6 +68,37 @@ try {
     assert.equal(shows, priorShows + 1, 'workbench intent must reveal the window');
     assert.equal(getState().route, 'tokenAnalytics', 'reopening must preserve the current page');
     assert.equal(getState().workbenchPage, 'tokenAnalytics');
+    const { hydrateReport } = await import('../app/ui/js/views.js');
+    const body = dataset => ({
+      isConnected: true, innerHTML: '', closest: () => ({ dataset }),
+    });
+    const overview = body({ page: 'tokenAnalytics' });
+    const analysis = body({ page: 'tokenAnalytics' });
+    const detail = body({ page: 'agentDetail', agentId: 'codex' });
+    const bodies = [overview, analysis, detail];
+    document.querySelectorAll = selector => selector === '[data-report-root]' ? bodies : [];
+    // 第一个在线工具没有明细，但聚合报告和指定详情都有数据。
+    getState().engine = { snapshots: [{ id: 'antigravity' }] };
+    const requests = [];
+    const originalInvoke = window.__TAURI__.core.invoke;
+    window.__TAURI__.core.invoke = async (command, args) => {
+      if (command !== 'get_report') return originalInvoke(command, args);
+      requests.push(args.agentId);
+      if (args.agentId === 'antigravity') return null;
+      return {
+        usage: { tokens24h: 9876, tokens_total: 20000, cost24h: 0, cost_total: 0, cost_estimated: false },
+        hourly30d: [],
+        models24h: [{ model: args.agentId ? 'detail-model' : 'aggregate-model', tokens: 9876, cost: 0 }],
+      };
+    };
+    await hydrateReport();
+    assert.deepEqual(requests, ['', '', 'codex'], 'analytics must request the aggregate, details their own agent');
+    assert.ok(overview.innerHTML.includes('aggregate-model'));
+    assert.ok(analysis.innerHTML.includes('aggregate-model'));
+    assert.ok(detail.innerHTML.includes('detail-model'));
+    getState().engine.snapshots = [];
+    await hydrateReport();
+    assert.equal(requests.at(-3), '', 'aggregate selection must not depend on online snapshots');
     console.log('PASS: workbench cold/live navigation and current page retention');
     process.exit(0);
   }

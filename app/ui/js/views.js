@@ -731,7 +731,8 @@ export async function hydrateReport() {
   await Promise.all(bodies.map(async (body) => {
     const page = body.closest('[data-page]');
     const analytics = page?.dataset.page === 'tokenAnalytics';
-    const agentId = analytics ? st.engine?.snapshots?.[0]?.id ?? '' : page?.dataset.agentId ?? '';
+    // 空 ID 是后端约定的全部启用档案汇总，不取第一个在线工具。
+    const agentId = analytics ? '' : page?.dataset.agentId ?? '';
     const report = await invoke('get_report', { agentId }).catch(() => null);
     // 导航可能已经换页；过期响应不写入新页面。
     if (!body.isConnected) return;
