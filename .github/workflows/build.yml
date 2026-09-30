@@ -1,0 +1,59 @@
+name: Build
+
+# 为什么有这份 workflow：项目对外承诺「目标平台至少 Windows 和 macOS」，
+# 但在此之前**没有任何 CI 在编译这个应用**。后果是 Windows 那条路
+# 从写下那天起就没被编译过一次——`#[cfg(windows)]` 的 FFI（取工作区、
+# 光标位置、显示器 DPI）长期只存在于源码里，从未被编译器看过一眼。
+#
+# 这类「看着像实现了、其实从没验证过」的代码，正是本项目反复栽跟头的那一类
+# （见 CHANGELOG v0.0.266：发版链三处潜伏缺陷全都藏在「没跑过的代码」里）。
+#
+# ⚠️ **Windows 这次是真跑测试，不是只做编译。**
+# 第一次跑很可能是红的——那就让它红着。CI 的作用是把「我们以为成立」变成
+# 「已经验过」，而在此之前 Windows 上的任何结论都只是推断。
+# 如果为了让徽章变绿而只做 `cargo check`，那等于造一个假的保证。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      # Swift 侧不在这份 workflow 里跑：需要 Xcode，而 runner 镜像上未必一致。
+      # 本机那一份（556 条）由 `scripts/release.sh` 负责，别在 CI 里假装它跑过。
+      - name: 编译检查
+        run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
+      - name: Rust 测试
+        run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      # 验的是**能不能在 Windows 上编译并跑通**，不是「应该能」。
+      # 本机（macOS）上 `cargo check --target x86_64-pc-windows-msvc` 会在
+      # `rusqlite` 的 bundled C 那步就断掉（没有 C 交叉工具链），
+      # 所以这条路径只能靠真正的 Windows runner 来走。
+      - name: 编译检查
+        run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
+      - name: Rust 测试
+        run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml

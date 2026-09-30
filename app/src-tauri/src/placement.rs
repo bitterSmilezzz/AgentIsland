@@ -10,7 +10,7 @@ use crate::models::DockEdge;
 /// **不要用「零引用」一刀切去删平台函数**。
 #[cfg(windows)]
 pub fn work_area_under_cursor() -> (f64, f64, f64, f64, f64) {
-    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 

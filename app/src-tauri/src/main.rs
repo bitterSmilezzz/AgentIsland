@@ -50,8 +50,12 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+// Windows 端原先在这里 `use std::os::windows::process::CommandExt;`——
+// **导入后全文件零引用**。macOS 上它被 `#[cfg(windows)]` 挡住，所以从不出现在
+// 编译警告里；直到把 `placement.rs` 的 FFI 单独拿去做 Windows 目标编译才看见。
+// 推断它对应一个被删掉的 `creation_flags` 调用（起子进程时不弹控制台窗口）。
+// 这里**只删导入、不补行为**：Windows 上的进程拉起要不要设标志，属于待定需求，
+// 不该由一条「顺手清警告」偷偷定下来。要加就连同调用点一起加。
 
 type SharedEngine = Arc<Mutex<ActivityEngine>>;
 

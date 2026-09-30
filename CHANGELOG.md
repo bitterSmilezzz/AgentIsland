@@ -4,6 +4,65 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.267] - 2026-09-30
+
+### Windows 那条路，从写下那天起就没被编译过一次
+
+项目对外承诺「目标平台至少 Windows 和 macOS」。但 `.github/workflows/` 里
+**只有站点部署**，没有任何 workflow 在编译这个应用。于是：
+
+- `placement.rs` 的三个 `#[cfg(windows)]` 函数——取工作区、取光标、换算 DPI——
+  **从未被编译器看过一眼**；
+- `main.rs` 里 `use std::os::windows::process::CommandExt;` **导入后全文件零引用**。
+  macOS 上它被 `#[cfg(windows)]` 挡住，所以从不出现在任何警告列表里。
+
+`power.rs` 与 `secret.rs` 倒是备了 `#[cfg(not(target_os = "macos"))]` 回退，
+结构上是照着「两个平台都要能编」写的——但**结构对不等于编过**。
+
+### 能验多少就只写多少
+
+先试整包：`cargo check --target x86_64-pc-windows-msvc`。**断在 `rusqlite` 的 bundled C**
+（`stdlib.h file not found`，本机没有 C 交叉工具链），与本项目代码无关——
+整包这条路在 macOS 上走不通。
+
+但 FFI 那一段是**纯 Rust**。把 `placement.rs` 的 Windows 段**逐字照抄**进一个
+只依赖 `windows-sys 0.59` 的临时 crate，对 Windows 目标做检查：
+
+```
+Checking wincheck v0.0.0
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.38s
+```
+
+**零警告通过。** 于是现在能说的是：「取工作区 / 光标 / DPI 那段 FFI 在
+`x86_64-pc-windows-msvc` 上编译通过」；仍然**不能**说的是「这个应用在 Windows 上能跑」
+——那部分依然没验过，不因为这次编译通过就算数。
+
+### 补上 CI，并且**故意让它真跑测试**
+
+新增 `.github/workflows/build.yml`：`macos-latest` 与 `windows-latest` 两个 job，
+各跑 `cargo check` + `cargo test`。
+
+⚠️ Windows 那一步**不是只做编译**。第一次跑很可能是红的，那就让它红着。
+CI 的作用是把「我们以为成立」变成「已经验过」；而在有 CI 之前，
+Windows 上的任何结论都只是推断。**为了让徽章变绿而只留 `cargo check`，
+等于造一个假的保证**——那正是这一版在修的东西。
+
+Swift 测试（556 条）**不放进 CI**：它需要 Xcode，而 runner 镜像上未必一致。
+宁可少一条，也不要在 workflow 里写一行假装它跑过的步骤。
+
+### 顺带清掉两处只存在于 Windows 的死 import
+
+- `placement.rs` 的 `work_area_under_cursor` 多导了 `GetMonitorInfoW` 与 `MONITORINFO`
+  （实际在 `work_area_of_monitor` 里用）——就是它让上面那次编译报出唯一那条警告。
+- `main.rs` 的 `CommandExt`：推断它对应一个被删掉的 `creation_flags` 调用
+  （拉起子进程时不弹控制台窗口）。**只删导入、不补行为**——Windows 上要不要设标志
+  属于待定需求，不该由「顺手清警告」偷偷定下来；要加就连同调用点一起加。
+
+### 门禁
+
+Rust 540 条通过（**+0**，这一版没加测试：加的是 CI，不是断言）/ 0 失败，
+release 编译警告 14（无漂移），Windows FFI 目标编译**零警告**，脱敏扫描零新增。
+
 ## [0.0.266] - 2026-09-30
 
 ### 坏掉的 `settings.json` 会被静默删掉，而 `todos.json` 不会
