@@ -6,6 +6,7 @@ import {
   hydrateTodo,
   renderCard,
   renderSidebar,
+  renderNavSummaryOnly,
   renderSidebarDetail,
   renderSliver,
   renderWorkbench,
@@ -130,7 +131,7 @@ export function scheduleRender() {
   requestAnimationFrame(async () => {
     rafPending = false;
     if (isSidebar()) {
-      if (state.route === 'list') renderSidebar();
+      if (state.route === 'list') renderSidebar(); else renderNavSummaryOnly();
       return;
     }
     if (state.expanded) {
@@ -257,7 +258,7 @@ async function boot() {
       // **只有「实时列表」这一页随推送重画**。分析页、档位页是「进来时渲染一次」：
       // 每 2 秒重画一次会把它们打回「加载中」，档位页还会把用户正在填的表单冲掉
       // （同一个坑在分析页上也踩过一次）。
-      if (state.route === 'list') renderSidebar();
+      if (state.route === 'list') renderSidebar(); else renderNavSummaryOnly();
     });
     // 深链（`agentisland://…`）：Rust 侧解析完把**意图**发过来，
     // 由形态各自决定怎么呈现——这里两份壳各写一小段，

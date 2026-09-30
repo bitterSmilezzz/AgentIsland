@@ -162,3 +162,6 @@
   --button-fill: #414146; --field-fill: #222225;
   --control-hover: rgba(255,255,255,.08); --control-active: rgba(255,255,255,.14);
 }
+
+/* 切换控件的高对比滑块，两种主题一致。 */
+:root { --switch-thumb: #fff; }

@@ -167,3 +167,6 @@
 .shell-sidebar .sb-nav { background: var(--surface-inset); }
 .shell-sidebar .sb-agent { width: 100%; border: 0; background: transparent; color: var(--text); font: inherit; text-align: left; }
 .shell-sidebar .sb-body { min-height: 0; }
+
+.shell-sidebar .sb-nav-footer { margin-top: auto; padding: 20px 7px 6px; border-top: 1px solid var(--border-subtle); }
+.shell-sidebar .sb-nav-footer p { font-size: 9px; color: var(--text-faint); margin-top: 12px; line-height: 1.5; }

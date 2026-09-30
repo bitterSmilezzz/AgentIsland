@@ -1,6 +1,6 @@
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
-import { isIsland } from './shell.js';
+import { isIsland, isWorkbench } from './shell.js';
 import { getState, setState, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge, applyLayout } from './main.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -535,25 +535,25 @@ function renderReportBody(report) {
     <div class="segmented" data-seg>
       <div class="on">24h</div><div data-range="7">7天</div><div data-range="30">30天</div>
     </div>
-    <div class="card-box">
-      <h4>📈 月末用量与成本预测</h4>
+    <div class="card-box usage-forecast">
+      <h4>月末用量与成本预测</h4>
       <div class="totals" style="margin-top:8px;justify-content:flex-start;gap:14px">
         <div><div class="big-num" style="font-size:14px">${compact(u.tokens24h * remaining)}</div><div class="num-label">预估月末消耗</div></div>
         <div><div class="big-num c-working" style="font-size:14px">${costText(u.cost24h, u.cost_estimated) ? `~$${(u.cost24h * remaining).toFixed(2)}` : '—'}</div><div class="num-label">预估月末费用</div></div>
         <div><div class="big-num" style="font-size:14px">${remaining} 天</div><div class="num-label">当月剩余自然日</div></div>
       </div>
     </div>
-    <div class="card-box">
+    <div class="card-box usage-totals">
       <div class="totals">
         <div><div class="big-num">${compact(u.tokens24h)}</div><div class="num-label">24h 用量</div></div>
         <div><div class="big-num">${costText(u.cost24h, u.cost_estimated) || '—'}</div><div class="num-label">费用</div></div>
         <div><div class="big-num">${compact(u.tokens_total)}</div><div class="num-label">累计</div></div>
       </div>
     </div>
-    <div class="card-box">
+    <div class="card-box usage-trend">
       <div style="display:flex;align-items:center"><h4>使用趋势</h4>
         <span style="margin-left:auto;font-size:9.5px;color:var(--cyan);font-family:var(--font-mono)">峰值 ${compact(max)}</span></div>
-      <svg width="${W}" height="${H}" style="margin-top:6px">
+      <svg class="usage-trend" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="最近 24 小时用量趋势" style="margin-top:6px">
         ${[1, 2, 3].map((i) => `<line x1="4" x2="${W - 4}" y1="${(H - 16) * i / 4}" y2="${(H - 16) * i / 4}" stroke="var(--hairline)" stroke-width="0.5"/>`).join('')}
         ${xy.length > 1 ? `
           <path d="${area}" fill="color-mix(in srgb, var(--cyan) 14%, transparent)"/>
@@ -565,12 +565,12 @@ function renderReportBody(report) {
         <span>${pts.length ? new Date(pts[pts.length - 1][0]).toTimeString().slice(0, 5) : ''}</span>
       </div>
     </div>
-    <div class="card-box">
+    <div class="card-box usage-rhythm">
       <div style="display:flex;align-items:center"><span style="font-size:10.5px;color:var(--text-faint)">24h 协同节律</span>
         <span style="margin-left:auto;font-size:9.5px;color:var(--text)">活跃 ${heat.filter((h) => !h.includes('8%')).length}/24h</span></div>
       <div class="heat">${heat.join('')}</div>
     </div>
-    <div class="card-box">
+    <div class="card-box usage-models">
       <h4>按工具用量</h4>
       ${report.models24h.map((m) => `
         <div class="model-row">
@@ -587,7 +587,7 @@ export function pageAgentDetail(eng, agentId) {
   const snap = eng.snapshots.find((s) => s.id === agentId);
   const name = snap?.name ?? agentId;
   return `
-    <div class="page" data-page="agentDetail">
+    <div class="page" data-page="agentDetail" data-agent-id="${esc(agentId)}">
       <div class="page-header">
         <button type="button" class="back-btn" aria-label="返回监控" data-back>‹</button>
         <div class="page-titles">
@@ -765,18 +765,21 @@ function bindRowClicks(st) {
 
 export async function hydrateReport() {
   const st = getState();
-  const body = document.querySelector('[data-report-root]');
-  if (!body) return;
-  const agentId = st.route.startsWith('agentDetail:') ? st.route.split(':')[1] : st.engine?.snapshots?.[0]?.id ?? '';
-  const report = await invoke('get_report', { agentId }).catch(() => null);
-  if (!report) {
-    body.innerHTML = '<div class="c-faint" style="font-size:11px;text-align:center;padding:20px 0">暂无本地明细数据</div>';
-    return;
-  }
-  const snap = st.engine?.snapshots.find((s) => s.id === agentId);
-  body.innerHTML = st.route === 'tokenAnalytics' ? renderReportBody(report) : renderDetailBody(report, snap);
-  // 报告注入后内容高度变化，窗口跟随——**只在灵动岛窗口做**：
-  // 侧边栏是一整列固定尺寸的窗口，跟着内容长高会把用户拉好的宽度与位置一起改掉
+  const bodies = [...document.querySelectorAll('[data-report-root]')];
+  await Promise.all(bodies.map(async (body) => {
+    const page = body.closest('[data-page]');
+    const analytics = page?.dataset.page === 'tokenAnalytics';
+    const agentId = analytics ? st.engine?.snapshots?.[0]?.id ?? '' : page?.dataset.agentId ?? '';
+    const report = await invoke('get_report', { agentId }).catch(() => null);
+    // 导航可能已经换页；过期响应不写入新页面。
+    if (!body.isConnected) return;
+    if (!report) {
+      body.innerHTML = `<div class="report-empty">${navigationIcon('chart')}<span>暂无本地明细数据</span></div>`;
+      return;
+    }
+    const snap = st.engine?.snapshots.find((entry) => entry.id === agentId);
+    body.innerHTML = analytics ? renderReportBody(report) : renderDetailBody(report, snap);
+  }));
   if (isIsland()) await resizeToContent();
 }
 
@@ -815,11 +818,14 @@ export function pageReport() {
   return `
     <div class="sb-page" data-report-panel>
       <div class="wb-report-actions">
-        <button type="button" class="mini-btn" data-report-format="md">Markdown</button>
-        <button type="button" class="mini-btn" data-report-format="csv">CSV</button>
-        <button type="button" class="mini-btn" data-report-copy>复制</button>
+        <div class="wb-format-group" role="group" aria-label="报告格式">
+          <button type="button" class="mini-btn" data-report-format="md" aria-pressed="false">Markdown</button>
+          <button type="button" class="mini-btn" data-report-format="csv" aria-pressed="false">CSV</button>
+        </div>
+        <button type="button" class="mini-btn" data-report-copy disabled>复制报告</button>
       </div>
-      <pre class="wb-report-body" data-report-text>点上面任一格式生成。</pre>
+      <pre class="wb-report-body is-placeholder" data-report-text>选择 Markdown 或 CSV 生成用量报告。
+生成后可复制内容用于记录或核对。</pre>
     </div>`;
 }
 
@@ -828,9 +834,20 @@ export async function hydrateReportPanel(format) {
   const box = document.querySelector('[data-report-text]');
   if (!box) return;
   if (!format) return;
+  const panel = box.closest('[data-report-panel]');
+  panel.querySelectorAll('[data-report-format]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.reportFormat === format)));
+  panel.querySelector('[data-report-copy]').disabled = true;
+  box.classList.remove('is-placeholder');
   box.textContent = '生成中…';
-  const text = await invoke('report_text', { format }).catch((error) => `生成失败：${error}`);
-  box.textContent = text ?? '';
+  try {
+    const text = await invoke('report_text', { format });
+    if (!box.isConnected || panel.querySelector('[aria-pressed="true"]')?.dataset.reportFormat !== format) return;
+    box.textContent = text ?? '';
+    panel.querySelector('[data-report-copy]').disabled = !text;
+  } catch (error) {
+    if (!box.isConnected || panel.querySelector('[aria-pressed="true"]')?.dataset.reportFormat !== format) return;
+    box.textContent = `生成失败：${error}`;
+  }
 }
 
 export function pageProvider() {
@@ -857,16 +874,17 @@ function workbenchMonitor(eng) {
   if (route.startsWith('agentDetail:')) return pageAgentDetail(eng, route.slice('agentDetail:'.length));
   const running = eng.snapshots.filter(isVisible);
   if (running.length === 0) {
-    return '<div class="wb-empty">还没有检测到运行中的智能体</div>';
+    return `<div class="wb-empty">${navigationIcon('terminal')}<strong>还没有检测到运行中的智能体</strong><span>启动本机编码工具后，运行状态会显示在这里。</span></div>`;
   }
   return running
     .map((snap) => {
       const model = agentRowModel(snap);
       const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
       return `<button type="button" class="wb-agent" data-agent="${model.id}">
+        <span class="wb-agent-glyph">${navigationIcon('terminal')}</span>
         <span class="name">${escapeHtml(model.name)}</span>
-        <span class="tokens" style="color:${model.statusColor}">${escapeHtml(model.tokensText)}</span>
-        <span class="meta">${escapeHtml(detail)}</span>
+        <span class="tokens">${escapeHtml(model.tokensText)}</span>
+        <span class="meta"><i class="wb-state-dot" style="background:${model.statusColor}"></i>${escapeHtml(detail)}</span>
       </button>`;
     })
     .join('');
@@ -892,6 +910,26 @@ function navigationIcon(kind) {
     gear: '<circle cx="12" cy="12" r="3"/><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-2v-3l3-1 1-3-3-2V7l-3-1-1-3Z"/>',
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] ?? paths.square}</svg>`;
+}
+
+const workbenchDescriptions = {
+  tokenAnalytics: '了解用量规模、趋势与模型构成。净消耗不含缓存读取。',
+  todo: '把接下来的工作记在这里，完成后轻轻勾选。',
+  provider: '管理本机 Codex 配置档位，查看当前配置与备份。',
+  report: '将本机用量整理成便于记录和核对的报告。',
+  agents: '选择需要关注的智能体，保持监控列表清晰。',
+  remote: '配置通知通道，在离开电脑时接收重要状态。',
+  settings: '按你的工作习惯调整外观、采样与通知。',
+};
+
+function navigationSummary(engine) {
+  if (!engine) return '<span class="nav-machine-label">本机状态</span><p>等待采样</p>';
+  return `<span class="nav-machine-label">本机状态</span><div class="nav-machine-values"><div><strong>${engine.snapshots.filter(isVisible).length}</strong><span>在线</span></div><div><strong>${compact(engine.grand_total.tokens24h)}</strong><span>24h tokens</span></div></div><p>数据保存在本机</p>`;
+}
+
+export function renderNavSummaryOnly() {
+  const box = document.querySelector('[data-nav-summary]');
+  if (box) box.innerHTML = navigationSummary(getState().engine);
 }
 
 export function renderWorkbench() {
@@ -923,14 +961,15 @@ export function renderWorkbench() {
       tokenAnalytics: () => pageAnalytics(eng), provider: pageProvider, todo: pageTodo,
       report: pageReport, settings: pageSettings, remote: pageRemote, agents: pageAgents,
     };
-    content = `<div class="wb-single"><h1>${title}</h1>${pages[selected]?.() ?? ''}</div>`;
+    const icon = workbenchPages.find(([key]) => key === selected)?.[2];
+    content = `<div class="wb-single" data-workbench-page="${selected}"><div class="wb-page-heading"><span class="wb-page-icon">${navigationIcon(icon)}</span><div><h1>${title}</h1><p>${workbenchDescriptions[selected] ?? ''}</p></div></div>${pages[selected]?.() ?? ''}</div>`;
   }
   root.innerHTML = `<div class="wb">
     <nav class="wb-nav" aria-label="工作台导航">
       <div class="wb-brand">${navigationIcon('square')}<span>AgentIsland<small>本机智能体工作台</small></span></div>
       <div class="wb-nav-label">工作空间</div>
       ${workbenchPages.map(([key, label, icon], index) => `${index === 5 ? '<div class="wb-nav-label wb-nav-divider">管理</div>' : ''}<button type="button" class="wb-nav-item${selected === key ? ' is-active' : ''}" data-wb-nav="${key}" aria-current="${selected === key ? 'page' : 'false'}">${navigationIcon(icon)}<span>${label}</span></button>`).join('')}
-      <div class="wb-nav-footer"><span class="wb-live-dot"></span>仅在本机处理数据</div>
+      <div class="wb-nav-footer" data-nav-summary>${navigationSummary(st.engine)}</div>
     </nav>
     <main class="wb-main">
       <header class="wb-head" data-tauri-drag-region><span class="wb-head-title">${title}</span><div class="wb-status" data-wb-status>${workbenchStatus(st.engine)}</div><div class="wb-head-actions"><button type="button" class="mini-btn" data-wb-hide>收起窗口</button></div></header>
@@ -987,6 +1026,7 @@ function bindReportPanel() {
  * 同一个坑在侧边栏上踩过一次（那里是「只有列表页随推送重画」）。
  */
 export function renderWorkbenchMonitorOnly() {
+  renderNavSummaryOnly();
   const box = document.querySelector('[data-wb-monitor]');
   const eng = getState().engine;
   if (!eng) return;
@@ -1118,6 +1158,7 @@ export function renderSidebar() {
             </button>`,
           )
           .join('')}
+        <div class="sb-nav-footer" data-nav-summary>${navigationSummary(st.engine)}</div>
       </nav>
       <main class="sb-main">
         <div class="sb-head"><div class="t">${header.t}</div><div class="s">${header.s}</div></div>
@@ -1219,8 +1260,7 @@ export function pageAgents() {
 
   return `<div class="sb-page" data-agents-root>
     <div class="sb-note">关掉某个 Agent 只是不再监控它，不会终止它的进程。变更立即生效。</div>
-    <div class="sb-hint">存的是**禁用名单**：名单为空 = 全部开着。macOS 那边存的是启用名单（空 = 全关），
-      同一句「空」在两端意思相反，迁移设置时别照抄。</div>
+    <div class="sb-hint">启用后出现在监控列表中；关闭后仍可在这里重新启用。</div>
     ${rows || '<div class="sb-empty">这一拍没有采集到任何 Agent</div>'}
     ${orphans}
   </div>`;
@@ -1239,7 +1279,7 @@ export function bindAgents() {
       await invoke('save_settings', { newSettings: st.settings }).catch(() => {});
       // 引擎下一拍就会按新集合过滤（状态是 `engine://tick` 推来的）。
       // 这里立刻重画是为了不让人对着一个已经改了、看起来却没动的界面发愣。
-      renderSidebar();
+      if (isWorkbench()) renderWorkbench(); else renderSidebar();
     });
   });
 }

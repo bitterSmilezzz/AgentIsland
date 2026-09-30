@@ -13,3 +13,7 @@ Mac 工作台使用原生标题栏、窗口控制和系统材质。关闭按钮�
 Mac 单实例插件的 Unix listener 异步绑定；应用在进入 Tauri 前取得进程冷启动锁，setup 完成后释放。第二次冷启动等待监听器就绪，然后由单实例插件复用已有实例。CLI 分派先于此步骤。锁由文件描述符管理，进程退出自动释放；不删除持有中的锁文件。
 
 依据：Apple [Materials](https://developer.apple.com/design/human-interface-guidelines/materials) 与 [macOS 27 更新说明](https://support.apple.com/en-ie/127257)，本机 macOS 27.0.1 的视觉与窗口验证。
+
+导航未选中项使用中性色，选中项才强调图标；底部呈现只读本机摘要。概览显示核心用量、趋势与工具拆分，完整预测和节律置于用量页。独立页面采用统一标题、表单分组与控件层级，状态颜色只表示运行含义。此信息分区参考 ui-research 案例 08（video dashboard information partition）与 09（Filenns refining details）。
+
+明细区域按自身页面属性选择报告，不依赖容器的全局路由；同时存在概览分析和智能体详情时各自取数，离开页面后的响应不写回。
