@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
       createTextNode: () => mk(),
     };
     globalThis.window = { innerWidth: 400, innerHeight: 800, devicePixelRatio: 2, getComputedStyle: () => ({}) };
-    globalThis.location = { search: '?shell=island' };
+    globalThis.location = { search: '?shell=' + (process.env.TEST_NAVIGATION_SHELL ?? 'island') };
     Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async () => {} } }, configurable: true });
     globalThis.addEventListener = noop; globalThis.removeEventListener = noop;
     globalThis.matchMedia = () => ({ matches: false, addEventListener: noop, removeEventListener: noop });
@@ -28,6 +28,8 @@ const listeners = new Map();
 const placements = [];
 const startup = process.env.TEST_COLD_NAVIGATION === '1';
 let drains = 0;
+let shows = 0;
+const workbench = process.env.TEST_NAVIGATION_SHELL === 'workbench';
 window.__TAURI__ = {
   core: { invoke: async (command, args) => {
     if (command === 'get_boot_args') return {};
@@ -35,10 +37,11 @@ window.__TAURI__ = {
     if (command === 'drain_navigation') {
       assert.ok(listeners.has('deeplink://navigate'), 'subscription must precede replay');
       drains++;
-      if (startup && drains === 1) return ['Expand', 'Agent("codex")'];
-      if (startup && drains === 2) return ['Collapse'];
+      if (startup && drains === 1) return workbench ? ['Workbench'] : ['Expand', 'Agent("codex")'];
+      if (startup && !workbench && drains === 2) return ['Collapse'];
       return [];
     }
+    if (command === 'show_workbench') shows++;
     if (command === 'place_island') placements.push(args);
     return null;
   } },
@@ -50,10 +53,24 @@ try {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.ok(listeners.has('deeplink://navigate'), 'island boot must subscribe to deep links');
-  for (let i = 0; i < 100 && drains < (startup ? 3 : 1); i++) {
+  const expectedDrains = startup ? (workbench ? 2 : 3) : 1;
+  for (let i = 0; i < 100 && drains < expectedDrains; i++) {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  assert.equal(drains, startup ? 3 : 1, 'boot must consume all startup batches');
+  assert.equal(drains, expectedDrains, 'boot must consume all startup batches');
+  if (workbench) {
+    const send = action => listeners.get('deeplink://navigate')({ payload: { action } });
+    assert.equal(shows, startup ? 1 : 0, 'cold workbench intent must reveal the window');
+    await send('Analytics');
+    assert.equal(getState().route, 'tokenAnalytics');
+    const priorShows = shows;
+    await send('Workbench');
+    assert.equal(shows, priorShows + 1, 'workbench intent must reveal the window');
+    assert.equal(getState().route, 'tokenAnalytics', 'reopening must preserve the current page');
+    assert.equal(getState().workbenchPage, 'tokenAnalytics');
+    console.log('PASS: workbench cold/live navigation and current page retention');
+    process.exit(0);
+  }
   if (startup) {
     assert.equal(getState().expanded, false);
     assert.equal(getState().route, 'list');

@@ -219,6 +219,11 @@ async function boot() {
     });
     await subscribeNavigation(async (e) => {
       const intent = String(e.payload?.action ?? '');
+      if (intent === 'Workbench') {
+        // 只唤回当前工作台，保留页面、表单草稿与滚动位置。
+        await showWorkbench();
+        return;
+      }
       if (intent.startsWith('Agent(')) {
         const id = agentIdFromIntent(intent);
         if (!id) return;
