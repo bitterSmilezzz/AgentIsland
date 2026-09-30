@@ -21,6 +21,7 @@
         shell === 'workbench' ? 'shell-workbench'
         : shell === 'sidebar' ? 'shell-sidebar'
         : 'shell-island';
+      if (/Mac/.test(navigator.platform)) document.documentElement.classList.add('platform-mac');
     } catch (error) {
       document.documentElement.className = 'shell-island';
     }

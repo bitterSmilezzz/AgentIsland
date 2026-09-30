@@ -1,6 +1,6 @@
 # AgentIsland — Rust/Tauri 桌面端
 
-Rust 核心与静态 Web UI，提供灵动岛、侧边栏与工作台三个窗口。三个窗口共用监控状态、用量口径与主题；侧边栏提供监控、用量、Codex 档位、待办、设置、远程通知与 Agent 启停，工作台同时展示监控、待办、报告、用量与档位。
+Rust 核心与静态 Web UI，提供灵动岛、侧边栏与工作台三个窗口。三个窗口共用监控状态、用量口径与主题；侧边栏提供监控、用量、Codex 档位、待办、设置、远程通知与 Agent 启停，工作台提供概览与独立功能页，Mac 使用原生窗口控制、系统材质和系统字体。
 
 主发布包是 `dist/AgentIsland.app`；Swift 原生端是本机回退产物，能力差异见[两端对照表](../docs/workbench/23-swift-rust-parity-matrix.md)。
 
@@ -25,7 +25,7 @@ cargo tauri build --bundles app,dmg
 - `ui/css/island.css`：灵动岛几何与内容。
 - `ui/css/sidebar.css`：侧栏导航与布局。
 - `ui/css/panels.css`：侧栏与工作台共用的档位、待办与表单控件。
-- `ui/css/workbench.css`：工作台双栏与窄窗口单栏布局。
+- `ui/css/workbench.css`：工作台导航、概览与独立内容页的响应式布局。
 - `ui/js/views.js`：页面内容及交互；`main.js`：状态、启动与采样订阅。
 
 ## 平台边界

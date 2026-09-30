@@ -80,7 +80,7 @@ step "UI 冒烟（点遍三个窗口的可点元素）"
 scripts/ui-smoke.sh
 
 step "正式应用单实例回归（重复打开仍保留原进程）"
-python3 scripts/test-app-instance.py
+python3 scripts/test-app-instance.py --cold
 
 step "发布包"
 ZIP="dist/AgentIsland-$VERSION.zip"

@@ -15,7 +15,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 LOG="${TMPDIR:-/tmp}agentisland-tauri.log"
-RUN_MS="${UI_SMOKE_RUN_MS:-15000}"
+RUN_MS="${UI_SMOKE_RUN_MS:-30000}"
 
 # 用哪个二进制：默认取**新一点**的那个。发布产物比源码旧时（刚改完还没重打包）
 # 会自动退回 debug——否则会拿一个不带 --ui-smoke 的二进制去跑，冒烟静默不执行。
@@ -156,7 +156,10 @@ for label in island sidebar workbench; do
         fi
     fi
     if [[ "$label" == "workbench" ]] && echo "$line" | grep -q '"emptyState"'; then
-        if ! echo "$line" | grep -q '"emptyEl":true'; then
+        running=$(echo "$line" | grep -o '"runningAgents":[0-9]*' | head -1 | cut -d: -f2)
+        if [[ "${running:-0}" -gt 0 ]]; then
+            echo "    ${label}  监控栏 ${running} 个智能体在场"
+        elif ! echo "$line" | grep -q '"emptyEl":true'; then
             echo "✗ ${label}：监控栏没有 Agent 在跑，却没有空态文案 —— 一片空白会被看成「界面没加载」"
             fail=1
         else

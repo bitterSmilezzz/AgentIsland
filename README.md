@@ -2,13 +2,13 @@
 
 一款**跨 Agent 的本机监控工具**：在 macOS 灵动岛中展示 AI 编码 agent 的运行状态、当前动作与可读取的 token 用量。
 
-**当前交付物是 Rust/Tauri 端。** 三个形态：灵动岛、侧边栏、**工作台**（连同 Codex 配置档位、待办清单与运维报告，五块同时在场）。Swift 本体仍在本机保留为 `dist/AgentIsland-Swift.app` 作为回退。两种形态的取舍见 [ADR 0012](docs/adr/0012-sidebar-alongside-island.md)，整个迁移的范围与进度见 [工作台计划](docs/workbench/README.md)。
+**当前交付物是 Rust/Tauri 端。** 三个形态：灵动岛、侧边栏、**工作台**（概览、用量分析、Codex 档位、待办、报告与管理页面）。Swift 本体仍在本机保留为 `dist/AgentIsland-Swift.app` 作为回退。两种形态的取舍见 [ADR 0012](docs/adr/0012-sidebar-alongside-island.md)，整个迁移的范围与进度见 [工作台计划](docs/workbench/README.md)。
 
 **同一个 agent 的五态与可信度，在三个出口永远对得上：灵动岛卡片、`agentisland doctor`、`agentisland state`。** 三处读的是同一份 `AgentObservability.evaluate(snapshot:)`（`state` 直接问运行中的 app，`doctor` 在 CLI 进程里调同一个纯函数）；对不上时三处都显示「有冲突」，而不是各自挑一个数给你看。同理，「没读到」在三个出口都是「没读到」，不是 0。
 
 > **能力边界今天是这样**（不藏）：25 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy / WorkBuddy AI）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
 
-> 本文档描述 **v0.0.270** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.271** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 >
@@ -45,7 +45,7 @@
 
 ## 侧边栏（Rust 端，迁移中）
 
-同一份监控数据的**第二种形态**：一整列的窗口，贴左或贴右、宽度可拉并记住。它解决的是灵动岛解决不了的两件事——**键盘可达**与**信息容量**（灵动岛是一块浮在边沿的卡片，372×520 装不下表单类界面）。两种形态**并存**，默认仍是灵动岛；`shell_mode` 或启动参数 `--shell=sidebar` 切换，切换只决定显示哪个窗口。**第三个形态是工作台**（`--shell=workbench`、托盘或深链叫出），它不是侧边栏的翻版，而是把监控、用量分析、Provider、待办、报告五块同时摆在一张大面板上——见 [工作台计划](docs/workbench/README.md)。
+同一份监控数据的**第二种形态**：一整列的窗口，贴左或贴右、宽度可拉并记住。它解决的是灵动岛解决不了的两件事——**键盘可达**与**信息容量**（灵动岛是一块浮在边沿的卡片，372×520 装不下表单类界面）。两种形态**并存**，默认仍是灵动岛；`shell_mode` 或启动参数 `--shell=sidebar` 切换，切换只决定显示哪个窗口。**第三个形态是工作台**（`--shell=workbench`、托盘或深链叫出），它提供分组导航与概览，监控、用量分析、Provider、待办和报告共享既有数据与页面；Mac 工作台使用系统材质、原生窗口控制和系统字体——见 [工作台计划](docs/workbench/README.md)。
 
 - **监控**：Agent 列表（名字 / 状态 / 24h 用量 / 最近动作）。状态文案与用量缩写和灵动岛**共用同一份显示模型**，不会出现「同一件事两种说法」。
 - **Token 用量**：与灵动岛分析页共用同一套页面函数。

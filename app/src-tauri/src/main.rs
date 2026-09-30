@@ -88,12 +88,27 @@ fn get_settings(state: State<SharedEngine>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<SharedEngine>, new_settings: Settings) {
+fn save_settings(state: State<SharedEngine>, app: AppHandle, new_settings: Settings) {
     let mut e = state.lock().unwrap();
     e.settings = new_settings.normalized();
     let s = e.settings.clone();
     drop(e);
     s.save();
+    apply_window_appearance(&app, &s.appearance);
+}
+
+/// 系统材质和 Web 内容使用同一外观；跟随系统时取消强制主题。
+fn apply_window_appearance(app: &AppHandle, mode: &str) {
+    let theme = match mode {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    for label in ["island", "sidebar", "workbench"] {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.set_theme(theme);
+        }
+    }
 }
 
 /// 把侧边栏窗口按记忆值摆好（贴左/贴右、宽度、铺满工作区高度）。
@@ -948,6 +963,22 @@ fn show_workbench(app: AppHandle) {
 
 /// 把工作台窗口叫到前面。**托盘、深链、前端三处共用这一段**——
 /// 三处各写一份显隐规则的话，迟早只有一处会带 `unminimize`。
+#[cfg(target_os = "macos")]
+fn acquire_startup_guard() -> std::io::Result<std::fs::File> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    // single-instance 的 Unix listener 异步绑定；串行化冷启动直到 setup 完成，
+    // 防止两次同时打开都在 socket 就绪前通过插件检测。CLI 不经过此入口。
+    let path = std::env::temp_dir().join(format!("dev.agentisland.startup-{}.lock", unsafe { libc::geteuid() }));
+    let file = std::fs::OpenOptions::new()
+        .read(true).write(true).create(true).truncate(false)
+        .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 { return Ok(file); }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted { return Err(error); }
+    }
+}
+
 fn reveal_workbench_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("workbench") {
         let _ = window.show();
@@ -1404,6 +1435,9 @@ const UI_SMOKE_JS: &str = r#"(function () {
         return f ? (f.textContent || '').trim().slice(0, 12) : '';
       })();
       await clickAll('[data-nav]');
+      await clickAll('[data-wb-nav]');
+      var overview = document.querySelector('[data-wb-nav="overview"]');
+      if (overview) { overview.click(); await wait(300); }
       await clickAll('[data-analytics]');
       await clickAll('[data-agent]');
       await clickAll('[data-back]');
@@ -1466,6 +1500,7 @@ const UI_SMOKE_JS: &str = r#"(function () {
       var emptyEl = document.querySelector('.wb-empty');
       window.__uiSmoke.emptyState = {
         monitorBox: !!monitorBox,
+        runningAgents: monitorBox ? monitorBox.querySelectorAll('[data-agent]').length : -1,
         emptyEl: !!emptyEl,
         text: emptyEl ? (emptyEl.textContent || '').slice(0, 30) : '',
         // 元素在但看不见 ⇒ 尺寸或颜色有问题，一并量出来
@@ -1689,6 +1724,9 @@ fn main() {
     log_line(&format!("[run] pid={} 启动", std::process::id()));
     log_line("=== boot ===");
 
+    #[cfg(target_os = "macos")]
+    let startup_guard = acquire_startup_guard().expect("应用冷启动互斥锁应当可用");
+
     tauri::Builder::default()
         // 必须早于其他插件：第二次打开复用现有应用，不再创建窗口与托盘。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1712,7 +1750,30 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .manage(shared.clone())
+        .on_window_event(|window, event| {
+            // 标准关闭按钮收起工作台，托盘和重复打开仍可唤回原窗口。
+            if window.label() == "workbench" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(move |app| {
+            let appearance = shared.lock().unwrap().settings.appearance.clone();
+            apply_window_appearance(app.handle(), &appearance);
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("workbench") {
+                use tauri::utils::{config::WindowEffectsConfig, WindowEffect};
+                // 内容区保持不透明；系统材质只从透明的导航和窗口边缘透出。
+                let effects = WindowEffectsConfig {
+                    effects: vec![WindowEffect::LiquidGlassRegular, WindowEffect::Sidebar],
+                    ..Default::default()
+                };
+                if let Err(error) = window.set_effects(effects) {
+                    log_line(&format!("[window] 原生材质不可用，使用 CSS 底板: {error}"));
+                }
+            }
             // 全局热键：按设置里的开关注册。
             //
             // 刻意**不在设置变化时重注册**：热键注册要在主线程做，而设置改完
@@ -1943,6 +2004,8 @@ fn main() {
                     let _ = sidebar.hide();
                 }
             }
+            #[cfg(target_os = "macos")]
+            drop(startup_guard);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2260,10 +2323,9 @@ mod ui_symbol_sentinel {
             .expect("views.js 里应当有 renderWorkbench");
         let body = &views[start..];
         for name in ["pageAnalytics", "pageProvider", "pageTodo", "pageReport"] {
-            // 只查**调用形状** `${name(`，不查 `${name()}`：实际调用都带参
-            // （`${pageAnalytics(eng)}`），按无参写会把「调用了」误判成「没调用」。
+            // 页面可作为 section() 的参数；检查调用，不绑定模板插值写法。
             assert!(
-                body.contains(&format!("${{{name}(")),
+                body.contains(&format!("{name}(")),
                 "工作台应当复用 `{name}(…)`——它现在要么没被调用，要么被换成了另一份实现"
             );
         }

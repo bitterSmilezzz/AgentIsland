@@ -13,7 +13,7 @@ html.shell-island, html.shell-island body {
   height: 100%;
   background: transparent;
   overflow: hidden;
-  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  font-family: var(--font-text);
 }
 
 html.shell-island #root {
@@ -555,3 +555,7 @@ html.shell-island.compact .card-box {
   margin-top: 6px;
   padding: 6px 8px;
 }
+
+/* 浮层与工作台同源：去掉荧光强调，保留状态颜色和紧凑的边缘几何。 */
+html.shell-island.theme-light { --glass-top: rgba(252,252,254,.96); --glass-bottom: rgba(244,244,247,.98); }
+html.shell-island.theme-dark { --glass-top: rgba(39,39,43,.97); --glass-bottom: rgba(27,27,30,.98); }

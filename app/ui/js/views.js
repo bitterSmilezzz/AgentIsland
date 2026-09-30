@@ -842,9 +842,7 @@ export function pageProvider() {
 
 // MARK: 工作台形态（第三个窗口）
 //
-// 「大而全」的含义是**五块同时在场**，不是把侧边栏那七页再抄一遍——
-// 所以这里调的全是上面那些**同一个**页面函数。抄一遍的话，
-// 侧边栏改一处措辞、工作台就会留在旧话上，而且没有任何断言会响。
+// 概览与独立功能页复用既有页面函数；容器不复制业务实现。
 
 function workbenchStatus(engine) {
   if (!engine) return '等待采样';
@@ -874,63 +872,91 @@ function workbenchMonitor(eng) {
     .join('');
 }
 
-/**
- * 工作台：大而全面板。
- *
- * 分栏是刻意的：左边一列监控与任务（监控 / 待办 / 报告），右边一列放用量与档位。把五块平铺成五个等宽格会让每块都窄到读不了字。
- */
+// 工作台导航独立于智能体详情路由；周期采样只更新实时监控区。
+const workbenchPages = [
+  ['overview', '概览', 'square'], ['tokenAnalytics', '用量分析', 'chart'],
+  ['todo', '待办事项', 'check'], ['provider', 'Codex 档位', 'sliders'],
+  ['report', '导出报告', 'document'], ['agents', '智能体管理', 'terminal'],
+  ['remote', '远程通知', 'bell'], ['settings', '设置', 'gear'],
+];
+
+function navigationIcon(kind) {
+  const paths = {
+    square: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="M9 3v18M9 10h12"/>',
+    chart: '<path d="M4 20h16M6 16v-5m6 5V5m6 11V8"/>',
+    check: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="m7 12 3 3 7-7"/>',
+    sliders: '<path d="M4 7h6m4 0h6M4 17h10m4 0h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/>',
+    document: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9ZM14 3v6h6M8 13h8M8 17h5"/>',
+    terminal: '<rect x="3" y="4" width="18" height="16" rx="4"/><path d="m7 9 3 3-3 3m6 0h4"/>',
+    bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-2v-3l3-1 1-3-3-2V7l-3-1-1-3Z"/>',
+  };
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] ?? paths.square}</svg>`;
+}
+
 export function renderWorkbench() {
   const st = getState();
   const eng = st.engine ?? {
     snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
     latest_event: null, any_working: false, has_attention: false,
   };
+  const selected = st.workbenchPage ?? 'overview';
+  const title = workbenchPages.find(([key]) => key === selected)?.[1] ?? '概览';
   const root = document.getElementById('root');
-  root.innerHTML = `
-    <div class="wb">
-      <header class="wb-head" data-tauri-drag-region>
-        <div class="wb-brand">AgentIsland <span class="wb-sub">工作台</span></div>
-        <div class="wb-status" data-wb-status>${workbenchStatus(st.engine)}</div>
-        <div class="wb-head-actions">
-          <button type="button" class="mini-btn" data-wb-hide>隐藏</button>
-        </div>
-      </header>
+  const section = (heading, content, attrs = '') => `<section class="wb-section"><h2 class="wb-section-title">${heading}</h2><div class="wb-section-body" ${attrs}>${content}</div></section>`;
+  let content;
+  if (selected === 'overview') {
+    content = `<div class="wb-intro"><div><p class="wb-eyebrow">你的本机工作空间</p><h1>工作概览</h1><p>关注正在运行的智能体，安排接下来的工作。</p></div><div class="wb-summary" data-wb-summary>${workbenchSummary(eng)}</div></div>
       <div class="wb-grid">
-        <section class="wb-col wb-col-main">
-          <div class="wb-section">
-            <h2 class="wb-section-title">监控</h2>
-            <div class="wb-section-body" data-wb-monitor>${workbenchMonitor(eng)}</div>
-          </div>
-          <div class="wb-section">
-            <h2 class="wb-section-title">待办</h2>
-            <div class="wb-section-body">${pageTodo()}</div>
-          </div>
-          <div class="wb-section">
-            <h2 class="wb-section-title">报告</h2>
-            <div class="wb-section-body">${pageReport()}</div>
-          </div>
-        </section>
-        <section class="wb-col">
-          <div class="wb-section">
-            <h2 class="wb-section-title">Token 用量</h2>
-            <div class="wb-section-body">${pageAnalytics(eng)}</div>
-          </div>
-          <div class="wb-section">
-            <h2 class="wb-section-title">Codex 档位</h2>
-            <div class="wb-section-body">${pageProvider()}</div>
-          </div>
-
-        </section>
-      </div>
-    </div>`;
-
-  // 注水各走各的既有函数：它们各自 `querySelector` 自己的 root，
-  // 所以这里只要容器在位就行，不需要为工作台另写一份取数逻辑。
-  hydrateReport();
-  hydrateProvider();
-  hydrateTodo();
-
+        <div class="wb-col wb-col-main">
+          ${section('实时监控', workbenchMonitor(eng), `data-wb-monitor data-detail-route="${esc(st.route)}"`)}
+          ${section('待办事项', pageTodo())}
+          ${section('导出报告', pageReport())}
+        </div>
+        <div class="wb-col">
+          ${section('用量分析', pageAnalytics(eng))}
+          ${section('Codex 档位', pageProvider())}
+        </div>
+      </div>`;
+  } else {
+    const pages = {
+      tokenAnalytics: () => pageAnalytics(eng), provider: pageProvider, todo: pageTodo,
+      report: pageReport, settings: pageSettings, remote: pageRemote, agents: pageAgents,
+    };
+    content = `<div class="wb-single"><h1>${title}</h1>${pages[selected]?.() ?? ''}</div>`;
+  }
+  root.innerHTML = `<div class="wb">
+    <nav class="wb-nav" aria-label="工作台导航">
+      <div class="wb-brand">${navigationIcon('square')}<span>AgentIsland<small>本机智能体工作台</small></span></div>
+      <div class="wb-nav-label">工作空间</div>
+      ${workbenchPages.map(([key, label, icon], index) => `${index === 5 ? '<div class="wb-nav-label wb-nav-divider">管理</div>' : ''}<button type="button" class="wb-nav-item${selected === key ? ' is-active' : ''}" data-wb-nav="${key}" aria-current="${selected === key ? 'page' : 'false'}">${navigationIcon(icon)}<span>${label}</span></button>`).join('')}
+      <div class="wb-nav-footer"><span class="wb-live-dot"></span>仅在本机处理数据</div>
+    </nav>
+    <main class="wb-main">
+      <header class="wb-head" data-tauri-drag-region><span class="wb-head-title">${title}</span><div class="wb-status" data-wb-status>${workbenchStatus(st.engine)}</div><div class="wb-head-actions"><button type="button" class="mini-btn" data-wb-hide>收起窗口</button></div></header>
+      <div class="wb-content${selected === 'overview' ? ' wb-overview' : ''}">${content}</div>
+    </main>
+  </div>`;
+  if (selected === 'overview' || selected === 'tokenAnalytics') hydrateReport();
+  if (selected === 'overview' || selected === 'provider') hydrateProvider();
+  if (selected === 'overview' || selected === 'todo') hydrateTodo();
+  if (selected === 'remote') hydrateRemote();
+  if (selected === 'settings') bindSettings();
+  if (selected === 'agents') bindAgents();
   bindWorkbench();
+  root.querySelectorAll('[data-wb-nav]').forEach((button) => {
+    button.onclick = () => {
+      st.workbenchPage = button.dataset.wbNav;
+      st.route = st.workbenchPage === 'tokenAnalytics' ? 'tokenAnalytics' : 'list';
+      renderWorkbench();
+      root.querySelector(`[data-wb-nav="${st.workbenchPage}"]`)?.focus({ preventScroll: true });
+    };
+  });
+}
+
+function workbenchSummary(eng) {
+  const count = eng.snapshots.filter(isVisible).length;
+  return `<div><strong>${count}</strong><span>在线智能体</span></div><div><strong>${compact(eng.grand_total.tokens24h)}</strong><span>24 小时 tokens</span></div>`;
 }
 
 /** 报告面板的交互：生成（两种格式）与复制。 */
@@ -962,14 +988,17 @@ function bindReportPanel() {
  */
 export function renderWorkbenchMonitorOnly() {
   const box = document.querySelector('[data-wb-monitor]');
-  if (!box) return;
   const eng = getState().engine;
   if (!eng) return;
+  const summary = document.querySelector('[data-wb-summary]');
+  if (summary) summary.innerHTML = workbenchSummary(eng);
   const statusEl = document.querySelector('[data-wb-status]');
   if (statusEl) statusEl.textContent = workbenchStatus(eng);
+  if (!box) return;
   // 详情中的报告是异步注水的，周期采样不能把它重新打回空壳。
-  if (getState().route.startsWith('agentDetail:') && box.querySelector('[data-report-root]')) return;
+  if (getState().route.startsWith('agentDetail:') && box.dataset.detailRoute === getState().route && box.querySelector('[data-report-root]')) return;
   box.innerHTML = workbenchMonitor(eng);
+  box.dataset.detailRoute = getState().route;
   bindWorkbenchAgentClicks();
 }
 
@@ -1016,7 +1045,7 @@ export function renderSidebar() {
     // 角标是**未完成**数（不是总条数）：勾掉最后一条之后角标就该消失
     { key: 'todo', label: '待办', count: st.todosPending ?? 0, badge: 'todo' },
     // 03-approach §3：首层极简，重页面从这里进
-    { key: 'settings', label: '高级设置 ›', count: 0 },
+    { key: 'settings', label: '设置', count: 0 },
     { key: 'remote', label: '远程通知', count: 0 },
     { key: 'agents', label: 'Agent 启停', count: 0 },
   ];
@@ -1083,7 +1112,7 @@ export function renderSidebar() {
           .map(
             (item) => `<button type="button" class="sb-item${item.key === route ? ' is-active' : ''}${item.disabled ? ' is-disabled' : ''}"
               ${item.disabled ? 'disabled' : `data-nav="${item.key}"`} aria-current="${item.key === route ? 'page' : 'false'}">
-              <span>${escapeHtml(item.label)}</span>${item.text
+              ${navigationIcon(({ list: 'terminal', tokenAnalytics: 'chart', provider: 'sliders', todo: 'check', settings: 'gear', remote: 'bell', agents: 'terminal' })[item.key])}<span>${escapeHtml(item.label)}</span>${item.text
                 ? `<span class="sb-count" data-nav-text="${escapeHtml(item.badge ?? '')}">${escapeHtml(item.text)}</span>`
                 : item.count ? `<span class="sb-count" ${item.badge ? `data-nav-count="${item.badge}"` : ''}>${item.count}</span>` : ''}
             </button>`,
@@ -1609,6 +1638,16 @@ function renderProviderPage(root, status, profiles, backups) {
         ? `生效中：<b>${escapeHtml(activeName)}</b>（provider <code>${escapeHtml(status.active_provider_id ?? '')}</code>）`
         : `生效中：<b>不是本应用的档位</b>（读到的 provider 是 <code>${escapeHtml(status.active_provider_id ?? '未设置')}</code>）`)
     : '未检测到 Codex 配置（没装，或还没跑过一次）';
+
+  if (root.closest('.wb-overview')) {
+    root.innerHTML = `${limitations}<div class="sb-kv" data-status>${activeLine}</div><p class="wb-provider-count">${profiles.length} 个本机档位 · ${backups.length} 份备份</p><button type="button" class="mini-btn" data-provider-open>管理档位</button>`;
+    root.querySelector('[data-provider-open]').onclick = () => {
+      getState().workbenchPage = 'provider';
+      getState().route = 'list';
+      renderWorkbench();
+    };
+    return;
+  }
 
   // ③ 档位列表：每条带「切换」，生效中的标出来
   const rows = profiles.length === 0
