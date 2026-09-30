@@ -30,34 +30,70 @@ html.shell-island #root.edge-right  { align-items: center;     justify-content: 
 
 /* ============ 收起态微细条（DockedSliverCapsule） ============ */
 
-.sliver {
+html.shell-island .sliver {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  height: 100%;
   cursor: pointer;
+  outline: none;
 }
-.sliver.hit-top    { padding-bottom: 12px; }
-.sliver.hit-bottom { padding-top: 12px; }
-.sliver.hit-left   { padding-right: 12px; }
-.sliver.hit-right  { padding-left: 12px; }
-
-.sliver-capsule {
-  width: 140px;
-  height: 6px;
+html.shell-island .sliver.hit-top { padding-bottom: 8px; }
+html.shell-island .sliver.hit-bottom { padding-top: 8px; }
+html.shell-island .sliver.hit-left { padding-right: 6px; }
+html.shell-island .sliver.hit-right { padding-left: 6px; }
+html.shell-island .sliver-capsule {
+  position: relative;
+  width: 136px;
+  height: 12px;
+  flex: none;
   border-radius: 999px;
   background: var(--sliver-fill);
-  border: 0.75px solid var(--sliver-stroke);
-  transition: background 0.3s, border-color 0.3s;
+  border: 1px solid var(--sliver-stroke);
+  box-shadow: inset 0 1px 0 var(--sliver-highlight);
+  transition: background .18s ease-out, border-color .18s ease-out;
 }
-.sliver.vertical .sliver-capsule { width: 6px; height: 120px; }
-.sliver.working .sliver-capsule { background: var(--sliver-fill-working); border-color: var(--emerald); }
-.sliver.alert .sliver-capsule   { background: rgba(61, 10, 10, 0.85); border-color: var(--danger); }
-.theme-light .sliver.alert .sliver-capsule { background: rgba(211, 47, 47, 0.85); }
-
-.sliver-capsule.breathing { animation: breathe 2.2s ease-in-out infinite; }
-.sliver.alert .sliver-capsule.breathing { animation-duration: 1.2s; }
-@keyframes breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1.0; } }
+html.shell-island .sliver-capsule::before {
+  content: '';
+  position: absolute;
+  width: 46px;
+  height: 2px;
+  top: 4px;
+  left: calc(50% - 23px);
+  border-radius: 999px;
+  background: var(--text-muted);
+  opacity: .5;
+}
+html.shell-island .sliver-state {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  top: 3px;
+  left: 12px;
+  border-radius: 50%;
+  background: var(--offline);
+}
+html.shell-island .sliver.working .sliver-state { background: var(--working); animation: sliver-pulse 3.8s infinite; }
+html.shell-island .sliver.alert .sliver-state { background: var(--warning); animation: sliver-pulse 2.4s infinite; }
+html.shell-island .sliver.vertical .sliver-capsule { width: 12px; height: 116px; }
+html.shell-island .sliver.vertical .sliver-capsule::before { width: 2px; height: 46px; top: calc(50% - 23px); left: 4px; }
+html.shell-island .sliver.vertical .sliver-state { top: 12px; left: 3px; }
+html.shell-island .sliver:is(:hover,:focus-visible) .sliver-capsule { background: var(--sliver-fill-hover); border-color: var(--text-faint); }
+html.shell-island .sliver:focus-visible .sliver-capsule::before { background: var(--accent); opacity: 1; }
+@keyframes sliver-pulse {
+  0%, 100% { opacity: .6; }
+  35% { opacity: 1; }
+  70% { opacity: .75; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html.shell-island .sliver .sliver-state { animation: none; }
+  html.shell-island .sliver-capsule { transition: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  html.shell-island .sliver-capsule { background: var(--surface-raised); }
+}
 
 /* ============ 玻璃卡壳 ============ */
 

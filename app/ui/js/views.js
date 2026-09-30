@@ -201,16 +201,29 @@ export function renderSliver() {
   // 为什么保留：微细条是收起态唯一的唤回入口（`mouseenter` 即展开）。
   // 连热区一起去掉的话，窗口会变成一块看不见也点不到的死区——
   // 用户只能靠托盘或快捷键把它叫出来，而那两样在 macOS 侧还要用户自己知道。
-  // 所以「隐藏」隐藏的是**那 6pt 的视觉条**，不是交互面积。
+  // 所以「隐藏」隐藏的是**胶囊把手**，不是交互面积。
   const hidden = st.settings?.hide_docked_sliver === true;
+  const status = alert ? '有提醒' : working ? '工作中' : '待机';
+  const className = `sliver ${vertical ? 'vertical' : ''} ${hitClass} ${working ? 'working' : ''} ${alert ? 'alert' : ''}${hidden ? ' sliver-invisible' : ''}`;
+  const existing = root.querySelector('#sliver');
+  // 周期采样只更新状态，保留动画相位与键盘焦点。
+  if (existing) {
+    existing.className = className;
+    existing.setAttribute('aria-label', `展开灵动岛：${status}`);
+    existing.title = `${status} · 展开灵动岛`;
+    return;
+  }
   root.innerHTML = `
-    <div class="sliver ${vertical ? 'vertical' : ''} ${hitClass} ${working ? 'working' : ''} ${alert ? 'alert' : ''}${hidden ? ' sliver-invisible' : ''}" id="sliver">
-      <div class="sliver-capsule ${working || alert ? 'breathing' : ''}"></div>
+    <div class="${className}" id="sliver" role="button" tabindex="0" aria-label="展开灵动岛：${status}" title="${status} · 展开灵动岛">
+      <div class="sliver-capsule" aria-hidden="true"><span class="sliver-state"></span></div>
     </div>`;
 
   const el = root.querySelector('#sliver');
   el.addEventListener('mouseenter', () => expand());
   el.addEventListener('mouseup', () => expand());
+  el.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); expand(); }
+  });
 }
 
 // MARK: 顶栏状态摘要（HeaderPresentation）
