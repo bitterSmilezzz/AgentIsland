@@ -677,26 +677,5 @@ mod csv_tests {
         }
     }
 
-    /// **两端必须逐字节一致**。改一边会让同一个 Agent 导出两个内容不同的文件，
-    /// 而报告是拿去对账的——对不上的报告比没有更糟。
-    #[test]
-    fn the_swift_side_uses_the_same_rule() {
-        let swift = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../Sources/AgentIslandCore/AuditReportExporter.swift"),
-        )
-        .expect("应当读得到 AuditReportExporter.swift");
-        for needle in [
-            "startsLikeFormula",
-            "\"=\"",
-            "\"+\"",
-            "\"-\"",
-            "\"@\"",
-        ] {
-            assert!(
-                swift.contains(needle),
-                "Swift 侧应当也有同一套公式注入判据（缺 {needle}）——只有一边防就等于没防"
-            );
-        }
-    }
+
 }

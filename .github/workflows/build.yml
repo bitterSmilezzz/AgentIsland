@@ -33,8 +33,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
-      # Swift 侧不在这份 workflow 里跑：需要 Xcode，而 runner 镜像上未必一致。
-      # 本机那一份（556 条）由 `scripts/release.sh` 负责，别在 CI 里假装它跑过。
       - name: 编译检查
         run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
       - name: Rust 测试

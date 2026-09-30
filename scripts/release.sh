@@ -24,12 +24,7 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 [[ -n "$TITLE" ]] || die "缺 release 标题（CHANGELOG 首条的那句话）"
 
 step "版本三处一致性预检 v${VERSION}"
-TOP=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-[[ "$TOP" == "$VERSION" ]] || die "CHANGELOG 首条是 [$TOP]，与要发的 v$VERSION 不一致"
-[[ "$(grep -m1 -oE 'string = "[0-9.]+"' Sources/AgentIslandCore/AppVersion.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')" == "$VERSION" ]] \
-    || die "AppVersion.string 还没改到 ${VERSION}（CLI 横幅与设置页都读它）"
-[[ "$(grep -m1 -oE '本文档描述 \*\*v[0-9.]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')" == "$VERSION" ]] \
-    || die "README 的「本文档描述 vX.Y.Z」没跟着改（README 讲功能，逐版记录归 CHANGELOG）"
+python3 scripts/check-version.py "$VERSION"
 [[ -z "$(git tag -l "v$VERSION")" ]] || die "tag v$VERSION 已存在，别重复发版"
 git rev-parse --verify --quiet "HEAD" >/dev/null || die "没有提交历史"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -46,29 +41,12 @@ fi
 
 step "脱敏守护与 Rust 回归测试"
 scripts/test-scan-secrets.sh
+python3 scripts/test-version.py
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml
 
-step "Swift 测试门禁与打包"
-# **工具链缺 SwiftUIMacros 时自动 SKIP_SWIFT=1。**
-#
-# 不这么做的话，`build-app.sh` 会在 Swift 构建那段直接退出，`set -e` 之下
-# **后面所有步骤都到不了**——包括下一段的 UI 冒烟。
-# 实测踩过：`release.sh` 在这台机器（只装了 CommandLineTools）上一次都跑不完，
-# 而 UI 冒烟是排在它后面的，于是那段代码从未被执行过——
-# **「加进脚本」不等于「跑过」**。
-#
-# 判据与 `build-app.sh` 里那道前置检查同源：那个宏插件是 Xcode 闭源提供的。
-if ! swiftui_macros_available; then
-    echo "!! 工具链里没有 SwiftUIMacros（$(swift_developer_dir)）⇒ 自动 SKIP_SWIFT=1 SKIP_TESTS=1"
-    echo "!! 代价：**产不出 dist/${APP_NAME}-Swift.app 那条回退路**，也跑不了 Swift 测试门禁。"
-    # ⚠️ **两个都必须导。** `build-app.sh` 的 `check_swift_toolchain` 判的是
-    # `SKIP_TESTS == 1 && SKIP_SWIFT == 1` 才放行，只导一个它照样 `exit 1`。
-    # v0.0.266 实测：只导 `SKIP_SWIFT` 时发版链在这个 if 块里**第三次**中止；
-    # 两个都导才走得通——`AgentIslandCLI` 与图标脚本都不依赖 SwiftUIMacros，
-    # 实测在只装 CommandLineTools 的机器上能编出来，主交付物不受影响。
-    export SKIP_SWIFT=1
-    export SKIP_TESTS=1
-fi
+step "Rust/Tauri 打包"
+# Rust 全量回归已在上一阶段完成。
+export SKIP_TESTS=1
 
 scripts/build-app.sh "$VERSION"
 

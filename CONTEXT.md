@@ -1,6 +1,6 @@
 # AgentIsland
 
-macOS 灵动岛应用：监控本机 AI 编码智能体的运行状态与 token 消耗，在屏幕顶部以悬浮岛呈现，无需用户聚焦即可感知 Agent 是否在工作。
+Rust/Tauri 跨平台桌面工作台：监控本机 AI 编码智能体的运行状态与 token 消耗，在屏幕顶部以悬浮岛呈现，无需用户聚焦即可感知 Agent 是否在工作。
 
 ## Language
 
@@ -256,3 +256,7 @@ macOS 上托盘是 AppKit 的 `NSStatusItem`，写它必须回主线程并等结
 ### Mac 工作台界面
 
 工作台以概览和分组导航组织功能，独立页面复用侧栏的页面与命令。Mac 使用原生窗口控制和系统材质，内容区保持不透明底板；关闭工作台只隐藏，唤回保留状态。Web 与原生材质使用同一外观设置。见 [ADR 0015](docs/adr/0015-macos-workbench-materials.md)。
+
+## 开发主线
+
+main 维护 Rust 核心、Rust CLI 与静态 Web UI。SwiftUI 和旧 WPF 实现保存在 `codex/archive-swiftui`；运行与发布不依赖归档源码。决策见 [ADR 0016](docs/adr/0016-rust-only-main.md)。

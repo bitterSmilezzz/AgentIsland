@@ -2,7 +2,7 @@
 
 Rust 核心与静态 Web UI，提供灵动岛、侧边栏与工作台三个窗口。三个窗口共用监控状态、用量口径与主题；侧边栏提供监控、用量、Codex 档位、待办、设置、远程通知与 Agent 启停，工作台提供概览与独立功能页，Mac 使用原生窗口控制、系统材质和系统字体。导航底部展示本机状态摘要；概览聚焦核心用量，完整分析和配置使用独立页面。
 
-主发布包是 `dist/AgentIsland.app`；Swift 原生端是本机回退产物，能力差异见[两端对照表](../docs/workbench/23-swift-rust-parity-matrix.md)。
+主发布包是 `dist/AgentIsland.app` 和 Rust CLI `dist/agentisland`；main 只维护 Rust/Tauri，旧端见[归档决策](../docs/adr/0016-rust-only-main.md)。
 
 ## 构建与运行
 
@@ -14,7 +14,7 @@ cd app/src-tauri
 cargo tauri build --bundles app,dmg
 ```
 
-完整验证、打包与发布由仓库根目录 `scripts/release.sh` 执行。Swift UI 回退构建需要完整 Xcode 提供的 SwiftUIMacros。
+完整验证、打包与发布由仓库根目录 `scripts/release.sh` 执行。
 
 启动参数：`--demo` 演示数据、`--expand` 展开灵动岛、`--route=tokenAnalytics` / `--route=agentDetail:<id>` 直达内容；`--shell=sidebar` / `--shell=workbench` 选择桌面形态。重复启动显示已有工作台，CLI 子命令可以独立运行。
 

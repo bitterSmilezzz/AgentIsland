@@ -6,8 +6,7 @@
 
 ## 当前工程入口
 
-先读 [ADR 0010 · Swift 冻结与 Rust 前置门](../adr/0010-swift-freeze-and-rust-prerequisites.md)
-和 [23 · 两端口径对照表](23-swift-rust-parity-matrix.md)，再读 [04 · 实施计划](04-plan.md)。
+先读 [ADR 0016 · Rust/Tauri 唯一主线](../adr/0016-rust-only-main.md) 和 [04 · 实施计划](04-plan.md)。Swift 冻结与两端对照表是迁移取证，查旧端实现时使用归档分支。
 M1 的五态回放、三方言 fixture 与 `provider.rs` 原子写/掩码守护现已完成；
 M2 本机构建及真工作区实现已完成，M5 对照表已建立。
 M3 的 12 个模块已全部迁入（v0.0.161–186）。

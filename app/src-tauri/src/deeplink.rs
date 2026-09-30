@@ -374,23 +374,5 @@ mod bundle_registration {
         );
     }
 
-    /// 与 macOS 端那份声明**形状必须一致**。
-    ///
-    /// `scripts/build-app.sh` 硬写的是同一个 `CFBundleURLTypes` 结构。
-    /// 两边不一致的症状很具体：装过旧包之后 `open agentisland://x` 打开的是
-    /// 另一个应用，而两个应用都自称是 AgentIsland。
-    #[test]
-    fn the_swift_bundle_declares_the_same_scheme() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/build-app.sh");
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("读不到 {}", path.display()));
-        assert!(
-            text.contains("CFBundleURLSchemes") && text.contains(super::SCHEME),
-            "build-app.sh 里的 macOS 端声明与 `deeplink::SCHEME` 不一致"
-        );
-        assert!(
-            text.contains("com.agentisland.url"),
-            "build-app.sh 里的 CFBundleURLName 与 Info.plist 不一致"
-        );
-    }
+
 }

@@ -2143,35 +2143,16 @@ mod hotkey_tests {
     }
 }
 
-/// **版本位的唯一真相源**：四个地方写着同一个版本号。
-///
-/// Swift 侧 `AppVersion.string`、CHANGELOG 首条、README 的「本文档描述 vX.Y.Z」
-/// 三处早就在 `scripts/release.sh` 里做过一致性预检；`Cargo.toml` 是**第四处**，
-/// 此前一直是 0.1.0，而 `raycast` 清单要把版本写进去——照抄 Cargo 的会得到 0.1.0。
-///
-/// 写法是「读源码」而不是各写各的：`AppVersion.string` 是 Swift 源文本，
-/// `CARGO_PKG_VERSION` 是编译期常量。四处对不上时这条用例红，
-/// 而发版脚本会在 commit 之前就挡住前两处。
+/// Rust 包、Tauri 配置与交付文档的版本保持一致。
 #[cfg(test)]
 mod version_pinning {
     use std::path::Path;
 
     #[test]
-    fn the_cargo_version_matches_the_swift_app_version() {
-        let manifest = env!("CARGO_MANIFEST_DIR");
-        let swift = std::path::Path::new(manifest)
-            .join("../../Sources/AgentIslandCore/AppVersion.swift");
-        let text = std::fs::read_to_string(&swift).expect("应当读得到 AppVersion.swift");
-        let want = text
-            .split("string = \"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .expect("AppVersion.string 应当是 \"X.Y.Z\" 形状");
-        assert_eq!(
-            env!("CARGO_PKG_VERSION"),
-            want,
-            "Cargo.toml 的版本与 AppVersion.string 不一致——raycast 清单会把 Cargo 的那个写进去"
-        );
+    fn the_cargo_version_matches_the_changelog() {
+        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CHANGELOG.md")).unwrap();
+        let version = text.lines().find_map(|line| line.strip_prefix("## [")).unwrap().split(']').next().unwrap();
+        assert_eq!(env!("CARGO_PKG_VERSION"), version);
     }
 
     /// `tauri.conf.json` 的 `version` 也要跟上——**它决定用户看到的
@@ -2179,7 +2160,7 @@ mod version_pinning {
     ///
     /// 这条是被「交付物整个换成 Rust 端」这件事逼出来的：换过去之后，用户
     /// 「关于本机」的窗口里写着 **0.1.0**，而 tag 是 0.0.232。
-    /// 而原来的 `version_pinning` 只查 Cargo.toml 与 AppVersion.swift，
+    /// 而原来的 `version_pinning` 只查 Cargo.toml 与 CHANGELOG，
     /// **漏了这一处**——三处版本号里最容易漂的一处，反而没被钉住。
     #[test]
     fn the_tauri_bundle_reports_the_same_version_as_everything_else() {

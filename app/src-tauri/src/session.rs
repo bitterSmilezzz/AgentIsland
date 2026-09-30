@@ -2845,56 +2845,12 @@ mod status_index_tests {
         drop(sandbox);
     }
 
-    /// 词表与 Swift 同源。漂了不会有人报错，只会表现为「一边报等待批准、一边不报」。
     #[test]
-    fn the_vocabulary_matches_the_swift_side() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../Sources/AgentIslandCore/AgentSessionInspector.swift");
-        let text = std::fs::read_to_string(&path).expect("应当读得到 AgentSessionInspector.swift");
-
-        // **只取 `requestStates` 那一段**（从声明行到它自己的收尾 `]`）：
-        // 往下顺扫会把紧挨着的 `completionTypes` 也吃进来，
-        // 于是用例报「Rust 少了 taskcomplete」——而 taskcomplete 是完成态词，不是等待态。
-        let block: Vec<&str> = {
-            let lines: Vec<&str> = text.lines().collect();
-            let start = lines
-                .iter()
-                .position(|l| l.contains("let requestStates"))
-                .expect("Swift 源里应当有 requestStates");
-            let end = lines[start..]
-                .iter()
-                .position(|l| l.contains(']'))
-                .map(|offset| start + offset)
-                .expect("requestStates 词表应当在本行内收尾");
-            lines[start..=end].to_vec()
-        };
-        let quoted: Vec<String> = block
-            .iter()
-            .flat_map(|l| {
-                l.split('"').skip(1).step_by(2).map(|s| s.to_string()).collect::<Vec<_>>()
-            })
-            .collect();
-        assert_eq!(
-            quoted.len(),
-            REQUEST_STATES.len(),
-            "从 Swift 源里只抽出 {} 个词，Rust 这边 {} 个——取词窗口可能没对准",
-            quoted.len(),
-            REQUEST_STATES.len()
-        );
-        // **双向**。单向（只查「Swift 有而 Rust 没有」）会让「Rust 自己多出几个词」
-        // 溜过去——而我第一版正是这么溜过去的：多补了三个不存在的词。
-        for word in &quoted {
-            assert!(
-                REQUEST_STATES.contains(&word.as_str()),
-                "Swift 的 requestStates 里有 `{word}`，Rust 这边没有——两边会报出不同的 attention"
-            );
-        }
-        for word in REQUEST_STATES {
-            assert!(
-                quoted.iter().any(|q| q == word),
-                "Rust 这边多出了 `{word}`，Swift 源里没有——没有产生点的词条就是纸面"
-            );
-        }
+    fn request_vocabulary_matches_the_published_contract() {
+        let words: Vec<String> = serde_json::from_str(include_str!("../tests/fixtures/contracts/request-states.json")).unwrap();
+        assert_eq!(words.len(), REQUEST_STATES.len());
+        for word in &words { assert!(REQUEST_STATES.contains(&word.as_str()), "缺少 {word}"); }
+        for word in REQUEST_STATES { assert!(words.iter().any(|entry| entry == word), "多出 {word}"); }
     }
 
     /// 对**本机真实状态索引库**跑一遍——`--ignored` 手动探针。

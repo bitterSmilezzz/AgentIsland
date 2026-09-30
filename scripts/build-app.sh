@@ -1,11 +1,10 @@
 #!/bin/bash
-# 打包 AgentIsland.app（无 Xcode 环境：swift build + 手工 .app 结构 + ad-hoc 签名）
+# 打包 Rust/Tauri 应用与 Rust CLI，使用系统 SDK 和 ad-hoc 签名。
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/common.sh"
 cd "$SCRIPT_DIR/.."
 
-BUILD_DIR=".build/release"
 APP_DIR="dist/$APP_NAME.app"
 
 # SDK 选择：**用机器上最新的那个**，不要钉死某个版本。
@@ -59,142 +58,11 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
-# 版本一致性校验：README 开头的「本文档描述 vX.Y.Z」必须同步（漂移即拒绝打包）。
-# 校验的是「文档有没有跟着这版更新」，不是版本号写在哪——README 只留这一处版本，
-# 逐版记录归 CHANGELOG（此前 README 也记一遍版本史，结果长出了 5 组重复小节和 0.0.35 的过期下载链接）
-README_VERSION=$(grep -m1 -oE '本文档描述 \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-if [[ "$README_VERSION" != "$VERSION" ]]; then
-    echo "✗ 版本漂移：CHANGELOG=$VERSION 但 README 功能版本=${README_VERSION:-缺失}。先同步 README 再发布。" >&2
-    exit 1
-fi
-
-# 版本单一来源校验：代码里的 AppVersion.string 必须与 CHANGELOG 首条一致。
-# CLI 横幅、导出的 Raycast 清单与设置页都读它——曾经应用已到 v0.0.84 而 CLI 仍打印 v0.0.80。
-CODE_VERSION=$(grep -m1 -oE 'public static let string = "[0-9]+\.[0-9]+\.[0-9]+"' Sources/AgentIslandCore/AppVersion.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
-if [[ "$CODE_VERSION" != "$VERSION" ]]; then
-    echo "✗ 版本漂移：CHANGELOG=$VERSION 但 AppVersion.string=${CODE_VERSION:-缺失}。先改 AppVersion.swift 再发布。" >&2
-    exit 1
-fi
-
-# Swift 工具链前置检查。
-#
-# `@State` / `@Binding` 这些 SwiftUI 属性包装器是**宏**，由 `SwiftUIMacros` 插件实现，
-# 而它是 **Xcode 闭源提供的**——CommandLineTools 的 host/plugins 里只有
-# libObservationMacros 与 libSwiftMacros。没有它，整棵 SwiftUI 视图层编不出来，
-# 而且报错长得极不像这件事：
-#   先报「SwiftUIMacros.StateMacro could not be found」，再连锁出几十条
-#   「cannot find '$state' in scope」「self is immutable」「类型检查超时」，
-#   最后把一整条 4000 字符的 swift-frontend 命令行糊在脸上。
-# 那些 `self is immutable` **不是**代码写错了——先排掉这一层再去看代码。
-#
-# **两条 Swift 构建路径都要守**：`swift build --build-tests`（测试门禁）会连带编译
-# 应用 target，只守 release 那一段等于没守——实测正是测试门禁先炸的。
-check_swift_toolchain() {
-    local need_tests="${SKIP_TESTS:-0}" need_swift="${SKIP_SWIFT:-0}"
-    [[ "$need_tests" != "1" || "$need_swift" != "1" ]] || return 0
-    # 插件目录**必须跟着 `xcode-select -p` 走**。写死 CommandLineTools 的话，
-    # 装好 Xcode 并 `xcode-select -s` 之后这里仍然找不到插件 → 误报成「没装 Xcode」。
-    # 判据在 `scripts/common.sh` 里，与 `release.sh` 共用同一份实现
-    if swiftui_macros_available; then
-        return 0
-    fi
-    local dev_dir
-    dev_dir=$(swift_developer_dir)
-    echo "✗ 当前 Swift 工具链里没有 SwiftUIMacros 插件，Swift 版编不出来。" >&2
-    echo "  xcode-select -p ⇒ $dev_dir" >&2
-    echo "  该插件由 Xcode 提供，只有 CommandLineTools 时没有它；" >&2
-    echo "  于是所有用 @State/@Binding 的 SwiftUI 视图都编不出来。" >&2
-    echo >&2
-    echo "  三选一：" >&2
-    echo "    ① 装 Xcode（xcode-select -s /Applications/Xcode.app）后重跑；" >&2
-    echo "    ② SKIP_SWIFT=1 SKIP_TESTS=1 跳过——代价是**没有 dist/${APP_NAME}-Swift.app" >&2
-    echo "       这条回退路，也跑不了 Swift 测试门禁**；" >&2
-    echo "    ③ 确认不再需要回退路，把 Swift 那几段从脚本里删掉。" >&2
-    exit 1
-}
-
-check_swift_toolchain
-
-# 测试门禁：打包前全量测试（SKIP_TESTS=1 跳过，仅供快速冒烟）
+python3 scripts/check-version.py "$VERSION"
 if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
-    echo "==> 测试门禁（SKIP_TESTS=1 可跳过）"
-    swift build --build-tests
-    .build/debug/AgentIslandTestsRunner
+    cargo test --locked --manifest-path app/src-tauri/Cargo.toml
 fi
-
-echo "==> 生成图标"
-ICON_DIR="/tmp/agentisland-icon.iconset"
-rm -rf "$ICON_DIR"
-swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
-iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
-
-# Swift 版：降级为**回退产物**（本机保留，不进发布包）。
-#
-# v0.0.233 起用户拍板把交付物整个换成 Rust 端。理由不是「新写的更好」，
-# 而是**口径**：在换之前，每次发版用户装到机器上、每天打开的都是 Swift 那个
-# 二进制，Rust 端只以 CLI 的身份搭车——「迁移已完成到哪」这件事，
-# 从用户视角根本看不出来。
-#
-# 仍然构建它，是为了**留一条回退路**：一个不留退路的切换不是切换，是砸东西。
-# 出问题就 `open dist/AgentIsland-Swift.app`，一秒钟退回去。
-if [[ "${SKIP_SWIFT:-0}" != "1" ]]; then
-    # 工具链前置检查在上面已经统一做过了（`check_swift_toolchain`），
-    # 这里不再重复——两处各写一份，迟早只改一处。
-    echo "==> 构建 Swift 版（回退产物：dist/${APP_NAME}-Swift.app；SKIP_SWIFT=1 可跳过）"
-    swift build -c release --product AgentIsland
-    swift build -c release --product AgentIslandCLI
-    SWIFT_DIR="dist/${APP_NAME}-Swift.app"
-    rm -rf "$SWIFT_DIR"
-    mkdir -p "$SWIFT_DIR/Contents/MacOS" "$SWIFT_DIR/Contents/Resources" "$SWIFT_DIR/Contents/Helpers"
-    cp "$BUILD_DIR/$APP_NAME" "$SWIFT_DIR/Contents/MacOS/"
-    cp "$ICON_DIR/AppIcon.icns" "$SWIFT_DIR/Contents/Resources/"
-    cp "$BUILD_DIR/AgentIslandCLI" "$SWIFT_DIR/Contents/Helpers/agentisland"
-    chmod +x "$SWIFT_DIR/Contents/Helpers/agentisland"
-    cat > "$SWIFT_DIR/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key><string>AgentIsland</string>
-    <key>CFBundleDisplayName</key><string>AgentIsland</string>
-    <key>CFBundleIdentifier</key><string>com.agentisland.app</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
-    <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleExecutable</key><string>AgentIsland</string>
-    <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key><string>13.0</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>© 2026 AgentIsland</string>
-    <key>LSUIElement</key><true/>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key><string>com.agentisland.url</string>
-            <key>CFBundleURLSchemes</key><array><string>agentisland</string></array>
-        </dict>
-    </array>
-</dict>
-</plist>
-PLIST
-    codesign --force --deep --sign - "$SWIFT_DIR"
-    echo "==> Swift 版已就位（回退用）：$SWIFT_DIR"
-
-fi
-
-# **跳过了 Swift 构建 ⇒ dist 里那个回退包是旧的，而且没有任何东西会提醒你。**
-# 本机上正是这样：dist/AgentIsland-Swift.app 是几天前的产物，比源码老，
-# 而 `SKIP_SWIFT=1` 既不刷新它也不提它——看 dist 的人会以为「随时可以退回去」，
-# 那是个假保证（这正是 AgentIsland 拍板「留一条回退路」时要防的事）。
-if [[ "${SKIP_SWIFT:-0}" == "1" && -d "dist/${APP_NAME}-Swift.app" ]]; then
-    NEWEST_SRC=$(find Sources -type f -name '*.swift' -newer "dist/${APP_NAME}-Swift.app" 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$NEWEST_SRC" != "0" ]]; then
-        echo "" >&2
-        echo "!! dist/${APP_NAME}-Swift.app 比 $NEWEST_SRC 个 Swift 源文件**旧**。" >&2
-        echo "!! 它**不是**当前源码构建出来的，拿它回退等于回到几天前的行为。" >&2
-        echo "!! 要真实的回退产物：装 Xcode 后不带 SKIP_SWIFT 重跑。" >&2
-    fi
-fi
+mkdir -p dist
 
 echo "==> 构建 Rust/Tauri 端（**主交付物**）"
 ( cd app/src-tauri && cargo tauri build --bundles app )
@@ -205,13 +73,11 @@ if [[ ! -d "$RUST_SRC" ]]; then
     exit 1
 fi
 
-# CLI 工具：两边同名同位置，外部接入方（脚本 / Raycast）不用改路径
-swift build -c release --product AgentIslandCLI
-cp "$BUILD_DIR/AgentIslandCLI" "dist/agentisland"
-chmod +x "dist/agentisland"
+# 同一 Rust 二进制按 CLI 子命令分派；打包路径保持稳定。
+cp app/src-tauri/target/release/agentisland dist/agentisland
+chmod +x dist/agentisland
 mkdir -p "$RUST_SRC/Contents/Helpers"
-cp "$BUILD_DIR/AgentIslandCLI" "$RUST_SRC/Contents/Helpers/agentisland"
-chmod +x "$RUST_SRC/Contents/Helpers/agentisland"
+cp dist/agentisland "$RUST_SRC/Contents/Helpers/agentisland"
 
 # 主名归 Rust 版。旧的主名此刻是 Swift 那个 bundle，先移开再放。
 #
@@ -228,12 +94,14 @@ fi
 cp -R "$RUST_SRC" "$APP_DIR"
 
 # 旧名称是同一 Rust 应用的过期副本，留在可见目录会被再次打开。
-# 移入隐藏归档，保留恢复能力；Swift 回退包仍按既有约定保留。
-if [[ -d "dist/${APP_NAME}-Rust.app" ]]; then
-    LEGACY_ARCHIVE=$(mktemp -d "dist/.retired-${APP_NAME}-Rust.XXXXXX")
-    mv "dist/${APP_NAME}-Rust.app" "$LEGACY_ARCHIVE/"
-    echo "==> 旧 Rust 应用已归档：${LEGACY_ARCHIVE}"
-fi
+# 移入隐藏归档，保留恢复能力；旧端产物不再用于当前开发。
+for legacy in Rust Swift; do
+    if [[ -d "dist/${APP_NAME}-${legacy}.app" ]]; then
+        LEGACY_ARCHIVE=$(mktemp -d "dist/.retired-${APP_NAME}-${legacy}.XXXXXX")
+        mv "dist/${APP_NAME}-${legacy}.app" "$LEGACY_ARCHIVE/"
+        echo "==> 旧应用已归档：${LEGACY_ARCHIVE}"
+    fi
+done
 
 echo "==> 签名（ad-hoc）"
 codesign --force --sign - "dist/agentisland"
@@ -242,4 +110,4 @@ codesign --force --deep --sign - "$APP_DIR"
 # ⚠️ 变量后面紧跟中文全角括号会被 bash 当成变量名的一部分
 # （`$APP_DIR（` ⇒ 报 `APP_DIR…: unbound variable`）。这个坑踩了两次，
 # 所以**所有变量与中文之间一律加花括号或空格**。
-echo "==> 完成: $(pwd)/${APP_DIR}  —— Rust/Tauri 端；回退用 dist/${APP_NAME}-Swift.app"
+echo "==> 完成: $(pwd)/${APP_DIR}  —— Rust/Tauri 端；CLI 同为 Rust"

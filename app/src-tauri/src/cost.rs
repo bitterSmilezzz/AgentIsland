@@ -147,60 +147,13 @@ pub fn resolve_cost(
 mod tests {
     use super::*;
 
-    /// 跨语言漂移哨兵：直接读 Swift 源表，逐条比对 pattern 与两个价。
-    /// 不放进来的话，两边改一个数就只有「用户发现算出来的钱不一样」能发现。
-    fn swift_table() -> Vec<(String, f64, f64)> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../Sources/AgentIslandCore/TokenCostEstimator.swift");
-        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("读不到 Swift 费率表 {}：{e}——哨兵读不到源就等于没有哨兵", path.display())
-        });
-        let mut rows = Vec::new();
-        for raw in src.lines() {
-            let line = raw.trim();
-            let Some(rest) = line.strip_prefix("(\"") else { continue };
-            let Some((pattern, tail)) = rest.split_once("\",") else { continue };
-            let Some((_, after_input)) = tail.split_once("input:") else { continue };
-            let Some((input_str, after_in)) = after_input.split_once(',') else { continue };
-            let Some((_, after_output)) = after_in.split_once("output:") else { continue };
-            let output_str = after_output
-                .trim_end_matches(|c: char| c == ')' || c == ',')
-                .trim();
-            let (Ok(input), Ok(output)) =
-                (input_str.trim().parse::<f64>(), output_str.parse::<f64>())
-            else {
-                continue;
-            };
-            rows.push((pattern.to_string(), input, output));
-        }
-        rows
-    }
-
     #[test]
-    fn swift_table_parity_is_value_by_value_and_order_by_order() {
-        let swift = swift_table();
-        assert!(
-            !swift.is_empty(),
-            "从 Swift 源里一条费率都没解析出来——解析口径换了，哨兵自己失效了"
-        );
-        assert_eq!(
-            swift.len(),
-            KNOWN_RATES.len(),
-            "费率条数不一致：Swift {} 条 vs Rust {} 条",
-            swift.len(),
-            KNOWN_RATES.len()
-        );
-        for (idx, ((sp, si, so), (rp, rate))) in
-            swift.iter().zip(KNOWN_RATES.iter()).enumerate()
-        {
-            assert_eq!(sp, rp, "第 {} 条 pattern 不一致（顺序也是契约）", idx + 1);
-            assert_eq!(
-                (*si, *so),
-                (rate.input_per_million, rate.output_per_million),
-                "pattern {sp} 的费率不一致：Swift ({si}, {so}) vs Rust ({}, {})",
-                rate.input_per_million,
-                rate.output_per_million
-            );
+    fn rates_match_the_published_contract_including_order() {
+        let rows: Vec<(String, f64, f64)> = serde_json::from_str(include_str!("../tests/fixtures/contracts/rates.json")).unwrap();
+        assert_eq!(rows.len(), KNOWN_RATES.len());
+        for ((pattern, input, output), (actual, rate)) in rows.iter().zip(KNOWN_RATES.iter()) {
+            assert_eq!(pattern, actual);
+            assert_eq!((*input, *output), (rate.input_per_million, rate.output_per_million));
         }
     }
 

@@ -23,7 +23,6 @@
 
 ```sh
 python3 scripts/untested-surface.py
-python3 scripts/untested-surface.py --swift     # 附带 Swift 侧的同类扫描
 ```
 
 **退出码恒为 0**：它是报告不是门禁。价值在于「改过之后能重跑对比」，
@@ -56,7 +55,6 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 RUST_SRC = ROOT / "app" / "src-tauri" / "src"
-SWIFT_SRC = ROOT / "Sources"
 
 # 当前构建满足的 cfg 组合（本机 macOS）。换平台时补对应分支，
 # 不要删掉不满足的——它们正是「平台代码」的判据。
@@ -64,36 +62,6 @@ SATISFIED = {"target_os = \"macos\"", "unix", "not(windows)"}
 
 # 测试专用文件：它们整体是用例，不是被测对象
 TEST_FILES = {"testutil.rs", "state_tests.rs"}
-
-
-def strip_comments_only(text: str) -> str:
-    r"""只把**注释**抹成空格，字符串内容原样保留。
-
-    为什么要单独一个版本：Swift 的字符串插值 `\(expr)` 里是**可执行代码**
-    （`"\(...) \(Foo.statusLabel(x))"` 是真实调用），把字符串内容抹掉等于
-    把调用方一起抹掉 ⇒ 零引用统计全线报错。
-    「零引用」这件事本身只需要去掉**文档注释**造成的假引用，不需要动字符串。
-
-    Rust 侧则相反：它有 `'\''` / `'\"'` 这类字符字面量与 `"{x}"` 这类格式串，
-    抹内容更安全（见 `strip_noise`）。**两套规则不能合并**。
-    """
-    out = list(text)
-    i, n = 0, len(text)
-    while i < n:
-        if text[i] == '/' and i + 1 < n and text[i + 1] == '/':
-            while i < n and text[i] != '\n':
-                out[i] = ' '
-                i += 1
-        elif text[i] == '/' and i + 1 < n and text[i + 1] == '*':
-            end = text.find('*/', i + 2)
-            end = n if end < 0 else end + 2
-            for k in range(i, end):
-                if out[k] != '\n':
-                    out[k] = ' '
-            i = end
-        else:
-            i += 1
-    return ''.join(out)
 
 
 def strip_noise(text: str) -> str:
@@ -158,7 +126,6 @@ def strip_noise(text: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--swift', action='store_true', help='附带 Swift 侧同类扫描')
     args = ap.parse_args()
 
     files = sorted(RUST_SRC.rglob('*.rs'))
@@ -204,33 +171,6 @@ def main() -> int:
     block("Rust：死代码（本平台可达、零引用、不是 Tauri 命令）", dead, "（无）")
     block("Rust：平台代码（cfg 分支够不到，**不是死代码**）", platform, "（无）")
     block("Rust：由 JS invoke 调用的 Tauri 命令（Rust 侧零引用是正常的）", js_only, "（无）")
-
-    if args.swift:
-        # **Tests 也要扫**：一个只被用例引用的函数不是死代码（用例就是它的消费者）。
-        # 只扫 Sources 会把 `expiredEvidence` 这类报成零引用——事实是它在 Tests 里有 3 处引用。
-        st = sorted(SWIFT_SRC.rglob('*.swift'))
-        tdir = ROOT / "Tests"
-        tf = sorted(tdir.rglob('*.swift'))
-        sraw = [strip_comments_only(f.read_text()) for f in st]
-        traw = [strip_comments_only(f.read_text()) for f in tf]
-        sblob, tblob = "\n".join(sraw), "\n".join(traw)
-        prod, testonly = [], []
-        for f, text in zip(st, sraw):
-            for m in re.finditer(r'\bpublic\s+(?:static\s+)?func\s+(\w+)', text):
-                name = m.group(1)
-                in_prod = len(re.findall(rf'\b{re.escape(name)}\b', sblob))
-                in_test = len(re.findall(rf'\b{re.escape(name)}\b', tblob))
-                line = text[:m.start()].count(chr(10)) + 1
-                if in_prod > 1:
-                    continue                      # 有生产调用方，不是问题
-                if in_test > 0:
-                    testonly.append(f"{f.name}:{line}: {name}  (仅 {in_test} 处测试引用)")
-                else:
-                    prod.append(f"{f.name}:{line}: {name}")
-        print("注意：Swift 侧同样**只报「有没有产生点」**，不做覆盖率——")
-        print("      方法调用 / 协议见证 / 闭包捕获让调用图在这个精度下不可靠。")
-        block("Swift：全仓零引用的 public func（**没有产生点**）", prod, "（无）")
-        block("Swift：只有测试引用的 public func（不是死代码，但生产侧没人用）", testonly, "（无）")
 
     print("这份统计替代不了逐个核实（v0.0.224–227 手工版错了三次）。")
     print("改动之后请重跑对比，而不是把这里的数字当结论。")

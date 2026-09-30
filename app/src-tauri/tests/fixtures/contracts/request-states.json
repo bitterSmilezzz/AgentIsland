@@ -1,0 +1,17 @@
+[
+  "approvalrequest",
+  "approvalrequested",
+  "permissionrequest",
+  "permissionrequested",
+  "confirmationrequest",
+  "requiresconfirmation",
+  "needsconfirmation",
+  "pendingapproval",
+  "awaitingapproval",
+  "awaitinguserinput",
+  "waitingforuser",
+  "waitingforuserinput",
+  "userinputrequest",
+  "elicitation",
+  "approvalasked"
+]

@@ -180,8 +180,8 @@ export const isVisible = (snap) => snap.process_running === true;
 
 export function sliverSize(edge) {
   return edge === 'left' || edge === 'right'
-    ? { w: 18, h: 132 }
-    : { w: 152, h: 20 };
+    ? { w: 17, h: 88 }
+    : { w: 88, h: 17 };
 }
 
 export function renderSliver() {
@@ -324,47 +324,19 @@ export function agentRowModel(snap) {
 
 function rowHtml(snap) {
   const model = agentRowModel(snap);
-  const c = levelColors(snap.level);
-  const pillColor = model.statusColor;
-  const pillBackground = model.statusBackground;
-  const pillBorder = model.statusBorder;
-  const hasAction = model.hasAction;
-  const usage = model.tokensText !== '—';
-  const dots = [10, 60, 300, 900, 3600];
-  const ago = snap.last_activity_text === '刚刚' ? 5 : null;
-
-  const actionColor = snap.level === 'attention' ? 'var(--warning)' : 'var(--working)';
-  const barStyle = `color:${actionColor};background:color-mix(in srgb, ${actionColor} 8%, transparent);border:0.5px solid color-mix(in srgb, ${actionColor} 22%, transparent)`;
-
   return `
-  <div class="row" data-agent="${esc(snap.id)}">
-    <div class="row-line1">
-      <div class="row-left">
-        ${ringHtml(snap, 36)}
+    <button type="button" class="row" data-agent="${esc(model.id)}" aria-label="${esc(model.name)}：${esc(model.statusText)}，查看详情">
+      <div class="row-line1">
+        <span class="island-agent-icon">${navigationIcon('terminal')}</span>
         <div class="row-name-col">
-          <div class="row-name">${esc(snap.name)}</div>
-          <div class="row-sub">
-            ${usage
-              ? `<span class="token-badge"><span class="bolt">⚡</span>${compact(snap.token_usage.tokens24h)}</span>`
-              : `<span class="last-activity">${esc(snap.last_activity_text)}</span>`}
-            <span class="activity-dots">${dots.map((t, i) =>
-              `<i class="${snap.level === 'working' && i < 2 ? 'on' : (ago !== null && ago < t ? 'on' : '')}"></i>`).join('')}</span>
-          </div>
+          <div class="row-name">${esc(model.name)}</div>
+          <div class="row-sub"><i class="island-state-dot" style="background:${model.statusColor}"></i><span>${esc(model.statusText)}</span></div>
         </div>
-      </div>
-      <div class="row-right">
-        ${snap.process_running && snap.memory_bytes > 0 ? `<span class="mem-badge" title="物理内存驻留集 (RSS): ${esc(snap.memory_text)}">${esc(snap.memory_text)}</span>` : ''}
+        <div class="island-row-usage"><strong>${model.tokensText}</strong><span>24h tokens</span></div>
         ${healthChip(snap)}
-        ${`<span class="status-pill" title="${esc(snap.observability?.summary ?? model.statusText)}" style="color:${pillColor};background:${pillBackground};border-color:${pillBorder}">${esc(model.statusText)}</span>`}
       </div>
-    </div>
-    ${hasAction ? `
-    <div class="action-bar" style="${barStyle}" title="${esc(snap.current_action)}">
-      <span class="ic">${snap.level === 'attention' ? '\uE7C2' : '\uE756'}</span>
-      <span class="txt">${esc(snap.current_action)}</span>
-      ${snap.subagent_count > 0 ? `<span style="color:var(--cyan);font-family:var(--font-text);font-size:8px;font-weight:700;background:color-mix(in srgb, var(--cyan) 18%, transparent);padding:1px 4px;border-radius:999px">${snap.subagent_count}子任务</span>` : ''}
-    </div>` : ''}
-  </div>`;
+      ${model.hasAction ? `<div class="action-bar" title="${esc(model.actionText)}">${esc(model.actionText)}</div>` : model.activityText ? `<div class="island-row-activity">${esc(model.activityText)}</div>` : ''}
+    </button>`;
 }
 
 // MARK: 主卡（IslandView.expandedCard）
@@ -400,25 +372,12 @@ export function renderCard() {
 
 function listCard(eng, st, visible, dark, edge) {
   const hp = headerPresentation(eng);
-  const shelfSnaps = visible.filter((s) => ['attention', 'working'].includes(s.level)).slice(0, 6);
   const gt = eng.grand_total ?? {};
   const hasSummary = (gt.tokens24h ?? 0) > 0 || (gt.tokens_total ?? 0) > 0;
   const ev = eng.latest_event;
 
   const chev = edge === 'top' ? ICONS.chevUp : edge === 'bottom' ? ICONS.chevDown : edge === 'left' ? ICONS.chevLeft : ICONS.chevRight;
   const themeIcon = dark ? ICONS.sun : ICONS.moon;
-
-  const shelf = shelfSnaps.length > 0 ? `
-    <div class="divider"></div>
-    <div class="shelf">${shelfSnaps.map((s) => {
-      const sub = s.level === 'working' ? '工作中' : s.level === 'attention' ? '等待你确认' : s.level === 'completed' ? '任务已完成'
-        : s.token_usage?.tokens24h > 0 ? compact(s.token_usage.tokens24h) : s.level_label;
-      const sc = s.level === 'attention' ? 'var(--warning)' : ['working', 'completed'].includes(s.level) ? 'var(--ring-green)' : 'var(--text-faint)';
-      return `<div class="shelf-chip" data-agent="${esc(s.id)}">
-        ${ringHtml(s, 30)}
-        <div><div class="nm">${esc(s.name)}</div><div class="sub" style="color:${sc}">${esc(sub)}</div></div>
-      </div>`;
-    }).join('')}</div>` : '';
 
   const banner = ev ? `
     <div class="divider"></div>
@@ -444,31 +403,22 @@ function listCard(eng, st, visible, dark, edge) {
     : visible;
 
   const list = filtered.length === 0
-    ? `<div class="empty">${st.searchActive ? `<span style="font-size:18px">🔍</span><span>未找到匹配「${esc(st.searchText)}」的智能体</span>`
-      : `<span style="font-size:22px">💤</span><span>没有活跃的 Agent</span>`}</div>`
+    ? `<div class="empty">${st.searchActive ? `${navigationIcon('search')}<span>未找到匹配「${esc(st.searchText)}」的智能体</span>`
+      : `${navigationIcon('terminal')}<span>没有活跃的 Agent</span>`}</div>`
     : `<div class="list">${filtered.map(rowHtml).join('')}</div>`;
 
   const summary = hasSummary ? `
-    <div class="divider"></div>
-    <div class="summary" data-analytics>
-      <div class="left">
-        <span class="mini-tag" style="color:var(--cyan);background:color-mix(in srgb, var(--cyan) 16%, transparent);border-color:color-mix(in srgb, var(--cyan) 35%, transparent)">24H</span>
-        <span class="num">${compact(gt.tokens24h)}</span>
-        ${costText(gt.cost24h, gt.cost_estimated) ? `<span class="cost">${costText(gt.cost24h, gt.cost_estimated)}</span>` : ''}
-      </div>
-      <div class="right">
-        <span class="mini-tag" style="color:var(--text-muted);background:rgba(127,127,127,0.10);border-color:var(--hairline)">TOTAL</span>
-        <span class="num">${compact(gt.tokens_total)}</span>
-        ${costText(gt.cost_total, gt.cost_estimated) ? `<span class="cost">${costText(gt.cost_total, gt.cost_estimated)}</span>` : ''}
-        <span class="chev">›</span>
-      </div>
-    </div>` : '';
+    <button type="button" class="summary" data-analytics aria-label="查看用量分析">
+      <span class="island-summary-metric"><span>最近 24 小时</span><strong>${compact(gt.tokens24h)}</strong><small>${costText(gt.cost24h, gt.cost_estimated) || 'tokens'}</small></span>
+      <span class="island-summary-metric"><span>累计用量</span><strong>${compact(gt.tokens_total)}</strong><small>${costText(gt.cost_total, gt.cost_estimated) || 'tokens'}</small></span>
+      <span class="island-summary-link">用量分析 ${navigationIcon('chart')}</span>
+    </button>` : '';
 
   const statusColor = eng.has_attention ? 'var(--warning)' : eng.any_working ? 'var(--working)' : 'var(--idle)';
 
   return `
     <div class="header" data-drag>
-      <div class="status-dot" style="background:${statusColor}">${eng.any_working ? '<span class="pulse" style="background:' + statusColor + '"></span>' : ''}</div>
+      <div class="status-dot" style="background:${statusColor}"></div>
       <div class="header-titles">
         <div class="header-line1">
           <span class="header-title">${esc(hp.title)}</span>
@@ -480,15 +430,14 @@ function listCard(eng, st, visible, dark, edge) {
           <span class="sub" style="color:${hp.tint}">${esc(hp.subtitle)}</span></div>` : ''}
       </div>
       <div class="header-icons">
-        <span class="header-count">${visible.length}</span>
-        <span class="icon-btn" data-search title="即时搜索过滤 (/)">${ICONS.search}</span>
-        <span class="icon-btn" data-theme title="外观主题">${themeIcon}</span>
-        <span class="icon-btn" data-analytics title="Token 用量分析">${ICONS.wrench}</span>
-        <span class="icon-btn" data-collapse title="收起灵动岛">${chev}</span>
+        <span class="header-count">本机 · ${visible.length} 在线</span>
+        <button type="button" class="icon-btn" data-search title="即时搜索过滤 (/)" aria-label="搜索智能体">${ICONS.search}</button>
+        <button type="button" class="icon-btn" data-theme title="外观主题" aria-label="切换外观">${themeIcon}</button>
+        <button type="button" class="icon-btn" data-analytics title="Token 用量分析" aria-label="用量分析">${ICONS.wrench}</button>
+        <button type="button" class="icon-btn" data-collapse title="收起灵动岛" aria-label="收起灵动岛">${chev}</button>
       </div>
     </div>
     <div class="divider"></div>
-    ${shelf}
     ${banner}
     ${search}
     ${list}
@@ -738,7 +687,7 @@ function bindCardEvents(eng, st) {
         const visible = (st.engine?.snapshots ?? []).filter(isVisible);
         const filtered = visible.filter((s) => s.name.toLowerCase().includes(st.searchText.toLowerCase()) || s.id.includes(st.searchText.toLowerCase()));
         listZone.innerHTML = filtered.length === 0
-          ? `<div class="empty" style="padding:24px 0"><span style="font-size:18px">🔍</span><span>未找到匹配「${esc(st.searchText)}」的智能体</span></div>`
+          ? `<div class="empty" style="padding:24px 0">${navigationIcon('search')}<span>未找到匹配「${esc(st.searchText)}」的智能体</span></div>`
           : filtered.map(rowHtml).join('');
         bindRowClicks(st);
       }

@@ -1,6 +1,6 @@
 # AgentIsland — Agent 工作约定
 
-macOS 灵动岛应用：监控本机 AI 编码智能体的运行状态与 token 消耗。SwiftPM 构建，`swift build` / 自建测试 runner（无 XCTest）。
+跨平台 Rust/Tauri 工作台：监控本机 AI 编码智能体的运行状态与 token 消耗。main 是唯一开发主线；SwiftUI 与旧 WPF 源码保存在 `codex/archive-swiftui`，需要查历史实现时读取该分支。测试用 `cargo test --locked --manifest-path app/src-tauri/Cargo.toml`，打包用 `scripts/build-app.sh`。
 
 ## 交付约定
 
@@ -31,7 +31,7 @@ scripts/release.sh <X.Y.Z> "<CHANGELOG 首条那句话>"
 ```
 
 - 顺序是钉死的：**扫描先于 commit**（`release.sh` 内置），因为一旦提交，泄漏的内容就进了 git 对象，删掉文件也拿不回来
-- 发版前三处版本必须一致：CHANGELOG 首条、`AppVersion.string`、README 的版本行；漂移即拒绝（脚本与 `build-app.sh` 都查）
+- 发版前版本必须一致：Rust Cargo / lock / Tauri 配置、CHANGELOG 首条、README 的版本行；漂移即拒绝（脚本与 `build-app.sh` 都查）
 - tag 与 release 是**必须发生的步骤**。历史上出现过 38 个版本只推了 commit、没建 tag 也没发 release（v0.0.81..v0.0.118），所以这条不再靠记忆
 - 版本号取 `git tag --sort=-v:refname | head -1` 的下一号；CHANGELOG 条目按既有风格写「改了什么 + 为什么 + 没做什么」
 
@@ -51,7 +51,7 @@ README 里出现「此前」「不再」「v0.0.x」「本机实测 N 条」即�
 
 `docs/workbench/` 是**进行中的大改造**的作战文档，四件套分工：`01` 现状（全部核实过）、`02` 目标与非目标、`03` 技术方案、`04` 分 Phase 计划。改造定案的结论要往 `CONTEXT.md` / `docs/adr/` 沉淀，不要让 workbench 长成第二份长期口径。
 
-`../ui-research/` 是**外部一手调研库**（独立私有仓，与本仓同级；索引见其 [ui/README.md](../ui-research/ui/README.md)）：每篇固定四节——技术手法与源码级细节、可迁移的决策规则、一手证据/本地验证结果、应用建议清单。它记录"看见了什么、能搬什么"，**不排期**；要做哪条就开 issue，别把案例库读成待办板。那里的待核实清单由 `scripts/check-checklist.sh` + pre-commit 守着；本仓的 Swift 守卫（`DebtPayoffTests`「研究文档的待核实」）在 sibling 仓存在时也扫一遍，两侧豁免口径同源。
+`../ui-research/` 是**外部一手调研库**（独立私有仓，与本仓同级；索引见其 [ui/README.md](../ui-research/ui/README.md)）：每篇固定四节——技术手法与源码级细节、可迁移的决策规则、一手证据/本地验证结果、应用建议清单。它记录"看见了什么、能搬什么"，**不排期**；要做哪条就开 issue，别把案例库读成待办板。那里的待核实清单由 `scripts/check-checklist.sh` + pre-commit 守着。
 
 正在进行的改造（跨平台工作台：双形态 + CC Switch + ToDos）见 [docs/workbench/README.md](docs/workbench/README.md)。
 
@@ -82,7 +82,7 @@ scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
 
 **① 本仓自有的（进 git，克隆即得）**——单份源放 `.agents/skills/<name>/`，`.claude/skills/<name>` 是指向它的相对软链，`skills-lock.json` 记录来源与 hash。
 
-- `libraries-dev`（来自 `Jakubantalik/Libraries.dev`）：教你 agent 在**哪里**、**用什么程度**给界面加动效。领域是 React/Web 界面，对本项目（SwiftUI/macOS）没有可套用的组件，价值在于它的**决策规则**（按等待时长定效果、不叠特效、匹配明暗主题）——改界面时可以参考这套思路，但不要尝试 `npm install`。
+- `libraries-dev`（来自 `Jakubantalik/Libraries.dev`）：教你 agent 在**哪里**、**用什么程度**给界面加动效。领域是 React/Web 界面，本项目使用静态 Web UI，不能直接套用 React 组件，价值在于它的**决策规则**（按等待时长定效果、不叠特效、匹配明暗主题）——改界面时可以参考这套思路，但不要尝试 `npm install`。
 - 安装/更新/卸载：`npx skills add Jakubantalik/Libraries.dev --skill '*' --copy -y`。**不要**用它默认的 `--agent '*'`：那是 `--all` 的别名，会往项目里写 17 个 agent 目录（Antigravity、Cursor、Copilot、Goose、Junie…），每个都是同一份内容的副本。
 
 **② 全局装的（只在本机，不进 git）**——来自 [mattpocock/skills](https://github.com/mattpocock/skills)（269,700 star，MIT），装在家目录 `~/.agents/skills/`，当前有 24 个生效。它们**受上游 `.agents/invocation.md` 等元规范约束**，不是本仓定的规矩。装法 `npx skills@latest add mattpocock/skills --skill=<name>`，更新 `npx skills@latest update <name>`。
