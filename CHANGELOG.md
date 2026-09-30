@@ -4,6 +4,93 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.270] - 2026-09-30
+
+### 统一本地日历接口，减少 Windows 兼容性缺口
+
+静默时段、月末预估、报告日期和邮件日期的四处本地时间读取统一到
+`localclock.rs`：Unix 使用重入接口，Windows 使用 CRT 的安全接口，参数顺序与
+成功判据各按平台处理；毫秒使用向下取整，无法转换时保留各调用方的降级行为。
+SMTP 时区偏移由同一时刻的本地日历与 UTC 日历差计算，不依赖 Windows 不具备的
+`tm_gmtoff` 字段，也不把夏令时偏移固定为标准时区偏移。
+
+POSIX 棘轮上限从 8 降为 4。新增跨日、跨年、非整小时偏移、毫秒边界与系统偏移
+对照回归；独立日历模块连同测试在 Windows MSVC 目标上做编译检查。
+本轮没有移植进程终止、主机名与文件权限接口，Windows 整体应用仍不能据此宣称可构建。
+
+同时收窄 UI 冒烟清理范围：只匹配应用 bundle 的可执行路径，避免终止同名 CLI；
+冒烟进程结束时按自身 PID 清理。
+
+验证：Rust 548 条通过、5 条忽略；日历模块在纽约、加德满都与基里蒂马蒂时区
+测试通过，Windows MSVC 目标连同测试编译通过。
+
+
+### Windows 上编不过——不是「待验收」，是**一整层从没移植**
+
+CI 第二次跑，Windows 仍然红。但这次错误**全部落在我们自己的代码里**
+（上一轮那条 `core-foundation` 修掉之后，下游终于被检查了）：
+
+```
+src\webhook.rs  92 93 153 157 168 260      src\placement.rs  135 137 143 146 150 176
+src\cleaner.rs  241 374                    src\procmon.rs    4
+src\engine.rs   636                        src\filemon.rs    3
+src\main.rs     415                        src\tokens.rs     819
+src\remote.rs   487   src\smtp.rs  52 55 77   src\forecast.rs  55
+```
+
+**17 个错误 / 13 个文件。** 缺口是 POSIX 实现从来没被移植到 Windows：
+`std::os::unix` 的权限位与 inode、`libc::localtime_r`（本地时区换算，4 处）、
+`libc::getppid`、`libc::kill`、`libc::SIGKILL`、`libc::gethostname`，
+外加 `placement.rs` 一处 cfg 作用域问题（`fallback_work_area` 不在作用域内）
+和几个文件级 `#[cfg(unix)] use`。
+
+同期 macOS：**545 条测试全绿、编译警告 14 条**。同一份代码，两边判若两图。
+
+### 顺带订正一处把「未验证」说成「待验收」的口径
+
+`app/README.md` 原写「Windows/Linux **尚需对应平台构建与真机验收**」。
+这**低估了差距**：一个是「没验」，一个是「编不过」。
+旁边那句「Windows 需要 Rust stable-msvc、MSVC Build Tools 与 WebView2」也读起来像
+「照做就能成」，而它其实是「假定编得过时」的前提。现在按实测改写。
+
+同一次还清掉一句**过期状态声明**：「正式下载包仍为 Swift 原生端」——
+v0.0.233 起交付物整体换成了 Rust/Tauri 端，Swift 版只作本机回退产物。
+
+### 棘轮：这层缺口只能变少
+
+新增 `posix_port_ratchet`，**基线 = 8**，钉死在测试里。
+
+两个设计上的要点，都是被自己的错误逼出来的：
+
+1. **已门控的不算缺口。** 全仓有 14 处 POSIX 标识符，其中 6 处**已经**在
+   `#[cfg(unix)]` 后面（`atomicfile.rs` 的 `mode(0o600)`、`webhook.rs::inspect_token`、
+   `tokens.rs` 的 inode…）——它们在 Windows 上根本不编译，算进去就是误报。
+   误报久了没人看这条守护，比漏算更糟。
+2. **边界必须分清生产段与测试段。** `#[cfg(test)] mod tests;` 这种**声明**
+   不是边界（内容在 `session/tests.rs`），而 `session.rs` 的生产代码一直到 900 多行。
+   用「第一个 `#[cfg(test)]」当边界会把整个文件误判成测试代码 ⇒ 读到 0 处 ⇒ **恒绿**。
+
+变异验证两轮都栽在这类地方：第一版注入点选错（塞进 enum 变体，**编不过**——
+「变异必须保持可编译」第三次）；第二版追加到文件末尾，落在**测试区边界之后**，
+守护照样全绿（这一轮反而证明了边界规则在生效）。第三版注入到生产段，
+`8 → 9` 精确变红。
+
+⚠️ **8 不是「Windows 还差多少」的全部。** 它只统计 `std::os::unix` + POSIX libc 这一类；
+`placement.rs` 的 cfg 作用域问题、文件级 `#[cfg(unix)] use` 都不在表里。别拿它当完成度。
+
+### Windows CI 改成**不阻塞但持续报告**
+
+一个永远红的徽章会被所有人学会忽略，真出事时也没人看它。
+所以 `continue-on-error: true`：它继续跑、继续报，作用是「Windows 的状态一眼可见」，
+而不是「挡住了什么」。端口做完那一步，就是删掉这一行。
+
+方向另有 `posix_port_ratchet` 守着——每台 macOS 机器的每次 `cargo test` 都跑、秒级出结果，
+**不依赖那个 job**。
+
+### 门禁
+
+Rust 545 条通过（+2）/ 0 失败，release 编译警告 14（无漂移），脱敏扫描零新增。
+
 ## [0.0.269] - 2026-09-30
 
 ### 上一版加的 CI，第一次跑就红了——而错不在我们一行代码上
@@ -1180,7 +1267,7 @@ Sep 28 20:32:35 2026  SettingsView.o / TokenAnalyticsView.o   # 约 40 个文件
 但**没有证据**证明 Xcode 何时被谁移除。
 
 文档已按「验到 / 没验到」重写：
-[docs/research/2026-09-29-swift-app-target-needs-xcode.md](docs/research/2026-09-29-swift-app-target-needs-xcode.md)
+[docs/research/2026-09-29-swift-app-target-needs-xcode.md](../ui-research/2026-09-29-swift-app-target-needs-xcode.md)
 
 ### 顺带修掉 v0.0.243 那道前置检查的两个问题
 
@@ -2157,7 +2244,7 @@ Rust 侧的 `webhook::ensure_token` **一件都没做**——而其中一件直�
 不检查属主；不检查权限位。五类缺陷原本一律静默重写。
 
 取证与逐条比对见
-[report.token 的形态校验](docs/research/2026-09-28-report-token-shape-check.md)。
+[report.token 的形态校验](../ui-research/2026-09-28-report-token-shape-check.md)。
 
 ### 改法，以及一条必须成立的验收
 
@@ -2256,7 +2343,7 @@ Rust 459 条通过（+5）/ 0 失败，Swift 555 条通过 / 0 失败，编译�
 「在办会话」是迟早的事）。
 
 取证与交叉核对见
-[statusIndex 状态索引的真库对拍](docs/research/2026-09-28-statusindex-real-db-check.md)。
+[statusIndex 状态索引的真库对拍](../ui-research/2026-09-28-statusindex-real-db-check.md)。
 
 ### 为什么它一直没被发现：守护检查错了方向
 
@@ -3159,7 +3246,7 @@ Rust 拦**任何**未收口 `tool_use`——挂着一个未收口的 `Read` 时 
 测试 Rust 313 → **316**（+3 中断用例），编译警告保持 **17**，Swift 侧零改动。
 反向验证：去掉中断撤销 → 第一条红；去掉短行闸 → 第三条红。
 
-取证与逐条比对：[会话强语义逐段比对](docs/research/2026-09-27-session-probe-parity-check.md)。
+取证与逐条比对：[会话强语义逐段比对](../ui-research/2026-09-27-session-probe-parity-check.md)。
 
 ## [0.0.198] - 2026-09-27
 
@@ -3214,7 +3301,7 @@ Rust 两条即红——不是「写了断言就算」。
 `tokens --json` 里没有 `mimocode`（库可读、净消耗 48,934）——**未追查**，与表名失配是两件事
 ④ 侧边栏与灵动岛那条可见口径的三种写法**只记录未统一**。
 
-取证与复跑命令：[opencode 表名失配与真实库对拍](docs/research/2026-09-27-opencode-schema-and-real-db-check.md)。
+取证与复跑命令：[opencode 表名失配与真实库对拍](../ui-research/2026-09-27-opencode-schema-and-real-db-check.md)。
 
 ## [0.0.197] - 2026-09-27
 
@@ -3585,7 +3672,7 @@ Swift 侧零改动。
 
 **开工前先核实事实**，没有照抄记忆里的形状：本机 `~/.codex/config.toml` 实扫
 （只打印键路径，含敏感词的键值一律省略）+ OpenAI codex 仓库 `docs/config.md`（提交 `3f40fbc`）原文，
-记录在 [docs/research/2026-09-27-codex-provider-config.md](docs/research/2026-09-27-codex-provider-config.md)。
+记录在 [docs/research/2026-09-27-codex-provider-config.md](../ui-research/2026-09-27-codex-provider-config.md)。
 
 两处核实结果值得单独说：
 
@@ -4104,7 +4191,7 @@ https 在 TCP 之上叠一层 TLS，**主机名交给 TLS 栈校验**——证�
 `POST /island HTTP/1.1`、`X-Title` 与正文**；再加一条「同一个服务器 + 默认连接器必须失败，
 且报的是 TLS 握手问题」。反向验证：把 https 分支改成直接返回明文流 → 第二条立刻红。
 
-**踩到四个非显然的坑**（都记进了 [研究文档](docs/research/2026-09-27-macos-tls-for-rust-outbound.md)）：
+**踩到四个非显然的坑**（都记进了 [研究文档](../ui-research/2026-09-27-macos-tls-for-rust-outbound.md)）：
 ① macOS 的 `Identity::from_pkcs8` **只吃 RSA**，喂 rcgen 的 EC 密钥四种组合全是
 `-25257 Unknown format in import`（native-tls 自己的测试用的就是 RSA），所以本地证书绕道系统
 `openssl` 生成；② 它的**参数顺序与文档签名相反**（实现里第一个是证书）；③ 自签证书必须带
@@ -4429,7 +4516,7 @@ Rust 在数据层估）未对齐。Swift 侧零改动。
 （3,905,535 vs 114,006,271）。原因看一条真实记录就明白了：`input_tokens 43449` 里
 `cached_input_tokens` 占 41728（**96%**），旧公式 `input + output + cache_write` 把这份
 缓存命中的上下文当新输入全额计。取证与复跑命令见
-[JSONL 净口径实测](docs/research/2026-09-27-jsonl-net-token-formula.md)。
+[JSONL 净口径实测](../ui-research/2026-09-27-jsonl-net-token-formula.md)。
 
 **修法（对齐 Swift `StructuredTokenUsageIndex`）**：
 
@@ -4669,7 +4756,7 @@ Swift 灵动岛保留旧 checkpoints 兼容路径，并加入已验证的 rollou
 
 Trae 和 Windsurf 在检查的标准安装位置与会话目录均无实样；官方 Cascade 文档只能证明
 `~/.codeium/windsurf` 下有 hook 配置，不能证明其为普通会话目录。
-这两项维持原实现并在[取证记录](docs/research/2026-09-26-agent-session-paths.md)
+这两项维持原实现并在[取证记录](../ui-research/2026-09-26-agent-session-paths.md)
 与对照表中继续标为待核实。未迁入 M3 缺失模块，也未开放侧边栏。
 
 ## [0.0.161] - 2026-09-26
@@ -5717,7 +5804,7 @@ Swift 侧无改动，测试基数仍为 544 条。
 
 Mídé（[@mide_ajibade](https://x.com/mide_ajibade)，8454 followers）的
 "🛳️ —• Progressive Payment Reveal Interaction."——238 赞 / 4629 浏览 / 113 收藏。
-新增 [`14-mide-progressive-payment-reveal.md`](docs/research/ui/14-mide-progressive-payment-reveal.md)。
+新增 [`14-mide-progressive-payment-reveal.md`](../ui-research/ui/14-mide-progressive-payment-reveal.md)。
 
 - **一手证据：26.97 秒视频完整下载并逐帧分析**（1080×1080@30fps，原始 2160×2160）。
   `ffmpeg select='gt(scene,0.02)'` 零命中，确认是一条连续操作录像；抽 21 帧，
@@ -5732,14 +5819,14 @@ Mídé（[@mide_ajibade](https://x.com/mide_ajibade)，8454 followers）的
   （`CS101` / `Chemistry for Engineers`，展开后六个字段）。切 tab 时外壳不动。
 - **明暗主题切换被真实演示**：x14/x15 两帧确认月亮激活、界面确实变暗——不是只放个开关没切。
 - **另一条可抄**：`Courses` 卡折叠态两行、展开态六个字段，同一张卡同一个箭头（箭头由下变上）。
-  这是 [12](docs/research/ui/12-halogen-recorder-capsule-states.md)「一个控件的几种形态」的**第三个独立样本**。
+  这是 [12](../ui-research/ui/12-halogen-recorder-capsule-states.md)「一个控件的几种形态」的**第三个独立样本**。
 - 四色图例用**色点 + 名称 + 数值**，颜色不是唯一载体；`Due 26 Feb 2027 • in 164 days`
   把绝对日期与相对天数并排（前者存档、后者决策）。
 
 **对本仓最直接的一条**：Token 用量与耗时改成"数上去"。
 **但附了前提**：必须先确认取值频率——若是每秒轮询，每秒都数一次反而比跳变更吵，
 应当**只在值真正变化时数**。另有「进度条与数字必须同源」：两者不同步是这类控件最常见的 bug，
-而且**截图看不出来，只在动的时候暴露**。这与 [11 篇](docs/research/ui/11-plasma-ui-liquid-glass-panels.md)
+而且**截图看不出来，只在动的时候暴露**。这与 [11 篇](../ui-research/ui/11-plasma-ui-liquid-glass-panels.md)
 「同一光学参数的两个消费者共用一份来源」是同一条纪律在数据层的版本，已写成共识第 22、23 条。
 
 **没核实的**：这是作者的个人 demo，**未找到公开仓库或站点**（推文只给视频），所有实现层结论
@@ -5756,7 +5843,7 @@ Swift 侧无改动，测试基数仍为 544 条。
 Kopp（[@koppkev](https://x.com/koppkev)，瑞士，build [@details_so](https://x.com/details_so)）的
 "morphing dropdown ✨ available in the vault."——846 赞 / 39,659 浏览 / **975 收藏**。
 收藏高于点赞是"想照着做"的信号，比点赞更值钱。新增
-[`13-kopp-morphing-dropdown.md`](docs/research/ui/13-kopp-morphing-dropdown.md)。
+[`13-kopp-morphing-dropdown.md`](../ui-research/ui/13-kopp-morphing-dropdown.md)。
 
 - **一手证据：9.17 秒视频完整下载并逐帧分析**（1152×720@60fps，原始 1920×1200）。
   `ffmpeg select='gt(scene,0.02)'` 零命中，确认是一段连续操作而非拼接；抽 30 帧，内容全由 OCR 逐字读出。
@@ -5769,7 +5856,7 @@ Kopp（[@koppkev](https://x.com/koppkev)，瑞士，build [@details_so](https://
 - **最该抄的一条**：这不是四个下拉菜单，是**一个面板的几个状态**。
   如果做成四个独立下拉，就有四套开合状态、四份定位逻辑、四倍测试面；
   做成一个面板换内容，只有一份。判据是**内容形态是否共享同一个容器几何**。
-- 这与 [12 篇](docs/research/ui/12-halogen-recorder-capsule-states.md) 是同一取向的**第二个独立样本**，
+- 这与 [12 篇](../ui-research/ui/12-halogen-recorder-capsule-states.md) 是同一取向的**第二个独立样本**，
   于是「形态列表」从个人风格升级为可当收敛结论用的范式：12 篇讲一个控件的四种高度（内容只增减行），
   本篇讲同一个面板整体换形（图文 ↔ 纯列表，容器不动）。已写成共识第 21 条。
 - 另记两条：**收起要真的回到初始态**（d8.8 帧面板消失、hero 与导航完全恢复首帧构图，
@@ -5790,7 +5877,7 @@ Swift 侧无改动，测试基数仍为 544 条。
 
 [CruxGarden/plasma-ui](https://github.com/CruxGarden/plasma-ui)（npm `@cruxgarden/plasma-ui`，MIT，
 v0.3.0）——液态玻璃面板库，`<Plasma>` 面板接触时因表面张力融合、背后一切可见物被折射、
-松手吸附网格。新增 [`11-plasma-ui-liquid-glass-panels.md`](docs/research/ui/11-plasma-ui-liquid-glass-panels.md)。
+松手吸附网格。新增 [`11-plasma-ui-liquid-glass-panels.md`](../ui-research/ui/11-plasma-ui-liquid-glass-panels.md)。
 
 - **这篇的一手证据比前面所有篇厚一档：视频完整下载并逐帧分析了。** 36.2 秒 / 1652×1080 /
   60fps / 2173 帧，用 `ffmpeg select='gt(scene,0.02)'` 独立测出两处硬切点（22.75–22.79s
@@ -5840,7 +5927,7 @@ dispersion 色散分裂、网格吸附、mood 生效、六材质对应、reduced
 研究过程中 subagent 又沿链发现一篇与 `shell_mode` 直接相关的素材：sasha birukoff
 （[@sashabirukoff](https://x.com/sashabirukoff)）的 **Halogen** 常驻录屏小部件
 （视频 11.5s / 1080×1080 / 30fps / 344 帧，素材在本机 `.scratch/ui-material/11-halogen.mp4` 不入库）。
-新增 [`12-halogen-recorder-capsule-states.md`](docs/research/ui/12-halogen-recorder-capsule-states.md)。
+新增 [`12-halogen-recorder-capsule-states.md`](../ui-research/ui/12-halogen-recorder-capsule-states.md)。
 
 - **它对我们最有价值的一条**：同一个常驻控件在 闭合 / 两行展开 / 录制单行 / 三行菜单 / 回落闭合
   之间切换，**全程共用同一个容器、同一套点阵图标、同一套细描边**——变的只有高度、行数与显隐。
@@ -5848,7 +5935,7 @@ dispersion 色散分裂、网格吸附、mood 生效、六材质对应、reduced
 - **第二条**：录制中把不可用的 `Screenshot` **移出场外而不是置灰**——常驻 UI 上长期放一个点不动的
   元素是负债。第三条：塌缩用**行淡出**（图标+文字一起变暗→消失，计时数字等塌缩完成后才出现），
   全程没有 scaleY 压缩；计时数字是白字，红色只属于 Record 图标。
-- 与 [10 篇](docs/research/ui/10-swiftui-craft-invite-card-spring.md) 看着对立（那条讲切换要让尺寸
+- 与 [10 篇](../ui-research/ui/10-swiftui-craft-invite-card-spring.md) 看着对立（那条讲切换要让尺寸
   参与、要夸张；这条讲塌缩要安静），合起来的判据是**按形态层级决定切换强度**：同层内换内容可以夸张，
   跨层增减内容要安静。
 - 一手证据：全时间轴 6fps 采样 69 帧 + 展开/塌缩两段 5 帧裁剪放大读图标。
@@ -5868,24 +5955,24 @@ dispersion 色散分裂、网格吸附、mood 生效、六材质对应、reduced
 `docs/research/ui/` 原来只有 3 篇，本轮补齐并修正了两处自己写错的结论。
 
 - **新增 7 篇指定素材**：
-  - [`04-ui-resource-sites.md`](docs/research/ui/04-ui-resource-sites.md)（610 行）：六个站点横向对比。
+  - [`04-ui-resource-sites.md`](../ui-research/ui/04-ui-resource-sites.md)（610 行）：六个站点横向对比。
     最关键的发现是 **Beautiful UI 与 BoardUI 两批互不相识的开发者收敛出了同一份 agent 界面词汇表**
     （Thinking / Approval Card / Tool Chips / Task Rows ↔ `agent-thinking` / `questionnaire` /
     `task-list` / `agent-progress`），其中 `questionnaire` 与 `04 Approval Card` 是同一个需求的两种实现。
     另抄到 beUI `Dynamic Island` 源码（外壳动真实宽高不动 transform、`RADIUS = 32` 常量永不做动画、
     出场比进场短一个量级且不加 blur）与 BoardUI `agent-log` 的五段时长（`height 0.38 <
     opacity/filter/y 0.42 < mask 0.44`，容器先让位文字后到位）。
-  - [`05-morphicons-and-tools.md`](docs/research/ui/05-morphicons-and-tools.md)（342 行）：
+  - [`05-morphicons-and-tools.md`](../ui-research/ui/05-morphicons-and-tools.md)（342 行）：
     旋转是**解出来的**不是声明出来的——2D Procrustes 闭式解 `θ*=atan2(S_xy−S_yx, S_xx+S_yy)`，
     residual 驱动的分支（≈0 → 纯旋转）。附带一条对常驻 UI 重要的判断：它把图标 morph
     划为 reduce-motion 下"一般可接受的 micro-transition"于是默认播放，把决定权做成显式 prop。
-  - [`06-liquid-taffy-goo-engine.md`](docs/research/ui/06-liquid-taffy-goo-engine.md)（703 行）：
+  - [`06-liquid-taffy-goo-engine.md`](../ui-research/ui/06-liquid-taffy-goo-engine.md)（703 行）：
     本批最硬的一篇。**gooey 边框为什么不膨胀**——轮廓是两条 iso-alpha contour 之间的缝，
     每个工作 blur 配自己的一对阈值（离线栅格化 32px 圆盘积分墨量解出），blur 与阈值同帧切换，
     且 rim 遮罩必须用同一张表。另录：弹簧不用缓动曲线（两条物理弹簧采成 GSAP CustomEase）、
     关节点光三条规则（一 body 一 lobe / 焊接是 latch 不是 test / lobe 大部分停在关节亮的半径外）、
     以及 `motion.ts` "prefers-reduced-motion, asked in one place" 的可达性形态。
-  - [`07-ui-motion-tweet-sample.md`](docs/research/ui/07-ui-motion-tweet-sample.md)（246 行）：
+  - [`07-ui-motion-tweet-sample.md`](../ui-research/ui/07-ui-motion-tweet-sample.md)（246 行）：
     19 条推文当作一次抽样。10 张视频封面全部逐张视觉分析（OCR 取文字 + 语义读图取画面）。
     最硬的一条结论：**命名是作者的，特征是画面的**——`@arknow91` 自称 gooey toggle，
     三次定向读图都确认该帧只有一个连续形状、无 blur、无 neck、无 second blob；
@@ -5893,9 +5980,9 @@ dispersion 色散分裂、网格吸附、mood 生效、六材质对应、reduced
     **@Griveau 的 Linear 组件**：胶囊是唯一形状语言、彩色只编码状态（绿 `+232` / 红 `-17` /
     蓝紫对挑全部承载语义）、**单胶囊内用 1px 分隔线做多信息复合**。
   - 另三篇为研究过程中 subagent 引申发现的同源案例（编号 08–10，README 已注明哪些是指定素材）：
-    [`08`](docs/research/ui/08-farhan-video-dashboard-info-partition.md) Farhan 视频工作台静态稿、
-    [`09`](docs/research/ui/09-farhan-filenns-refining-details.md) Farhan 侧边栏 + 用量卡、
-    [`10`](docs/research/ui/10-swiftui-craft-invite-card-spring.md) withAnimationUI 的 SwiftUI 邀请函。
+    [`08`](../ui-research/ui/08-farhan-video-dashboard-info-partition.md) Farhan 视频工作台静态稿、
+    [`09`](../ui-research/ui/09-farhan-filenns-refining-details.md) Farhan 侧边栏 + 用量卡、
+    [`10`](../ui-research/ui/10-swiftui-craft-invite-card-spring.md) withAnimationUI 的 SwiftUI 邀请函。
     三篇素材与分析均为一手实样（图/视频在本机 `.scratch/ui-material/`，不入库）。
 
 - **修正一处我上轮写错的结论（重要）**：v0.0.137 时为了回答"动画 WebP 无视 reduced-motion

@@ -49,7 +49,7 @@ scripts/scan-secrets.sh --release  # 工作区 + 全部 git 对象，发版前�
   token 无 labels 写权限，**不含任何 token 值**。
 - **源码 `home()` 调用**（`AgentRegistry.swift` 等处）均使用 `FileManager.default.homeDirectoryForCurrentUser`
   拼系统相对路径，无硬编码用户名。
-- **扫描器第一次跑就抓到一处真泄漏**：`docs/research/qoder-monitoring.md` 粘了一条本机实况，
+- **扫描器第一次跑就抓到一处真泄漏**：调研文档（今在 `../ui-research/qoder-monitoring.md`）粘了一条本机实况，
   里面有 `/Users/<开发者账号>/workspace/...`。当前版本已改成占位路径；
   **旧版本仍在 git 历史里**（blob `eaad946e…`），改写公开历史要 force push 已发布的
   全部 tag，代价大于收益，故记入 `scripts/secrets-history-allow.txt` 并写明理由。

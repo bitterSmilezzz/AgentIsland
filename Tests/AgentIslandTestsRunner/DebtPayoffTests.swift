@@ -328,33 +328,43 @@ enum DebtPayoffTests {
                 // `String.range(of:options:.regularExpression)` 不认多行锚，`^` 只匹配整个字符串的开头
                 return t.range(of: #"\*\*V[0-9]"#, options: .regularExpression) != nil
             }
-            // 下限留一格给新建的研究文档（今天 3 份）：写死 3 会让「合并掉一份文档」这种
-            // 正当改动变红，而这一格不会放过「目录被清空」
-            let docs = try SourceTree.markdownTexts(under: "docs/research", atLeast: 2)
-            var checked: [String] = [], skipped: [String] = []
-            var perDoc: [(path: String, bad: [String])] = []
-            for doc in docs {
-                guard owesChecklist(doc.text) else { skipped.append(doc.relativePath); continue }
-                checked.append(doc.relativePath)
-                let bad = checklistViolations(doc.text)
-                if !bad.isEmpty { perDoc.append((doc.relativePath, bad)) }
+            // 调研文档已拆到独立仓 `ui-research`（README「文档分工」表有说明），那里有等价的
+            // bash 守卫 + pre-commit 钩子，所以本仓这条不再扫它们。
+            // 但不能静默跳过 sibling 仓不存在的情形——那正是「目录被改名 / 没 clone」
+            // 会一路静默失效的老路（`markdownTexts` 的注释记着这个坑）。所以：
+            // sibling 仓存在就必须至少校验到一份（一份都没有 = 失败）；不存在则整段不跑，
+            // 由 bash 守卫在那边守着，这里报告跳过而不是假装全绿。
+            if let kb = SourceTree.siblingRepo("ui-research") {
+                let docs = try SourceTree.markdownTexts(in: kb, atLeast: 2)
+                var checked: [String] = [], skipped: [String] = []
+                var perDoc: [(path: String, bad: [String])] = []
+                for doc in docs {
+                    // 与那边 bash 守卫同一条口径：根 README 是**规范说明**，描述规则而不是
+                    // 欠着东西，它必然提到三个状态词与清单形状。校验它等于「改规则本身就红」。
+                    // 两侧豁免必须同源，否则同一个文件在两边一个红一个绿，读者无从判断。
+                    if doc.relativePath == "README.md" { skipped.append(doc.relativePath); continue }
+                    guard owesChecklist(doc.text) else { skipped.append(doc.relativePath); continue }
+                    checked.append(doc.relativePath)
+                    let bad = checklistViolations(doc.text)
+                    if !bad.isEmpty { perDoc.append((doc.relativePath, bad)) }
+                }
+                // 「一份都没校验」必须是失败：否则⑤的扩围可以靠匹配条件写错退化成空跑
+                try expectTrue(!checked.isEmpty,
+                               "ui-research/ 下没有任何一份文档被这份守卫校验（扫到 \(docs.count) 份）"
+                               + "——要么约定变了要么触发条件写错了，绿在这里没有意义")
+                let total = perDoc.reduce(0) { $0 + $1.bad.count }
+                // 按文档分组再截：全局 `prefix(10)` 会被第一份文档的噪声挤满，
+                // 第二份文档一条违规都读不到（review P2）
+                let shown = perDoc.map { d in
+                    "\(d.path)（\(d.bad.count) 条）：\n      "
+                        + d.bad.prefix(3).joined(separator: "\n      ")
+                        + (d.bad.count > 3 ? "\n      …另有 \(d.bad.count - 3) 条" : "")
+                }.joined(separator: "\n")
+                try expectTrue(perDoc.isEmpty,
+                               "研究文档的「待核实」没有编号、没有状态或没有复核方式"
+                               + "（共 \(total) 条／校验 \(checked.count) 份：\(checked)／跳过 \(skipped.count) 份：\(skipped)）\n    "
+                               + shown)
             }
-            // 「一份都没校验」必须是失败：否则⑤的扩围可以靠匹配条件写错退化成空跑
-            try expectTrue(!checked.isEmpty,
-                           "`docs/research/` 下没有任何一份文档被这份守卫校验（扫到 \(docs.count) 份）"
-                           + "——要么约定变了要么触发条件写错了，绿在这里没有意义")
-            let total = perDoc.reduce(0) { $0 + $1.bad.count }
-            // 按文档分组再截：全局 `prefix(10)` 会被第一份文档的噪声挤满，
-            // 第二份文档一条违规都读不到（review P2）
-            let shown = perDoc.map { d in
-                "\(d.path)（\(d.bad.count) 条）：\n      "
-                    + d.bad.prefix(3).joined(separator: "\n      ")
-                    + (d.bad.count > 3 ? "\n      …另有 \(d.bad.count - 3) 条" : "")
-            }.joined(separator: "\n")
-            try expectTrue(perDoc.isEmpty,
-                           "研究文档的「待核实」没有编号、没有状态或没有复核方式"
-                           + "（共 \(total) 条／校验 \(checked.count) 份：\(checked)／跳过 \(skipped.count) 份：\(skipped)）\n    "
-                           + shown)
         }
 
         // MARK: README 的文体：功能说明，不是更新记录

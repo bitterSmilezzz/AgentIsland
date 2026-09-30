@@ -1,6 +1,6 @@
 # 20 · 收敛判断：这个项目现在该怎么做
 
-> 输入：`docs/workbench/` 01–19 篇调研 + `docs/research/ui/` 14 篇动效案例与 23 条共识 +
+> 输入：`docs/workbench/` 01–19 篇调研 + `../ui-research/` 14 篇动效案例与 23 条共识 +
 > 重划方案 [10-replan](10-replan-2026-09-26.md) + 本轮三路独立判断
 > （`/tmp/uibatch/direction-1-what-to-do.md` 169 行、`direction-2-moat-and-phases.md` 204 行、
 > `direction-3-code-facts.md` 321 行）。
@@ -62,7 +62,7 @@
 
 ### 判断三 · 克制是默认项，而我们有两处相反的默认值（三路独立）
 
-动效案例库共识 1（`docs/research/ui/README.md:51-54`）+ Omarchy `Inactive indicators are hidden`
+动效案例库共识 1（`../ui-research/ui/README.md` 共识 1）+ Omarchy `Inactive indicators are hidden`
 + codenotch「无会话 cell 直接消失」三处独立指向同一默认值。
 
 我们的反例：① `README.md:3` 首层一次列 16 家；② 空态可能还在渲染"都在摸鱼"类文案

@@ -71,7 +71,7 @@ public enum AgentRegistry {
             sessionDirs: [home(".qoder/projects")],
             // tokenRoots 故意留空：Qoder 落盘的 token 字段全为 0（真值只有 credits），
             // 接上采集只会多花 1~1.9s 换 0 条数据。详见 TokenUsageMonitor 的
-            // structuredSources 注释与 docs/research/ 的用量口径调研。
+            // structuredSources 注释与 ../ui-research/ 的用量口径调研。
             category: .assistant,
             emoji: "🖥️",
             sessionDialect: .qoderTranscript,

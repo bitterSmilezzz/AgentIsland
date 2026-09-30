@@ -8,7 +8,7 @@
 
 > **能力边界今天是这样**（不藏）：25 个 agent 档案都能报五态，但**只有 5 家读得到 token 明细**（DimAgent / Claude Code / Codex / WorkBuddy / WorkBuddy AI）。读不到的那一家，界面上写「读不到」，不写 0、不留空。
 
-> 本文档描述 **v0.0.269** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.270** 的行为；每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
 >
 > 项目主页（截图与功能导览）：<https://bitterSmilezzz.github.io/AgentIsland/>，源码在 `site/`。
 >
@@ -180,7 +180,7 @@ AGENTISLAND_DEBUG=1 open dist/AgentIsland.app && tail -f /tmp/agentisland.log
 
 协同开发的 agent 可以装第三方 skill（管理与写法见 [AGENTS.md](AGENTS.md)）：skill 放 `.agents/skills/<名称>/`，`.claude/skills/<名称>` 指过去的软链供 Claude Code 读取。当前装有 `libraries-dev`（Libraries.dev 的配套 skill，含 7 个 React 视觉特效库的取舍规则），它对 SwiftUI/macOS 没有可调用组件，本项目不依赖它构建。
 
-套件覆盖五态状态机、会话语义、通知路由、标题可读性、事件唤醒、进程树熔断、外观主题、命令清洗、token 时间统计、深链与 CLI、远程外发协议与策略。多数断言做过**变异验证**（把被测逻辑改坏、确认对应测试变红），抓不到的缺口在 CHANGELOG 里如实列出。另有**债务棘轮**：Theme 外硬编码色值与 `UserDefaults.standard` 直读处数钉成基线，新增即测试失败并说明该用什么替代。开发约定见 [AGENTS.md](AGENTS.md)，设计依据见 `docs/research/`（含远程通知与 Qoder 监控两份调研）。
+套件覆盖五态状态机、会话语义、通知路由、标题可读性、事件唤醒、进程树熔断、外观主题、命令清洗、token 时间统计、深链与 CLI、远程外发协议与策略。多数断言做过**变异验证**（把被测逻辑改坏、确认对应测试变红），抓不到的缺口在 CHANGELOG 里如实列出。另有**债务棘轮**：Theme 外硬编码色值与 `UserDefaults.standard` 直读处数钉成基线，新增即测试失败并说明该用什么替代。开发约定见 [AGENTS.md](AGENTS.md)，设计依据见独立知识库 `../ui-research/`（外部动效案例与各家 agent 调研，MIT）。
 
 ## 目录结构
 

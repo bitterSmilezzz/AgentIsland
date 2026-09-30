@@ -55,7 +55,7 @@ Skill 分两桶：`engineering/`（代码工作）与 `productivity/`（通用�
 
 **这条直接命中我们 AGENTS.md 的写法**：[AGENTS.md](../../AGENTS.md) 的 Installed skills 一节写的是
 「`.claude/skills/<name>` 是指向它的相对软链」——那是**安装事实**没错，
-但我们自己的 skill（`docs/research/ui/` 那 14 篇案例与 `docs/workbench/` 的调研）在互相引用时
+但我们自己的 skill（`../ui-research/` 那 14 篇案例与本目录的调研）在互相引用时
 用的正是 `../workbench/xxx.md` 这种跨目录相对路径。
 上游规范说的是**skill 之间**的依赖要用工具点名；文档之间的引用用相对路径没问题（我们也确实更愿用相对路径），
 但**这条界线值得写明**：引用给人看的文档可以用相对链接，**给 agent 下的操作指令必须点名工具**。

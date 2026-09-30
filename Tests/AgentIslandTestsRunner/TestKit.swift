@@ -232,6 +232,19 @@ enum SourceTree {
 
     static var sources: URL { repoRoot.appendingPathComponent("Sources") }
 
+    /// 与仓库根同级的另一个仓库（`<parent>/<name>`）。不存在返回 nil。
+    /// 用于「守卫的对象被拆到别的仓」——此时**不能**因为找不到就抛：干净签出
+    /// （没 clone 那个仓）必须仍然全绿；但也不能静默跳过，否则改个名字就悄悄失效。
+    /// 调用方负责区分「扫过且全绿」与「没扫」。
+    static func siblingRepo(_ name: String) -> URL? {
+        let url = repoRoot.deletingLastPathComponent().appendingPathComponent(name)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+            return nil
+        }
+        return url
+    }
+
     /// 某个子树下的全部 .swift 文件；扫不到期望数量即抛错。
     static func requireSwiftFiles(under subpath: String = "", atLeast minimum: Int = 20) throws -> [URL] {
         let dir = subpath.isEmpty ? sources : sources.appendingPathComponent(subpath)
@@ -260,19 +273,25 @@ enum SourceTree {
     /// 递归枚举，和 `requireSwiftFiles` 同一套先例。
     static func markdownTexts(under subpath: String, atLeast minimum: Int = 1)
         throws -> [(relativePath: String, text: String)] {
-        let dir = repoRoot.appendingPathComponent(subpath)
+        try markdownTexts(in: repoRoot.appendingPathComponent(subpath), atLeast: minimum)
+    }
+
+    /// 同上，但根目录由调用方给（守卫对象在 sibling 仓时用）。路径取自哪个根，
+    /// 相对路径就以那个根为基准——否则跨仓报告的路径会把读者带错地方。
+    static func markdownTexts(in root: URL, atLeast minimum: Int = 1)
+        throws -> [(relativePath: String, text: String)] {
         // 实测 `enumerator(at:)` 对**不存在的目录不返回 nil**，它给的是一个什么都吐不出来的
         // 枚举器；权限不足的目录也一样。所以「列不出来」只能靠存在性与可读性自己判——
         // 只查数量下限会把「目录被改名」「目录读不了」都报成「只扫到 0 个」，
         // 把读者往「文档太少」的方向带走。
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else {
-            throw TestError(message: "\(subpath)/ 不存在或不是目录：结构断言没有可校验的对象（\(dir.path)）")
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
+            throw TestError(message: "\(root.path) 不存在或不是目录：结构断言没有可校验的对象")
         }
-        guard FileManager.default.isReadableFile(atPath: dir.path) else {
-            throw TestError(message: "\(subpath)/ 存在但读不了（权限）：结构断言不能建立在空清单上（\(dir.path)）")
+        guard FileManager.default.isReadableFile(atPath: root.path) else {
+            throw TestError(message: "\(root.path) 存在但读不了（权限）：结构断言不能建立在空清单上")
         }
-        let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
         // 扩展名大小写不敏感、且认 `.markdown`：改个扩展名就从清单上静默消失，
         // 而只要目录里还剩两个 `.md`，数量下限也照样过（review P2）
         let urls = (en?.compactMap { $0 as? URL } ?? []).filter { url in
@@ -280,15 +299,15 @@ enum SourceTree {
             return ext == "md" || ext == "markdown"
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         try expectTrue(urls.count >= minimum,
-                       "\(subpath)/ 只扫到 \(urls.count) 份 markdown（期望 ≥\(minimum)），"
-                       + "结构断言不能在这种前提下算通过：\(dir.path)")
-        let root = repoRoot.path
+                       "\(root.path) 只扫到 \(urls.count) 份 markdown（期望 ≥\(minimum)），"
+                       + "结构断言不能在这种前提下算通过")
+        let rootPath = root.path
         return try urls.map { url in
             guard let text = try? String(contentsOf: url, encoding: .utf8) else {
                 throw TestError(message: "读不到 \(url.path)：结构断言不能建立在缺文件的清单上")
             }
-            let rel = url.path.hasPrefix(root + "/")
-                ? String(url.path.dropFirst(root.count + 1)) : url.lastPathComponent
+            let rel = url.path.hasPrefix(rootPath + "/")
+                ? String(url.path.dropFirst(rootPath.count + 1)) : url.lastPathComponent
             return (rel, text)
         }
     }
