@@ -115,7 +115,7 @@ scan_worktree() {
         # 会触发 SIGTRAP；批量扫描也让 grep 的失败码不再被 process substitution 吞掉。
         LC_ALL=C grep -InHE -- "$pat" "${files[@]}" > /tmp/scan-secrets-matches.txt 2>/dev/null
         grep_rc=$?
-        [[ $grep_rc -le 1 ]] || { echo "✗ [$rule] 文件扫描失败（grep 退出码 $grep_rc）" >&2; exit 3; }
+        [[ $grep_rc -le 1 ]] || { echo "✗ [$rule] 文件扫描失败（grep 退出码 ${grep_rc}）" >&2; exit 3; }
         while IFS= read -r match; do
             f="${match%%:*}"; rest="${match#*:}"
             ln="${rest%%:*}"; content="${rest#*:}"
@@ -234,7 +234,7 @@ case "$MODE" in
 $(cut -d'|' -f1-3 "$HITS")
 EOF
         [[ $? -eq 0 ]] || { echo "✗ 重写 $BASELINE 失败" >&2; exit 3; }
-        echo "✓ 已重写 $BASELINE（$(wc -l < "$HITS" | tr -d ' ') 条）"
+        echo "✓ 已重写 ${BASELINE}（$(wc -l < "$HITS" | tr -d ' ') 条）"
         exit 0
         ;;
     worktree|staged)

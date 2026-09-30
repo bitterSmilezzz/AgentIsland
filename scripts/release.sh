@@ -9,7 +9,9 @@
 #   notes 缺省时取 CHANGELOG 里该版本那一节。
 # 环境变量：SKIP_SCAN=1 跳过脱敏扫描（只用于本地试跑，等于自废门禁，输出里会标出来）
 set -euo pipefail
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/common.sh"
+cd "$SCRIPT_DIR/.."
 
 VERSION="${1:-}"
 TITLE="${2:-}"
@@ -25,13 +27,13 @@ step "版本三处一致性预检 v${VERSION}"
 TOP=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
 [[ "$TOP" == "$VERSION" ]] || die "CHANGELOG 首条是 [$TOP]，与要发的 v$VERSION 不一致"
 [[ "$(grep -m1 -oE 'string = "[0-9.]+"' Sources/AgentIslandCore/AppVersion.swift | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')" == "$VERSION" ]] \
-    || die "AppVersion.string 还没改到 $VERSION（CLI 横幅与设置页都读它）"
+    || die "AppVersion.string 还没改到 ${VERSION}（CLI 横幅与设置页都读它）"
 [[ "$(grep -m1 -oE '本文档描述 \*\*v[0-9.]+' README.md | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')" == "$VERSION" ]] \
     || die "README 的「本文档描述 vX.Y.Z」没跟着改（README 讲功能，逐版记录归 CHANGELOG）"
 [[ -z "$(git tag -l "v$VERSION")" ]] || die "tag v$VERSION 已存在，别重复发版"
 git rev-parse --verify --quiet "HEAD" >/dev/null || die "没有提交历史"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-[[ "$BRANCH" == "main" ]] || die "当前在 $BRANCH，发版要求在 main"
+[[ "$BRANCH" == "main" ]] || die "当前在 ${BRANCH}，发版要求在 main"
 MERGED=$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')
 [[ "$MERGED" == "0" ]] || die "有 $MERGED 个未解决冲突，先解冲突"
 
@@ -56,11 +58,16 @@ step "Swift 测试门禁与打包"
 # **「加进脚本」不等于「跑过」**。
 #
 # 判据与 `build-app.sh` 里那道前置检查同源：那个宏插件是 Xcode 闭源提供的。
-DEV_DIR=$(xcode-select -p 2>/dev/null || echo /Library/Developer/CommandLineTools)
-if ! ls "$DEV_DIR/usr/lib/swift/host/plugins" 2>/dev/null | grep -q SwiftUIMacros; then
-    echo "!! 工具链里没有 SwiftUIMacros（$DEV_DIR）⇒ 自动 SKIP_SWIFT=1"
+if ! swiftui_macros_available; then
+    echo "!! 工具链里没有 SwiftUIMacros（$(swift_developer_dir)）⇒ 自动 SKIP_SWIFT=1 SKIP_TESTS=1"
     echo "!! 代价：**产不出 dist/${APP_NAME}-Swift.app 那条回退路**，也跑不了 Swift 测试门禁。"
+    # ⚠️ **两个都必须导。** `build-app.sh` 的 `check_swift_toolchain` 判的是
+    # `SKIP_TESTS == 1 && SKIP_SWIFT == 1` 才放行，只导一个它照样 `exit 1`。
+    # v0.0.266 实测：只导 `SKIP_SWIFT` 时发版链在这个 if 块里**第三次**中止；
+    # 两个都导才走得通——`AgentIslandCLI` 与图标脚本都不依赖 SwiftUIMacros，
+    # 实测在只装 CommandLineTools 的机器上能编出来，主交付物不受影响。
     export SKIP_SWIFT=1
+    export SKIP_TESTS=1
 fi
 
 scripts/build-app.sh "$VERSION"

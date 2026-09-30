@@ -132,15 +132,87 @@ pub(crate) fn config_dir() -> PathBuf {
     dir
 }
 
+/// 把一份**解析不回来**的 `settings.json` 改名留档，返回留档文件名。
+///
+/// 与 `todos.rs::stash_broken` 同一处置。两个细节是那边没有的：
+///
+/// - **不覆盖已有留档。** `fs::rename` 在 POSIX 上会**静默覆盖**目标文件，
+///   所以「先改名再判存在」会把上一次留档冲掉——那等于用丢一份换丢一份。
+///   这里先查存在、撞名就加序号。
+/// - **时间戳取文件自己的 mtime**，不取墙上时钟。它恰好是「这份设置最后被写下的
+///   时刻」，比「发现它坏掉的时刻」更有信息量；更重要的是它是**数据**而不是
+///   **采样**，不走 `sampling_clock_sentinel` 那条「采样时钟由引擎盖章」的纪律
+///   （那条只管 `session.rs` 的探测层），测试也完全确定。
+fn stash_broken(path: &Path) -> Option<String> {
+    let stamp = fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let parent = path.parent()?;
+    let base = path.file_name()?.to_string_lossy().to_string();
+    // 撞名要能一直往下找：同一毫秒内坏两次、或 mtime 取不到（都退化成 0）都会撞。
+    for n in 0..64u32 {
+        let name = if n == 0 {
+            format!("{base}.broken-{stamp}")
+        } else {
+            format!("{base}.broken-{stamp}-{n}")
+        };
+        let target = parent.join(&name);
+        if target.exists() {
+            continue; // 已有同名留档：换序号，绝不覆盖
+        }
+        return fs::rename(path, &target).ok().map(|()| name);
+    }
+    None
+}
+
+/// 现存文件读得到、却解析不回来 ⇒ 它是用户的东西，不是垃圾：改名留档。
+///
+/// 读不到（不存在 / 无权限）**不算坏**——那没有东西可丢。
+fn stash_broken_if_unparseable(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    if serde_json::from_str::<Settings>(&text).is_ok() {
+        return None;
+    }
+    stash_broken(path)
+}
+
 impl Settings {
     pub fn load() -> Self {
-        let path = config_dir().join("settings.json");
-        if let Ok(text) = fs::read_to_string(&path) {
-            if let Ok(s) = serde_json::from_str::<Settings>(&text) {
-                return s.normalized();
+        Self::load_from(&config_dir())
+    }
+
+    /// 读设置（`load()` 传真实配置目录，测试传临时目录）。
+    ///
+    /// **解析失败先留档，再回落出厂值。** 此前这里只 `if let Ok(..)` 一笔带过，
+    /// 坏文件的命运交给下一次 `save()`——而 `save_to` 写得挺稳的，于是那份坏文件
+    /// 被一份「出厂值」干净利落地覆盖掉：用户改过的设置整份消失，**没有留档、没有日志、
+    /// 没有提示**。本文件开头把「写一半崩掉 → 静默回落出厂值」写成落盘必须原子的理由，
+    /// 却只挡住了成因（写一半），没挡住后果（已经坏掉的那份被覆盖）。
+    ///
+    /// 处置与 `todos.rs::stash_broken` 一致——**同一件事只能有一种待遇**。
+    pub(crate) fn load_from(dir: &Path) -> Self {
+        let path = dir.join("settings.json");
+        let Ok(text) = fs::read_to_string(&path) else {
+            return Settings::default(); // 不存在或读不动：不是「坏」，没什么可留档
+        };
+        match serde_json::from_str::<Settings>(&text) {
+            Ok(s) => s.normalized(),
+            Err(error) => {
+                match stash_broken(&path) {
+                    Some(name) => crate::log_line(&format!(
+                        "[settings] settings.json 解析失败（{error}），已留档为 {name}，本次回落出厂值"
+                    )),
+                    None => crate::log_line(&format!(
+                        "[settings] settings.json 解析失败（{error}）且留档失败——下一次落盘会覆盖它"
+                    )),
+                }
+                Settings::default()
             }
         }
-        Settings::default()
     }
 
     pub fn save(&self) {
@@ -153,18 +225,41 @@ impl Settings {
     /// 下次启动 `load()` 解析失败、静默回落出厂值——用户的设置整份消失且没有任何提示，
     /// 比解析失败更难发现。校验用「能被自己解析回来」，与 `load()` 同一套形状；
     /// 校验没过则原文件逐字节不动（由 `atomicfile` 保证）。
+    ///
+    /// 原子性只挡住「**写坏**」，挡不住「**覆盖已经坏掉的**」：文件可能是老版本写的、
+    /// 手改写坏的、磁盘写满截断的、或备份工具动过的。所以落盘前先看一眼现存文件——
+    /// 读得到却解析不回来就改名留档，再写新的（`load_from` 也做同一件事，
+    /// 覆盖「跑起来之后才坏掉」的那一半）。
+    ///
+    /// 返回类型保持 `()`：失败**写进日志**而不是向上抛。6 个调用点里有 5 个是
+    /// 「改完内存顺手存一下」，让它们各自处理 `Result` 只会换来 5 份重复的错误处理
+    /// 和一处漏掉；把痕迹落在唯一一处，谁写谁都有。`launchAtLogin` 开关的失败
+    /// 同样只记日志（`main.rs` 的 `[launchAtLogin] … 失败`），口径一致。
     pub(crate) fn save_to(&self, dir: &Path) {
-        let _ = fs::create_dir_all(dir);
-        let path = dir.join("settings.json");
-        let Ok(json) = serde_json::to_string_pretty(self) else {
+        if let Err(error) = fs::create_dir_all(dir) {
+            crate::log_line(&format!("[settings] 建配置目录 {} 失败：{error}", dir.display()));
             return;
+        }
+        let path = dir.join("settings.json");
+        if let Some(name) = stash_broken_if_unparseable(&path) {
+            crate::log_line(&format!("[settings] 落盘前发现坏掉的 settings.json，已留档为 {name}"));
+        }
+        let json = match serde_json::to_string_pretty(self) {
+            Ok(json) => json,
+            Err(error) => {
+                crate::log_line(&format!("[settings] 序列化失败，本次未落盘：{error}"));
+                return;
+            }
         };
-        let _ = crate::atomicfile::atomic_replace_validated(&path, json.as_bytes(), |staged| {
+        let result = crate::atomicfile::atomic_replace_validated(&path, json.as_bytes(), |staged| {
             let text = fs::read_to_string(staged)?;
             serde_json::from_str::<Settings>(&text)
                 .map(|_| ())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
         });
+        if let Err(error) = result {
+            crate::log_line(&format!("[settings] 落盘失败：{error}"));
+        }
     }
 
     /// 脏值钳制（与 macOS `EngineConfig.normalized()` 同规则）
@@ -576,6 +671,141 @@ mod tests {
         assert_eq!(again.appearance, "light");
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // MARK: 坏掉的 settings.json 不许被静默覆盖
+
+    fn list_dir(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// 目录里的留档文件名（`settings.json.broken-*`）。
+    fn broken_archives(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = list_dir(dir)
+            .into_iter()
+            .filter(|n| n.starts_with("settings.json.broken"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// 坏掉的 `settings.json` 不能被静默覆盖——那份坏文件是用户的东西。
+    ///
+    /// 修复前这条**不可能通过**：旧 `save_to` 只管写、不看现存文件是什么，
+    /// 于是坏文件被新写的一份顶掉，目录里只剩 `settings.json`。
+    /// 断言的是**留档逐字节等于原来那份坏文件**，不是「有个备份」——
+    /// 否则一个留档写成空文件也能蒙混过关。
+    #[test]
+    fn a_corrupt_settings_file_is_archived_instead_of_silently_overwritten() {
+        let sandbox = crate::testutil::Sandbox::new("settings-broken");
+        let dir = sandbox.path().to_path_buf();
+        // 截断的 JSON：正是本文档开头那场「写一半崩掉」的真实产物形状
+        let corrupt = r#"{"appearance": "dar"#;
+        fs::write(dir.join("settings.json"), corrupt).unwrap();
+
+        let mut s = Settings::default();
+        s.appearance = "dark".into();
+        s.save_to(&dir);
+
+        let archives = broken_archives(&dir);
+        assert_eq!(archives.len(), 1, "坏文件应留档一份，目录：{:?}", list_dir(&dir));
+        assert_eq!(
+            fs::read_to_string(dir.join(&archives[0])).unwrap(),
+            corrupt,
+            "留档必须逐字节等于原来那份坏文件"
+        );
+        let text = fs::read_to_string(dir.join("settings.json")).unwrap();
+        let back: Settings = serde_json::from_str(&text).expect("落盘后必须能解析");
+        assert_eq!(back.appearance, "dark", "新值要真的落下去");
+    }
+
+    /// 读的那条路也必须留档：**发现**坏文件是在读的时候，回落出厂值之后
+    /// 下一次 `save()` 就会覆盖它——所以留档得发生在回落之前。
+    #[test]
+    fn load_archives_a_corrupt_file_before_falling_back_to_defaults() {
+        let sandbox = crate::testutil::Sandbox::new("settings-load-broken");
+        let dir = sandbox.path().to_path_buf();
+        let corrupt = "[] 这不是对象";
+        fs::write(dir.join("settings.json"), corrupt).unwrap();
+
+        let s = Settings::load_from(&dir);
+        assert_eq!(s.appearance, "system", "解析失败应回落出厂值");
+        let archives = broken_archives(&dir);
+        assert_eq!(archives.len(), 1, "回落前必须先留档，目录：{:?}", list_dir(&dir));
+        assert_eq!(fs::read_to_string(dir.join(&archives[0])).unwrap(), corrupt);
+    }
+
+    /// 留档不能互相覆盖：`fs::rename` 在 POSIX 上会**静默顶掉**同名目标。
+    /// 只查「有没有留档」会被这条钻空子——两份坏文件只剩一份，仍然「有留档」。
+    ///
+    /// **两次坏掉的 mtime 必须钉成同一个值**：留档名是 `…broken-<mtime 毫秒>`，
+    /// 两次若落不同时刻，名字本来就不撞，这条会「靠运气」全绿——
+    /// 事实上第一版正是如此，变异去掉存在性检查后它**照样通过**，等于没测。
+    /// 所以这里显式把 mtime 设成固定常量，逼出真正要防的那件事。
+    #[test]
+    fn archiving_never_clobbers_an_existing_archive() {
+        use std::fs::FileTimes;
+        use std::time::{Duration, SystemTime};
+
+        let sandbox = crate::testutil::Sandbox::new("settings-broken-twice");
+        let dir = sandbox.path().to_path_buf();
+        let pinned = SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
+        let write_corrupt = |text: &str| {
+            let path = dir.join("settings.json");
+            fs::write(&path, text).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(pinned))
+                .unwrap();
+        };
+
+        write_corrupt("第一次坏掉");
+        Settings::default().save_to(&dir);
+        write_corrupt("第二次坏掉");
+        Settings::default().save_to(&dir);
+
+        let archives = broken_archives(&dir);
+        assert_eq!(archives.len(), 2, "两次坏掉要留两份档，目录：{:?}", list_dir(&dir));
+        let bodies: Vec<String> = archives
+            .iter()
+            .map(|n| fs::read_to_string(dir.join(n)).unwrap())
+            .collect();
+        // 按「两份都在」断言，不按顺序：这里要证明的是谁都没被冲掉，
+        // 顺序只取决于码点与 mtime，与要证明的事无关。
+        assert!(
+            bodies.contains(&"第一次坏掉".to_string()),
+            "第一份坏文件应还在留档里：{bodies:?}"
+        );
+        assert!(
+            bodies.contains(&"第二次坏掉".to_string()),
+            "第二份坏文件应还在留档里：{bodies:?}"
+        );
+    }
+
+    /// 反向：不许退化成「什么都留档」。好文件一次都不该被改名。
+    /// 这条同时守住健康路径没被我改坏（读回来是最新那份）。
+    #[test]
+    fn a_healthy_settings_file_is_never_archived() {
+        let sandbox = crate::testutil::Sandbox::new("settings-healthy");
+        let dir = sandbox.path().to_path_buf();
+        let mut s = Settings::default();
+        s.appearance = "light".into();
+        s.save_to(&dir);
+        s.appearance = "dark".into();
+        s.save_to(&dir);
+        assert!(
+            broken_archives(&dir).is_empty(),
+            "好文件不该留档，目录：{:?}",
+            list_dir(&dir)
+        );
+        assert_eq!(Settings::load_from(&dir).appearance, "dark", "读回来应是最新那份");
     }
 }
 

@@ -995,7 +995,7 @@ fn truncate_log_if_oversized(path: &std::path::Path) -> Option<u64> {
     Some(size)
 }
 
-fn log_line(msg: &str) {
+pub(crate) fn log_line(msg: &str) {
     let path = std::env::temp_dir().join("agentisland-tauri.log");
     if let Some(before) = truncate_log_if_oversized(&path) {
         let line = format!("[run] 上一份日志 {before} 字节，已按 {LOG_CAP_BYTES} 字节封顶清空");
@@ -2972,5 +2972,415 @@ mod log_cap_tests {
             "封顶 {LOG_CAP_BYTES} 字节大得没意义：等于没有封顶"
         );
         assert!(LOG_CAP_BYTES > 64 * 1024, "封顶太小会把正常运行要的日志也清掉");
+    }
+}
+
+/// 守护：**shell 脚本里的 `$VAR` 后面不许紧跟非 ASCII 字符。**
+///
+/// 起因是 v0.0.266 那次发版**真的卡住了**：`release.sh:61` 在这台机器上
+/// 报 `DEV_DIR?: unbound variable`，`set -u` 之下整条发版链中止。
+///
+/// 机理：bash 的变量名在**多字节 locale** 下允许高位字节，于是
+/// `$DEV_DIR）`（全角右括号紧跟）被当成变量名 `DEV_DIR` + `）`，
+/// 那个变量不存在，`set -u` 立刻退出。
+///
+/// ⚠️ **反直觉的地方**：不是 `LC_ALL=C` 才炸，恰恰是 **UTF-8 locale 才炸**——
+/// 实测 `C` locale 下正常、`en_US.UTF-8` 下失败。所以「本机跑过」不证明它安全，
+/// 换个 locale（或 CI、或别人机器）就炸。引号**救不了**（出问题的那行本来就在双引号里），
+/// 只有 `${VAR}` 花括号能定住名字。
+///
+/// 这已经是**同一个坑第三次**：`build-app.sh` 的注释里明写着
+/// 「`$APP_DIR（` ⇒ 报 `APP_DIR...: unbound variable`。这个坑踩了两次」。
+/// 修过一次、没留下门禁，于是换个文件又出现 6 处。
+#[cfg(test)]
+mod shell_quoting_sentinel {
+    use std::path::{Path, PathBuf};
+
+    /// 仓里的 shell 脚本目录（`app/src-tauri` 往上两层）。
+    fn scripts_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts")
+    }
+
+    /// 扫一行，返回所有「`$VAR` 紧跟非 ASCII」的位置。
+    ///
+    /// 跳过的三类，都不是 bug：
+    /// - 整行注释——`build-app.sh` 里那行注释**正是在描述这个坑**；
+    /// - `$` 后面跟 `(`（命令替换 `$(...)`）或字母数字以外的东西（`$1`/`$?`/`$@`）；
+    /// - 被反斜杠转义的 `\$VAR`（那是要输出字面量 `$`）。
+    ///
+    /// `${VAR}` 天然不命中：名字后面紧跟的是 `}`，是 ASCII。
+    fn scan_line(line: &str) -> Vec<String> {
+        fn name_end(bytes: &[u8], from: usize) -> usize {
+            let mut i = from;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            i
+        }
+        let bytes = line.as_bytes();
+        let mut hits = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'$' {
+                i += 1;
+                continue;
+            }
+            // `\$` 是转义，不算变量引用
+            let escaped = i > 0 && bytes[i - 1] == b'\\' && !bytes[..i].ends_with(b"\\\\");
+            let start = i + 1;
+            if start >= bytes.len() {
+                break;
+            }
+            let first = bytes[start];
+            if !(first.is_ascii_alphabetic() || first == b'_') {
+                i = start;
+                continue;
+            }
+            if escaped {
+                i = name_end(bytes, start);
+                continue;
+            }
+            let end = name_end(bytes, start);
+            let name = &line[start..end];
+            let next = line[end..].chars().next();
+            if let Some(c) = next {
+                if !c.is_ascii() {
+                    hits.push(format!("${name}{c}（`{c}` 是 U+{:04X}）", c as u32));
+                }
+            }
+            i = end;
+        }
+        hits
+    }
+
+    fn scan_all_scripts() -> Vec<String> {
+        let dir = scripts_dir();
+        let mut hits = Vec::new();
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("应当读得到 scripts/：{e}"));
+        let mut paths: Vec<PathBuf> = entries
+            .map(|e| e.expect("目录项应可读").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "sh"))
+            .collect();
+        paths.sort();
+        assert!(!paths.is_empty(), "scripts/ 下一个 .sh 都没有——守护本身失效了");
+        for path in paths {
+            let text = std::fs::read_to_string(&path).expect("脚本应可读");
+            for (n, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with('#') {
+                    continue;
+                }
+                for hit in scan_line(line) {
+                    let name = path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    hits.push(format!("{name}:{}: {hit}  |  {}", n + 1, line.trim()));
+                }
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn no_shell_script_expands_a_variable_straight_into_a_multibyte_character() {
+        let hits = scan_all_scripts();
+        assert!(
+            hits.is_empty(),
+            "这些 `$VAR` 后面紧跟了非 ASCII 字符——UTF-8 locale 下 bash 会把那个字符\n\
+             并进变量名，`set -u` 于是报 `VAR?: unbound variable` 并中止脚本。\n\
+             改写成 `${{VAR}}`（花括号）即可，引号无效。命中：\n  {}",
+            hits.join("\n  ")
+        );
+    }
+
+    /// 扫描器自己得能看见坏样例。
+    ///
+    /// 只会返回「没有命中」的扫描器等于没有扫描器——这条拿真实坏写法钉住检测逻辑，
+    /// 顺带把三类该放过的也钉住（注释、命令替换、转义）。
+    #[test]
+    fn the_scanner_sees_a_bare_name_next_to_a_full_width_paren() {
+        let bad = r#"    echo "!! 工具链里没有 SwiftUIMacros（$DEV_DIR）⇒ 自动 SKIP_SWIFT=1""#;
+        let hits = scan_line(bad);
+        assert_eq!(hits.len(), 1, "应恰好报一处：{hits:?}");
+        assert!(hits[0].starts_with("$DEV_DIR）"), "报出的应是 `$DEV_DIR）`：{hits:?}");
+    }
+
+    #[test]
+    fn braced_expansion_and_the_three_legitimate_shapes_are_left_alone() {
+        for ok in [
+            r#"echo "工具链里没有（${DEV_DIR}）⇒ 跳过""#, // 花括号定住了名字
+            r#"echo "（$(wc -l < "$HITS") 条）""#,        // 命令替换，不是变量
+            r#"echo "第 $1 行、第 $? 行、第 $@ 些""#,      // 位置参数，不是变量名
+            r#"echo "字面量 \$DEV_DIR 不是变量""#,       // 转义
+            r#"echo "工具链是 $DEV_DIR 跳过 Swift 那段""#, // 紧跟的是 ASCII 空格
+        ] {
+            assert_eq!(scan_line(ok), Vec::<String>::new(), "不该命中：{ok}");
+        }
+    }
+
+    // MARK: 同一类里另一种死法——`set -u` 引用了从没定义过的变量
+
+    /// 扫一行，返回所有「裸展开了一个本文件里没定义、也没兜底的变量」。
+    ///
+    /// `assigned` 是**全文件**收集到的赋值（含 `read` 的多个目标、
+    /// `for` 的循环变量、`scripts/common.sh` 里共享的常量）。
+    /// `optional` 是别处写过 `${VAR:-…}` 的那些——作者已经表明它可缺，**不报**。
+    fn undefined_in_line(line: &str, assigned: &[String], optional: &[String]) -> Vec<String> {
+        fn name_end(b: &[u8], from: usize) -> usize {
+            let mut i = from;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            i
+        }
+        let known = |n: &str| assigned.iter().any(|a| a == n) || optional.iter().any(|a| a == n);
+        let line = strip_comment(line);
+        let bytes = line.as_bytes();
+        let mut hits = Vec::new();
+        let mut i = 0;
+        let mut in_single = false;
+        while i < bytes.len() {
+            match bytes[i] {
+                // **单引号里的 `$` 是字面量**，不展开。
+                // 实测踩过：`test-scan-secrets.sh` 里那段 awk 程序整体包在单引号中，
+                // 里面的 `${rest%%:*}` 是给用户看的样例文本，不是脚本自己的变量。
+                b'\'' => {
+                    in_single = !in_single;
+                    i += 1;
+                    continue;
+                }
+                b'\\' if !in_single => {
+                    i += 2; // 转义掉下一个字符
+                    continue;
+                }
+                _ => {}
+            }
+            if in_single || bytes[i] != b'$' {
+                i += 1;
+                continue;
+            }
+            // `${NAME}` 的名字从 `{` 之后开始；`$NAME` 从 `$` 之后开始
+            let braced = bytes.get(i + 1) == Some(&b'{');
+            let start = i + if braced { 2 } else { 1 };
+            if start >= bytes.len() || !(bytes[start].is_ascii_alphabetic() || bytes[start] == b'_') {
+                i = start;
+                continue;
+            }
+            let end = name_end(bytes, start);
+            let name = &line[start..end];
+            // 名字后面紧跟 `:` 或 `=` ⇒ `${NAME:-…}` / `${NAME:=…}`，有兜底。
+            // ⚠️ 紧跟 `}` **不算**兜底——那是普通的花括号展开，正是要报的那种。
+            let guarded = matches!(bytes.get(end), Some(b':' | b'='));
+            if !guarded && !known(name) {
+                hits.push(format!("${name}"));
+            }
+            i = end;
+        }
+        hits
+    }
+
+    /// 去掉行内注释。`#` 在引号里不算注释开头。
+    fn strip_comment(line: &str) -> &str {
+        let b = line.as_bytes();
+        let (mut in_s, mut in_d) = (false, false);
+        for i in 0..b.len() {
+            match b[i] {
+                b'\\' => continue,
+                b'\'' if !in_d => in_s = !in_s,
+                b'"' if !in_s => in_d = !in_d,
+                b'#' if !in_s && !in_d => return &line[..i],
+                _ => {}
+            }
+        }
+        line
+    }
+
+    /// 收集一个文件里定义过的变量名。
+    fn assigned_in(text: &str) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for raw in text.lines() {
+            let line = strip_comment(raw);
+            let b = line.as_bytes();
+            // `NAME=` 出现在「词首」才算赋值
+            let mut i = 0;
+            while i < b.len() {
+                if !(b[i].is_ascii_alphabetic() || b[i] == b'_') {
+                    i += 1;
+                    continue;
+                }
+                if i > 0 && !matches!(b[i - 1], b' ' | b'\t' | b';' | b'&' | b'|' | b'(') {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                    j += 1;
+                }
+                if b.get(j) == Some(&b'=') {
+                    names.push(line[i..j].to_string());
+                }
+                i = j;
+            }
+            let words: Vec<&str> = line.split_whitespace().collect();
+            // `read -r a b c`：只剥掉 `-x` / `--long` 选项，剩下的到分隔符为止全是变量名。
+            // ⚠️ 必须按**整行**找 `read` 这个词：早先版本在空白切分出的 token 里 `find`，
+            // 却拿那个偏移去切整行，于是切到别处、`read` 的目标一个都没收进来。
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            while i + 4 <= bytes.len() {
+                let is_word = (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+                    && &bytes[i..i + 4] == b"read"
+                    && bytes.get(i + 4).is_some_and(|c| c.is_ascii_whitespace());
+                if !is_word {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i + 4;
+                // 剥选项：`-r` / `-a` / `--color` 一律以 `-` 开头
+                loop {
+                    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b'-' {
+                        while j < bytes.len() && !bytes[j].is_ascii_whitespace() {
+                            j += 1;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+                let stop = j;
+                let mut k = j;
+                while k < bytes.len() && !matches!(bytes[k], b';' | b'|' | b'&' | b'<' | b'>') {
+                    k += 1;
+                }
+                for tok in line[stop..k].split_whitespace() {
+                    if tok.starts_with('-') || tok.is_empty() {
+                        continue;
+                    }
+                    let ok = tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && tok.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+                    if ok {
+                        names.push(tok.to_string());
+                    }
+                }
+                i = k.max(i + 4);
+            }
+
+            // `for NAME in …` / `for ((NAME=…` 的循环变量
+            let words: Vec<&str> = line.split_whitespace().collect();
+            for (k, w) in words.iter().enumerate() {
+                if *w != "for" && *w != "select" {
+                    continue;
+                }
+                let Some(next) = words.get(k + 1) else { continue };
+                let next = next.trim_start_matches("((");
+                if !next.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                    continue;
+                }
+                let name: String =
+                    next.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                if !name.is_empty() {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
+
+    /// 别处写过 `${VAR:-` / `${VAR:=` 的变量：作者已表明它可缺。
+    fn optional_in(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let b = text.as_bytes();
+        let mut i = 0;
+        while i + 1 < b.len() {
+            if b[i] == b'$' && b[i + 1] == b'{' {
+                let mut j = i + 2;
+                while j < b.len() && (b[j].is_ascii_alphanumeric() || b[j] == b'_') {
+                    j += 1;
+                }
+                if j > i + 2 && matches!(b.get(j), Some(b':' | b'=')) {
+                    out.push(text[i + 2..j].to_string());
+                    i = j;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// bash 自己提供的、或从 `scripts/common.sh` 共享来的，不算「该脚本没定义」。
+    ///
+    /// ⚠️ 这里**只能列 bash 内建 + `SCRIPT_DIR` 这类本脚本自己算出来的**。
+    /// 早先版本把 `APP_NAME` 也列了进来——那等于把这条守护要抓的 bug
+    /// 直接豁免掉：变异删掉 `common.sh` 里的定义，它照样全绿。
+    /// `APP_NAME` 该由 `common.sh` 提供，走 `common_names` 那条路进来。
+    fn ambient_names() -> Vec<String> {
+        [
+            "BASH_SOURCE", "PATH", "HOME", "PWD", "TMPDIR", "USER", "LANG", "VERSION",
+            "HOSTNAME", "RANDOM", "SECONDS", "LINENO", "PIPESTATUS", "UID", "EUID", "SHELL",
+            "TERM", "IFS", "REPLY", "OSTYPE", "PPID", "FUNCNAME", "DEVELOPER_DIR", "SDKROOT",
+            "SCRIPT_DIR",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn no_set_u_script_expands_a_variable_it_never_defines() {
+        let dir = scripts_dir();
+        let common_text = std::fs::read_to_string(dir.join("common.sh")).expect("读得到 common.sh");
+        let common_names = assigned_in(&common_text);
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("读得到 scripts/")
+            .map(|e| e.expect("目录项可读").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "sh"))
+            .collect();
+        paths.sort();
+        assert!(!paths.is_empty(), "scripts/ 下一个 .sh 都没有——守护本身失效了");
+
+        let mut problems: Vec<String> = Vec::new();
+        for path in &paths {
+            let text = std::fs::read_to_string(path).expect("脚本应可读");
+            let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            if name == "common.sh" {
+                continue; // 它就是来源
+            }
+            let mut defined = ambient_names();
+            defined.extend(common_names.iter().cloned());
+            defined.extend(assigned_in(&text));
+            let optional = optional_in(&text);
+            for (n, line) in text.lines().enumerate() {
+                for hit in undefined_in_line(line, &defined, &optional) {
+                    problems.push(format!(
+                        "{name}:{}: {hit} 从未定义，也没有 :- 兜底（该脚本有 set -u）\n      {}",
+                        n + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "这些变量在该脚本里从未赋值、也没写 ${{VAR:-}} 兜底，而脚本开头是 `set -euo pipefail`——\n\
+             跑到那一行会直接 `unbound variable` 中止。实测就是这样卡死过一次发版。\n  {}",
+            problems.join("\n  ")
+        );
+    }
+
+    /// 正例控制：扫描器必须看得见真问题。
+    ///
+    /// v0.0.266 之前 `release.sh` 里的 `${APP_NAME}` 就是这个形状——
+    /// 它是 `build-app.sh` 的变量，跨进程取不到。
+    #[test]
+    fn the_undefined_variable_scanner_sees_a_real_one() {
+        let bad = r#"    echo "!! 产不出 dist/${APP_NAME}-Swift.app 那条回退路""#;
+        let hits = undefined_in_line(bad, &["SCRIPT_DIR".to_string()], &[]);
+        assert_eq!(hits, vec!["$APP_NAME".to_string()], "应报出 $APP_NAME");
+        // 给它一个定义之后就不报了——证明这条判据确实在看「有没有定义」
+        assert!(undefined_in_line(bad, &["APP_NAME".to_string()], &[]).is_empty());
     }
 }

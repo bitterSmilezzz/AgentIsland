@@ -1,9 +1,10 @@
 #!/bin/bash
 # 打包 AgentIsland.app（无 Xcode 环境：swift build + 手工 .app 结构 + ad-hoc 签名）
 set -euo pipefail
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/common.sh"
+cd "$SCRIPT_DIR/.."
 
-APP_NAME="AgentIsland"
 BUILD_DIR=".build/release"
 APP_DIR="dist/$APP_NAME.app"
 
@@ -43,7 +44,7 @@ if [[ -n "${SDKROOT:-}" ]]; then
         system_major=$(sw_vers -productVersion | cut -d. -f1)
         sdk_major=$(basename "$SDKROOT" | sed -E 's/MacOSX([0-9]+).*/\1/')
         if [[ "$sdk_major" =~ ^[0-9]+$ && "$system_major" =~ ^[0-9]+$ && "$sdk_major" -lt "$system_major" ]]; then
-            echo "!! 注意：系统 macOS $system_major 但 SDK 是 $sdk_major。webview 可能静默失效（见本脚本注释）" >&2
+            echo "!! 注意：系统 macOS ${system_major} 但 SDK 是 ${sdk_major}。webview 可能静默失效（见本脚本注释）" >&2
         fi
     fi
 fi
@@ -93,12 +94,12 @@ check_swift_toolchain() {
     [[ "$need_tests" != "1" || "$need_swift" != "1" ]] || return 0
     # 插件目录**必须跟着 `xcode-select -p` 走**。写死 CommandLineTools 的话，
     # 装好 Xcode 并 `xcode-select -s` 之后这里仍然找不到插件 → 误报成「没装 Xcode」。
-    local dev_dir plugin_dir
-    dev_dir=$(xcode-select -p 2>/dev/null || echo /Library/Developer/CommandLineTools)
-    plugin_dir="$dev_dir/usr/lib/swift/host/plugins"
-    if ls "$plugin_dir" 2>/dev/null | grep -q SwiftUIMacros; then
+    # 判据在 `scripts/common.sh` 里，与 `release.sh` 共用同一份实现
+    if swiftui_macros_available; then
         return 0
     fi
+    local dev_dir
+    dev_dir=$(swift_developer_dir)
     echo "✗ 当前 Swift 工具链里没有 SwiftUIMacros 插件，Swift 版编不出来。" >&2
     echo "  xcode-select -p ⇒ $dev_dir" >&2
     echo "  该插件由 Xcode 提供，只有 CommandLineTools 时没有它；" >&2
