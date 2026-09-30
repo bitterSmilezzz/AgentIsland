@@ -6,14 +6,20 @@ macOS 灵动岛应用：监控本机 AI 编码智能体的运行状态与 token 
 
 ### 自动重启应用（无感）
 
-每次改动完成、构建出新的 `dist/AgentIsland.app` 后，**直接重启应用**，不必询问也不必先检查它是否在运行：
+每次改动完成、构建出新的 `dist/AgentIsland.app` 后，**直接重启应用**，不必询问：
 
 ```sh
-pkill -x AgentIsland; sleep 0.6; open dist/AgentIsland.app
+scripts/restart-app.sh
 ```
 
-- 旧实例存在就先杀掉（`pkill -x` 按进程名精确匹配，不会误伤 `AgentIslandTestsRunner`）
-- 旧实例不存在时 `pkill` 返回非零，忽略即可，继续 `open`
+- 脚本会杀掉旧实例、打开新构建，并**校验两步都真的发生了**（任一步不符就非零退出）
+- ⚠️ **不要自己写 `pkill -x AgentIsland`**——那是条**从来没生效过**的命令。
+  `pkill -x` 匹配的是**进程名**，而 bundle 里的二进制叫 **`agentisland`（小写）**，
+  不是 `AgentIsland`。实测 `pkill -x AgentIsland` 退出码 = 1（一个都没打中），
+  `pgrep -x agentisland` 才命中。所以应用过去每次都**没有真的重启**，
+  看起来更新只是因为 `open` 撞上被改过的 bundle、Launch Services 自己重开的
+- 也**不要用 `pkill -x agentisland`**：用户自己跑的 CLI（`dist/agentisland`）同名，会被一起杀掉。
+  按应用内的完整路径匹配才只打应用
 - 重启后简短汇报，不要写成长篇操作说明
 
 ### 自动化提交与发版（每轮改造的收尾）

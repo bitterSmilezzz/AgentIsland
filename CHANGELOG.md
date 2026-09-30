@@ -4,6 +4,64 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.268] - 2026-09-30
+
+### 「每次改动后重启应用」这条指令，从没真的重启过
+
+AGENTS.md 与 `release.sh` 都写的是：
+
+```sh
+pkill -x AgentIsland; sleep 0.6; open dist/AgentIsland.app
+```
+
+`pkill -x` 匹配的是**进程名**。而 bundle 里的二进制叫 **`agentisland`（小写）**，
+不是 `AgentIsland`。实测：
+
+```
+$ pkill -x AgentIsland ; echo $?
+1                      ← 一个都没打中
+$ pgrep -x agentisland
+99264                  ← 才命中
+```
+
+所以「重启」这一步**每一次都没发生**，而脚本照常打印「重启应用」并返回 0。
+应用看起来更新了，是 `open` 撞上被改过的 bundle、Launch Services 自己重开的——
+**跟文档里写的那条命令没有关系**。
+
+⚠️ AGENTS.md 原本给这句的理由是「`pkill -x` 按进程名精确匹配，不会误伤
+`AgentIslandTestsRunner`」。这个理由**方向就是错的**：正因为它按进程名匹配，
+它才打不中真正的应用。**一个为「避免误伤」而写的理由，恰好解释了它为什么没用。**
+
+### 换成脚本，并且**校验两步都真的发生**
+
+新增 `scripts/restart-app.sh`，AGENTS.md 与 `release.sh` 都改为调它：
+
+- 可执行文件名**从 Info.plist 的 `CFBundleExecutable` 读**，不靠猜
+  （bundle 名 `AgentIsland.app` ≠ 二进制名 `agentisland`）；
+- 用 `pkill -f` 匹配**应用内完整路径**。**不用** `pkill -x agentisland`：
+  用户自己跑的那个 CLI（`dist/agentisland`）同名，按名字杀会把它一起带走；
+- 杀完等旧实例消失，打开后等新实例出现，**任一步不符就非零退出**。
+  重启失败必须被看见，不能像以前那样安静地什么都不做。
+
+实跑三次，pid 依次 `99264 → 99280 → 99296`——是换了进程，不是「打开了一下」。
+
+### v0.0.266 那条守护，当场抓到我自己的新 bug
+
+写这个脚本时我在第 25 行打了 `没有 $APP，先构建`——**全角逗号紧跟 `$APP`**，
+和 v0.0.266 修掉的那 6 处**完全同一个形状**。`shell_quoting_sentinel` 一跑就红并点名：
+
+```
+restart-app.sh:25: $APP，（`，` 是 U+FF0C） | [[ -d "$APP" ]] || { echo "✗ 没有 $APP，先构建" …
+```
+
+这条门禁第一次发挥作用就抓到了**写它的人的现行**——比它抓到任何历史遗留都说明问题：
+当时那 6 处之所以能存在，就是因为没有会红的检查。
+
+### 门禁
+
+Rust 540 条通过（**+0**，这一版改的是流程不是断言）/ 0 失败，
+release 编译警告 14（无漂移），脱敏扫描零新增。
+
 ## [0.0.267] - 2026-09-30
 
 ### Windows 那条路，从写下那天起就没被编译过一次

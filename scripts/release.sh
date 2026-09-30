@@ -132,9 +132,11 @@ else
 fi
 
 step "重启应用（AGENTS.md：出包后无感替换旧实例）"
-pkill -x AgentIsland || true
-sleep 0.6
-open dist/AgentIsland.app
+# 此前这里是 `pkill -x AgentIsland; sleep 0.6; open dist/AgentIsland.app`，
+# 而 `pkill -x AgentIsland` **打不中任何进程**（进程名是小写 `agentisland`）——
+# 也就是说发版末尾的「重启」从来没发生过，脚本却照常打印这一步。收进共用脚本，
+# 由它校验「旧实例确实没了、新实例确实起来了」。
+scripts/restart-app.sh
 
 printf '\n\033[32m✓ v%s 已发布：提交已推送、tag 已打、release 已建\033[0m\n' "$VERSION"
 # 附件复核。注意 `releases/tags/…` 这个端点会短暂返回空 assets（实测刚传完读到 0，
