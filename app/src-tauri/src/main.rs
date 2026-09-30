@@ -1078,6 +1078,69 @@ fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
     };
 }
 
+/// 嵌进二进制的资源清单（`[boot] 资源表` 逐个验它真在里面）。
+///
+/// 覆盖 `app/ui/` 下的**全部**文件——少列一个，那个文件缺失时就查不出来，
+/// 而少一个 CSS 的后果是**整个形态无样式渲染、零报错**。
+const EMBEDDED_ASSET_SAMPLE: [&str; 10] = [
+    "index.html",
+    "probe.html",
+    "js/main.js",
+    "js/views.js",
+    "js/shell.js",
+    "js/tauri.js",
+    "css/tokens.css",
+    "css/island.css",
+    "css/sidebar.css",
+    "css/workbench.css",
+];
+
+/// **`[boot] 资源表` 的名单必须盖全 `app/ui/`。**
+///
+/// 少列一个的后果不是「少一条日志」：那个文件没嵌进二进制时，
+/// **没有任何东西会报错**——少一个 CSS 就是**整个形态无样式渲染**，
+/// 页面照样出、DOM 照样在，只有像素不对。
+#[cfg(test)]
+mod embedded_assets_sentinel {
+    use super::EMBEDDED_ASSET_SAMPLE;
+    use std::path::{Path, PathBuf};
+
+    fn ui_files() -> Vec<String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui");
+        let mut out = Vec::new();
+        fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, base, out);
+                } else if let Ok(rel) = p.strip_prefix(base) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        walk(&root, &root, &mut out);
+        out.sort();
+        out
+    }
+
+    /// 名单里**不能有**目录里不存在的条目（否则资源表永远查不出「少了谁」）。
+    #[test]
+    fn the_sample_list_matches_the_ui_directory_exactly() {
+        let mut on_disk = ui_files();
+        let mut listed: Vec<String> = EMBEDDED_ASSET_SAMPLE.iter().map(|s| s.to_string()).collect();
+        on_disk.sort();
+        listed.sort();
+        assert_eq!(
+            on_disk, listed,
+            "app/ui 下的文件与 `[boot] 资源表` 名单对不上。\n\
+             **新加文件却忘了进名单 = 它没嵌进二进制时永远查不出来**——\
+             少一个 CSS 的后果是那个形态整个无样式渲染，而且**零报错**。"
+        );
+    }
+}
+
+
 #[tauri::command]
 fn log_from_ui(message: String) {
     log_line(&format!("[webview] {}", message));
@@ -1744,13 +1807,11 @@ fn main() {
             {
                 let resolver = app.asset_resolver();
                 let mut seen: Vec<String> = Vec::new();
-                for key in [
-                    "index.html",
-                    "js/main.js",
-                    "js/views.js",
-                    "css/tokens.css",
-                    "css/workbench.css",
-                ] {
+                // 名单要**盖全** `app/ui/` 下的每一个文件：少列一个，
+                // 那个文件没嵌进去时就**没人会知道**——而少一个 CSS 的后果是
+                // 那个形态整个无样式渲染，照样零报错。
+                // 「名单与目录一致」由 `embedded_assets_cover_every_ui_file` 守着。
+                for key in EMBEDDED_ASSET_SAMPLE {
                     match resolver.get(key.to_string()) {
                         Some(asset) => seen.push(format!("{key}={}B/{}", asset.bytes.len(), asset.mime_type)),
                         None => seen.push(format!("{key}=**缺失**")),
