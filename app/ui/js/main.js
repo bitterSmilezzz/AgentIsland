@@ -14,6 +14,7 @@ import {
   sliverSize,
 } from './views.js';
 import { invoke } from './tauri.js';
+import { agentIdFromIntent } from './navigation.js';
 import { isSidebar, isWorkbench, SHELL } from './shell.js';
 
 const $root = () => document.getElementById('root');
@@ -219,7 +220,9 @@ async function boot() {
     await listen('deeplink://navigate', async (e) => {
       const intent = String(e.payload?.action ?? '');
       if (intent.startsWith('Agent(')) {
-        state.route = `agentDetail:${intent.slice('Agent('.length).replace(')', '')}`;
+        const id = agentIdFromIntent(intent);
+        if (!id) return;
+        state.route = `agentDetail:${id}`;
         state.workbenchPage = 'overview';
       } else if (intent.startsWith('Analytics')) {
         state.route = 'tokenAnalytics';
@@ -266,44 +269,21 @@ async function boot() {
     // （两份规则迟早只改一处）。
     await listen('deeplink://navigate', async (e) => {
       const intent = String(e.payload?.action ?? '');
-      if (isSidebar()) {
-        // 侧边栏是常驻的，没有展开/收起——只有路由有意义
-        if (intent.startsWith('Analytics')) {
-          state.route = 'tokenAnalytics';
-          renderSidebar();
-          await hydrateReport();
-        } else if (intent.startsWith('Agent(')) {
-          const id = intent.slice('Agent('.length).replace(')', '');
-          state.route = `agentDetail:${id}`;
-          renderSidebarDetail();
-          await hydrateReport();
-        } else if (intent.startsWith('Toolbox') || intent.startsWith('Clean') || intent.startsWith('Export')) {
-          // 侧边栏没有工作台，落到设置页（最接近的「重页面」入口）
-          state.route = 'settings';
-          renderSidebar();
-        }
-        return;
-      }
-      // 灵动岛
-      if (intent.startsWith('Toggle')) {
-        state.expanded ? collapse() : expand();
-      } else if (intent.startsWith('Expand')) {
-        await expand();
-      } else if (intent.startsWith('Analytics')) {
-        await expand();
+      // 侧边栏是常驻的，没有展开/收起——只有路由有意义
+      if (intent.startsWith('Analytics')) {
         state.route = 'tokenAnalytics';
-        renderCard();
+        renderSidebar();
         await hydrateReport();
       } else if (intent.startsWith('Agent(')) {
-        const id = intent.slice('Agent('.length).replace(')', '');
-        await expand();
+        const id = agentIdFromIntent(intent);
+        if (!id) return;
         state.route = `agentDetail:${id}`;
-        renderCard();
+        renderSidebarDetail();
         await hydrateReport();
       } else if (intent.startsWith('Toolbox') || intent.startsWith('Clean') || intent.startsWith('Export')) {
-        await expand();
-        state.route = 'list';
-        renderCard();
+        // 侧边栏没有工作台，落到设置页（最接近的「重页面」入口）
+        state.route = 'settings';
+        renderSidebar();
       }
     });
     await listen('deeplink://notify', async (e) => {
@@ -337,6 +317,35 @@ async function boot() {
     scheduleRender();
   });
   await listen('tray://toggle', () => (state.expanded ? collapse() : expand()));
+  await listen('deeplink://navigate', async (e) => {
+    const intent = String(e.payload?.action ?? '');
+    if (intent.startsWith('Toggle')) {
+      await (state.expanded ? collapse() : expand());
+    } else if (intent.startsWith('Expand')) {
+      await expand();
+    } else if (intent === 'Collapse') {
+      await collapse();
+    } else if (intent.startsWith('Analytics')) {
+      await expand();
+      state.route = 'tokenAnalytics';
+      renderCard();
+      await hydrateReport();
+      await resizeToContent();
+    } else if (intent.startsWith('Agent(')) {
+      const id = agentIdFromIntent(intent);
+      if (!id) return;
+      await expand();
+      state.route = `agentDetail:${id}`;
+      renderCard();
+      await hydrateReport();
+      await resizeToContent();
+    } else if (intent.startsWith('Toolbox') || intent.startsWith('Clean') || intent.startsWith('Export')) {
+      await expand();
+      state.route = 'list';
+      renderCard();
+      await resizeToContent();
+    }
+  });
   invoke('log_from_ui', { message: 'island boot：事件已订阅' }).catch(() => {});
 
   if (boot.expand) {

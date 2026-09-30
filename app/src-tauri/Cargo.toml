@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.274"
+version = "0.0.275"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"

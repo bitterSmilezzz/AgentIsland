@@ -1145,10 +1145,11 @@ fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
 ///
 /// 覆盖 `app/ui/` 下的**全部**文件——少列一个，那个文件缺失时就查不出来，
 /// 而少一个 CSS 的后果是**整个形态无样式渲染、零报错**。
-const EMBEDDED_ASSET_SAMPLE: [&str; 11] = [
+const EMBEDDED_ASSET_SAMPLE: [&str; 12] = [
     "index.html",
     "probe.html",
     "js/main.js",
+    "js/navigation.js",
     "js/views.js",
     "js/shell.js",
     "js/tauri.js",
@@ -2582,6 +2583,18 @@ mod build_env_sentinel {
     globalThis.innerWidth = 400; globalThis.innerHeight = 800;
     "#;
 
+
+    #[test]
+    fn island_boot_handles_deep_link_navigation() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/test-island-deeplink.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("深链 UI 回归需要 node");
+        assert!(output.status.success(), "深链 UI 回归失败：\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
 
     fn tauri_conf() -> String {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
