@@ -965,10 +965,12 @@ export function renderWorkbenchMonitorOnly() {
   if (!box) return;
   const eng = getState().engine;
   if (!eng) return;
-  box.innerHTML = workbenchMonitor(eng);
-  bindWorkbenchAgentClicks();
   const statusEl = document.querySelector('[data-wb-status]');
   if (statusEl) statusEl.textContent = workbenchStatus(eng);
+  // 详情中的报告是异步注水的，周期采样不能把它重新打回空壳。
+  if (getState().route.startsWith('agentDetail:') && box.querySelector('[data-report-root]')) return;
+  box.innerHTML = workbenchMonitor(eng);
+  bindWorkbenchAgentClicks();
 }
 
 /** 点 Agent 进详情。监控列表在整页与局部重画两条路上都要绑，只写一处。 */
