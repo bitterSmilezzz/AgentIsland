@@ -26,10 +26,19 @@ import assert from 'node:assert/strict';
 globalThis.getComputedStyle = () => ({});
 const listeners = new Map();
 const placements = [];
+const startup = process.env.TEST_COLD_NAVIGATION === '1';
+let drains = 0;
 window.__TAURI__ = {
   core: { invoke: async (command, args) => {
     if (command === 'get_boot_args') return {};
     if (command === 'get_settings') return { dock_edge: 'top', appearance: 'light' };
+    if (command === 'drain_navigation') {
+      assert.ok(listeners.has('deeplink://navigate'), 'subscription must precede replay');
+      drains++;
+      if (startup && drains === 1) return ['Expand', 'Agent("codex")'];
+      if (startup && drains === 2) return ['Collapse'];
+      return [];
+    }
     if (command === 'place_island') placements.push(args);
     return null;
   } },
@@ -41,6 +50,15 @@ try {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.ok(listeners.has('deeplink://navigate'), 'island boot must subscribe to deep links');
+  for (let i = 0; i < 100 && drains < (startup ? 3 : 1); i++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(drains, startup ? 3 : 1, 'boot must consume all startup batches');
+  if (startup) {
+    assert.equal(getState().expanded, false);
+    assert.equal(getState().route, 'list');
+    assert.deepEqual(placements.map(size => size.width), [88, 330, 88]);
+  }
   const send = action => listeners.get('deeplink://navigate')({ payload: { action } });
   await send('Expand');
   assert.equal(getState().expanded, true);
@@ -52,6 +70,9 @@ try {
   assert.equal(getState().expanded, true);
   await send('Toggle');
   assert.equal(getState().expanded, false);
+  await Promise.all([send('Expand'), send('Collapse')]);
+  assert.equal(getState().expanded, false);
+  assert.equal(placements.at(-1).width, 88, 'rapid navigation must finish in arrival order');
   await send('Analytics');
   assert.equal(getState().expanded, true);
   assert.equal(getState().route, 'tokenAnalytics');

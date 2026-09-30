@@ -14,7 +14,7 @@ import {
   sliverSize,
 } from './views.js';
 import { invoke } from './tauri.js';
-import { agentIdFromIntent } from './navigation.js';
+import { agentIdFromIntent, subscribeNavigation } from './navigation.js';
 import { isSidebar, isWorkbench, SHELL } from './shell.js';
 
 const $root = () => document.getElementById('root');
@@ -217,7 +217,7 @@ async function boot() {
       state.engine = e.payload;
       renderWorkbenchMonitorOnly();
     });
-    await listen('deeplink://navigate', async (e) => {
+    await subscribeNavigation(async (e) => {
       const intent = String(e.payload?.action ?? '');
       if (intent.startsWith('Agent(')) {
         const id = agentIdFromIntent(intent);
@@ -267,7 +267,7 @@ async function boot() {
     // 由形态各自决定怎么呈现——这里两份壳各写一小段，
     // 而不是让 Rust 再写一份「显示哪个窗口、切到哪一页」的规则
     // （两份规则迟早只改一处）。
-    await listen('deeplink://navigate', async (e) => {
+    await subscribeNavigation(async (e) => {
       const intent = String(e.payload?.action ?? '');
       // 侧边栏是常驻的，没有展开/收起——只有路由有意义
       if (intent.startsWith('Analytics')) {
@@ -317,7 +317,7 @@ async function boot() {
     scheduleRender();
   });
   await listen('tray://toggle', () => (state.expanded ? collapse() : expand()));
-  await listen('deeplink://navigate', async (e) => {
+  await subscribeNavigation(async (e) => {
     const intent = String(e.payload?.action ?? '');
     if (intent.startsWith('Toggle')) {
       await (state.expanded ? collapse() : expand());

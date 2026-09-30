@@ -6,6 +6,7 @@ mod cleaner;
 mod cli;
 mod cost;
 mod deeplink;
+mod navigation;
 mod duration;
 mod selfreport;
 #[cfg(test)]
@@ -79,6 +80,27 @@ fn get_boot_args() -> BootArgs {
         demo: args.iter().any(|a| a == "--demo"),
         expand: args.iter().any(|a| a == "--expand"),
         route,
+    }
+}
+
+// 每个窗口在订阅完成后领取自己的启动期意图。空队列才切到实时投递。
+#[tauri::command]
+fn drain_navigation(
+    window: tauri::WebviewWindow,
+    mailbox: State<Mutex<navigation::Mailbox>>,
+) -> Vec<String> {
+    mailbox.lock().unwrap().drain(window.label())
+}
+
+fn send_navigation(app: &AppHandle, action: &deeplink::Action) {
+    let intent = format!("{action:?}");
+    let targets = app.state::<Mutex<navigation::Mailbox>>()
+        .lock().unwrap().enqueue(&intent);
+    // 不持有队列锁调用窗口 API。
+    for label in targets {
+        if let Err(error) = app.emit_to(label, "deeplink://navigate", serde_json::json!({"action": intent})) {
+            log_line(&format!("[deeplink] 导航投递失败 {label}: {error}"));
+        }
     }
 }
 
@@ -1678,16 +1700,12 @@ pub fn handle_deep_link(app: &AppHandle, url: &str) -> bool {
         // 两个窗口都建好了才谈「显示哪个」——这里只发意图，
         // 由前端按 `shell_mode` 决定显示岛还是侧边栏，
         // 免得 Rust 侧再写一份显隐规则（两份规则迟早只改一处）
-        let _ = app.emit("deeplink://navigate", serde_json::json!({
-            "action": format!("{action:?}"),
-        }));
+        send_navigation(app, &action);
     } else if matches!(action, deeplink::Action::Workbench) {
         // 工作台是独立窗口：把它叫到前面。**同时**把意图发给前端，
         // 这样「已开着工作台时收到一个 agent 深链」会推进内容而不是白等一次显隐。
         reveal_workbench_window(app);
-        let _ = app.emit("deeplink://navigate", serde_json::json!({
-            "action": format!("{action:?}"),
-        }));
+        send_navigation(app, &action);
     } else if let deeplink::Action::Settings(tab) = &action {
         // 设置是独立窗口：先把它显示出来，岛保持当前形态
         if let Some(win) = app.get_webview_window("settings") {
@@ -1751,6 +1769,7 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .manage(shared.clone())
+        .manage(Mutex::new(navigation::Mailbox::default()))
         .on_window_event(|window, event| {
             // 标准关闭按钮收起工作台，托盘和重复打开仍可唤回原窗口。
             if window.label() == "workbench" {
@@ -2011,6 +2030,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_boot_args,
+            drain_navigation,
             get_settings,
             save_settings,
             remote_status,
@@ -2588,12 +2608,15 @@ mod build_env_sentinel {
     fn island_boot_handles_deep_link_navigation() {
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../scripts/test-island-deeplink.mjs");
-        let output = std::process::Command::new("node")
-            .arg(script)
-            .output()
-            .expect("深链 UI 回归需要 node");
-        assert!(output.status.success(), "深链 UI 回归失败：\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        for cold_start in ["0", "1"] {
+            let output = std::process::Command::new("node")
+                .arg(&script)
+                .env("TEST_COLD_NAVIGATION", cold_start)
+                .output()
+                .expect("深链 UI 回归需要 node");
+            assert!(output.status.success(), "深链 UI 回归失败（cold={cold_start}）：\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     fn tauri_conf() -> String {
