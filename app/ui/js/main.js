@@ -36,6 +36,12 @@ const state = {
 export const getState = () => state;
 export const setState = (patch) => Object.assign(state, patch);
 
+export async function saveSettings(patch) {
+  const settings = await invoke('patch_settings', { patch });
+  state.settings = settings;
+  return settings;
+}
+
 // MARK: 主题
 
 /// 把「形态 / 外观 / 紧凑」三件布局事实一起挂到 `<html>` 的类上。
@@ -46,7 +52,8 @@ export function applyLayout() {
   const root = document.documentElement;
   root.classList.toggle('compact', state.settings?.compact_view === true);
   applyAppearance(state.settings?.appearance ?? 'system');
-  root.className = `${root.className} ${edgeClass()}`;
+  ['top', 'bottom', 'left', 'right'].forEach(edge => root.classList.remove(`edge-${edge}`));
+  root.classList.add(edgeClass());
 }
 
 export function applyAppearance(mode) {
@@ -205,6 +212,27 @@ async function boot() {
   }).catch(() => {});
 
   const { listen } = await import('./tauri.js');
+  await listen('settings://changed', async (event) => {
+    state.settings = event.payload;
+    document.querySelectorAll('[data-set]').forEach((control) => {
+      if (control === document.activeElement) return;
+      const value = state.settings[control.dataset.set];
+      if (control.type === 'checkbox') control.checked = !!value;
+      else if (value !== undefined) control.value = value;
+    });
+    applyLayout();
+    applyEdge();
+    if (SHELL === 'island') {
+      if (!state.expanded) {
+        renderSliver();
+        const size = sliverSize(state.settings.dock_edge);
+        await invoke('place_island', { width: size.w, height: size.h });
+      } else if (state.route === 'list') {
+        renderCard();
+        await resizeToContent();
+      }
+    }
+  });
   if (isWorkbench()) {
     // 工作台默认概览，启动路由也可进入独立功能页。
     // 数据型面板进入时填充，采样只更新实时区域，保留表单草稿。

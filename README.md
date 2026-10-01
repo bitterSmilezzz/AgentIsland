@@ -4,7 +4,7 @@
 
 **main 使用 Rust/Tauri 开发。** Rust 负责监控、会话解析、配置与 CLI；静态 Web UI 提供灵动岛、贴边侧栏及工作台，macOS 使用系统窗口控制和材质。SwiftUI 与旧 WPF 实现保存在 [归档分支](https://github.com/bitterSmilezzz/AgentIsland/tree/codex/archive-swiftui)，归档规则见 [ADR 0016](docs/adr/0016-rust-only-main.md)。
 
-> 本文档描述 **v0.0.280** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.281** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 
@@ -15,7 +15,7 @@
 - **用量**：读取本机 JSONL / SQLite 等记录，统计最近 24 小时与累计净消耗；缓存读取不重复计入，费用估算用 `~` 标记。
 - **Codex 档位**：管理本机模型与 provider 配置、切换和备份；档位只保存环境变量名，密钥由环境或系统钥匙串提供。
 - **待办与报告**：本机待办列表、Markdown / CSV 用量报告与复制；CLI 可导出文件。
-- **通知**：确认、完成和成本事件提示；远程通知可选，默认关闭。
+- **通知**：确认、完成和成本事件提示；远程通知可选，默认关闭，支持 ntfy、HTTP 模板与 SMTP 465。页面提供手动发送测试和近期结果，IM 服务通过各自的 HTTP 模板配置。
 
 ## 安装与使用
 

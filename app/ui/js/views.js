@@ -1,7 +1,7 @@
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
 import { isIsland, isWorkbench } from './shell.js';
-import { getState, setState, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge, applyLayout } from './main.js';
+import { getState, setState, saveSettings, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge, applyLayout } from './main.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -653,7 +653,7 @@ function bindCardEvents(eng, st) {
     const dark = document.documentElement.classList.contains('theme-dark');
     st.settings.appearance = dark ? 'light' : 'dark';
     applyAppearance(st.settings.appearance);
-    invoke('save_settings', { newSettings: st.settings }).catch(() => {});
+    saveSettings({ appearance: st.settings.appearance }).catch(() => {});
     renderCard();
   });
 
@@ -1253,10 +1253,17 @@ export function bindAgents() {
   document.querySelectorAll('[data-agent-toggle]').forEach((el) => {
     el.addEventListener('change', async () => {
       const id = el.dataset.agentToggle;
+      const previousDisabled = [...st.settings.disabled_agents];
       const set = new Set(st.settings.disabled_agents);
       if (el.checked) set.delete(id); else set.add(id);
       st.settings.disabled_agents = [...set];
-      await invoke('save_settings', { newSettings: st.settings }).catch(() => {});
+      try { await saveSettings({ disabled_agents: st.settings.disabled_agents }); }
+      catch (error) {
+        st.settings.disabled_agents = previousDisabled;
+        el.checked = !previousDisabled.includes(id);
+        el.closest('.sb-agent-toggle')?.appendChild(notice(`保存失败：${error}`));
+        return;
+      }
       // 引擎下一拍就会按新集合过滤（状态是 `engine://tick` 推来的）。
       // 这里立刻重画是为了不让人对着一个已经改了、看起来却没动的界面发愣。
       if (isWorkbench()) renderWorkbench(); else renderSidebar();
@@ -1310,10 +1317,11 @@ export async function hydrateRemote() {
   // 不合成一句「有问题」：用户要能分辨「没配」与「配了但不安全」
   const notices = [];
   if (remote.readiness) notices.push(`未配齐：${remote.readiness}`);
-  if (remote.insecure_endpoint) notices.push(`端点不安全：${remote.insecure_endpoint}`);
-  if (remote.quiet_now) notices.push('此刻落在静默时段内');
-  if (remote.away_now) notices.push(`在场判定：${remote.away_reason}`);
-  if (remote.unrecognized_kind) notices.push(`设置里的通道「${remote.unrecognized_kind}」认不出，已回落到 ${remote.label}`);
+  if (remote.plaintextSecret) notices.push(`配置警告：${remote.plaintextSecret}`);
+  if (remote.insecureEndpoint) notices.push(`端点不安全：${remote.insecureEndpoint}`);
+  if (remote.quietNow) notices.push('此刻落在静默时段内');
+  if (remote.awayNow) notices.push(`在场判定：${remote.awayReason}`);
+  if (remote.unrecognizedKind) notices.push(`设置里的通道「${remote.unrecognizedKind}」认不出，已回落到 ${remote.label}`);
 
   root.innerHTML = `
     <div class="sb-note">${escapeHtml(remote.limitations ?? '')}</div>
@@ -1333,15 +1341,18 @@ export async function hydrateRemote() {
 
     <div class="sb-group">
       <div class="sb-group-title">密钥（存进系统钥匙串）</div>
-      <div class="sb-hint">条目名 <code>${escapeHtml(remote.secret_name)}</code>；界面与日志只显示掩码，读不回真值。</div>
+      <div class="sb-hint">条目名 <code>${escapeHtml(remote.secretName)}</code>；界面与日志只显示掩码，读不回真值。</div>
       <label class="sb-set"><span class="sb-set-label">密钥</span>
         <span class="sb-set-ctl"><input type="password" data-remote-secret placeholder="留空即清除" autocomplete="off"></span></label>
       <div class="sb-foot">
         <button type="button" class="mini-btn" data-remote-save-secret>保存密钥</button>
         <button type="button" class="mini-btn" data-remote-del-secret>删除</button>
         <button type="button" class="mini-btn" data-remote-preview>发送预览</button>
+        <button type="button" class="mini-btn" data-remote-test>发送测试通知</button>
       </div>
       <div data-remote-out class="sb-note"></div>
+      <div data-remote-history class="sb-note"></div>
+      <button type="button" class="mini-btn" data-remote-refresh>刷新发送记录</button>
     </div>
 
     <div class="sb-group">
@@ -1366,9 +1377,10 @@ export async function hydrateRemote() {
       <label class="sb-set"><span class="sb-set-label">无输入判定</span>
         <span class="sb-set-ctl"><input type="number" data-remote-policy="away_idle_seconds" min="30" max="3600"
           value="${escapeHtml(String(policy.away_idle_seconds ?? 120))}"><span class="sb-unit">秒</span></span></label>
-      <div class="sb-hint">Rust 侧还没接 macOS 在场信号层，今天「人不在」一律 fail-open 判成已离开。</div>
+      <div class="sb-hint">macOS 根据显示器睡眠和无输入时长判断离开；锁屏信号暂未接入。信号不可用时按已离开放行。</div>
     </div>`;
   bindRemote();
+  hydrateRemoteHistory();
   scheduleLayoutLog();
 }
 
@@ -1384,6 +1396,16 @@ function remoteField(kind, field, cfg) {
       placeholder="${escapeHtml(field.ph ?? '')}" value="${escapeHtml(String(cfg[field.key] ?? ''))}"></span></label>`;
 }
 
+export async function hydrateRemoteHistory() {
+  const box = document.querySelector('[data-remote-history]');
+  if (!box) return;
+  try {
+    const recent = await invoke('remote_recent');
+    if (!box.isConnected) return;
+    box.innerHTML = recent.length ? recent.map(entry => `<div class="sb-hint">${escapeHtml(entry.title)} · ${escapeHtml(entry.text)}</div>`).join('') : '<div class="sb-hint">尚无发送记录</div>';
+  } catch (error) { if (box.isConnected) box.textContent = `读取记录失败：${error}`; }
+}
+
 function bindRemote() {
   const st = getState();
   st.settings = st.settings ?? {};
@@ -1392,13 +1414,23 @@ function bindRemote() {
 
   const persist = async (out) => {
     try {
-      await invoke('save_settings', { newSettings: st.settings });
+      await saveSettings({ remote_kind: st.settings.remote_kind, remote_channels: st.settings.remote_channels, remote_policy: st.settings.remote_policy });
       out.innerHTML = '<div class="sb-hint">已保存</div>';
     } catch (error) {
       out.innerHTML = `<div class="sb-hint sb-warn">保存失败：${escapeHtml(String(error))}</div>`;
     }
   };
   const out = document.querySelector('[data-remote-out]') ?? document.createElement('div');
+
+  document.querySelector('[data-remote-refresh]')?.addEventListener('click', hydrateRemoteHistory);
+  document.querySelector('[data-remote-test]')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    out.textContent = '正在测试发送…';
+    try { out.textContent = await invoke('remote_send_test'); }
+    catch (error) { out.textContent = `发送失败：${error}`; }
+    finally { button.disabled = false; await hydrateRemoteHistory(); }
+  });
 
   document.querySelector('[data-remote-kind]')?.addEventListener('change', async (e) => {
     st.settings.remote_kind = e.target.value;
@@ -1431,7 +1463,7 @@ function bindRemote() {
     const input = document.querySelector('[data-remote-secret]');
     const result = await invoke('remote_secret_set', { value: input?.value ?? '' })
       .catch((e) => ({ kind: 'Failed', reason: String(e) }));
-    if (result.kind === 'Ok') {
+    if (result.kind === 'ok') {
       input.value = '';
       out.innerHTML = '<div class="sb-hint">密钥已写入钥匙串</div>';
       await hydrateRemote();
@@ -1527,7 +1559,7 @@ export function pageSettings() {
     </div>`).join('');
 
   return `<div class="sb-page" data-settings-root>
-    <div class="sb-note">改完立即生效，不需要重启。数值超出范围会被自动夹回合法区间。</div>
+    <div class="sb-note">保存后无需重启，监控阈值在下一次采样生效。数值超出范围会被自动夹回合法区间。</div>
     ${body}
   </div>`;
 }
@@ -1583,10 +1615,13 @@ export function bindSettings() {
         el.value = value;
       }
       st.settings = st.settings ?? {};
+      const previousSettings = { ...st.settings };
       st.settings[key] = value;
       try {
-        await invoke('save_settings', { newSettings: st.settings });
+        await saveSettings({ [key]: value });
         if (key === 'shell_mode') await invoke('set_shell_mode', { mode: String(value) });
+        if (key === 'sidebar_edge') await invoke('set_sidebar_edge', { edge: String(value) });
+        if (field.type === 'number') el.value = st.settings[key];
         // 形态 / 外观 / 紧凑 / 微细条 / 贴边：五件都走同一条布局通道
         if (key === 'appearance' || key === 'compact_view' || key === 'dock_edge') {
           applyLayout();
@@ -1610,6 +1645,9 @@ export function bindSettings() {
           st.hotkeyAccel = st.hotkeyAccel ?? 'Cmd/Ctrl+Shift+I';
         }
       } catch (error) {
+        st.settings = previousSettings;
+        if (field.type === 'bool') el.checked = !!previousSettings[key];
+        else el.value = previousSettings[key];
         el.closest('.sb-set')?.appendChild(notice(`保存失败：${error}`));
       }
     };
@@ -1618,7 +1656,10 @@ export function bindSettings() {
 }
 
 function notice(text) {
-  return `<div class="sb-hint sb-warn">${escapeHtml(text)}</div>`;
+  const node = document.createElement('div');
+  node.className = 'sb-hint sb-warn';
+  node.textContent = text;
+  return node;
 }
 
 export function pageSettingsHeaderLabel() {

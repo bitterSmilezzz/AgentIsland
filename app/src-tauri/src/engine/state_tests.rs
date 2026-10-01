@@ -651,3 +651,54 @@ fn a_negative_or_absurd_budget_from_a_hand_edited_file_is_normalized_away() {
     settings.daily_token_budget = 9_999_999_999;
     assert_eq!(settings.normalized().daily_token_budget, 1_000_000_000);
 }
+
+#[test]
+fn changed_cpu_threshold_controls_real_decision_path() {
+    let mut replay = Replay::new();
+    replay.engine.settings.cpu_threshold = 23.0;
+    assert_eq!(replay.sample(100_000, true, Some(20.0), None), ActivityLevel::Idle);
+    assert_eq!(replay.sample(101_000, true, Some(24.0), None), ActivityLevel::Working);
+    assert_eq!(replay.sample(102_000, true, Some(20.0), None), ActivityLevel::Working);
+    assert_eq!(replay.sample(112_000, true, Some(20.0), None), ActivityLevel::Idle);
+}
+
+#[test]
+fn automatic_outbound_uses_presence_and_never_forwards_external_events() {
+    struct OfflineTransport;
+    impl crate::notifier::Transport for OfflineTransport {
+        fn perform(&self, _: &crate::render::Request) -> crate::notifier::Outcome {
+            panic!("在场或外部投递的事件不应外发");
+        }
+    }
+    let mut replay = Replay::new();
+    replay.engine.notifier = crate::notifier::Notifier::with_transport(Box::new(OfflineTransport));
+    replay.engine.settings.remote_policy.master_enabled = true;
+    replay.engine.settings.remote_policy.only_when_away = true;
+    let mut event = AgentTaskEvent {
+        id: "fixture-notify".into(), agent_id: "fixture-agent".into(), agent_name: "Fixture".into(),
+        event_type: "attention".into(), timestamp: 100_000, message: None, detail: None,
+        duration: 0.0, externally_delivered: true,
+    };
+    replay.engine.push_event(event.clone());
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(replay.engine.notifier.recent().is_empty());
+    event.externally_delivered = false;
+    replay.engine.notify_outbound_with_presence(&event, crate::remote::PresenceSignals {
+        screen_locked: false, display_asleep: false, idle_seconds: Some(1.0),
+    });
+    for _ in 0..100 {
+        if !replay.engine.notifier.recent().is_empty() { break; }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(matches!(replay.engine.notifier.recent()[0].outcome, crate::notifier::Outcome::Suppressed { .. }));
+}
+
+#[test]
+fn high_cpu_evidence_is_updated_even_during_attention() {
+    let mut replay = Replay::new();
+    replay.engine.settings.runaway_cpu_threshold = 80.0;
+    replay.sample(100_000, true, Some(90.0), Some(Signal::Attention("fixture-attention".into(), "fixture".into())));
+    assert_eq!(replay.engine.high_cpu_since.get(&replay.profile.id), Some(&100_000));
+    replay.sample(101_000, true, Some(20.0), Some(Signal::Attention("fixture-attention".into(), "fixture".into())));
+    assert!(!replay.engine.high_cpu_since.contains_key(&replay.profile.id));
+}

@@ -18,12 +18,18 @@ pub struct FileActivityResult {
 }
 
 /// 会话目录扫描：找最近写入的会话文件（JSONL/JSON/DB/LOG）。
-/// 目录结果带节流缓存：刚活动过 2s，安静 6s。
+/// 最新写入与活跃计数共用 2s 元数据缓存，信号内容仍由解析器按采样读取。
 pub struct FileMonitor {
-    cache: HashMap<String, (std::time::Instant, Option<SystemTime>, Option<String>)>,
+    cache: HashMap<String, DirectoryScan>,
 }
 
-const MAX_DEPTH: usize = 3;
+struct DirectoryScan {
+    at: std::time::Instant,
+    files: Vec<(SystemTime, String)>,
+}
+
+// Codex sessions/<year>/<month>/<day>/<rollout> 的文件深度为 4。
+const MAX_DEPTH: usize = 4;
 const SKIP_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -56,7 +62,7 @@ impl FileMonitor {
             }
             // 活跃会话数**按目录各自数再相加**（Swift `activeSessionCounts` 逐目录产出一份）。
             // 不这么做的后果是跨目录时重复计：同一场会话在两个根下各被数一次。
-            active_sessions += count_active_sessions(root, active_window_secs);
+            active_sessions += active_count(&self.cache[root].files, active_window_secs);
         }
         FileActivityResult {
             latest_write: latest,
@@ -83,56 +89,14 @@ impl FileMonitor {
     }
 
     fn probe_dir(&mut self, dir: &str) -> (Option<SystemTime>, Option<String>) {
-        if let Some((at, lw, lf)) = self.cache.get(dir) {
-            let ttl = if at.elapsed().as_secs() < 30 {
-                2
-            } else {
-                6
-            };
-            if at.elapsed().as_secs() < ttl {
-                return (*lw, lf.clone());
-            }
+        if !self.cache.get(dir).is_some_and(|scan| scan.at.elapsed().as_secs_f64() < 2.0) {
+            self.cache.insert(dir.to_string(), scan_directory(dir));
         }
-        let mut latest: Option<SystemTime> = None;
-        let mut latest_file: Option<String> = None;
-        let mut count = 0usize;
-        for entry in WalkDir::new(dir)
-            .max_depth(MAX_DEPTH)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                e.depth() == 0 || !SKIP_DIRS.contains(&name.as_str())
-            })
-        {
-            let Ok(entry) = entry else { continue };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let ext = entry
-                .path()
-                .extension()
-                .map(|e| e.to_string_lossy().to_lowercase())
-                .unwrap_or_default();
-            if !matches!(ext.as_str(), "jsonl" | "json" | "db" | "sqlite" | "log") {
-                continue;
-            }
-            count += 1;
-            if count > 4000 {
-                break;
-            }
-            if let Ok(meta) = entry.metadata() {
-                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                if latest.is_none() || mtime > latest.unwrap() {
-                    latest = Some(mtime);
-                    latest_file = Some(entry.path().to_string_lossy().to_string());
-                }
-            }
-        }
-        self.cache
-            .insert(dir.to_string(), (std::time::Instant::now(), latest, latest_file.clone()));
-        (latest, latest_file)
+        self.cache[dir].files.iter().max_by_key(|(mtime, _)| *mtime)
+            .map(|(mtime, path)| (Some(*mtime), Some(path.clone())))
+            .unwrap_or((None, None))
     }
+
 }
 
 /// 「最近活动」这一列（Swift `ActivityEngine.formatAgo` 同口径）。
@@ -167,30 +131,33 @@ pub fn time_ago_text(ago_secs: Option<f64>) -> String {
 /// **同一个来源**——否则用户在设置里调了窗口，两边会按不同的数判「有没有活跃会话」。
 ///
 /// 只数**文件**：目录的 mtime 会被创建/删除子项改动，而那不代表有会话在跑。
-fn count_active_sessions(root: &str, window_secs: f64) -> usize {
+fn active_count(files: &[(SystemTime, String)], window_secs: f64) -> usize {
+    if window_secs <= 0.0 { return 0; }
     let now = SystemTime::now();
-    let cutoff = now
-        .checked_sub(std::time::Duration::from_secs_f64(window_secs.max(0.0)))
-        .unwrap_or(now);
-    let mut count = 0usize;
-    let walker = walkdir::WalkDir::new(root)
-        .max_depth(MAX_DEPTH)
-        .into_iter()
-        .filter_entry(|e| {
-            let name = e.file_name().to_string_lossy();
-            !SKIP_DIRS.contains(&name.as_ref())
-        });
-    for entry in walker.flatten() {
-        if !entry.file_type().is_file() {
-            continue;
+    let cutoff = now.checked_sub(std::time::Duration::from_secs_f64(window_secs.max(0.0))).unwrap_or(now);
+    files.iter().filter(|(modified, _)| *modified >= cutoff && *modified <= now).count()
+}
+
+fn scan_directory(root: &str) -> DirectoryScan {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(root).max_depth(MAX_DEPTH).follow_links(false).into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || !SKIP_DIRS.contains(&entry.file_name().to_string_lossy().as_ref()))
+    {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() { continue; }
+        let ext = entry.path().extension().map(|ext| ext.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if !matches!(ext.as_str(), "jsonl" | "json" | "db" | "sqlite" | "log") { continue; }
+        if let Some(modified) = entry.metadata().ok().and_then(|metadata| metadata.modified().ok()) {
+            files.push((modified, entry.path().to_string_lossy().into_owned()));
         }
-        let Ok(meta) = entry.metadata() else { continue };
-        let Ok(modified) = meta.modified() else { continue };
-        if modified >= cutoff {
-            count += 1;
-        }
+        if files.len() >= 4000 { break; }
     }
-    count
+    DirectoryScan { at: std::time::Instant::now(), files }
+}
+
+#[cfg(test)]
+fn count_active_sessions(root: &str, window_secs: f64) -> usize {
+    active_count(&scan_directory(root).files, window_secs)
 }
 
 #[cfg(test)]
@@ -234,6 +201,47 @@ mod active_session_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.jsonl"), b"{}").unwrap();
         assert_eq!(count_active_sessions(dir.to_str().unwrap(), 0.0), 0);
+    }
+
+    #[test]
+    fn unrelated_files_are_not_active_sessions() {
+        let sandbox = crate::testutil::Sandbox::new("active-signal-only");
+        std::fs::write(sandbox.path().join("session.jsonl"), b"{}").unwrap();
+        std::fs::write(sandbox.path().join("image.png"), b"fixture").unwrap();
+        std::fs::write(sandbox.path().join("settings.txt"), b"fixture").unwrap();
+        assert_eq!(count_active_sessions(sandbox.path().to_str().unwrap(), 600.0), 1);
+    }
+
+    #[test]
+    fn latest_activity_and_counts_share_one_cached_scan() {
+        let sandbox = crate::testutil::Sandbox::new("shared-session-scan");
+        for index in 0..500 { std::fs::write(sandbox.path().join(format!("{index}.jsonl")), b"{}").unwrap(); }
+        let mut profile = crate::registry::builtin().remove(0);
+        let root = sandbox.path().to_string_lossy().into_owned();
+        profile.session_dirs = vec![root.clone()];
+        let mut monitor = FileMonitor::new();
+        let first = monitor.probe(&profile, 600.0);
+        let scanned_at = monitor.cache[&root].at;
+        assert_eq!(first.active_sessions, 500);
+        assert_eq!(monitor.probe_files(&profile).len(), 1);
+        assert_eq!(monitor.probe(&profile, 0.0).active_sessions, 0);
+        assert_eq!(monitor.cache[&root].at, scanned_at, "读候选和计数不能重复遍历目录");
+    }
+
+    #[test]
+    fn codex_date_partitioned_rollout_is_detected() {
+        let sandbox = crate::testutil::Sandbox::new("codex-partitioned-session");
+        let dated = sandbox.path().join("2026/10/01");
+        std::fs::create_dir_all(&dated).unwrap();
+        let rollout = dated.join("rollout-fixture.jsonl");
+        std::fs::write(&rollout, b"{}\n").unwrap();
+        let mut profile = crate::registry::builtin().into_iter().find(|profile| profile.id == "codex").unwrap();
+        profile.session_dirs = vec![sandbox.path().to_string_lossy().into_owned()];
+        let mut monitor = FileMonitor::new();
+        let result = monitor.probe(&profile, 600.0);
+        assert_eq!(result.active_sessions, 1, "Codex 的年/月/日目录必须可见");
+        assert_eq!(result.latest_file.as_deref(), rollout.to_str());
+        assert_eq!(monitor.probe_files(&profile), vec![rollout.to_string_lossy().into_owned()]);
     }
 
     fn filetime_set(path: &std::path::Path, when: std::time::SystemTime) {

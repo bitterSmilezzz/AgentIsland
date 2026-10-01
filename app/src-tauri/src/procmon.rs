@@ -1,13 +1,20 @@
 use crate::models::AgentProfile;
 use std::collections::HashMap;
 use std::time::Instant;
-use sysinfo::{Process, ProcessesToUpdate, System};
+use sysinfo::{ProcessesToUpdate, System};
 
 /// 进程表快照 + CPU 差分（sysinfo 内部就是两拍 refresh 之间的差分）。
 /// 第一拍没有窗口，CPU 返回「没测」（None），不谎报 0。
 pub struct ProcessMonitor {
     sys: System,
     last_refresh: Option<Instant>,
+    cpu_measured: bool,
+    rows: Vec<ObservedProcess>,
+}
+
+struct ObservedProcess {
+    hit: ProcHit,
+    cmdline: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,88 +38,52 @@ impl ProcessMonitor {
     pub fn new() -> Self {
         let mut sys = System::new();
         sys.refresh_processes(ProcessesToUpdate::All, true);
-        ProcessMonitor {
+        let mut monitor = ProcessMonitor {
             sys,
             last_refresh: Some(Instant::now()),
-        }
+            cpu_measured: false,
+            rows: Vec::new(),
+        };
+        monitor.rebuild_rows();
+        monitor
     }
 
     /// 刷新一拍。两次调用间隔即 CPU 差分窗口。
     pub fn refresh(&mut self) {
+        self.cpu_measured = self.last_refresh.is_some_and(|at| at.elapsed() >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
         self.last_refresh = Some(Instant::now());
+        self.rebuild_rows();
     }
 
     /// 按档案匹配进程（名字前缀族 + 命令行提示 + 路径排除）。
     pub fn match_profile(&self, profile: &AgentProfile) -> Vec<ProcHit> {
-        let mut hits: Vec<ProcHit> = Vec::new();
-        for (pid, proc_) in self.sys.processes() {
-            let raw_name = proc_.name().to_string_lossy().to_string();
-            let exe = proc_
-                .exe()
-                .map(|e| e.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let cmdline = proc_
-                .cmd()
-                .iter()
-                .map(|c| c.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !profile_matches(profile, &raw_name, &exe, &cmdline) {
-                continue;
-            }
-            let lower_raw = raw_name.to_lowercase();
-            let name = lower_raw
-                .strip_suffix(".exe")
-                .unwrap_or(&lower_raw)
-                .to_string();
-            let cpu = if self.last_refresh.is_some() {
-                Some(proc_.cpu_usage() as f64)
-            } else {
-                None
-            };
-            hits.push(ProcHit {
-                pid: pid.as_u32(),
-                ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
-                name,
-                exe_path: exe,
-                memory: proc_.memory(),
-                cpu,
-                is_zombie: proc_.status() == sysinfo::ProcessStatus::Zombie,
-            });
-        }
-        hits
+        self.rows.iter().filter(|row| profile_matches(profile, &row.hit.name, &row.hit.exe_path, &row.cmdline))
+            .map(|row| row.hit.clone()).collect()
     }
 
-    /// 整张进程表（不做档案匹配）。
-    ///
-    /// 进程树要用它：树是「谁派生谁」的结构，只给匹配到的那些进程建不出树来
-    /// （中间往往夹着 npm / node 这类不属于任何档案的进程）。
-    /// 名字归一化与 [`ProcessMonitor::match_profile`] 同一套（去 `.exe`、转小写）。
+    /// 同一拍的名字、路径和命令行只组装一次，各档案复用，避免逐档案重建整张进程表。
+    fn rebuild_rows(&mut self) {
+        self.rows = self.sys.processes().iter().map(|(pid, process)| {
+            let raw = process.name().to_string_lossy().to_lowercase();
+            ObservedProcess {
+                cmdline: process.cmd().iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join(" "),
+                hit: ProcHit {
+                    pid: pid.as_u32(),
+                    ppid: process.parent().map(|parent| parent.as_u32()).unwrap_or(0),
+                    name: raw.strip_suffix(".exe").unwrap_or(&raw).to_string(),
+                    exe_path: process.exe().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default(),
+                    memory: process.memory(),
+                    cpu: self.cpu_measured.then_some(process.cpu_usage() as f64),
+                    is_zombie: process.status() == sysinfo::ProcessStatus::Zombie,
+                },
+            }
+        }).collect();
+    }
+
+    /// 进程树读取与档案匹配共用本拍数据，PID 顺序固定。
     pub fn table(&self) -> Vec<ProcHit> {
-        let mut table: Vec<ProcHit> = Vec::with_capacity(self.sys.processes().len());
-        for (pid, proc_) in self.sys.processes() {
-            let raw = proc_.name().to_string_lossy().to_lowercase();
-            let name = raw.strip_suffix(".exe").unwrap_or(&raw).to_string();
-            let cpu = if self.last_refresh.is_some() {
-                Some(proc_.cpu_usage() as f64)
-            } else {
-                None
-            };
-            table.push(ProcHit {
-                pid: pid.as_u32(),
-                ppid: proc_.parent().map(|p| p.as_u32()).unwrap_or(0),
-                name,
-                exe_path: proc_
-                    .exe()
-                    .map(|e| e.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                memory: proc_.memory(),
-                cpu,
-                is_zombie: proc_.status() == sysinfo::ProcessStatus::Zombie,
-            });
-        }
-        // 顺序固定：sysinfo 的 HashMap 迭代顺序不保证，而树的同层顺序会反映到界面上
+        let mut table: Vec<_> = self.rows.iter().map(|row| row.hit.clone()).collect();
         table.sort_by_key(|hit| hit.pid);
         table
     }
@@ -182,3 +153,15 @@ pub fn memory_text(bytes: u64) -> String {
 
 /// 引擎用的快照缓存类型
 pub type ProcTable = HashMap<u32, ProcHit>;
+
+#[cfg(test)]
+mod cpu_window_regressions {
+    use super::*;
+    #[test]
+    fn one_process_snapshot_has_no_cpu_difference_window() {
+        let monitor = ProcessMonitor::new();
+        let table = monitor.table();
+        assert!(!table.is_empty());
+        assert!(table.iter().all(|hit| hit.cpu.is_none()), "首次采样不能伪报 CPU 0 或旧读数");
+    }
+}

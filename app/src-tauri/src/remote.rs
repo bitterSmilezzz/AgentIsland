@@ -186,19 +186,43 @@ impl Default for ChannelConfig {
     }
 }
 
+// 接受 Swift 的 camelCase 与 Rust/Web 已落盘的 snake_case；写出继续遵守现有 Web 契约。
+fn wire_value<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    let alias = match key {
+        "urlTemplate" => "url_template",
+        "bodyTemplate" => "body_template",
+        "smtpHost" => "smtp_host",
+        "smtpPort" => "smtp_port",
+        "smtpUser" => "smtp_user",
+        "smtpTo" => "smtp_to",
+        "includeActionDetail" => "include_action_detail",
+        "masterEnabled" => "master_enabled",
+        "sendCompleted" => "send_completed",
+        "sendAttention" => "send_attention",
+        "sendCostSpike" => "send_cost_spike",
+        "throttleSeconds" => "throttle_seconds",
+        "quietStart" => "quiet_start",
+        "quietEnd" => "quiet_end",
+        "onlyWhenAway" => "only_when_away",
+        "awayIdleSeconds" => "away_idle_seconds",
+        _ => key,
+    };
+    map.get(key).or_else(|| map.get(alias))
+}
+
 fn text(map: &Map<String, Value>, key: &str) -> String {
-    map.get(key)
+    wire_value(map, key)
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string()
 }
 
 fn flag(map: &Map<String, Value>, key: &str, fallback: bool) -> bool {
-    map.get(key).and_then(|v| v.as_bool()).unwrap_or(fallback)
+    wire_value(map, key).and_then(|v| v.as_bool()).unwrap_or(fallback)
 }
 
 fn integer(map: &Map<String, Value>, key: &str, fallback: i64) -> i64 {
-    map.get(key).and_then(|v| v.as_i64()).unwrap_or(fallback)
+    wire_value(map, key).and_then(|v| v.as_i64()).unwrap_or(fallback)
 }
 
 /// 手写解码：每个字段各自回落默认值（与 Swift 的 `decodeIfPresent` 同口径）。
@@ -500,7 +524,7 @@ pub fn local_minutes_of_day(now_ms: i64) -> Option<u32> {
 ///
 /// 内容对齐 Swift `RemoteNotifySettingsView` 的三段 help 与默认说明，
 /// 外加 Rust 侧**特有**的一条：在场信号层还没接，那一条必须写出来而不是让人猜。
-pub const REMOTE_LIMITATIONS: &str = "默认只送「哪个 Agent + 什么状态」，不含命令内容、路径与消息原文。三个通道：ntfy（订阅一个主题名）、自定义 HTTP 模板（微信 Server酱 / PushPlus、企微、钉钉、飞书都走这条——密钥写 {key}、标题 {title}、正文 {body}）、邮箱 SMTP。邮箱只支持 465（隐式 TLS）：25/587 的 STARTTLS 需要在已建立的 TCP 上原地升级，本仓不提供，填了会被拦住并说明原因。密钥只进系统钥匙串，界面与日志只显示掩码，设置文件里零密钥。本平台暂未接入屏幕锁定与显示器睡眠信号，「人不在」一律按「已离开」放行（fail-open）。";
+pub const REMOTE_LIMITATIONS: &str = "默认只送「哪个 Agent + 什么状态」，不含命令内容、路径与消息原文。三个通道：ntfy（订阅一个主题名）、自定义 HTTP 模板（微信 Server酱 / PushPlus、企微、钉钉、飞书都走这条——密钥写 {key}、标题 {title}、正文 {body}）、邮箱 SMTP。邮箱只支持 465（隐式 TLS）：25/587 的 STARTTLS 需要在已建立的 TCP 上原地升级，本仓不提供，填了会被拦住并说明原因。密钥只进系统钥匙串，界面与日志只显示掩码，设置文件里零密钥。macOS 根据显示器睡眠与无输入时长判定离开，暂未读取锁屏标记；信号不可用时按已离开放行。";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -519,8 +543,7 @@ pub struct Status {
     pub policy: Policy,
     /// 此刻是否落在静默时段（本地时间取不到时按**不静默**降级）
     pub quiet_now: bool,
-    /// 此刻是否判成「人不在」。注意 Rust 还没接 macOS 的在场信号层，
-    /// 所以今天它一律是 `true`（fail-open），依据见 `away_reason`
+    /// 此刻是否判成「人不在」；页面与自动外发使用同一份平台采集规则。
     pub away_now: bool,
     pub away_reason: String,
     /// 事件类型 → 该类是否允许外发
@@ -955,5 +978,34 @@ mod tests {
         }
         // 同一时刻两次调用一致（取不到就只能是环境不支持，不是随机）
         assert_eq!(local_minutes_of_day(now), local_minutes_of_day(now));
+    }
+}
+
+#[cfg(test)]
+mod wire_roundtrip_regressions {
+    use super::*;
+    #[test]
+    fn saved_remote_policy_preserves_enabled_and_thresholds() {
+        let mut policy = Policy::default();
+        policy.master_enabled = true;
+        policy.throttle_seconds = 123;
+        policy.only_when_away = true;
+        let json = serde_json::to_string(&policy).unwrap();
+        let loaded: Policy = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.master_enabled, policy.master_enabled);
+        assert_eq!(loaded.throttle_seconds, 123);
+        assert_eq!(loaded.only_when_away, true);
+    }
+    #[test]
+    fn saved_smtp_and_http_fields_survive_roundtrip() {
+        let mut config = ChannelConfig::default();
+        config.smtp_host = "smtp.example.com".into();
+        config.smtp_user = "fixture-user".into();
+        config.smtp_to = "fixture-recipient".into();
+        config.url_template = "https://example.com/notify".into();
+        config.body_template = "{body}".into();
+        config.include_action_detail = true;
+        let loaded: ChannelConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(loaded, config);
     }
 }

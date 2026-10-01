@@ -443,6 +443,32 @@ impl ActivityEngine {
         // 进程在跑 ⇒ 续上连续观测窗口（首次插入即起点）
         self.observed_running_since.entry(key.clone()).or_insert(now);
 
+        // 资源证据独立于活动等级；确认/完成的提前返回也不能跳过它。
+        // 熔断：CPU 连续 70% 以上达 5 分钟。阈值只从 health 那一个来源取——
+        // 此前这里和健康度判定各写一遍 70.0 / 300_000，改一处就会让
+        // 「告警会响」与「健康度说卡死」对不上
+        if let Some(c) = cpu {
+            // 开关关掉只关**告警**，不清 `high_cpu_since`：持续高负载的证据要留着，
+            // 否则「健康度说卡死」与「告警不响」会变成两个互相矛盾的结论。
+            if c >= self.settings.runaway_cpu_threshold {
+                let since = *self.high_cpu_since.entry(key.clone()).or_insert(now);
+                if now - since >= (self.settings.runaway_duration_threshold * 1000.0) as i64
+                    && self.settings.runaway_cpu_alert
+                {
+                    self.raise_cost_spike(
+                        profile,
+                        pid,
+                        &format!("CPU 持续 {:.0}% 已超过 {} 分钟", c, (now - since) / 60_000),
+                        now,
+                        "cpu",
+                    );
+                }
+            } else {
+                self.high_cpu_since.remove(&key);
+            }
+        }
+
+
         // 强语义：attention 优先（同一指纹只提醒一次）
         if let Some(Signal::Attention(fp, message)) = &probe.signal {
             let fp = fp.clone();
@@ -552,30 +578,6 @@ impl ActivityEngine {
             self.last_work_signal_at.remove(&key);
             ActivityLevel::Idle
         };
-
-        // 熔断：CPU 连续 70% 以上达 5 分钟。阈值只从 health 那一个来源取——
-        // 此前这里和健康度判定各写一遍 70.0 / 300_000，改一处就会让
-        // 「告警会响」与「健康度说卡死」对不上
-        if let Some(c) = cpu {
-            // 开关关掉只关**告警**，不清 `high_cpu_since`：持续高负载的证据要留着，
-            // 否则「健康度说卡死」与「告警不响」会变成两个互相矛盾的结论。
-            if c >= self.settings.runaway_cpu_threshold {
-                let since = *self.high_cpu_since.entry(key.clone()).or_insert(now);
-                if now - since >= (self.settings.runaway_duration_threshold * 1000.0) as i64
-                    && self.settings.runaway_cpu_alert
-                {
-                    self.raise_cost_spike(
-                        profile,
-                        pid,
-                        &format!("CPU 持续 {:.0}% 已超过 {} 分钟", c, (now - since) / 60_000),
-                        now,
-                        "cpu",
-                    );
-                }
-            } else {
-                self.high_cpu_since.remove(&key);
-            }
-        }
 
         // Token 暴涨告警：按「每分钟净增量」判定（与 macOS 端口径一致）；
         // 24h 累计值会长期越过阈值，不能作为触发条件
@@ -694,6 +696,11 @@ impl ActivityEngine {
     /// `completed` 的 `seconds` 是「本次任务用时」：此刻 `work_started_at` 还没被清
     /// （`decide_level` 里先 `push_event` 再 `remove`），正好拿得到；其余类型按「刚刚」。
     fn notify_outbound(&mut self, event: &AgentTaskEvent) {
+        if event.externally_delivered { return; }
+        self.notify_outbound_with_presence(event, crate::power::presence_signals());
+    }
+
+    fn notify_outbound_with_presence(&mut self, event: &AgentTaskEvent, presence: remote::PresenceSignals) {
         let Some(kind) = remote::EventKind::parse(&event.event_type) else {
             return;
         };
@@ -708,6 +715,7 @@ impl ActivityEngine {
         let mut inputs = render::Inputs::new(event.agent_name.clone(), kind, seconds);
         inputs.agent_id = event.agent_id.clone();
         inputs.message = event.message.clone();
+        inputs.action_detail = event.detail.clone();
 
         let (channel, _) = remote::resolve_kind(Some(self.settings.remote_kind.as_str()));
         let config = self
@@ -727,8 +735,7 @@ impl ActivityEngine {
             channel,
             config,
             remote::Now::at(event.timestamp),
-            // Rust 还没接 macOS 的在场信号层：按 fail-open 判成「人不在」
-            remote::PresenceSignals::unavailable(),
+            presence,
             false);
     }
 

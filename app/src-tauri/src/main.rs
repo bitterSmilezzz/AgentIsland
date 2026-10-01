@@ -110,13 +110,22 @@ fn get_settings(state: State<SharedEngine>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<SharedEngine>, app: AppHandle, new_settings: Settings) {
-    let mut e = state.lock().unwrap();
-    e.settings = new_settings.normalized();
-    let s = e.settings.clone();
-    drop(e);
-    s.save();
-    apply_window_appearance(&app, &s.appearance);
+fn save_settings(state: State<SharedEngine>, app: AppHandle, new_settings: Settings) -> Result<Settings, String> {
+    patch_settings(state, app, serde_json::to_value(new_settings).map_err(|error| error.to_string())?)
+}
+
+#[tauri::command]
+fn patch_settings(state: State<SharedEngine>, app: AppHandle, patch: serde_json::Value) -> Result<Settings, String> {
+    let settings = {
+        let mut engine = state.lock().unwrap();
+        let settings = engine.settings.patched(patch)?;
+        settings.try_save_to(&crate::settings::config_dir()).map_err(|error| error.to_string())?;
+        engine.settings = settings.clone();
+        settings
+    };
+    apply_window_appearance(&app, &settings.appearance);
+    let _ = app.emit("settings://changed", &settings);
+    Ok(settings)
 }
 
 /// 系统材质和 Web 内容使用同一外观；跟随系统时取消强制主题。
@@ -581,11 +590,7 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
 
 /// 外发状态快照（设置页用）。**不含任何密钥值**——`has_secret` 是布尔，
 /// 凭据只读钥匙串条目名，值永远不经过这里（ADR 0009）。
-/// 钥匙串读取本轮未接：ad-hoc 签名下每次出包代码标识都变，取「存在性」也可能弹窗，
-/// 所以先如实报 `false`，而不是假装查过。
-/// 「发送预览」：**真发之前**让界面看见哪些字节会离开这台机器。
-/// 密钥本轮一律传 `None`（Rust 侧还没有钥匙串），预览里 `{key}` 显示成掩码，
-/// 而不是假装查到了值。
+/// 预览不读取密钥；{key} 保持掩码，实际发送在策略放行后由工作线程读取钥匙串。
 #[tauri::command]
 fn remote_preview(
     state: State<SharedEngine>,
@@ -636,6 +641,28 @@ fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
     // 节流状态在 notifier 里，不在判定层：这里补上
     snapshot.throttled = engine.notifier.throttle_keys();
     snapshot
+}
+
+#[tauri::command]
+fn remote_recent(state: State<SharedEngine>) -> Vec<crate::notifier::Recent> {
+    state.lock().unwrap().notifier.recent_view()
+}
+
+#[tauri::command]
+async fn remote_send_test(state: State<'_, SharedEngine>) -> Result<String, String> {
+    let (notifier, policy, channel, config) = {
+        let engine = state.lock().unwrap();
+        let channel = crate::remote::resolve_kind(Some(&engine.settings.remote_kind)).0;
+        (engine.notifier.clone(), engine.settings.remote_policy.clone(), channel,
+         engine.settings.remote_channels.get(channel.as_str()).cloned().unwrap_or_default())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let now = crate::tokens::now_ms();
+        let mut inputs = crate::render::Inputs::new("AgentIsland", crate::remote::EventKind::Attention, 0.0);
+        inputs.agent_id = "agentisland-test".into();
+        let outcome = notifier.attempt(&inputs, &policy, channel, &config, crate::remote::Now::at(now), &power::presence_signals(), true);
+        crate::notifier::Attempt { at_ms: now, title: "测试通知".into(), outcome, tries: 1 }.short_text()
+    }).await.map_err(|error| error.to_string())
 }
 
 /// 存密钥：**由用户自己录入，只进钥匙串**（ADR 0009：本仓不存任何凭据）。
@@ -1416,7 +1443,15 @@ const UI_SMOKE_JS: &str = r#"(function () {
           });
           return;
         }
-        return wait(240).then(function () { snap(selector + ' → ' + key); });
+        return wait(240).then(async function () {
+          var remoteRoot = document.querySelector('[data-remote-root]');
+          if (remoteRoot) {
+            var status = await window.__TAURI__.core.invoke('remote_status');
+            if (remoteRoot.textContent.indexOf(status.secretName) < 0) throw new Error('远程通知密钥条目名未显示');
+            if (!remoteRoot.querySelector('[data-remote-test]') || !remoteRoot.querySelector('[data-remote-history]')) throw new Error('远程测试或发送记录入口缺失');
+          }
+          snap(selector + ' → ' + key);
+        });
       });
     });
     return chain;
@@ -2099,7 +2134,10 @@ fn main() {
             drain_navigation,
             get_settings,
             save_settings,
+            patch_settings,
             remote_status,
+            remote_recent,
+            remote_send_test,
             remote_preview,
             token_forecast,
             audit_report_markdown,
@@ -2443,7 +2481,7 @@ mod ui_symbol_sentinel {
                 }
                 // 命令函数名在下一行：`fn name(` / `fn name<T>(`
                 if let Some(next) = lines.peek() {
-                    let trimmed = next.trim().strip_prefix("fn ").unwrap_or("");
+                    let trimmed = next.trim().strip_prefix("fn ").or_else(|| next.trim().strip_prefix("async fn ")).unwrap_or("");
                     if let Some(name) = trimmed.split(['(', '<']).next() {
                         if !name.is_empty() {
                             commands.insert(name.to_string());
@@ -2669,6 +2707,13 @@ mod build_env_sentinel {
     globalThis.innerWidth = 400; globalThis.innerHeight = 800;
     "#;
 
+
+    #[test]
+    fn functional_ui_settings_and_remote_feedback_regression() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-functional-ui.mjs");
+        let output = std::process::Command::new("node").arg(script).output().expect("功能回归需要 node");
+        assert!(output.status.success(), "功能回归失败：{}", String::from_utf8_lossy(&output.stderr));
+    }
 
     #[test]
     fn island_clicks_do_not_trigger_drag_placement() {

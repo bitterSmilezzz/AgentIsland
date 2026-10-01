@@ -231,35 +231,39 @@ impl Settings {
     /// 读得到却解析不回来就改名留档，再写新的（`load_from` 也做同一件事，
     /// 覆盖「跑起来之后才坏掉」的那一半）。
     ///
-    /// 返回类型保持 `()`：失败**写进日志**而不是向上抛。6 个调用点里有 5 个是
-    /// 「改完内存顺手存一下」，让它们各自处理 `Result` 只会换来 5 份重复的错误处理
-    /// 和一处漏掉；把痕迹落在唯一一处，谁写谁都有。`launchAtLogin` 开关的失败
-    /// 同样只记日志（`main.rs` 的 `[launchAtLogin] … 失败`），口径一致。
+    /// 内部兼容调用仍只记录错误；UI 经 try_save_to 返回错误，不得把未落盘报成已保存。
     pub(crate) fn save_to(&self, dir: &Path) {
-        if let Err(error) = fs::create_dir_all(dir) {
-            crate::log_line(&format!("[settings] 建配置目录 {} 失败：{error}", dir.display()));
-            return;
+        if let Err(error) = self.try_save_to(dir) {
+            crate::log_line(&format!("[settings] 落盘失败：{error}"));
         }
+    }
+
+    pub(crate) fn try_save_to(&self, dir: &Path) -> io::Result<()> {
+        fs::create_dir_all(dir)?;
         let path = dir.join("settings.json");
         if let Some(name) = stash_broken_if_unparseable(&path) {
             crate::log_line(&format!("[settings] 落盘前发现坏掉的 settings.json，已留档为 {name}"));
         }
-        let json = match serde_json::to_string_pretty(self) {
-            Ok(json) => json,
-            Err(error) => {
-                crate::log_line(&format!("[settings] 序列化失败，本次未落盘：{error}"));
-                return;
-            }
-        };
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let result = crate::atomicfile::atomic_replace_validated(&path, json.as_bytes(), |staged| {
             let text = fs::read_to_string(staged)?;
             serde_json::from_str::<Settings>(&text)
                 .map(|_| ())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
         });
-        if let Err(error) = result {
-            crate::log_line(&format!("[settings] 落盘失败：{error}"));
+        result
+    }
+
+    pub(crate) fn patched(&self, patch: serde_json::Value) -> Result<Self, String> {
+        let mut value = serde_json::to_value(self).map_err(|error| error.to_string())?;
+        let current = value.as_object_mut().ok_or("设置不是对象")?;
+        let fields = patch.as_object().ok_or("设置变更必须是对象")?;
+        for (key, field) in fields {
+            if !current.contains_key(key) { return Err(format!("未知设置项：{key}")); }
+            current.insert(key.clone(), field.clone());
         }
+        serde_json::from_value::<Self>(value).map(|settings| settings.normalized()).map_err(|error| error.to_string())
     }
 
     /// 脏值钳制（与 macOS `EngineConfig.normalized()` 同规则）
@@ -970,5 +974,27 @@ mod default_off {
     fn normalization_keeps_the_default_off_choice() {
         let d = Settings::default();
         assert_eq!(d.normalized().disabled_agents, d.disabled_agents);
+    }
+}
+
+#[cfg(test)]
+mod patch_regressions {
+    use super::*;
+    #[test]
+    fn independent_window_patches_preserve_threshold_and_remote_policy() {
+        let settings = Settings::default().patched(serde_json::json!({"cpu_threshold": 23})).unwrap();
+        let settings = settings.patched(serde_json::json!({"remote_policy": {"master_enabled": true, "throttle_seconds": 140}})).unwrap();
+        assert_eq!(settings.cpu_threshold, 23.0);
+        assert!(settings.remote_policy.master_enabled);
+        assert_eq!(settings.remote_policy.throttle_seconds, 140);
+        assert!(settings.patched(serde_json::json!({"cpu_threshold": "bad"})).is_err());
+        assert!(settings.patched(serde_json::json!({"unknown_setting": true})).is_err());
+    }
+    #[test]
+    fn disk_failure_is_returned_to_the_ui_caller() {
+        let sandbox = crate::testutil::Sandbox::new("settings-write-error");
+        let file = sandbox.path().join("blocked");
+        std::fs::write(&file, b"fixture").unwrap();
+        assert!(Settings::default().try_save_to(&file).is_err());
     }
 }
