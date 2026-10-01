@@ -443,6 +443,7 @@ fn snap_nearest_edge(
     width: f64,
     height: f64,
 ) -> Result<String, String> {
+    if ui_smoke_requested() { let _ = window.emit("test://snap", ()); }
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -1494,6 +1495,20 @@ const UI_SMOKE_JS: &str = r#"(function () {
         var f = document.querySelector('.sb-item');
         return f ? (f.textContent || '').trim().slice(0, 12) : '';
       })();
+      // 在实际 WebView 中派发按钮按下/松开，确认不会走拖拽定位命令。
+      var islandHeader = document.querySelector('.header[data-drag]');
+      var islandButton = islandHeader && islandHeader.querySelector('button');
+      if (islandButton) {
+        var snapCalls = 0;
+        var unlistenSnap = await window.__TAURI__.event.listen('test://snap', function () { snapCalls++; });
+        try {
+          islandButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, screenX: 100, screenY: 100 }));
+          islandButton.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, screenX: 100, screenY: 100 }));
+          await wait(180);
+          if (snapCalls) throw new Error('按钮点击触发拖拽吸附：' + snapCalls);
+          snap('按钮按下/松开未触发定位命令');
+        } finally { unlistenSnap(); }
+      }
       await clickAll('[data-nav]');
       await clickAll('[data-wb-nav]');
       var overview = document.querySelector('[data-wb-nav="overview"]');
@@ -2654,6 +2669,13 @@ mod build_env_sentinel {
     globalThis.innerWidth = 400; globalThis.innerHeight = 800;
     "#;
 
+
+    #[test]
+    fn island_clicks_do_not_trigger_drag_placement() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-island-click.mjs");
+        let output = std::process::Command::new("node").arg(script).output().expect("点击回归需要 node");
+        assert!(output.status.success(), "点击定位回归失败：{}", String::from_utf8_lossy(&output.stderr));
+    }
 
     #[test]
     fn island_boot_handles_deep_link_navigation() {

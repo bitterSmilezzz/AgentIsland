@@ -607,13 +607,30 @@ function bindCardEvents(eng, st) {
   const header = root.querySelector('[data-drag]');
   if (header) {
     header.setAttribute('data-tauri-drag-region', '');
-    header.addEventListener('mouseup', async () => {
-      // 原生拖拽结束后吸附最近边
+    let dragStart = null;
+    const interactive = (target) => target?.closest('button, input, textarea, select, a, [role="button"]');
+    header.addEventListener('mousedown', (event) => {
+      dragStart = event.button === 0 && !interactive(event.target)
+        ? { x: event.screenX, y: event.screenY } : null;
+    });
+    header.addEventListener('mouseup', (event) => {
+      const start = dragStart;
+      dragStart = null;
+      // 点击按钮或标题不代表拖拽；只在实际移动后吸附。
+      if (!start || event.button !== 0 || interactive(event.target)
+        || Math.hypot(event.screenX - start.x, event.screenY - start.y) < 5) return;
       setTimeout(async () => {
-        const edge = await invoke('snap_nearest_edge', { width: 330, height: root.querySelector('.card').getBoundingClientRect().height + 20 });
-        st.settings.dock_edge = edge;
-        applyEdge();
-        renderCard();
+        const card = root.querySelector('.card');
+        if (!st.expanded || !root.contains(header) || !card) return;
+        try {
+          const height = Math.min(card.getBoundingClientRect().height, 520);
+          const edge = await invoke('snap_nearest_edge', { width: 330, height });
+          st.settings.dock_edge = edge;
+          applyEdge();
+          renderCard();
+        } catch (error) {
+          invoke('log_from_ui', { message: `拖拽吸附失败：${error?.message ?? error}` }).catch(() => {});
+        }
       }, 60);
     });
   }
