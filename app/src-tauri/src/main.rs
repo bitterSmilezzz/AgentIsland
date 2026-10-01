@@ -973,9 +973,7 @@ fn report_text(state: State<SharedEngine>, format: String) -> Result<String, Str
 /// 隐藏再打开时用户期望的是回到刚才的位置，而不是一个刚加载完的空白页。
 #[tauri::command]
 fn hide_workbench(app: AppHandle) {
-    if let Some(window) = app.get_webview_window("workbench") {
-        let _ = window.hide();
-    }
+    conceal_workbench_window(&app);
 }
 
 #[tauri::command]
@@ -1001,8 +999,47 @@ fn acquire_startup_guard() -> std::io::Result<std::fs::File> {
     }
 }
 
+fn set_dock_presence(app: &AppHandle, visible: bool) {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app.set_activation_policy(if visible {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    }) {
+        log_line(&format!("[window] Dock 显隐失败: {error}"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, visible);
+}
+
+fn conceal_workbench_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("workbench") {
+        if window.hide().is_ok() { set_dock_presence(app, false); }
+    }
+}
+
+// 单色胶囊符号交给 macOS 作为 template 着色，避免缩小应用图标到菜单栏。
+fn menu_bar_icon() -> tauri::image::Image<'static> {
+    let mut rgba = vec![0u8; 44 * 44 * 4];
+    for y in 0..44 {
+        for x in 0..44 {
+            let px = (x as f64 + 0.5) / 2.0;
+            let py = (y as f64 + 0.5) / 2.0;
+            let dx = (px - 11.0).abs() - 5.0;
+            let distance = dx.max(0.0).hypot(py - 11.0);
+            if distance <= 4.0 {
+                // 右侧状态灯留白；小尺寸只保留胶囊与一个圆点。
+                let hole = (px - 16.0).hypot(py - 11.0) < 1.5;
+                rgba[(y * 44 + x) * 4 + 3] = if hole { 0 } else { 255 };
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, 44, 44)
+}
+
 fn reveal_workbench_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("workbench") {
+        set_dock_presence(app, true);
         let _ = window.show();
         // 隐藏后再打开时窗口可能是最小化的；只 `show` 会得到一个「在 Dock 里但看不见」的窗口
         let _ = window.unminimize();
@@ -1743,8 +1780,8 @@ fn main() {
 
     tauri::Builder::default()
         // 必须早于其他插件：第二次打开复用现有应用，不再创建窗口与托盘。
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            reveal_workbench_window(app);
+        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
+            // 普通重复打开只复用常驻实例；工作台由菜单或明确深链唤回。
         }))
         // **页面加载完成时记一笔。**
         //
@@ -1770,11 +1807,29 @@ fn main() {
             if window.label() == "workbench" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    let _ = window.hide();
+                    conceal_workbench_window(window.app_handle());
                 }
             }
         })
         .setup(move |app| {
+            set_dock_presence(app.handle(), false);
+            // 原生显隐回归：只在明确测试参数下执行，普通启动没有定时切窗。
+            #[cfg(target_os = "macos")]
+            if std::env::args().any(|arg| arg == "--dock-smoke") {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    reveal_workbench_window(&handle);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    conceal_workbench_window(&handle);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    reveal_workbench_window(&handle);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    if let Some(window) = handle.get_webview_window("workbench") { let _ = window.close(); }
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    handle.exit(0);
+                });
+            }
             let appearance = shared.lock().unwrap().settings.appearance.clone();
             apply_window_appearance(app.handle(), &appearance);
             #[cfg(target_os = "macos")]
@@ -1876,7 +1931,8 @@ fn main() {
             let quit = MenuItem::with_id(app, "quit", "退出 AgentIsland", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&toggle, &workbench, &quit])?;
             TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
+                .icon(if cfg!(target_os = "macos") { menu_bar_icon() } else { app.default_window_icon().unwrap().clone() })
+                .icon_as_template(true)
                 .tooltip("AgentIsland")
                 .menu(&menu)
                 .on_menu_event(|app, event| {
@@ -2613,6 +2669,16 @@ mod build_env_sentinel {
             assert!(output.status.success(), "深链 UI 回归失败（shell={shell}, cold={cold_start}）：\n{}\n{}",
                 String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
         }
+    }
+
+    #[test]
+    fn macos_bundle_starts_without_a_dock_entry() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let out = std::process::Command::new("python3")
+            .arg("-c")
+            .arg("import plistlib,json,sys; from pathlib import Path; p=Path(sys.argv[1]); c=json.loads((p/'tauri.conf.json').read_text()); assert plistlib.loads((p/c['bundle']['macOS']['infoPlist']).read_bytes())['LSUIElement'] is True; assert 'icons/icon.icns' in c['bundle']['icon']; assert (p/'icons/icon.icns').stat().st_size > 0")
+            .arg(root).output().expect("bundle 验证需要 python3");
+        assert!(out.status.success(), "macOS 常驻启动或 Dock 资产配置错误：{}", String::from_utf8_lossy(&out.stderr));
     }
 
     fn tauri_conf() -> String {

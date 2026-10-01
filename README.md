@@ -4,7 +4,7 @@
 
 **main 使用 Rust/Tauri 开发。** Rust 负责监控、会话解析、配置与 CLI；静态 Web UI 提供灵动岛、贴边侧栏及工作台，macOS 使用系统窗口控制和材质。SwiftUI 与旧 WPF 实现保存在 [归档分支](https://github.com/bitterSmilezzz/AgentIsland/tree/codex/archive-swiftui)，归档规则见 [ADR 0016](docs/adr/0016-rust-only-main.md)。
 
-> 本文档描述 **v0.0.278** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.279** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 
@@ -21,7 +21,7 @@
 
 从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases/latest) 下载发布包。macOS 包含 `AgentIsland.app` 和 Rust CLI `agentisland`；应用未公证，首次运行使用右键 → 打开。
 
-托盘可打开工作台。灵动岛把手可通过悬停、点击或键盘 Enter / 空格展开，四个方向均可贴边；设置中的“收起时隐藏微细条”隐藏视觉元素并保留唤回热区。重复启动复用已有应用实例。
+macOS 默认作为菜单栏常驻应用启动，显示灵动岛贴条与菜单栏图标；手动打开工作台时显示 Dock 图标，关闭或收起工作台后隐藏 Dock 图标。托盘可打开工作台。灵动岛把手可通过悬停、点击或键盘 Enter / 空格展开，四个方向均可贴边；设置中的“收起时隐藏微细条”隐藏视觉元素并保留唤回热区。重复启动复用已有应用实例。
 
 ```sh
 ./agentisland --shell=workbench

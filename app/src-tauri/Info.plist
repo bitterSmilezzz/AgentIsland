@@ -18,6 +18,8 @@
 -->
 <plist version="1.0">
 <dict>
+  <key>LSUIElement</key>
+  <true/>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>

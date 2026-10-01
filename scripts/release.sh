@@ -57,6 +57,9 @@ scripts/build-app.sh "$VERSION"
 step "UI 冒烟（点遍三个窗口的可点元素）"
 scripts/ui-smoke.sh
 
+step "macOS Dock 原生显隐回归"
+python3 scripts/test-dock-presence.py
+
 step "正式应用单实例回归（重复打开仍保留原进程）"
 python3 scripts/test-app-instance.py --cold
 
