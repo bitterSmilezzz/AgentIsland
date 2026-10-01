@@ -1232,19 +1232,38 @@ fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
 ///
 /// 覆盖 `app/ui/` 下的**全部**文件——少列一个，那个文件缺失时就查不出来，
 /// 而少一个 CSS 的后果是**整个形态无样式渲染、零报错**。
-const EMBEDDED_ASSET_SAMPLE: [&str; 12] = [
+const EMBEDDED_ASSET_SAMPLE: [&str; 31] = [
+    "assets/agents/LICENSE",
+    "assets/agents/README.md",
+    "assets/agents/antigravity.svg",
+    "assets/agents/claude.svg",
+    "assets/agents/cline.svg",
+    "assets/agents/codex.svg",
+    "assets/agents/cursor.svg",
+    "assets/agents/deepseek.svg",
+    "assets/agents/goose.svg",
+    "assets/agents/hermesagent.svg",
+    "assets/agents/openai.svg",
+    "assets/agents/opencode.svg",
+    "assets/agents/qoder.svg",
+    "assets/agents/roocode.svg",
+    "assets/agents/trae.svg",
+    "assets/agents/windsurf.svg",
+    "assets/agents/xiaomimimo.svg",
+    "css/agents.css",
+    "css/island.css",
+    "css/panels.css",
+    "css/sidebar.css",
+    "css/tokens.css",
+    "css/workbench.css",
     "index.html",
-    "probe.html",
+    "js/agent-icons.js",
     "js/main.js",
     "js/navigation.js",
-    "js/views.js",
     "js/shell.js",
     "js/tauri.js",
-    "css/tokens.css",
-    "css/island.css",
-    "css/sidebar.css",
-    "css/panels.css",
-    "css/workbench.css",
+    "js/views.js",
+    "probe.html",
 ];
 
 /// **`[boot] 资源表` 的名单必须盖全 `app/ui/`。**
@@ -1502,6 +1521,26 @@ const UI_SMOKE_JS: &str = r#"(function () {
         ]);
       }
       await settle();
+      // 在真正的 WebView 中验证全部本地标识，而非只检查 DOM 中出现了类名。
+      var identityModule = await import(new URL('js/agent-icons.js', location.href).href);
+      var identityProbe = document.createElement('div');
+      identityProbe.setAttribute('aria-hidden', 'true');
+      identityProbe.style.cssText = 'position:fixed;left:-10000px;top:0;pointer-events:none;';
+      identityProbe.innerHTML = Object.keys(identityModule.agentIdentities).map(function (id) {
+        return identityModule.agentIcon({ id: id });
+      }).join('');
+      document.body.appendChild(identityProbe);
+      try {
+        await Promise.all(Array.from(identityProbe.querySelectorAll('.agent-mark')).map(async function (mark) {
+          var mask = getComputedStyle(mark).maskImage || getComputedStyle(mark).webkitMaskImage;
+          var match = mask.match(/^url\(["']?(.*?)["']?\)$/);
+          if (!match || mark.getBoundingClientRect().width < 16) throw new Error('Agent 图标样式或遮罩缺失');
+          var image = new Image();
+          image.src = match[1];
+          await Promise.race([image.decode(), wait(3000).then(function () { throw new Error('Agent 图标加载超时'); })]);
+        }));
+        window.__uiSmoke.agentIcons = identityProbe.children.length;
+      } finally { identityProbe.remove(); }
       // 灵动岛额外验一件具体的事：**卡片有没有出现过，多久出现的**。
       // 「DOM 长度稳定」分不清「一直是窄条」与「卡片闪过又被收回去了」，
       // 而这两种要查的地方完全不同。-1 表示 6 秒内一次都没出现过。
@@ -1639,6 +1678,7 @@ const UI_SMOKE_JS: &str = r#"(function () {
           found: window.__uiSmoke.found,
           steps: window.__uiSmoke.steps,
           bootArgs: window.__uiSmoke.bootArgs,
+          agentIcons: window.__uiSmoke.agentIcons,
           cards: window.__uiSmoke.cards,
           search: window.__uiSmoke.search,
           emptyState: window.__uiSmoke.emptyState,
@@ -2713,6 +2753,13 @@ mod build_env_sentinel {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-functional-ui.mjs");
         let output = std::process::Command::new("node").arg(script).output().expect("功能回归需要 node");
         assert!(output.status.success(), "功能回归失败：{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    fn agent_identities_cover_registry_and_all_ui_locations() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-agent-identities.mjs");
+        let output = std::process::Command::new("node").arg(script).output().expect("身份图标回归需要 node");
+        assert!(output.status.success(), "身份图标回归失败：{}", String::from_utf8_lossy(&output.stderr));
     }
 
     #[test]

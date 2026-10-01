@@ -4,7 +4,7 @@
 
 **main 使用 Rust/Tauri 开发。** Rust 负责监控、会话解析、配置与 CLI；静态 Web UI 提供灵动岛、贴边侧栏及工作台，macOS 使用系统窗口控制和材质。SwiftUI 与旧 WPF 实现保存在 [归档分支](https://github.com/bitterSmilezzz/AgentIsland/tree/codex/archive-swiftui)，归档规则见 [ADR 0016](docs/adr/0016-rust-only-main.md)。
 
-> 本文档描述 **v0.0.281** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.282** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 

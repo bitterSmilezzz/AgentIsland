@@ -111,8 +111,8 @@
 /* 首层：极简的 Agent 行（名字 + 状态 + 24h 用量） */
 .shell-sidebar .sb-agent {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 2px 8px;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  gap: 2px 10px;
   padding: 8px 9px;
   border-radius: 8px;
   cursor: default;
@@ -137,7 +137,7 @@
 }
 
 .shell-sidebar .sb-agent .meta {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   font-size: 11px;
   color: var(--text-faint);
   overflow: hidden;

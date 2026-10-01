@@ -1,5 +1,6 @@
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
+import { agentIcon } from './agent-icons.js';
 import { isIsland, isWorkbench } from './shell.js';
 import { getState, setState, saveSettings, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge, applyLayout } from './main.js';
 
@@ -118,7 +119,7 @@ function ringHtml(snap, size) {
     color = dark ? '#28e07b' : '#157f3c';
   }
   return `<div class="ring" data-ring>${ringSvg(size, snap.level, snap.cpu_percent, progress, color)}
-    <div class="glyph" style="font-size:${size >= 34 ? 17 : 13.5}px">${esc(snap.glyph)}</div></div>`;
+    <div class="glyph">${agentIcon(snap, 'agent-avatar--bare')}</div></div>`;
 }
 
 // MARK: 小图标（内联 SVG）
@@ -327,7 +328,7 @@ function rowHtml(snap) {
   return `
     <button type="button" class="row" data-agent="${esc(model.id)}" aria-label="${esc(model.name)}：${esc(model.statusText)}，查看详情">
       <div class="row-line1">
-        <span class="island-agent-icon">${navigationIcon('terminal')}</span>
+        ${agentIcon(snap, 'island-agent-icon')}
         <div class="row-name-col">
           <div class="row-name">${esc(model.name)}</div>
           <div class="row-sub"><i class="island-state-dot" style="background:${model.statusColor}"></i><span>${esc(model.statusText)}</span></div>
@@ -552,6 +553,7 @@ export function pageAgentDetail(eng, agentId) {
     <div class="page" data-page="agentDetail" data-agent-id="${esc(agentId)}">
       <div class="page-header">
         <button type="button" class="back-btn" aria-label="返回监控" data-back>‹</button>
+        ${agentIcon(snap ?? { id: agentId, name })}
         <div class="page-titles">
           <div class="t">${esc(name)}</div>
           <div class="s">Agent 详情 · 双口径总览 + 按模型拆分</div>
@@ -860,8 +862,8 @@ function workbenchMonitor(eng) {
     .map((snap) => {
       const model = agentRowModel(snap);
       const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
-      return `<button type="button" class="wb-agent" data-agent="${model.id}">
-        <span class="wb-agent-glyph">${navigationIcon('terminal')}</span>
+      return `<button type="button" class="wb-agent" data-agent="${esc(model.id)}">
+        ${agentIcon(snap, 'wb-agent-glyph')}
         <span class="name">${escapeHtml(model.name)}</span>
         <span class="tokens">${escapeHtml(model.tokensText)}</span>
         <span class="meta"><i class="wb-state-dot" style="background:${model.statusColor}"></i>${escapeHtml(detail)}</span>
@@ -1098,7 +1100,8 @@ export function renderSidebar() {
         const model = agentRowModel(snap);
         const tokens = model.tokensText === '—' ? '—' : `${model.tokensText} tokens`;
         const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
-        return `<button type="button" class="sb-agent" data-agent="${model.id}">
+        return `<button type="button" class="sb-agent" data-agent="${esc(model.id)}">
+          ${agentIcon(snap)}
           <span class="name">${escapeHtml(model.name)}</span>
           <span class="tokens" style="color:${model.statusColor}">${tokens}</span>
           <span class="meta">${escapeHtml(detail)}</span>
@@ -1223,6 +1226,7 @@ export function pageAgents() {
       const off = disabled.has(snap.id);
       return `<label class="sb-agent-toggle">
         <input type="checkbox" data-agent-toggle="${escapeHtml(snap.id)}"${off ? '' : ' checked'}>
+        ${agentIcon(snap)}
         <span class="name">${escapeHtml(snap.name)}</span>
         <span class="meta">${off ? '已关' : '开着'}</span>
       </label>`;
@@ -1233,6 +1237,7 @@ export function pageAgents() {
     .filter((id) => !seen.has(id))
     .map((id) => `<label class="sb-agent-toggle">
         <input type="checkbox" data-agent-toggle="${escapeHtml(id)}">
+        ${agentIcon({ id })}
         <span class="name">${escapeHtml(id)}</span>
         <span class="meta">已关（本拍没出现）</span>
       </label>`)

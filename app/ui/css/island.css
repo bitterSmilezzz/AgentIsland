@@ -318,13 +318,12 @@ html.shell-island .sliver:focus-visible .sliver-capsule::before { background: va
 .row-line1 { display: flex; align-items: center; }
 .row-left { display: flex; align-items: center; flex: 1; min-width: 0; }
 
-/* 环形微仪表盘（36px 圆角方环 + 居中 Glyph） */
+/* 环形微仪表盘（圆角方环 + 居中身份标识） */
 .ring { position: relative; flex: none; }
 .ring svg { display: block; }
 .ring .glyph {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  font-family: var(--font-icon);
   color: var(--text);
 }
 .ring .spin-arc { animation: spin 1.2s linear infinite; transform-origin: 50% 50%; transform-box: fill-box; }
