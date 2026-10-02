@@ -206,6 +206,16 @@ pub fn builtin() -> Vec<AgentProfile> {
             category: "assistant".into(),
         },
         AgentProfile {
+            id: "minimaxcode".into(), name: "MiniMax Code".into(), glyph: "\u{E774}".into(), emoji: "🤖".into(),
+            process_names: vec!["MiniMax Code".into(), "mcode".into(), "minimax-code".into()], bundle_ids: vec!["com.minimax.agent.cn".into()],
+            cmdline_hints: vec!["@minimax-ai/code".into(), "minimax-code/dist/cli".into()],
+            path_excludes: vec!["frameworks".into(), "helper".into()], path_contains: vec![], cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![], token_roots: vec![], token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
+            session_database: Some(SessionDatabase { path: p(&[".minimax", "v2", "sqlite", "runtime-state.sqlite"]), schema: SessionSchema::MiniMaxRuntime, status_sql: None }),
+            category: "assistant".into(),
+        },
+        AgentProfile {
             id: "mimocode".into(),
             name: "Xiaomi MiMo".into(),
             glyph: "\u{E774}".into(),
@@ -699,11 +709,11 @@ mod parity {
     fn the_registry_contains_only_current_agent_identities() {
         let ids: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
         // 合并桌面 ChatGPT 与 Codex；Ego Lite 是供 Agent 使用的浏览器。
-        assert_eq!(ids.len(), 24, "档案数：{ids:?}");
+        assert_eq!(ids.len(), 25, "档案数：{ids:?}");
         assert!(!ids.iter().any(|id| id == "chatgpt" || id == "ego-browser"));
         for id in [
             "qoder", "copilot", "workbuddy", "workbuddy-ai", "antigravity", "hermes",
-            "continue", "codex", "dsh", "vibe-usage", "openviking",
+            "continue", "codex", "dsh", "vibe-usage", "openviking", "minimaxcode",
         ] {
             assert!(ids.iter().any(|i| i == id), "缺档案 {id}");
         }
@@ -964,7 +974,7 @@ fn covered_by_rust(p: &AgentProfile) -> bool {
     // · `DimTasks`：不看 status，看最新一条 assistant 末个 part 的 `endTime`；
     // · `OpenCode`：看消息行 `time.completed` / `time.created`，表名还要现查。
     let by_database = p.session_database.as_ref().is_some_and(|db| {
-        matches!(db.schema, S::StatusIndex | S::DimTasks | S::OpenCode)
+        matches!(db.schema, S::StatusIndex | S::DimTasks | S::OpenCode | S::MiniMaxRuntime)
     });
     by_file || by_database
 }

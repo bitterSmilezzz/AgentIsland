@@ -137,6 +137,8 @@ pub enum SessionSchema {
     StatusIndex,
     /// OpenCode 及其同表 fork（如小米 MiMo Code）：`message.data` 是 JSON
     OpenCode,
+    /// MiniMax Code local runtime session and usage tables.
+    MiniMaxRuntime,
 }
 
 /// 会话记录的存放**格式**。

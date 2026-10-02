@@ -28,7 +28,7 @@
   height: 24px;
   object-fit: contain;
   border-radius: 5px;
-  background: #fff;
+  background: transparent;
   color-scheme: light;
 }
 .sb-agent-toggle .agent-brand-image { width: 21px; height: 21px; }
@@ -40,3 +40,7 @@ html.shell-island .agent-avatar.island-agent-icon { color: var(--agent-ink); }
 .sb-agent-toggle .agent-mark { width: 17px; height: 17px; }
 .ring .agent-avatar--bare { width: 24px; height: 24px; border: 0; background: transparent; }
 .ring .agent-avatar--bare .agent-mark { width: 20px; height: 20px; }
+
+/* Original app icons already have their own silhouette; avoid a white tile behind transparent padding. */
+.agent-avatar--brand { background: transparent; border-color: transparent; }
+.agent-brand-image--backed { background: #fff; }

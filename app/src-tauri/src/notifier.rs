@@ -56,7 +56,7 @@ impl Outcome {
 
     fn base_text(&self) -> String {
         match self {
-            Outcome::Delivered => "已送达".to_string(),
+            Outcome::Delivered => "平台已受理".to_string(),
             Outcome::Suppressed { reason } => format!("未发：{reason}"),
             Outcome::NotConfigured { reason } => format!("未配置：{reason}"),
             Outcome::Failed { reason, .. } => format!("失败：{reason}"),
@@ -784,7 +784,7 @@ mod tests {
         let recent = notifier.recent();
         assert_eq!(recent.len(), HISTORY_LIMIT);
         assert_eq!(recent[0].at_ms, 1_024, "新的在前");
-        assert_eq!(recent[0].short_text(), "已送达");
+        assert_eq!(recent[0].short_text(), "平台已受理");
         assert_eq!(recent[0].title, "Claude · 任务完成");
 
         let suppressed = Attempt {
@@ -815,7 +815,7 @@ mod tests {
             outcome: Outcome::Delivered,
             tries: 3,
         };
-        assert_eq!(retried.short_text(), "已送达（重试 2 次后）");
+        assert_eq!(retried.short_text(), "平台已受理（重试 2 次后）");
         let gave_up = Attempt {
             at_ms: 0,
             title: "t".into(),

@@ -167,11 +167,11 @@ impl Transport for HttpTransport {
             };
         };
         match self.round_trip(&url, request) {
-            Ok(status) => {
+            Ok((status, body)) => {
                 if (200..300).contains(&status) {
                     // 注意语义：这是「对方接受了这条请求」。多数中转服务即使内部失败
                     // 也回 200 + 一段错误 JSON，本层不去猜——设置页的文案对此写明
-                    Outcome::Delivered
+                    if let Some(channel) = request.response_check { crate::im::response(channel, &body) } else { Outcome::Delivered }
                 } else if (300..400).contains(&status) {
                     Outcome::Failed {
                         reason: format!(
@@ -195,7 +195,7 @@ impl Transport for HttpTransport {
 }
 
 impl HttpTransport {
-    fn round_trip(&self, url: &Parsed, request: &Request) -> Result<u16, String> {
+    fn round_trip(&self, url: &Parsed, request: &Request) -> Result<(u16, Vec<u8>), String> {
         let mut stream = self.connect(url)?;
 
         let host = if url.host.contains(':') { format!("[{}]", url.host) } else { url.host.clone() };
@@ -238,9 +238,62 @@ impl HttpTransport {
         }
         // Never echo a peer's arbitrary status text into UI history: it could
         // contain request credentials or private payload content.
-        code.and_then(|code| code.parse::<u16>().ok()).filter(|code| (100..=599).contains(code))
-            .ok_or_else(|| "HTTP 响应状态码无效".into())
+        let status = code.and_then(|code| code.parse::<u16>().ok()).filter(|code| (100..=599).contains(code))
+            .ok_or_else(|| "HTTP 响应状态码无效".to_string())?;
+        let body = if request.response_check.is_some() && (200..300).contains(&status) {
+            provider_body(&mut reader)?
+        } else { Vec::new() };
+        Ok((status, body))
     }
+}
+
+/// Bounded HTTP framing for preset JSON receipts. Never expose response text.
+fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
+    const LIMIT: usize = 65536;
+    fn line(reader: &mut impl BufRead) -> Result<String, String> {
+        let mut line = String::new();
+        Read::by_ref(reader).take(8193).read_line(&mut line).map_err(|_| "读取平台回执失败".to_string())?;
+        if line.len() > 8192 || !line.ends_with("\r\n") { return Err("平台回执头不完整或过长".into()); }
+        Ok(line)
+    }
+    let mut length = None;
+    let mut chunked = false;
+    let mut total = 0;
+    loop {
+        let header = line(reader)?;
+        total += header.len();
+        if total > 32768 { return Err("平台回执头过长".into()); }
+        if header == "\r\n" { break; }
+        let (name, value) = header.split_once(':').ok_or("平台回执头无效")?;
+        if name.eq_ignore_ascii_case("content-length") {
+            let size = value.trim().parse::<usize>().map_err(|_| "平台回执长度无效")?;
+            if size > LIMIT || length.is_some() { return Err("平台回执长度无效或过大".into()); }
+            length = Some(size);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            if chunked || !value.trim().eq_ignore_ascii_case("chunked") { return Err("平台回执编码不支持".into()); }
+            chunked = true;
+        }
+    }
+    if chunked && length.is_some() { return Err("平台回执长度冲突".into()); }
+    let mut body = Vec::new();
+    if chunked {
+        // Bound chunk count as well as data: empty metadata must not run forever.
+        for _ in 0..1024 {
+            let header = line(reader)?;
+            let size = usize::from_str_radix(header.trim().split(';').next().unwrap_or(""), 16).map_err(|_| "平台回执分块无效")?;
+            if size == 0 { return Ok(body); }
+            if size > LIMIT - body.len() { return Err("平台回执过大".into()); }
+            let start = body.len(); body.resize(start + size, 0);
+            reader.read_exact(&mut body[start..]).map_err(|_| "平台回执不完整")?;
+            let mut end = [0u8;2]; reader.read_exact(&mut end).map_err(|_| "平台回执不完整")?;
+            if end != *b"\r\n" { return Err("平台回执分块无效".into()); }
+        }
+        return Err("平台回执分块过多".into());
+    }
+    Read::by_ref(reader).take(length.unwrap_or(LIMIT + 1) as u64).read_to_end(&mut body).map_err(|_| "读取平台回执失败")?;
+    if body.len() > LIMIT || length.is_some_and(|size| size != body.len()) { return Err("平台回执过大或不完整".into()); }
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -248,6 +301,33 @@ mod tests {
     use super::*;
     use crate::render::HttpField;
     use std::sync::mpsc;
+
+    #[test]
+    fn provider_receipt_framing_is_bounded_and_chunked() {
+        let json = br#"{"code":0}"#;
+        let wire = format!("Content-Length: {}\r\n\r\n{}", json.len(), String::from_utf8_lossy(json));
+        assert_eq!(provider_body(&mut std::io::Cursor::new(wire)).unwrap(), json);
+        let wire = "Transfer-Encoding: chunked\r\n\r\nA\r\n{\"code\":0}\r\n0\r\n\r\n";
+        assert_eq!(provider_body(&mut std::io::Cursor::new(wire)).unwrap(), json);
+        for invalid in ["Content-Length: 65537\r\n\r\n", "Content-Length: 10\r\n\r\nx", "Content-Length: 10\r\nTransfer-Encoding: chunked\r\n\r\n", "Transfer-Encoding: chunked\r\n\r\n10001\r\n"] {
+            assert!(provider_body(&mut std::io::Cursor::new(invalid)).is_err());
+        }
+    }
+
+    #[test]
+    fn http_200_with_provider_error_is_failure_over_tcp() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let request = server.recv().unwrap();
+            request.respond(tiny_http::Response::from_string(r#"{"code":401}"#)).unwrap();
+        });
+        let request = Request { url:format!("http://127.0.0.1:{port}/send"), method:"POST".into(), response_check:Some(crate::remote::Channel::WechatPushPlus), ..Request::default() };
+        let outcome = HttpTransport::new().perform(&request);
+        assert!(!outcome.is_delivered());
+        assert!(outcome.is_permanent());
+        handle.join().unwrap();
+    }
 
     /// 起一个真的本地 HTTP 服务器（tiny_http 已是依赖），回一个固定状态码，
     /// 并把收到的请求原样交回来——这是**端到端**验证：请求真的出过 TCP。
@@ -312,7 +392,7 @@ mod tests {
                 HttpField::new("X-Priority", "4"),
             ],
             body: body.into(),
-            smtp: None,
+            smtp: None, response_check: None,
         }
     }
 
@@ -407,7 +487,7 @@ mod tests {
         let without_target = Request {
             method: "SMTP".into(),
             url: String::new(),
-            smtp: None,
+            smtp: None, response_check: None,
             ..post(1, "/", "b")
         };
         match HttpTransport::new().perform(&without_target) {
@@ -590,7 +670,7 @@ mod tests {
                 "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85",
             )],
             body: "Qoder · 等待你确认".into(),
-            smtp: None,
+            smtp: None, response_check: None,
         };
         let outcome = server.client().perform(&request);
         assert_eq!(outcome, Outcome::Delivered, "HTTPS 应真能连上并拿到 200");
@@ -614,7 +694,7 @@ mod tests {
             method: "POST".into(),
             headers: vec![],
             body: "b".into(),
-            smtp: None,
+            smtp: None, response_check: None,
         };
         match HttpTransport::new().perform(&request) {
             Outcome::Failed { reason, .. } => {
@@ -667,7 +747,7 @@ mod optimization_regressions {
                 let mut buffer = [0; 4096]; let _ = stream.read(&mut buffer);
                 stream.write_all(response.as_bytes()).unwrap();
             });
-            let request = Request { url: format!("http://127.0.0.1:{port}/notify"), method: "POST".into(), headers: vec![], body: "fixture".into(), smtp: None };
+            let request = Request { url: format!("http://127.0.0.1:{port}/notify"), method: "POST".into(), headers: vec![], body: "fixture".into(), smtp: None, response_check: None };
             let outcome = HttpTransport::new().perform(&request);
             server.join().unwrap();
             assert!(matches!(outcome, Outcome::Failed { .. }), "invalid HTTP response cannot count as delivered");

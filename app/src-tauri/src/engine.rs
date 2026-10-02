@@ -92,7 +92,7 @@ pub struct ActivityEngine {
 fn has_usage_location(profile: &AgentProfile) -> bool {
     profile.token_roots.iter().any(|root| std::path::Path::new(root).is_dir())
         || profile.session_database.as_ref().is_some_and(|database| {
-            matches!(database.schema, SessionSchema::OpenCode | SessionSchema::DimTasks)
+            matches!(database.schema, SessionSchema::OpenCode | SessionSchema::DimTasks | SessionSchema::MiniMaxRuntime)
                 && std::path::Path::new(&database.path).is_file()
         })
 }
@@ -819,6 +819,7 @@ impl ActivityEngine {
                 crate::models::SessionSchema::StatusIndex
                     | crate::models::SessionSchema::DimTasks
                     | crate::models::SessionSchema::OpenCode
+                    | crate::models::SessionSchema::MiniMaxRuntime
             )
         })
         else {
@@ -842,6 +843,7 @@ impl ActivityEngine {
         let (probe, failure) = match database.schema {
             crate::models::SessionSchema::DimTasks => session::probe_dim(database, file_age),
             crate::models::SessionSchema::OpenCode => session::probe_opencode(database, file_age, now),
+            crate::models::SessionSchema::MiniMaxRuntime => crate::minimax::probe(database, now),
             _ => session::probe_status_index(database, file_age, now),
         };
 

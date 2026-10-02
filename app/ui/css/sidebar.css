@@ -112,8 +112,11 @@
 .shell-sidebar .sb-agent {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) auto;
-  gap: 2px 10px;
-  padding: 8px 9px;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 4px 10px;
+  min-height: 54px;
+  padding: 9px;
   border-radius: 8px;
   cursor: default;
 }
@@ -123,6 +126,8 @@
 }
 
 .shell-sidebar .sb-agent .name {
+  grid-column: 2;
+  grid-row: 1;
   font-size: 12px;
   font-weight: 600;
   overflow: hidden;
@@ -131,13 +136,20 @@
 }
 
 .shell-sidebar .sb-agent .tokens {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
   font-size: 11px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 
 .shell-sidebar .sb-agent .meta {
+  grid-row: 2;
   grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
   color: var(--text-faint);
   overflow: hidden;
@@ -170,3 +182,6 @@
 
 .shell-sidebar .sb-nav-footer { margin-top: auto; padding: 20px 7px 6px; border-top: 1px solid var(--border-subtle); }
 .shell-sidebar .sb-nav-footer p { font-size: 9px; color: var(--text-faint); margin-top: 12px; line-height: 1.5; }
+
+.shell-sidebar .sb-agent-status { flex: none; font-size: 10px; line-height: 16px; }
+.shell-sidebar .sb-agent-action { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

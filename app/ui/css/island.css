@@ -661,3 +661,6 @@ html.shell-island .banner { margin: 10px; padding: 12px; border-radius: 12px; }
 html.shell-island .mini-btn { background: var(--button-fill); border-color: var(--border); }
 html.shell-island :is(button,[data-agent]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (prefers-reduced-motion:reduce) { html.shell-island .card.open, html.shell-island .ring .spin-arc, html.shell-island .ring .breath-arc { animation: none; } html.shell-island .row { transition: none; } }
+
+.shell-island .island-settings { max-height: min(70vh, 520px); overflow-y: auto; padding-bottom: 12px; }
+.shell-island .island-settings .sb-page { padding: 0 16px; }

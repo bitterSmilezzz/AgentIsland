@@ -30,6 +30,8 @@ let settings = { dock_edge: 'top', appearance: 'light', cpu_threshold: 6,
   remote_kind: 'smtpEmail', remote_channels: { smtpEmail: {} }, remote_policy: { master_enabled: false } };
 const patches = [];
 let failSave = false;
+const secretWrites = [];
+let testSends = 0;
 const root = mk();
 document.getElementById = () => root;
 window.__TAURI__ = {
@@ -38,8 +40,9 @@ window.__TAURI__ = {
     if (command === 'get_boot_args') return {};
     if (command === 'drain_navigation') return [];
     if (command === 'remote_recent') return [{ title: 'Fixture', text: '未发：总开关已关闭' }];
-    if (command === 'remote_secret_set') return { kind: 'ok' };
-    if (command === 'remote_status') return { kind: 'smtpEmail', secretName: 'remote.smtpEmail',
+    if (command === 'remote_secret_set') { secretWrites.push(args.value); return { kind: 'ok' }; }
+    if (command === 'remote_send_test') { testSends++; return '平台已受理'; }
+    if (command === 'remote_status') return { kind: settings.remote_kind, secretName: `remote.${settings.remote_kind}`,
       insecureEndpoint: 'fixture-warning', policy: settings.remote_policy, limitations: 'fixture' };
     if (command === 'patch_settings') {
       if (failSave) throw new Error('fixture-write-failed');
@@ -60,17 +63,30 @@ try {
   assert.equal(agentRowModel({ token_usage: { tokens24h:0 } }).tokensText, '0', 'measured zero must differ from missing usage');
   assert.equal(agentRowModel({ token_usage:null }).tokensText, '—');
   const out = mk(), remoteRoot = mk(), input = { value: 'fixture-input' };
-  const secretButton = mk();
-  let saveSecret;
+  const secretButton = mk(), testButton = mk();
+  let saveSecret, sendTest;
+  testButton.addEventListener = (_, handler) => { sendTest = handler; };
   secretButton.addEventListener = (_, handler) => { saveSecret = handler; };
   document.querySelector = selector => ({ '[data-remote-root]': remoteRoot, '[data-remote-out]': out,
-    '[data-remote-save-secret]': secretButton, '[data-remote-secret]': input })[selector] ?? null;
+    '[data-remote-save-secret]': secretButton, '[data-remote-secret]': input, '[data-remote-test]': testButton })[selector] ?? null;
   await hydrateRemote();
   assert.ok(remoteRoot.innerHTML.includes('remote.smtpEmail'), 'real camelCase status key must render');
   assert.ok(remoteRoot.innerHTML.includes('fixture-warning'), 'server readiness warnings must render');
   await saveSecret();
   assert.equal(input.value, '', 'successful lower-case ok result must clear the secret input');
   assert.ok(out.innerHTML.includes('密钥已写入'), 'keychain success must not be shown as a refusal');
+  assert.match(remoteRoot.innerHTML, /<details[^>]*data-remote-advanced>/, 'advanced defaults closed');
+  for (const kind of ['feishuBot','wechatPushPlus','qqPushPlus','qqOneBot']) assert.ok(remoteRoot.innerHTML.includes(`value="${kind}"`));
+  await saveSecret();
+  assert.equal(secretWrites.length, 1, 'blank save must not delete a stored credential');
+  await sendTest({ currentTarget:testButton });
+  assert.equal(testSends, 0, 'disabled privacy gate must not send a test');
+  getState().settings.remote_kind = settings.remote_kind = 'feishuBot';
+  await hydrateRemote();
+  input.value = 'https://open.feishu.cn/open-apis/bot/v2/hook/fixture-hook';
+  await saveSecret();
+  assert.deepEqual(JSON.parse(secretWrites.at(-1)), { webhook:'https://open.feishu.cn/open-apis/bot/v2/hook/fixture-hook', signingSecret:'' });
+  assert.ok(!JSON.stringify(patches).includes('fixture-hook'), 'webhook must never enter settings');
   const notices = [];
   const row = { appendChild: node => { assert.equal(typeof node, 'object'); notices.push(node.textContent); } };
   let change;

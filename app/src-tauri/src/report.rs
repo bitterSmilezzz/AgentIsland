@@ -101,7 +101,7 @@ pub fn build_timeline(range: TokenTimeRange, now_ms: i64) -> Timeline {
     let mut tokens = 0i64;
     let mut cost = 0f64;
     for profile in crate::registry::builtin() {
-        if profile.token_roots.is_empty() {
+        if profile.token_roots.is_empty() && !profile.session_database.as_ref().is_some_and(|db| db.schema == crate::models::SessionSchema::MiniMaxRuntime) {
             continue;
         }
         let (range_tokens, range_cost) =
@@ -109,7 +109,7 @@ pub fn build_timeline(range: TokenTimeRange, now_ms: i64) -> Timeline {
         let available = profile
             .token_roots
             .iter()
-            .any(|root| std::path::Path::new(root).is_dir());
+            .any(|root| std::path::Path::new(root).is_dir()) || profile.session_database.as_ref().is_some_and(|db| db.schema == crate::models::SessionSchema::MiniMaxRuntime && std::path::Path::new(&db.path).is_file());
         // 既没读到用量、也没找到本地统计源的档案不进报告：一行全是 0 的「未发现」
         // 会把「这台机器没装这个工具」混进用量分布里
         if range_tokens == 0 && !available {

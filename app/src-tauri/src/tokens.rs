@@ -183,6 +183,7 @@ impl TokenUsageMonitor {
             let part = match database.schema {
                 SessionSchema::OpenCode => query_open_code(&database.path, cutoff24),
                 SessionSchema::DimTasks => query_dim_tasks(&database.path, cutoff24),
+                SessionSchema::MiniMaxRuntime => query_minimax(&database.path, cutoff24),
                 // 状态索引只回答「最新一条状态」，**不含 token**——不是缺数据，是没这个概念
                 SessionSchema::StatusIndex => None,
             };
@@ -231,9 +232,24 @@ impl TokenUsageMonitor {
                 *hourly.entry(hour).or_insert(0) += tokens;
             }
         }
+        if let Some(database) = profile.session_database.as_ref().filter(|db| db.schema == SessionSchema::MiniMaxRuntime) {
+            if let Ok(connection) = sqlite::open_readonly(&database.path) {
+                if let Ok(mut statement) = connection.prepare("SELECT ts - ts % 3600000, SUM(MAX(input_tokens,0)+MAX(output_tokens,0)+MAX(reasoning_tokens,0)) FROM local_runtime_token_usage WHERE ts >= ?1 GROUP BY 1") {
+                    if let Ok(rows) = statement.query_map([cutoff30], |row| Ok((column_i64(row,0), column_i64(row,1)))) {
+                        for (hour, tokens) in rows.flatten() { *hourly.entry(hour).or_default() += tokens; }
+                    }
+                }
+            }
+        }
         let mut hourly30d: Vec<(i64, i64)> = hourly.into_iter().collect();
         hourly30d.sort_by_key(|kv| kv.0);
 
+        let models_total = models24h.clone();
+        if let Some(database) = profile.session_database.as_ref().filter(|db| db.schema == SessionSchema::MiniMaxRuntime) {
+            if let Ok(connection) = sqlite::open_readonly(&database.path) {
+                models24h = collect_models(&connection, &format!("SELECT COALESCE(model,'unknown'), SUM(MAX(input_tokens,0)+MAX(output_tokens,0)+MAX(reasoning_tokens,0)), SUM(MAX(COALESCE(cost_usd,0),0)) FROM local_runtime_token_usage WHERE ts >= {cutoff24} GROUP BY 1 ORDER BY 2 DESC"));
+            }
+        }
         TokenReport {
             usage: TokenUsage {
                 tokens24h: tokens24,
@@ -242,8 +258,8 @@ impl TokenUsageMonitor {
                 cost_total,
                 cost_estimated,
             },
-            models24h: models24h.clone(),
-            models_total: models24h,
+            models24h,
+            models_total,
             hourly30d,
         }
     }
@@ -287,6 +303,9 @@ impl TokenUsageMonitor {
                 tokens += t;
                 cost += c;
             }
+        }
+        if let Some(database) = profile.session_database.as_ref().filter(|db| db.schema == SessionSchema::MiniMaxRuntime) {
+            if let Some(part) = query_minimax(&database.path, cutoff) { tokens += part.tokens24; cost += part.cost24; }
         }
         (tokens, cost)
     }
@@ -714,6 +733,18 @@ fn query_open_code(path: &str, cutoff24: i64) -> Option<UsagePart> {
     })
 }
 
+/// MiniMax stores fresh provider input/output/reasoning independently of cache counters.
+/// Do not also scan its message projections: they duplicate this usage ledger.
+fn query_minimax(path: &str, cutoff: i64) -> Option<UsagePart> {
+    let connection = sqlite::open_readonly(path).ok()?;
+    const NET: &str = "MAX(input_tokens,0)+MAX(output_tokens,0)+MAX(reasoning_tokens,0)";
+    let (tokens_total, cost_total, tokens24, cost24) = connection.query_row(
+        &format!("SELECT COALESCE(SUM({NET}),0), COALESCE(SUM(MAX(COALESCE(cost_usd,0),0)),0), COALESCE(SUM(CASE WHEN ts>=?1 THEN {NET} ELSE 0 END),0), COALESCE(SUM(CASE WHEN ts>=?1 THEN MAX(COALESCE(cost_usd,0),0) ELSE 0 END),0) FROM local_runtime_token_usage"),
+        [cutoff], |row| Ok((column_i64(row,0),column_f64(row,1),column_i64(row,2),column_f64(row,3)))).ok()?;
+    let models = collect_models(&connection, &format!("SELECT COALESCE(model,'unknown'), SUM({NET}), SUM(MAX(COALESCE(cost_usd,0),0)) FROM local_runtime_token_usage GROUP BY 1 ORDER BY 2 DESC"));
+    Some(UsagePart { tokens_total, cost_total, tokens24, cost24, models, cost_estimated:false })
+}
+
 /// DimAgent 方言：`usage_ledger`。净 token = (promptTokens − cacheReadTokens，**下限 0**)
 /// + completionTokens——`promptTokens` 含缓存命中部分，直接相加会把同一批 token 计两遍。
 /// `createdAt` 是 ISO8601 字符串，SQL 里靠**字典序**当时间比较，所以下界必须按同一个
@@ -898,6 +929,28 @@ mod tests {
         format!(
             r#"{{"message":{{"model":"{model}","usage":{{"input_tokens":3000,"output_tokens":1000}}}}}}"#
         )
+    }
+
+    #[test]
+    fn minimax_ledger_excludes_cache_and_preserves_ranges_models_and_buckets() {
+        let sandbox = crate::testutil::Sandbox::new("minimax-tokens");
+        let path = sandbox.path().join("runtime.sqlite");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE local_runtime_token_usage(ts INTEGER,input_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,cost_usd REAL,model TEXT);").unwrap();
+        let now = now_ms();
+        connection.execute("INSERT INTO local_runtime_token_usage VALUES(?1,100,20,5,10000,20000,0.25,'fixture-new')",[now]).unwrap();
+        connection.execute("INSERT INTO local_runtime_token_usage VALUES(?1,200,30,0,10000,20000,0.75,'fixture-old')",[now-172800000]).unwrap();
+        let mut profile = crate::registry::builtin().into_iter().find(|p| p.id=="minimaxcode").unwrap();
+        profile.session_database.as_mut().unwrap().path = path.to_string_lossy().into();
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&profile);
+        assert_eq!(report.usage.tokens24h,125);
+        assert_eq!(report.usage.tokens_total,355);
+        assert_eq!(report.models24h.len(),1);
+        assert_eq!(report.models_total.len(),2);
+        assert_eq!(report.hourly30d.iter().map(|(_,t)| t).sum::<i64>(),355);
+        assert_eq!(monitor.range_totals(&profile,86400000,now).0,125);
+        assert_eq!(monitor.range_totals(&profile,604800000,now).0,355);
     }
 
     #[test]

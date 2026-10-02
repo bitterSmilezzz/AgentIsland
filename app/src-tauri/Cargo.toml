@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.286"
+version = "0.0.287"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -33,6 +33,8 @@ libc = "0.2"
 native-tls = "0.2"
 # SMTP 的 AUTH LOGIN 与 RFC 2047 主题都要 base64；lock 里早有 0.21.7（传递依赖），列为直接依赖不增加下载
 base64 = "0.21"
+hmac = "0.12"
+sha2 = "0.10"
 # 钥匙串那两个 crate 是 **macOS 专属**，已挪到下面的
 # `[target.'cfg(target_os = "macos")'.dependencies]`。
 # 此前它们挂在 `[dependencies]` 里，于是 `core-foundation`（Apple Core Foundation 绑定，

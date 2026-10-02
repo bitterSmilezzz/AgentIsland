@@ -152,6 +152,7 @@ pub fn sensitive_header(name: &str) -> bool {
 /// URL 里的密钥常见形态：`?token=xxx` / `&key=xxx` / `.../<SendKey>.send`。
 /// 预览与日志都必须过这一层——密钥泄漏最常见的路径就是「把完整 URL 打印出来了」。
 pub fn masked_url(url: &str) -> String {
+    if let Some((base, _)) = url.split_once("/bot/v2/hook/") { return format!("{base}/bot/v2/hook/••••••"); }
     let mut out = url.to_string();
     for query in ["access_token", "token", "sendkey", "key", "webhook"] {
         let needle = format!("{query}=");
@@ -242,6 +243,7 @@ pub struct Request {
     pub body: String,
     /// SMTP 用：连接与认证参数（HTTP 通道为 `None`）
     pub smtp: Option<SmtpTarget>,
+    pub response_check: Option<Channel>,
 }
 
 impl Request {
@@ -265,7 +267,14 @@ impl Request {
         }
         if !self.body.is_empty() {
             lines.push(String::new());
-            lines.push(self.body.clone());
+            let mut body = self.body.clone();
+            if self.response_check.is_some() {
+                if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    for key in ["token", "sign"] { if json.get(key).is_some() { json[key] = serde_json::json!("••••••"); } }
+                    body = json.to_string();
+                }
+            }
+            lines.push(body);
         }
         lines.join("\n")
     }
@@ -399,6 +408,7 @@ pub fn render_request(
     masked_preview: bool,
 ) -> Request {
     match channel {
+        Channel::FeishuBot | Channel::WechatPushPlus | Channel::QqPushPlus | Channel::QqOneBot => crate::im::request(message, channel, config, secret, masked_preview),
         Channel::Ntfy => {
             // 形态按官方文档：POST https://<服务器>/<主题>，标题与优先级走 X-Title / X-Priority
             let starts_with_http = config.topic_or_url.starts_with("http");
@@ -426,7 +436,7 @@ pub fn render_request(
                     HttpField::new("X-Priority", if message.urgent { "4" } else { "3" }),
                 ],
                 body: capped.body,
-                smtp: None,
+                smtp: None, response_check: None,
             }
         }
         Channel::CustomHttp => {
@@ -488,7 +498,7 @@ pub fn render_request(
                 method: "POST".into(),
                 headers,
                 body,
-                smtp: None,
+                smtp: None, response_check: None,
             }
         }
         Channel::SmtpEmail => {

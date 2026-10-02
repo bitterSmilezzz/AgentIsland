@@ -18,6 +18,14 @@ use serde_json::{Map, Value};
 pub enum Channel {
     #[serde(rename = "ntfy")]
     Ntfy,
+    #[serde(rename = "feishuBot")]
+    FeishuBot,
+    #[serde(rename = "wechatPushPlus")]
+    WechatPushPlus,
+    #[serde(rename = "qqPushPlus")]
+    QqPushPlus,
+    #[serde(rename = "qqOneBot")]
+    QqOneBot,
     #[serde(rename = "customHTTP")]
     CustomHttp,
     #[serde(rename = "smtpEmail")]
@@ -28,6 +36,10 @@ impl Channel {
     pub fn as_str(self) -> &'static str {
         match self {
             Channel::Ntfy => "ntfy",
+            Channel::FeishuBot => "feishuBot",
+            Channel::WechatPushPlus => "wechatPushPlus",
+            Channel::QqPushPlus => "qqPushPlus",
+            Channel::QqOneBot => "qqOneBot",
             Channel::CustomHttp => "customHTTP",
             Channel::SmtpEmail => "smtpEmail",
         }
@@ -36,6 +48,10 @@ impl Channel {
     pub fn parse(raw: &str) -> Option<Channel> {
         match raw {
             "ntfy" => Some(Channel::Ntfy),
+            "feishuBot" => Some(Channel::FeishuBot),
+            "wechatPushPlus" => Some(Channel::WechatPushPlus),
+            "qqPushPlus" => Some(Channel::QqPushPlus),
+            "qqOneBot" => Some(Channel::QqOneBot),
             "customHTTP" => Some(Channel::CustomHttp),
             "smtpEmail" => Some(Channel::SmtpEmail),
             _ => None,
@@ -45,6 +61,10 @@ impl Channel {
     pub fn label(self) -> &'static str {
         match self {
             Channel::Ntfy => "ntfy 推送",
+            Channel::FeishuBot => "飞书群机器人",
+            Channel::WechatPushPlus => "微信（PushPlus）",
+            Channel::QqPushPlus => "QQ（PushPlus）",
+            Channel::QqOneBot => "QQ 群（OneBot 11）",
             Channel::CustomHttp => "自定义 HTTP（微信 Server酱 / PushPlus / 企微 / 钉钉…）",
             Channel::SmtpEmail => "邮箱（SMTP）",
         }
@@ -64,8 +84,8 @@ impl Channel {
         let url = match self {
             Channel::Ntfy => &config.topic_or_url,
             // 只支持 465，一定是 TLS
-            Channel::SmtpEmail => return None,
-            Channel::CustomHttp => &config.url_template,
+            Channel::SmtpEmail | Channel::FeishuBot | Channel::WechatPushPlus | Channel::QqPushPlus => return None,
+            Channel::CustomHttp | Channel::QqOneBot => &config.url_template,
         };
         url.to_lowercase().starts_with("http://").then_some(
             "地址是明文 http://：密钥与通知内容会明文经过路径上的每一跳，建议换成 https://",
@@ -99,6 +119,13 @@ impl Channel {
     /// 判据本身保持纯函数：它每次外发都会被调，不该在里面碰钥匙串。
     pub fn missing_field(self, config: &ChannelConfig, has_secret: bool) -> Option<&'static str> {
         match self {
+            Channel::FeishuBot => (!has_secret).then_some("请保存飞书机器人 Webhook 地址"),
+            Channel::WechatPushPlus | Channel::QqPushPlus => (!has_secret).then_some("请保存 PushPlus Token"),
+            Channel::QqOneBot => {
+                if crate::im::onebot_url(&config.url_template).is_none() { return Some("请填写 OneBot HTTP 服务地址（不含认证参数）"); }
+                if config.topic_or_url.parse::<u64>().ok().filter(|id| *id > 0).is_none() { return Some("请填写有效的 QQ 群号"); }
+                None
+            }
             Channel::Ntfy => {
                 let value = config.topic_or_url.trim();
                 if value.is_empty() {
@@ -524,7 +551,7 @@ pub fn local_minutes_of_day(now_ms: i64) -> Option<u32> {
 ///
 /// 内容对齐 Swift `RemoteNotifySettingsView` 的三段 help 与默认说明，
 /// 外加 Rust 侧**特有**的一条：在场信号层还没接，那一条必须写出来而不是让人猜。
-pub const REMOTE_LIMITATIONS: &str = "默认只送「哪个 Agent + 什么状态」，不含命令内容、路径与消息原文。三个通道：ntfy（订阅一个主题名）、自定义 HTTP 模板（微信 Server酱 / PushPlus、企微、钉钉、飞书都走这条——密钥写 {key}、标题 {title}、正文 {body}）、邮箱 SMTP。邮箱只支持 465（隐式 TLS）：25/587 的 STARTTLS 需要在已建立的 TCP 上原地升级，本仓不提供，填了会被拦住并说明原因。密钥只进系统钥匙串，界面与日志只显示掩码，设置文件里零密钥。macOS 根据显示器睡眠与无输入时长判定离开，暂未读取锁屏标记；信号不可用时按已离开放行。";
+pub const REMOTE_LIMITATIONS: &str = "默认仅发送 Agent 名与状态，不含命令、路径与消息原文。飞书支持群机器人及可选签名；微信通过 PushPlus 公众号接收；QQ 可通过 PushPlus 已绑定的机器人接收，也可直连已运行的 OneBot 11 HTTP 群机器人。平台受理不代表手机收到或已读。自定义 HTTP 仅检查 HTTP 状态，不解析第三方业务回执。邮箱仅支持 465 隐式 TLS。凭据只进系统钥匙串。离开判定使用显示器睡眠与无输入时长，信号不可用时放行。";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -536,6 +563,7 @@ pub struct Status {
     pub label: String,
     /// 密钥在钥匙串里的条目名（不是密钥本身）
     pub secret_name: String,
+    pub credential_stored: bool,
     /// 配齐了没有；`None` = 已配齐
     pub readiness: Option<String>,
     pub insecure_endpoint: Option<String>,
@@ -577,6 +605,7 @@ pub fn status(
         unrecognized_kind: unrecognized,
         label: channel.label().to_string(),
         secret_name: channel.default_secret_name(),
+        credential_stored: has_secret,
         readiness: channel.missing_field(config, has_secret).map(str::to_string),
         insecure_endpoint: channel.insecure_endpoint(config).map(str::to_string),
         plaintext_secret: channel

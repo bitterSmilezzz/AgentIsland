@@ -2,7 +2,7 @@
 /* ── Codex 档位页（Phase 2）────────────────────────────────────────── */
 
 /* 页面容器：内容滚动交给 .sb-body，这里只管纵向排布 */
-html:is(.shell-sidebar, .shell-workbench) .sb-page {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-page {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -10,7 +10,7 @@ html:is(.shell-sidebar, .shell-workbench) .sb-page {
 
 
 /* 能力边界：必须显眼。它写的是「这个功能做不到什么」，而不是装饰 */
-html:is(.shell-sidebar, .shell-workbench) .sb-note {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-note {
   margin: 0 0 10px;
   padding: 8px 9px;
   border-radius: 8px;
@@ -21,21 +21,21 @@ html:is(.shell-sidebar, .shell-workbench) .sb-note {
   color: var(--text-muted);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-kv {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-kv {
   font-size: 12px;
   line-height: 1.6;
   color: var(--text, #0f172a);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-kv code,
-html:is(.shell-sidebar, .shell-workbench) .sb-profile code {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-kv code,
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-profile code {
   font-size: 11px;
   padding: 1px 4px;
   border-radius: 4px;
   background: var(--control-hover);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-section {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-section {
   margin: 14px 0 6px;
   font-size: 11px;
   font-weight: 600;
@@ -43,14 +43,14 @@ html:is(.shell-sidebar, .shell-workbench) .sb-section {
   color: var(--text-faint);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-profile {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-profile {
   padding: 8px 9px;
   border-radius: 8px;
   border: 1px solid var(--border, #e2e8f0);
   margin-bottom: 6px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-profile .name {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-profile .name {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -58,21 +58,21 @@ html:is(.shell-sidebar, .shell-workbench) .sb-profile .name {
   font-weight: 600;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-profile .meta {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-profile .meta {
   margin-top: 2px;
   font-size: 11px;
   color: var(--text-faint);
   overflow-wrap: anywhere;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-profile .actions,
-html:is(.shell-sidebar, .shell-workbench) .sb-confirm .actions {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-profile .actions,
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-confirm .actions {
   display: flex;
   gap: 6px;
   margin-top: 7px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-tag {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-tag {
   font-size: 10px;
   font-weight: 500;
   padding: 1px 5px;
@@ -82,14 +82,14 @@ html:is(.shell-sidebar, .shell-workbench) .sb-tag {
   border: 1px solid var(--emerald-200, #a7f3d0);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-form {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-form {
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-form input,
-html:is(.shell-sidebar, .shell-workbench) .sb-form select {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-form input,
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-form select {
   font: inherit;
   font-size: 11px;
   padding: 5px 7px;
@@ -99,11 +99,11 @@ html:is(.shell-sidebar, .shell-workbench) .sb-form select {
   color: var(--text, #0f172a);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-form .mini-btn {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-form .mini-btn {
   align-self: flex-start;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-backup {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-backup {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -113,12 +113,12 @@ html:is(.shell-sidebar, .shell-workbench) .sb-backup {
   color: var(--text-muted);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-backup .name {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-backup .name {
   font-variant-numeric: tabular-nums;
 }
 
 /* 确认框：破坏性动作（切换 / 还原 / 删除）都要先过这里 */
-html:is(.shell-sidebar, .shell-workbench) .sb-confirm {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-confirm {
   margin-top: 12px;
   padding: 9px;
   border-radius: 8px;
@@ -129,7 +129,7 @@ html:is(.shell-sidebar, .shell-workbench) .sb-confirm {
   color: var(--text-muted);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-toast {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-toast {
   margin-top: 10px;
   padding: 7px 9px;
   border-radius: 8px;
@@ -140,7 +140,7 @@ html:is(.shell-sidebar, .shell-workbench) .sb-toast {
   overflow-wrap: anywhere;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-item.is-disabled {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-item.is-disabled {
   opacity: 0.45;
   cursor: default;
 }
@@ -148,7 +148,7 @@ html:is(.shell-sidebar, .shell-workbench) .sb-item.is-disabled {
 /* ── 待办页（Phase 3）──────────────────────────────────────────────
    极简：无分组、无日期、无优先级。做完的只加一条删除线，不下沉。 */
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo {
   display: flex;
   align-items: flex-start;
   gap: 7px;
@@ -158,11 +158,11 @@ html:is(.shell-sidebar, .shell-workbench) .sb-todo {
   line-height: 1.5;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo:hover {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo:hover {
   background: var(--control-hover);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .box {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .box {
   flex: none;
   width: 14px;
   height: 14px;
@@ -177,38 +177,38 @@ html:is(.shell-sidebar, .shell-workbench) .sb-todo .box {
   cursor: default;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo.is-done .box {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo.is-done .box {
   background: var(--emerald-50, #ecfdf5);
   border-color: var(--emerald-200, #a7f3d0);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .text {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .text {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo.is-done .text {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo.is-done .text {
   text-decoration: line-through;
   color: var(--slate-400, #94a3b8);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .x {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .x {
   flex: none;
   padding: 0 3px;
   color: var(--slate-400, #94a3b8);
   cursor: default;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .x:hover {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .x:hover {
   color: var(--danger, #dc2626);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo-add {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo-add {
   margin-top: 8px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo-add input {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo-add input {
   width: 100%;
   box-sizing: border-box;
   font: inherit;
@@ -220,20 +220,20 @@ html:is(.shell-sidebar, .shell-workbench) .sb-todo-add input {
   color: var(--text, #0f172a);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo-foot {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo-foot {
   margin-top: 8px;
   display: flex;
   gap: 6px;
 }
 
 /* 高级设置页（03-approach §3）。
-   每条规则都挂在 html:is(.shell-sidebar, .shell-workbench) 下——`models.rs` 有一条哨兵扫这张表，
+   每条规则都挂在 html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) 下——`models.rs` 有一条哨兵扫这张表，
    漏挂会让侧边栏样式漏进灵动岛，而那条测试会直接红。 */
-html:is(.shell-sidebar, .shell-workbench) .sb-group {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-group {
   margin-top: 14px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-group-title {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-group-title {
   font-size: 10px;
   font-weight: 700;
   color: var(--text-faint, #64748b);
@@ -241,7 +241,7 @@ html:is(.shell-sidebar, .shell-workbench) .sb-group-title {
   margin-bottom: 4px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-set {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -250,21 +250,21 @@ html:is(.shell-sidebar, .shell-workbench) .sb-set {
   font-size: 12px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-set-label {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set-label {
   color: var(--text, #0f172a);
   flex: 1 1 auto;
   min-width: 0;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-set-ctl {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set-ctl {
   display: flex;
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-set-ctl input[type='number'],
-html:is(.shell-sidebar, .shell-workbench) .sb-set-ctl select {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set-ctl input[type='number'],
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set-ctl select {
   width: 84px;
   font: inherit;
   font-size: 11.5px;
@@ -275,43 +275,43 @@ html:is(.shell-sidebar, .shell-workbench) .sb-set-ctl select {
   color: var(--text, #0f172a);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-set-ctl input[type='checkbox'] {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set-ctl input[type='checkbox'] {
   width: 15px;
   height: 15px;
   accent-color: var(--working, #30d158);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-unit {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-unit {
   font-size: 10px;
   color: var(--text-faint, #64748b);
   min-width: 26px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-hint {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-hint {
   font-size: 10px;
   color: var(--text-faint, #64748b);
   margin: -2px 0 4px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-warn {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-warn {
   color: var(--danger, #dc2626);
 }
 
 /* 远程通知页与 Agent 启停页。
-   同样每条挂 html:is(.shell-sidebar, .shell-workbench) —— `models.rs` 的哨兵会逐条扫这张表。 */
-html:is(.shell-sidebar, .shell-workbench) .sb-set-ctl input[type='text'],
-html:is(.shell-sidebar, .shell-workbench) .sb-set-ctl input[type='password'] {
+   同样每条挂 html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) —— `models.rs` 的哨兵会逐条扫这张表。 */
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set-ctl input[type='text'],
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-set-ctl input[type='password'] {
   width: 130px;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-foot {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-foot {
   margin-top: 8px;
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-note pre {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-note pre {
   margin: 4px 0 0;
   padding: 6px 8px;
   border-radius: 6px;
@@ -325,7 +325,7 @@ html:is(.shell-sidebar, .shell-workbench) .sb-note pre {
   overflow: auto;
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-agent-toggle {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-agent-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -334,36 +334,47 @@ html:is(.shell-sidebar, .shell-workbench) .sb-agent-toggle {
   border-bottom: 1px solid var(--border, #e2e8f0);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-agent-toggle .name {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-agent-toggle .name {
   flex: 1 1 auto;
   min-width: 0;
   color: var(--text, #0f172a);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-agent-toggle .meta {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-agent-toggle .meta {
   font-size: 10px;
   color: var(--text-faint, #64748b);
 }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-agent-toggle input[type='checkbox'] {
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-agent-toggle input[type='checkbox'] {
   width: 15px;
   height: 15px;
   accent-color: var(--working, #30d158);
 }
 
-html:is(.shell-sidebar, .shell-workbench) button { font-family: inherit; }
-html:is(.shell-sidebar, .shell-workbench) :is(button, input, select, [data-back]):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
-html:is(.shell-sidebar, .shell-workbench) .mini-btn { min-height: 28px; }
-html:is(.shell-sidebar, .shell-workbench) .sb-form :is(input, select) { min-width: 0; width: 100%; min-height: 32px; }
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .box { width: 24px; height: 24px; background: var(--surface-inset); border-color: var(--border); }
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .x { min-width: 28px; min-height: 28px; border: 0; background: transparent; font-size: 18px; }
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .text { padding-top: 3px; }
-html:is(.shell-sidebar, .shell-workbench) .sb-tag { color: var(--working); background: var(--card-fill); border-color: var(--border); }
-html:is(.shell-sidebar, .shell-workbench) .sb-confirm { background: var(--surface-inset); border-color: var(--warning); color: var(--text); }
-html:is(.shell-sidebar, .shell-workbench) .sb-profile .actions { flex-wrap: wrap; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) button { font-family: inherit; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) :is(button, input, select, [data-back]):focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .mini-btn { min-height: 28px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-form :is(input, select) { min-width: 0; width: 100%; min-height: 32px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .box { width: 24px; height: 24px; background: var(--surface-inset); border-color: var(--border); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .x { min-width: 28px; min-height: 28px; border: 0; background: transparent; font-size: 18px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .text { padding-top: 3px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-tag { color: var(--working); background: var(--card-fill); border-color: var(--border); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-confirm { background: var(--surface-inset); border-color: var(--warning); color: var(--text); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-profile .actions { flex-wrap: wrap; }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-todo.is-done .box { background: var(--control-active); border-color: var(--working); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo.is-done .box { background: var(--control-active); border-color: var(--working); }
 
-html:is(.shell-sidebar, .shell-workbench) .sb-field { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; color: var(--text-muted); font-size: 11px; }
-html:is(.shell-sidebar, .shell-workbench) .sb-todo.is-done .text,
-html:is(.shell-sidebar, .shell-workbench) .sb-todo .x { color: var(--text-faint); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-field { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; color: var(--text-muted); font-size: 11px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo.is-done .text,
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-todo .x { color: var(--text-faint); }
+
+/* Progressive disclosure keeps the connection workflow short in both desktop forms. */
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .remote-advanced { border-top: 1px solid var(--border-subtle); padding-top: 12px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .remote-advanced > summary { cursor: pointer; font-size: 12px; color: var(--text); padding: 6px 0; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .remote-advanced > summary span { font-size: 10px; color: var(--text-faint); font-weight: 400; margin-left: 6px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .remote-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .remote-channel-help { line-height: 1.65; margin: 6px 0 12px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) [data-remote-root] .sb-set-ctl { min-width: 0; flex: 1; max-width: 260px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) [data-remote-root] .sb-set-ctl input:not([type='checkbox']),
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) [data-remote-root] .sb-set-ctl select { min-width: 0; width: 100%; box-sizing: border-box; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .remote-intro .sb-group-title { color: var(--text); font-size: 14px; letter-spacing: 0; }

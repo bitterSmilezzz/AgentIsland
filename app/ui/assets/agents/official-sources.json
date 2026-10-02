@@ -81,10 +81,31 @@
       "sha256": "49d523938a22af5a70dd79923725df38674823026e2f917e76337319969f4af4"
     },
     "mimo": {
-      "file": "mimo.png",
-      "source": "https://cdn.cnbj1.fds.api.mi-img.com/aife/mimo-blog-fe/doc_build/mimo.ico",
-      "processing": "sips ICO to PNG; no redraw or recoloring",
-      "sha256": "68da84c4c927f972515143da470a8854df60fee7895a8a01ebeb0bafb8b61903"
+      "file": "mimodesktop.png",
+      "source": "Xiaomi MiMo.app/Contents/Resources/icon.icns",
+      "bundle_id": "com.xiaomi.mimo.desktop",
+      "version": "26.929.292248",
+      "source_sha256": "3e73bababcb167c8331aecd2a63683685a3558dd8c39714e1152f2652de06900",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "e4c803efc8ffa4c189279b15acef849b8eb38445a4fc446d5c21c5ea14866c96"
+    },
+    "chatgpt": {
+      "file": "chatgpt.png",
+      "source": "ChatGPT.app/Contents/Resources/electron.icns",
+      "bundle_id": "com.openai.codex",
+      "version": "26.930.21537",
+      "source_sha256": "8ee5a24e1e32e33f976bc56943c2e8ad0a700449e6857741e543dc738648a2fb",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "3724f6ef090109e5dc6f14c103ff5fbec43fa78953aa049ef2af122ad9b482e1"
+    },
+    "minimaxcode": {
+      "file": "minimaxcode.png",
+      "source": "MiniMax Code.app/Contents/Resources/icon.icns",
+      "bundle_id": "com.minimax.agent.cn",
+      "version": "3.1.0",
+      "source_sha256": "7c6ecb28984cf923c90ecf2ddcbbcfcbf7f61f54e8147ae4cba9b3dbd35cbacb",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "5f7d32b67d32932de57f0f4330c90ff9c87fd40eaa22b901bc8aba7a4959ef97"
     }
   }
 }

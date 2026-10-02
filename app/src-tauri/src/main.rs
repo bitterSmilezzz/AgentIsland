@@ -27,6 +27,8 @@ mod provider;
 mod registry;
 mod remote;
 mod render;
+mod im;
+mod minimax;
 mod report;
 mod resilience;
 mod session;
@@ -529,7 +531,7 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         // 聚合全部启用档案（分析页口径）
         let profiles: Vec<crate::models::AgentProfile> = crate::registry::builtin()
             .into_iter()
-            .filter(|p| !e.settings.disabled_agents.contains(&p.id) && !p.token_roots.is_empty())
+            .filter(|p| !e.settings.disabled_agents.contains(&p.id) && (!p.token_roots.is_empty() || p.session_database.as_ref().is_some_and(|db| matches!(db.schema, models::SessionSchema::MiniMaxRuntime | models::SessionSchema::OpenCode | models::SessionSchema::DimTasks))))
             .collect();
         if profiles.is_empty() {
             return None;
@@ -542,6 +544,7 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         let mut agg_cost_estimated = false;
         let mut hourly: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
         let mut models: std::collections::HashMap<String, (i64, f64, bool)> = std::collections::HashMap::new();
+        let mut total_models: std::collections::HashMap<String, (i64, f64, bool)> = std::collections::HashMap::new();
         for p in &profiles {
             if let Some(r) = e.get_report(&p.id) {
                 agg_tokens24 += r.usage.tokens24h;
@@ -551,6 +554,10 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
                 agg_cost_estimated = agg_cost_estimated || r.usage.cost_estimated;
                 for (ts, v) in r.hourly30d {
                     *hourly.entry(ts).or_insert(0) += v;
+                }
+                for m in r.models_total {
+                    let entry = total_models.entry(m.model).or_insert((0, 0.0, false));
+                    entry.0 += m.tokens; entry.1 += m.cost; entry.2 |= m.cost_estimated;
                 }
                 for m in r.models24h {
                     let e2 = models.entry(m.model).or_insert((0, 0.0, false));
@@ -572,6 +579,8 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
             })
             .collect();
         models24h.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+        let mut models_total: Vec<models::ModelUsage> = total_models.into_iter().map(|(model,(tokens,cost,cost_estimated))| models::ModelUsage {model,tokens,cost,cost_estimated}).collect();
+        models_total.sort_by(|a,b| b.tokens.cmp(&a.tokens));
         return Some(models::TokenReport {
             usage: models::TokenUsage {
                 tokens24h: agg_tokens24,
@@ -580,8 +589,8 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
                 cost_total: agg_cost_total,
                 cost_estimated: agg_cost_estimated,
             },
-            models24h: models24h.clone(),
-            models_total: models24h,
+            models24h,
+            models_total,
             hourly30d,
         });
     }
@@ -693,6 +702,12 @@ fn remote_secret_set(
                 reason: "钥匙串里本来就没有这一条".to_string(),
             }
         };
+    }
+    if channel == crate::remote::Channel::FeishuBot && crate::im::feishu_credentials(&value).is_none() {
+        return crate::secret::WriteResult::Refused { reason: "请填写有效的飞书 HTTPS 群机器人 Webhook 地址".into() };
+    }
+    if channel == crate::remote::Channel::QqOneBot && value.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return crate::secret::WriteResult::Refused { reason: "访问令牌不能包含空格或换行".into() };
     }
     crate::secret::write(&crate::secret::default_secret_name(channel), &value)
 }
@@ -1232,7 +1247,7 @@ fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
 ///
 /// 覆盖 `app/ui/` 下的**全部**文件——少列一个，那个文件缺失时就查不出来，
 /// 而少一个 CSS 的后果是**整个形态无样式渲染、零报错**。
-const EMBEDDED_ASSET_SAMPLE: [&str; 49] = [
+const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "assets/agents/LICENSE",
     "assets/agents/LICENSE.OpenViking",
     "assets/agents/LICENSE.DeepSeekHarness",
@@ -1242,10 +1257,12 @@ const EMBEDDED_ASSET_SAMPLE: [&str; 49] = [
     "assets/agents/qoder.png",
     "assets/agents/vibeusage.png",
     "assets/agents/workbuddy.png",
+    "assets/agents/chatgpt.png",
     "assets/agents/workbuddyai.png",
     "assets/agents/dsh.svg",
     "assets/agents/trae.png",
-    "assets/agents/mimo.png",
+    "assets/agents/mimodesktop.png",
+    "assets/agents/minimaxcode.png",
     "assets/agents/vscode.svg",
     "assets/agents/aider.svg",
     "assets/agents/ima.svg",
@@ -1486,6 +1503,9 @@ const UI_SMOKE_JS: &str = r#"(function () {
             var status = await window.__TAURI__.core.invoke('remote_status');
             if (remoteRoot.textContent.indexOf(status.secretName) < 0) throw new Error('远程通知密钥条目名未显示');
             if (!remoteRoot.querySelector('[data-remote-test]') || !remoteRoot.querySelector('[data-remote-history]')) throw new Error('远程测试或发送记录入口缺失');
+            var advanced = remoteRoot.querySelector('[data-remote-advanced]');
+            if (!advanced || advanced.open) throw new Error('远程高级设置应默认折叠');
+            if (remoteRoot.querySelectorAll('[data-remote-kind] option').length < 7) throw new Error('IM 渠道缺失');
           }
           snap(selector + ' → ' + key);
         });
@@ -1615,6 +1635,11 @@ const UI_SMOKE_JS: &str = r#"(function () {
       await clickAll('[data-analytics]');
       await clickAll('[data-agent]');
       await clickAll('[data-back]');
+      if (document.querySelector('[data-island-settings]')) {
+        await clickAll('[data-island-settings]');
+        if (!document.querySelector('[data-settings-root]') || document.querySelector('[data-report-root]')) throw new Error('灵动岛设置入口未进入设置页');
+        await clickAll('[data-back]');
+      }
       await clickAll('[data-report-format]');
       await clickAll('[data-search]');
       // **真打一个字进去**：点开搜索框不等于搜索能用。
@@ -1662,6 +1687,23 @@ const UI_SMOKE_JS: &str = r#"(function () {
         searchInput.value = '';
         searchInput.dispatchEvent(new Event('input', { bubbles: true }));
         await wait(120);
+      }
+      if (document.documentElement.classList.contains('shell-sidebar')) {
+        var mainModule = await import(new URL('js/main.js', location.href).href);
+        var viewModule = await import(new URL('js/views.js', location.href).href);
+        var state = mainModule.getState(), originalEngine = state.engine, originalRoute = state.route;
+        try {
+          state.route = 'list';
+          state.engine = { snapshots: [{id:'workbuddy', name:'WorkBuddy', level:'completed', level_label:'已完成', process_running:true, last_activity_text:'', token_usage:null}], grand_total:{}, latest_event:null };
+          viewModule.renderSidebar();
+          var row = document.querySelector('.sb-agent');
+          if (!row || document.querySelectorAll('.sb-agent').length !== 1) throw new Error('单条完成记录未显示');
+          var icon = row.querySelector('.agent-avatar').getBoundingClientRect();
+          var name = row.querySelector('.name').getBoundingClientRect();
+          var meta = row.querySelector('.meta').getBoundingClientRect();
+          if (name.left < icon.right + 6 || Math.abs(name.left-meta.left)>1 || meta.top < name.bottom) throw new Error('单条完成记录图标与文字错位');
+          snap('单条已完成记录的原生行布局');
+        } finally { state.engine=originalEngine; state.route=originalRoute; viewModule.renderSidebar(); }
       }
       await clickAll('[data-theme]');
       await clickAll('[data-collapse]');

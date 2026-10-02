@@ -132,8 +132,8 @@ const ICONS = {
   clock: '<svg viewBox="0 0 16 16"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm.7 3v4.2l3 1.8-.7 1.2-3.7-2.2V4h1.4z"/></svg>',
   chevUp: '<svg viewBox="0 0 16 16"><path d="M8 5.5 13 10.5 11.6 12 8 8.4 4.4 12 3 10.5z"/></svg>',
   chevDown: '<svg viewBox="0 0 16 16"><path d="M8 10.5 3 5.5 4.4 4 8 7.6 11.6 4 13 5.5z"/></svg>',
-  chevLeft: '<svg viewBox="0 0 16 16"><path d="M10.5 8 5.5 13 4 11.6 7.6 8 4 4.4 5.5 3z"/></svg>',
-  chevRight: '<svg viewBox="0 0 16 16"><path d="M5.5 8 10.5 3 12 4.4 8.4 8 12 11.6 10.5 13z"/></svg>',
+  chevLeft: '<svg viewBox="0 0 16 16"><path d="M5.5 8 10.5 3 12 4.4 8.4 8 12 11.6 10.5 13z"/></svg>',
+  chevRight: '<svg viewBox="0 0 16 16"><path d="M10.5 8 5.5 13 4 11.6 7.6 8 4 4.4 5.5 3z"/></svg>',
   close: '<svg viewBox="0 0 16 16"><path d="M4.4 3 8 6.6 11.6 3 13 4.4 9.4 8l3.6 3.6-1.4 1.4L8 9.4 4.4 13 3 11.6 6.6 8 3 4.4z"/></svg>',
   hand: '<svg viewBox="0 0 16 16"><path d="M7 2v6H6V3.5a.75.75 0 0 0-1.5 0V10l-1-1.3a1.1 1.1 0 0 0-1.7 1.4l3.2 4A3 3 0 0 0 7.4 15H9a4 4 0 0 0 4-4V6.5a.75.75 0 0 0-1.5 0V9h-.5V4.5a.75.75 0 0 0-1.5 0V9H9V2.75A.75.75 0 0 0 8.25 2 1.25 1.25 0 0 0 7 3.25z"/></svg>',
   terminal: '<svg viewBox="0 0 16 16"><path d="M2 3h12v10H2V3zm1.5 1.5v7h9v-7h-9zM4.8 6l1.8 2-1.8 2 1 1 2.6-3L5.8 5l-1 1z"/></svg>',
@@ -357,6 +357,8 @@ export function renderCard() {
   let content = '';
   if (st.route === 'tokenAnalytics') {
     content = pageAnalytics(eng);
+  } else if (st.route === 'settings') {
+    content = `<div class="page island-settings" data-island-settings-page><div class="page-header"><button type="button" class="icon-btn" data-back aria-label="返回监控">${ICONS.chevLeft}</button><span class="page-title">设置</span></div>${pageSettings()}</div>`;
   } else if (st.route.startsWith('agentDetail:')) {
     content = pageAgentDetail(eng, st.route.split(':')[1]);
   } else {
@@ -434,7 +436,8 @@ function listCard(eng, st, visible, dark, edge) {
         <span class="header-count">本机 · ${visible.length} 在线</span>
         <button type="button" class="icon-btn" data-search title="即时搜索过滤 (/)" aria-label="搜索智能体">${ICONS.search}</button>
         <button type="button" class="icon-btn" data-theme title="外观主题" aria-label="切换外观">${themeIcon}</button>
-        <button type="button" class="icon-btn" data-analytics title="Token 用量分析" aria-label="用量分析">${ICONS.wrench}</button>
+        <button type="button" class="icon-btn" data-analytics title="Token 用量分析" aria-label="用量分析">${navigationIcon('chart')}</button>
+        <button type="button" class="icon-btn" data-island-settings title="设置" aria-label="设置">${navigationIcon('gear')}</button>
         <button type="button" class="icon-btn" data-collapse title="收起灵动岛" aria-label="收起灵动岛">${chev}</button>
       </div>
     </div>
@@ -663,6 +666,13 @@ function bindCardEvents(eng, st) {
     st.route = 'tokenAnalytics';
     renderCard();
   }));
+
+  root.querySelector('[data-island-settings]')?.addEventListener('click', () => {
+    st.route = 'settings';
+    renderCard();
+    resizeToContent();
+  });
+  if (st.route === 'settings') bindSettings();
 
   const collapseBtn = root.querySelector('[data-collapse]');
   if (collapseBtn) collapseBtn.addEventListener('click', collapse);
@@ -1099,12 +1109,12 @@ export function renderSidebar() {
         // 两处不会再各说各话（排版仍各自不同）
         const model = agentRowModel(snap);
         const tokens = model.tokensText === '—' ? '—' : `${model.tokensText} tokens`;
-        const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
-        return `<button type="button" class="sb-agent" data-agent="${esc(model.id)}">
+        const detail = model.actionText || model.activityText;
+        return `<button type="button" class="sb-agent" data-level="${esc(model.level)}" data-agent="${esc(model.id)}">
           ${agentIcon(snap)}
           <span class="name">${escapeHtml(model.name)}</span>
           <span class="tokens" style="color:${model.statusColor}">${tokens}</span>
-          <span class="meta">${escapeHtml(detail)}</span>
+          <span class="meta"><span class="sb-agent-status" style="color:${model.statusColor}">${escapeHtml(model.statusText)}</span>${detail && detail !== model.statusText ? `<span class="sb-agent-action">${escapeHtml(detail)}</span>` : ''}</span>
         </button>`;
       })
       .join('');
@@ -1283,17 +1293,22 @@ export function bindAgents() {
 /// 同值——写错一个，界面就写进了一个 Rust 认不出的通道，而 `normalized()` 会把它
 /// 悄悄回落成 ntfy，用户看到的是「我选了却没生效」而没有任何报错。
 const REMOTE_CHANNELS = [
-  { kind: 'ntfy', label: 'ntfy 推送', fields: [
+  { kind: 'feishuBot', label: '飞书群机器人', secretLabel: 'Webhook 地址', help: '飞书群设置 → 群机器人 → 添加自定义机器人，复制 Webhook 即可。若使用关键词校验，请允许 AgentIsland；签名校验在高级设置中填写。', fields: [] },
+  { kind: 'wechatPushPlus', label: '微信 · PushPlus', secretLabel: 'PushPlus Token', help: '关注 PushPlus 公众号，在 PushPlus 官网获取 Token。通知通过公众号发到微信，受平台额度与订阅限制。', fields: [] },
+  { kind: 'qqPushPlus', label: 'QQ · PushPlus 机器人', secretLabel: 'PushPlus Token', help: '先在 PushPlus 个人中心 → 渠道配置 → QQ 机器人完成绑定，然后粘贴 Token。默认发给自己，群推送可在高级设置填写群配置编码。', fields: [] },
+  { kind: 'qqOneBot', label: 'QQ 群 · OneBot 11（已有机器人）', secretLabel: '访问令牌（可选）', help: '需要已登录并运行的 OneBot 11 群机器人，填写它的 HTTP 服务地址与群号。AgentIsland 不负责登录 QQ。', fields: [
+    { key: 'url_template', label: '机器人地址', ph: 'http://127.0.0.1:3000' },
+    { key: 'topicOrURL', label: 'QQ 群号', ph: '接收通知的群号' } ] },
+  { kind: 'ntfy', label: 'ntfy 推送', help: '填写主题名，并在手机 ntfy 应用订阅同一主题。', fields: [
     { key: 'topicOrURL', label: '主题名', ph: 'my-agentisland-topic' } ] },
-  { kind: 'customHTTP', label: '自定义 HTTP', fields: [
+  { kind: 'smtpEmail', label: '邮箱 · SMTP', secretLabel: '密码 / 授权码', help: '填写邮箱的 SMTP 服务器、发信账号与收件人；使用 465 加密端口。部分邮箱需要单独生成授权码。', fields: [
+    { key: 'smtp_host', label: 'SMTP 服务器', ph: 'smtp.qq.com' },
+    { key: 'smtp_user', label: '发信邮箱' },
+    { key: 'smtp_to', label: '收件邮箱' } ] },
+  { kind: 'customHTTP', label: '自定义 HTTP（高级）', secretLabel: '密钥', help: '适用于其他服务。地址与正文模板在高级设置中配置。', fields: [
     { key: 'url_template', label: '地址', ph: 'https://example.com/send?key={key}' },
-    { key: 'body_template', label: '正文', ph: '{title}\n{body}' },
+    { key: 'body_template', label: '正文模板', ph: '{title}\n{body}' },
     { key: 'useJSONBody', label: '正文用 JSON', type: 'bool' } ] },
-  { kind: 'smtpEmail', label: '邮箱 SMTP（仅 465）', fields: [
-    { key: 'smtp_host', label: 'SMTP 主机' },
-    { key: 'smtp_port', label: '端口', type: 'number', min: 465, max: 465 },
-    { key: 'smtp_user', label: '账号' },
-    { key: 'smtp_to', label: '收件人' } ] },
 ];
 
 /// 远程通知页外壳。**能力边界逐字用后端给的那段**（与档位页同一条纪律：
@@ -1328,48 +1343,38 @@ export async function hydrateRemote() {
   if (remote.awayNow) notices.push(`在场判定：${remote.awayReason}`);
   if (remote.unrecognizedKind) notices.push(`设置里的通道「${remote.unrecognizedKind}」认不出，已回落到 ${remote.label}`);
 
+  const policyToggle = (key, label, fallback = false) => `<label class="sb-set"><span class="sb-set-label">${label}</span><span class="sb-set-ctl"><input type="checkbox" data-remote-policy="${key}"${(policy[key] ?? fallback) ? ' checked' : ''}></span></label>`;
+  const secretControl = channel.secretLabel ? `<label class="sb-set"><span class="sb-set-label">${channel.secretLabel}</span><span class="sb-set-ctl"><input type="password" data-remote-secret placeholder="留空保留已保存的连接" autocomplete="off" spellcheck="false"></span></label><div class="sb-hint">${remote.credentialStored ? '连接凭据已保存；留空保留。' : '填好后点击保存连接。'} 凭据只存系统钥匙串。</div>` : '';
   root.innerHTML = `
-    <div class="sb-note">${escapeHtml(remote.limitations ?? '')}</div>
-    ${notices.map((n) => `<div class="sb-hint sb-warn">${escapeHtml(n)}</div>`).join('')}
-
+    <div class="sb-group remote-intro"><div class="sb-group-title">把重要进展送到你身边</div><div class="sb-hint">选一个渠道，填好连接信息。默认只发送 Agent 名称与状态。</div></div>
     <div class="sb-group">
-      <div class="sb-group-title">通道</div>
-      <label class="sb-set"><span class="sb-set-label">通道</span>
-        <span class="sb-set-ctl"><select data-remote-kind>
-          ${REMOTE_CHANNELS.map((c) => `<option value="${c.kind}"${c.kind === remote.kind ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
-        </select></span></label>
-      ${channel.fields.map((f) => remoteField(channel.kind, f, cfg)).join('')}
-      <label class="sb-set"><span class="sb-set-label">附带最后一条动作</span>
-        <span class="sb-set-ctl"><input type="checkbox" data-remote-cfg="include_action_detail" data-kind="${channel.kind}"${cfg.include_action_detail ? ' checked' : ''}></span></label>
-      <div class="sb-hint">命令内容与文件路径默认**不送出**这台机器。勾上才会一起走。</div>
+      <div class="sb-group-title">接收方式</div>
+      <label class="sb-set"><span class="sb-set-label">通知渠道</span><span class="sb-set-ctl"><select data-remote-kind>${REMOTE_CHANNELS.map(c => `<option value="${c.kind}"${c.kind === remote.kind ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}</select></span></label>
+      <div class="sb-hint remote-channel-help">${escapeHtml(channel.help)}</div>
+      ${channel.kind === 'customHTTP' ? '' : channel.fields.map(f => remoteField(channel.kind, f, cfg)).join('')}
+      ${secretControl}
+      ${notices.map(n => `<div class="sb-hint sb-warn">${escapeHtml(n)}</div>`).join('')}
     </div>
-
     <div class="sb-group">
-      <div class="sb-group-title">密钥（存进系统钥匙串）</div>
-      <div class="sb-hint">条目名 <code>${escapeHtml(remote.secretName)}</code>；界面与日志只显示掩码，读不回真值。</div>
-      <label class="sb-set"><span class="sb-set-label">密钥</span>
-        <span class="sb-set-ctl"><input type="password" data-remote-secret placeholder="留空即清除" autocomplete="off"></span></label>
+      <div class="sb-group-title">通知哪些进展</div>
+      ${policyToggle('master_enabled', '开启远程通知')}
+      ${policyToggle('send_completed', '任务完成', true)}
+      ${policyToggle('send_attention', '需要我确认', true)}
+      ${policyToggle('send_cost_spike', '资源 / 消耗告警', true)}
       <div class="sb-foot">
-        <button type="button" class="mini-btn" data-remote-save-secret>保存密钥</button>
-        <button type="button" class="mini-btn" data-remote-del-secret>删除</button>
-        <button type="button" class="mini-btn" data-remote-preview>发送预览</button>
-        <button type="button" class="mini-btn" data-remote-test>发送测试通知</button>
+        ${channel.secretLabel ? '<button type="button" class="mini-btn" data-remote-save-secret>保存连接</button>' : ''}
+        <button type="button" class="mini-btn" data-remote-test>发送测试</button>
       </div>
-      <div data-remote-out class="sb-note"></div>
-      <div data-remote-history class="sb-note"></div>
-      <button type="button" class="mini-btn" data-remote-refresh>刷新发送记录</button>
+      <div class="sb-hint">开启远程通知后可测试；测试会跳过静默、离开与节流策略。平台受理不代表手机已收到或消息已读。</div>
+      <div data-remote-out class="sb-note" role="status" aria-live="polite"></div>
     </div>
-
-    <div class="sb-group">
-      <div class="sb-group-title">发送策略</div>
-      <label class="sb-set"><span class="sb-set-label">总开关</span>
-        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="master_enabled"${policy.master_enabled ? ' checked' : ''}></span></label>
-      <label class="sb-set"><span class="sb-set-label">任务完成</span>
-        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="send_completed"${policy.send_completed ? ' checked' : ''}></span></label>
-      <label class="sb-set"><span class="sb-set-label">等待确认</span>
-        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="send_attention"${policy.send_attention ? ' checked' : ''}></span></label>
-      <label class="sb-set"><span class="sb-set-label">消耗告警</span>
-        <span class="sb-set-ctl"><input type="checkbox" data-remote-policy="send_cost_spike"${policy.send_cost_spike ? ' checked' : ''}></span></label>
+    <details class="sb-group remote-advanced" data-remote-advanced>
+      <summary class="sb-group-title">高级设置 <span>模板、签名与发送策略</span></summary>
+      ${channel.kind === 'customHTTP' ? channel.fields.map(f => remoteField(channel.kind, f, cfg)).join('') : ''}
+      ${channel.kind === 'qqPushPlus' ? remoteField(channel.kind, { key: 'topicOrURL', label: '群配置编码（可选）', ph: '留空发给自己' }, cfg) : ''}
+      ${channel.kind === 'feishuBot' ? '<label class="sb-set"><span class="sb-set-label">签名密钥（可选）</span><span class="sb-set-ctl"><input type="password" data-remote-signing autocomplete="off" placeholder="启用签名校验时填写"></span></label><div class="sb-hint">修改签名时需同时填写 Webhook，再保存连接。两项一起存入钥匙串。</div>' : ''}
+      <label class="sb-set"><span class="sb-set-label">附带最后一条动作</span><span class="sb-set-ctl"><input type="checkbox" data-remote-cfg="include_action_detail" data-kind="${channel.kind}"${cfg.include_action_detail ? ' checked' : ''}></span></label>
+      <div class="sb-hint">开启后会把命令内容与文件路径一起送出。</div>
       <label class="sb-set"><span class="sb-set-label">同事件节流</span>
         <span class="sb-set-ctl"><input type="number" data-remote-policy="throttle_seconds" min="15" max="3600"
           value="${escapeHtml(String(policy.throttle_seconds ?? 90))}"><span class="sb-unit">秒</span></span></label>
@@ -1383,7 +1388,12 @@ export async function hydrateRemote() {
         <span class="sb-set-ctl"><input type="number" data-remote-policy="away_idle_seconds" min="30" max="3600"
           value="${escapeHtml(String(policy.away_idle_seconds ?? 120))}"><span class="sb-unit">秒</span></span></label>
       <div class="sb-hint">macOS 根据显示器睡眠和无输入时长判断离开；锁屏信号暂未接入。信号不可用时按已离开放行。</div>
-    </div>`;
+
+      <div class="sb-foot"><button type="button" class="mini-btn" data-remote-preview>查看发送内容</button>${channel.secretLabel ? '<button type="button" class="mini-btn" data-remote-del-secret>删除已保存的凭据</button>' : ''}</div>
+      <div class="sb-hint">钥匙串条目 <code>${escapeHtml(remote.secretName)}</code></div>
+      <div class="sb-note">${escapeHtml(remote.limitations ?? '')}</div>
+      <div data-remote-history class="sb-note"></div><button type="button" class="mini-btn" data-remote-refresh>刷新发送记录</button>
+    </details>`;
   bindRemote();
   hydrateRemoteHistory();
   scheduleLayoutLog();
@@ -1417,13 +1427,20 @@ function bindRemote() {
   st.settings.remote_channels = st.settings.remote_channels ?? {};
   st.settings.remote_policy = st.settings.remote_policy ?? {};
 
-  const persist = async (out) => {
+  let pendingSave = Promise.resolve(true);
+  const persist = (out) => {
+    const patch = structuredClone({ remote_kind: st.settings.remote_kind, remote_channels: st.settings.remote_channels, remote_policy: st.settings.remote_policy });
+    pendingSave = pendingSave.then(async () => {
     try {
-      await saveSettings({ remote_kind: st.settings.remote_kind, remote_channels: st.settings.remote_channels, remote_policy: st.settings.remote_policy });
+      await saveSettings(patch);
       out.innerHTML = '<div class="sb-hint">已保存</div>';
+      return true;
     } catch (error) {
       out.innerHTML = `<div class="sb-hint sb-warn">保存失败：${escapeHtml(String(error))}</div>`;
+      return false;
     }
+    });
+    return pendingSave;
   };
   const out = document.querySelector('[data-remote-out]') ?? document.createElement('div');
 
@@ -1431,15 +1448,21 @@ function bindRemote() {
   document.querySelector('[data-remote-test]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
-    out.textContent = '正在测试发送…';
-    try { out.textContent = await invoke('remote_send_test'); }
+    try {
+      if (!await pendingSave) return;
+      if (!st.settings.remote_policy.master_enabled) { out.textContent = '请先开启远程通知，再发送测试。'; return; }
+      if (document.querySelector('[data-remote-secret]')?.value.trim() || document.querySelector('[data-remote-signing]')?.value.trim()) { out.textContent = '请先保存连接，再发送测试。'; return; }
+      out.textContent = '正在测试发送…';
+      out.textContent = await invoke('remote_send_test');
+    }
     catch (error) { out.textContent = `发送失败：${error}`; }
     finally { button.disabled = false; await hydrateRemoteHistory(); }
   });
 
   document.querySelector('[data-remote-kind]')?.addEventListener('change', async (e) => {
+    const previous = st.settings.remote_kind;
     st.settings.remote_kind = e.target.value;
-    await persist(out);
+    if (!await persist(out)) { st.settings.remote_kind = previous; e.target.value = previous; return; }
     await hydrateRemote(); // 换通道要重画字段：三个通道的键不一样
   });
 
@@ -1466,10 +1489,16 @@ function bindRemote() {
   // 密钥：只往钥匙串写，**永不读回**（后端刻意没有读回命令）
   document.querySelector('[data-remote-save-secret]')?.addEventListener('click', async () => {
     const input = document.querySelector('[data-remote-secret]');
-    const result = await invoke('remote_secret_set', { value: input?.value ?? '' })
+    if (!await pendingSave) return;
+    const raw = input?.value.trim() ?? '';
+    if (!raw) { out.textContent = '留空会保留现有连接。需要更换时填写凭据，需要删除时使用高级设置。'; return; }
+    const value = st.settings.remote_kind === 'feishuBot' ? JSON.stringify({ webhook: raw, signingSecret: document.querySelector('[data-remote-signing]')?.value.trim() ?? '' }) : raw;
+    const result = await invoke('remote_secret_set', { value })
       .catch((e) => ({ kind: 'Failed', reason: String(e) }));
     if (result.kind === 'ok') {
       input.value = '';
+      const signing = document.querySelector('[data-remote-signing]');
+      if (signing) signing.value = '';
       out.innerHTML = '<div class="sb-hint">密钥已写入钥匙串</div>';
       await hydrateRemote();
     } else {
@@ -1479,15 +1508,16 @@ function bindRemote() {
     }
   });
   document.querySelector('[data-remote-del-secret]')?.addEventListener('click', async () => {
-    await invoke('remote_secret_delete').catch(() => false);
-    out.innerHTML = '<div class="sb-hint">已请求删除</div>';
+    if (!await pendingSave) return;
+    const deleted = await invoke('remote_secret_delete').catch(() => false);
+    if (!deleted) { out.textContent = '删除未完成：凭据不存在或系统拒绝访问。'; return; }
     await hydrateRemote();
   });
   document.querySelector('[data-remote-preview]')?.addEventListener('click', async () => {
     const preview = await invoke('remote_preview', { args: { kind: 'attention', agentName: 'AgentIsland', seconds: 0 } })
       .catch(() => null);
     if (!preview) { out.innerHTML = '<div class="sb-hint sb-warn">预览命令没接上</div>'; return; }
-    out.innerHTML = `<div class="sb-note"><pre data-preview>${escapeHtml(preview.text ?? JSON.stringify(preview, null, 2))}</pre></div>`;
+    out.innerHTML = `<div class="sb-note"><pre data-preview>${escapeHtml(preview.requestSummary ?? preview.text ?? JSON.stringify(preview, null, 2))}</pre></div>`;
   });
 }
 
