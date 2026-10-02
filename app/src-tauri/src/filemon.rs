@@ -1,6 +1,5 @@
 use crate::models::AgentProfile;
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 use walkdir::WalkDir;
@@ -71,21 +70,18 @@ impl FileMonitor {
         }
     }
 
-    /// 每个会话目录的最新文件（按修改时间新→旧）。动作/语义解析按此顺序候选：
-    /// 最新的不一定是语义文件（如 CLI 日志比 rollout 更新），调用方逐个尝试。
+    /// 同拍元数据里的最近候选（新→旧，最多 16 个）。较新的普通日志不能遮住会话。
     pub fn probe_files(&mut self, profile: &AgentProfile) -> Vec<String> {
-        let mut files: Vec<(SystemTime, String)> = Vec::new();
+        let mut files = Vec::new();
         for root in &profile.session_dirs {
-            if !Path::new(root).is_dir() {
-                continue;
-            }
-            let (lw, lf) = self.probe_dir(root);
-            if let (Some(t), Some(f)) = (lw, lf) {
-                files.push((t, f));
-            }
+            if !Path::new(root).is_dir() { continue; }
+            self.probe_dir(root);
+            files.extend(self.cache[root].files.iter().cloned());
         }
-        files.sort_by(|a, b| b.0.cmp(&a.0));
-        files.into_iter().map(|(_, f)| f).collect()
+        files.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let mut seen = std::collections::HashSet::new();
+        files.into_iter().filter_map(|(_, path)| seen.insert(path.clone()).then_some(path))
+            .take(16).collect()
     }
 
     fn probe_dir(&mut self, dir: &str) -> (Option<SystemTime>, Option<String>) {
@@ -223,7 +219,7 @@ mod active_session_tests {
         let first = monitor.probe(&profile, 600.0);
         let scanned_at = monitor.cache[&root].at;
         assert_eq!(first.active_sessions, 500);
-        assert_eq!(monitor.probe_files(&profile).len(), 1);
+        assert_eq!(monitor.probe_files(&profile).len(), 16);
         assert_eq!(monitor.probe(&profile, 0.0).active_sessions, 0);
         assert_eq!(monitor.cache[&root].at, scanned_at, "读候选和计数不能重复遍历目录");
     }
@@ -250,5 +246,25 @@ mod active_session_tests {
             .open(path)
             .expect("应当能打开来改 mtime");
         file.set_modified(when).expect("set_modified 应当成功");
+    }
+}
+
+#[cfg(test)]
+mod optimization_regressions {
+    use super::*;
+    #[test]
+    fn a_newer_log_cannot_hide_the_session_candidate() {
+        let sandbox = crate::testutil::Sandbox::new("log-shadows-session");
+        let session = sandbox.path().join("rollout.jsonl");
+        let log = sandbox.path().join("runtime.log");
+        std::fs::write(&session, b"{}\n").unwrap();
+        std::fs::write(&log, b"runtime heartbeat\n").unwrap();
+        let older = SystemTime::now() - std::time::Duration::from_secs(10);
+        std::fs::File::options().write(true).open(&session).unwrap().set_times(std::fs::FileTimes::new().set_modified(older)).unwrap();
+        let mut profile = crate::registry::builtin().remove(0);
+        profile.session_dirs = vec![sandbox.path().to_string_lossy().into_owned()];
+        let files = FileMonitor::new().probe_files(&profile);
+        assert_eq!(files.first(), Some(&log.to_string_lossy().into_owned()));
+        assert!(files.contains(&session.to_string_lossy().into_owned()), "fall through to actual session when the newer log has no signal");
     }
 }

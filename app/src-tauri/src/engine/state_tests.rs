@@ -120,6 +120,11 @@ impl Replay {
 fn agents_without_token_source_do_not_return_zero_usage_reports() {
     let (_, rx) = mpsc::channel();
     let mut engine = ActivityEngine::new(Settings::default(), rx);
+    // 明确构造无用量源的档案，避免已安装的 OpenCode 数据库影响测试。
+    for profile in &mut engine.profiles {
+        profile.token_roots.clear();
+        profile.session_database = None;
+    }
     assert!(engine.get_report("opencode").is_none());
     assert!(engine.get_report("cline").is_none());
     assert!(engine.get_report("roo-code").is_none());

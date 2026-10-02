@@ -314,7 +314,7 @@ export function agentRowModel(snap) {
     statusBackground: uncertainty ? 'color-mix(in srgb, var(--warning) 10%, transparent)' : colors.bg,
     statusBorder: uncertainty ? 'color-mix(in srgb, var(--warning) 25%, transparent)' : colors.border,
     /** 24h 用量：没取到写 `—`（不是 0） */
-    tokensText: snap.token_usage && snap.token_usage.tokens24h > 0 ? compact(snap.token_usage.tokens24h) : '—',
+    tokensText: snap.token_usage != null ? compact(snap.token_usage.tokens24h) : '—',
     /** 只有工作/等待确认才有「当前动作」，其余形态是空的 */
     actionText: hasAction ? (snap.current_action ?? '') : '',
     hasAction: hasAction && !!snap.current_action,

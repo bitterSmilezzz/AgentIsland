@@ -110,36 +110,22 @@ struct Parsed {
     path: String,
 }
 
-/// URL 解析（只认 http/https）。不引 URL crate：需要的只是「协议 / 主机 / 端口 / 路径」，
-/// 而多一个依赖要单独论证。
-fn parse_url(url: &str) -> Option<Parsed> {
-    let (scheme, rest) = url.split_once("://")?;
-    let scheme = scheme.to_lowercase();
-    if scheme != "http" && scheme != "https" {
+/// Reuse the URL parser already in Tauri's dependency graph: IPv6, escaping,
+/// queries and fragments share one implementation; userinfo remains unsupported.
+fn parse_url(address: &str) -> Option<Parsed> {
+    if address.chars().any(|ch| ch.is_control()) { return None; }
+    let url = url::Url::parse(address).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
         return None;
     }
-    let (authority, path) = match rest.find('/') {
-        Some(index) => (&rest[..index], &rest[index..]),
-        None => (rest, "/"),
+    let host = match url.host()? {
+        url::Host::Domain(domain) => domain.to_string(),
+        url::Host::Ipv4(address) => address.to_string(),
+        url::Host::Ipv6(address) => address.to_string(),
     };
-    // 端口缺省：https 443、http 80。刻意用 host:port 的字面形式而不是先剥用户信息——
-    // 本仓的通道地址里不会有 user@，出现了就当解析失败更好
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => (host.to_string(), port.parse::<u16>().ok()?),
-        None => (
-            authority.to_string(),
-            if scheme == "https" { 443 } else { 80 },
-        ),
-    };
-    if host.is_empty() || path.is_empty() {
-        return None;
-    }
-    Some(Parsed {
-        scheme,
-        host,
-        port,
-        path: path.to_string(),
-    })
+    let mut path = url.path().to_string();
+    if let Some(query) = url.query() { path.push('?'); path.push_str(query); }
+    Some(Parsed { scheme: url.scheme().into(), host, port: url.port_or_known_default()?, path })
 }
 
 impl Transport for HttpTransport {
@@ -212,10 +198,11 @@ impl HttpTransport {
     fn round_trip(&self, url: &Parsed, request: &Request) -> Result<u16, String> {
         let mut stream = self.connect(url)?;
 
-        let host_header = if url.port == 80 {
-            url.host.clone()
+        let host = if url.host.contains(':') { format!("[{}]", url.host) } else { url.host.clone() };
+        let host_header = if (url.scheme == "http" && url.port == 80) || (url.scheme == "https" && url.port == 443) {
+            host
         } else {
-            format!("{}:{}", url.host, url.port)
+            format!("{host}:{}", url.port)
         };
         // `Connection: close` 让对端在响应后关连接，于是 BufReader 能直接读到状态行，
         // 不必实现 chunked 解码——我们只要状态码
@@ -236,17 +223,23 @@ impl HttpTransport {
         let _ = stream.flush();
 
         let mut reader = BufReader::new(stream);
+        const MAX_STATUS_LINE: u64 = 8192;
         let mut status_line = String::new();
-        reader
-            .read_line(&mut status_line)
+        Read::by_ref(&mut reader).take(MAX_STATUS_LINE + 1).read_line(&mut status_line)
             .map_err(|error| format!("读响应失败：{error}"))?;
-        // "HTTP/1.1 200 OK"
+        if status_line.len() as u64 > MAX_STATUS_LINE || !status_line.ends_with('\n') {
+            return Err("HTTP 响应状态行过长或不完整".into());
+        }
         let mut parts = status_line.split_whitespace();
-        let _version = parts.next();
-        parts
-            .next()
-            .and_then(|code| code.parse::<u16>().ok())
-            .ok_or_else(|| format!("响应无法解析：{}", status_line.trim()))
+        let version = parts.next();
+        let code = parts.next().filter(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
+        if !matches!(version, Some("HTTP/1.0" | "HTTP/1.1")) {
+            return Err("HTTP 响应状态行无效".into());
+        }
+        // Never echo a peer's arbitrary status text into UI history: it could
+        // contain request credentials or private payload content.
+        code.and_then(|code| code.parse::<u16>().ok()).filter(|code| (100..=599).contains(code))
+            .ok_or_else(|| "HTTP 响应状态码无效".into())
     }
 }
 
@@ -657,5 +650,45 @@ mod tests {
                 "{bad} 应报失败而不是 panic"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod optimization_regressions {
+    use super::*;
+    #[test]
+    fn malformed_status_lines_are_not_delivery_or_echoed_into_history() {
+        for response in ["NOTHTTP 200 OK\r\n", "HTTP/1.1 700 INVALID\r\n", "HTTP/1.1 invalid private-test-marker\r\n"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut buffer = [0; 4096]; let _ = stream.read(&mut buffer);
+                stream.write_all(response.as_bytes()).unwrap();
+            });
+            let request = Request { url: format!("http://127.0.0.1:{port}/notify"), method: "POST".into(), headers: vec![], body: "fixture".into(), smtp: None };
+            let outcome = HttpTransport::new().perform(&request);
+            server.join().unwrap();
+            assert!(matches!(outcome, Outcome::Failed { .. }), "invalid HTTP response cannot count as delivered");
+            if let Outcome::Failed { reason, .. } = outcome {
+                assert!(!reason.contains("private-test-marker"), "peer response content must not be copied to the visible history");
+            }
+        }
+    }
+
+    #[test]
+    fn query_without_slash_and_ipv6_are_valid_notification_addresses() {
+        let parsed = parse_url("https://example.invalid?mode=test").expect("valid query URL");
+        assert_eq!(parsed.host, "example.invalid");
+        assert_eq!(parsed.path, "/?mode=test");
+        let parsed = parse_url("http://[::1]:8080/notify#local").expect("valid IPv6 URL");
+        assert_eq!(parsed.host, "::1");
+        assert_eq!(parsed.path, "/notify", "fragments are not sent to the server");
+    }
+    #[test]
+    fn userinfo_and_line_breaks_are_rejected_before_connecting() {
+        assert!(parse_url("https://user@example.invalid/notify").is_none());
+        assert!(parse_url("https://example.invalid/notify\r\nInjected: value").is_none());
     }
 }

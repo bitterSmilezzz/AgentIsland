@@ -274,6 +274,26 @@ fn probe_by_id(profile_id: &str, path: &str) -> SessionProbe {
     }
 }
 
+// Cache bounded raw lines on the sampling thread. Semantic age, state and
+// diagnostics are evaluated on every call; file replacement/writes invalidate.
+#[derive(Clone, PartialEq, Eq)]
+struct TailStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    inode: u64,
+}
+struct TailMemo {
+    path: String,
+    stamp: TailStamp,
+    lines: Vec<String>,
+    bytes: usize,
+}
+thread_local! {
+    static TAIL_MEMO: std::cell::RefCell<std::collections::VecDeque<TailMemo>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+const TAIL_MEMO_BYTES: usize = 4 * 1024 * 1024;
+const TAIL_MEMO_ENTRY_BYTES: usize = 512 * 1024;
+
 fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
     // model-io 一类的会话文件单行可达数 MB（请求体全量内嵌），
     // 固定小窗口里可能没有完整行。改为：读末尾大缓冲 → 以最后一个 \n 为界，
@@ -282,34 +302,55 @@ fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
     // **每一类失败给出不同的理由**（与 Swift `SessionProbeFailure` 同形）：
     // 打不开、读不了、太大，是三件事——「都是读不到」会把修法也一起丢掉
     let mut f = File::open(path).map_err(|_| SessionProbeFailure::UnreadableFile)?;
-    let len = f
-        .metadata()
-        .map_err(|_| SessionProbeFailure::UnreadableFile)?
-        .len();
+    let metadata = f.metadata().map_err(|_| SessionProbeFailure::UnreadableFile)?;
+    let len = metadata.len();
+    #[cfg(unix)]
+    let inode = { use std::os::unix::fs::MetadataExt; metadata.ino() };
+    #[cfg(not(unix))]
+    let inode = 0;
+    let stamp = TailStamp { len, modified: metadata.modified().ok(), inode };
+    let cached = TAIL_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let index = memo.iter().position(|entry| entry.path == path)?;
+        let entry = memo.remove(index)?;
+        if entry.stamp != stamp || stamp.modified.is_none() { return None; }
+        let lines = entry.lines.clone();
+        memo.push_back(entry);
+        Some(lines)
+    });
+    if let Some(lines) = cached { return Ok(lines); }
     // 超出上限是**有意的降级**而非故障：单行可达数 MB，固定小窗口里可能没有完整行
     let start = len.saturating_sub(MAX_TAIL);
     f.seek(SeekFrom::Start(start))
         .map_err(|_| SessionProbeFailure::UnreadableFile)?;
-    let mut buf = String::new();
-    f.read_to_string(&mut buf)
+    let mut bytes = Vec::new();
+    f.take(MAX_TAIL).read_to_end(&mut bytes)
         .map_err(|_| SessionProbeFailure::UnreadableFile)?;
-
-    let complete: &[&str] = if start == 0 {
-        &buf.lines().collect::<Vec<_>>()
+    // A byte window can start inside a UTF-8 character. Drop the incomplete first
+    // line before decoding, rather than treating a valid transcript as unreadable.
+    let complete = if start == 0 {
+        bytes.as_slice()
     } else {
-        // 丢弃首个残行
-        match buf.find('\n') {
-            Some(i) => &buf[i + 1..].lines().collect::<Vec<_>>(),
-            None => &[], // 整个缓冲都在一行内（行比缓冲还大）：放弃
+        match bytes.iter().position(|byte| *byte == b'\n') {
+            Some(index) => &bytes[index + 1..],
+            None => &[],
         }
     };
-    let mut lines: Vec<String> = complete
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .map(|s| s.to_string())
-        .collect();
-    while lines.len() > 600 {
-        lines.remove(0);
+    let text = std::str::from_utf8(complete).map_err(|_| SessionProbeFailure::UnreadableFile)?;
+    // Only allocate the last 600 non-empty lines; removing the first element
+    // repeatedly copies the remaining vector and becomes quadratic on busy logs.
+    let mut lines: Vec<String> = text.lines().rev().filter(|line| !line.trim().is_empty())
+        .take(600).map(str::to_owned).collect();
+    lines.reverse();
+    let bytes: usize = lines.iter().map(String::len).sum();
+    if bytes <= TAIL_MEMO_ENTRY_BYTES && stamp.modified.is_some() {
+        TAIL_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.push_back(TailMemo { path: path.into(), stamp, lines: lines.clone(), bytes });
+            while memo.len() > 16 || memo.iter().map(|entry| entry.bytes).sum::<usize>() > TAIL_MEMO_BYTES {
+                memo.pop_front();
+            }
+        });
     }
     Ok(lines)
 }
@@ -3700,5 +3741,44 @@ fn real_opencode_library_probe() {
             };
             println!("{label:<9} file_age={age:>8.0}s  {kind:<22} 失败={:?}", failure.is_some());
         }
+    }
+}
+
+#[cfg(test)]
+mod optimization_regressions {
+    use super::*;
+    #[test]
+    fn raw_tail_memo_invalidates_on_rewrite_and_remains_bounded() {
+        let sandbox = crate::testutil::Sandbox::new("tail-memo-bounds");
+        let file = sandbox.path().join("session.jsonl");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(20);
+        std::fs::write(&file, "old\n").unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+        assert_eq!(read_tail_lines(file.to_str().unwrap()).unwrap(), ["old"]);
+        std::fs::write(&file, "new\n").unwrap();
+        assert_eq!(read_tail_lines(file.to_str().unwrap()).unwrap(), ["new"], "same-size rewrites invalidate the raw cache");
+        for i in 0..24 {
+            let path = sandbox.path().join(format!("{i}.jsonl"));
+            std::fs::write(&path, "x".repeat(400_000)).unwrap();
+            read_tail_lines(path.to_str().unwrap()).unwrap();
+        }
+        TAIL_MEMO.with(|memo| {
+            let memo = memo.borrow();
+            assert!(memo.len() <= 16);
+            assert!(memo.iter().map(|entry| entry.bytes).sum::<usize>() <= 4 * 1024 * 1024);
+        });
+    }
+
+    #[test]
+    fn tail_window_cutting_utf8_keeps_complete_lines_readable() {
+        let sandbox = crate::testutil::Sandbox::new("utf8-tail-boundary");
+        let file = sandbox.path().join("rollout.jsonl");
+        let mut bytes = "你\n".as_bytes().to_vec();
+        bytes.extend(std::iter::repeat_n(b'x', 8 * 1024 * 1024 - 7));
+        bytes.extend_from_slice(b"\n{}\n");
+        std::fs::write(&file, bytes).unwrap();
+        let lines = read_tail_lines(file.to_str().unwrap()).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.last().map(String::as_str), Some("{}"));
     }
 }

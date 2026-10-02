@@ -67,7 +67,6 @@ pub struct ActivityEngine {
     /// 连续多少档超阈值才发 token 暴涨告警（Swift `tokenSpikeConfirmations`）。
     /// 没有它，一次性账本补写就会误报成「消耗突增」。
     token_spike_streak: HashMap<String, u32>,
-    probe_cache: HashMap<String, (u64, SystemTime, Option<Signal>, usize)>,
     token_cache: HashMap<String, (i64, TokenReport)>,
     pub event_rx: Option<Receiver<AgentTaskEvent>>,
 
@@ -88,6 +87,14 @@ pub struct ActivityEngine {
     /// 当前预算状态（界面绑定；Swift 侧是 `@Published budgetStatus`）
     pub budget_status: crate::budget::BudgetStatus,
     pub snapshots: Vec<AgentSnapshot>,
+}
+
+fn has_usage_location(profile: &AgentProfile) -> bool {
+    profile.token_roots.iter().any(|root| std::path::Path::new(root).is_dir())
+        || profile.session_database.as_ref().is_some_and(|database| {
+            matches!(database.schema, SessionSchema::OpenCode | SessionSchema::DimTasks)
+                && std::path::Path::new(&database.path).is_file()
+        })
 }
 
 impl ActivityEngine {
@@ -115,7 +122,6 @@ impl ActivityEngine {
             last_cost_spike: HashMap::new(),
             token_rate: HashMap::new(),
             token_spike_streak: HashMap::new(),
-            probe_cache: HashMap::new(),
             token_cache: HashMap::new(),
             event_rx: Some(event_rx),
             latest_event: None,
@@ -787,42 +793,19 @@ impl ActivityEngine {
         session::SessionProbe,
         crate::models::SessionActiveContext,
     ) {
+        let mut candidate_failure = None;
         for path in paths {
-            if path.is_empty() {
-                continue;
-            }
-            let meta = std::fs::metadata(path);
-            let (len, mtime) = match meta {
-                Ok(m) => (m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
-                Err(_) => continue,
-            };
-            if let Some((l, t, signal, sc)) = self.probe_cache.get(path) {
-                if *l == len && *t == mtime {
-                    if signal.is_some() {
-                        // ⚠️ 缓存只存**信号**，上下文一律给空：它是「本轮」的，
-                        // 而缓存命中意味着这一拍其实没重新读文件——把上一轮的
-                        // 后台任务照抄过来，就是让「已经结束的任务」继续亮着
-                        return (
-                            session::SessionProbe {
-                                signal: signal.clone(),
-                                subagent_count: *sc,
-                                health: None,
-                            },
-                            crate::models::SessionActiveContext::default(),
-                        );
-                    }
-                    continue;
-                }
-            }
+            if path.is_empty() { continue; }
+            // Binary session stores are handled by the declared database adapter,
+            // not the UTF-8 tail reader; an idle healthy DB must not look unreadable.
+            if std::path::Path::new(path).extension().and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("db") || ext.eq_ignore_ascii_case("sqlite")) { continue; }
+            // Cache raw input in the parser, never its state result: dialects
+            // depend on file age and must re-evaluate even when metadata is stable.
             let (probe, context) = session::probe_dialect(profile_id, dialect, path);
-            let signal = probe.signal.clone();
-            let sc = probe.subagent_count;
-            if self.probe_cache.len() > 200 {
-                self.probe_cache.clear();
-            }
-            self.probe_cache.insert(path.clone(), (len, mtime, signal.clone(), sc));
-            if signal.is_some() {
-                return (probe, context);
+            if probe.signal.is_some() { return (probe, context); }
+            if candidate_failure.is_none() && probe.health.is_some() {
+                candidate_failure = probe.health;
             }
         }
         // 文件这条路全落空之后才轮到**状态索引库**（Swift 同顺序：`probe` 的最后一步
@@ -840,7 +823,7 @@ impl ActivityEngine {
         })
         else {
             return (
-                session::SessionProbe { signal: None, subagent_count: 0, health: None },
+                session::SessionProbe { signal: None, subagent_count: 0, health: candidate_failure },
                 crate::models::SessionActiveContext::default(),
             );
         };
@@ -870,14 +853,14 @@ impl ActivityEngine {
                     failure,
                     path: database.path.clone(),
                     observed_at: now,
-                }),
+                }).or(candidate_failure),
             },
             crate::models::SessionActiveContext::default(),
         )
     }
 
     fn token_usage_cached(&mut self, profile: &AgentProfile) -> Option<TokenUsage> {
-        if !self.refresh_usage || profile.token_roots.is_empty() {
+        if !self.refresh_usage || !has_usage_location(profile) {
             return None;
         }
         if let Some((fetched, report)) = self.token_cache.get(&profile.id) {
@@ -898,7 +881,7 @@ impl ActivityEngine {
         let profile = self.profiles.iter().find(|p| p.id == agent_id)?.clone();
         // `get_report` 是**按需**取（分析页点进来才要），所以它**不受 `refresh_usage` 约束**——
         // 调用它的人已经明确要这一份数据了，再加一道开关只会让分析页永远是空的
-        if profile.token_roots.is_empty() {
+        if !has_usage_location(&profile) {
             return None;
         }
         if let Some((_, report)) = self.token_cache.get(agent_id) {
@@ -1270,5 +1253,37 @@ mod database_dispatch_tests {
             "DimTasks 的库被当成状态索引查了 —— 查出来的东西根本不是这一族要的：{:?}",
             probe.signal
         );
+    }
+}
+
+#[cfg(test)]
+mod optimization_regressions {
+    use super::*;
+    #[test]
+    fn missing_usage_location_is_none_but_an_empty_readable_source_is_zero() {
+        let sandbox = crate::testutil::Sandbox::new("missing-usage-source");
+        let mut profile = crate::registry::builtin().into_iter().find(|profile| profile.id == "codex").unwrap();
+        profile.token_roots = vec![sandbox.path().join("missing").to_string_lossy().into_owned()];
+        profile.session_database = None;
+        let (_, rx) = std::sync::mpsc::channel();
+        let mut engine = ActivityEngine::new(Settings::default(), rx);
+        assert!(engine.token_usage_cached(&profile).is_none(), "missing source is not measured zero");
+        std::fs::create_dir_all(&profile.token_roots[0]).unwrap();
+        assert_eq!(engine.token_usage_cached(&profile).unwrap().tokens24h, 0);
+    }
+
+    #[test]
+    fn unreadable_candidate_health_reaches_the_engine_and_recovers() {
+        let sandbox = crate::testutil::Sandbox::new("candidate-health");
+        let file = sandbox.path().join("session.jsonl");
+        std::fs::write(&file, [0xff]).unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let (_, rx) = std::sync::mpsc::channel();
+        let mut engine = ActivityEngine::new(Settings::default(), rx);
+        let (probe, _) = engine.probe_cached_multi("qoder", SessionDialect::QoderTranscript, &[path.clone()], None, now_ms());
+        assert!(probe.health.is_some(), "candidate failures must not become silent no-signal results");
+        std::fs::write(&file, "{}\n").unwrap();
+        let (probe, _) = engine.probe_cached_multi("qoder", SessionDialect::QoderTranscript, &[path], None, now_ms());
+        assert!(probe.health.is_none(), "a repaired source must recover on the next sample");
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.282"
+version = "0.0.283"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -17,6 +17,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Reuse the URL parser already locked by Tauri; handwritten authority parsing broke IPv6/query URLs.
+url = "2"
 toml_edit = "0.25.15"
 sysinfo = "0.33"
 tiny_http = "0.12"

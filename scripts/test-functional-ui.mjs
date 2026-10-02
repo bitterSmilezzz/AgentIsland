@@ -56,7 +56,9 @@ try {
   assert.ok(listeners.has('settings://changed'), 'every window must subscribe to shared settings');
   await listeners.get('settings://changed')({ payload: { ...settings, cpu_threshold: 23 } });
   assert.equal(getState().settings.cpu_threshold, 23, 'other-window threshold update must arrive');
-  const { hydrateRemote, bindSettings } = await import('../app/ui/js/views.js');
+  const { hydrateRemote, bindSettings, agentRowModel } = await import('../app/ui/js/views.js');
+  assert.equal(agentRowModel({ token_usage: { tokens24h:0 } }).tokensText, '0', 'measured zero must differ from missing usage');
+  assert.equal(agentRowModel({ token_usage:null }).tokensText, '—');
   const out = mk(), remoteRoot = mk(), input = { value: 'fixture-input' };
   const secretButton = mk();
   let saveSecret;

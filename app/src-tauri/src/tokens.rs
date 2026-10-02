@@ -137,6 +137,7 @@ impl TokenUsageMonitor {
         let mut cost_estimated = false;
         // (tokens, cost, 该模型是否含估价)
         let mut models: HashMap<String, (i64, f64, bool)> = HashMap::new();
+        let mut profile_files = HashSet::new();
 
         for root in &profile.token_roots {
             if !Path::new(root).is_dir() {
@@ -160,6 +161,7 @@ impl TokenUsageMonitor {
                     continue;
                 }
                 let path = entry.path().to_path_buf();
+                if !profile_files.insert(path.to_string_lossy().into_owned()) { continue; }
                 let (t24, c24, tt, ct, m) = self.parse_file(&path, cutoff24);
                 tokens24 += t24;
                 cost24 += c24;
@@ -219,7 +221,8 @@ impl TokenUsageMonitor {
         // 30 天逐小时桶
         let mut hourly: HashMap<i64, i64> = HashMap::new();
         let cutoff30 = now_ms() - 30 * 24 * 3600 * 1000;
-        for st in self.states.values() {
+        for (path, st) in &self.states {
+            if !profile_files.contains(path) { continue; }
             for (ts, _, tokens, _) in &st.entries {
                 if *ts < cutoff30 || *tokens <= 0 {
                     continue;
@@ -921,6 +924,33 @@ mod tests {
     }
 
     // ── JSONL 净口径与去重（对齐 StructuredTokenUsageIndex）────────────────────
+
+    #[test]
+    fn optimization_regression_hourly_chart_does_not_include_other_agents() {
+        let a = crate::testutil::Sandbox::new("hourly-agent-a");
+        let b = crate::testutil::Sandbox::new("hourly-agent-b");
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        std::fs::write(a.path().join("a.jsonl"), format!("{}\n", codex_record_at(150, 0, 0, "a", &timestamp))).unwrap();
+        std::fs::write(b.path().join("b.jsonl"), format!("{}\n", codex_record_at(20, 0, 0, "b", &timestamp))).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        let first = one_root_profile("a", &a.path().to_string_lossy());
+        let second = one_root_profile("b", &b.path().to_string_lossy());
+        assert_eq!(sum_hourly(&monitor.monitor(&first)), 150);
+        assert_eq!(sum_hourly(&monitor.monitor(&second)), 20, "an agent chart must only use its own source files");
+        assert_eq!(sum_hourly(&monitor.monitor(&first)), 150, "cache reuse cannot contaminate the original agent");
+    }
+
+    #[test]
+    fn optimization_regression_overlapping_roots_do_not_double_count() {
+        let sandbox = crate::testutil::Sandbox::new("overlap-token-roots");
+        std::fs::create_dir_all(sandbox.path().join("nested")).unwrap();
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        std::fs::write(sandbox.path().join("nested/a.jsonl"), format!("{}\n", codex_record_at(150, 0, 0, "a", &timestamp))).unwrap();
+        let mut profile = one_root_profile("a", &sandbox.path().to_string_lossy());
+        profile.token_roots.push(sandbox.path().join("nested").to_string_lossy().into_owned());
+        let report = TokenUsageMonitor::new().monitor(&profile);
+        assert_eq!(report.usage.tokens24h, 150, "one physical source reached through two roots must not be counted twice");
+    }
 
     fn codex_record(input: i64, cached: i64, output: i64, response_id: &str) -> String {
         codex_record_at(input, cached, output, response_id, "2020-01-01T00:00:00.000Z")

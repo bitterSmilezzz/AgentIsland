@@ -1,7 +1,7 @@
 use crate::models::AgentProfile;
 use std::collections::HashMap;
 use std::time::Instant;
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, UpdateKind, ProcessesToUpdate, System};
 
 /// 进程表快照 + CPU 差分（sysinfo 内部就是两拍 refresh 之间的差分）。
 /// 第一拍没有窗口，CPU 返回「没测」（None），不谎报 0。
@@ -37,7 +37,7 @@ pub struct ProcHit {
 impl ProcessMonitor {
     pub fn new() -> Self {
         let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
         let mut monitor = ProcessMonitor {
             sys,
             last_refresh: Some(Instant::now()),
@@ -51,14 +51,14 @@ impl ProcessMonitor {
     /// 刷新一拍。两次调用间隔即 CPU 差分窗口。
     pub fn refresh(&mut self) {
         self.cpu_measured = self.last_refresh.is_some_and(|at| at.elapsed() >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        self.sys.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
         self.last_refresh = Some(Instant::now());
         self.rebuild_rows();
     }
 
     /// 按档案匹配进程（名字前缀族 + 命令行提示 + 路径排除）。
     pub fn match_profile(&self, profile: &AgentProfile) -> Vec<ProcHit> {
-        self.rows.iter().filter(|row| profile_matches(profile, &row.hit.name, &row.hit.exe_path, &row.cmdline))
+        self.rows.iter().filter(|row| !row.hit.is_zombie && profile_matches(profile, &row.hit.name, &row.hit.exe_path, &row.cmdline))
             .map(|row| row.hit.clone()).collect()
     }
 
@@ -88,6 +88,13 @@ impl ProcessMonitor {
         table
     }
 
+}
+
+// CPU/memory update each sample; immutable identity is loaded once per PID.
+// The generic refresh omits cmd and samples disk I/O that this application never uses.
+fn process_refresh_kind() -> ProcessRefreshKind {
+    ProcessRefreshKind::nothing().with_cpu().with_memory()
+        .with_exe(UpdateKind::OnlyIfNotSet).with_cmd(UpdateKind::OnlyIfNotSet)
 }
 
 /// 一个进程是否属于某个档案。**纯函数**：只看名字 / 可执行路径 / 命令行三个字符串。
@@ -163,5 +170,45 @@ mod cpu_window_regressions {
         let table = monitor.table();
         assert!(!table.is_empty());
         assert!(table.iter().all(|hit| hit.cpu.is_none()), "首次采样不能伪报 CPU 0 或旧读数");
+    }
+}
+
+#[cfg(test)]
+mod optimization_regressions {
+    use super::*;
+
+    #[test]
+    fn node_hosted_cli_is_identified_by_its_real_command_line() {
+        let mut child = std::process::Command::new("node")
+            .args(["-e", "setInterval(() => {}, 1000)", "agentisland-cli-probe-fixture"])
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .spawn().expect("Node fixture must start");
+        let mut monitor = ProcessMonitor::new();
+        let mut profile = crate::registry::builtin().remove(0);
+        profile.process_names.clear();
+        profile.path_contains.clear();
+        profile.path_excludes.clear();
+        profile.cmdline_hints = vec!["agentisland-cli-probe-fixture".into()];
+        let mut found = false;
+        for _ in 0..10 {
+            monitor.refresh();
+            found |= monitor.match_profile(&profile).iter().any(|hit| hit.pid == child.id());
+            if found { break; }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = child.kill(); let _ = child.wait();
+        assert!(found, "refresh must populate cmd for Node-hosted CLI detection");
+    }
+
+    #[test]
+    fn zombies_do_not_keep_an_agent_online() {
+        let mut monitor = ProcessMonitor::new();
+        let mut hit = monitor.table().into_iter().next().unwrap();
+        hit.name = "agentisland-fixture".into(); hit.is_zombie = true;
+        monitor.rows = vec![ObservedProcess { hit, cmdline: String::new() }];
+        let mut profile = crate::registry::builtin().remove(0);
+        profile.process_names = vec!["agentisland-fixture".into()];
+        profile.cmdline_hints.clear(); profile.path_contains.clear(); profile.path_excludes.clear();
+        assert!(monitor.match_profile(&profile).is_empty(), "exited zombies are not live agents");
     }
 }

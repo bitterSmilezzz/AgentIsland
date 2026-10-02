@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentisland"
-version = "0.0.282"
+version = "0.0.283"
 dependencies = [
  "base64 0.21.7",
  "dirs 5.0.1",
@@ -30,6 +30,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tiny_http",
  "toml_edit 0.25.15+spec-1.1.0",
+ "url",
  "walkdir",
  "windows-sys 0.59.0",
 ]
