@@ -1232,17 +1232,24 @@ fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
 ///
 /// 覆盖 `app/ui/` 下的**全部**文件——少列一个，那个文件缺失时就查不出来，
 /// 而少一个 CSS 的后果是**整个形态无样式渲染、零报错**。
-const EMBEDDED_ASSET_SAMPLE: [&str; 42] = [
+const EMBEDDED_ASSET_SAMPLE: [&str; 49] = [
     "assets/agents/LICENSE",
-    "assets/agents/dim.svg",
-    "assets/agents/zcode.svg",
+    "assets/agents/LICENSE.OpenViking",
+    "assets/agents/LICENSE.DeepSeekHarness",
+    "assets/agents/official-sources.json",
+    "assets/agents/dim.png",
+    "assets/agents/zcode.png",
+    "assets/agents/qoder.png",
+    "assets/agents/vibeusage.png",
+    "assets/agents/workbuddy.png",
+    "assets/agents/workbuddyai.png",
+    "assets/agents/dsh.svg",
+    "assets/agents/trae.png",
+    "assets/agents/mimo.png",
     "assets/agents/vscode.svg",
     "assets/agents/aider.svg",
     "assets/agents/ima.svg",
-    "assets/agents/workbuddy.svg",
-    "assets/agents/workbuddyai.svg",
     "assets/agents/continue.svg",
-    "assets/agents/vibeusage.svg",
     "assets/agents/openviking.svg",
     "assets/agents/customagent.svg",
     "assets/agents/README.md",
@@ -1540,11 +1547,16 @@ const UI_SMOKE_JS: &str = r#"(function () {
       identityProbe.innerHTML = Object.keys(identityModule.agentIdentities).map(function (id) {
         return identityModule.agentIcon({ id: id });
       }).join('') + identityModule.agentIcon({ id: 'custom-probe', name: '自定义 Agent' });
-      if (identityProbe.querySelectorAll('.agent-mark').length !== identityProbe.children.length)
+      if (identityProbe.querySelectorAll('.agent-mark, .agent-brand-image').length !== identityProbe.children.length)
         throw new Error('Agent 缺少图形标识');
       document.body.appendChild(identityProbe);
       try {
-        await Promise.all(Array.from(identityProbe.querySelectorAll('.agent-mark')).map(async function (mark) {
+        await Promise.all(Array.from(identityProbe.querySelectorAll('.agent-mark, .agent-brand-image')).map(async function (mark) {
+          if (mark instanceof HTMLImageElement) {
+            await Promise.race([mark.decode(), wait(3000).then(function () { throw new Error('产品原始图标加载超时'); })]);
+            if (mark.naturalWidth < 16 || mark.getBoundingClientRect().width < 16) throw new Error('产品原始图标尺寸无效');
+            return;
+          }
           var mask = getComputedStyle(mark).maskImage || getComputedStyle(mark).webkitMaskImage;
           var match = mask.match(/^url\(["']?(.*?)["']?\)$/);
           if (!match || mark.getBoundingClientRect().width < 16) throw new Error('Agent 图标样式或遮罩缺失');

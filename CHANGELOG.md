@@ -4,6 +4,13 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.286] - 2026-10-02 — 用真实产品素材修正国内 Agent 图标
+
+- 用已核对包身份的 Dim、ZCode、Qoder、Vibe Usage 和两个 WorkBuddy 原始 ICNS 提取 PNG，替换原创图案或通用标识；保持真实色彩与比例，不重画 logo。两个 WorkBuddy 的原始图标相同，通过产品名称区分，不为了区分而伪造图案。
+- ima、TRAE、小米 MiMo 使用官网声明的 favicon；OpenViking 和 DeepSeek Harness 使用固定提交的官方仓库图标。MiMo 不混用 MiniMax Code，ima 不混用 GitHub Copilot，DSH 不再仅显示厂商品牌替代素材。
+- 共享身份组件支持原色 PNG/SVG 图片并保留本地图形兜底，黑色透明标识使用浅色底以适配深色界面；不通过遮罩改色、不运行时联网、不启动 Chrome，不恢复合并或已移除的 Agent。
+- 保存来源、包标识、版本、转换步骤与 SHA-256 清单及上游许可；删除被取代的原创文件。身份回归检查源文件校验和，原生三个窗口分别解码原色图片和遮罩图形；未知/自定义项仍使用原创兜底，不宣称厂商官方标识。
+
 ## [0.0.285] - 2026-10-02 — 补齐所有 Agent 的图形图标
 
 - 将 Dim、ZCode、VS Code、Aider、ima、WorkBuddy 两个变体、Continue、Vibe Usage 和 OpenViking 的字母徽标替换为独立本地 SVG 图形；沿用共享身份组件，在贴条、侧栏、工作台、管理和详情中一致显示。其余产品标识保留，不退回通用终端图标。

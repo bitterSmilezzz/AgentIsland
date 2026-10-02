@@ -28,14 +28,27 @@ globalThis.getComputedStyle = () => ({});
 
 const { readFileSync, existsSync, mkdirSync, writeFileSync } = await import('node:fs');
 const { agentIcon, agentIdentities } = await import('../app/ui/js/agent-icons.js');
+const { createHash } = await import('node:crypto');
+const official = JSON.parse(readFileSync(new URL('../app/ui/assets/agents/official-sources.json', import.meta.url), 'utf8')).assets;
 const registry = readFileSync(new URL('../app/src-tauri/src/registry.rs', import.meta.url), 'utf8');
 const ids = [...registry.matchAll(/id: "([a-z-]+)"\.into\(\)/g)].map(match => match[1]);
 assert.deepEqual(Object.keys(agentIdentities).sort(), ids.sort(), 'all built-in registry identities must be covered');
-for (const [, mark] of Object.values(agentIdentities)) {
+for (const [, mark, , , file] of Object.values(agentIdentities)) {
   assert.match(mark, /^[a-z]+$/, 'every built-in agent must have a graphic asset, not initials');
   if (/^[a-z]+$/.test(mark)) {
-    const path = new URL(`../app/ui/assets/agents/${mark}.svg`, import.meta.url);
+    const filename = file || `${mark}.svg`;
+    assert.match(filename, /^[a-z]+\.(svg|png)$/);
+    const path = new URL(`../app/ui/assets/agents/${filename}`, import.meta.url);
     assert.ok(existsSync(path), `missing local mark ${mark}`);
+    if (file) {
+      const provenance = Object.values(official).find(source => source.file === file);
+      assert.ok(provenance?.source, `official source missing for ${file}`);
+      assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), provenance.sha256);
+    }
+    if (filename.endsWith('.png')) {
+      assert.equal(readFileSync(path).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+      continue;
+    }
     const svg = readFileSync(path, 'utf8');
     assert.ok(svg.includes('<svg'));
     assert.ok(!/<script|<foreignObject|(?:href|src)=|<image|<use/i.test(svg), 'marks must be static, self-contained vectors');

@@ -1,0 +1,90 @@
+{
+  "verified_on": "2026-10-02",
+  "assets": {
+    "dim": {
+      "file": "dim.png",
+      "source": "DimAgent.app/Contents/Resources/icon.icns",
+      "bundle_id": "com.dimcode.app",
+      "version": "0.9.51",
+      "source_sha256": "12749f5ab9feed497d781248fa827916bd4c74721e0fe958e2a6f3b03435c0b3",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "2a45e3b2822795080e17ae166f2360ee2e37bb00d7bdf96e0b30b114a135d0d2"
+    },
+    "zcode": {
+      "file": "zcode.png",
+      "source": "ZCode.app/Contents/Resources/icon.icns",
+      "bundle_id": "dev.zcode.app",
+      "version": "3.14.4",
+      "source_sha256": "9c286aeaf42ea1026877869dfade0f44ebce4c335c7b7ae347ba007ba0e16aa1",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "132eb12a8ece5a493e3eb9fcc73951e3141768a97ee01eddb6c660756943f6bd"
+    },
+    "qoder": {
+      "file": "qoder.png",
+      "source": "Qoder.app/Contents/Resources/icon.icns",
+      "bundle_id": "com.qoder.app",
+      "version": "0.4.3",
+      "source_sha256": "09eb23fb9d9f30cca6e02c7c93379fe515c222d71d4ef23324366b66863cc29a",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "6369e4b4bfdff58ad518d65d96d97852586693bdfc720c4652ea47988cd6b983"
+    },
+    "vibeusage": {
+      "file": "vibeusage.png",
+      "source": "Vibe Usage.app/Contents/Resources/AppIcon.icns",
+      "bundle_id": "ai.vibecafe.vibe-usage",
+      "version": "0.7.0",
+      "source_sha256": "753681fff45d198f925639456792fc6c92175ab7974dd8edc83f148c6268e989",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "456a7fa63d2a09cf39a92e733aaaf9d76e8d37dd6438cab05b74a26971d60dbc"
+    },
+    "workbuddy": {
+      "file": "workbuddy.png",
+      "source": "WorkBuddy.app/Contents/Resources/icon.icns",
+      "bundle_id": "com.tencent.workbuddy.mac",
+      "version": "5.6.2",
+      "source_sha256": "222fd607a9dadd54252724c44123acca508a5da9d419b7d6cc19dc539c0fe134",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "d49e210e0eaa15af2da71284f8115fddfa576d0b8f64739bc8a35c86c5d08fe1"
+    },
+    "workbuddyai": {
+      "file": "workbuddyai.png",
+      "source": "WorkBuddy AI.app/Contents/Resources/icon.icns",
+      "bundle_id": "com.workbuddy.workbuddy-ai",
+      "version": "5.6.2",
+      "source_sha256": "222fd607a9dadd54252724c44123acca508a5da9d419b7d6cc19dc539c0fe134",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "d49e210e0eaa15af2da71284f8115fddfa576d0b8f64739bc8a35c86c5d08fe1"
+    },
+    "ima": {
+      "file": "ima.svg",
+      "source": "https://fe-static.ima.myqcloud.com/ima/assets/chat/favicon.svg",
+      "processing": "CRLF to LF only; no visual modification",
+      "sha256": "9ab88245f12479bd54a3d57251419846220f183a1d7cdb494e8dc8ab4d8d7f35",
+      "source_sha256": "79f5f565ad0d31c2b3a0f61f3647756abe43bb6a264c7b229f212734662bc1f8"
+    },
+    "openviking": {
+      "file": "openviking.svg",
+      "source": "https://raw.githubusercontent.com/volcengine/OpenViking/df32bf6e50a40843438f9491a26069ca4bd08f1f/docs/images/favicon.svg",
+      "processing": "unmodified upstream asset",
+      "sha256": "8b859bc7f5c5f33eaad780d84a50742147156c36044d1d78a4aa8ad8fc0b334a"
+    },
+    "dsh": {
+      "file": "dsh.svg",
+      "source": "https://raw.githubusercontent.com/deepseek-ai/deepseek-harness/639ed015397290b3745d163aafe02ffee4aa3f84/apps/web/public/favicon.svg",
+      "processing": "unmodified upstream asset",
+      "sha256": "9e983b4f649c25c6ca0623a50be1a6e705fd8f49f756638b980fa13b40575ab6"
+    },
+    "trae": {
+      "file": "trae.png",
+      "source": "https://lf16-web-neutral.traecdn.ai/obj/trae-ai-static/trae_website/favicon.png",
+      "processing": "unmodified upstream asset",
+      "sha256": "49d523938a22af5a70dd79923725df38674823026e2f917e76337319969f4af4"
+    },
+    "mimo": {
+      "file": "mimo.png",
+      "source": "https://cdn.cnbj1.fds.api.mi-img.com/aife/mimo-blog-fe/doc_build/mimo.ico",
+      "processing": "sips ICO to PNG; no redraw or recoloring",
+      "sha256": "68da84c4c927f972515143da470a8854df60fee7895a8a01ebeb0bafb8b61903"
+    }
+  }
+}

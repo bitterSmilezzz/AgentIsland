@@ -1,35 +1,56 @@
 # Agent identity assets
 
-Static monochrome SVGs from [Lobe Icons](https://github.com/lobehub/lobe-icons),
-revision `79b551cf26aab9ea4ac701fb807160950a5b860f`, copied without modification
-from `packages/static-svg/icons/`. The upstream MIT license is preserved in
-[LICENSE](LICENSE). Product names and marks remain their respective owners’ trademarks;
-use here identifies monitored tools and does not imply endorsement.
+Every identity slot uses `app/ui/js/agent-icons.js`. Assets are local; no browser
+launch, runtime CDN, network request or icon font is required.
 
-`app/ui/js/agent-icons.js` is the mapping used by every Agent identity slot.
-Claude, Codex, Cursor, Cline, Roo Code, OpenCode, Xiaomi MiMo, Goose, Windsurf,
-Trae, Qoder, Antigravity and Hermes Agent use corresponding marks. The unified
-ChatGPT / Codex entry uses the Codex mark; DeepSeek Harness uses DeepSeek’s mark
-as a vendor identity. The retained OpenAI SVG is an upstream asset, not a separate Agent entry.
+## Verified product artwork
 
-The remaining identities use original AgentIsland vector pictograms under the
-repository MIT license (copyright 2026 bitterSmilezzz), not claimed official logos:
+Verification date: 2026-10-02. File-level source, version, processing and SHA-256
+are recorded in [official-sources.json](official-sources.json). The six application
+icons were resolved from each installed bundle's Info.plist CFBundleIconFile,
+with bundle identifier checked against the monitored product. ICNS/ICO conversion
+only changes format and resolution; artwork and colors are preserved.
 
-| File | Identity | Visual cue |
-| --- | --- | --- |
-| `dim.svg` | DimAgent | Spark |
-| `zcode.svg` | ZCode | Lightning inside a rounded frame |
-| `vscode.svg` | VS Code | Editor ribbon |
-| `aider.svg` | Aider | Paired code chevrons |
-| `ima.svg` | ima.copilot | Notes with a spark |
-| `workbuddy.svg` | WorkBuddy | Connected collaborators |
-| `workbuddyai.svg` | WorkBuddy AI | Globe |
-| `continue.svg` | Continue | Continuing arrow |
-| `vibeusage.svg` | Vibe Usage | Usage trend |
-| `openviking.svg` | OpenViking | Viking helmet |
-| `customagent.svg` | Custom or unknown Agent | Hexagon and spark |
+| Asset | Verified source |
+| --- | --- |
+| `dim.png` | DimAgent 0.9.51, `com.dimcode.app` |
+| `zcode.png` | ZCode 3.14.4, `dev.zcode.app` |
+| `qoder.png` | Qoder 0.4.3, `com.qoder.app` |
+| `vibeusage.png` | Vibe Usage 0.7.0, `ai.vibecafe.vibe-usage` |
+| `workbuddy.png` | WorkBuddy 5.6.2, `com.tencent.workbuddy.mac` |
+| `workbuddyai.png` | WorkBuddy AI 5.6.2, `com.workbuddy.workbuddy-ai` |
+| `ima.svg` | [ima official site](https://ima.qq.com/), declared favicon |
+| `trae.png` | [TRAE official site](https://www.trae.ai/), declared favicon |
+| `mimo.png` | [Xiaomi MiMo official site](https://mimo.xiaomi.com/), declared ICO favicon |
+| `openviking.svg` | [OpenViking official repository](https://github.com/volcengine/OpenViking), `docs/images/favicon.svg` |
+| `dsh.svg` | [DeepSeek Harness official repository](https://github.com/deepseek-ai/deepseek-harness), `apps/web/public/favicon.svg` |
 
-Registry id `copilot` means Tencent **ima.copilot**, so the GitHub Copilot mark
-must not be used for it. WorkBuddy variants have different pictograms. Every
-built-in identity and the custom fallback uses a local SVG through a CSS mask,
-with theme-aware ink; status colors remain separate from identity colors.
+Both WorkBuddy variants have identical ICNS hashes in these installed releases;
+their names distinguish them. `mimocode` identifies Xiaomi MiMo, not MiniMax Code.
+`copilot` identifies Tencent ima, not GitHub Copilot. Product artwork is displayed
+as an image, retaining its original colors rather than being recolored through a mask.
+The light backing preserves black/transparent artwork in both interface themes.
+
+Product artwork and trademarks remain their respective owners' property; the
+project MIT license does not relicense them. Use identifies monitored products
+and does not imply endorsement. Upstream DeepSeek Harness MIT and OpenViking
+AGPL texts are preserved in [LICENSE.DeepSeekHarness](LICENSE.DeepSeekHarness)
+and [LICENSE.OpenViking](LICENSE.OpenViking). DeepSeek's
+[brand guidelines](https://github.com/deepseek-ai/deepseek-harness/blob/master/BRAND_GUIDELINES.md)
+are respected by using its mark only to identify the monitored product.
+
+## Lobe Icons artwork
+
+The remaining vendor SVGs were copied without modification from
+[Lobe Icons](https://github.com/lobehub/lobe-icons), revision
+`79b551cf26aab9ea4ac701fb807160950a5b860f`, `packages/static-svg/icons/`.
+Their upstream MIT license is preserved in [LICENSE](LICENSE). The unified
+ChatGPT / Codex entry uses the Codex mark. Retained unused vendor SVGs do not
+create additional Agent entries.
+
+## Original fallback artwork
+
+`vscode.svg`, `aider.svg`, `continue.svg` and `customagent.svg` are original
+AgentIsland identification pictograms under the repository MIT license
+(copyright 2026 bitterSmilezzz), not claimed official logos. The custom SVG is
+used only for unknown/custom identities. All status colors remain separate.
