@@ -10,8 +10,14 @@
 #   2. 全程零未捕获错误（errs 为空）
 #   3. 没有「点不动」的步骤
 #
-# 用法：scripts/ui-smoke.sh [--keep-log]
+# 用法：scripts/ui-smoke.sh --isolated-session [--keep-log]
 set -uo pipefail
+# Hidden native windows can still activate macOS. Require an isolated user session or VM.
+if [[ "${1:-}" != "--isolated-session" ]]; then
+    echo "原生 UI 测试会影响桌面焦点；请在隔离用户会话或虚拟机内使用 --isolated-session。" >&2
+    exit 2
+fi
+shift
 cd "$(dirname "$0")/.."
 
 LOG="${TMPDIR:-/tmp}agentisland-tauri.log"
@@ -51,33 +57,16 @@ fi
 [[ -x "$BIN" ]] || { echo "✗ 找不到可执行文件（${BIN}）——先构建" >&2; exit 1; }
 
 echo "==> UI 冒烟：$BIN --ui-smoke"
-# **先把上一次的残留实例清掉**，再开跑。
-# 不清会有两个实例同时往同一个累积日志里写，证据就搅浑了——
-# 而且新实例会撞上「127.0.0.1:42000 绑定失败」，
-# 于是 `/__probe__` 那些兜底请求记到了**别人**的日志里（实测踩过）。
-# 端口被占这件事本身不影响冒烟（驱动与读回都走 eval，不走 HTTP），
-# 但它会让日志里的证据不再可信。
-# 只结束应用 bundle 内的实例；同名的 dist/agentisland CLI 可能仍在工作。
-pkill -f '/AgentIsland(-Rust|-Swift)?[.]app/Contents/MacOS/(agentisland|AgentIsland)([[:space:]]|$)' 2>/dev/null
-sleep 1
-
-# 日志是累积的（同一路径按运行叠加），先清空，否则会把历史遗留的
-# `[smoke]` 行当成本次结果 —— 这个坑在 main.rs 的 [run] 注释里记过一次。
-: > "$LOG"
-
+# Test instances have an isolated identifier and log. Never stop or relaunch the user's app.
 "$BIN" --ui-smoke --expand --route=todo >/dev/null 2>&1 &
 PID=$!
+LOG="${TMPDIR:-/tmp/}agentisland-test-${PID}.log"
 trap 'kill $PID 2>/dev/null' EXIT
 
 # 等它跑完（冒烟 1.2s 开跑、约 5~6s 点完、8s 后读回，留 3s 余量）
 sleep "$(( RUN_MS / 1000 ))"
 kill $PID 2>/dev/null
 wait $PID 2>/dev/null
-
-# 让用户手边的岛还在
-if [[ -d "dist/AgentIsland.app" ]]; then
-    open dist/AgentIsland.app 2>/dev/null || true
-fi
 
 echo "==> 冒烟结果"
 # 优先用**驱动自报**的结果（`SMOKE_RESULT`）——它没有定时读回那个竞态。

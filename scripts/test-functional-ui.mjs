@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
       className: 'shell-island', style: {}, dataset: {}, children: [], innerHTML: '',
       classList: { contains: () => false, add: noop, remove: noop, toggle: noop },
       appendChild: noop, setAttribute: noop, removeAttribute: noop, addEventListener: noop,
-      querySelector: (selector) => selector === '#sliver' ? mk() : null, querySelectorAll: () => [],
+      querySelector: (selector) => ['#sliver', '.sb-body'].includes(selector) ? mk() : null, querySelectorAll: () => [],
       getBoundingClientRect: () => ({ width: 0, height: 0 }), focus: noop, remove: noop,
     });
     globalThis.document = {
@@ -38,6 +38,8 @@ window.__TAURI__ = {
   core: { invoke: async (command, args) => {
     if (command === 'get_settings') return { ...settings };
     if (command === 'get_boot_args') return {};
+    if (command === 'window_is_visible') return true;
+    if (command === 'get_engine_state') return { snapshots: [], grand_total: {tokens24h: 0}, marker: 'fresh' };
     if (command === 'drain_navigation') return [];
     if (command === 'remote_recent') return [{ title: 'Fixture', text: '未发：总开关已关闭' }];
     if (command === 'remote_secret_set') { secretWrites.push(args.value); return { kind: 'ok' }; }
@@ -102,6 +104,18 @@ try {
   assert.equal(getState().settings.cpu_threshold, 24);
   assert.equal(control.value, 24);
   assert.ok(notices.at(-1).includes('fixture-write-failed'), 'save failure must be visible, without appendChild string errors');
+  await listeners.get('ui://visibility')({ payload: false });
+  assert.equal(getState().windowVisible, false);
+  let hiddenDomReads = 0;
+  const previousQuery = document.querySelectorAll;
+  document.querySelectorAll = () => { hiddenDomReads++; return []; };
+  await listeners.get('settings://changed')({ payload: { ...settings, cpu_threshold: 31 } });
+  assert.equal(getState().settings.cpu_threshold, 31, 'hidden window keeps settings current');
+  assert.equal(hiddenDomReads, 0, 'hidden settings events must not touch the DOM');
+  document.querySelectorAll = previousQuery;
+  await listeners.get('ui://visibility')({ payload: true });
+  assert.equal(getState().engine.marker, 'fresh', 'reopening fetches current engine state');
+  assert.equal(getState().windowVisible, true);
   console.log('PASS: shared thresholds, partial saves, rollback, remote DTO and keychain feedback');
   process.exit(0);
 } catch (error) { console.error(error); process.exit(1); }

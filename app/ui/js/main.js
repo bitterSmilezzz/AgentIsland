@@ -14,8 +14,16 @@ import {
   sliverSize,
 } from './views.js';
 import { invoke } from './tauri.js';
+import { DraftGuard } from './window-lifecycle.js';
+const draftGuard = new DraftGuard();
+function updateWorkbenchDraftStatus() {
+  if (isWorkbench()) invoke('set_workbench_draft', { dirty: draftGuard.dirty }).catch(() => {});
+}
 import { agentIdFromIntent, subscribeNavigation } from './navigation.js';
 import { isSidebar, isWorkbench, SHELL } from './shell.js';
+
+let windowVisible = true;
+let refreshVisibleWindow = () => {};
 
 const $root = () => document.getElementById('root');
 
@@ -24,6 +32,7 @@ const showWorkbench = () => invoke('show_workbench').catch(() => {});
 
 const state = {
   expanded: false,
+  windowVisible: true,
   engine: null,       // EngineState（Rust 推送）
   settings: null,
   route: 'list',      // list | tokenAnalytics | agentDetail:<id>
@@ -39,6 +48,8 @@ export const setState = (patch) => Object.assign(state, patch);
 export async function saveSettings(patch) {
   const settings = await invoke('patch_settings', { patch });
   state.settings = settings;
+  draftGuard.saved(patch);
+  updateWorkbenchDraftStatus();
   return settings;
 }
 
@@ -138,6 +149,7 @@ export function scheduleRender() {
   rafPending = true;
   requestAnimationFrame(async () => {
     rafPending = false;
+    if (!windowVisible) return;
     if (isSidebar()) {
       if (state.route === 'list') renderSidebar(); else renderNavSummaryOnly();
       return;
@@ -155,6 +167,7 @@ export function scheduleRender() {
 
 /// 按卡片内容自适应窗口高度（引擎数据变化后窗口跟随）
 export async function resizeToContent() {
+  if (!windowVisible) return;
   const card = document.querySelector('.card');
   if (!card) return;
   card.style.maxHeight = 'none';
@@ -212,8 +225,30 @@ async function boot() {
   }).catch(() => {});
 
   const { listen } = await import('./tauri.js');
-  await listen('settings://changed', async (event) => {
+  await listen('ui://visibility', async (event) => {
+    windowVisible = event.payload === true;
+    state.windowVisible = windowVisible;
+    if (isWorkbench() && !windowVisible) {
+      localStorage.setItem('agentisland.workbench.page', state.workbenchPage ?? 'overview');
+    }
+    if (!windowVisible) {
+      clearTimeout(state.collapseTimer);
+      if (globalThis.__heightHealer) clearInterval(globalThis.__heightHealer);
+      globalThis.__heightHealer = null;
+      return;
+    }
+    const snapshot = await invoke('get_engine_state').catch(() => null);
+    if (!windowVisible) return;
+    if (snapshot) state.engine = snapshot;
+    refreshVisibleWindow();
+  });
+  windowVisible = (await invoke('window_is_visible').catch(() => true)) !== false;
+  state.windowVisible = windowVisible;
+  const snapshot = await invoke('get_engine_state').catch(() => null);
+  if (snapshot) state.engine = snapshot;
+  await listen('settings://changed' , async (event) => {
     state.settings = event.payload;
+    if (!windowVisible) return;
     document.querySelectorAll('[data-set]').forEach((control) => {
       if (control === document.activeElement) return;
       const value = state.settings[control.dataset.set];
@@ -236,14 +271,26 @@ async function boot() {
   if (isWorkbench()) {
     // 工作台默认概览，启动路由也可进入独立功能页。
     // 数据型面板进入时填充，采样只更新实时区域，保留表单草稿。
+    document.addEventListener('focusin', event => draftGuard.focus(event.target), true);
+    document.addEventListener('input', event => { draftGuard.changed(event.target); updateWorkbenchDraftStatus(); }, true);
+    document.addEventListener('change', event => { draftGuard.changed(event.target); updateWorkbenchDraftStatus(); }, true);
+    updateWorkbenchDraftStatus();
+    if (!state.bootRoute) {
+      const savedPage = localStorage.getItem('agentisland.workbench.page');
+      if (['overview', 'tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report'].includes(savedPage)) {
+        state.workbenchPage = savedPage;
+        state.route = savedPage === 'overview' ? 'list' : savedPage;
+      }
+    }
     if (state.bootRoute) {
       state.route = state.bootRoute;
       state.workbenchPage = ['tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report'].includes(state.bootRoute) ? state.bootRoute : 'overview';
     }
+    refreshVisibleWindow = () => { applyLayout(); renderWorkbenchMonitorOnly(); };
     renderWorkbench();
     await listen('engine://tick', (e) => {
       state.engine = e.payload;
-      renderWorkbenchMonitorOnly();
+      if (windowVisible) renderWorkbenchMonitorOnly();
     });
     await subscribeNavigation(async (e) => {
       const intent = String(e.payload?.action ?? '');
@@ -289,8 +336,10 @@ async function boot() {
       renderSidebarDetail();
       await hydrateReport();
     }
+    refreshVisibleWindow = () => { applyLayout(); if (state.route === 'list') renderSidebar(); else renderNavSummaryOnly(); };
     await listen('engine://tick', (e) => {
       state.engine = e.payload;
+      if (!windowVisible) return;
       // **只有「实时列表」这一页随推送重画**。分析页、档位页是「进来时渲染一次」：
       // 每 2 秒重画一次会把它们打回「加载中」，档位页还会把用户正在填的表单冲掉
       // （同一个坑在分析页上也踩过一次）。
@@ -344,10 +393,11 @@ async function boot() {
   await invoke('place_island', { width: size.w, height: size.h });
   invoke('log_from_ui', { message: 'island boot：place_island 已返回' }).catch(() => {});
 
+  refreshVisibleWindow = () => { applyLayout(); scheduleRender(); };
   // 引擎推送
   await listen('engine://tick', (e) => {
     state.engine = e.payload;
-    scheduleRender();
+    if (windowVisible) scheduleRender();
   });
   await listen('tray://toggle', () => (state.expanded ? collapse() : expand()));
   await subscribeNavigation(async (e) => {

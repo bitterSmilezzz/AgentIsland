@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.288"
+version = "0.0.289"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -52,6 +52,10 @@ tauri-plugin-deep-link = "2.5.0"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Rust-owned transcript buffers otherwise accumulate in macOS malloc's freed-large cache.
+# Keep AppKit/WebKit allocation and the other platforms' allocators unchanged.
+mimalloc = { version = "0.1", default-features = false }
+
 # 钥匙串：密钥只进 macOS 钥匙串（本仓红线）。`security-framework` 由 `native-tls`
 # 已经带进来，列为直接依赖不增加下载；`security-framework-sys` 那层是为了两个
 # 具名错误码常量，用名字而不是 -25308 这种魔数（与 Swift `RemoteSecret.describe`

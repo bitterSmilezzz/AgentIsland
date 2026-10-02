@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AgentIsland",
-  "version": "0.0.288",
+  "version": "0.0.289",
   "identifier": "dev.agentisland.app",
   "build": {
     "frontendDist": "../ui"
@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "island",
+        "create": false,
         "title": "AgentIsland",
         "width": 372,
         "height": 520,
@@ -28,6 +29,7 @@
       },
       {
         "label": "sidebar",
+        "create": false,
         "title": "AgentIsland",
         "width": 360,
         "height": 800,
@@ -43,6 +45,7 @@
       },
       {
         "label": "workbench",
+        "create": false,
         "title": "AgentIsland \u5de5\u4f5c\u53f0",
         "width": 1120,
         "height": 760,

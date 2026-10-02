@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import { DraftGuard } from '../app/ui/js/window-lifecycle.js';
+const guard = new DraftGuard();
+const text = { tagName:'INPUT', type:'text', value:'', defaultValue:'', dataset:{}, isConnected:true };
+guard.focus(text); text.value = 'unsaved credential'; guard.changed(text);
+assert.equal(guard.dirty, true, 'never destroy an unsaved credential field');
+text.value = ''; assert.equal(guard.dirty, false, 'clearing a saved credential releases the guard');
+const checkbox = { tagName:'INPUT', type:'checkbox', checked:false, dataset:{set:'remote_enabled'} };
+guard.focus(checkbox); checkbox.checked = true; guard.changed(checkbox);
+assert.equal(guard.dirty, true);
+guard.saved({remote_enabled:true}); assert.equal(guard.dirty, false);
+const search = { ...text, type:'search', value:'agent filter' };
+guard.changed(search); assert.equal(guard.dirty, false, 'search must not keep a hidden workbench alive');
+const textarea = {...text, tagName:'TEXTAREA', value:'draft'};
+guard.changed(textarea); assert.equal(guard.dirty, true, 'autofill without focus must be protected');
+textarea.isConnected = false; assert.equal(guard.dirty, false);
+console.log('PASS: credential, settings, autofill and disconnected form draft protection');

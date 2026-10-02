@@ -29,10 +29,19 @@ impl Mailbox {
             if slot.ready {
                 live.push(*label);
             } else {
+                // Lazy windows may remain unopened for the lifetime of the app.
+                // Retain a short ordered replay, rather than every historic navigation.
+                if slot.pending.len() == 32 { slot.pending.remove(0); }
                 slot.pending.push(intent.to_owned());
             }
         }
         live
+    }
+
+    pub fn reset(&mut self, label: &str) {
+        if let Some((_, slot)) = self.slots.iter_mut().find(|(name, _)| *name == label) {
+            *slot = Slot::default();
+        }
     }
 
     pub fn drain(&mut self, label: &str) -> Vec<String> {
@@ -77,6 +86,24 @@ mod tests {
         assert!(mailbox.drain("island").is_empty());
         assert_eq!(mailbox.enqueue("Toggle"), ["island"]);
         assert_eq!(mailbox.drain("sidebar"), ["Expand", "Collapse", "Toggle"]);
+    }
+
+    #[test]
+    fn destroyed_window_replays_intents_after_recreation() {
+        let mut mailbox = Mailbox::default();
+        mailbox.drain("workbench");
+        mailbox.reset("workbench");
+        assert!(mailbox.enqueue("Workbench").is_empty());
+        assert_eq!(mailbox.drain("workbench"), ["Workbench"]);
+    }
+
+    #[test]
+    fn unopened_windows_have_a_bounded_replay() {
+        let mut mailbox = Mailbox::default();
+        for index in 0..1000 { mailbox.enqueue(&format!("Agent({index})")); }
+        let pending = mailbox.drain("workbench");
+        assert_eq!(pending.len(), 32);
+        assert_eq!(pending.last().unwrap(), "Agent(999)");
     }
 
     #[test]

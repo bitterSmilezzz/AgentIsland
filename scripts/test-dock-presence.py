@@ -9,6 +9,9 @@ import time
 if sys.platform != 'darwin':
     print('Dock 策略检查仅适用于 macOS')
     sys.exit(0)
+if '--isolated-session' not in sys.argv[1:]:
+    print('原生 Dock 测试会影响桌面焦点；仅在隔离用户会话或虚拟机内使用 --isolated-session。', file=sys.stderr)
+    sys.exit(2)
 root = pathlib.Path(__file__).resolve().parents[1]
 binary = root / 'dist/AgentIsland.app/Contents/MacOS/agentisland'
 with tempfile.TemporaryDirectory(prefix='agentisland-dock-') as directory:
@@ -20,9 +23,7 @@ if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(pro
 }
 ''')
     subprocess.run(['swiftc', str(source), '-o', str(helper)], check=True)
-    # 按 bundle 完整路径结束应用；不匹配同名 CLI。
-    subprocess.run(['pkill', '-f', '/AgentIsland[.]app/Contents/MacOS/agentisland([[:space:]]|$)'], check=False)
-    time.sleep(0.5)
+    # 不结束用户运行中的应用；测试应在独立会话执行。
     app = subprocess.Popen([str(binary), '--dock-smoke'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     observed = []
     try:

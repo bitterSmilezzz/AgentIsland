@@ -1,6 +1,13 @@
 // 始终隐藏控制台：日志统一走 %TEMP%gentisland-tauri.log（log_from_ui + panic hook）
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+mod memory;
+mod window_smoke;
+mod window_lifecycle;
 mod atomicfile;
 mod cleaner;
 mod cli;
@@ -121,7 +128,9 @@ fn patch_settings(state: State<SharedEngine>, app: AppHandle, patch: serde_json:
     let settings = {
         let mut engine = state.lock().unwrap();
         let settings = engine.settings.patched(patch)?;
-        settings.try_save_to(&crate::settings::config_dir()).map_err(|error| error.to_string())?;
+        if !background_test_requested() {
+            settings.try_save_to(&crate::settings::config_dir()).map_err(|error| error.to_string())?;
+        }
         engine.settings = settings.clone();
         settings
     };
@@ -142,6 +151,106 @@ fn apply_window_appearance(app: &AppHandle, mode: &str) {
             let _ = window.set_theme(theme);
         }
     }
+}
+
+/// Native UI regression always runs without showing windows or registering user controls.
+fn background_test_requested() -> bool {
+    std::env::args().any(|a| {
+        matches!(
+            a.as_str(),
+            "--background-test" | "--memory-smoke" | "--ui-smoke"
+        )
+    })
+}
+
+// Tauri executes run_on_main_thread inline when already on the main thread.
+// Leave IPC/deep-link callbacks first, then build/destroy windows without their runtime locks.
+fn queue_window_task<F: FnOnce() + Send + 'static>(app: &AppHandle, task: F) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = handle.run_on_main_thread(task);
+    });
+}
+
+/// Called only from setup or a main-thread task: window creation must be serialized.
+fn ensure_window(app: &AppHandle, label: &str) -> tauri::Result<tauri::WebviewWindow> {
+    if let Some(window) = app.get_webview_window(label) {
+        return Ok(window);
+    }
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == label)
+        .ok_or_else(|| tauri::Error::WindowNotFound)?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, config)?
+        .visible(false)
+        .build()?;
+    let appearance = app
+        .state::<SharedEngine>()
+        .lock()
+        .unwrap()
+        .settings
+        .appearance
+        .clone();
+    let _ = window.set_theme(match appearance.as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    });
+    #[cfg(target_os = "macos")]
+    if label == "workbench" {
+        use tauri::utils::{config::WindowEffectsConfig, WindowEffect};
+        let _ = window.set_effects(WindowEffectsConfig {
+            effects: vec![WindowEffect::LiquidGlassRegular, WindowEffect::Sidebar],
+            ..Default::default()
+        });
+    }
+    if label == "workbench" {
+        app.state::<Mutex<window_lifecycle::WorkbenchLease>>().lock().unwrap().created();
+    }
+    log_line(&format!("[window] created {label}"));
+    Ok(window)
+}
+
+fn show_resident_window(
+    app: &AppHandle,
+    mode: crate::models::ShellMode,
+    edge: crate::models::DockEdge,
+    width: f64,
+) -> tauri::Result<()> {
+    let label = match mode {
+        crate::models::ShellMode::Island => "island",
+        crate::models::ShellMode::Sidebar => "sidebar",
+    };
+    let window = ensure_window(app, label)?;
+    if label == "sidebar" {
+        place_sidebar_window(app, edge, width);
+    }
+    if !background_test_requested() {
+        let _ = window.show();
+    }
+    for other in ["island", "sidebar"] {
+        if other != label {
+            if let Some(w) = app.get_webview_window(other) {
+                let _ = w.hide();
+                let _ = w.emit("ui://visibility", false);
+            }
+        }
+    }
+    let _ = window.emit("ui://visibility", !background_test_requested());
+    Ok(())
+}
+
+#[tauri::command]
+fn get_engine_state(state: State<SharedEngine>) -> models::EngineState {
+    state.lock().unwrap().state()
+}
+
+#[tauri::command]
+fn window_is_visible(window: tauri::WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(false)
 }
 
 /// 把侧边栏窗口按记忆值摆好（贴左/贴右、宽度、铺满工作区高度）。
@@ -251,6 +360,7 @@ pub fn apply_hotkey(app: &AppHandle, want: bool) -> Result<(), String> {
 /// 只会以为这个开关坏了，而不会想到是系统权限没给。
 #[tauri::command]
 fn set_launch_at_login(app: AppHandle, enabled: bool) -> bool {
+    if background_test_requested() { return enabled; }
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     let outcome = if enabled {
@@ -315,8 +425,7 @@ fn place_sidebar_window(app: &AppHandle, edge: crate::models::DockEdge, width: f
     let _ = win.set_position(LogicalPosition::new(left, top));
 }
 
-/// 切换形态。**两个窗口都建好了**，这里只改显示哪一个——
-/// 「切回去」因此不需要重建窗口，也就不会有「切十次留十个窗口」这种事。
+/// 首次切换时创建另一形态，此后复用窗口；创建操作在回调结束后排队。
 #[tauri::command]
 fn set_shell_mode(state: State<SharedEngine>, app: AppHandle, mode: String) -> String {
     let mode = crate::models::ShellMode::parse(&mode);
@@ -325,29 +434,14 @@ fn set_shell_mode(state: State<SharedEngine>, app: AppHandle, mode: String) -> S
         let mut e = state.lock().unwrap();
         e.settings.shell_mode = mode.as_str().to_string();
         let s = e.settings.clone();
-        s.save();
+        if !background_test_requested() { s.save(); }
         edge = crate::models::DockEdge::parse(&e.settings.sidebar_edge);
         width = e.settings.sidebar_width;
     }
-    match mode {
-        crate::models::ShellMode::Island => {
-            if let Some(sidebar) = app.get_webview_window("sidebar") {
-                let _ = sidebar.hide();
-            }
-            if let Some(island) = app.get_webview_window("island") {
-                let _ = island.show();
-            }
-        }
-        crate::models::ShellMode::Sidebar => {
-            place_sidebar_window(&app, edge, width);
-            if let Some(sidebar) = app.get_webview_window("sidebar") {
-                let _ = sidebar.show();
-            }
-            if let Some(island) = app.get_webview_window("island") {
-                let _ = island.hide();
-            }
-        }
-    }
+    let handle=app.clone();
+    queue_window_task(&app, move || {
+        if let Err(error)=show_resident_window(&handle,mode,edge,width) {log_line(&format!("[window] switch failed: {error}"));}
+    });
     mode.as_str().to_string()
 }
 
@@ -361,7 +455,7 @@ fn set_sidebar_width(state: State<SharedEngine>, app: AppHandle, width: f64) -> 
         let mut e = state.lock().unwrap();
         e.settings.sidebar_width = width;
         let s = e.settings.clone();
-        s.save();
+        if !background_test_requested() { s.save(); }
         edge = crate::models::DockEdge::parse(&e.settings.sidebar_edge);
     }
     place_sidebar_window(&app, edge, width);
@@ -382,7 +476,7 @@ fn set_sidebar_edge(state: State<SharedEngine>, app: AppHandle, edge: String) ->
         let mut e = state.lock().unwrap();
         e.settings.sidebar_edge = edge.to_string();
         let s = e.settings.clone();
-        s.save();
+        if !background_test_requested() { s.save(); }
         width = e.settings.sidebar_width;
     }
     place_sidebar_window(&app, crate::models::DockEdge::parse(edge), width);
@@ -410,7 +504,7 @@ fn set_dock_edge(state: State<SharedEngine>, app: AppHandle, edge: String) {
         e.settings.dock_edge = edge.clone();
         anchor = e.settings.dock_anchor;
         let s = e.settings.clone();
-        s.save();
+        if !background_test_requested() { s.save(); }
     }
     reposition(&app, state, &DockEdge::parse(&edge), anchor, true);
 }
@@ -484,7 +578,7 @@ fn snap_nearest_edge(
         e.settings.dock_edge = edge_str.to_string();
         e.settings.dock_anchor = anchor.clamp(0.0, 1.0);
         let s = e.settings.clone();
-        s.save();
+        if !background_test_requested() { s.save(); }
     }
     let edge = DockEdge::parse(edge_str);
     let wa = work_area_for(&window, &state);
@@ -1055,9 +1149,36 @@ fn set_dock_presence(app: &AppHandle, visible: bool) {
     let _ = (app, visible);
 }
 
+#[tauri::command]
+fn set_workbench_draft(window: tauri::WebviewWindow, lease: State<Mutex<window_lifecycle::WorkbenchLease>>, dirty: bool) {
+    if window.label() == "workbench" { lease.lock().unwrap().dirty = dirty; }
+}
+
+fn schedule_workbench_release(app: &AppHandle, window: tauri::WebviewWindow) {
+    let epoch = app.state::<Mutex<window_lifecycle::WorkbenchLease>>().lock().unwrap().hidden();
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(90));
+        let app = handle.clone();
+        queue_window_task(&handle, move || {
+            let may_release = app.state::<Mutex<window_lifecycle::WorkbenchLease>>().lock().unwrap().can_release(epoch);
+            if !may_release || window.is_visible().unwrap_or(true) { return; }
+            if window.destroy().is_ok() {
+                app.state::<Mutex<navigation::Mailbox>>().lock().unwrap().reset("workbench");
+                memory::reclaim_idle_pages();
+                log_line("[window] released hidden workbench");
+            }
+        });
+    });
+}
+
 fn conceal_workbench_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("workbench") {
-        if window.hide().is_ok() { set_dock_presence(app, false); }
+        if window.hide().is_ok() {
+            let _ = window.emit("ui://visibility", false);
+            set_dock_presence(app, false);
+            schedule_workbench_release(app, window);
+        }
     }
 }
 
@@ -1081,13 +1202,19 @@ fn menu_bar_icon() -> tauri::image::Image<'static> {
 }
 
 fn reveal_workbench_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("workbench") {
-        set_dock_presence(app, true);
-        let _ = window.show();
-        // 隐藏后再打开时窗口可能是最小化的；只 `show` 会得到一个「在 Dock 里但看不见」的窗口
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    let handle = app.clone();
+    queue_window_task(app, move || match ensure_window(&handle, "workbench") {
+        Ok(window) => {
+            if !background_test_requested() {
+                set_dock_presence(&handle, true);
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            let _ = window.emit("ui://visibility", true);
+        }
+        Err(error) => log_line(&format!("[window] workbench creation failed: {error}")),
+    });
 }
 
 #[tauri::command]
@@ -1134,7 +1261,10 @@ fn truncate_log_if_oversized(path: &std::path::Path) -> Option<u64> {
 }
 
 pub(crate) fn log_line(msg: &str) {
-    let path = std::env::temp_dir().join("agentisland-tauri.log");
+    let filename = if background_test_requested() {
+        format!("agentisland-test-{}.log", std::process::id())
+    } else { "agentisland-tauri.log".to_string() };
+    let path = std::env::temp_dir().join(filename);
     if let Some(before) = truncate_log_if_oversized(&path) {
         let line = format!("[run] 上一份日志 {before} 字节，已按 {LOG_CAP_BYTES} 字节封顶清空");
         use std::io::Write;
@@ -1211,8 +1341,15 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
             (s, interval, badge)
         };
         // 锁已释放，才轮到托盘——顺序不能反，见 `apply_tray_badge` 的注释。
+        memory::reclaim_idle_pages();
         apply_tray_badge(&app, badge);
-        let _ = app.emit("engine://tick", &state);
+        for label in ["island", "sidebar", "workbench"] {
+            if let Some(window) = app.get_webview_window(label) {
+                if window.is_visible().unwrap_or(false) {
+                    let _ = window.emit("engine://tick", &state);
+                }
+            }
+        }
         std::thread::sleep(std::time::Duration::from_secs_f64(interval));
     }
 }
@@ -1295,6 +1432,7 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/agent-icons.js",
     "js/main.js",
     "js/navigation.js",
+    "js/window-lifecycle.js",
     "js/shell.js",
     "js/tauri.js",
     "js/views.js",
@@ -1421,7 +1559,7 @@ const WEBVIEW_PROBE_JS: &str = r#"(function () {
   try {
     fetch('http://127.0.0.1:42000/__probe__/' + out.ready
       + '-tauri' + (out.tauri ? 1 : 0) + '-invoke' + (out.invoke ? 1 : 0)
-      + '-errs' + (out.errs || []).length, { mode: 'no-cors' });
+      + '-errs' + (out.errs || []).length, { mode: 'no-cors' }).catch(function () {});
   } catch (e2) { /* 兜底也失败就算了，回调那条路还在 */ }
   return JSON.stringify(out);
 })()"#;
@@ -1911,6 +2049,7 @@ pub fn handle_deep_link(app: &AppHandle, url: &str) -> bool {
         // 启动期间的意图由 Mailbox 保存至前端就绪，
         // 免得 Rust 侧再写一份显隐规则（两份规则迟早只改一处）
         send_navigation(app, &action);
+        if matches!(action,deeplink::Action::Workbench) { reveal_workbench_window(app); }
     } else if let deeplink::Action::Settings(tab) = &action {
         // 设置是独立窗口：先把它显示出来，岛保持当前形态
         if let Some(win) = app.get_webview_window("settings") {
@@ -1930,11 +2069,39 @@ fn main() {
     // **必须在建引擎、开线程、起窗口之前**：`status` 的全部价值是「快」，
     // 而拉起 Tauri 再退出比它自己采完一拍慢一个量级。
     let argv: Vec<String> = std::env::args().collect();
+    // Explicit diagnostic mode: no WebViews, hooks, settings writes or remote delivery.
+    if argv.iter().any(|a| a == "--memory-core-probe") {
+        if argv.iter().any(|a| a == "--process-only") {
+            let mut monitor = procmon::ProcessMonitor::new();
+            for _ in 0..20 {
+                monitor.refresh();
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            return;
+        }
+        let (_tx, rx) = mpsc::channel();
+        let mut settings = Settings::load();
+        settings.remote_policy.master_enabled = false;
+        let mut engine = ActivityEngine::new(settings, rx);
+        engine.refresh_usage = !argv.iter().any(|a| a == "--without-usage");
+        for _ in 0..20 {
+            engine.tick();
+            if !argv.iter().any(|a| a == "--retain-allocator-pages") {
+                memory::reclaim_idle_pages();
+            }
+            println!("memory-probe tick");
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        return;
+    }
     if let Some(code) = cli::try_run(&argv) {
         std::process::exit(code);
     }
     let (tx, rx) = mpsc::channel::<models::AgentTaskEvent>();
-    let settings = Settings::load();
+    let mut settings = Settings::load();
+    if background_test_requested() {
+        settings.remote_policy.master_enabled = false;
+    }
     let mut engine = ActivityEngine::new(settings, rx);
     let demo = std::env::args().any(|a| a == "--demo");
     engine.demo_mode = demo;
@@ -1951,6 +2118,13 @@ fn main() {
     #[cfg(target_os = "macos")]
     let startup_guard = acquire_startup_guard().expect("应用冷启动互斥锁应当可用");
 
+    let mut context = tauri::generate_context!();
+    if background_test_requested() {
+        context
+            .config_mut()
+            .identifier
+            .push_str(&format!(".test.p{}", std::process::id()));
+    }
     tauri::Builder::default()
         // 必须早于其他插件：第二次打开复用现有应用，不再创建窗口与托盘。
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
@@ -1975,6 +2149,7 @@ fn main() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(shared.clone())
         .manage(Mutex::new(navigation::Mailbox::default()))
+        .manage(Mutex::new(window_lifecycle::WorkbenchLease::default()))
         .on_window_event(|window, event| {
             // 标准关闭按钮收起工作台，托盘和重复打开仍可唤回原窗口。
             if window.label() == "workbench" {
@@ -1986,6 +2161,22 @@ fn main() {
         })
         .setup(move |app| {
             set_dock_presence(app.handle(), false);
+            let (saved_mode, edge, width) = {
+                let e = shared.lock().unwrap();
+                (
+                    crate::models::ShellMode::parse(&e.settings.shell_mode),
+                    crate::models::DockEdge::parse(&e.settings.sidebar_edge),
+                    e.settings.sidebar_width,
+                )
+            };
+            let startup_mode = shell_arg_override().unwrap_or(saved_mode);
+            show_resident_window(app.handle(), startup_mode, edge, width)?;
+            if ui_smoke_requested() {
+                for label in ["island", "sidebar", "workbench"] {
+                    ensure_window(app.handle(), label)?;
+                }
+            }
+
             // 原生显隐回归：只在明确测试参数下执行，普通启动没有定时切窗。
             #[cfg(target_os = "macos")]
             if std::env::args().any(|arg| arg == "--dock-smoke") {
@@ -1998,40 +2189,32 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     reveal_workbench_window(&handle);
                     std::thread::sleep(std::time::Duration::from_secs(2));
-                    if let Some(window) = handle.get_webview_window("workbench") { let _ = window.close(); }
+                    if let Some(window) = handle.get_webview_window("workbench") {
+                        let _ = window.close();
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     handle.exit(0);
                 });
             }
             let appearance = shared.lock().unwrap().settings.appearance.clone();
             apply_window_appearance(app.handle(), &appearance);
-            #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("workbench") {
-                use tauri::utils::{config::WindowEffectsConfig, WindowEffect};
-                // 内容区保持不透明；系统材质只从透明的导航和窗口边缘透出。
-                let effects = WindowEffectsConfig {
-                    effects: vec![WindowEffect::LiquidGlassRegular, WindowEffect::Sidebar],
-                    ..Default::default()
-                };
-                if let Err(error) = window.set_effects(effects) {
-                    log_line(&format!("[window] 原生材质不可用，使用 CSS 底板: {error}"));
-                }
-            }
             // 全局热键：按设置里的开关注册。
             //
             // 刻意**不在设置变化时重注册**：热键注册要在主线程做，而设置改完
             // 立刻生效是本轮的承诺之一——那就在每拍检查一次「开关状态与
             // 当前注册状态是否一致」，不一致才动。注册失败只记日志，
             // 不打断引擎循环：热键是锦上添花，不该让它把监控整个拖停。
-            {
+            if !background_test_requested() {
                 // 热键回调：与托盘同一个动作（展开 / 收起），不另发明一套
                 if let Ok(shortcut) = parse_hotkey() {
                     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-                    let _ = app.global_shortcut().on_shortcut(shortcut, move |app, _, event| {
-                        if matches!(event.state(), ShortcutState::Pressed) {
-                            let _ = app.emit("tray://toggle", ());
-                        }
-                    });
+                    let _ = app
+                        .global_shortcut()
+                        .on_shortcut(shortcut, move |app, _, event| {
+                            if matches!(event.state(), ShortcutState::Pressed) {
+                                let _ = app.emit("tray://toggle", ());
+                            }
+                        });
                 } else {
                     log_line("[globalHotKey] 组合键解析失败，未注册");
                 }
@@ -2075,9 +2258,14 @@ fn main() {
                 let app_handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     // 一次事件可能带多条 URL（批量粘贴时会发生），逐条消费
-                    for url in event.urls() {
-                        handle_deep_link(&app_handle, url.as_str());
-                    }
+                    let handle = app_handle.clone();
+                    let urls = event.urls();
+                    // Emission/window operations must not re-enter the plugin callback.
+                    std::thread::spawn(move || {
+                        for url in urls {
+                            handle_deep_link(&handle, url.as_str());
+                        }
+                    });
                 });
             }
 
@@ -2087,44 +2275,56 @@ fn main() {
             std::thread::spawn(move || engine_loop(shared2, handle));
 
             // 本地 Webhook（Rust 端 127.0.0.1:42000，与 Swift 的 41999 分开以免静默抢端口）
-            let shared_for_webhook = shared.clone();
-            std::thread::spawn(move || {
-                let _server = webhook::LocalEventServer::start(tx, shared_for_webhook);
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(3600));
-                }
-            });
+            if !background_test_requested() {
+                let shared_for_webhook = shared.clone();
+                std::thread::spawn(move || {
+                    let _server = webhook::LocalEventServer::start(tx, shared_for_webhook);
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(3600));
+                    }
+                });
 
-            // 托盘
-            let toggle = MenuItem::with_id(app, "toggle", "展开 / 收起灵动岛", true, None::<&str>)?;
-            // 工作台是**第三个窗口**，不能只靠深链进：深链在这台机器上被
-            // Swift 版抢走的可能性是真实存在的（两个应用都声明了同一个 scheme），
-            // 所以它必须有一条不经过 URL scheme 的入口。
-            let workbench = MenuItem::with_id(app, "workbench", "打开工作台", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出 AgentIsland", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&toggle, &workbench, &quit])?;
-            TrayIconBuilder::with_id("main")
-                .icon(if cfg!(target_os = "macos") { menu_bar_icon() } else { app.default_window_icon().unwrap().clone() })
-                .icon_as_template(true)
-                .tooltip("AgentIsland")
-                .menu(&menu)
-                .on_menu_event(|app, event| {
-                    match event.id.as_ref() {
-                        "toggle" => {
-                            let _ = app.emit("tray://toggle", ());
+                // 托盘
+                let toggle =
+                    MenuItem::with_id(app, "toggle", "展开 / 收起灵动岛", true, None::<&str>)?;
+                // 工作台是**第三个窗口**，不能只靠深链进：深链在这台机器上被
+                // Swift 版抢走的可能性是真实存在的（两个应用都声明了同一个 scheme），
+                // 所以它必须有一条不经过 URL scheme 的入口。
+                let workbench =
+                    MenuItem::with_id(app, "workbench", "打开工作台", true, None::<&str>)?;
+                let quit = MenuItem::with_id(app, "quit", "退出 AgentIsland", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&toggle, &workbench, &quit])?;
+                TrayIconBuilder::with_id("main")
+                    .icon(if cfg!(target_os = "macos") {
+                        menu_bar_icon()
+                    } else {
+                        app.default_window_icon().unwrap().clone()
+                    })
+                    .icon_as_template(true)
+                    .tooltip("AgentIsland")
+                    .menu(&menu)
+                    .on_menu_event(|app, event| {
+                        match event.id.as_ref() {
+                            "toggle" => {
+                                let _ = app.emit("tray://toggle", ());
+                            }
+                            // 与深链那条路径共用同一个命令，不另写一份显隐规则
+                            "workbench" => reveal_workbench_window(app),
+                            "quit" => app.exit(0),
+                            _ => {}
                         }
-                        // 与深链那条路径共用同一个命令，不另写一份显隐规则
-                        "workbench" => reveal_workbench_window(app),
-                        "quit" => app.exit(0),
-                        _ => {}
-                    }
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let tauri::tray::TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } = event {
-                        let _ = tray.app_handle().emit("tray://toggle", ());
-                    }
-                })
-                .build(app)?;
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let tauri::tray::TrayIconEvent::Click {
+                            button: tauri::tray::MouseButton::Left,
+                            ..
+                        } = event
+                        {
+                            let _ = tray.app_handle().emit("tray://toggle", ());
+                        }
+                    })
+                    .build(app)?;
+            }
 
             // **启动痕迹：把真实建出来的窗口逐个记下来。**
             //
@@ -2133,11 +2333,7 @@ fn main() {
             // webview 不跑 ⇒ 它必然是空的 ⇒ 这条证据无法自证。
             // 从 Rust 侧记一份「我建了哪些窗口」，至少能把「窗口没建出来」
             // 与「窗口建了但里面没跑 JS」分开。
-            let labels: Vec<String> = app
-                .webview_windows()
-                .keys()
-                .cloned()
-                .collect();
+            let labels: Vec<String> = app.webview_windows().keys().cloned().collect();
             log_line(&format!("[boot] 建出的窗口：{labels:?}"));
             for label in &labels {
                 if let Some(w) = app.get_webview_window(label) {
@@ -2172,7 +2368,9 @@ fn main() {
                 // 「名单与目录一致」由 `embedded_assets_cover_every_ui_file` 守着。
                 for key in EMBEDDED_ASSET_SAMPLE {
                     match resolver.get(key.to_string()) {
-                        Some(asset) => seen.push(format!("{key}={}B/{}", asset.bytes.len(), asset.mime_type)),
+                        Some(asset) => {
+                            seen.push(format!("{key}={}B/{}", asset.bytes.len(), asset.mime_type))
+                        }
                         None => seen.push(format!("{key}=**缺失**")),
                     }
                 }
@@ -2212,41 +2410,11 @@ fn main() {
                 schedule_ui_smoke(app.handle());
             }
 
-            // 初始贴边放置
-            let win = app.get_webview_window("island").unwrap();
-            let _ = win.set_ignore_cursor_events(false);
-
-            // 上次关在侧边栏形态 ⇒ 这次仍开侧边栏。**两个窗口都已经建好**，
-            // 这里只是决定显示哪一个——直接复用命令那条路径，避免「启动」与「切换」
-            // 两处各写一份显隐规则（两份规则迟早只改一处）
-            let (mode, sidebar_edge, sidebar_width) = {
-                let e = shared.lock().unwrap();
-                (
-                    crate::models::ShellMode::parse(&e.settings.shell_mode),
-                    crate::models::DockEdge::parse(&e.settings.sidebar_edge),
-                    e.settings.sidebar_width,
-                )
-            };
-            // `--shell=sidebar` / `--shell=island`：**只影响这一次运行，不写回设置**。
-            // 加它是为了能在不改用户 settings.json 的前提下验证另一个形态
-            // （改了设置去验证，验证完还得记得改回来，那是最容易留下脏状态的做法）
-            let mode = shell_arg_override().unwrap_or(mode);
-            if mode == crate::models::ShellMode::Sidebar {
-                place_sidebar_window(app.handle(), sidebar_edge, sidebar_width);
-                if let Some(sidebar) = app.get_webview_window("sidebar") {
-                    let _ = sidebar.show();
-                }
-                let _ = win.hide();
+            if std::env::args().any(|a| a == "--memory-smoke") {
+                window_smoke::schedule(app.handle());
             }
-            // `--shell=workbench`：同样**只影响这一次运行，不写回设置**。
-            // 存在的理由与 `--shell=sidebar` 一样——验证第三个形态不该靠改用户的设置，
-            // 而工作台平时是按需才出现的（托盘 / 深链），没有启动参数就没法无头验证它。
             if boot_arg_is("workbench") {
                 reveal_workbench_window(app.handle());
-                let _ = win.hide();
-                if let Some(sidebar) = app.get_webview_window("sidebar") {
-                    let _ = sidebar.hide();
-                }
             }
             #[cfg(target_os = "macos")]
             drop(startup_guard);
@@ -2254,6 +2422,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_boot_args,
+            get_engine_state,
+            window_is_visible,
+            set_workbench_draft,
             drain_navigation,
             get_settings,
             save_settings,
@@ -2304,9 +2475,10 @@ fn main() {
             show_workbench,
             collapse_to_tray
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running tauri application");
 }
+
 
 #[cfg(test)]
 mod tray_badge_tests {
@@ -4060,5 +4232,18 @@ mod single_tray_tests {
     fn configuration_does_not_create_a_second_tray() {
         let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert!(config["app"].get("trayIcon").is_none(), "setup 创建带菜单的 main 托盘，配置不能再自动创建一个托盘");
+    }
+}
+
+#[cfg(test)]
+mod background_lifecycle_tests {
+    #[test]
+    fn all_windows_are_declared_but_only_created_on_demand() {
+        let config:serde_json::Value=serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let windows=config["app"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(),3);
+        for window in windows {
+            assert_eq!(window["create"].as_bool().unwrap_or(true),false,"{} must not eagerly create a WebView",window["label"]);
+        }
     }
 }

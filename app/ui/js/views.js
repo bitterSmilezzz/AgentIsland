@@ -736,7 +736,7 @@ function bindCardEvents(eng, st) {
   if (!globalThis.__heightHealer) {
     globalThis.__heightHealer = setInterval(() => {
       const st2 = getState();
-      if (st2.expanded) resizeToContent();
+      if (st2.expanded && st2.windowVisible !== false) resizeToContent();
     }, 800);
   }
 
