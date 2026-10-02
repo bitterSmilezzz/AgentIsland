@@ -1565,16 +1565,32 @@ const UI_SMOKE_JS: &str = r#"(function () {
       identityProbe.setAttribute('aria-hidden', 'true');
       identityProbe.style.cssText = 'position:fixed;left:-10000px;top:0;pointer-events:none;';
       identityProbe.innerHTML = Object.keys(identityModule.agentIdentities).map(function (id) {
-        return identityModule.agentIcon({ id: id });
+        return identityModule.agentIcon({ id: id }, 'wb-agent-glyph');
       }).join('') + identityModule.agentIcon({ id: 'custom-probe', name: '自定义 Agent' });
       if (identityProbe.querySelectorAll('.agent-mark, .agent-brand-image').length !== identityProbe.children.length)
         throw new Error('Agent 缺少图形标识');
       document.body.appendChild(identityProbe);
       try {
+        Array.from(identityProbe.children).forEach(function (avatar) {
+          var bounds = avatar.getBoundingClientRect();
+          if (Math.abs(bounds.width-32)>0.5 || Math.abs(bounds.height-32)>0.5) throw new Error('工作台图标容器大小不一致');
+        });
         await Promise.all(Array.from(identityProbe.querySelectorAll('.agent-mark, .agent-brand-image')).map(async function (mark) {
           if (mark instanceof HTMLImageElement) {
             await Promise.race([mark.decode(), wait(3000).then(function () { throw new Error('产品原始图标加载超时'); })]);
             if (mark.naturalWidth < 16 || mark.getBoundingClientRect().width < 16) throw new Error('产品原始图标尺寸无效');
+            if (/\.png$/.test(mark.src)) {
+              var canvas=document.createElement('canvas');canvas.width=mark.naturalWidth;canvas.height=mark.naturalHeight;
+              var context=canvas.getContext('2d');context.drawImage(mark,0,0);
+              var pixels=context.getImageData(0,0,canvas.width,canvas.height).data;
+              var left=canvas.width,right=-1,top=canvas.height,bottom=-1;
+              for(var y=0;y<canvas.height;y++) for(var x=0;x<canvas.width;x++) {
+                if(pixels[(y*canvas.width+x)*4+3]>=32) {left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);}
+              }
+              var bounds=mark.getBoundingClientRect();
+              var visible=Math.max((right-left+1)/canvas.width*bounds.width,(bottom-top+1)/canvas.height*bounds.height);
+              if(Math.abs(visible-28)>1) throw new Error('工作台原色图标可见尺寸不一致');
+            }
             return;
           }
           var mask = getComputedStyle(mark).maskImage || getComputedStyle(mark).webkitMaskImage;

@@ -63,7 +63,8 @@ pub fn builtin() -> Vec<AgentProfile> {
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
             // Model IO is task evidence; CLI log can update for unrelated runtime activity.
             session_dirs: vec![p(&[".zcode", "cli", "rollout"])],
-            token_roots: vec![p(&[".zcode", "cli", "rollout"])],
+            // Canonical ledger first; JSONL is only a fallback, never added to its mirror.
+            token_roots: vec![p(&[".zcode", "cli", "db", "db.sqlite"]), p(&[".zcode", "cli", "rollout"])],
             token_alert_floor: None,
             session_dialect: SessionDialect::GenericTail,
             session_database: Some(SessionDatabase {
@@ -636,7 +637,9 @@ mod tests {
         let rollout = std::path::Path::new(".zcode").join("cli").join("rollout");
         assert_eq!(zcode.session_dirs.len(), 1);
         assert!(std::path::Path::new(&zcode.session_dirs[0]).ends_with(&rollout));
-        assert_eq!(zcode.token_roots, zcode.session_dirs);
+        assert_eq!(zcode.token_roots.len(),2);
+        assert!(std::path::Path::new(&zcode.token_roots[0]).ends_with(std::path::Path::new(".zcode/cli/db/db.sqlite")));
+        assert_eq!(zcode.token_roots[1],zcode.session_dirs[0]);
     }
 
     /// 声明了 SQLite 库的档案：**方言必须与库对应**，且库路径只在档案里出现一次。

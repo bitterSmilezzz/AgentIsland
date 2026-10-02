@@ -1,11 +1,12 @@
 /* Identity is stable; activity colors belong to the separate state indicators. */
 .agent-avatar {
+  --agent-size: 32px;
   --agent-ink: var(--agent-light, var(--text-muted));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: var(--agent-size);
+  height: var(--agent-size);
   flex: none;
   border-radius: 9px;
   background: var(--surface-inset);
@@ -16,30 +17,28 @@
 .theme-dark .agent-avatar { --agent-ink: var(--agent-dark, var(--text-muted)); }
 .agent-mark {
   display: block;
-  width: 19px;
-  height: 19px;
+  width: 62.5%;
+  height: 62.5%;
   background: var(--agent-ink);
   -webkit-mask: var(--agent-mask) center / contain no-repeat;
   mask: var(--agent-mask) center / contain no-repeat;
 }
 .agent-brand-image {
   display: block;
-  width: 24px;
-  height: 24px;
+  width: calc(100% - 2px);
+  height: calc(100% - 2px);
+  transform: scale(var(--agent-artwork-scale, 1));
   object-fit: contain;
   border-radius: 5px;
   background: transparent;
   color-scheme: light;
 }
-.sb-agent-toggle .agent-brand-image { width: 21px; height: 21px; }
-.ring .agent-avatar--bare .agent-brand-image { width: 22px; height: 22px; }
 .shell-sidebar .sb-agent > .agent-avatar { grid-row: 1 / 3; align-self: center; }
 .agent-avatar.wb-agent-glyph { color: var(--agent-ink); }
 html.shell-island .agent-avatar.island-agent-icon { color: var(--agent-ink); }
-.sb-agent-toggle > .agent-avatar { width: 27px; height: 27px; border-radius: 8px; }
-.sb-agent-toggle .agent-mark { width: 17px; height: 17px; }
-.ring .agent-avatar--bare { width: 24px; height: 24px; border: 0; background: transparent; }
-.ring .agent-avatar--bare .agent-mark { width: 20px; height: 20px; }
+.sb-agent-toggle > .agent-avatar { --agent-size: 27px; border-radius: 8px; }
+.ring .agent-avatar--bare { --agent-size: 24px; border: 0; background: transparent; }
+.ring .agent-avatar--bare .agent-mark { width: calc(100% - 2px); height: calc(100% - 2px); }
 
 /* Original app icons already have their own silhouette; avoid a white tile behind transparent padding. */
 .agent-avatar--brand { background: transparent; border-color: transparent; }

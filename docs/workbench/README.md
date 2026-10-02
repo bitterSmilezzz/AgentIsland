@@ -29,6 +29,10 @@ Swift 是原生灵动岛实现；Rust 端当前**三种形态都已实现**
 ⚠️ 本文其余段落里仍写「双形态」的地方是**当时的计划记录**（Phase 表、技术方案），
 按时间点证据保留原样；**当前实际形态以本节与根 README 为准**。
 
+## 后台内存专项
+
+[05-memory-optimization.md](05-memory-optimization.md)：实测基线、非必要工作、窗口与数据预算策略及验收目标，当前处于方案阶段。
+
 ## 产品目标与调查背景
 
 [**21-product-positioning.md · 产品定位与功能口径**](21-product-positioning.md) —— 这个产品是什么、

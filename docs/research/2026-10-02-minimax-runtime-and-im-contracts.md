@@ -14,7 +14,7 @@
 - `local_runtime_token_usage` 有 `ts/input_tokens/output_tokens/reasoning_tokens/cache_read_tokens/cache_write_tokens/cost_usd/model`。
 - 不读取 `record_json/raw` 或消息表正文，不运行 checkpoint 或迁移。
 
-官方 [pi-usage.ts](https://github.com/MiniMax-AI/minimax-code/blob/564e9166d81f87b0b767b005e4779d4697b512be/packages/local-runtime-v2/src/service/session-system/usage/pi-usage.ts) 分开记录新鲜输入、输出、推理和缓存计数；账本净用量为前三项之和，不能再加入缓存或并扫消息镜像。时间戳为毫秒。费用取账本记录，不另猜价。
+官方 [pi-usage.ts](https://github.com/MiniMax-AI/minimax-code/blob/564e9166d81f87b0b767b005e4779d4697b512be/packages/local-runtime-v2/src/service/session-system/usage/pi-usage.ts) 分开记录新鲜输入、输出、推理和缓存计数；运行时摘要使用前三项之和；跨来源的新鲜用量统计还应计入独立缓存创建项，排除缓存读取，且不能并扫消息镜像。此差异经 Vibe Usage mcode 读取器对照确认，详见同目录的 Vibe Usage 核查记录。时间戳为毫秒。费用取账本记录，不另猜价。
 
 状态只在新鲜窗口内采信 started；idle 必须伴随接近状态更新时间的用量才视为完成，未使用的 idle、过期 started 和归档会话不产生完成/在途信号。它是本地投影，不承诺覆盖所有框架的授权等待状态。
 

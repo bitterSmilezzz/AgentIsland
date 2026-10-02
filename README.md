@@ -4,7 +4,7 @@
 
 **main 使用 Rust/Tauri 开发。** Rust 负责监控、会话解析、配置与 CLI；静态 Web UI 提供灵动岛、贴边侧栏及工作台，macOS 使用系统窗口控制和材质。SwiftUI 与旧 WPF 实现保存在 [归档分支](https://github.com/bitterSmilezzz/AgentIsland/tree/codex/archive-swiftui)，归档规则见 [ADR 0016](docs/adr/0016-rust-only-main.md)。
 
-> 本文档描述 **v0.0.287** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.288** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 
@@ -12,7 +12,7 @@
 - **侧边栏**：持续显示监控、用量、档位、待办、设置、远程通知和智能体管理；左右贴边与宽度可配置。
 - **工作台**：分组导航、概览与独立功能页；复杂表单进入独立页，采样不会重置正在输入的内容。
 - **监控**：ChatGPT 桌面端与 Codex CLI 合并为一条“ChatGPT / Codex”，共用 Codex 会话及用量来源；Ego Lite 等供 Agent 使用的浏览器不列为内置 Agent。进程、文件与会话证据共同判定运行状态；会话源读不到、无本地明细和未接入明细源分别呈现，详情与 doctor 共用诊断口径。
-- **用量**：读取本机 JSONL / SQLite 等记录，统计最近 24 小时与累计净消耗；缓存读取不重复计入，费用估算用 `~` 标记。
+- **用量**：读取本机 JSONL / SQLite 等记录，统计最近 24 小时与累计净消耗；缓存读取不重复计入，缓存创建按来源计入新鲜用量；费用估算用 `~` 标记。
 - **Codex 档位**：管理本机模型与 provider 配置、切换和备份；档位只保存环境变量名，密钥由环境或系统钥匙串提供。
 - **待办与报告**：本机待办列表、Markdown / CSV 用量报告与复制；CLI 可导出文件。
 - **MiniMax Code**：检测 MiniMax Code 桌面版与 `mcode` CLI，读取默认 `~/.minimax/v2/sqlite/runtime-state.sqlite` 的会话状态和独立用量账本；提供 24h、累计、模型拆分和小时趋势，不读取登录凭据。自定义数据目录与命名 profile 需另行配置档案。

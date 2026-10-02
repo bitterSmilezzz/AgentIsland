@@ -90,7 +90,7 @@ pub struct ActivityEngine {
 }
 
 fn has_usage_location(profile: &AgentProfile) -> bool {
-    profile.token_roots.iter().any(|root| std::path::Path::new(root).is_dir())
+    profile.token_roots.iter().any(|root| std::path::Path::new(root).is_dir() || (std::path::Path::new(root).is_file() && root.ends_with(".sqlite")))
         || profile.session_database.as_ref().is_some_and(|database| {
             matches!(database.schema, SessionSchema::OpenCode | SessionSchema::DimTasks | SessionSchema::MiniMaxRuntime)
                 && std::path::Path::new(&database.path).is_file()

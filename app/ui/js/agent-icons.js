@@ -29,6 +29,16 @@ export const agentIdentities = Object.freeze({
   openviking: ['OpenViking', 'openviking', '#616993', '#b1b9de', 'openviking.svg'],
 });
 
+// Native ICNS exports retain transparent padding. Normalize their visible silhouette
+// without cropping, stretching or altering the original official asset.
+const artworkScale = Object.freeze({
+  'workbuddy.png': 128 / 102, 'workbuddyai.png': 128 / 102,
+  'minimaxcode.png': 128 / 102, 'qoder.png': 128 / 100,
+  'dim.png': 128 / 104, 'vibeusage.png': 128 / 104,
+  'chatgpt.png': 128 / 104, 'zcode.png': 128 / 105,
+  'mimodesktop.png': 128 / 105,
+});
+
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 
@@ -37,7 +47,11 @@ export function agentIcon(agent, extraClass = '') {
     ? agentIdentities[agent.id] : undefined;
   const mark = identity?.[1] || 'customagent';
   const file = identity?.[4];
-  const ink = identity?.[2] ? ` style="--agent-light:${identity[2]};--agent-dark:${identity[3]}"` : '';
+  const variables = [
+    ...(identity?.[2] ? [`--agent-light:${identity[2]}`, `--agent-dark:${identity[3]}`] : []),
+    ...(artworkScale[file] ? [`--agent-artwork-scale:${artworkScale[file]}`] : []),
+  ];
+  const ink = variables.length ? ` style="${variables.join(';')}"` : '';
   const content = file
     ? `<img class="agent-brand-image${['ima.svg', 'dsh.svg'].includes(file) ? ' agent-brand-image--backed' : ''}" src="${esc(new URL(`../assets/agents/${file}`, import.meta.url).href)}" alt="" draggable="false">`
     : `<span class="agent-mark" style="--agent-mask:url('${esc(new URL(`../assets/agents/${mark}.svg`, import.meta.url).href)}')"></span>`;
