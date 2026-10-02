@@ -4,7 +4,7 @@ export const agentIdentities = Object.freeze({
   dim: ['DimAgent', 'DI', '#7b5a94', '#c0a6d6'],
   zcode: ['ZCode', 'ZC', '#496699', '#a3bce7'],
   claude: ['Claude', 'claude', '#a55d40', '#e3a58a'],
-  codex: ['Codex', 'codex'],
+  codex: ['ChatGPT / Codex', 'codex'],
   cursor: ['Cursor', 'cursor'],
   vscode: ['VS Code', 'VS', '#326c99', '#8fbce0'],
   cline: ['Cline', 'cline'],
@@ -23,9 +23,7 @@ export const agentIdentities = Object.freeze({
   antigravity: ['Antigravity', 'antigravity', '#566a9c', '#a4b8e0'],
   hermes: ['Hermes Agent', 'hermesagent', '#92733f', '#d6c091'],
   continue: ['Continue', 'CT', '#52715b', '#a9c6af'],
-  chatgpt: ['ChatGPT', 'openai', '#427567', '#a0cdbd'],
   dsh: ['DeepSeek Harness', 'deepseek', '#4a65a2', '#a6bbed'],
-  'ego-browser': ['Ego Browser', 'EB', '#815e78', '#cdaec5'],
   'vibe-usage': ['Vibe Usage', 'VU', '#806946', '#d1bb96'],
   openviking: ['OpenViking', 'OV', '#616993', '#b1b9de'],
 });

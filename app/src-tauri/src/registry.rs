@@ -97,11 +97,11 @@ pub fn builtin() -> Vec<AgentProfile> {
         },
         AgentProfile {
             id: "codex".into(),
-            name: "Codex".into(),
+            name: "ChatGPT / Codex".into(),
             glyph: "\u{E99A}".into(),
             emoji: "🤖".into(),
-            process_names: vec!["codex".into()],
-            bundle_ids: vec![],
+            process_names: vec!["codex".into(), "ChatGPT".into()],
+            bundle_ids: vec!["com.openai.codex".into()],
             cmdline_hints: vec!["codex".into()],
             path_excludes: vec![],
             path_contains: vec![],
@@ -479,24 +479,6 @@ pub fn builtin() -> Vec<AgentProfile> {
             category: "codeEditor".into(),
         },
         AgentProfile {
-            id: "chatgpt".into(),
-            name: "ChatGPT".into(),
-            glyph: "\u{E9A0}".into(),
-            emoji: "💬".into(),
-            process_names: vec!["ChatGPT".into()],
-            bundle_ids: vec!["com.openai.codex".into()],
-            cmdline_hints: vec![],
-            path_contains: vec![],
-            path_excludes: vec![],
-            cpu_floor: Some(DESKTOP_CPU_FLOOR),
-            session_dirs: vec![p(&["Library", "Application Support", "com.openai.codex"])],
-            token_roots: vec![],
-            token_alert_floor: None,
-            session_dialect: SessionDialect::GenericTail,
-            session_database: None,
-            category: "assistant".into(),
-        },
-        AgentProfile {
             id: "dsh".into(),
             name: "DeepSeek Harness".into(),
             glyph: "\u{E7A1}".into(),
@@ -516,27 +498,6 @@ pub fn builtin() -> Vec<AgentProfile> {
             token_roots: vec![],
             token_alert_floor: None,
             session_dialect: SessionDialect::DshProjection,
-            session_database: None,
-            category: "assistant".into(),
-        },
-        AgentProfile {
-            id: "ego-browser".into(),
-            name: "Ego Browser".into(),
-            glyph: "\u{F774}".into(),
-            emoji: "🌐".into(),
-            process_names: vec!["ego-browser".into(), "ego lite".into(), "ego".into()],
-            bundle_ids: vec!["com.citrolabs.ego.lite".into()],
-            cmdline_hints: vec![],
-            path_contains: vec![],
-            path_excludes: vec![],
-            cpu_floor: Some(DESKTOP_CPU_FLOOR),
-            session_dirs: vec![
-                p(&[".local", "share", "ego"]),
-                p(&["Library", "Application Support", "ego lite"]),
-            ],
-            token_roots: vec![],
-            token_alert_floor: None,
-            session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "assistant".into(),
         },
@@ -721,7 +682,7 @@ mod tests {
     }
 }
 
-/// **档案数与 macOS 端对齐**。这条是「补齐档案」这件事的完成线。
+/// 当前内置档案及身份边界回归。
 #[cfg(test)]
 mod parity {
     use super::*;
@@ -735,16 +696,36 @@ mod parity {
     }
 
     #[test]
-    fn the_registry_covers_all_twenty_five_agents_plus_vscode() {
+    fn the_registry_contains_only_current_agent_identities() {
         let ids: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
-        // macOS 端 25 个，Rust 侧另有 1 个 `vscode`（Swift 用 cline/roo-code 覆盖同一批用户）
-        assert_eq!(ids.len(), 26, "档案数：{ids:?}");
+        // 合并桌面 ChatGPT 与 Codex；Ego Lite 是供 Agent 使用的浏览器。
+        assert_eq!(ids.len(), 24, "档案数：{ids:?}");
+        assert!(!ids.iter().any(|id| id == "chatgpt" || id == "ego-browser"));
         for id in [
             "qoder", "copilot", "workbuddy", "workbuddy-ai", "antigravity", "hermes",
-            "continue", "chatgpt", "dsh", "ego-browser", "vibe-usage", "openviking",
+            "continue", "codex", "dsh", "vibe-usage", "openviking",
         ] {
             assert!(ids.iter().any(|i| i == id), "缺档案 {id}");
         }
+    }
+
+    #[test]
+    fn unified_openai_profile_tracks_desktop_and_cli_with_one_usage_source() {
+        let profile = find("codex");
+        assert_eq!(profile.name, "ChatGPT / Codex");
+        assert_eq!(profile.bundle_ids, vec!["com.openai.codex"]);
+        for (name, exe, cmd) in [
+            ("ChatGPT", "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", ""),
+            ("Codex", "/Applications/Codex.app/Contents/MacOS/Codex", ""),
+            ("codex.exe", "C:/Tools/codex.exe", ""),
+            ("node", "/usr/bin/node", "node /tools/codex/bin/codex.js"),
+        ] {
+            let owners: Vec<_> = builtin().into_iter()
+                .filter(|p| profile_matches(p, name, exe, cmd)).map(|p| p.id).collect();
+            assert_eq!(owners, vec!["codex"], "desktop and CLI each have one owner");
+        }
+        assert_eq!(profile.token_roots.len(), 1);
+        assert!(std::path::Path::new(&profile.token_roots[0]).ends_with(".codex/sessions"));
     }
 
     /// **两个 WorkBuddy 变体不得互相命中。**
@@ -951,18 +932,12 @@ mod dialect_declaration {
 /// 每往这个表里加一个 id，等于**承认又多一个 Agent 缺会话语义**。
 /// 它是一道棘轮：新增档案若落进缺口而没被 conscious 登记，守护会精确变红。
 ///
-/// 两条**性质不同**，别混着看：
-/// · 12 个是**对拍缺口**——Swift 侧有路径（通用检测器或专用库），Rust 没有；
-/// · `vscode` 是 **Rust 独有**的档案，Swift 侧压根没有这个 profile，
-///   所以它不是对拍缺口，而是**新功能没做完**（声明了 workspaceStorage 却没写解析器）。
-///
-/// 本机可观测性（2026-09-29 实测）：剩下的 12 个里有 6 个的 `session_dirs`
-/// 在这台机器上存在，但**没有一个含 Swift 通用检测器读得动的会话文件**
-/// （copilot 指向的是 Chromium 配置目录、chatgpt 只有一个 appcast、ego 是空目录），
-/// 所以**今天两端表现一致**。缺口对**真的装了这些 Agent 且攒下了会话**的用户才成立。
+/// 当前列表只包括仍在内置注册表中的档案；数量由守护测试逐条核对。
+/// 合并后的 ChatGPT / Codex 使用 Codex 会话源；Ego Lite 浏览器不属于 Agent 档案。
+/// `vscode` 是 Rust 独有的明细缺口，不是与归档 SwiftUI 的对拍缺口。
 #[cfg(test)]
-const KNOWN_UNCOVERED: [&str; 13] = [
-    "aider", "chatgpt", "continue", "copilot", "cursor", "ego-browser", "goose", "hermes",
+const KNOWN_UNCOVERED: [&str; 11] = [
+    "aider", "continue", "copilot", "cursor", "goose", "hermes",
     "openviking", "trae", "vibe-usage", "windsurf",
     // Rust 独有档案，不是对拍缺口（见表头注释）
     "vscode",

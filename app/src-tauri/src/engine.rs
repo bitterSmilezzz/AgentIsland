@@ -920,7 +920,7 @@ impl ActivityEngine {
             (mk("dim", "DimAgent", "\u{E945}", "✨"), ActivityLevel::Idle, 277 << 20, None, 2_070_000),
             (mk("workbuddy", "WorkBuddy", "\u{E756}", "💼"), ActivityLevel::Idle, 322 << 20, None, 2_760_000),
             (mk("workbuddyai", "WorkBuddy AI", "\u{E774}", "🌐"), ActivityLevel::Idle, 362 << 20, None, 1_860_000),
-            (mk("chatgpt", "ChatGPT", "\u{E99A}", "🤖"), ActivityLevel::Idle, 131 << 20, None, 0),
+            (mk("codex", "ChatGPT / Codex", "\u{E99A}", "🤖"), ActivityLevel::Idle, 131 << 20, None, 0),
         ];
         self.snapshots = demo
             .into_iter()

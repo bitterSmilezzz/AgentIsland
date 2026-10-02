@@ -290,15 +290,17 @@ impl Settings {
                 *value = fallback;
             }
         }
-        // Registry ID was `roo` before Swift/Rust parity. Preserve an existing
-        // disabled choice when loading older settings instead of enabling it anew.
+        // Preserve disabled choices across merged identities; retired browser IDs
+        // must not reappear as orphan entries in Agent management.
         for id in &mut s.disabled_agents {
-            if id == "roo" {
-                *id = "roo-code".into();
+            match id.as_str() {
+                "roo" => *id = "roo-code".into(),
+                "chatgpt" => *id = "codex".into(),
+                _ => {}
             }
         }
         let mut seen = HashSet::new();
-        s.disabled_agents.retain(|id| seen.insert(id.clone()));
+        s.disabled_agents.retain(|id| id != "ego-browser" && seen.insert(id.clone()));
         let clamp = |v: f64, lo: f64, hi: f64| v.clamp(lo, hi);
         s.cpu_threshold = clamp(s.cpu_threshold, 1.0, 50.0);
         s.sample_interval = clamp(s.sample_interval, 0.5, 600.0);
@@ -633,6 +635,16 @@ mod tests {
         .unwrap();
         let normalized = old.normalized();
         assert_eq!(normalized.disabled_agents, vec!["roo-code", "codex"]);
+        assert_eq!(normalized.normalized().disabled_agents, normalized.disabled_agents);
+    }
+
+    #[test]
+    fn merged_and_retired_identities_do_not_return_as_disabled_orphans() {
+        let old: Settings = serde_json::from_str(
+            r#"{"disabled_agents":["chatgpt","ego-browser","codex","custom"]}"#,
+        ).unwrap();
+        let normalized = old.normalized();
+        assert_eq!(normalized.disabled_agents, vec!["codex", "custom"]);
         assert_eq!(normalized.normalized().disabled_agents, normalized.disabled_agents);
     }
 
