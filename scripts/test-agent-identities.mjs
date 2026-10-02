@@ -32,6 +32,7 @@ const registry = readFileSync(new URL('../app/src-tauri/src/registry.rs', import
 const ids = [...registry.matchAll(/id: "([a-z-]+)"\.into\(\)/g)].map(match => match[1]);
 assert.deepEqual(Object.keys(agentIdentities).sort(), ids.sort(), 'all built-in registry identities must be covered');
 for (const [, mark] of Object.values(agentIdentities)) {
+  assert.match(mark, /^[a-z]+$/, 'every built-in agent must have a graphic asset, not initials');
   if (/^[a-z]+$/.test(mark)) {
     const path = new URL(`../app/ui/assets/agents/${mark}.svg`, import.meta.url);
     assert.ok(existsSync(path), `missing local mark ${mark}`);
@@ -40,10 +41,12 @@ for (const [, mark] of Object.values(agentIdentities)) {
     assert.ok(!/<script|<foreignObject|(?:href|src)=|<image|<use/i.test(svg), 'marks must be static, self-contained vectors');
   }
 }
-assert.ok(agentIcon({ id: 'copilot' }).includes('>IM<'), 'ima.copilot must not be confused with GitHub Copilot');
-assert.ok(agentIcon({ id: 'custom', name: 'My Agent' }).includes('>MA<'));
-assert.ok(agentIcon({ id: 'constructor', name: 'Custom' }).includes('>CU<'), 'inherited object properties are not catalog entries');
-assert.ok(!agentIcon({ id: '\"><script>', name: '<script>' }).includes('<script>'), 'custom identifiers and initials must be escaped');
+assert.ok(agentIcon({ id: 'copilot' }).includes('/ima.svg'), 'ima.copilot must not be confused with GitHub Copilot');
+for (const agent of [{ id: 'custom', name: 'My Agent' }, { id: 'constructor', name: 'Custom' }, { name: '   ' }, {}]) {
+  assert.ok(agentIcon(agent).includes('/customagent.svg'), 'unknown, inherited and empty identities get a graphic fallback');
+}
+assert.ok(existsSync(new URL('../app/ui/assets/agents/customagent.svg', import.meta.url)));
+assert.ok(!agentIcon({ id: '\"><script>', name: '<script>' }).includes('<script>'), 'custom identifiers must be escaped and cannot select arbitrary assets');
 const root = mk();
 const sidebarBody = mk();
 root.querySelector = selector => selector === '.sb-body' ? sidebarBody : selector === '#sliver' ? mk() : null;
@@ -74,5 +77,5 @@ if (process.argv[2]) {
   mkdirSync(process.argv[2], { recursive:true });
   for (const [name, html] of Object.entries(rendered)) writeFileSync(`${process.argv[2]}/${name}.html`, html);
 }
-console.log('PASS: registry coverage, local vectors, safe custom initials and all five UI identity locations');
+console.log('PASS: every built-in has a graphic, safe custom fallback and all five UI identity locations');
 process.exit(0);

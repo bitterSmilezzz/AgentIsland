@@ -8,11 +8,28 @@ use here identifies monitored tools and does not imply endorsement.
 
 `app/ui/js/agent-icons.js` is the mapping used by every Agent identity slot.
 Claude, Codex, Cursor, Cline, Roo Code, OpenCode, Xiaomi MiMo, Goose, Windsurf,
-Trae, Qoder, Antigravity and Hermes Agent use corresponding marks. ChatGPT uses
-OpenAI’s mark; DeepSeek Harness uses DeepSeek’s mark as a vendor identity.
+Trae, Qoder, Antigravity and Hermes Agent use corresponding marks. The unified
+ChatGPT / Codex entry uses the Codex mark; DeepSeek Harness uses DeepSeek’s mark
+as a vendor identity. The retained OpenAI SVG is an upstream asset, not a separate Agent entry.
 
-The other entries use locally typeset initials, not claimed official logos.
-In particular, registry id `copilot` means Tencent **ima.copilot**, so the GitHub
-Copilot mark must not be used for it. WorkBuddy and WorkBuddy AI have distinct initials.
-Custom agents receive escaped name initials. SVGs load locally, through a CSS mask,
-with theme-aware ink; status colors are separate from identity colors.
+The remaining identities use original AgentIsland vector pictograms under the
+repository MIT license (copyright 2026 bitterSmilezzz), not claimed official logos:
+
+| File | Identity | Visual cue |
+| --- | --- | --- |
+| `dim.svg` | DimAgent | Spark |
+| `zcode.svg` | ZCode | Lightning inside a rounded frame |
+| `vscode.svg` | VS Code | Editor ribbon |
+| `aider.svg` | Aider | Paired code chevrons |
+| `ima.svg` | ima.copilot | Notes with a spark |
+| `workbuddy.svg` | WorkBuddy | Connected collaborators |
+| `workbuddyai.svg` | WorkBuddy AI | Globe |
+| `continue.svg` | Continue | Continuing arrow |
+| `vibeusage.svg` | Vibe Usage | Usage trend |
+| `openviking.svg` | OpenViking | Viking helmet |
+| `customagent.svg` | Custom or unknown Agent | Hexagon and spark |
+
+Registry id `copilot` means Tencent **ima.copilot**, so the GitHub Copilot mark
+must not be used for it. WorkBuddy variants have different pictograms. Every
+built-in identity and the custom fallback uses a local SVG through a CSS mask,
+with theme-aware ink; status colors remain separate from identity colors.

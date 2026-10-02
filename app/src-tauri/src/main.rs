@@ -1232,8 +1232,19 @@ fn apply_tray_badge(app: &AppHandle, badge: Option<String>) {
 ///
 /// 覆盖 `app/ui/` 下的**全部**文件——少列一个，那个文件缺失时就查不出来，
 /// 而少一个 CSS 的后果是**整个形态无样式渲染、零报错**。
-const EMBEDDED_ASSET_SAMPLE: [&str; 31] = [
+const EMBEDDED_ASSET_SAMPLE: [&str; 42] = [
     "assets/agents/LICENSE",
+    "assets/agents/dim.svg",
+    "assets/agents/zcode.svg",
+    "assets/agents/vscode.svg",
+    "assets/agents/aider.svg",
+    "assets/agents/ima.svg",
+    "assets/agents/workbuddy.svg",
+    "assets/agents/workbuddyai.svg",
+    "assets/agents/continue.svg",
+    "assets/agents/vibeusage.svg",
+    "assets/agents/openviking.svg",
+    "assets/agents/customagent.svg",
     "assets/agents/README.md",
     "assets/agents/antigravity.svg",
     "assets/agents/claude.svg",
@@ -1528,7 +1539,9 @@ const UI_SMOKE_JS: &str = r#"(function () {
       identityProbe.style.cssText = 'position:fixed;left:-10000px;top:0;pointer-events:none;';
       identityProbe.innerHTML = Object.keys(identityModule.agentIdentities).map(function (id) {
         return identityModule.agentIcon({ id: id });
-      }).join('');
+      }).join('') + identityModule.agentIcon({ id: 'custom-probe', name: '自定义 Agent' });
+      if (identityProbe.querySelectorAll('.agent-mark').length !== identityProbe.children.length)
+        throw new Error('Agent 缺少图形标识');
       document.body.appendChild(identityProbe);
       try {
         await Promise.all(Array.from(identityProbe.querySelectorAll('.agent-mark')).map(async function (mark) {
