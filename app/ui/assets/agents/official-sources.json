@@ -28,15 +28,6 @@
       "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
       "sha256": "6369e4b4bfdff58ad518d65d96d97852586693bdfc720c4652ea47988cd6b983"
     },
-    "vibeusage": {
-      "file": "vibeusage.png",
-      "source": "Vibe Usage.app/Contents/Resources/AppIcon.icns",
-      "bundle_id": "ai.vibecafe.vibe-usage",
-      "version": "0.7.0",
-      "source_sha256": "753681fff45d198f925639456792fc6c92175ab7974dd8edc83f148c6268e989",
-      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
-      "sha256": "456a7fa63d2a09cf39a92e733aaaf9d76e8d37dd6438cab05b74a26971d60dbc"
-    },
     "workbuddy": {
       "file": "workbuddy.png",
       "source": "WorkBuddy.app/Contents/Resources/icon.icns",
@@ -106,6 +97,36 @@
       "source_sha256": "7c6ecb28984cf923c90ecf2ddcbbcfcbf7f61f54e8147ae4cba9b3dbd35cbacb",
       "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
       "sha256": "5f7d32b67d32932de57f0f4330c90ff9c87fd40eaa22b901bc8aba7a4959ef97"
+    },
+    "vscode": {
+      "file": "vscode.png",
+      "verified_on": "2026-10-03",
+      "source": "Visual Studio Code.app/Contents/Resources/Code.icns",
+      "bundle_id": "com.microsoft.VSCode",
+      "version": "1.140.0",
+      "source_sha256": "66d4e5a4f21d0e68e530b26e992341d00ffe2764ec0cbdc668b2a604d6e604a7",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "408b56c1475188c7f4bbf9ddfb4086303b14a51104564d78643fdea41a78e819"
+    },
+    "doubaowork": {
+      "file": "doubaowork.png",
+      "verified_on": "2026-10-03",
+      "source": "DoubaoWork.app/Contents/Resources/app.icns",
+      "bundle_id": "com.work.pc.doubao",
+      "version": "2.31.10",
+      "source_sha256": "3575b7a6cc4d173c9a2bc47557fd9be33a99e4d337495f1581a6e4940b360c54",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "cfe428837e302762daf3ad73c4f45e12561a1274ab92e7b3dd7ca113b1aaf776"
+    },
+    "traework": {
+      "file": "traework.png",
+      "verified_on": "2026-10-03",
+      "source": "TRAE SOLO CN.app/Contents/Resources/TRAE SOLO CN.icns",
+      "bundle_id": "cn.trae.solo.app",
+      "version": "0.1.69",
+      "source_sha256": "90de2b46ed291bee59d1704d3bc620103e63d7f651c952670f1469fbad5ec51b",
+      "processing": "sips ICNS to PNG; proportional resize to 128px; no redraw or recoloring",
+      "sha256": "aa64af51fa1efbd9360630dafcb2065f9d811075ab273dd52fb1922b3084260e"
     }
   }
 }

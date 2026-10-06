@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
       getBoundingClientRect: () => ({ width: 0, height: 0 }), focus: noop, remove: noop,
     });
     globalThis.document = {
-      documentElement: mk(), body: mk(), getElementById: () => mk(), createElement: mk,
+      documentElement: mk(), body: mk(), getElementById: () => mk(), createElement: tag => { const node=mk(); if(tag==='dialog')node.querySelector=()=>mk(); return node; },
       querySelector: () => null, querySelectorAll: () => [], addEventListener: noop,
       createTextNode: () => mk(),
     };
@@ -70,7 +70,8 @@ try {
     assert.equal(getState().workbenchPage, 'tokenAnalytics');
     const { hydrateReport } = await import('../app/ui/js/views.js');
     const body = dataset => ({
-      isConnected: true, innerHTML: '', closest: () => ({ dataset }),
+      isConnected: true, innerHTML: '', dataset: {}, contains:()=>false, setAttribute:noop, querySelector:selector=>selector==='[data-usage-trend]'?{querySelector:()=>({innerHTML:''}),querySelectorAll:()=>[]}:null,
+      closest: selector => selector === '[data-page]' ? { dataset } : null,
     });
     const overview = body({ page: 'tokenAnalytics' });
     const analysis = body({ page: 'tokenAnalytics' });

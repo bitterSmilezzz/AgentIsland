@@ -26,10 +26,7 @@ mod sys {
     extern "C" {
         pub fn CGMainDisplayID() -> u32;
         pub fn CGDisplayIsAsleep(display: u32) -> i32;
-        pub fn CGEventSourceSecondsSinceLastEventType(
-            state: u32,
-            event_type: u32,
-        ) -> f64;
+        pub fn CGEventSourceSecondsSinceLastEventType(state: u32, event_type: u32) -> f64;
     }
 
     /// `kCGEventSourceStateCombinedSessionState`
@@ -39,7 +36,6 @@ mod sys {
     pub const EVENT_RIGHT_MOUSE_DOWN: u32 = 2;
     pub const EVENT_MOUSE_MOVED: u32 = 5;
     pub const EVENT_SCROLL_WHEEL: u32 = 22;
-
 }
 
 /// 会话是否已锁屏。
@@ -91,7 +87,9 @@ pub fn idle_seconds() -> Option<f64> {
         ];
         let values: Vec<f64> = types
             .iter()
-            .map(|t| unsafe { sys::CGEventSourceSecondsSinceLastEventType(sys::COMBINED_SESSION_STATE, *t) })
+            .map(|t| unsafe {
+                sys::CGEventSourceSecondsSinceLastEventType(sys::COMBINED_SESSION_STATE, *t)
+            })
             .collect();
         let least = values.iter().copied().fold(f64::INFINITY, f64::min);
         // 24 小时 = 一天内没动过键盘鼠标，那不是「取不到」，是「一整天没碰」。
@@ -157,7 +155,9 @@ pub fn parse_on_battery(text: &str) -> bool {
     text.lines()
         .find_map(|line| {
             let rest = line.trim().strip_prefix("Now drawing from")?.trim();
-            rest.strip_prefix('\'').and_then(|r| r.split_once('\'')).map(|(src, _)| src)
+            rest.strip_prefix('\'')
+                .and_then(|r| r.split_once('\''))
+                .map(|(src, _)| src)
         })
         .is_some_and(|source| source.eq_ignore_ascii_case("Battery Power"))
 }
@@ -340,7 +340,10 @@ fn idle_seconds_never_reports_a_false_zero() {
 fn the_presence_snapshot_is_internally_consistent() {
     let signals = presence_signals();
     // 锁屏恒 false ⇒ 显示器休眠是唯一的「人不在」硬信号
-    assert!(!signals.screen_locked, "见 is_screen_locked 那条：恒为 false");
+    assert!(
+        !signals.screen_locked,
+        "见 is_screen_locked 那条：恒为 false"
+    );
     // 三项都由真机 API 取，任何一项 panic 都是事故
     let _ = signals.display_asleep;
     let _ = signals.idle_seconds;

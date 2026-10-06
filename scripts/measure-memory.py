@@ -1,58 +1,130 @@
 #!/usr/bin/env python3
-"""macOS memory samples; only aggregate counts, never arguments or session contents.
+"""Read an existing macOS process, without creating or manipulating windows.
 
-Measure an existing application with --pid PID. For lifecycle regression, first
-in an isolated user session or VM, launch the packaged app with --shell=island --memory-smoke, then sample its PID
-for 150 seconds. Attribution uses XNU resource coalitions, not PPID=launchd.
+Footprint is a per-process ledger; a member sum is not exclusive machine memory.
+Unknown reads remain null. Coalition enumeration is a non-atomic observation;
+complete does not prove every future process or shared allocation is covered.
 """
 import argparse
 import ctypes
 import json
+import math
 import os
-import pathlib
-import re
 import subprocess
 import sys
 import time
 
 
-def coalition(pid):
-    # XNU proc_info_private.h: PROC_PIDCOALITIONINFO=20, two IDs + three reserved u64.
-    buf = (ctypes.c_uint64 * 5)()
-    lib = ctypes.CDLL('/usr/lib/libproc.dylib')
-    lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
-    lib.proc_pidinfo.restype = ctypes.c_int
-    if lib.proc_pidinfo(pid, 20, 0, ctypes.byref(buf), ctypes.sizeof(buf)) != ctypes.sizeof(buf):
-        return None
-    return buf[0]
+class RusageV2(ctypes.Structure):
+    # Installed macOS SDK sys/resource.h: RUSAGE_INFO_V2, public libproc API.
+    _fields_ = [('uuid', ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
+        'user_time', 'system_time', 'idle_wakeups', 'interrupt_wakeups', 'pageins',
+        'wired_size', 'resident_size', 'phys_footprint', 'start', 'exit',
+        'child_user_time', 'child_system_time', 'child_idle_wakeups',
+        'child_interrupt_wakeups', 'child_pageins', 'child_elapsed',
+        'disk_read', 'disk_write')]
 
 
-def footprint(pid):
-    result = subprocess.run(['vmmap', '-summary', str(pid)], capture_output=True, text=True)
-    match = re.search(r'^Physical footprint:\s+([\d.]+)([KMG])', result.stdout, re.M)
-    if not match:
-        return None
-    return round(float(match[1]) * {'K':1/1024, 'M':1, 'G':1024}[match[2]], 2)
+class Native:
+    def __init__(self):
+        self.lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        self.lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        self.lib.proc_pidinfo.restype = ctypes.c_int
+        self.lib.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+        self.lib.proc_pid_rusage.restype = ctypes.c_int
+
+    def coalition(self, pid):
+        # XNU private PROC_PIDCOALITIONINFO=20; may fail or change by OS version.
+        buf = (ctypes.c_uint64 * 5)()
+        if self.lib.proc_pidinfo(pid, 20, 0, ctypes.byref(buf), ctypes.sizeof(buf)) != ctypes.sizeof(buf):
+            return None
+        return int(buf[0]) or None
+
+    def usage(self, pid):
+        buf = RusageV2()
+        if self.lib.proc_pid_rusage(pid, 2, ctypes.byref(buf)) != 0 or not buf.start or buf.exit:
+            return None
+        return {name: int(getattr(buf, name)) for name in (
+            'start', 'resident_size', 'phys_footprint', 'user_time', 'system_time',
+            'idle_wakeups', 'interrupt_wakeups', 'pageins', 'disk_read', 'disk_write')}
+
+    def processes(self):
+        result = subprocess.run(['ps', '-axo', 'pid=,comm='], capture_output=True,
+                                text=True, errors='replace', timeout=5, check=True)
+        rows = []
+        for row in result.stdout.splitlines():
+            values = row.strip().split(None, 1)
+            if len(values) == 2 and values[0].isdigit():
+                rows.append((int(values[0]), values[1]))
+        return rows
 
 
-def sample(pid):
-    group = coalition(pid)
-    # A CLI launched from Codex shares its parent's coalition. Do not count that group.
-    isolated = group is not None and group != coalition(os.getpid())
-    rows = subprocess.run(['ps', '-axo', 'pid=,rss=,comm='], capture_output=True, text=True, errors="replace", check=True).stdout
-    members = []
-    for row in rows.splitlines():
-        values = row.strip().split(None, 2)
-        if len(values) != 3:
+def role(pid, main, command):
+    if pid == main:
+        return 'main'
+    for suffix, name in (('com.apple.WebKit.WebContent', 'web-content'),
+                         ('com.apple.WebKit.GPU', 'gpu'), ('com.apple.WebKit.Networking', 'network')):
+        if command.endswith('/' + suffix) or command == suffix:
+            return name
+    return 'other'
+
+
+def summarize(members, attribution, unresolved, stable):
+    readable = [member['footprint_mib'] for member in members if member['footprint_mib'] is not None]
+    complete = bool(members) and len(readable) == len(members) and unresolved == 0 and stable
+    return {'attribution': attribution, 'members': members,
+            'known_member_footprint_mib': round(sum(readable), 2),
+            'total_footprint_mib': round(sum(readable), 2) if complete else None,
+            'unresolved_membership': unresolved, 'membership_stable': stable,
+            'complete': complete}
+
+
+def sample(pid, native, expected_start=None, collector_pid=None):
+    before = native.usage(pid)
+    if before is None:
+        return {'schema_version': 2, 'status': 'target_unavailable'}
+    if expected_start is not None and before['start'] != expected_start:
+        return {'schema_version': 2, 'status': 'target_replaced'}
+    group = native.coalition(pid)
+    collector_group = native.coalition(collector_pid if collector_pid is not None else os.getpid())
+    isolated = group is not None and collector_group is not None and group != collector_group
+    unresolved, stable, members = 0, True, []
+    processes = native.processes() if isolated else [(pid, '')]
+    seen = set()
+    if not any(member == pid for member, _ in processes):
+        return {'schema_version': 2, 'status': 'target_unavailable'}
+    for member, command in processes:
+        if member in seen:
             continue
-        member = int(values[0])
-        if member != pid and not (isolated and coalition(member) == group):
+        seen.add(member)
+        member_group = native.coalition(member) if isolated else None
+        if isolated and member_group is None:
+            unresolved += 1
+        if member != pid and (not isolated or member_group != group):
             continue
-        members.append({'pid':member, 'role':pathlib.Path(values[2]).name,
-                        'rss_mib':round(int(values[1])/1024, 2), 'footprint_mib':footprint(member)})
-    return {'attribution':'resource-coalition' if isolated else 'main-only', 'members':members,
-            'total_footprint_mib':round(sum(m['footprint_mib'] or 0 for m in members), 2),
-            'complete':all(m['footprint_mib'] is not None for m in members)}
+        usage = native.usage(member)
+        after = native.usage(member) if usage is not None else None
+        if usage is not None and (after is None or after['start'] != usage['start']):
+            usage = None
+            stable = False
+        if isolated and native.coalition(member) != group:
+            usage = None
+            stable = False
+        metrics = {'pid': member, 'role': role(member, pid, command),
+                   'resident_mib': round(usage['resident_size'] / 1048576, 2) if usage else None,
+                   'footprint_mib': round(usage['phys_footprint'] / 1048576, 2) if usage else None}
+        # CPU raw counters are deliberately not converted to percent without verified units.
+        for field in ('user_time', 'system_time', 'idle_wakeups', 'interrupt_wakeups', 'pageins', 'disk_read', 'disk_write'):
+            metrics[field + '_raw' if field.endswith('_time') else field] = usage[field] if usage else None
+        members.append(metrics)
+    after = native.usage(pid)
+    if after is None:
+        return {'schema_version': 2, 'status': 'target_unavailable'}
+    if after['start'] != before['start']:
+        return {'schema_version': 2, 'status': 'target_replaced'}
+    stable = stable and native.coalition(pid) == group
+    return {'schema_version': 2, 'status': 'observed', 'main_start': before['start'],
+            **summarize(members, 'observed-resource-coalition' if isolated else 'main-only', unresolved, stable)}
 
 
 def main():
@@ -62,17 +134,28 @@ def main():
     parser.add_argument('--interval', type=int, default=10)
     args = parser.parse_args()
     if sys.platform != 'darwin':
-        parser.error('vmmap and resource coalitions require macOS')
-    if args.seconds < 1 or args.interval < 1:
-        parser.error('seconds and interval must be positive')
-    started = time.monotonic()
-    while time.monotonic()-started <= args.seconds:
-        result = sample(args.pid)
-        if not result['members']:
+        parser.error('libproc sampling requires macOS')
+    if not 1 <= args.pid <= 2147483647 or not 1 <= args.seconds <= 3600 or not 1 <= args.interval <= 60:
+        parser.error('pid: 1..2147483647; seconds: 1..3600; interval: 1..60')
+    native = Native()
+    started, deadline, expected_start, next_sample = time.monotonic(), time.monotonic() + args.seconds, None, 0
+    while True:
+        target = started + next_sample * args.interval
+        if target > deadline:
             break
-        print(json.dumps({'elapsed':round(time.monotonic()-started,1), **result}), flush=True)
-        time.sleep(args.interval)
+        time.sleep(max(0, target - time.monotonic()))
+        try:
+            result = sample(args.pid, native, expected_start)
+        except (OSError, subprocess.SubprocessError):
+            result = {'schema_version': 2, 'status': 'sampling_failed'}
+        print(json.dumps({'elapsed': round(time.monotonic() - started, 3), **result}), flush=True)
+        if result['status'] != 'observed':
+            return 2
+        expected_start = result['main_start']
+        # Skip missed slots rather than issuing a burst of overdue samples.
+        next_sample = max(next_sample + 1, math.ceil((time.monotonic() - started) / args.interval))
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

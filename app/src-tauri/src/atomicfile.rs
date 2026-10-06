@@ -38,6 +38,29 @@ pub(crate) fn atomic_replace_validated<F>(
 where
     F: FnOnce(&Path) -> io::Result<()>,
 {
+    atomic_write_validated(target, bytes, validate, true)
+}
+
+/// Publish a complete validated file without replacing any existing directory entry.
+/// A hard link from a synced same-directory staging file atomically claims the name;
+/// even a concurrent creator or dangling symlink is never overwritten. Filesystems
+/// without hard-link support fail closed, before a consumer changes its config.
+pub(crate) fn atomic_create_validated<F>(target: &Path, bytes: &[u8], validate: F) -> io::Result<()>
+where
+    F: FnOnce(&Path) -> io::Result<()>,
+{
+    atomic_write_validated(target, bytes, validate, false)
+}
+
+fn atomic_write_validated<F>(
+    target: &Path,
+    bytes: &[u8],
+    validate: F,
+    replace: bool,
+) -> io::Result<()>
+where
+    F: FnOnce(&Path) -> io::Result<()>,
+{
     let parent = target
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -45,7 +68,15 @@ where
     let name = target
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "target needs a filename"))?;
-    if fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink() || !m.is_file()) {
+    if !replace && fs::symlink_metadata(target).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "target already exists",
+        ));
+    }
+    if replace
+        && fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink() || !m.is_file())
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "target must be a regular file",
@@ -82,7 +113,11 @@ where
     file.sync_all()?;
     drop(file);
     validate(&guard.0)?;
-    fs::rename(&guard.0, target)?;
+    if replace {
+        fs::rename(&guard.0, target)?;
+    } else {
+        fs::hard_link(&guard.0, target)?;
+    }
     Ok(())
 }
 
@@ -125,6 +160,61 @@ mod tests {
             vec![target_name],
             "staging file leaked: {entries:?}"
         );
+    }
+
+    #[test]
+    fn new_file_publication_is_complete_private_and_never_replaces_an_existing_name() {
+        let sandbox = Sandbox::new();
+        let target = sandbox.0.join("config-1.toml");
+        atomic_create_validated(&target, b"model = 'first'\n", |stage| {
+            assert!(!target.exists());
+            assert_eq!(fs::read(stage)?, b"model = 'first'\n");
+            Ok(())
+        })
+        .unwrap();
+        let error = atomic_create_validated(&target, b"second", |_| Ok(())).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&target).unwrap(), b"model = 'first'\n");
+        only_target_remains(&sandbox.0, "config-1.toml");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(target).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn a_concurrent_creator_after_validation_is_never_overwritten() {
+        let sandbox = Sandbox::new();
+        let target = sandbox.0.join("config-2.toml");
+        let error = atomic_create_validated(&target, b"ours", |stage| {
+            assert_eq!(fs::read(stage)?, b"ours");
+            fs::write(&target, b"concurrent winner")?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&target).unwrap(), b"concurrent winner");
+        only_target_remains(&sandbox.0, "config-2.toml");
+    }
+
+    #[test]
+    fn rejected_new_backup_is_never_published_and_leaves_no_staging_file() {
+        let sandbox = Sandbox::new();
+        let target = sandbox.0.join("config-3.toml");
+        let error = atomic_create_validated(&target, b"incomplete", |_| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "fixture rejection",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(&sandbox.0).unwrap().count(), 0);
     }
 
     #[test]

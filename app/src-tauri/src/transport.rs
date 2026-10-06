@@ -113,9 +113,14 @@ struct Parsed {
 /// Reuse the URL parser already in Tauri's dependency graph: IPv6, escaping,
 /// queries and fragments share one implementation; userinfo remains unsupported.
 fn parse_url(address: &str) -> Option<Parsed> {
-    if address.chars().any(|ch| ch.is_control()) { return None; }
+    if address.chars().any(|ch| ch.is_control()) {
+        return None;
+    }
     let url = url::Url::parse(address).ok()?;
-    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() {
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
         return None;
     }
     let host = match url.host()? {
@@ -124,8 +129,16 @@ fn parse_url(address: &str) -> Option<Parsed> {
         url::Host::Ipv6(address) => address.to_string(),
     };
     let mut path = url.path().to_string();
-    if let Some(query) = url.query() { path.push('?'); path.push_str(query); }
-    Some(Parsed { scheme: url.scheme().into(), host, port: url.port_or_known_default()?, path })
+    if let Some(query) = url.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    Some(Parsed {
+        scheme: url.scheme().into(),
+        host,
+        port: url.port_or_known_default()?,
+        path,
+    })
 }
 
 impl Transport for HttpTransport {
@@ -171,7 +184,11 @@ impl Transport for HttpTransport {
                 if (200..300).contains(&status) {
                     // 注意语义：这是「对方接受了这条请求」。多数中转服务即使内部失败
                     // 也回 200 + 一段错误 JSON，本层不去猜——设置页的文案对此写明
-                    if let Some(channel) = request.response_check { crate::im::response(channel, &body) } else { Outcome::Delivered }
+                    if let Some(channel) = request.response_check {
+                        crate::im::response(channel, &body)
+                    } else {
+                        Outcome::Delivered
+                    }
                 } else if (300..400).contains(&status) {
                     Outcome::Failed {
                         reason: format!(
@@ -198,8 +215,14 @@ impl HttpTransport {
     fn round_trip(&self, url: &Parsed, request: &Request) -> Result<(u16, Vec<u8>), String> {
         let mut stream = self.connect(url)?;
 
-        let host = if url.host.contains(':') { format!("[{}]", url.host) } else { url.host.clone() };
-        let host_header = if (url.scheme == "http" && url.port == 80) || (url.scheme == "https" && url.port == 443) {
+        let host = if url.host.contains(':') {
+            format!("[{}]", url.host)
+        } else {
+            url.host.clone()
+        };
+        let host_header = if (url.scheme == "http" && url.port == 80)
+            || (url.scheme == "https" && url.port == 443)
+        {
             host
         } else {
             format!("{host}:{}", url.port)
@@ -225,24 +248,32 @@ impl HttpTransport {
         let mut reader = BufReader::new(stream);
         const MAX_STATUS_LINE: u64 = 8192;
         let mut status_line = String::new();
-        Read::by_ref(&mut reader).take(MAX_STATUS_LINE + 1).read_line(&mut status_line)
+        Read::by_ref(&mut reader)
+            .take(MAX_STATUS_LINE + 1)
+            .read_line(&mut status_line)
             .map_err(|error| format!("读响应失败：{error}"))?;
         if status_line.len() as u64 > MAX_STATUS_LINE || !status_line.ends_with('\n') {
             return Err("HTTP 响应状态行过长或不完整".into());
         }
         let mut parts = status_line.split_whitespace();
         let version = parts.next();
-        let code = parts.next().filter(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
+        let code = parts
+            .next()
+            .filter(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
         if !matches!(version, Some("HTTP/1.0" | "HTTP/1.1")) {
             return Err("HTTP 响应状态行无效".into());
         }
         // Never echo a peer's arbitrary status text into UI history: it could
         // contain request credentials or private payload content.
-        let status = code.and_then(|code| code.parse::<u16>().ok()).filter(|code| (100..=599).contains(code))
+        let status = code
+            .and_then(|code| code.parse::<u16>().ok())
+            .filter(|code| (100..=599).contains(code))
             .ok_or_else(|| "HTTP 响应状态码无效".to_string())?;
         let body = if request.response_check.is_some() && (200..300).contains(&status) {
             provider_body(&mut reader)?
-        } else { Vec::new() };
+        } else {
+            Vec::new()
+        };
         Ok((status, body))
     }
 }
@@ -252,8 +283,13 @@ fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
     const LIMIT: usize = 65536;
     fn line(reader: &mut impl BufRead) -> Result<String, String> {
         let mut line = String::new();
-        Read::by_ref(reader).take(8193).read_line(&mut line).map_err(|_| "读取平台回执失败".to_string())?;
-        if line.len() > 8192 || !line.ends_with("\r\n") { return Err("平台回执头不完整或过长".into()); }
+        Read::by_ref(reader)
+            .take(8193)
+            .read_line(&mut line)
+            .map_err(|_| "读取平台回执失败".to_string())?;
+        if line.len() > 8192 || !line.ends_with("\r\n") {
+            return Err("平台回执头不完整或过长".into());
+        }
         Ok(line)
     }
     let mut length = None;
@@ -262,37 +298,66 @@ fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
     loop {
         let header = line(reader)?;
         total += header.len();
-        if total > 32768 { return Err("平台回执头过长".into()); }
-        if header == "\r\n" { break; }
+        if total > 32768 {
+            return Err("平台回执头过长".into());
+        }
+        if header == "\r\n" {
+            break;
+        }
         let (name, value) = header.split_once(':').ok_or("平台回执头无效")?;
         if name.eq_ignore_ascii_case("content-length") {
-            let size = value.trim().parse::<usize>().map_err(|_| "平台回执长度无效")?;
-            if size > LIMIT || length.is_some() { return Err("平台回执长度无效或过大".into()); }
+            let size = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| "平台回执长度无效")?;
+            if size > LIMIT || length.is_some() {
+                return Err("平台回执长度无效或过大".into());
+            }
             length = Some(size);
         }
         if name.eq_ignore_ascii_case("transfer-encoding") {
-            if chunked || !value.trim().eq_ignore_ascii_case("chunked") { return Err("平台回执编码不支持".into()); }
+            if chunked || !value.trim().eq_ignore_ascii_case("chunked") {
+                return Err("平台回执编码不支持".into());
+            }
             chunked = true;
         }
     }
-    if chunked && length.is_some() { return Err("平台回执长度冲突".into()); }
+    if chunked && length.is_some() {
+        return Err("平台回执长度冲突".into());
+    }
     let mut body = Vec::new();
     if chunked {
         // Bound chunk count as well as data: empty metadata must not run forever.
         for _ in 0..1024 {
             let header = line(reader)?;
-            let size = usize::from_str_radix(header.trim().split(';').next().unwrap_or(""), 16).map_err(|_| "平台回执分块无效")?;
-            if size == 0 { return Ok(body); }
-            if size > LIMIT - body.len() { return Err("平台回执过大".into()); }
-            let start = body.len(); body.resize(start + size, 0);
-            reader.read_exact(&mut body[start..]).map_err(|_| "平台回执不完整")?;
-            let mut end = [0u8;2]; reader.read_exact(&mut end).map_err(|_| "平台回执不完整")?;
-            if end != *b"\r\n" { return Err("平台回执分块无效".into()); }
+            let size = usize::from_str_radix(header.trim().split(';').next().unwrap_or(""), 16)
+                .map_err(|_| "平台回执分块无效")?;
+            if size == 0 {
+                return Ok(body);
+            }
+            if size > LIMIT - body.len() {
+                return Err("平台回执过大".into());
+            }
+            let start = body.len();
+            body.resize(start + size, 0);
+            reader
+                .read_exact(&mut body[start..])
+                .map_err(|_| "平台回执不完整")?;
+            let mut end = [0u8; 2];
+            reader.read_exact(&mut end).map_err(|_| "平台回执不完整")?;
+            if end != *b"\r\n" {
+                return Err("平台回执分块无效".into());
+            }
         }
         return Err("平台回执分块过多".into());
     }
-    Read::by_ref(reader).take(length.unwrap_or(LIMIT + 1) as u64).read_to_end(&mut body).map_err(|_| "读取平台回执失败")?;
-    if body.len() > LIMIT || length.is_some_and(|size| size != body.len()) { return Err("平台回执过大或不完整".into()); }
+    Read::by_ref(reader)
+        .take(length.unwrap_or(LIMIT + 1) as u64)
+        .read_to_end(&mut body)
+        .map_err(|_| "读取平台回执失败")?;
+    if body.len() > LIMIT || length.is_some_and(|size| size != body.len()) {
+        return Err("平台回执过大或不完整".into());
+    }
     Ok(body)
 }
 
@@ -305,11 +370,26 @@ mod tests {
     #[test]
     fn provider_receipt_framing_is_bounded_and_chunked() {
         let json = br#"{"code":0}"#;
-        let wire = format!("Content-Length: {}\r\n\r\n{}", json.len(), String::from_utf8_lossy(json));
-        assert_eq!(provider_body(&mut std::io::Cursor::new(wire)).unwrap(), json);
+        let wire = format!(
+            "Content-Length: {}\r\n\r\n{}",
+            json.len(),
+            String::from_utf8_lossy(json)
+        );
+        assert_eq!(
+            provider_body(&mut std::io::Cursor::new(wire)).unwrap(),
+            json
+        );
         let wire = "Transfer-Encoding: chunked\r\n\r\nA\r\n{\"code\":0}\r\n0\r\n\r\n";
-        assert_eq!(provider_body(&mut std::io::Cursor::new(wire)).unwrap(), json);
-        for invalid in ["Content-Length: 65537\r\n\r\n", "Content-Length: 10\r\n\r\nx", "Content-Length: 10\r\nTransfer-Encoding: chunked\r\n\r\n", "Transfer-Encoding: chunked\r\n\r\n10001\r\n"] {
+        assert_eq!(
+            provider_body(&mut std::io::Cursor::new(wire)).unwrap(),
+            json
+        );
+        for invalid in [
+            "Content-Length: 65537\r\n\r\n",
+            "Content-Length: 10\r\n\r\nx",
+            "Content-Length: 10\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "Transfer-Encoding: chunked\r\n\r\n10001\r\n",
+        ] {
             assert!(provider_body(&mut std::io::Cursor::new(invalid)).is_err());
         }
     }
@@ -320,9 +400,16 @@ mod tests {
         let port = server.server_addr().to_ip().unwrap().port();
         let handle = std::thread::spawn(move || {
             let request = server.recv().unwrap();
-            request.respond(tiny_http::Response::from_string(r#"{"code":401}"#)).unwrap();
+            request
+                .respond(tiny_http::Response::from_string(r#"{"code":401}"#))
+                .unwrap();
         });
-        let request = Request { url:format!("http://127.0.0.1:{port}/send"), method:"POST".into(), response_check:Some(crate::remote::Channel::WechatPushPlus), ..Request::default() };
+        let request = Request {
+            url: format!("http://127.0.0.1:{port}/send"),
+            method: "POST".into(),
+            response_check: Some(crate::remote::Channel::WechatPushPlus),
+            ..Request::default()
+        };
         let outcome = HttpTransport::new().perform(&request);
         assert!(!outcome.is_delivered());
         assert!(outcome.is_permanent());
@@ -353,15 +440,19 @@ mod tests {
                     let headers = request
                         .headers()
                         .iter()
-                        .map(|h| (h.field.as_str().as_str().to_string(), h.value.as_str().to_string()))
+                        .map(|h| {
+                            (
+                                h.field.as_str().as_str().to_string(),
+                                h.value.as_str().to_string(),
+                            )
+                        })
                         .collect();
                     let mut body = String::new();
                     use std::io::Read;
                     let _ = request.as_reader().read_to_string(&mut body);
                     let _ = tx.send((method, url, headers, body));
-                    let _ = request.respond(
-                        tiny_http::Response::from_string("ok").with_status_code(status),
-                    );
+                    let _ = request
+                        .respond(tiny_http::Response::from_string("ok").with_status_code(status));
                 }
             });
             LocalServer {
@@ -392,7 +483,8 @@ mod tests {
                 HttpField::new("X-Priority", "4"),
             ],
             body: body.into(),
-            smtp: None, response_check: None,
+            smtp: None,
+            response_check: None,
         }
     }
 
@@ -407,7 +499,9 @@ mod tests {
         let (method, url, headers, body) = server.collect();
         assert_eq!(method, "Post");
         assert_eq!(url, "/island");
-        assert!(headers.iter().any(|(n, v)| n == "X-Title" && v == "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85"));
+        assert!(headers
+            .iter()
+            .any(|(n, v)| n == "X-Title" && v == "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85"));
         assert!(headers.iter().any(|(n, v)| n == "X-Priority" && v == "4"));
         assert_eq!(body, "Qoder · 等待你确认", "正文必须是裸 UTF-8 字节");
     }
@@ -456,7 +550,10 @@ mod tests {
         let outcome = HttpTransport::new().perform(&post(server.port, "/x?key=S3cretValue", "b"));
         match outcome {
             Outcome::Failed { reason, permanent } => {
-                assert!(permanent, "跟着重定向走会把凭据发给第三方，重试也是同样的决定");
+                assert!(
+                    permanent,
+                    "跟着重定向走会把凭据发给第三方，重试也是同样的决定"
+                );
                 assert!(reason.contains("不跟着走"), "{reason}");
                 assert!(reason.contains("302"), "{reason}");
             }
@@ -487,7 +584,8 @@ mod tests {
         let without_target = Request {
             method: "SMTP".into(),
             url: String::new(),
-            smtp: None, response_check: None,
+            smtp: None,
+            response_check: None,
             ..post(1, "/", "b")
         };
         match HttpTransport::new().perform(&without_target) {
@@ -508,7 +606,7 @@ mod tests {
                 user: "me@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
                 password: "p".into(),
                 from: "me@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
-                to: "you@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
+                to: "you@example.com".into(),  // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
             }),
             ..post(1, "/", "b")
         };
@@ -525,8 +623,17 @@ mod tests {
     /// 喂 EC 会得到 -25257「Unknown format in import」，与 PEM/DER、参数顺序都无关（四种组合都试过）。
     /// 证书只活在这一条用例里、写在临时目录，绝不进仓库、也不出本机。
     fn rsa_self_signed() -> Option<(Vec<u8>, Vec<u8>)> {
-        let dir = std::env::temp_dir().join(format!("agentisland-tls-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok()?;
+        // Each parallel test owns its certificate/key pair. A process-only directory
+        // lets another test replace one half while this test reads the other.
+        struct CertificateDirectory(std::path::PathBuf);
+        impl Drop for CertificateDirectory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("agentisland-tls-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).ok()?;
+        let _cleanup = CertificateDirectory(dir.clone());
         let key = dir.join("key.pem");
         let crt = dir.join("cert.pem");
         let status = std::process::Command::new("/usr/bin/openssl")
@@ -670,14 +777,18 @@ mod tests {
                 "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85",
             )],
             body: "Qoder · 等待你确认".into(),
-            smtp: None, response_check: None,
+            smtp: None,
+            response_check: None,
         };
         let outcome = server.client().perform(&request);
         assert_eq!(outcome, Outcome::Delivered, "HTTPS 应真能连上并拿到 200");
 
         let (first_line, title, body) = server.collect();
         assert_eq!(first_line, "POST /island HTTP/1.1");
-        assert_eq!(title, "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85", "头值要原样到达");
+        assert_eq!(
+            title, "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85",
+            "头值要原样到达"
+        );
         assert_eq!(body, "Qoder · 等待你确认", "正文是裸 UTF-8");
     }
 
@@ -694,7 +805,8 @@ mod tests {
             method: "POST".into(),
             headers: vec![],
             body: "b".into(),
-            smtp: None, response_check: None,
+            smtp: None,
+            response_check: None,
         };
         match HttpTransport::new().perform(&request) {
             Outcome::Failed { reason, .. } => {
@@ -712,7 +824,10 @@ mod tests {
         match HttpTransport::new().perform(&post(1, "/x", "b")) {
             Outcome::Failed { reason, permanent } => {
                 assert!(!permanent, "连不上是链路问题，值得重试");
-                assert!(reason.contains("连接失败") || reason.contains("地址解析失败"), "{reason}");
+                assert!(
+                    reason.contains("连接失败") || reason.contains("地址解析失败"),
+                    "{reason}"
+                );
             }
             other => panic!("应失败，实际 {other:?}"),
         }
@@ -720,13 +835,22 @@ mod tests {
 
     #[test]
     fn an_unparseable_url_is_reported_instead_of_panicking() {
-        for bad in ["", "not a url", "ftp://x/y", "http://", "http://host:notaport/"] {
+        for bad in [
+            "",
+            "not a url",
+            "ftp://x/y",
+            "http://",
+            "http://host:notaport/",
+        ] {
             let request = Request {
                 url: bad.into(),
                 ..post(1, "/", "b")
             };
             assert!(
-                matches!(HttpTransport::new().perform(&request), Outcome::Failed { .. }),
+                matches!(
+                    HttpTransport::new().perform(&request),
+                    Outcome::Failed { .. }
+                ),
                 "{bad} 应报失败而不是 panic"
             );
         }
@@ -738,21 +862,41 @@ mod optimization_regressions {
     use super::*;
     #[test]
     fn malformed_status_lines_are_not_delivery_or_echoed_into_history() {
-        for response in ["NOTHTTP 200 OK\r\n", "HTTP/1.1 700 INVALID\r\n", "HTTP/1.1 invalid private-test-marker\r\n"] {
+        for response in [
+            "NOTHTTP 200 OK\r\n",
+            "HTTP/1.1 700 INVALID\r\n",
+            "HTTP/1.1 invalid private-test-marker\r\n",
+        ] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             let server = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-                let mut buffer = [0; 4096]; let _ = stream.read(&mut buffer);
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buffer = [0; 4096];
+                let _ = stream.read(&mut buffer);
                 stream.write_all(response.as_bytes()).unwrap();
             });
-            let request = Request { url: format!("http://127.0.0.1:{port}/notify"), method: "POST".into(), headers: vec![], body: "fixture".into(), smtp: None, response_check: None };
+            let request = Request {
+                url: format!("http://127.0.0.1:{port}/notify"),
+                method: "POST".into(),
+                headers: vec![],
+                body: "fixture".into(),
+                smtp: None,
+                response_check: None,
+            };
             let outcome = HttpTransport::new().perform(&request);
             server.join().unwrap();
-            assert!(matches!(outcome, Outcome::Failed { .. }), "invalid HTTP response cannot count as delivered");
+            assert!(
+                matches!(outcome, Outcome::Failed { .. }),
+                "invalid HTTP response cannot count as delivered"
+            );
             if let Outcome::Failed { reason, .. } = outcome {
-                assert!(!reason.contains("private-test-marker"), "peer response content must not be copied to the visible history");
+                assert!(
+                    !reason.contains("private-test-marker"),
+                    "peer response content must not be copied to the visible history"
+                );
             }
         }
     }
@@ -764,7 +908,10 @@ mod optimization_regressions {
         assert_eq!(parsed.path, "/?mode=test");
         let parsed = parse_url("http://[::1]:8080/notify#local").expect("valid IPv6 URL");
         assert_eq!(parsed.host, "::1");
-        assert_eq!(parsed.path, "/notify", "fragments are not sent to the server");
+        assert_eq!(
+            parsed.path, "/notify",
+            "fragments are not sent to the server"
+        );
     }
     #[test]
     fn userinfo_and_line_breaks_are_rejected_before_connecting() {

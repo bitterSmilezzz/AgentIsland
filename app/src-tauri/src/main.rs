@@ -5,52 +5,85 @@
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod memory;
-mod window_smoke;
-mod window_lifecycle;
 mod atomicfile;
+mod audit;
+mod budget;
+mod capabilities;
+mod claude_hook_config;
+mod claude_plan_capture;
+mod claude_plan_receiver;
+mod claude_plan_runtime;
 mod cleaner;
 mod cli;
+mod connection_http;
+mod connection_probe;
+mod connections;
 mod cost;
 mod deeplink;
-mod navigation;
 mod duration;
-mod selfreport;
-#[cfg(test)]
-mod testutil;
-mod todos;
 mod engine;
 mod filemon;
+mod forecast;
 mod health;
+mod im;
 mod installed;
 mod localclock;
+mod mcp_config;
+mod memory;
+mod minimax;
 mod models;
+mod navigation;
 mod notifier;
 mod observability;
 mod placement;
 mod power;
+mod private_text;
 mod procmon;
+mod prompts;
 mod provider;
 mod registry;
 mod remote;
 mod render;
-mod im;
-mod minimax;
 mod report;
 mod resilience;
-mod session;
+mod resource_diagnostics;
 mod secret;
+mod selfreport;
 mod selftest;
+mod session;
+mod session_catalog;
+mod session_navigation;
 mod settings;
+mod skill_files;
+mod skills_config;
+#[cfg(unix)]
+mod skills_package;
+mod skills_picker;
 mod smtp;
 mod sqlite;
-mod audit;
-mod budget;
-mod forecast;
+mod task_artifacts;
+mod task_attention;
+mod task_sources;
+mod tasks;
+#[cfg(test)]
+mod testutil;
+mod todos;
 mod tokens;
-mod trees;
 mod transport;
+mod trees;
 mod webhook;
+mod window_layout;
+mod window_layout_execution;
+mod window_layout_journal;
+mod window_layout_native;
+mod window_layout_readback;
+mod window_layout_rules;
+mod window_layout_service;
+mod window_lifecycle;
+mod window_smoke;
+mod window_visibility;
+mod workspace_journal;
+mod workspaces;
 
 use engine::ActivityEngine;
 use models::DockEdge;
@@ -69,6 +102,638 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 // 不该由一条「顺手清警告」偷偷定下来。要加就连同调用点一起加。
 
 type SharedEngine = Arc<Mutex<ActivityEngine>>;
+
+type WindowLayoutStore = Mutex<window_layout_service::Store<window_layout_native::NativeWindow>>;
+type WindowRuleStore = Mutex<window_layout_rules::Store>;
+type ConnectionStore = Mutex<connections::Store>;
+type WorkspaceStore = Mutex<workspaces::Store>;
+type PromptStore = Mutex<prompts::Store>;
+struct SkillPackageStore {
+    #[cfg(unix)]
+    inner: Mutex<skills_package::Store>,
+}
+impl SkillPackageStore {
+    fn new() -> Self {
+        Self {
+            #[cfg(unix)]
+            inner: Mutex::new(skills_package::Store::new(
+                dirs::home_dir().unwrap_or_default(),
+            )),
+        }
+    }
+}
+
+#[tauri::command]
+async fn prompts_list(app: AppHandle) -> Result<prompts::List, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .list()
+    })
+    .await
+    .map_err(|_| "提示词读取未完成".to_string())?
+}
+#[tauri::command]
+async fn prompt_save(
+    app: AppHandle,
+    id: Option<String>,
+    draft: prompts::Draft,
+    expected_revision: u64,
+) -> Result<prompts::List, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .save(id, draft, expected_revision)
+    })
+    .await
+    .map_err(|_| "提示词保存未完成".to_string())?
+}
+#[tauri::command]
+async fn prompt_remove(
+    app: AppHandle,
+    id: String,
+    expected_revision: u64,
+) -> Result<prompts::List, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .remove(&id, expected_revision)
+    })
+    .await
+    .map_err(|_| "提示词移除未完成".to_string())?
+}
+#[tauri::command]
+async fn prompt_preview(
+    app: AppHandle,
+    target: Option<prompts::Client>,
+    id: String,
+    expected_revision: u64,
+) -> Result<prompts::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .for_client(target.unwrap_or_default())?
+            .preview(&id, expected_revision)
+    })
+    .await
+    .map_err(|_| "指令预览未完成".to_string())?
+}
+#[tauri::command]
+async fn prompt_apply(
+    app: AppHandle,
+    target: Option<prompts::Client>,
+    id: String,
+    expected_revision: u64,
+    plan_id: String,
+) -> Result<prompts::Applied, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .for_client(target.unwrap_or_default())?
+            .apply(&id, expected_revision, &plan_id)
+    })
+    .await
+    .map_err(|_| "指令应用未完成".to_string())?
+}
+#[tauri::command]
+async fn prompt_backups(
+    app: AppHandle,
+    target: Option<prompts::Client>,
+) -> Result<Vec<prompts::Backup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .for_client(target.unwrap_or_default())?
+            .backups()
+    })
+    .await
+    .map_err(|_| "指令备份读取未完成".to_string())?
+}
+#[tauri::command]
+async fn prompt_preview_restore(
+    app: AppHandle,
+    target: Option<prompts::Client>,
+    name: String,
+) -> Result<prompts::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .for_client(target.unwrap_or_default())?
+            .preview_restore(&name)
+    })
+    .await
+    .map_err(|_| "指令恢复预览未完成".to_string())?
+}
+#[tauri::command]
+async fn prompt_restore(
+    app: AppHandle,
+    target: Option<prompts::Client>,
+    name: String,
+    plan_id: String,
+) -> Result<prompts::Applied, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<PromptStore>()
+            .lock()
+            .map_err(|_| "提示词服务不可用")?
+            .for_client(target.unwrap_or_default())?
+            .restore(&name, &plan_id)
+    })
+    .await
+    .map_err(|_| "指令恢复未完成".to_string())?
+}
+
+fn workspace_catalog_impl(app: &AppHandle) -> workspaces::Catalog {
+    use workspaces::{Catalog, Choice};
+    let mut catalog = Catalog {
+        projects: vec![],
+        profiles: vec![],
+        layouts: vec![],
+        tools: crate::registry::builtin()
+            .into_iter()
+            .map(|p| Choice {
+                id: p.id,
+                name: p.name,
+                supported: true,
+            })
+            .collect(),
+        errors: vec![],
+    };
+    match app
+        .state::<TaskStore>()
+        .lock()
+        .ok()
+        .and_then(|s| s.load().ok())
+    {
+        Some(d) if d.projects.len() <= 200 => {
+            catalog.projects = d
+                .projects
+                .into_iter()
+                .map(|p| Choice {
+                    id: p.id,
+                    name: p.name,
+                    supported: true,
+                })
+                .collect()
+        }
+        _ => catalog
+            .errors
+            .push("项目来源无法读取或超过 200 项，请在任务页核对".into()),
+    }
+    match crate::provider::ProviderStore::at_default().workspace_choices() {
+        Ok(p) => catalog.profiles = p,
+        Err(_) => catalog
+            .errors
+            .push("档位来源暂不可用，请在模型页核对".into()),
+    }
+    match app
+        .state::<WindowRuleStore>()
+        .lock()
+        .ok()
+        .and_then(|s| s.list().ok())
+    {
+        Some(d) => {
+            catalog.layouts = d
+                .items
+                .into_iter()
+                .map(|r| Choice {
+                    id: r.id,
+                    name: r.name,
+                    supported: true,
+                })
+                .collect()
+        }
+        _ => catalog
+            .errors
+            .push("布局来源暂不可用，请在窗口页核对".into()),
+    }
+    catalog
+}
+#[tauri::command]
+async fn workspaces_list(app: AppHandle) -> Result<workspaces::List, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<WorkspaceStore>()
+            .lock()
+            .map_err(|_| "工作空间服务不可用")?
+            .list()
+    })
+    .await
+    .map_err(|_| "工作空间读取未完成".to_string())?
+}
+#[tauri::command]
+async fn workspace_catalog(app: AppHandle) -> Result<workspaces::Catalog, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace_catalog_impl(&app))
+        .await
+        .map_err(|_| "工作空间来源读取未完成".to_string())
+}
+#[tauri::command]
+async fn workspace_save(
+    app: AppHandle,
+    id: Option<String>,
+    draft: workspaces::Draft,
+    expected_revision: u64,
+) -> Result<workspaces::List, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let catalog = workspace_catalog_impl(&app);
+        app.state::<WorkspaceStore>()
+            .lock()
+            .map_err(|_| "工作空间服务不可用")?
+            .save(id, draft, expected_revision, &catalog)
+    })
+    .await
+    .map_err(|_| "工作空间保存未完成".to_string())?
+}
+#[tauri::command]
+async fn workspace_remove(
+    app: AppHandle,
+    id: String,
+    expected_revision: u64,
+) -> Result<workspaces::List, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<WorkspaceStore>()
+            .lock()
+            .map_err(|_| "工作空间服务不可用")?
+            .remove(&id, expected_revision)
+    })
+    .await
+    .map_err(|_| "工作空间移除未完成".to_string())?
+}
+#[tauri::command]
+async fn workspace_preview(
+    app: AppHandle,
+    id: String,
+    expected_revision: u64,
+) -> Result<workspaces::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let catalog = workspace_catalog_impl(&app);
+        app.state::<WorkspaceStore>()
+            .lock()
+            .map_err(|_| "工作空间服务不可用")?
+            .preview(&id, expected_revision, &catalog)
+    })
+    .await
+    .map_err(|_| "工作空间核对未完成".to_string())?
+}
+
+#[tauri::command]
+async fn connection_test(
+    id: String,
+    expected_revision: u64,
+    store: State<'_, ConnectionStore>,
+) -> Result<connection_probe::Probe, String> {
+    let connection = store
+        .lock()
+        .map_err(|_| "连接配置不可用")?
+        .get(&id, expected_revision)?;
+    let expected_connection = connection.clone();
+    let lease = connection_probe::Lease::acquire()?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _lease = lease;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "系统时间不可用")?
+            .as_millis();
+        let now: u64 = now.try_into().map_err(|_| "系统时间超出范围")?;
+        Ok::<_, String>(connection_probe::inspect(&connection, now))
+    })
+    .await
+    .map_err(|_| "服务检测未完成")??;
+    if store
+        .lock()
+        .map_err(|_| "连接配置不可用")?
+        .get(&id, expected_revision)?
+        != expected_connection
+    {
+        return Err("连接配置已变化，请重新检测".into());
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn connections_list(store: State<'_, ConnectionStore>) -> Result<connections::Snapshot, String> {
+    store.lock().map_err(|_| "连接配置不可用")?.list()
+}
+
+#[tauri::command]
+fn connection_save(
+    config: connections::Draft,
+    expected_revision: u64,
+    store: State<'_, ConnectionStore>,
+) -> Result<connections::Snapshot, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "系统时间不可用")?
+        .as_millis();
+    let now: u64 = now.try_into().map_err(|_| "系统时间超出范围")?;
+    store
+        .lock()
+        .map_err(|_| "连接配置不可用")?
+        .save(config, expected_revision, now)
+}
+
+#[tauri::command]
+fn connection_remove(
+    id: String,
+    expected_revision: u64,
+    store: State<'_, ConnectionStore>,
+) -> Result<connections::Snapshot, String> {
+    store
+        .lock()
+        .map_err(|_| "连接配置不可用")?
+        .remove(&id, expected_revision)
+}
+
+#[tauri::command]
+fn window_layout_rules_list(
+    store: State<'_, WindowRuleStore>,
+) -> Result<window_layout_rules::RuleList, String> {
+    store.lock().map_err(|_| "布局规则不可用")?.list()
+}
+#[tauri::command]
+fn window_layout_save_rule(
+    name: String,
+    selection: Vec<String>,
+    screen_id: String,
+    template: window_layout::Template,
+    gap: f64,
+    expected_revision: u64,
+    expected_rules_revision: u64,
+    windows: State<'_, WindowLayoutStore>,
+    rules: State<'_, WindowRuleStore>,
+) -> Result<window_layout_rules::RuleList, String> {
+    let (tools, screen) = windows
+        .lock()
+        .map_err(|_| "窗口列表不可用")?
+        .rule_selection(&selection, &screen_id, expected_revision)?;
+    rules.lock().map_err(|_| "布局规则不可用")?.save(
+        name,
+        tools,
+        template,
+        gap,
+        screen,
+        expected_rules_revision,
+    )
+}
+#[tauri::command]
+fn window_layout_remove_rule(
+    id: String,
+    expected_revision: u64,
+    rules: State<'_, WindowRuleStore>,
+) -> Result<window_layout_rules::RuleList, String> {
+    rules
+        .lock()
+        .map_err(|_| "布局规则不可用")?
+        .remove(&id, expected_revision)
+}
+#[tauri::command]
+fn window_layout_resolve_rule(
+    id: String,
+    expected_rules_revision: u64,
+    expected_revision: u64,
+    rules: State<'_, WindowRuleStore>,
+    windows: State<'_, WindowLayoutStore>,
+) -> Result<window_layout_rules::Resolved, String> {
+    let rule = rules
+        .lock()
+        .map_err(|_| "布局规则不可用")?
+        .get(&id, expected_rules_revision)?;
+    windows
+        .lock()
+        .map_err(|_| "窗口列表不可用")?
+        .resolve_rule(rule, expected_revision)
+}
+
+#[tauri::command]
+fn window_layout_capabilities() -> window_layout_native::Capabilities {
+    window_layout_native::capabilities()
+}
+
+#[tauri::command]
+async fn window_layout_candidates(
+    app: AppHandle,
+) -> Result<window_layout_service::Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        app.run_on_main_thread(move || {
+            let _ = tx.send(window_layout_native::displays());
+        })
+        .map_err(|_| "无法读取屏幕")?;
+        let displays = rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .map_err(|_| "屏幕读取超时")??;
+        let probe = window_layout_native::enumerate()?;
+        let windows = probe
+            .windows
+            .into_iter()
+            .map(|w| (w.candidate.clone(), w))
+            .collect();
+        let state = app.state::<WindowLayoutStore>();
+        let result =
+            state
+                .lock()
+                .map_err(|_| "窗口列表不可用")?
+                .replace(displays, windows, probe.warnings);
+        result
+    })
+    .await
+    .map_err(|_| "窗口读取任务失败")?
+}
+
+#[tauri::command]
+fn window_layout_preview(
+    selection: Vec<String>,
+    screen_id: String,
+    template: window_layout::Template,
+    gap: f64,
+    expected_revision: u64,
+    store: State<'_, WindowLayoutStore>,
+) -> Result<window_layout_service::Preview, String> {
+    if !window_layout_native::capabilities().permission_granted {
+        return Err("辅助功能权限不可用，请重新检查权限".into());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "系统时间不可用")?
+        .as_millis();
+    let now = u64::try_from(now).map_err(|_| "系统时间无效")?;
+    store.lock().map_err(|_| "窗口列表不可用")?.preview(
+        &selection,
+        &screen_id,
+        template,
+        gap,
+        expected_revision,
+        now,
+    )
+}
+
+fn layout_displays_on_main(app: &AppHandle) -> Result<Vec<window_layout::DisplayArea>, String> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = tx.send(window_layout_native::displays());
+    })
+    .map_err(|_| "无法读取屏幕")?;
+    rx.recv_timeout(std::time::Duration::from_secs(3))
+        .map_err(|_| "屏幕读取超时")?
+}
+
+#[tauri::command]
+async fn window_layout_history() -> Result<window_layout_journal::List, String> {
+    tauri::async_runtime::spawn_blocking(|| window_layout_journal::Store::at_default().list())
+        .await
+        .map_err(|_| "窗口历史读取未完成".to_string())?
+}
+#[tauri::command]
+async fn window_layout_history_remove(
+    app: AppHandle,
+    id: String,
+    expected_revision: String,
+) -> Result<window_layout_journal::List, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // Serialize metadata deletion with apply, including native execution and settlement.
+        let state = app.state::<WindowLayoutStore>();
+        let _guard = state.lock().map_err(|_| "窗口历史不可用")?;
+        window_layout_journal::Store::at_default().remove(&id, &expected_revision)
+    })
+    .await
+    .map_err(|_| "历史删除未完成，请刷新核对".to_string())?
+}
+#[tauri::command]
+async fn window_layout_recovery_preview(
+    app: AppHandle,
+    record_id: String,
+    slot_id: String,
+    window_id: String,
+    history_revision: String,
+    expected_revision: u64,
+) -> Result<window_layout_service::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !window_layout_native::capabilities().permission_granted {
+            return Err("辅助功能权限不可用".into());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "系统时间不可用")?
+            .as_millis();
+        let state = app.state::<WindowLayoutStore>();
+        let result = state
+            .lock()
+            .map_err(|_| "窗口操作不可用")?
+            .preview_recovery(
+                &record_id,
+                &slot_id,
+                &window_id,
+                &history_revision,
+                expected_revision,
+                u64::try_from(now).map_err(|_| "系统时间无效")?,
+            );
+        result
+    })
+    .await
+    .map_err(|_| "恢复预览未完成".to_string())?
+}
+#[tauri::command]
+async fn window_layout_apply(
+    app: AppHandle,
+    preview_id: String,
+    expected_revision: u64,
+    context: Option<window_layout_journal::WorkspaceContext>,
+) -> Result<window_layout_execution::ResultDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !window_layout_native::capabilities().permission_granted {
+            return Err("辅助功能权限不可用".into());
+        }
+        let displays = layout_displays_on_main(&app)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "系统时间不可用")?
+            .as_millis();
+        let now = u64::try_from(now).map_err(|_| "系统时间无效")?;
+        let state = app.state::<WindowLayoutStore>();
+        // Workspace -> rule -> window order; hold authoritative references through mutation.
+        let workspaces = app.state::<WorkspaceStore>();
+        let workspaces = if context.is_some() {
+            Some(workspaces.lock().map_err(|_| "工作空间服务不可用")?)
+        } else {
+            None
+        };
+        let rules = app.state::<WindowRuleStore>();
+        let rules = if context.is_some() {
+            Some(rules.lock().map_err(|_| "布局规则不可用")?)
+        } else {
+            None
+        };
+        let rule = if let Some(ctx) = &context {
+            workspaces.as_ref().unwrap().check_layout_context(ctx)?;
+            Some(
+                rules
+                    .as_ref()
+                    .unwrap()
+                    .get(&ctx.layout_id, ctx.expected_rules_revision)?,
+            )
+        } else {
+            None
+        };
+        let result = state.lock().map_err(|_| "窗口操作不可用")?.apply_scoped(
+            &preview_id,
+            expected_revision,
+            &displays,
+            now,
+            context.as_ref(),
+            rule.as_ref(),
+        );
+        result
+    })
+    .await
+    .map_err(|_| "窗口调整任务失败")?
+}
+
+#[tauri::command]
+async fn window_layout_undo(
+    app: AppHandle,
+    operation_id: String,
+    force_ids: Vec<String>,
+) -> Result<window_layout_execution::ResultDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !window_layout_native::capabilities().permission_granted {
+            return Err("辅助功能权限不可用".into());
+        }
+        let displays = layout_displays_on_main(&app)?;
+        let state = app.state::<WindowLayoutStore>();
+        let result = state
+            .lock()
+            .map_err(|_| "窗口操作不可用")?
+            .undo_on_displays(&operation_id, &force_ids, &displays);
+        result
+    })
+    .await
+    .map_err(|_| "窗口恢复任务失败")?
+}
+
+#[tauri::command]
+fn window_layout_open_permissions() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .status()
+            .map_err(|_| "无法打开系统设置")?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("系统设置打开失败".into())
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("当前平台尚未接入窗口排列".into())
+    }
+}
 
 #[derive(serde::Serialize, Clone)]
 struct BootArgs {
@@ -103,11 +768,18 @@ fn drain_navigation(
 
 fn send_navigation(app: &AppHandle, action: &deeplink::Action) {
     let intent = format!("{action:?}");
-    let targets = app.state::<Mutex<navigation::Mailbox>>()
-        .lock().unwrap().enqueue(&intent);
+    let targets = app
+        .state::<Mutex<navigation::Mailbox>>()
+        .lock()
+        .unwrap()
+        .enqueue(&intent);
     // 不持有队列锁调用窗口 API。
     for label in targets {
-        if let Err(error) = app.emit_to(label, "deeplink://navigate", serde_json::json!({"action": intent})) {
+        if let Err(error) = app.emit_to(
+            label,
+            "deeplink://navigate",
+            serde_json::json!({"action": intent}),
+        ) {
             log_line(&format!("[deeplink] 导航投递失败 {label}: {error}"));
         }
     }
@@ -119,17 +791,31 @@ fn get_settings(state: State<SharedEngine>) -> Settings {
 }
 
 #[tauri::command]
-fn save_settings(state: State<SharedEngine>, app: AppHandle, new_settings: Settings) -> Result<Settings, String> {
-    patch_settings(state, app, serde_json::to_value(new_settings).map_err(|error| error.to_string())?)
+fn save_settings(
+    state: State<SharedEngine>,
+    app: AppHandle,
+    new_settings: Settings,
+) -> Result<Settings, String> {
+    patch_settings(
+        state,
+        app,
+        serde_json::to_value(new_settings).map_err(|error| error.to_string())?,
+    )
 }
 
 #[tauri::command]
-fn patch_settings(state: State<SharedEngine>, app: AppHandle, patch: serde_json::Value) -> Result<Settings, String> {
+fn patch_settings(
+    state: State<SharedEngine>,
+    app: AppHandle,
+    patch: serde_json::Value,
+) -> Result<Settings, String> {
     let settings = {
         let mut engine = state.lock().unwrap();
         let settings = engine.settings.patched(patch)?;
         if !background_test_requested() {
-            settings.try_save_to(&crate::settings::config_dir()).map_err(|error| error.to_string())?;
+            settings
+                .try_save_to(&crate::settings::config_dir())
+                .map_err(|error| error.to_string())?;
         }
         engine.settings = settings.clone();
         settings
@@ -161,6 +847,16 @@ fn background_test_requested() -> bool {
             "--background-test" | "--memory-smoke" | "--ui-smoke"
         )
     })
+}
+
+/// Test instances that must not collide with a running user app get their own bundle
+/// identifier (single-instance hands off by identifier). Covers background tests plus
+/// `--dock-smoke`, which otherwise forwards to the resident instance and exits before
+/// any Dock transition — the regression then observes nothing and fails with an empty
+/// sequence. Deliberately *not* part of `background_test_requested`: the Dock
+/// regression needs the real reveal/conceal path, which that predicate disables.
+fn isolated_instance_requested() -> bool {
+    background_test_requested() || std::env::args().any(|a| a == "--dock-smoke")
 }
 
 // Tauri executes run_on_main_thread inline when already on the main thread.
@@ -208,7 +904,10 @@ fn ensure_window(app: &AppHandle, label: &str) -> tauri::Result<tauri::WebviewWi
         });
     }
     if label == "workbench" {
-        app.state::<Mutex<window_lifecycle::WorkbenchLease>>().lock().unwrap().created();
+        app.state::<Mutex<window_lifecycle::WorkbenchLease>>()
+            .lock()
+            .unwrap()
+            .created();
     }
     log_line(&format!("[window] created {label}"));
     Ok(window)
@@ -244,6 +943,27 @@ fn show_resident_window(
 }
 
 #[tauri::command]
+fn open_agent_session(
+    state: State<SharedEngine>,
+    agent: String,
+    event: Option<String>,
+    expected_url: Option<String>,
+) -> Result<session_navigation::Target, String> {
+    let target = state
+        .lock()
+        .unwrap()
+        .navigation_target(&agent, event.as_deref())?;
+    if expected_url
+        .as_deref()
+        .is_some_and(|url| target.url.as_deref() != Some(url))
+    {
+        return Err("对应会话已更新，请重新点击".into());
+    }
+    session_navigation::launch(&target)?;
+    Ok(target)
+}
+
+#[tauri::command]
 fn get_engine_state(state: State<SharedEngine>) -> models::EngineState {
     state.lock().unwrap().state()
 }
@@ -265,7 +985,9 @@ fn boot_arg_is(name: &str) -> bool {
     let args: Vec<String> = std::env::args().collect();
     let mut index = 0;
     while index < args.len() {
-        let matched = args[index].strip_prefix("--shell=").is_some_and(|v| v == name)
+        let matched = args[index]
+            .strip_prefix("--shell=")
+            .is_some_and(|v| v == name)
             || (args[index] == "--shell" && args.get(index + 1).is_some_and(|v| v == name));
         if matched {
             return true;
@@ -299,7 +1021,10 @@ fn shell_arg_override() -> Option<crate::models::ShellMode> {
 /// 而漏一个的症状是「岛跟过来了、侧边栏没跟」——**两边都不会报错**。
 /// 锁拿不到时用空串：`work_area_for_mode` 认不出的值一律按「跟随光标」处理，
 /// 那是最不像出错的回落。
-fn work_area_for(win: &tauri::WebviewWindow, state: &State<'_, SharedEngine>) -> (f64, f64, f64, f64, f64) {
+fn work_area_for(
+    win: &tauri::WebviewWindow,
+    state: &State<'_, SharedEngine>,
+) -> (f64, f64, f64, f64, f64) {
     placement::work_area_for_mode(win, &follow_mode(state))
 }
 
@@ -360,7 +1085,9 @@ pub fn apply_hotkey(app: &AppHandle, want: bool) -> Result<(), String> {
 /// 只会以为这个开关坏了，而不会想到是系统权限没给。
 #[tauri::command]
 fn set_launch_at_login(app: AppHandle, enabled: bool) -> bool {
-    if background_test_requested() { return enabled; }
+    if background_test_requested() {
+        return enabled;
+    }
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     let outcome = if enabled {
@@ -369,7 +1096,10 @@ fn set_launch_at_login(app: AppHandle, enabled: bool) -> bool {
         manager.disable()
     };
     if let Err(error) = outcome {
-        log_line(&format!("[launchAtLogin] {} 失败: {error}", if enabled { "启用" } else { "关闭" }));
+        log_line(&format!(
+            "[launchAtLogin] {} 失败: {error}",
+            if enabled { "启用" } else { "关闭" }
+        ));
     }
     // 「现在到底注册着没有」以插件的读数为准，而不是以上面那次调用的返回值——
     // 两者会不一致的情形正是最需要如实告诉用户的那一种
@@ -392,11 +1122,7 @@ fn launch_at_login_state(app: AppHandle) -> bool {
 /// **纯函数**：它决定一个会天天出现在用户眼前的字符串，而它能拿到的只有
 /// 一个 `&AgentSnapshot` 列表与一个 24h 总量。写成纯函数是为了能离线断言——
 /// 「没有 Agent 时写什么」「用量怎么缩写」这两件事在真机上很难稳定复现。
-pub fn tray_badge_text(
-    mode: &str,
-    active: usize,
-    tokens24h: i64,
-) -> Option<String> {
+pub fn tray_badge_text(mode: &str, active: usize, tokens24h: i64) -> Option<String> {
     match mode {
         "activeCount" => Some(format!("⚡️ {active}")),
         "tokenUsage" => {
@@ -434,13 +1160,17 @@ fn set_shell_mode(state: State<SharedEngine>, app: AppHandle, mode: String) -> S
         let mut e = state.lock().unwrap();
         e.settings.shell_mode = mode.as_str().to_string();
         let s = e.settings.clone();
-        if !background_test_requested() { s.save(); }
+        if !background_test_requested() {
+            s.save();
+        }
         edge = crate::models::DockEdge::parse(&e.settings.sidebar_edge);
         width = e.settings.sidebar_width;
     }
-    let handle=app.clone();
+    let handle = app.clone();
     queue_window_task(&app, move || {
-        if let Err(error)=show_resident_window(&handle,mode,edge,width) {log_line(&format!("[window] switch failed: {error}"));}
+        if let Err(error) = show_resident_window(&handle, mode, edge, width) {
+            log_line(&format!("[window] switch failed: {error}"));
+        }
     });
     mode.as_str().to_string()
 }
@@ -455,7 +1185,9 @@ fn set_sidebar_width(state: State<SharedEngine>, app: AppHandle, width: f64) -> 
         let mut e = state.lock().unwrap();
         e.settings.sidebar_width = width;
         let s = e.settings.clone();
-        if !background_test_requested() { s.save(); }
+        if !background_test_requested() {
+            s.save();
+        }
         edge = crate::models::DockEdge::parse(&e.settings.sidebar_edge);
     }
     place_sidebar_window(&app, edge, width);
@@ -476,7 +1208,9 @@ fn set_sidebar_edge(state: State<SharedEngine>, app: AppHandle, edge: String) ->
         let mut e = state.lock().unwrap();
         e.settings.sidebar_edge = edge.to_string();
         let s = e.settings.clone();
-        if !background_test_requested() { s.save(); }
+        if !background_test_requested() {
+            s.save();
+        }
         width = e.settings.sidebar_width;
     }
     place_sidebar_window(&app, crate::models::DockEdge::parse(edge), width);
@@ -504,7 +1238,9 @@ fn set_dock_edge(state: State<SharedEngine>, app: AppHandle, edge: String) {
         e.settings.dock_edge = edge.clone();
         anchor = e.settings.dock_anchor;
         let s = e.settings.clone();
-        if !background_test_requested() { s.save(); }
+        if !background_test_requested() {
+            s.save();
+        }
     }
     reposition(&app, state, &DockEdge::parse(&edge), anchor, true);
 }
@@ -531,14 +1267,58 @@ fn place_island(
     // 它依然报 372×520 与 (1098,216)）。曾据此得出「窗口压根没被缩」的错误结论，
     // v0.0.256 已撤回。**验窗口几何只能截图**：
     // `screencapture -x -o -R <x>,<y>,<w>,<h>`，并做一次「杀掉进程再拍同一块」的对照。
-    log_line(&format!("[place] 请求 {width}×{height} 算得 ({left},{top})"));
-    window
-        .set_size(LogicalSize::new(width, height))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_position(LogicalPosition::new(left, top))
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    log_line(&format!(
+        "[place] 请求 {width}×{height} 算得 ({left},{top})"
+    ));
+    #[cfg(target_os = "macos")]
+    {
+        // Tao's setters each enqueue another AppKit task, even on the main thread.
+        // Commit origin, size and view display together, and acknowledge execution.
+        let native_window = window.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        window
+            .run_on_main_thread(move || {
+                let result = (|| -> Result<(), String> {
+                    use objc2::MainThreadMarker;
+                    use objc2_app_kit::{NSScreen, NSWindow};
+                    use objc2_foundation::{NSPoint, NSRect, NSSize};
+                    let mtm = MainThreadMarker::new().ok_or("AppKit requires the main thread")?;
+                    // Tauri uses a top-left desktop origin; AppKit uses the primary
+                    // screen's bottom-left origin, including for secondary displays.
+                    let primary = NSScreen::screens(mtm)
+                        .firstObject()
+                        .ok_or("No primary screen")?;
+                    let frame = NSRect::new(
+                        NSPoint::new(left, primary.frame().size.height - top - height),
+                        NSSize::new(width, height),
+                    );
+                    let ptr = native_window.ns_window().map_err(|e| e.to_string())?;
+                    if ptr.is_null() {
+                        return Err("Missing native island window".into());
+                    }
+                    // SAFETY: the retained Tauri window owns this NSWindow; access is
+                    // confined to its main thread. The island is borderless.
+                    let native = unsafe { &*ptr.cast::<NSWindow>() };
+                    if native.frame() != frame {
+                        native.setFrame_display(frame, true);
+                    }
+                    Ok(())
+                })();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        return rx.recv().map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window
+            .set_size(LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_position(LogicalPosition::new(left, top))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -548,7 +1328,9 @@ fn snap_nearest_edge(
     width: f64,
     height: f64,
 ) -> Result<String, String> {
-    if ui_smoke_requested() { let _ = window.emit("test://snap", ()); }
+    if ui_smoke_requested() {
+        let _ = window.emit("test://snap", ());
+    }
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let size = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().unwrap_or(1.0);
@@ -578,7 +1360,9 @@ fn snap_nearest_edge(
         e.settings.dock_edge = edge_str.to_string();
         e.settings.dock_anchor = anchor.clamp(0.0, 1.0);
         let s = e.settings.clone();
-        if !background_test_requested() { s.save(); }
+        if !background_test_requested() {
+            s.save();
+        }
     }
     let edge = DockEdge::parse(edge_str);
     let wa = work_area_for(&window, &state);
@@ -593,7 +1377,12 @@ fn snap_nearest_edge(
 }
 
 #[tauri::command]
-fn reposition_now(window: tauri::WebviewWindow, state: State<SharedEngine>, width: f64, height: f64) {
+fn reposition_now(
+    window: tauri::WebviewWindow,
+    state: State<SharedEngine>,
+    width: f64,
+    height: f64,
+) {
     let (edge, anchor) = {
         let e = state.lock().unwrap();
         (
@@ -606,7 +1395,13 @@ fn reposition_now(window: tauri::WebviewWindow, state: State<SharedEngine>, widt
     let _ = window.set_position(LogicalPosition::new(left, top));
 }
 
-fn reposition(app: &AppHandle, _state: State<SharedEngine>, edge: &DockEdge, anchor: f64, _expanded: bool) {
+fn reposition(
+    app: &AppHandle,
+    _state: State<SharedEngine>,
+    edge: &DockEdge,
+    anchor: f64,
+    _expanded: bool,
+) {
     if let Some(win) = app.get_webview_window("island") {
         let size = win.outer_size().unwrap_or_default();
         let scale = win.scale_factor().unwrap_or(1.0);
@@ -625,7 +1420,18 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         // 聚合全部启用档案（分析页口径）
         let profiles: Vec<crate::models::AgentProfile> = crate::registry::builtin()
             .into_iter()
-            .filter(|p| !e.settings.disabled_agents.contains(&p.id) && (!p.token_roots.is_empty() || p.session_database.as_ref().is_some_and(|db| matches!(db.schema, models::SessionSchema::MiniMaxRuntime | models::SessionSchema::OpenCode | models::SessionSchema::DimTasks))))
+            .filter(|p| {
+                !e.settings.disabled_agents.contains(&p.id)
+                    && (!p.token_roots.is_empty()
+                        || p.session_database.as_ref().is_some_and(|db| {
+                            matches!(
+                                db.schema,
+                                models::SessionSchema::MiniMaxRuntime
+                                    | models::SessionSchema::OpenCode
+                                    | models::SessionSchema::DimTasks
+                            )
+                        }))
+            })
             .collect();
         if profiles.is_empty() {
             return None;
@@ -637,8 +1443,10 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         // 只要有任一档案的成本是估的，聚合值就不是记录值（见 models.rs 的 `cost_estimated`）
         let mut agg_cost_estimated = false;
         let mut hourly: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-        let mut models: std::collections::HashMap<String, (i64, f64, bool)> = std::collections::HashMap::new();
-        let mut total_models: std::collections::HashMap<String, (i64, f64, bool)> = std::collections::HashMap::new();
+        let mut models: std::collections::HashMap<String, (i64, f64, bool)> =
+            std::collections::HashMap::new();
+        let mut total_models: std::collections::HashMap<String, (i64, f64, bool)> =
+            std::collections::HashMap::new();
         for p in &profiles {
             if let Some(r) = e.get_report(&p.id) {
                 agg_tokens24 += r.usage.tokens24h;
@@ -651,7 +1459,9 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
                 }
                 for m in r.models_total {
                     let entry = total_models.entry(m.model).or_insert((0, 0.0, false));
-                    entry.0 += m.tokens; entry.1 += m.cost; entry.2 |= m.cost_estimated;
+                    entry.0 += m.tokens;
+                    entry.1 += m.cost;
+                    entry.2 |= m.cost_estimated;
                 }
                 for m in r.models24h {
                     let e2 = models.entry(m.model).or_insert((0, 0.0, false));
@@ -665,16 +1475,28 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         hourly30d.sort_by_key(|kv| kv.0);
         let mut models24h: Vec<models::ModelUsage> = models
             .into_iter()
-            .map(|(model, (tokens, cost, cost_estimated))| models::ModelUsage {
-                model,
-                tokens,
-                cost,
-                cost_estimated,
-            })
+            .map(
+                |(model, (tokens, cost, cost_estimated))| models::ModelUsage {
+                    model,
+                    tokens,
+                    cost,
+                    cost_estimated,
+                },
+            )
             .collect();
         models24h.sort_by(|a, b| b.tokens.cmp(&a.tokens));
-        let mut models_total: Vec<models::ModelUsage> = total_models.into_iter().map(|(model,(tokens,cost,cost_estimated))| models::ModelUsage {model,tokens,cost,cost_estimated}).collect();
-        models_total.sort_by(|a,b| b.tokens.cmp(&a.tokens));
+        let mut models_total: Vec<models::ModelUsage> = total_models
+            .into_iter()
+            .map(
+                |(model, (tokens, cost, cost_estimated))| models::ModelUsage {
+                    model,
+                    tokens,
+                    cost,
+                    cost_estimated,
+                },
+            )
+            .collect();
+        models_total.sort_by(|a, b| b.tokens.cmp(&a.tokens));
         return Some(models::TokenReport {
             usage: models::TokenUsage {
                 tokens24h: agg_tokens24,
@@ -708,8 +1530,8 @@ fn remote_preview(
         .remote_channels
         .get(channel.as_str())
         .unwrap_or(&empty);
-    let kind = crate::remote::EventKind::parse(&args.kind)
-        .unwrap_or(crate::remote::EventKind::Attention);
+    let kind =
+        crate::remote::EventKind::parse(&args.kind).unwrap_or(crate::remote::EventKind::Attention);
     let agent_name = if args.agent_name.is_empty() {
         "AgentIsland"
     } else {
@@ -756,16 +1578,42 @@ async fn remote_send_test(state: State<'_, SharedEngine>) -> Result<String, Stri
     let (notifier, policy, channel, config) = {
         let engine = state.lock().unwrap();
         let channel = crate::remote::resolve_kind(Some(&engine.settings.remote_kind)).0;
-        (engine.notifier.clone(), engine.settings.remote_policy.clone(), channel,
-         engine.settings.remote_channels.get(channel.as_str()).cloned().unwrap_or_default())
+        (
+            engine.notifier.clone(),
+            engine.settings.remote_policy.clone(),
+            channel,
+            engine
+                .settings
+                .remote_channels
+                .get(channel.as_str())
+                .cloned()
+                .unwrap_or_default(),
+        )
     };
     tauri::async_runtime::spawn_blocking(move || {
         let now = crate::tokens::now_ms();
-        let mut inputs = crate::render::Inputs::new("AgentIsland", crate::remote::EventKind::Attention, 0.0);
+        let mut inputs =
+            crate::render::Inputs::new("AgentIsland", crate::remote::EventKind::Attention, 0.0);
         inputs.agent_id = "agentisland-test".into();
-        let outcome = notifier.attempt(&inputs, &policy, channel, &config, crate::remote::Now::at(now), &power::presence_signals(), true);
-        crate::notifier::Attempt { at_ms: now, title: "测试通知".into(), outcome, tries: 1 }.short_text()
-    }).await.map_err(|error| error.to_string())
+        let outcome = notifier.attempt(
+            &inputs,
+            &policy,
+            channel,
+            &config,
+            crate::remote::Now::at(now),
+            &power::presence_signals(),
+            true,
+        );
+        crate::notifier::Attempt {
+            at_ms: now,
+            title: "测试通知".into(),
+            outcome,
+            tries: 1,
+        }
+        .short_text()
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// 存密钥：**由用户自己录入，只进钥匙串**（ADR 0009：本仓不存任何凭据）。
@@ -797,11 +1645,19 @@ fn remote_secret_set(
             }
         };
     }
-    if channel == crate::remote::Channel::FeishuBot && crate::im::feishu_credentials(&value).is_none() {
-        return crate::secret::WriteResult::Refused { reason: "请填写有效的飞书 HTTPS 群机器人 Webhook 地址".into() };
+    if channel == crate::remote::Channel::FeishuBot
+        && crate::im::feishu_credentials(&value).is_none()
+    {
+        return crate::secret::WriteResult::Refused {
+            reason: "请填写有效的飞书 HTTPS 群机器人 Webhook 地址".into(),
+        };
     }
-    if channel == crate::remote::Channel::QqOneBot && value.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return crate::secret::WriteResult::Refused { reason: "访问令牌不能包含空格或换行".into() };
+    if channel == crate::remote::Channel::QqOneBot
+        && value.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return crate::secret::WriteResult::Refused {
+            reason: "访问令牌不能包含空格或换行".into(),
+        };
     }
     crate::secret::write(&crate::secret::default_secret_name(channel), &value)
 }
@@ -858,14 +1714,13 @@ fn audit_report_csv(state: State<SharedEngine>) -> crate::models::Export {
 /// 现场扫一拍进程表：树是**当下**的结构，用引擎里那份快照拼不出「谁派生了谁」——
 /// 快照里只有匹配到档案的那些进程，中间夹着的 npm / node 不在其中。
 #[tauri::command]
-fn agent_process_tree(state: State<SharedEngine>, agent_id: String) -> Option<crate::trees::TreeReport> {
+fn agent_process_tree(
+    state: State<SharedEngine>,
+    agent_id: String,
+) -> Option<crate::trees::TreeReport> {
     let pid = {
         let engine = state.lock().unwrap();
-        engine
-            .snapshots
-            .iter()
-            .find(|s| s.id == agent_id)?
-            .pid?
+        engine.snapshots.iter().find(|s| s.id == agent_id)?.pid?
     };
     let mut monitor = crate::procmon::ProcessMonitor::new();
     monitor.refresh();
@@ -919,74 +1774,539 @@ fn provider_scan_tools() -> Vec<crate::provider::ToolScan> {
 }
 
 #[tauri::command]
-fn provider_list_profiles() -> Vec<crate::provider::CodexProfile> {
-    crate::provider::ProviderStore::at_default().list()
+fn provider_list_profiles() -> Result<Vec<crate::provider::CodexProfile>, String> {
+    crate::provider::ProviderStore::at_default().list_checked()
+}
+
+#[tauri::command]
+fn provider_export_file() -> Result<String, String> {
+    let directory = dirs::download_dir().ok_or("下载目录不可用")?;
+    crate::provider::ProviderStore::at_default()
+        .export_to_directory(&directory)
+        .map(|path| path.to_string_lossy().into_owned())
+}
+#[tauri::command]
+fn provider_preview_import(text: String) -> Result<crate::provider::ImportPreview, String> {
+    crate::provider::ProviderStore::at_default().preview_import(&text)
+}
+#[tauri::command]
+fn provider_import_bundle(text: String, revision: String) -> Result<usize, String> {
+    let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位写入锁不可用")?;
+    crate::provider::ProviderStore::at_default().import_bundle(&text, &revision)
+}
+#[tauri::command]
+async fn mcp_inspect() -> Result<crate::mcp_config::Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+        crate::mcp_config::inspect(&target)
+    })
+    .await
+    .map_err(|_| "MCP 后台读取未完成，请重试".to_string())?
+}
+#[tauri::command]
+async fn mcp_preview(
+    operation: crate::mcp_config::Operation,
+    revision: String,
+) -> Result<crate::mcp_config::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+        crate::mcp_config::preview(&target, &operation, &revision)
+    })
+    .await
+    .map_err(|_| "MCP 后台预览未完成，请重试".to_string())?
+}
+#[tauri::command]
+async fn mcp_apply(
+    operation: crate::mcp_config::Operation,
+    revision: String,
+    plan_id: String,
+) -> Result<crate::mcp_config::Applied, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "配置写入锁不可用")?;
+        let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "系统时间不可用")?
+            .as_millis();
+        crate::mcp_config::apply(
+            &target,
+            &crate::provider::ProviderStore::at_default().backups_dir(),
+            &operation,
+            &revision,
+            &plan_id,
+            i64::try_from(now).map_err(|_| "系统时间超出范围")?,
+        )
+    })
+    .await
+    .map_err(|_| "MCP 后台操作未完成，请刷新核对配置和备份".to_string())?
+}
+#[tauri::command]
+async fn skills_inspect() -> Result<crate::skills_config::Snapshot, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+        let home = dirs::home_dir().ok_or("用户目录不可用")?;
+        crate::skills_config::inspect(&target, &home)
+    })
+    .await
+    .map_err(|_| "Skills 后台读取未完成".to_string())?
+}
+#[tauri::command]
+async fn skills_preview(
+    operation: crate::skills_config::Operation,
+    revision: String,
+) -> Result<crate::skills_config::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+        let home = dirs::home_dir().ok_or("用户目录不可用")?;
+        crate::skills_config::preview(&target, &home, &operation, &revision)
+    })
+    .await
+    .map_err(|_| "Skills 后台预览未完成".to_string())?
+}
+#[tauri::command]
+async fn skills_apply(
+    operation: crate::skills_config::Operation,
+    revision: String,
+    plan_id: String,
+) -> Result<crate::mcp_config::Applied, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "配置写入锁不可用")?;
+        let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+        let home = dirs::home_dir().ok_or("用户目录不可用")?;
+        crate::skills_config::apply(
+            &target,
+            &home,
+            &crate::provider::ProviderStore::at_default().backups_dir(),
+            &operation,
+            &revision,
+            &plan_id,
+            crate::tokens::now_ms(),
+        )
+    })
+    .await
+    .map_err(|_| "Skills 后台操作未完成，请刷新核对配置和备份".to_string())?
+}
+#[tauri::command]
+fn provider_capabilities() -> crate::capabilities::CapabilityInventory {
+    crate::capabilities::inventory()
+}
+
+#[tauri::command]
+fn skills_package_capability() -> bool {
+    cfg!(target_os = "macos")
+}
+#[tauri::command]
+async fn skills_package_choose(
+    app: tauri::AppHandle,
+    target: Option<String>,
+) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target: crate::skills_package::Tool = serde_json::from_value(
+            serde_json::Value::String(target.unwrap_or_else(|| "codex".into())),
+        )
+        .map_err(|_| "技能安装目标不受支持")?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.run_on_main_thread(move || {
+            let _ = tx.send(crate::skills_picker::choose());
+        })
+        .map_err(|_| "目录选择暂不可用")?;
+        tauri::async_runtime::spawn_blocking(move || {
+            let path = rx.recv().map_err(|_| "目录选择未完成")??;
+            let Some(path) = path else {
+                return Ok(serde_json::Value::Null);
+            };
+            let state = app.state::<SkillPackageStore>();
+            let result = state
+                .inner
+                .lock()
+                .map_err(|_| "技能安装服务不可用")?
+                .preview_for(&path, target, crate::tokens::now_ms())?;
+            serde_json::to_value(result).map_err(|_| "技能预览不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能预览未完成，请重新选择目录".to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, target);
+        Err("本平台技能安装尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_inventory(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let inventory = state
+                .inner
+                .lock()
+                .map_err(|_| "技能服务不可用")?
+                .inventory()?;
+            serde_json::to_value(inventory).map_err(|_| "技能来源不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能来源读取未完成".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+        Err("本平台技能同步尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_sync_preview(
+    app: tauri::AppHandle,
+    id: String,
+    generation: String,
+    target: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let target: crate::skills_package::Tool =
+                serde_json::from_value(serde_json::Value::String(target))
+                    .map_err(|_| "技能同步目标不受支持")?;
+            let state = app.state::<SkillPackageStore>();
+            let preview = state
+                .inner
+                .lock()
+                .map_err(|_| "技能服务不可用")?
+                .sync_preview(&id, &generation, target, crate::tokens::now_ms())?;
+            serde_json::to_value(preview).map_err(|_| "技能同步预览不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能同步预览未完成".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, id, generation, target);
+        Err("本平台技能同步尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_edit_read(
+    app: tauri::AppHandle,
+    id: String,
+    generation: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let value = state
+                .inner
+                .lock()
+                .map_err(|_| "技能服务不可用")?
+                .edit_read(&id, &generation, crate::tokens::now_ms())?;
+            serde_json::to_value(value).map_err(|_| "正文读取不可序列化".into())
+        })
+        .await
+        .map_err(|_| "正文读取未完成".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, id, generation);
+        Err("本平台技能编辑尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_edit_preview(
+    app: tauri::AppHandle,
+    ticket: String,
+    body: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let value = state
+                .inner
+                .lock()
+                .map_err(|_| "技能服务不可用")?
+                .edit_preview(&ticket, body, crate::tokens::now_ms())?;
+            serde_json::to_value(value).map_err(|_| "正文预览不可序列化".into())
+        })
+        .await
+        .map_err(|_| "正文预览未完成".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, ticket, body);
+        Err("本平台技能编辑尚未接入".into())
+    }
+}
+#[tauri::command]
+fn skills_package_edit_close(
+    ticket: String,
+    state: State<'_, SkillPackageStore>,
+) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        state
+            .inner
+            .lock()
+            .map_err(|_| "技能服务不可用")?
+            .edit_close(&ticket);
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (ticket, state);
+        Err("本平台技能编辑尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_apply(
+    app: tauri::AppHandle,
+    plan_id: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let result = state
+                .inner
+                .lock()
+                .map_err(|_| "技能安装服务不可用")?
+                .apply(&plan_id, crate::tokens::now_ms())?;
+            serde_json::to_value(result).map_err(|_| "技能结果不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能安装后台操作未完成，请刷新核对安装记录".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, plan_id);
+        Err("本平台技能安装尚未接入".into())
+    }
+}
+#[tauri::command]
+fn skills_package_cancel(
+    plan_id: String,
+    state: State<'_, SkillPackageStore>,
+) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        state
+            .inner
+            .lock()
+            .map_err(|_| "技能安装服务不可用")?
+            .cancel(&plan_id);
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (plan_id, state);
+        Ok(())
+    }
+}
+#[tauri::command]
+async fn skills_package_recoveries(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let result = state
+                .inner
+                .lock()
+                .map_err(|_| "技能安装服务不可用")?
+                .recoveries()?;
+            serde_json::to_value(result).map_err(|_| "技能记录不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能安装记录读取未完成".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+        Err("本平台技能安装尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_restore(
+    app: tauri::AppHandle,
+    id: String,
+    revision: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let result = state
+                .inner
+                .lock()
+                .map_err(|_| "技能安装服务不可用")?
+                .restore(&id, &revision)?;
+            serde_json::to_value(result).map_err(|_| "技能恢复结果不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能恢复后台操作未完成，请刷新核对安装记录".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, id, revision);
+        Err("本平台技能安装尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_restore_preview(
+    app: tauri::AppHandle,
+    id: String,
+    revision: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let result = state
+                .inner
+                .lock()
+                .map_err(|_| "技能安装服务不可用")?
+                .restore_preview(&id, &revision)?;
+            serde_json::to_value(result).map_err(|_| "技能恢复预览不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能恢复预览未完成，请刷新记录".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, id, revision);
+        Err("本平台技能安装尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_trash_preview(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let result = state
+                .inner
+                .lock()
+                .map_err(|_| "技能安装服务不可用")?
+                .trash_preview(&id, crate::tokens::now_ms())?;
+            serde_json::to_value(result).map_err(|_| "技能记录清理预览不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能记录清理预览未完成，请刷新记录".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, id);
+        Err("本平台技能记录清理尚未接入".into())
+    }
+}
+#[tauri::command]
+async fn skills_package_trash(
+    app: tauri::AppHandle,
+    plan_id: String,
+) -> Result<serde_json::Value, String> {
+    #[cfg(unix)]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<SkillPackageStore>();
+            let result = state
+                .inner
+                .lock()
+                .map_err(|_| "技能安装服务不可用")?
+                .trash(&plan_id, crate::tokens::now_ms())?;
+            serde_json::to_value(result).map_err(|_| "技能记录清理结果不可序列化".into())
+        })
+        .await
+        .map_err(|_| "技能记录清理后台未完成，请核对废纸篓与安装记录".to_string())?
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (app, plan_id);
+        Err("本平台技能记录清理尚未接入".into())
+    }
+}
+#[tauri::command]
+fn provider_preview_backup(name: String) -> Result<crate::provider::BackupPreview, String> {
+    let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+    crate::provider::preview_backup(
+        &target,
+        &crate::provider::ProviderStore::at_default().backups_dir(),
+        &name,
+    )
 }
 
 #[tauri::command]
 fn provider_save_profile(
     profile: crate::provider::CodexProfile,
 ) -> Result<crate::provider::CodexProfile, String> {
+    let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位写入锁不可用")?;
     crate::provider::ProviderStore::at_default().save(profile)
 }
 
 #[tauri::command]
 fn provider_delete_profile(id: String) -> Result<(), String> {
+    let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位写入锁不可用")?;
     crate::provider::ProviderStore::at_default().delete(&id)
 }
 
 #[tauri::command]
 fn provider_status() -> crate::provider::ProviderStatus {
     let store = crate::provider::ProviderStore::at_default();
-    let profiles = store.list();
     let path = crate::provider::codex_config_path();
-    let installed = path.as_ref().is_some_and(|p| p.exists());
-    let active_provider_id = path
-        .as_ref()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|text| crate::provider::active_provider_id(&text));
-    let active_profile_id = active_provider_id.as_ref().and_then(|provider| {
-        profiles
-            .iter()
-            .find(|profile| &profile.provider_id == provider)
-            .map(|profile| profile.id.clone())
-    });
-    crate::provider::ProviderStatus {
-        installed,
-        config_path: path.map(|p| p.to_string_lossy().to_string()),
-        active_provider_id,
-        active_profile_id,
-        profile_count: profiles.len(),
-        limitations: crate::provider::PROVIDER_LIMITATIONS,
+    let profiles = store.list_checked();
+    let mut status = crate::provider::inspect_codex_config(
+        path.as_deref(),
+        profiles.as_deref().unwrap_or(&[]),
+        &store,
+    );
+    if let Err(error) = profiles {
+        status.record_error = Some(error);
     }
+    status
 }
 
-/// 切换档位：**先备份、再原子写**。写失败时原文件逐字节不动（`atomicfile` 保证）。
-#[tauri::command]
-fn provider_apply_profile(id: String) -> Result<crate::provider::ProviderApplyResult, String> {
+// Serialize our three config/record mutations across windows. Other tools are
+// protected by the observed revision check, never automatically overwritten.
+static PROVIDER_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn apply_provider_choice(
+    profile: crate::provider::CodexProfile,
+    revision: &str,
+) -> Result<crate::provider::ProviderApplyResult, String> {
     let store = crate::provider::ProviderStore::at_default();
-    let profile = store
-        .list()
-        .into_iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| format!("没有这个档位：{id}"))?;
-    let target = crate::provider::codex_config_path()
-        .ok_or_else(|| "找不到 Codex 配置目录".to_string())?;
-    let backup = crate::provider::apply_codex_profile(
-        &target,
-        &store.backups_dir(),
-        &profile,
-        crate::tokens::now_ms(),
-    )
-    .map_err(|e| format!("切换档位失败：{e}"))?;
-    Ok(crate::provider::ProviderApplyResult {
-        config_path: target.to_string_lossy().to_string(),
-        backup_name: backup
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        limitations: crate::provider::PROVIDER_LIMITATIONS,
-    })
+    let target =
+        crate::provider::codex_config_path().ok_or_else(|| "找不到 Codex 配置目录".to_string())?;
+    store.apply_with_receipt(&target, &profile, revision, crate::tokens::now_ms())
+}
+
+#[tauri::command]
+fn provider_apply_profile(
+    id: String,
+    revision: String,
+    expected_profile: crate::provider::CodexProfile,
+) -> Result<crate::provider::ProviderApplyResult, String> {
+    let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位写入锁不可用")?;
+    let profile =
+        crate::provider::ProviderStore::at_default().profile_for_apply(&id, &expected_profile)?;
+    apply_provider_choice(profile, &revision)
+}
+
+#[tauri::command]
+fn provider_reapply(revision: String) -> Result<crate::provider::ProviderApplyResult, String> {
+    let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位写入锁不可用")?;
+    let profile = crate::provider::ProviderStore::at_default()
+        .last_applied()?
+        .ok_or("没有上次应用记录")?;
+    apply_provider_choice(profile, &revision)
+}
+
+#[tauri::command]
+fn provider_keep_current(revision: String) -> Result<(), String> {
+    let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位写入锁不可用")?;
+    let target = crate::provider::codex_config_path().ok_or("找不到 Codex 配置目录")?;
+    crate::provider::verify_config_revision(&target, &revision)?;
+    crate::provider::ProviderStore::at_default().keep_current()
 }
 
 #[tauri::command]
@@ -996,12 +2316,529 @@ fn provider_list_backups() -> Vec<crate::provider::BackupInfo> {
 
 /// 按**名字**还原（界面只能选我们列出的备份；传别的名字一律拒绝）
 #[tauri::command]
-fn provider_restore_backup(name: String) -> Result<(), String> {
+fn provider_restore_backup(
+    name: String,
+    revision: String,
+    backup_revision: String,
+) -> Result<crate::provider::ProviderApplyResult, String> {
+    let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位写入锁不可用")?;
     let store = crate::provider::ProviderStore::at_default();
-    let target = crate::provider::codex_config_path()
-        .ok_or_else(|| "找不到 Codex 配置目录".to_string())?;
-    crate::provider::restore_backup_by_name(&target, &store.backups_dir(), &name)
-        .map_err(|e| format!("还原失败：{e}"))
+    let target =
+        crate::provider::codex_config_path().ok_or_else(|| "找不到 Codex 配置目录".to_string())?;
+    store.restore_with_receipt(&target, &name, &revision, &backup_revision)
+}
+
+type WorkspaceApplied = workspace_journal::Applied;
+fn workspace_profile_write(
+    app: &AppHandle,
+    ctx: workspace_journal::Context,
+    recovery: Option<&str>,
+    write: impl FnOnce() -> Result<provider::ProviderApplyResult, String>,
+) -> Result<WorkspaceApplied, String> {
+    let store = app.state::<WorkspaceStore>();
+    let store = store.lock().map_err(|_| "工作空间服务不可用")?;
+    store.check_profile_context(&ctx)?;
+    store.journal().execute(&ctx, recovery, write)
+}
+#[tauri::command]
+fn workspace_apply_profile(
+    app: AppHandle,
+    context: workspace_journal::Context,
+    id: String,
+    revision: String,
+    expected_profile: provider::CodexProfile,
+) -> Result<WorkspaceApplied, String> {
+    if context.profile_id != id || context.recovery_operation_id.is_some() {
+        return Err("工作空间应用目标不匹配".into());
+    }
+    workspace_profile_write(&app, context, None, || {
+        provider_apply_profile(id, revision, expected_profile)
+    })
+}
+#[tauri::command]
+fn workspace_restore_profile(
+    app: AppHandle,
+    context: workspace_journal::Context,
+    name: String,
+    revision: String,
+    backup_revision: String,
+) -> Result<WorkspaceApplied, String> {
+    workspace_profile_write(&app, context, Some(&name), || {
+        provider_restore_backup(name.clone(), revision, backup_revision)
+    })
+}
+#[tauri::command]
+async fn workspace_operations(
+    app: AppHandle,
+    id: String,
+) -> Result<Vec<workspace_journal::Record>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if uuid::Uuid::parse_str(&id).is_err() {
+            return Err("工作空间身份无效".into());
+        }
+        let store = app.state::<WorkspaceStore>();
+        let store = store.lock().map_err(|_| "工作空间服务不可用")?;
+        Ok(store
+            .journal()
+            .list()?
+            .into_iter()
+            .filter(|r| r.workspace_id == id)
+            .collect())
+    })
+    .await
+    .map_err(|_| "操作记录读取未完成".to_string())?
+}
+
+// Local task commands share one writer and never invoke source-agent actions.
+type TaskStore = Mutex<crate::tasks::Store>;
+fn with_tasks<T>(
+    state: State<TaskStore>,
+    f: impl FnOnce(&crate::tasks::Store) -> Result<T, crate::tasks::Error>,
+) -> Result<T, crate::tasks::Error> {
+    let store = state.lock().map_err(|_| crate::tasks::Error {
+        code: "unavailable".into(),
+        message: "任务服务暂不可用".into(),
+    })?;
+    f(&store)
+}
+fn publish_tasks(
+    app: &AppHandle,
+    result: Result<crate::tasks::Data, crate::tasks::Error>,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    if let Ok(data) = &result {
+        let _ = app.emit("tasks://changed", data.revision);
+    }
+    result
+}
+#[tauri::command]
+fn tasks_attention_summary(
+    state: State<TaskStore>,
+) -> Result<crate::task_attention::Summary, crate::tasks::Error> {
+    with_tasks(state, |s| {
+        s.load().map(|d| crate::task_attention::summarize(&d))
+    })
+}
+#[tauri::command]
+fn task_show_workbench(
+    app: AppHandle,
+    store: State<TaskStore>,
+    id: Option<String>,
+    run_id: Option<String>,
+    expected_revision: Option<u64>,
+) -> Result<(), String> {
+    let intent = if let Some(id) = id {
+        let data = with_tasks(store, |s| s.load()).map_err(|e| e.message)?;
+        if expected_revision != Some(data.revision) {
+            return Err("任务已更新，请重新点击".into());
+        }
+        let t = data
+            .tasks
+            .iter()
+            .find(|t| t.id == id && t.archived_ms.is_none())
+            .ok_or("任务已归档或不可用")?;
+        if t.current_run_id != run_id {
+            return Err("这次运行已更新，请重新点击".into());
+        }
+        format!(
+            "Task({})",
+            serde_json::to_string(&id).map_err(|_| "任务导航不可用")?
+        )
+    } else {
+        "Tasks".into()
+    };
+    let live = app
+        .state::<Mutex<navigation::Mailbox>>()
+        .lock()
+        .map_err(|_| "任务导航不可用")?
+        .enqueue_for("workbench", &intent);
+    if live {
+        let _ = app.emit_to(
+            "workbench",
+            "deeplink://navigate",
+            serde_json::json!({"action":intent}),
+        );
+    }
+    reveal_workbench_window(&app);
+    Ok(())
+}
+#[tauri::command]
+fn tasks_snapshot(state: State<TaskStore>) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    with_tasks(state, |s| s.load())
+}
+#[tauri::command]
+fn task_project_create(
+    app: AppHandle,
+    state: State<TaskStore>,
+    name: String,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| s.project_create(&name, expected_revision)),
+    )
+}
+#[tauri::command]
+fn task_create(
+    app: AppHandle,
+    state: State<TaskStore>,
+    title: String,
+    project_id: Option<String>,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| {
+            s.create(
+                &title,
+                project_id,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+#[tauri::command]
+fn task_update(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    title: String,
+    project_id: Option<String>,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| {
+            s.update(
+                &id,
+                &title,
+                project_id,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+#[tauri::command]
+fn task_archive(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    archived: bool,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| {
+            s.archive(&id, archived, expected_revision, crate::tokens::now_ms())
+        }),
+    )
+}
+#[tauri::command]
+fn task_record_progress(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    status: crate::tasks::RunStatus,
+    kind: Option<crate::tasks::AttentionKind>,
+    artifact_title: Option<String>,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| {
+            s.record(
+                &id,
+                status,
+                kind,
+                artifact_title,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+#[tauri::command]
+fn task_mark_handled(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    run_id: String,
+    attention_id: String,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| {
+            s.handled(
+                &id,
+                &run_id,
+                &attention_id,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+
+#[tauri::command]
+fn task_sources(state: State<SharedEngine>) -> Vec<crate::task_sources::Choice> {
+    state
+        .lock()
+        .unwrap()
+        .task_sources
+        .values()
+        .cloned()
+        .collect()
+}
+
+type SessionCatalogStore = Mutex<crate::session_catalog::Store>;
+#[tauri::command]
+async fn session_catalog_read(app: AppHandle) -> Result<session_catalog::Catalog, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<SessionCatalogStore>()
+            .lock()
+            .map_err(|_| "会话目录不可用".to_string())
+            .map(|mut store| store.read())
+    })
+    .await
+    .map_err(|_| "会话目录读取未完成".to_string())?
+}
+#[tauri::command]
+async fn session_catalog_open(
+    app: AppHandle,
+    generation: String,
+    source: tasks::Source,
+) -> Result<session_navigation::Target, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = app
+            .state::<SessionCatalogStore>()
+            .lock()
+            .map_err(|_| "会话目录不可用")?
+            .target(&generation, &source)?;
+        session_navigation::launch(&target)?;
+        Ok(target)
+    })
+    .await
+    .map_err(|_| "会话打开未完成".to_string())?
+}
+
+#[tauri::command]
+fn session_open_observed(
+    state: State<SharedEngine>,
+    source: tasks::Source,
+) -> Result<session_navigation::Target, String> {
+    let target = crate::task_sources::selected_target(
+        state.lock().unwrap().task_sources.get(&source.agent_id),
+        &source,
+    )?;
+    session_navigation::launch(&target)?;
+    Ok(target)
+}
+#[tauri::command]
+fn task_link_source(
+    app: AppHandle,
+    state: State<SharedEngine>,
+    store: State<TaskStore>,
+    id: String,
+    agent: String,
+    session_id: String,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    let source = state
+        .lock()
+        .unwrap()
+        .task_sources
+        .get(&agent)
+        .filter(|c| c.source.session_id == session_id)
+        .map(|c| c.source.clone())
+        .ok_or_else(|| crate::tasks::Error {
+            code: "source_expired".into(),
+            message: "来源会话已更新，请刷新来源列表".into(),
+        })?;
+    publish_tasks(
+        &app,
+        with_tasks(store, |s| {
+            s.link(&id, source, expected_revision, crate::tokens::now_ms())
+        }),
+    )
+}
+#[tauri::command]
+fn task_open_source(
+    store: State<TaskStore>,
+    id: String,
+    run_id: Option<String>,
+    artifact_id: Option<String>,
+    expected_revision: u64,
+) -> Result<session_navigation::Target, String> {
+    let data = with_tasks(store, |s| s.load()).map_err(|e| e.message)?;
+    let source = data
+        .navigation_source(
+            &id,
+            run_id.as_deref(),
+            artifact_id.as_deref(),
+            expected_revision,
+        )
+        .map_err(|e| e.message)?;
+    let target = crate::task_sources::stored_target(source)?;
+    session_navigation::launch(&target)?;
+    Ok(target)
+}
+
+#[tauri::command]
+async fn task_artifact_content(
+    app: AppHandle,
+    id: String,
+    run_id: String,
+    artifact_id: String,
+    expected_revision: u64,
+) -> Result<crate::task_artifacts::Content, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<TaskStore>();
+        let snapshot = store
+            .lock()
+            .map_err(|_| "任务服务暂不可用")?
+            .load()
+            .map_err(|e| e.message)?;
+        let source = snapshot
+            .navigation_source(&id, Some(&run_id), Some(&artifact_id), expected_revision)
+            .map_err(|e| e.message)?;
+        let profile = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == source.agent_id)
+            .ok_or("来源工具未支持内容读取")?;
+        #[cfg(target_os = "macos")]
+        let runtime = app
+            .state::<SharedEngine>()
+            .lock()
+            .map_err(|_| "采集状态不可用")?
+            .claude_plan_runtime
+            .clone();
+        #[cfg(target_os = "macos")]
+        let result = if let Some(runtime) = runtime {
+            runtime
+                .lock()
+                .map_err(|_| "采集状态不可用")?
+                .with_cache(|capture| {
+                    crate::task_artifacts::read_with_capture(
+                        &snapshot,
+                        &id,
+                        &run_id,
+                        &artifact_id,
+                        expected_revision,
+                        &profile,
+                        capture,
+                    )
+                })?
+        } else {
+            crate::task_artifacts::read(
+                &snapshot,
+                &id,
+                &run_id,
+                &artifact_id,
+                expected_revision,
+                &profile,
+            )?
+        };
+        #[cfg(not(target_os = "macos"))]
+        let result = crate::task_artifacts::read(
+            &snapshot,
+            &id,
+            &run_id,
+            &artifact_id,
+            expected_revision,
+            &profile,
+        )?;
+        if store
+            .lock()
+            .map_err(|_| "任务服务暂不可用")?
+            .load()
+            .map_err(|e| e.message)?
+            .revision
+            != expected_revision
+        {
+            return Err("任务已更新，请刷新后重试".into());
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "来源内容读取未完成，请重试".to_string())?
+}
+
+// Claude plan controls return metadata only; body reads use the existing exact artifact command.
+enum ClaudePlanOperation {
+    Status,
+    Preview(claude_hook_config::Action, String, Option<String>),
+    Apply(String),
+    Cancel,
+    Resume(String),
+    Pause,
+}
+async fn claude_plan_operation(
+    app: AppHandle,
+    operation: ClaudePlanOperation,
+) -> Result<serde_json::Value, serde_json::Value> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, operation);
+        Err(
+            serde_json::json!({"code":"unsupported","notice":"本平台尚未支持方案采集。","applied":false}),
+        )
+    }
+    #[cfg(target_os="macos")]
+    tauri::async_runtime::spawn_blocking(move||{
+        let error=|notice:&str|serde_json::json!({"code":"unavailable","notice":notice,"applied":false});
+        let runtime=app.state::<SharedEngine>().lock().map_err(|_|error("采集状态不可用。"))?.claude_plan_runtime.clone().ok_or_else(||error("本次运行未开放方案采集。"))?;
+        let mut runtime=runtime.lock().map_err(|_|error("采集状态不可用。"))?;
+        let convert=|e:claude_hook_config::Error|serde_json::to_value(e).unwrap_or_else(|_|error("采集结果未核实。"));
+        match operation {
+            ClaudePlanOperation::Status=>serde_json::to_value(runtime.status()).map_err(|_|error("采集状态不可用。")),
+            ClaudePlanOperation::Preview(action,revision,backup)=>serde_json::to_value(runtime.preview(action,&revision,backup.as_deref()).map_err(convert)?).map_err(|_|error("预览未核实。")),
+            ClaudePlanOperation::Apply(id)=>serde_json::to_value(runtime.apply(&id).map_err(convert)?).map_err(|_|error("执行结果未核实。")),
+            ClaudePlanOperation::Cancel=>{runtime.cancel();Ok(serde_json::json!({"cancelled":true}))},
+            ClaudePlanOperation::Resume(revision)=>{runtime.resume(&revision).map_err(convert)?;serde_json::to_value(runtime.status()).map_err(|_|error("采集状态不可用。"))},
+            ClaudePlanOperation::Pause=>{runtime.pause().map_err(convert)?;serde_json::to_value(runtime.status()).map_err(|_|error("采集状态不可用。"))},
+        }
+    }).await.map_err(|_|serde_json::json!({"code":"uncertain","notice":"采集操作未完整返回，请重新读取。","applied":true}))?
+}
+#[tauri::command]
+async fn claude_plan_status(app: AppHandle) -> Result<serde_json::Value, serde_json::Value> {
+    claude_plan_operation(app, ClaudePlanOperation::Status).await
+}
+#[tauri::command]
+async fn claude_plan_preview(
+    app: AppHandle,
+    action: claude_hook_config::Action,
+    revision: String,
+    backup_id: Option<String>,
+) -> Result<serde_json::Value, serde_json::Value> {
+    claude_plan_operation(
+        app,
+        ClaudePlanOperation::Preview(action, revision, backup_id),
+    )
+    .await
+}
+#[tauri::command]
+async fn claude_plan_apply(
+    app: AppHandle,
+    plan_id: String,
+) -> Result<serde_json::Value, serde_json::Value> {
+    claude_plan_operation(app, ClaudePlanOperation::Apply(plan_id)).await
+}
+#[tauri::command]
+async fn claude_plan_cancel(app: AppHandle) -> Result<serde_json::Value, serde_json::Value> {
+    claude_plan_operation(app, ClaudePlanOperation::Cancel).await
+}
+#[tauri::command]
+async fn claude_plan_resume(
+    app: AppHandle,
+    revision: String,
+) -> Result<serde_json::Value, serde_json::Value> {
+    claude_plan_operation(app, ClaudePlanOperation::Resume(revision)).await
+}
+#[tauri::command]
+async fn claude_plan_pause(app: AppHandle) -> Result<serde_json::Value, serde_json::Value> {
+    claude_plan_operation(app, ClaudePlanOperation::Pause).await
 }
 
 // MARK: - 待办（Phase 3）
@@ -1093,13 +2930,9 @@ fn report_text(state: State<SharedEngine>, format: String) -> Result<String, Str
     let now = crate::tokens::now_ms();
     match format.as_str() {
         "csv" => Ok(crate::audit::csv_export(&snapshots.0, now).content),
-        "md" | "markdown" => Ok(crate::audit::markdown_export(
-            &snapshots.0,
-            &[],
-            Some(&snapshots.1),
-            now,
-        )
-        .content),
+        "md" | "markdown" => {
+            Ok(crate::audit::markdown_export(&snapshots.0, &[], Some(&snapshots.1), now).content)
+        }
         other => Err(format!("--format 只认 md 与 csv（收到 {other}）")),
     }
 }
@@ -1125,14 +2958,25 @@ fn acquire_startup_guard() -> std::io::Result<std::fs::File> {
     use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
     // single-instance 的 Unix listener 异步绑定；串行化冷启动直到 setup 完成，
     // 防止两次同时打开都在 socket 就绪前通过插件检测。CLI 不经过此入口。
-    let path = std::env::temp_dir().join(format!("dev.agentisland.startup-{}.lock", unsafe { libc::geteuid() }));
+    let path = std::env::temp_dir().join(format!("dev.agentisland.startup-{}.lock", unsafe {
+        libc::geteuid()
+    }));
     let file = std::fs::OpenOptions::new()
-        .read(true).write(true).create(true).truncate(false)
-        .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
     loop {
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 { return Ok(file); }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(file);
+        }
         let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted { return Err(error); }
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
     }
 }
 
@@ -1150,21 +2994,40 @@ fn set_dock_presence(app: &AppHandle, visible: bool) {
 }
 
 #[tauri::command]
-fn set_workbench_draft(window: tauri::WebviewWindow, lease: State<Mutex<window_lifecycle::WorkbenchLease>>, dirty: bool) {
-    if window.label() == "workbench" { lease.lock().unwrap().dirty = dirty; }
+fn set_workbench_draft(
+    window: tauri::WebviewWindow,
+    lease: State<Mutex<window_lifecycle::WorkbenchLease>>,
+    dirty: bool,
+) {
+    if window.label() == "workbench" {
+        lease.lock().unwrap().dirty = dirty;
+    }
 }
 
 fn schedule_workbench_release(app: &AppHandle, window: tauri::WebviewWindow) {
-    let epoch = app.state::<Mutex<window_lifecycle::WorkbenchLease>>().lock().unwrap().hidden();
+    let epoch = app
+        .state::<Mutex<window_lifecycle::WorkbenchLease>>()
+        .lock()
+        .unwrap()
+        .hidden();
     let handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(90));
         let app = handle.clone();
         queue_window_task(&handle, move || {
-            let may_release = app.state::<Mutex<window_lifecycle::WorkbenchLease>>().lock().unwrap().can_release(epoch);
-            if !may_release || window.is_visible().unwrap_or(true) { return; }
+            let may_release = app
+                .state::<Mutex<window_lifecycle::WorkbenchLease>>()
+                .lock()
+                .unwrap()
+                .can_release(epoch);
+            if !may_release || window.is_visible().unwrap_or(true) {
+                return;
+            }
             if window.destroy().is_ok() {
-                app.state::<Mutex<navigation::Mailbox>>().lock().unwrap().reset("workbench");
+                app.state::<Mutex<navigation::Mailbox>>()
+                    .lock()
+                    .unwrap()
+                    .reset("workbench");
                 memory::reclaim_idle_pages();
                 log_line("[window] released hidden workbench");
             }
@@ -1224,7 +3087,6 @@ fn collapse_to_tray(window: tauri::WebviewWindow) {
 
 // 抑制未使用告警（collapse_to_tray 参数保留给后续窗口控制）
 #[allow(unused)]
-
 #[derive(serde::Serialize, Clone)]
 struct TokenReportPub {
     #[serde(flatten)]
@@ -1263,12 +3125,18 @@ fn truncate_log_if_oversized(path: &std::path::Path) -> Option<u64> {
 pub(crate) fn log_line(msg: &str) {
     let filename = if background_test_requested() {
         format!("agentisland-test-{}.log", std::process::id())
-    } else { "agentisland-tauri.log".to_string() };
+    } else {
+        "agentisland-tauri.log".to_string()
+    };
     let path = std::env::temp_dir().join(filename);
     if let Some(before) = truncate_log_if_oversized(&path) {
         let line = format!("[run] 上一份日志 {before} 字节，已按 {LOG_CAP_BYTES} 字节封顶清空");
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let _ = writeln!(f, "{line}");
         }
     }
@@ -1278,7 +3146,11 @@ pub(crate) fn log_line(msg: &str) {
     // `[page] / [webview]` 当成当次运行的证据。
 
     use std::io::Write;
-    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         Ok(mut f) => {
             let _ = writeln!(f, "{}", msg);
         }
@@ -1290,9 +3162,10 @@ pub(crate) fn log_line(msg: &str) {
 }
 
 fn engine_loop(shared: SharedEngine, app: AppHandle) {
+    let mut source_signature = Vec::<String>::new();
     loop {
         // 徽标文本在临界区里**算好**，写托盘留到锁外（理由见 `apply_tray_badge`）。
-        let (state, interval, badge) = {
+        let (state, interval, badge, observations) = {
             let mut e = shared.lock().unwrap();
             let mut events = Vec::new();
             if let Some(rx) = e.event_rx.as_ref() {
@@ -1310,15 +3183,20 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
                 .snapshots
                 .iter()
                 .filter(|snap| {
-                    matches!(snap.level, models::ActivityLevel::Working | models::ActivityLevel::Attention)
+                    matches!(
+                        snap.level,
+                        models::ActivityLevel::Working | models::ActivityLevel::Attention
+                    )
                 })
                 .count();
             // 跟随 `menu_bar_badge_mode`（iconOnly 时不设标题）
             let badge = tray_badge_text(&badge_mode, working, s.grand_total.tokens24h);
-            let active = s
-                .snapshots
-                .iter()
-                .any(|snap| matches!(snap.level, models::ActivityLevel::Working | models::ActivityLevel::Attention));
+            let active = s.snapshots.iter().any(|snap| {
+                matches!(
+                    snap.level,
+                    models::ActivityLevel::Working | models::ActivityLevel::Attention
+                )
+            });
             // 全闲置走**独立字段**（Swift `idleSampleInterval`，默认 5s）。
             // 此前这里写死 `sample_interval × 2.5`——那是另一个公式，
             // 于是两侧的耗电量与「岛多久变灰」对不上。
@@ -1338,11 +3216,53 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
                     base
                 }
             };
-            (s, interval, badge)
+            (
+                s,
+                interval,
+                badge,
+                e.task_sources
+                    .values()
+                    .map(|c| c.observation.clone())
+                    .collect::<Vec<_>>(),
+            )
         };
         // 锁已释放，才轮到托盘——顺序不能反，见 `apply_tray_badge` 的注释。
         memory::reclaim_idle_pages();
         apply_tray_badge(&app, badge);
+        let mut signature: Vec<_> = observations
+            .iter()
+            .map(|o| {
+                format!(
+                    "{}:{}:{:?}",
+                    o.source.agent_id, o.source.session_id, o.status
+                )
+            })
+            .collect();
+        signature.sort();
+        if signature != source_signature {
+            source_signature = signature;
+            let _ = app.emit("tasks://sources_changed", ());
+        }
+        if !observations.is_empty() {
+            let result = app
+                .state::<TaskStore>()
+                .lock()
+                .map_err(|_| crate::tasks::Error {
+                    code: "unavailable".into(),
+                    message: "任务服务暂不可用".into(),
+                })
+                .and_then(|store| store.sync(&observations, crate::tokens::now_ms()));
+            // Owned data leaves the writer lock before touching any WebView.
+            match result {
+                Ok(Some(data)) => {
+                    let _ = app.emit("tasks://changed", data.revision);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = app.emit("tasks://error", error);
+                }
+            }
+        }
         for label in ["island", "sidebar", "workbench"] {
             if let Some(window) = app.get_webview_window(label) {
                 if window.is_visible().unwrap_or(false) {
@@ -1392,15 +3312,16 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "assets/agents/dim.png",
     "assets/agents/zcode.png",
     "assets/agents/qoder.png",
-    "assets/agents/vibeusage.png",
     "assets/agents/workbuddy.png",
     "assets/agents/chatgpt.png",
     "assets/agents/workbuddyai.png",
     "assets/agents/dsh.svg",
     "assets/agents/trae.png",
+    "assets/agents/traework.png",
+    "assets/agents/doubaowork.png",
     "assets/agents/mimodesktop.png",
     "assets/agents/minimaxcode.png",
-    "assets/agents/vscode.svg",
+    "assets/agents/vscode.png",
     "assets/agents/aider.svg",
     "assets/agents/ima.svg",
     "assets/agents/continue.svg",
@@ -1430,9 +3351,28 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "css/workbench.css",
     "index.html",
     "js/agent-icons.js",
+    "js/agent-actions.js",
+    "js/island-navigation.js",
     "js/main.js",
     "js/navigation.js",
     "js/window-lifecycle.js",
+    "js/page-host.js",
+    "js/tasks-page.js",
+    "js/sessions-page.js",
+    "js/report-panel.js",
+    "js/usage-trend.js",
+    "js/workspaces-page.js",
+    "js/workspace-flow.js",
+    "js/prompts-page.js",
+    "js/quick-navigation.js",
+    "js/window-layout-page.js",
+    "js/models-page.js",
+    "js/connections-page.js",
+    "js/mcp-page.js",
+    "js/skills-package-page.js",
+    "js/claude-plan-page.js",
+    "js/artifact-lifetime.js",
+    "js/task-attention.js",
     "js/shell.js",
     "js/tauri.js",
     "js/views.js",
@@ -1453,7 +3393,9 @@ mod embedded_assets_sentinel {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui");
         let mut out = Vec::new();
         fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
-            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return;
+            };
             for e in rd.flatten() {
                 let p = e.path();
                 if p.is_dir() {
@@ -1472,7 +3414,10 @@ mod embedded_assets_sentinel {
     #[test]
     fn the_sample_list_matches_the_ui_directory_exactly() {
         let mut on_disk = ui_files();
-        let mut listed: Vec<String> = EMBEDDED_ASSET_SAMPLE.iter().map(|s| s.to_string()).collect();
+        let mut listed: Vec<String> = EMBEDDED_ASSET_SAMPLE
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         on_disk.sort();
         listed.sort();
         assert_eq!(
@@ -1483,7 +3428,6 @@ mod embedded_assets_sentinel {
         );
     }
 }
-
 
 #[tauri::command]
 fn log_from_ui(message: String) {
@@ -1794,7 +3738,23 @@ const UI_SMOKE_JS: &str = r#"(function () {
         if (!document.querySelector('[data-settings-root]') || document.querySelector('[data-report-root]')) throw new Error('灵动岛设置入口未进入设置页');
         await clickAll('[data-back]');
       }
+      var usageNav = document.querySelector('.wb-nav [data-wb-nav="tokenAnalytics"]');
+      if (usageNav) {
+        usageNav.click(); await wait(300);
+        var usageReport = document.querySelector('[data-usage-report]');
+        if (!usageReport) throw new Error('用量页缺少报告入口');
+        if (!usageReport.open) usageReport.querySelector('summary').click();
+      }
       await clickAll('[data-report-format]');
+      var reportPanel = document.querySelector('[data-report-panel]');
+      if (reportPanel) {
+        var reportWait = Date.now();
+        while (reportPanel.getAttribute('aria-busy') === 'true' && Date.now() - reportWait < 6000) await wait(100);
+        var reportStatus = reportPanel.querySelector('[data-report-status]');
+        if (!reportStatus || !/报告已生成|暂无报告内容/.test(reportStatus.textContent)) throw new Error('报告生成未完成');
+        snap('用量页报告生成与状态反馈');
+      }
+      await clickAll('[data-usage-range]');
       await clickAll('[data-search]');
       // **真打一个字进去**：点开搜索框不等于搜索能用。
       //
@@ -1896,6 +3856,9 @@ const UI_SMOKE_JS: &str = r#"(function () {
       window.__TAURI__.core.invoke('log_from_ui', {
         message: 'SMOKE_RESULT ' + shell + ' ' + JSON.stringify({
           state: window.__uiSmoke.state,
+          // 驱动抛异常时 `steps`/`found` 都是空的，没有 fatal 这条输出就是
+          // 「threw 但不知道为什么」——冒烟门禁红得没有可操作性。
+          fatal: window.__uiSmoke.fatal,
           found: window.__uiSmoke.found,
           steps: window.__uiSmoke.steps,
           bootArgs: window.__uiSmoke.bootArgs,
@@ -1967,7 +3930,6 @@ fn ui_smoke_requested() -> bool {
     std::env::args().any(|a| a == "--ui-smoke")
 }
 
-
 /// 深链投递的事件落进事件队列。
 ///
 /// 标记为**外部投递**（`externally_delivered`）：它来自一条 URL，
@@ -2002,8 +3964,16 @@ fn notify_external(
         agent_name: profile.name.clone(),
         event_type: event_type.to_string(),
         timestamp: tokens::now_ms(),
-        message: if message.is_empty() { None } else { Some(message) },
-        detail: if detail.is_empty() { None } else { Some(detail) },
+        message: if message.is_empty() {
+            None
+        } else {
+            Some(message)
+        },
+        detail: if detail.is_empty() {
+            None
+        } else {
+            Some(detail)
+        },
         duration: 0.0,
         externally_delivered: true,
     });
@@ -2049,7 +4019,9 @@ pub fn handle_deep_link(app: &AppHandle, url: &str) -> bool {
         // 启动期间的意图由 Mailbox 保存至前端就绪，
         // 免得 Rust 侧再写一份显隐规则（两份规则迟早只改一处）
         send_navigation(app, &action);
-        if matches!(action,deeplink::Action::Workbench) { reveal_workbench_window(app); }
+        if matches!(action, deeplink::Action::Workbench) {
+            reveal_workbench_window(app);
+        }
     } else if let deeplink::Action::Settings(tab) = &action {
         // 设置是独立窗口：先把它显示出来，岛保持当前形态
         if let Some(win) = app.get_webview_window("settings") {
@@ -2069,13 +4041,30 @@ fn main() {
     // **必须在建引擎、开线程、起窗口之前**：`status` 的全部价值是「快」，
     // 而拉起 Tauri 再退出比它自己采完一拍慢一个量级。
     let argv: Vec<String> = std::env::args().collect();
+    if let Some(code) = claude_plan_receiver::cli(&argv) {
+        std::process::exit(code);
+    }
     // Explicit diagnostic mode: no WebViews, hooks, settings writes or remote delivery.
     if argv.iter().any(|a| a == "--memory-core-probe") {
+        let options = match resource_diagnostics::Options::parse(&argv) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
         if argv.iter().any(|a| a == "--process-only") {
             let mut monitor = procmon::ProcessMonitor::new();
-            for _ in 0..20 {
+            for sample in 0..options.samples {
+                let start = std::time::Instant::now();
                 monitor.refresh();
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                println!(
+                    "{}",
+                    serde_json::json!({"schema_version":1,"sample":sample+1,"recorded_ms":tokens::now_ms(),"mode":"process_only","process_us":resource_diagnostics::elapsed(Some(start))})
+                );
+                if sample + 1 < options.samples {
+                    std::thread::sleep(std::time::Duration::from_millis(options.interval_ms));
+                }
             }
             return;
         }
@@ -2084,13 +4073,22 @@ fn main() {
         settings.remote_policy.master_enabled = false;
         let mut engine = ActivityEngine::new(settings, rx);
         engine.refresh_usage = !argv.iter().any(|a| a == "--without-usage");
-        for _ in 0..20 {
+        engine.enable_resource_diagnostics();
+        for sample in 0..options.samples {
             engine.tick();
-            if !argv.iter().any(|a| a == "--retain-allocator-pages") {
+            let reclaim = !argv.iter().any(|a| a == "--retain-allocator-pages");
+            let start = std::time::Instant::now();
+            if reclaim {
                 memory::reclaim_idle_pages();
             }
-            println!("memory-probe tick");
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            let reclaim_us = resource_diagnostics::elapsed(Some(start));
+            println!(
+                "{}",
+                serde_json::json!({"schema_version":1,"sample":sample+1,"recorded_ms":tokens::now_ms(),"mode":"core","usage_enabled":engine.refresh_usage,"reclaim_enabled":reclaim,"reclaim_us":reclaim_us,"tick":engine.resource_diagnostics()})
+            );
+            if sample + 1 < options.samples {
+                std::thread::sleep(std::time::Duration::from_millis(options.interval_ms));
+            }
         }
         return;
     }
@@ -2105,6 +4103,15 @@ fn main() {
     let mut engine = ActivityEngine::new(settings, rx);
     let demo = std::env::args().any(|a| a == "--demo");
     engine.demo_mode = demo;
+    #[cfg(target_os = "macos")]
+    if !demo && !isolated_instance_requested() {
+        if let Ok(mut runtime) = crate::claude_plan_runtime::Runtime::at_default() {
+            if runtime.resume_saved().is_err() {
+                log_line("[claude-plan] 采集重启状态未核实，未声明运行。");
+            }
+            engine.claude_plan_runtime = Some(Arc::new(Mutex::new(runtime)));
+        }
+    }
     let shared: SharedEngine = Arc::new(Mutex::new(engine));
 
     std::panic::set_hook(Box::new(|info| {
@@ -2119,7 +4126,7 @@ fn main() {
     let startup_guard = acquire_startup_guard().expect("应用冷启动互斥锁应当可用");
 
     let mut context = tauri::generate_context!();
-    if background_test_requested() {
+    if isolated_instance_requested() {
         context
             .config_mut()
             .identifier
@@ -2148,6 +4155,20 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .manage(shared.clone())
+        .manage(WindowLayoutStore::new(
+            window_layout_service::Store::with_journal(window_layout_journal::Store::at_default()),
+        ))
+        .manage(WindowRuleStore::new(
+            window_layout_rules::Store::at_default(),
+        ))
+        .manage(WorkspaceStore::new(workspaces::Store::at_default()))
+        .manage(SessionCatalogStore::new(
+            session_catalog::Store::at_default(),
+        ))
+        .manage(PromptStore::new(prompts::Store::at_default()))
+        .manage(SkillPackageStore::new())
+        .manage(ConnectionStore::new(connections::Store::at_default()))
+        .manage(Mutex::new(crate::tasks::Store::at_default()))
         .manage(Mutex::new(navigation::Mailbox::default()))
         .manage(Mutex::new(window_lifecycle::WorkbenchLease::default()))
         .on_window_event(|window, event| {
@@ -2204,7 +4225,7 @@ fn main() {
             // 立刻生效是本轮的承诺之一——那就在每拍检查一次「开关状态与
             // 当前注册状态是否一致」，不一致才动。注册失败只记日志，
             // 不打断引擎循环：热键是锦上添花，不该让它把监控整个拖停。
-            if !background_test_requested() {
+            if !isolated_instance_requested() {
                 // 热键回调：与托盘同一个动作（展开 / 收起），不另发明一套
                 if let Ok(shortcut) = parse_hotkey() {
                     use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -2275,7 +4296,7 @@ fn main() {
             std::thread::spawn(move || engine_loop(shared2, handle));
 
             // 本地 Webhook（Rust 端 127.0.0.1:42000，与 Swift 的 41999 分开以免静默抢端口）
-            if !background_test_requested() {
+            if !isolated_instance_requested() {
                 let shared_for_webhook = shared.clone();
                 std::thread::spawn(move || {
                     let _server = webhook::LocalEventServer::start(tx, shared_for_webhook);
@@ -2422,7 +4443,41 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_boot_args,
+            connections_list,
+            connection_test,
+            connection_save,
+            connection_remove,
+            window_layout_capabilities,
+            window_layout_candidates,
+            window_layout_preview,
+            window_layout_apply,
+            window_layout_history,
+            window_layout_history_remove,
+            window_layout_recovery_preview,
+            window_layout_undo,
+            window_layout_open_permissions,
+            window_layout_rules_list,
+            prompts_list,
+            prompt_save,
+            prompt_remove,
+            prompt_preview,
+            prompt_apply,
+            prompt_backups,
+            prompt_preview_restore,
+            prompt_restore,
+            workspaces_list,
+            workspace_catalog,
+            workspace_save,
+            workspace_remove,
+            workspace_preview,
+            workspace_apply_profile,
+            workspace_restore_profile,
+            workspace_operations,
+            window_layout_save_rule,
+            window_layout_remove_rule,
+            window_layout_resolve_rule,
             get_engine_state,
+            open_agent_session,
             window_is_visible,
             set_workbench_draft,
             drain_navigation,
@@ -2438,6 +4493,28 @@ fn main() {
             audit_report_csv,
             agent_process_tree,
             run_selftest,
+            task_sources,
+            session_open_observed,
+            session_catalog_read,
+            session_catalog_open,
+            task_link_source,
+            task_open_source,
+            task_artifact_content,
+            claude_plan_status,
+            claude_plan_preview,
+            claude_plan_apply,
+            claude_plan_cancel,
+            claude_plan_resume,
+            claude_plan_pause,
+            tasks_attention_summary,
+            task_show_workbench,
+            tasks_snapshot,
+            task_project_create,
+            task_create,
+            task_update,
+            task_archive,
+            task_record_progress,
+            task_mark_handled,
             todos_list,
             todos_add,
             todos_toggle,
@@ -2445,10 +4522,37 @@ fn main() {
             todos_clear_done,
             provider_scan_tools,
             provider_list_profiles,
+            provider_export_file,
+            provider_preview_import,
+            provider_import_bundle,
+            provider_preview_backup,
+            provider_capabilities,
+            skills_inspect,
+            skills_preview,
+            skills_apply,
+            skills_package_capability,
+            skills_package_choose,
+            skills_package_inventory,
+            skills_package_sync_preview,
+            skills_package_edit_read,
+            skills_package_edit_preview,
+            skills_package_edit_close,
+            skills_package_apply,
+            skills_package_cancel,
+            skills_package_recoveries,
+            skills_package_restore,
+            skills_package_restore_preview,
+            skills_package_trash_preview,
+            skills_package_trash,
+            mcp_inspect,
+            mcp_preview,
+            mcp_apply,
             provider_save_profile,
             provider_delete_profile,
             provider_status,
             provider_apply_profile,
+            provider_reapply,
+            provider_keep_current,
             provider_list_backups,
             provider_restore_backup,
             token_report_markdown,
@@ -2479,7 +4583,6 @@ fn main() {
         .expect("error while running tauri application");
 }
 
-
 #[cfg(test)]
 mod tray_badge_tests {
     use super::tray_badge_text;
@@ -2492,12 +4595,24 @@ mod tray_badge_tests {
         assert_eq!(tray_badge_text("whatever", 3, 123_456), None);
 
         // activeCount：正在工作的 Agent 数
-        assert_eq!(tray_badge_text("activeCount", 2, 0), Some("⚡️ 2".to_string()));
-        assert_eq!(tray_badge_text("activeCount", 0, 0), Some("⚡️ 0".to_string()));
+        assert_eq!(
+            tray_badge_text("activeCount", 2, 0),
+            Some("⚡️ 2".to_string())
+        );
+        assert_eq!(
+            tray_badge_text("activeCount", 0, 0),
+            Some("⚡️ 0".to_string())
+        );
 
         // tokenUsage：复用引擎那一套缩写，菜单栏上不该写 `120.00M`
-        assert_eq!(tray_badge_text("tokenUsage", 0, 120_000), Some("120.0k".to_string()));
-        assert_eq!(tray_badge_text("tokenUsage", 0, 2_500_000), Some("2.50M".to_string()));
+        assert_eq!(
+            tray_badge_text("tokenUsage", 0, 120_000),
+            Some("120.0k".to_string())
+        );
+        assert_eq!(
+            tray_badge_text("tokenUsage", 0, 2_500_000),
+            Some("2.50M".to_string())
+        );
     }
 
     /// 菜单栏那一格的长度不是小事：它会把旁边的菜单挤走。
@@ -2510,7 +4625,15 @@ mod tray_badge_tests {
     #[test]
     fn the_badge_never_gets_long_enough_to_push_the_menubar_around() {
         for mode in ["iconOnly", "activeCount", "tokenUsage"] {
-            for tokens in [0i64, 999, 1_000, 120_000, 2_500_000, 999_999_999, 1_000_000_000_000] {
+            for tokens in [
+                0i64,
+                999,
+                1_000,
+                120_000,
+                2_500_000,
+                999_999_999,
+                1_000_000_000_000,
+            ] {
                 for active in [0usize, 1, 9, 99, 1_000] {
                     if let Some(text) = tray_badge_text(mode, active, tokens) {
                         assert!(
@@ -2542,7 +4665,11 @@ mod hotkey_tests {
             "{HOTKEY_ACCEL} 没有修饰键——那不是全局热键，是全局劫持"
         );
         // 主键的形状钉住：`I`。写成 Debug 全文比较，键一改就红
-        assert_eq!(format!("{:?}", shortcut.key), "KeyI", "{HOTKEY_ACCEL} 的主键应当是 I");
+        assert_eq!(
+            format!("{:?}", shortcut.key),
+            "KeyI",
+            "{HOTKEY_ACCEL} 的主键应当是 I"
+        );
     }
 
     /// 组合键的**形状**要写进断言：改了它，用户肌肉记忆里的快捷键就变了，
@@ -2551,7 +4678,9 @@ mod hotkey_tests {
     fn the_hotkey_shape_is_pinned_so_a_silent_change_cannot_happen() {
         let shortcut = parse_hotkey().expect("热键组合键必须能解析");
         assert!(
-            shortcut.mods.contains(tauri_plugin_global_shortcut::Modifiers::SHIFT),
+            shortcut
+                .mods
+                .contains(tauri_plugin_global_shortcut::Modifiers::SHIFT),
             "{HOTKEY_ACCEL} 应当带 Shift（与既有快捷键区分）"
         );
         let cmd_or_ctrl = tauri_plugin_global_shortcut::Modifiers::SUPER
@@ -2570,8 +4699,17 @@ mod version_pinning {
 
     #[test]
     fn the_cargo_version_matches_the_changelog() {
-        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CHANGELOG.md")).unwrap();
-        let version = text.lines().find_map(|line| line.strip_prefix("## [")).unwrap().split(']').next().unwrap();
+        let text = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../CHANGELOG.md"),
+        )
+        .unwrap();
+        let version = text
+            .lines()
+            .find_map(|line| line.strip_prefix("## ["))
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap();
         assert_eq!(env!("CARGO_PKG_VERSION"), version);
     }
 
@@ -2634,7 +4772,12 @@ mod ui_symbol_sentinel {
         let mut out = HashSet::new();
         for line in text.lines() {
             let line = line.trim_start();
-            for prefix in ["export function ", "export async function ", "function ", "async function "] {
+            for prefix in [
+                "export function ",
+                "export async function ",
+                "function ",
+                "async function ",
+            ] {
                 if let Some(rest) = line.strip_prefix(prefix) {
                     if let Some(name) = rest.split(['(', '<', ' ']).next() {
                         if !name.is_empty() {
@@ -2661,6 +4804,21 @@ mod ui_symbol_sentinel {
     const PREFIXES: [&str; 3] = ["page", "hydrate", "render"];
 
     #[test]
+    fn session_directory_preserves_source_identity_and_history() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-sessions.mjs");
+        let result = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("node is required");
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[test]
     fn every_page_and_hydrate_call_has_a_definition() {
         let files = ui_js_files();
         let mut defined: HashSet<String> = HashSet::new();
@@ -2679,7 +4837,10 @@ mod ui_symbol_sentinel {
             for line in text.lines() {
                 // 跳过注释行：文档里提到某个函数名不算调用
                 let trimmed = line.trim_start();
-                if trimmed.starts_with("//") || trimmed.starts_with("*") || trimmed.starts_with("/*") {
+                if trimmed.starts_with("//")
+                    || trimmed.starts_with("*")
+                    || trimmed.starts_with("/*")
+                {
                     continue;
                 }
                 let mut rest = trimmed;
@@ -2763,12 +4924,15 @@ mod ui_symbol_sentinel {
     fn every_invoke_has_a_backing_command() {
         let mut commands: HashSet<String> = HashSet::new();
         for entry in std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
-            .unwrap_or_else(|_| panic!("应当读得到 src")) {
+            .unwrap_or_else(|_| panic!("应当读得到 src"))
+        {
             let path = entry.expect("目录项应当可读").path();
             if path.extension().is_none_or(|ext| ext != "rs") {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             let mut lines = text.lines().peekable();
             while let Some(line) = lines.next() {
                 if line.trim() != "#[tauri::command]" {
@@ -2776,7 +4940,11 @@ mod ui_symbol_sentinel {
                 }
                 // 命令函数名在下一行：`fn name(` / `fn name<T>(`
                 if let Some(next) = lines.peek() {
-                    let trimmed = next.trim().strip_prefix("fn ").or_else(|| next.trim().strip_prefix("async fn ")).unwrap_or("");
+                    let trimmed = next
+                        .trim()
+                        .strip_prefix("fn ")
+                        .or_else(|| next.trim().strip_prefix("async fn "))
+                        .unwrap_or("");
                     if let Some(name) = trimmed.split(['(', '<']).next() {
                         if !name.is_empty() {
                             commands.insert(name.to_string());
@@ -2828,11 +4996,11 @@ mod ui_symbol_sentinel {
                     //  一度以为规则有洞——其实是规则自己把大写挡在了门外）。
                     let looks_like_command = word.contains('_')
                         && word.contains(|c: char| c.is_ascii_lowercase())
-                        && word
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+                        && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
                     if looks_like_command && !commands.contains(word) {
-                        missing.push(format!("{name}: `invoke('{word}')` 没有对应的 #[tauri::command]"));
+                        missing.push(format!(
+                            "{name}: `invoke('{word}')` 没有对应的 #[tauri::command]"
+                        ));
                     }
                     rest = &inner[end + 1..];
                 }
@@ -2870,7 +5038,10 @@ mod ui_symbol_sentinel {
             .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
             .collect();
         files.sort();
-        assert!(!files.is_empty(), "一个 ui/js/*.js 都没找到——检查本身失效了");
+        assert!(
+            !files.is_empty(),
+            "一个 ui/js/*.js 都没找到——检查本身失效了"
+        );
 
         let mut broken = Vec::new();
         for path in &files {
@@ -2947,7 +5118,10 @@ mod ui_symbol_sentinel {
             })
             .filter(|s| !s.is_empty())
             .collect();
-        assert!(!labels.is_empty(), "一个窗口标签都没从 tauri.conf.json 里读到——解析失效了");
+        assert!(
+            !labels.is_empty(),
+            "一个窗口标签都没从 tauri.conf.json 里读到——解析失效了"
+        );
 
         for label in &labels {
             assert!(
@@ -3002,41 +5176,177 @@ mod build_env_sentinel {
     globalThis.innerWidth = 400; globalThis.innerHeight = 800;
     "#;
 
+    #[test]
+    fn workbench_cached_drafts_and_request_lifetimes() {
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-window-lifecycle.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("草稿回归需要 node");
+        assert!(
+            output.status.success(),
+            "草稿生命周期回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn model_directory_preserves_configured_target_scope() {
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-model-directory.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("模型目录回归需要 node");
+        assert!(
+            output.status.success(),
+            "模型目录回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn quick_navigation_search_is_scoped_and_escaped() {
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-quick-navigation.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("快捷导航回归需要 node");
+        assert!(
+            output.status.success(),
+            "快捷导航回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn prompts_ui_keeps_body_out_of_lists_and_escapes_labels() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-prompts.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("提示词回归需要 node");
+        assert!(
+            output.status.success(),
+            "提示词回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn workspace_reference_actions_escape_labels_and_disable_missing_sources() {
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-workspaces.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("工作空间回归需要 node");
+        assert!(
+            output.status.success(),
+            "工作空间回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn functional_ui_settings_and_remote_feedback_regression() {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-functional-ui.mjs");
-        let output = std::process::Command::new("node").arg(script).output().expect("功能回归需要 node");
-        assert!(output.status.success(), "功能回归失败：{}", String::from_utf8_lossy(&output.stderr));
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-functional-ui.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("功能回归需要 node");
+        assert!(
+            output.status.success(),
+            "功能回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
     fn agent_identities_cover_registry_and_all_ui_locations() {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-agent-identities.mjs");
-        let output = std::process::Command::new("node").arg(script).output().expect("身份图标回归需要 node");
-        assert!(output.status.success(), "身份图标回归失败：{}", String::from_utf8_lossy(&output.stderr));
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-agent-identities.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("身份图标回归需要 node");
+        assert!(
+            output.status.success(),
+            "身份图标回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn island_navigation_settles_after_asynchronous_report_retarget() {
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-island-motion.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("导航动效回归需要 node");
+        assert!(
+            output.status.success(),
+            "导航动效回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn island_agent_return_waits_for_viewport_commit() {
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-island-return.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("返回动效回归需要 node");
+        assert!(
+            output.status.success(),
+            "返回动效回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
     fn island_clicks_do_not_trigger_drag_placement() {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-island-click.mjs");
-        let output = std::process::Command::new("node").arg(script).output().expect("点击回归需要 node");
-        assert!(output.status.success(), "点击定位回归失败：{}", String::from_utf8_lossy(&output.stderr));
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-island-click.mjs");
+        let output = std::process::Command::new("node")
+            .arg(script)
+            .output()
+            .expect("点击回归需要 node");
+        assert!(
+            output.status.success(),
+            "点击定位回归失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
     fn island_boot_handles_deep_link_navigation() {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../scripts/test-island-deeplink.mjs");
-        for (shell, cold_start) in [("island", "0"), ("island", "1"), ("workbench", "0"), ("workbench", "1")] {
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-island-deeplink.mjs");
+        for (shell, cold_start) in [
+            ("island", "0"),
+            ("island", "1"),
+            ("workbench", "0"),
+            ("workbench", "1"),
+        ] {
             let output = std::process::Command::new("node")
                 .arg(&script)
                 .env("TEST_COLD_NAVIGATION", cold_start)
                 .env("TEST_NAVIGATION_SHELL", shell)
                 .output()
                 .expect("深链 UI 回归需要 node");
-            assert!(output.status.success(), "深链 UI 回归失败（shell={shell}, cold={cold_start}）：\n{}\n{}",
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "深链 UI 回归失败（shell={shell}, cold={cold_start}）：\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
@@ -3047,7 +5357,11 @@ mod build_env_sentinel {
             .arg("-c")
             .arg("import plistlib,json,sys; from pathlib import Path; p=Path(sys.argv[1]); c=json.loads((p/'tauri.conf.json').read_text()); assert plistlib.loads((p/c['bundle']['macOS']['infoPlist']).read_bytes())['LSUIElement'] is True; assert 'icons/icon.icns' in c['bundle']['icon']; assert (p/'icons/icon.icns').stat().st_size > 0")
             .arg(root).output().expect("bundle 验证需要 python3");
-        assert!(out.status.success(), "macOS 常驻启动或 Dock 资产配置错误：{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "macOS 常驻启动或 Dock 资产配置错误：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn tauri_conf() -> String {
@@ -3180,11 +5494,16 @@ mod main_thread_dispatch_sentinel {
     #[test]
     fn tray_writes_happen_outside_the_engine_lock() {
         let body = engine_loop_body();
-        let lock_at = body.find("shared.lock()").expect("engine_loop 不再锁引擎了？守护需要跟着改");
+        let lock_at = body
+            .find("shared.lock()")
+            .expect("engine_loop 不再锁引擎了？守护需要跟着改");
         let badge_at = body
             .find("apply_tray_badge(")
             .expect("engine_loop 不再写托盘徽标了？徽标会静默消失");
-        assert!(lock_at < badge_at, "写托盘必须排在拿锁之后，实际是 {lock_at} vs {badge_at}");
+        assert!(
+            lock_at < badge_at,
+            "写托盘必须排在拿锁之后，实际是 {lock_at} vs {badge_at}"
+        );
 
         let critical = &body[lock_at..badge_at];
         for forbidden in ["set_title", "tray_by_id"] {
@@ -3244,7 +5563,10 @@ mod level_contract_sentinel {
         use crate::models::ActivityLevel;
         use crate::session::{SessionProbe, Signal};
         let mut e = engine();
-        let Some(profile) = crate::registry::builtin().into_iter().find(|p| p.id == "claude") else {
+        let Some(profile) = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "claude")
+        else {
             return;
         };
         let mut e = e;
@@ -3262,7 +5584,9 @@ mod level_contract_sentinel {
             30.0,
             1.0,
             &FileActivityResult {
-                latest_write: Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(999)),
+                latest_write: Some(
+                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(999),
+                ),
                 latest_file: Some("/tmp/x.jsonl".into()),
                 active_sessions: 3,
             },
@@ -3282,7 +5606,10 @@ mod level_contract_sentinel {
     fn a_running_process_is_not_forced_offline_by_this_contract() {
         use crate::session::SessionProbe;
         let mut e = engine();
-        let Some(profile) = crate::registry::builtin().into_iter().find(|p| p.id == "claude") else {
+        let Some(profile) = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "claude")
+        else {
             return;
         };
         let level = e.decide_level(
@@ -3293,7 +5620,11 @@ mod level_contract_sentinel {
             0.0,
             30.0,
             1.0,
-            &FileActivityResult { latest_write: None, latest_file: None, active_sessions: 0 },
+            &FileActivityResult {
+                latest_write: None,
+                latest_file: None,
+                active_sessions: 0,
+            },
             &SessionProbe::default(),
             Some(4242),
         );
@@ -3466,7 +5797,11 @@ mod log_cap_tests {
         let body = "[run] pid=1 启动\n[boot] 一些内容\n";
         std::fs::write(&path, body).unwrap();
         assert_eq!(truncate_log_if_oversized(&path), None, "没超封顶就不该截断");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), body, "内容必须原样保留");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            body,
+            "内容必须原样保留"
+        );
     }
 
     #[test]
@@ -3491,7 +5826,10 @@ mod log_cap_tests {
             LOG_CAP_BYTES <= 16 * 1024 * 1024,
             "封顶 {LOG_CAP_BYTES} 字节大得没意义：等于没有封顶"
         );
-        assert!(LOG_CAP_BYTES > 64 * 1024, "封顶太小会把正常运行要的日志也清掉");
+        assert!(
+            LOG_CAP_BYTES > 64 * 1024,
+            "封顶太小会把正常运行要的日志也清掉"
+        );
     }
 }
 
@@ -3610,10 +5948,7 @@ security-framework = "3"
         .parse()
         .expect("内联 TOML 应当可解析");
         assert_eq!(keys(&doc, "dependencies"), vec!["a", "b"]);
-        assert_eq!(
-            keys(&doc, &MACOS_TABLE),
-            vec!["security-framework"]
-        );
+        assert_eq!(keys(&doc, &MACOS_TABLE), vec!["security-framework"]);
         assert!(keys(&doc, "target.\"cfg(windows)\".dependencies").is_empty());
     }
 }
@@ -3729,7 +6064,11 @@ mod posix_port_ratchet {
             .map(|e| e.path().to_path_buf())
             .collect();
         out.sort();
-        assert!(out.len() > 20, "只找到 {} 个 .rs，采集器本身失效了", out.len());
+        assert!(
+            out.len() > 20,
+            "只找到 {} 个 .rs，采集器本身失效了",
+            out.len()
+        );
         out
     }
 
@@ -3738,7 +6077,11 @@ mod posix_port_ratchet {
         let mut found = Vec::new();
         for path in rusted_files() {
             let text = std::fs::read_to_string(&path).expect("源文件应可读");
-            let rel = path.strip_prefix(&src_root).unwrap_or(&path).display().to_string();
+            let rel = path
+                .strip_prefix(&src_root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
             let lines: Vec<&str> = production_section(&text).lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 for needle in POSIX_ONLY {
@@ -3796,8 +6139,7 @@ mod posix_port_ratchet {
         assert_eq!(count_in(inline), 1, "内联测试模块里的那处不该计入");
 
         // 声明式 `mod tests;` **不是**边界——它的内容在别的文件里
-        let declared =
-            "#[cfg(test)]\nmod tests;\nfn b() { let _ = libc::getppid(); }\n";
+        let declared = "#[cfg(test)]\nmod tests;\nfn b() { let _ = libc::getppid(); }\n";
         assert_eq!(count_in(declared), 1, "声明式模块不该把后面的生产代码切掉");
 
         // `#[path = …]` 夹在中间也要能跨过去
@@ -3807,13 +6149,20 @@ mod posix_port_ratchet {
 
         // 已门控的**不算缺口**——它在 Windows 上不会编译
         let gated = "fn f() {\n    #[cfg(unix)]\n    {\n        use std::os::unix::fs::PermissionsExt;\n    }\n}\n";
-        assert_eq!(count_in(gated), 0, "已门控的不该计入（否则这条守护会一直误报）");
+        assert_eq!(
+            count_in(gated),
+            0,
+            "已门控的不该计入（否则这条守护会一直误报）"
+        );
         let gated_item =
             "#[cfg(unix)]\npub fn g() {\n    use std::os::unix::fs::PermissionsExt;\n}\n";
         assert_eq!(count_in(gated_item), 0, "函数级门控也不该计入");
 
         // 整个仓当前确实有命中（不是 0）
-        assert!(hits().len() > 0, "读到 0 处——采集器或边界规则坏了，上面那条会恒绿");
+        assert!(
+            hits().len() > 0,
+            "读到 0 处——采集器或边界规则坏了，上面那条会恒绿"
+        );
     }
 }
 
@@ -3898,14 +6247,17 @@ mod shell_quoting_sentinel {
     fn scan_all_scripts() -> Vec<String> {
         let dir = scripts_dir();
         let mut hits = Vec::new();
-        let entries = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("应当读得到 scripts/：{e}"));
+        let entries =
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("应当读得到 scripts/：{e}"));
         let mut paths: Vec<PathBuf> = entries
             .map(|e| e.expect("目录项应可读").path())
             .filter(|p| p.extension().is_some_and(|x| x == "sh"))
             .collect();
         paths.sort();
-        assert!(!paths.is_empty(), "scripts/ 下一个 .sh 都没有——守护本身失效了");
+        assert!(
+            !paths.is_empty(),
+            "scripts/ 下一个 .sh 都没有——守护本身失效了"
+        );
         for path in paths {
             let text = std::fs::read_to_string(&path).expect("脚本应可读");
             for (n, line) in text.lines().enumerate() {
@@ -3945,7 +6297,10 @@ mod shell_quoting_sentinel {
         let bad = r#"    echo "!! 工具链里没有 SwiftUIMacros（$DEV_DIR）⇒ 自动 SKIP_SWIFT=1""#;
         let hits = scan_line(bad);
         assert_eq!(hits.len(), 1, "应恰好报一处：{hits:?}");
-        assert!(hits[0].starts_with("$DEV_DIR）"), "报出的应是 `$DEV_DIR）`：{hits:?}");
+        assert!(
+            hits[0].starts_with("$DEV_DIR）"),
+            "报出的应是 `$DEV_DIR）`：{hits:?}"
+        );
     }
 
     #[test]
@@ -3953,8 +6308,8 @@ mod shell_quoting_sentinel {
         for ok in [
             r#"echo "工具链里没有（${DEV_DIR}）⇒ 跳过""#, // 花括号定住了名字
             r#"echo "（$(wc -l < "$HITS") 条）""#,        // 命令替换，不是变量
-            r#"echo "第 $1 行、第 $? 行、第 $@ 些""#,      // 位置参数，不是变量名
-            r#"echo "字面量 \$DEV_DIR 不是变量""#,       // 转义
+            r#"echo "第 $1 行、第 $? 行、第 $@ 些""#,     // 位置参数，不是变量名
+            r#"echo "字面量 \$DEV_DIR 不是变量""#,        // 转义
             r#"echo "工具链是 $DEV_DIR 跳过 Swift 那段""#, // 紧跟的是 ASCII 空格
         ] {
             assert_eq!(scan_line(ok), Vec::<String>::new(), "不该命中：{ok}");
@@ -4005,7 +6360,8 @@ mod shell_quoting_sentinel {
             // `${NAME}` 的名字从 `{` 之后开始；`$NAME` 从 `$` 之后开始
             let braced = bytes.get(i + 1) == Some(&b'{');
             let start = i + if braced { 2 } else { 1 };
-            if start >= bytes.len() || !(bytes[start].is_ascii_alphabetic() || bytes[start] == b'_') {
+            if start >= bytes.len() || !(bytes[start].is_ascii_alphabetic() || bytes[start] == b'_')
+            {
                 i = start;
                 continue;
             }
@@ -4070,7 +6426,8 @@ mod shell_quoting_sentinel {
             let bytes = line.as_bytes();
             let mut i = 0;
             while i + 4 <= bytes.len() {
-                let is_word = (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+                let is_word = (i == 0
+                    || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
                     && &bytes[i..i + 4] == b"read"
                     && bytes.get(i + 4).is_some_and(|c| c.is_ascii_whitespace());
                 if !is_word {
@@ -4101,7 +6458,10 @@ mod shell_quoting_sentinel {
                         continue;
                     }
                     let ok = tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                        && tok.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+                        && tok
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
                     if ok {
                         names.push(tok.to_string());
                     }
@@ -4115,13 +6475,17 @@ mod shell_quoting_sentinel {
                 if *w != "for" && *w != "select" {
                     continue;
                 }
-                let Some(next) = words.get(k + 1) else { continue };
+                let Some(next) = words.get(k + 1) else {
+                    continue;
+                };
                 let next = next.trim_start_matches("((");
                 if !next.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
                     continue;
                 }
-                let name: String =
-                    next.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                let name: String = next
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
                 if !name.is_empty() {
                     names.push(name);
                 }
@@ -4160,9 +6524,30 @@ mod shell_quoting_sentinel {
     /// `APP_NAME` 该由 `common.sh` 提供，走 `common_names` 那条路进来。
     fn ambient_names() -> Vec<String> {
         [
-            "BASH_SOURCE", "PATH", "HOME", "PWD", "TMPDIR", "USER", "LANG", "VERSION",
-            "HOSTNAME", "RANDOM", "SECONDS", "LINENO", "PIPESTATUS", "UID", "EUID", "SHELL",
-            "TERM", "IFS", "REPLY", "OSTYPE", "PPID", "FUNCNAME", "DEVELOPER_DIR", "SDKROOT",
+            "BASH_SOURCE",
+            "PATH",
+            "HOME",
+            "PWD",
+            "TMPDIR",
+            "USER",
+            "LANG",
+            "VERSION",
+            "HOSTNAME",
+            "RANDOM",
+            "SECONDS",
+            "LINENO",
+            "PIPESTATUS",
+            "UID",
+            "EUID",
+            "SHELL",
+            "TERM",
+            "IFS",
+            "REPLY",
+            "OSTYPE",
+            "PPID",
+            "FUNCNAME",
+            "DEVELOPER_DIR",
+            "SDKROOT",
             "SCRIPT_DIR",
         ]
         .iter()
@@ -4181,12 +6566,18 @@ mod shell_quoting_sentinel {
             .filter(|p| p.extension().is_some_and(|x| x == "sh"))
             .collect();
         paths.sort();
-        assert!(!paths.is_empty(), "scripts/ 下一个 .sh 都没有——守护本身失效了");
+        assert!(
+            !paths.is_empty(),
+            "scripts/ 下一个 .sh 都没有——守护本身失效了"
+        );
 
         let mut problems: Vec<String> = Vec::new();
         for path in &paths {
             let text = std::fs::read_to_string(path).expect("脚本应可读");
-            let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
             if name == "common.sh" {
                 continue; // 它就是来源
             }
@@ -4230,8 +6621,12 @@ mod shell_quoting_sentinel {
 mod single_tray_tests {
     #[test]
     fn configuration_does_not_create_a_second_tray() {
-        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert!(config["app"].get("trayIcon").is_none(), "setup 创建带菜单的 main 托盘，配置不能再自动创建一个托盘");
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert!(
+            config["app"].get("trayIcon").is_none(),
+            "setup 创建带菜单的 main 托盘，配置不能再自动创建一个托盘"
+        );
     }
 }
 
@@ -4239,11 +6634,17 @@ mod single_tray_tests {
 mod background_lifecycle_tests {
     #[test]
     fn all_windows_are_declared_but_only_created_on_demand() {
-        let config:serde_json::Value=serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        let windows=config["app"]["windows"].as_array().unwrap();
-        assert_eq!(windows.len(),3);
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let windows = config["app"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 3);
         for window in windows {
-            assert_eq!(window["create"].as_bool().unwrap_or(true),false,"{} must not eagerly create a WebView",window["label"]);
+            assert_eq!(
+                window["create"].as_bool().unwrap_or(true),
+                false,
+                "{} must not eagerly create a WebView",
+                window["label"]
+            );
         }
     }
 }

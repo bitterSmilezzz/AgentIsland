@@ -99,7 +99,8 @@ fn table_exists(connection: &Connection, name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {    use super::*;
+mod tests {
+    use super::*;
     use std::fs;
 
     /// 沙箱取名统一走 `testutil`：并行跑时 `as_nanos()` 会撞名，两个用例共用一个目录，
@@ -168,7 +169,8 @@ mod tests {    use super::*;
         let message_only = temp_path("message-only.db");
         {
             let seed = Connection::open(&message_only).unwrap();
-            seed.execute_batch("CREATE TABLE message (data TEXT);").unwrap();
+            seed.execute_batch("CREATE TABLE message (data TEXT);")
+                .unwrap();
         }
         let resolved = OpenCodeTables::resolve(&open_readonly(&message_only).unwrap()).unwrap();
         assert_eq!(resolved.message, "message");

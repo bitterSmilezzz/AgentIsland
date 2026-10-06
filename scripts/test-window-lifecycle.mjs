@@ -15,3 +15,38 @@ const textarea = {...text, tagName:'TEXTAREA', value:'draft'};
 guard.changed(textarea); assert.equal(guard.dirty, true, 'autofill without focus must be protected');
 textarea.isConnected = false; assert.equal(guard.dirty, false);
 console.log('PASS: credential, settings, autofill and disconnected form draft protection');
+
+const { PageCache, pageRequest } = await import('../app/ui/js/page-host.js');
+const pages = new PageCache();
+const cached = { ...text, value:'kept draft', isConnected:true };
+const draftLease = new DraftGuard();
+draftLease.changed(cached);
+const node = { querySelectorAll:()=>[cached] };
+pages.remember('provider',node);
+cached.isConnected=false;
+draftLease.retain(pages.retainedControls);
+assert.equal(draftLease.dirty,true,'cached hidden pages must retain the native draft lease');
+assert.equal(pages.take('provider'),node,'restore the same DOM instead of serializing form values');
+cached.isConnected=true;
+draftLease.retain(pages.retainedControls);
+assert.equal(draftLease.dirty,true,'restored draft remains protected');
+const container={isConnected:true};
+const older=pageRequest(container), newer=pageRequest(container);
+assert.equal(older(),false,'older reads must not overwrite a newer request');
+assert.equal(newer(),true);
+container.isConnected=false;
+assert.equal(newer(),false,'detached pages must not receive asynchronous writes');
+console.log('PASS: retained page drafts, native lease and stale asynchronous reads');
+
+const resetGuard = new DraftGuard();
+const edited = { ...text, value:'existing connection' };
+resetGuard.focus(edited); edited.value = 'unsaved change'; resetGuard.changed(edited);
+assert.equal(resetGuard.dirty, true);
+edited.value = ''; resetGuard.commit([edited]);
+assert.equal(resetGuard.dirty, false, 'explicit save/cancel reset must release the draft lease');
+edited.value = 'new draft'; resetGuard.changed(edited);
+assert.equal(resetGuard.dirty, true, 'editing after reset must acquire the draft lease again');
+console.log('PASS: explicit form reset releases the lease and later edits remain protected');
+
+assert.equal(newer.ownsRequest(),true,"a hidden cached page retains ownership of a mutation receipt");
+assert.equal(older.ownsRequest(),false,"a replaced request cannot apply a mutation receipt");

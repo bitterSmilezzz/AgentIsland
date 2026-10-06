@@ -65,6 +65,18 @@ try {
  const snaps = calls.filter(c => c.command === 'snap_nearest_edge');
  assert.equal(snaps.length, 1, 'real drag should still snap once');
  assert.deepEqual(snaps[0].args, { width:330, height:240 }, 'drag and content sizing must use identical dimensions');
- console.log('PASS: button/plain clicks stay fixed, drag alone snaps with consistent height');
+ // Shrinking a docked window can move its boundary past the stationary pointer.
+ // That mouseleave is geometry feedback, not an intent to dismiss the island.
+ const { stageNavigation } = await import('../app/ui/js/island-navigation.js');
+ const inner = { ...mk(), getBoundingClientRect: () => ({ width: 298, height: 238 }) };
+ card.animate = () => {};
+ card.querySelector = selector => selector === '.card-inner' ? inner : null;
+ stageNavigation(card, { copy: { ...mk(), remove: noop }, from: { width: 330, height: 370 }, route: 'list', previous: 'agentDetail:codex' });
+ const { getState } = await import('../app/ui/js/main.js');
+ getState().settings.collapse_delay = 0.2;
+ root.onmouseleave();
+ await new Promise(resolve => setTimeout(resolve, 350));
+ assert.equal(getState().expanded, true, 'geometry-driven mouseleave during return must not arm auto-collapse');
+ console.log('PASS: button/plain clicks stay fixed, drag alone snaps; navigation geometry does not auto-collapse');
  process.exit(0);
 } catch (error) { console.error(error); process.exit(1); }

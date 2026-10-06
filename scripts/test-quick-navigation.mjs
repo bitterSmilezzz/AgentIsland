@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {navigationMatches,navigationOptions} from '../app/ui/js/quick-navigation.js';
+const items=[{key:'provider',label:'模型与连接',aliases:'MCP Skills 提示词'},{key:'tasks',label:'任务'},{key:'settings',label:'设置'}];
+assert.deepEqual(navigationMatches(items,' mCp ').map(x=>x.key),['provider']);
+assert.deepEqual(navigationMatches(items,'Skills 提示词').map(x=>x.key),['provider']);
+assert.equal(navigationMatches(items,'不存在').length,0);
+assert.equal(navigationMatches(items,'').length,3);
+assert.match(navigationOptions([{key:'<bad>',label:'<script>'}],0,'<bad>'),/&lt;script&gt;/);
+assert.match(navigationOptions(items,1,'tasks'),/aria-selected="true"[^>]*data-quick-index="1"/);
+assert.match(navigationOptions(items,1,'tasks'),/当前页面/);
+console.log('PASS: navigation search matches bounded known targets, escapes labels, and marks selection/current page');

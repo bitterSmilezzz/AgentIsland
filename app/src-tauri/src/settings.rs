@@ -9,17 +9,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    pub appearance: String,     // system | light | dark
+    pub appearance: String, // system | light | dark
     /// 形态：`island` | `sidebar`（ADR 0009：两者并存，默认仍是灵动岛）
     pub shell_mode: String,
     /// 侧边栏贴在左边还是右边（只有这两档）
     pub sidebar_edge: String,
     /// 侧边栏宽度（**记忆**：用户拉过一次，下次开还在那儿）
     pub sidebar_width: f64,
-    pub dock_edge: String,      // top | bottom | left | right
-    pub dock_anchor: f64,       // 0..1
-    pub collapse_delay: f64,    // 秒
-    pub sample_interval: f64,   // 秒
+    pub dock_edge: String,    // top | bottom | left | right
+    pub dock_anchor: f64,     // 0..1
+    pub collapse_delay: f64,  // 秒
+    pub sample_interval: f64, // 秒
     /// 全闲置时的降频间隔（Swift `idleSampleInterval`，默认 5.0）。
     /// 此前 Rust 没有这个字段，用 `sample_interval × 2.5` 顶替——那是**另一个公式**，
     /// 于是两侧的耗电量与「岛多久变灰」对不上。区间与 Swift 同用 `sampleIntervalRange`。
@@ -37,7 +37,7 @@ pub struct Settings {
     pub runaway_cpu_threshold: f64,
     /// 持续高负荷需持续多久（Swift `runawayDurationThreshold`，默认 300s）。此前硬编码。
     pub runaway_duration_threshold: f64,
-    pub cpu_threshold: f64,     // %
+    pub cpu_threshold: f64, // %
     /// 电池供电时降频（Swift `batterySaverEnabled`，默认开）。此前 Rust 无此字段。
     pub battery_saver_enabled: bool,
     pub token_alert_enabled: bool,
@@ -64,7 +64,6 @@ pub struct Settings {
     pub play_completion_sound: bool,
     pub disabled_agents: Vec<String>,
     // MARK: 界面侧开关（Swift `SettingsStore` 的散点，Rust 侧此前整块缺失）
-
     /// 开机自启（Swift `launchAtLogin`，默认关）
     pub launch_at_login: bool,
     /// 收起时隐藏 6pt 微细条（Swift `hideDockedSliver`，默认关 = 显示）
@@ -242,16 +241,19 @@ impl Settings {
         fs::create_dir_all(dir)?;
         let path = dir.join("settings.json");
         if let Some(name) = stash_broken_if_unparseable(&path) {
-            crate::log_line(&format!("[settings] 落盘前发现坏掉的 settings.json，已留档为 {name}"));
+            crate::log_line(&format!(
+                "[settings] 落盘前发现坏掉的 settings.json，已留档为 {name}"
+            ));
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let result = crate::atomicfile::atomic_replace_validated(&path, json.as_bytes(), |staged| {
-            let text = fs::read_to_string(staged)?;
-            serde_json::from_str::<Settings>(&text)
-                .map(|_| ())
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-        });
+        let result =
+            crate::atomicfile::atomic_replace_validated(&path, json.as_bytes(), |staged| {
+                let text = fs::read_to_string(staged)?;
+                serde_json::from_str::<Settings>(&text)
+                    .map(|_| ())
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            });
         result
     }
 
@@ -260,10 +262,14 @@ impl Settings {
         let current = value.as_object_mut().ok_or("设置不是对象")?;
         let fields = patch.as_object().ok_or("设置变更必须是对象")?;
         for (key, field) in fields {
-            if !current.contains_key(key) { return Err(format!("未知设置项：{key}")); }
+            if !current.contains_key(key) {
+                return Err(format!("未知设置项：{key}"));
+            }
             current.insert(key.clone(), field.clone());
         }
-        serde_json::from_value::<Self>(value).map(|settings| settings.normalized()).map_err(|error| error.to_string())
+        serde_json::from_value::<Self>(value)
+            .map(|settings| settings.normalized())
+            .map_err(|error| error.to_string())
     }
 
     /// 脏值钳制（与 macOS `EngineConfig.normalized()` 同规则）
@@ -284,7 +290,10 @@ impl Settings {
             (&mut s.active_session_window, base.active_session_window),
             (&mut s.min_working_hold, base.min_working_hold),
             (&mut s.runaway_cpu_threshold, base.runaway_cpu_threshold),
-            (&mut s.runaway_duration_threshold, base.runaway_duration_threshold),
+            (
+                &mut s.runaway_duration_threshold,
+                base.runaway_duration_threshold,
+            ),
         ] {
             if value.is_nan() {
                 *value = fallback;
@@ -300,7 +309,8 @@ impl Settings {
             }
         }
         let mut seen = HashSet::new();
-        s.disabled_agents.retain(|id| id != "ego-browser" && seen.insert(id.clone()));
+        s.disabled_agents
+            .retain(|id| id != "ego-browser" && seen.insert(id.clone()));
         let clamp = |v: f64, lo: f64, hi: f64| v.clamp(lo, hi);
         s.cpu_threshold = clamp(s.cpu_threshold, 1.0, 50.0);
         s.sample_interval = clamp(s.sample_interval, 0.5, 600.0);
@@ -367,7 +377,10 @@ mod shell_tests {
     #[test]
     fn a_hand_edited_shell_mode_or_edge_falls_back_instead_of_breaking_the_window() {
         let mut s = Settings::default();
-        assert_eq!(s.shell_mode, "island", "默认仍是灵动岛（ADR 0009 的并存前提）");
+        assert_eq!(
+            s.shell_mode, "island",
+            "默认仍是灵动岛（ADR 0009 的并存前提）"
+        );
         assert_eq!(s.sidebar_edge, "right");
         assert_eq!(s.sidebar_width, crate::placement::DEFAULT_SIDEBAR_WIDTH);
 
@@ -412,7 +425,8 @@ mod tests {
     #[test]
     fn settings_deserialize_tolerates_missing_fields() {
         let partial = r#"{"appearance":"dark"}"#;
-        let s: Settings = serde_json::from_str(partial).expect("缺字段应被默认值补齐，而非解析失败");
+        let s: Settings =
+            serde_json::from_str(partial).expect("缺字段应被默认值补齐，而非解析失败");
         assert_eq!(s.appearance, "dark");
         assert_eq!(s.dock_edge, "top", "缺 dock_edge 应落默认值");
         assert_eq!(
@@ -435,7 +449,10 @@ mod tests {
         let n = lo.normalized();
 
         assert_eq!(n.cpu_threshold, 1.0, "cpu_threshold 下限");
-        assert_eq!(n.sample_interval, 0.5, "sample_interval 下限（0 会让引擎空转占核）");
+        assert_eq!(
+            n.sample_interval, 0.5,
+            "sample_interval 下限（0 会让引擎空转占核）"
+        );
         assert_eq!(n.collapse_delay, 0.2, "collapse_delay 下限");
         assert_eq!(n.dock_anchor, 0.0, "dock_anchor 下限");
         assert_eq!(n.token_alert_threshold, 1_000, "token_alert_threshold 下限");
@@ -454,13 +471,25 @@ mod tests {
 
         assert_eq!(n.cpu_threshold, 50.0, "cpu_threshold 上限");
         assert_eq!(n.working_window, 300.0, "working_window 上限");
-        assert_eq!(n.active_session_window, 3600.0, "active_session_window 上限");
+        assert_eq!(
+            n.active_session_window, 3600.0,
+            "active_session_window 上限"
+        );
         assert_eq!(n.min_working_hold, 300.0, "min_working_hold 上限");
         assert_eq!(n.runaway_cpu_threshold, 100.0, "runaway_cpu_threshold 上限");
-        assert_eq!(n.runaway_duration_threshold, 3600.0, "runaway_duration_threshold 上限");
-        assert_eq!(n.collapse_delay, 5.0, "collapse_delay 上限（Swift SettingLimits 是 5s，不是 30s）");
+        assert_eq!(
+            n.runaway_duration_threshold, 3600.0,
+            "runaway_duration_threshold 上限"
+        );
+        assert_eq!(
+            n.collapse_delay, 5.0,
+            "collapse_delay 上限（Swift SettingLimits 是 5s，不是 30s）"
+        );
         assert_eq!(n.dock_anchor, 1.0, "dock_anchor 上限");
-        assert_eq!(n.token_alert_threshold, 10_000_000, "token_alert_threshold 上限");
+        assert_eq!(
+            n.token_alert_threshold, 10_000_000,
+            "token_alert_threshold 上限"
+        );
     }
 
     /// 区间与默认值**逐个**对着 Swift `EngineConfig` 核。
@@ -479,7 +508,10 @@ mod tests {
         assert_eq!(d.min_working_hold, 10.0, "minWorkingHold");
         assert!(d.runaway_cpu_alert, "runawayCpuAlert 默认开");
         assert_eq!(d.runaway_cpu_threshold, 70.0, "runawayCpuThreshold");
-        assert_eq!(d.runaway_duration_threshold, 300.0, "runawayDurationThreshold");
+        assert_eq!(
+            d.runaway_duration_threshold, 300.0,
+            "runawayDurationThreshold"
+        );
         assert!(d.battery_saver_enabled, "batterySaverEnabled 默认开");
         assert!(!d.launch_at_login, "launchAtLogin 默认关");
         assert!(!d.hide_docked_sliver, "hideDockedSliver 默认关");
@@ -501,10 +533,19 @@ mod tests {
         assert_eq!(n.sample_interval, 0.5, "sampleIntervalRange 下界");
         assert_eq!(n.idle_sample_interval, 0.5, "idleSampleIntervalRange 下界");
         assert_eq!(n.working_window, 10.0, "workingWindowRange 下界");
-        assert_eq!(n.active_session_window, 60.0, "activeSessionWindowRange 下界");
+        assert_eq!(
+            n.active_session_window, 60.0,
+            "activeSessionWindowRange 下界"
+        );
         assert_eq!(n.min_working_hold, 1.0, "minWorkingHoldRange 下界");
-        assert_eq!(n.runaway_cpu_threshold, 10.0, "runawayCpuThresholdRange 下界");
-        assert_eq!(n.runaway_duration_threshold, 30.0, "runawayDurationThresholdRange 下界");
+        assert_eq!(
+            n.runaway_cpu_threshold, 10.0,
+            "runawayCpuThresholdRange 下界"
+        );
+        assert_eq!(
+            n.runaway_duration_threshold, 30.0,
+            "runawayDurationThresholdRange 下界"
+        );
     }
 
     /// NaN 必须先归位再钳。
@@ -524,7 +565,10 @@ mod tests {
         assert_eq!(n.working_window, 60.0);
         assert_eq!(n.runaway_cpu_threshold, 70.0);
         assert_eq!(n.sample_interval, 2.0);
-        assert!(n.normalized().cpu_threshold.is_nan() == false, "归一化后不得仍是 NaN");
+        assert!(
+            n.normalized().cpu_threshold.is_nan() == false,
+            "归一化后不得仍是 NaN"
+        );
     }
 
     /// 有活动间隔不得大于闲置间隔（Swift `normalized()` 末尾同一条）。
@@ -560,7 +604,12 @@ mod tests {
             keep.menu_bar_badge_mode = good.into();
             assert_eq!(keep.normalized().menu_bar_badge_mode, good);
         }
-        for good in ["followMouse", "mainScreen", "builtInScreen", "externalScreen"] {
+        for good in [
+            "followMouse",
+            "mainScreen",
+            "builtInScreen",
+            "externalScreen",
+        ] {
             let mut keep = Settings::default();
             keep.screen_follow_mode = good.into();
             assert_eq!(keep.normalized().screen_follow_mode, good);
@@ -586,7 +635,10 @@ mod tests {
         );
 
         let clean = dirty.normalized();
-        assert_eq!(clean.remote_policy.throttle_seconds, crate::remote::THROTTLE_RANGE.0);
+        assert_eq!(
+            clean.remote_policy.throttle_seconds,
+            crate::remote::THROTTLE_RANGE.0
+        );
         assert!(
             clean.remote_policy.quiet_start.is_empty() && clean.remote_policy.quiet_end.is_empty(),
             "写坏的时刻必须整对作废"
@@ -622,30 +674,38 @@ mod tests {
 
         assert_eq!(original.appearance, back.appearance);
         assert_eq!(original.dock_edge, back.dock_edge, "dock_edge 往返后变了");
-        assert_eq!(original.disabled_agents, back.disabled_agents, "禁用列表往返后变了");
+        assert_eq!(
+            original.disabled_agents, back.disabled_agents,
+            "禁用列表往返后变了"
+        );
         assert_eq!(original.cpu_threshold, back.cpu_threshold);
         assert_eq!(original.token_alert_threshold, back.token_alert_threshold);
     }
 
     #[test]
     fn legacy_roo_disabled_choice_survives_id_alignment() {
-        let old: Settings = serde_json::from_str(
-            r#"{"disabled_agents":["roo","codex","roo-code"]}"#,
-        )
-        .unwrap();
+        let old: Settings =
+            serde_json::from_str(r#"{"disabled_agents":["roo","codex","roo-code"]}"#).unwrap();
         let normalized = old.normalized();
         assert_eq!(normalized.disabled_agents, vec!["roo-code", "codex"]);
-        assert_eq!(normalized.normalized().disabled_agents, normalized.disabled_agents);
+        assert_eq!(
+            normalized.normalized().disabled_agents,
+            normalized.disabled_agents
+        );
     }
 
     #[test]
     fn merged_and_retired_identities_do_not_return_as_disabled_orphans() {
         let old: Settings = serde_json::from_str(
             r#"{"disabled_agents":["chatgpt","ego-browser","codex","custom"]}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let normalized = old.normalized();
         assert_eq!(normalized.disabled_agents, vec!["codex", "custom"]);
-        assert_eq!(normalized.normalized().disabled_agents, normalized.disabled_agents);
+        assert_eq!(
+            normalized.normalized().disabled_agents,
+            normalized.disabled_agents
+        );
     }
 
     /// 落盘必须原子：写出来的东西要能被 `load()` 的形状解析回来，且不留暂存文件。
@@ -729,7 +789,12 @@ mod tests {
         s.save_to(&dir);
 
         let archives = broken_archives(&dir);
-        assert_eq!(archives.len(), 1, "坏文件应留档一份，目录：{:?}", list_dir(&dir));
+        assert_eq!(
+            archives.len(),
+            1,
+            "坏文件应留档一份，目录：{:?}",
+            list_dir(&dir)
+        );
         assert_eq!(
             fs::read_to_string(dir.join(&archives[0])).unwrap(),
             corrupt,
@@ -752,7 +817,12 @@ mod tests {
         let s = Settings::load_from(&dir);
         assert_eq!(s.appearance, "system", "解析失败应回落出厂值");
         let archives = broken_archives(&dir);
-        assert_eq!(archives.len(), 1, "回落前必须先留档，目录：{:?}", list_dir(&dir));
+        assert_eq!(
+            archives.len(),
+            1,
+            "回落前必须先留档，目录：{:?}",
+            list_dir(&dir)
+        );
         assert_eq!(fs::read_to_string(dir.join(&archives[0])).unwrap(), corrupt);
     }
 
@@ -788,7 +858,12 @@ mod tests {
         Settings::default().save_to(&dir);
 
         let archives = broken_archives(&dir);
-        assert_eq!(archives.len(), 2, "两次坏掉要留两份档，目录：{:?}", list_dir(&dir));
+        assert_eq!(
+            archives.len(),
+            2,
+            "两次坏掉要留两份档，目录：{:?}",
+            list_dir(&dir)
+        );
         let bodies: Vec<String> = archives
             .iter()
             .map(|n| fs::read_to_string(dir.join(n)).unwrap())
@@ -821,7 +896,11 @@ mod tests {
             "好文件不该留档，目录：{:?}",
             list_dir(&dir)
         );
-        assert_eq!(Settings::load_from(&dir).appearance, "dark", "读回来应是最新那份");
+        assert_eq!(
+            Settings::load_from(&dir).appearance,
+            "dark",
+            "读回来应是最新那份"
+        );
     }
 }
 
@@ -840,14 +919,18 @@ mod ui_parity {
     /// 只认 `{ key: '...' }` 这一种形状——解析失败宁可返回空集让断言报出来，
     /// 也不要猜一个键名继续往下走。
     fn ui_field_keys() -> Vec<String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../app/ui/js/views.js");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/ui/js/views.js");
         let Ok(text) = std::fs::read_to_string(&path) else {
             panic!("读不到 views.js：{}", path.display());
         };
-        let start = text.find("const SETTING_FIELDS = [")
+        let start = text
+            .find("const SETTING_FIELDS = [")
             .expect("views.js 里应当有 SETTING_FIELDS");
-        let end = text[start..].find("\n];").expect("SETTING_FIELDS 应当有结束标记") + start;
+        let end = text[start..]
+            .find("\n];")
+            .expect("SETTING_FIELDS 应当有结束标记")
+            + start;
         let block = &text[start..end];
 
         let mut keys: Vec<String> = Vec::new();
@@ -891,11 +974,26 @@ mod ui_parity {
     /// 每补一页就从这里移走一条，名单空了这条断言就自动收紧成「零例外」。
     const MANAGED_ELSEWHERE: &[(&str, &str)] = &[
         ("sidebar_width", "侧边栏直接拖拽调整（记宽度），不是滑块"),
-        ("dock_anchor", "灵动岛顶栏拖拽 + 松手吸附直接操作，滑块给不出同样的手感"),
-        ("remote_kind", "远程通知页有自己的通道选择器（三个通道字段不一样，挤进通用行会很难用）"),
-        ("remote_policy", "远程通知页有「发送策略」分组，含静默时段这类成对字段"),
-        ("remote_channels", "同上：每个通道一份独立配置，不是单个标量"),
-        ("disabled_agents", "Agent 启停页是逐项列表（`List<String>`），不是设置页里的一行控件"),
+        (
+            "dock_anchor",
+            "灵动岛顶栏拖拽 + 松手吸附直接操作，滑块给不出同样的手感",
+        ),
+        (
+            "remote_kind",
+            "远程通知页有自己的通道选择器（三个通道字段不一样，挤进通用行会很难用）",
+        ),
+        (
+            "remote_policy",
+            "远程通知页有「发送策略」分组，含静默时段这类成对字段",
+        ),
+        (
+            "remote_channels",
+            "同上：每个通道一份独立配置，不是单个标量",
+        ),
+        (
+            "disabled_agents",
+            "Agent 启停页是逐项列表（`List<String>`），不是设置页里的一行控件",
+        ),
     ];
 
     #[test]
@@ -976,7 +1074,9 @@ mod default_off {
         );
         // 且这个档案**必须存在**——把一个不存在的 id 写进黑名单是静默无效的
         assert!(
-            crate::registry::builtin().iter().any(|p| p.id == "continue"),
+            crate::registry::builtin()
+                .iter()
+                .any(|p| p.id == "continue"),
             "黑名单里的 `continue` 必须在注册表里"
         );
     }
@@ -994,13 +1094,19 @@ mod patch_regressions {
     use super::*;
     #[test]
     fn independent_window_patches_preserve_threshold_and_remote_policy() {
-        let settings = Settings::default().patched(serde_json::json!({"cpu_threshold": 23})).unwrap();
+        let settings = Settings::default()
+            .patched(serde_json::json!({"cpu_threshold": 23}))
+            .unwrap();
         let settings = settings.patched(serde_json::json!({"remote_policy": {"master_enabled": true, "throttle_seconds": 140}})).unwrap();
         assert_eq!(settings.cpu_threshold, 23.0);
         assert!(settings.remote_policy.master_enabled);
         assert_eq!(settings.remote_policy.throttle_seconds, 140);
-        assert!(settings.patched(serde_json::json!({"cpu_threshold": "bad"})).is_err());
-        assert!(settings.patched(serde_json::json!({"unknown_setting": true})).is_err());
+        assert!(settings
+            .patched(serde_json::json!({"cpu_threshold": "bad"}))
+            .is_err());
+        assert!(settings
+            .patched(serde_json::json!({"unknown_setting": true}))
+            .is_err());
     }
     #[test]
     fn disk_failure_is_returned_to_the_ui_caller() {

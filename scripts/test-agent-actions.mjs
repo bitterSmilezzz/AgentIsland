@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { agentNextStep, healthReason } from '../app/ui/js/agent-actions.js';
+const exact={exactSession:true,hint:'对应会话'};
+assert.deepEqual(agentNextStep({level:'attention',current_action:'批准执行测试'},exact),{kind:'待确认',detail:'批准执行测试',action:'去确认',hint:'对应会话'});
+assert.equal(agentNextStep({level:'completed'},exact).action,'查看结果');
+assert.equal(agentNextStep({level:'attention'},{exactSession:false,hint:'只打开应用'}).action,'打开工具');
+assert.equal(agentNextStep({level:'idle',health:{grade:'partial',issues:[]}},exact),null,'missing observation is not an actionable fault');
+assert.equal(healthReason({health:{issues:['CPU 负荷较高 (65.0%)']}}).label,'CPU 偏高');
+assert.equal(healthReason({health:{issues:['内存连续增长：10 分钟增加 1G']}}).label,'内存增长');
+assert.equal(healthReason({is_hung:true,health:{issues:['CPU 高负荷']}}).label,'疑似卡死');
+assert.equal(agentNextStep({level:'idle',health:{issues:['CPU 负荷较高 (65.0%)']}},exact).detail,'CPU 负荷较高 (65.0%)');
+assert.equal(agentNextStep({level:'completed'},null).action,null,'no fake jump affordance without a destination');
+console.log('PASS: confirmation, completion, resource reasons and exact/tool-only destinations stay distinct');

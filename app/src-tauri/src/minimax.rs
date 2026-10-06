@@ -3,10 +3,26 @@ use crate::models::SessionDatabase;
 use crate::session::{SessionProbe, SessionProbeFailure, Signal};
 
 pub fn probe(database: &SessionDatabase, now: i64) -> (SessionProbe, Option<SessionProbeFailure>) {
+    probe_source(database, now, &mut None)
+}
+
+pub(crate) fn probe_source(
+    database: &SessionDatabase,
+    now: i64,
+    source_keys: &mut Option<crate::models::DatabaseSource>,
+) -> (SessionProbe, Option<SessionProbeFailure>) {
+    *source_keys = None;
     let connection = match crate::sqlite::open_readonly(&database.path) {
         Ok(connection) => connection,
         Err(crate::sqlite::Failure::Missing) => return (SessionProbe::default(), None),
-        Err(_) => return (SessionProbe::default(), Some(SessionProbeFailure::UnreadableDatabase("MiniMax 会话库无法读取".into()))),
+        Err(_) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(
+                    "MiniMax 会话库无法读取".into(),
+                )),
+            )
+        }
     };
     // Do not interpret an idle but never-used session as a completed task.
     let result = connection.query_row(
@@ -15,16 +31,42 @@ pub fn probe(database: &SessionDatabase, now: i64) -> (SessionProbe, Option<Sess
     let (id, status, updated, usage_time) = match result {
         Ok(row) => row,
         Err(rusqlite::Error::QueryReturnedNoRows) => return (SessionProbe::default(), None),
-        Err(_) => return (SessionProbe::default(), Some(SessionProbeFailure::UnreadableDatabase("MiniMax 会话库结构与解析器不匹配".into()))),
+        Err(_) => {
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(
+                    "MiniMax 会话库结构与解析器不匹配".into(),
+                )),
+            )
+        }
     };
-    let age = now.saturating_sub(updated).max(0);
+    let Some(age) = now.checked_sub(updated).filter(|age| *age >= 0) else {
+        return (SessionProbe::default(), None);
+    };
     let fingerprint = format!("minimax-{id}-{updated}");
     let signal = if status == "started" && age <= 300_000 {
         Some(Signal::Active(fingerprint, None))
-    } else if status == "idle" && age <= 60_000 && usage_time.is_some_and(|ts| ts <= updated && updated.saturating_sub(ts) <= 60_000) {
+    } else if status == "idle"
+        && age <= 60_000
+        && usage_time.is_some_and(|ts| ts <= updated && updated.saturating_sub(ts) <= 60_000)
+    {
         Some(Signal::Completed(fingerprint))
-    } else { None };
-    (SessionProbe { signal, ..SessionProbe::default() }, None)
+    } else {
+        None
+    };
+    if signal.is_some() {
+        *source_keys = crate::session::database_source_keys(vec![id]).map(|mut source| {
+            source.activity_ms = Some(updated);
+            source
+        });
+    }
+    (
+        SessionProbe {
+            signal,
+            ..SessionProbe::default()
+        },
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -36,16 +78,52 @@ mod tests {
         let path = sandbox.path().join("runtime.sqlite");
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection.execute_batch("CREATE TABLE local_runtime_sessions(session_id TEXT,status TEXT,updated_at_ms INTEGER,archived INTEGER);CREATE TABLE local_runtime_token_usage(session_id TEXT,ts INTEGER);").unwrap();
-        let db = SessionDatabase { path:path.to_string_lossy().into(),schema:crate::models::SessionSchema::MiniMaxRuntime,status_sql:None };
-        connection.execute("INSERT INTO local_runtime_sessions VALUES('fixture','idle',1000000,0)",[]).unwrap();
-        assert!(probe(&db,1_000_000).0.signal.is_none(), "unused idle is not completed");
-        connection.execute("UPDATE local_runtime_sessions SET status='started'",[]).unwrap();
-        assert!(matches!(probe(&db,1_000_001).0.signal,Some(Signal::Active(..))));
-        assert!(probe(&db,1_400_001).0.signal.is_none(), "stale started must expire");
-        connection.execute("UPDATE local_runtime_sessions SET status='idle'",[]).unwrap();
-        connection.execute("INSERT INTO local_runtime_token_usage VALUES('fixture',999999)",[]).unwrap();
-        assert!(matches!(probe(&db,1_000_001).0.signal,Some(Signal::Completed(..))));
-        connection.execute("UPDATE local_runtime_sessions SET archived=1",[]).unwrap();
-        assert!(probe(&db,1_000_001).0.signal.is_none());
+        let db = SessionDatabase {
+            path: path.to_string_lossy().into(),
+            schema: crate::models::SessionSchema::MiniMaxRuntime,
+            status_sql: None,
+        };
+        connection
+            .execute(
+                "INSERT INTO local_runtime_sessions VALUES('fixture','idle',1000000,0)",
+                [],
+            )
+            .unwrap();
+        assert!(
+            probe(&db, 1_000_000).0.signal.is_none(),
+            "unused idle is not completed"
+        );
+        connection
+            .execute("UPDATE local_runtime_sessions SET status='started'", [])
+            .unwrap();
+        assert!(matches!(
+            probe(&db, 1_000_001).0.signal,
+            Some(Signal::Active(..))
+        ));
+        assert!(
+            probe(&db, 999_999).0.signal.is_none(),
+            "future event is not current activity"
+        );
+        assert!(
+            probe(&db, 1_400_001).0.signal.is_none(),
+            "stale started must expire"
+        );
+        connection
+            .execute("UPDATE local_runtime_sessions SET status='idle'", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO local_runtime_token_usage VALUES('fixture',999999)",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            probe(&db, 1_000_001).0.signal,
+            Some(Signal::Completed(..))
+        ));
+        connection
+            .execute("UPDATE local_runtime_sessions SET archived=1", [])
+            .unwrap();
+        assert!(probe(&db, 1_000_001).0.signal.is_none());
     }
 }

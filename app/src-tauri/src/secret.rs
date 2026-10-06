@@ -173,10 +173,7 @@ mod tests {
             default_secret_name(Channel::CustomHttp),
             "remote.customHTTP"
         );
-        assert_eq!(
-            default_secret_name(Channel::SmtpEmail),
-            "remote.smtpEmail"
-        );
+        assert_eq!(default_secret_name(Channel::SmtpEmail), "remote.smtpEmail");
     }
 
     #[test]

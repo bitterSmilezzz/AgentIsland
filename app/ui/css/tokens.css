@@ -37,6 +37,7 @@
 
 /* ---- 深色（黑曜石） ---- */
 .theme-dark {
+  color-scheme: dark;
   --surface: #14161a;
   --surface-raised: #1b1e23;
   --surface-inset: #101216;
@@ -92,6 +93,7 @@
 
 /* ---- 浅色（白瓷工控） ---- */
 .theme-light {
+  color-scheme: light;
   --surface: #f8fafc;
   --surface-raised: #ffffff;
   --surface-inset: #f1f5f9;
@@ -167,3 +169,8 @@
 
 /* 切换控件的高对比滑块，两种主题一致。 */
 :root { --switch-thumb: #fff; }
+
+/* Commit the palette together; keep geometry and opacity transitions available. */
+html.theme-switching :is(button,input,select,textarea,.wb-agent,.wb-tool) {
+  transition-property:transform,opacity!important;
+}

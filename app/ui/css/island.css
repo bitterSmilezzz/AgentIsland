@@ -117,7 +117,7 @@ html.shell-island .sliver:focus-visible .sliver-capsule::before { background: va
   min-height: 0;
   flex: 1;
   padding: var(--notch-inset);
-  animation: card-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1);
+
 }
 @keyframes card-in {
   from { transform: scale(0.98); opacity: 0; }
@@ -394,9 +394,10 @@ html.shell-island .sliver:focus-visible .sliver-capsule::before { background: va
 
 /* 健康度：只在非「健康」时上屏，数值与等级都来自快照的 health（Rust health.rs） */
 .health-chip {
-  font-size: 10.5px;
-  font-weight: 700;
-  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex: none;
   min-width: 20px;
   text-align: center;
   padding: 2px 6px 3px;
@@ -596,46 +597,51 @@ html.shell-island.theme-light { --glass-top: rgba(252,252,254,.96); --glass-bott
 html.shell-island.theme-dark { --glass-top: rgba(39,39,43,.97); --glass-bottom: rgba(27,27,30,.98); }
 
 /* UI Research 08/09/12：同一胶囊身份，按内容职责分层，常驻区域保持安静。 */
-html.shell-island .card { border-radius: 22px; border-color: var(--border); background: var(--surface); overflow: hidden; }
+html.shell-island .card { flex-shrink: 0; border-radius: 16px; border-color: var(--border); background: var(--surface); overflow: hidden; }
+html.shell-island .card:has(.header[data-drag]) { --card-width: 300px; }
+html.shell-island .header-titles { overflow: hidden; }
+html.shell-island .header-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 html.shell-island .card-inner { padding: 0; animation: none; }
 html.shell-island .card.open { animation: island-reveal .22s cubic-bezier(.2,.8,.2,1); }
 @keyframes island-reveal { from { opacity: .6; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 html.shell-island #root.edge-bottom .card { transform-origin: bottom; }
-html.shell-island .header { display: grid; grid-template-columns: 7px minmax(0,1fr); gap: 8px; padding: 18px 18px 12px; background: var(--surface-raised); }
+html.shell-island .header { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center; gap: 6px; padding: 10px 12px; background: var(--surface-raised); }
 html.shell-island .header .status-dot { width: 6px; height: 6px; margin-top: 6px; }
-html.shell-island .header-title { font-size: 14px; font-weight: 600; max-width: none; letter-spacing: -.2px; }
-html.shell-island .header-line1 { flex-wrap: wrap; gap: 5px; }
-html.shell-island .header-line2 { margin: 6px 0 0; font-size: 11px; line-height: 1.5; }
+html.shell-island .header-title { font-size: 12px; font-weight: 600; max-width: none; letter-spacing: -.2px; }
+html.shell-island .header-line1 { flex-wrap: nowrap; gap: 5px; }
+html.shell-island .header-line2 { margin: 2px 0 0; font-size: 10px; line-height: 1.5; }
 html.shell-island .header-line2 .sub { max-width: 260px; color: var(--text-faint); }
 html.shell-island .header-line2 > span:first-child { display: none; }
 html.shell-island .badge { font-size: 9px; font-weight: 500; padding: 2px 5px; border-radius: 5px; }
-html.shell-island .header-icons { grid-column: 1/-1; width: 100%; gap: 5px; margin-top: 5px; }
-html.shell-island .header-count { margin-right: auto; font-size: 10px; color: var(--text-faint); }
-html.shell-island .icon-btn { width: 25px; height: 25px; padding: 0; border-color: var(--border-subtle); background: var(--button-fill); color: var(--text-muted); }
+html.shell-island .header-icons { width: auto; gap: 4px; margin-top: 0; }
+html.shell-island .header-count { display: block; margin-top: 2px; font-size: 9px; color: var(--text-faint); }
+html.shell-island .icon-btn { width: 24px; height: 24px; padding: 0; border-color: var(--border-subtle); background: var(--button-fill); color: var(--text-muted); }
 html.shell-island .divider { background: var(--border-subtle); }
-html.shell-island .list { padding: 8px 10px; }
-html.shell-island .row { display: block; width: 100%; margin: 0; padding: 12px 8px; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; color: var(--text); text-align: left; font: inherit; transition: background .15s; }
+html.shell-island .list { padding: 4px 6px; }
+html.shell-island .row { display: block; width: 100%; margin: 0; padding: 8px 6px; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; color: var(--text); text-align: left; font: inherit; transition: background .15s; }
 html.shell-island .row:last-child { border-bottom: 0; }
 html.shell-island .row:hover { background: var(--control-hover); transform: none; border-radius: 10px; }
-html.shell-island .row-line1 { gap: 10px; }
-html.shell-island .island-agent-icon { width: 30px; height: 30px; border-radius: 9px; background: var(--surface-inset); display: flex; align-items: center; justify-content: center; flex: none; color: var(--text-muted); }
+html.shell-island .row-line1 { gap: 8px; }
+html.shell-island .island-agent-icon { width: 24px; height: 24px; border-radius: 7px; background: var(--surface-inset); display: flex; align-items: center; justify-content: center; flex: none; color: var(--text-muted); }
 html.shell-island .island-agent-icon svg { width: 17px; height: 17px; }
 html.shell-island .row-name-col { margin: 0; flex: 1; }
-html.shell-island .row-name { max-width: none; font-size: 12px; font-weight: 600; }
-html.shell-island .row-sub { font-size: 10px; color: var(--text-faint); line-height: 1.4; gap: 5px; }
+html.shell-island .row-name { max-width: none; font-size: 11px; font-weight: 600; }
+html.shell-island .row-sub { font-size: 9px; color: var(--text-faint); line-height: 1.4; gap: 5px; }
 html.shell-island .island-state-dot { width: 4px; height: 4px; border-radius: 50%; flex: none; }
 html.shell-island .island-row-usage { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: none; }
 html.shell-island .island-row-usage strong { font-size: 12px; font-weight: 550; font-variant-numeric: tabular-nums; }
 html.shell-island .island-row-usage span { font-size: 8px; color: var(--text-faint); }
-html.shell-island .action-bar { display: block; margin: 8px 0 0 40px; padding: 6px 8px; border: 0; border-radius: 6px; background: var(--surface-inset); color: var(--text-muted); font-family: var(--font-text); font-size: 10px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.shell-island .action-bar { display: block; margin: 3px 0 0 32px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-muted); font-family: var(--font-text); font-size: 9px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 html.shell-island .island-row-activity { margin: 6px 0 0 40px; font-size: 9px; color: var(--text-faint); }
-html.shell-island .summary { display: grid; grid-template-columns: 1fr 1fr; width: 100%; gap: 8px 14px; margin: 0; padding: 14px 18px; border: 0; border-top: 1px solid var(--border-subtle); background: var(--surface-raised); font: inherit; text-align: left; }
-html.shell-island .island-summary-metric { display: flex; flex-direction: column; gap: 4px; }
-html.shell-island .island-summary-metric > span { font-size: 9px; color: var(--text-faint); }
-html.shell-island .island-summary-metric strong { font-size: 19px; font-weight: 550; color: var(--text); font-variant-numeric: tabular-nums; }
-html.shell-island .island-summary-metric small { font-size: 9px; color: var(--text-muted); }
-html.shell-island .island-summary-link { grid-column: 1/-1; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: var(--text-faint); }
-html.shell-island .island-summary-link svg { width: 13px; height: 13px; }
+html.shell-island .summary { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; align-items: center; width: 100%; gap: 8px; margin: 0; padding: 10px 12px; border: 0; border-top: 1px solid var(--border-subtle); background: var(--surface-raised); font: inherit; text-align: left; }
+html.shell-island .summary:hover { background: var(--row-hover); }
+html.shell-island .summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+html.shell-island .island-summary-metric { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+html.shell-island .island-summary-metric > span { font-size: 9px; color: var(--text-faint); white-space: nowrap; }
+html.shell-island .island-summary-metric strong { font-size: 12px; font-weight: 550; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+html.shell-island .island-summary-metric + .island-summary-metric { border-left: 1px solid var(--border-subtle); padding-left: 10px; }
+html.shell-island .island-summary-link { display: flex; align-items: center; color: var(--text-faint); }
+html.shell-island .island-summary-link svg { width: 12px; height: 12px; }
 html.shell-island .empty { padding: 28px 18px; gap: 12px; font-size: 11px; color: var(--text-faint); }
 html.shell-island .empty svg { width: 28px; height: 28px; opacity: .65; }
 html.shell-island .page { padding: 0; background: transparent; border: 0; }
@@ -662,5 +668,72 @@ html.shell-island .mini-btn { background: var(--button-fill); border-color: var(
 html.shell-island :is(button,[data-agent]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (prefers-reduced-motion:reduce) { html.shell-island .card.open, html.shell-island .ring .spin-arc, html.shell-island .ring .breath-arc { animation: none; } html.shell-island .row { transition: none; } }
 
-.shell-island .island-settings { max-height: min(70vh, 520px); overflow-y: auto; padding-bottom: 12px; }
+.shell-island .island-settings { flex: none; height: 410px; max-height: none; overflow: hidden; padding-bottom: 0; }
+.shell-island .island-settings > .page-header { flex: none; border-bottom: 1px solid var(--border-subtle); }
+.shell-island .island-settings-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 12px; }
 .shell-island .island-settings .sb-page { padding: 0 16px; }
+
+/* Event status is already in the header; one quiet row carries the requested action. */
+html.shell-island .banner { margin: 6px 10px; padding: 5px 7px; gap: 5px; border-radius: 8px; }
+html.shell-island .banner .line1 { gap: 3px; }
+html.shell-island .banner-message { flex: 1; min-width: 0; padding: 3px 2px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 11px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+html.shell-island .banner-message:hover { text-decoration: underline; }
+html.shell-island .banner-control { display: grid; place-items: center; width: 24px; height: 24px; flex: none; padding: 5px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); cursor: pointer; }
+html.shell-island .banner-control:hover { background: var(--hover-fill); }
+html.shell-island .banner-control svg { width: 12px; height: 12px; fill: currentColor; }
+html.shell-island .banner .detail { max-height: 120px; overflow-y: auto; overflow-wrap: anywhere; white-space: pre-wrap; padding: 4px 2px; }
+html.shell-island .banner .detail[hidden] { display: none; }
+html.shell-island .banner .detail p { margin: 5px 0 0; }
+
+/* Three primary controls leave the event source and status room to breathe. */
+html.shell-island .header { padding: 8px 10px; gap: 7px; }
+html.shell-island .header .status-dot { margin-top: 0; align-self: center; }
+html.shell-island .header-line1 .badge { flex: none; white-space: nowrap; }
+html.shell-island .header-count { margin-top: 1px; font-variant-numeric: tabular-nums; }
+html.shell-island .header-icons { gap: 2px; }
+html.shell-island .header-icons .icon-btn { background: transparent; border-color: transparent; border-radius: 6px; }
+html.shell-island .header-icons .icon-btn:hover { background: var(--control-hover); }
+
+html.shell-island .header-icons .island-toolbar-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; display: block; }
+html.shell-island .header-icons .icon-btn { color: var(--text-muted); transition: background .12s, color .12s; }
+html.shell-island .header-icons .icon-btn:hover { color: var(--text); }
+@media (prefers-reduced-motion: reduce) { html.shell-island .header-icons .icon-btn { transition: none; } }
+
+/* Only opening the island plays the entry animation; sampling stays still. */
+.card-enter { animation: card-in .21s cubic-bezier(.22,1,.36,1); }
+@media (prefers-reduced-motion: reduce) { .card-enter { animation: none; } }
+
+/* A stable surface changes shape; destination content keeps its final typography. */
+html.shell-island .card[data-island-navigating] { flex: none; contain: layout paint; }
+html.shell-island .card-inner.island-navigation-content { position: absolute; inset: 0 auto auto 0; height: auto; flex: none; }
+html.shell-island [data-page-outgoing].island-navigation-content { z-index: 2; overflow: hidden; }
+html.shell-island .card[data-island-navigating] .card-inner:not([data-page-outgoing]) { z-index: 1; }
+
+html.shell-island .settings-save-status { margin-left: auto; color: var(--text-muted); font-size: 10px; font-weight: 400; }
+html.shell-island .island-settings > .page-header { height: 48px; padding: 10px 14px; gap: 9px; }
+html.shell-island .island-settings .page-title { font-size: 13px; font-weight: 600; }
+
+/* State explains the action; the separate control opens the originating tool. */
+html.shell-island .agent-entry { border-bottom: 1px solid var(--border-subtle); }
+html.shell-island .agent-entry:last-child { border-bottom: 0; }
+html.shell-island .agent-entry > .row { border-bottom: 0; }
+html.shell-island .agent-next-step { display: flex; align-items: center; gap: 6px; padding: 0 6px 5px; font-size: 10px; color: var(--text-muted); }
+html.shell-island .agent-next-step > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.shell-island .agent-next-step > button { display: flex; align-items: center; gap: 3px; flex: none; min-height: 24px; padding: 2px 4px; border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; border-radius: 5px; }
+html.shell-island .agent-next-step > button:hover { background: var(--control-hover); }
+html.shell-island .agent-next-step svg { width: 10px; height: 10px; fill: currentColor; }
+html.shell-island .agent-open-error { font-size: 10px; color: var(--danger); padding: 0 6px 6px; }
+
+.usage-trend-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.usage-trend-ranges{display:flex;gap:2px;background:var(--pill);border-radius:7px;padding:2px}
+.usage-trend-ranges button{border:0;border-radius:5px;font:inherit;font-size:10px;padding:4px 7px;background:transparent;color:var(--text-muted);cursor:pointer}
+.usage-trend-ranges button[aria-pressed=true]{background:var(--surface-raised);color:var(--text)}
+.usage-trend-ranges button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.usage-trend-axis{display:flex;justify-content:space-between;gap:10px;font-size:9px;color:var(--text-muted)}
+.usage-trend-note,.usage-trend-scope{font-size:10px;line-height:1.6;color:var(--text-muted);margin:6px 0 0}
+.usage-rhythm .heat i.is-missing{box-shadow:inset 0 0 0 1px var(--hairline)}
+
+.usage-read-error{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0 0 12px;font-size:11px;color:var(--text-muted)}
+.usage-read-error p{margin:0;line-height:1.6}
+
+[data-usage-trend] svg.usage-trend{display:block;width:100%;height:auto;min-height:80px}

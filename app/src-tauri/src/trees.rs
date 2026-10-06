@@ -100,7 +100,10 @@ pub fn build_tree(root_pid: u32, table: &[ProcHit]) -> TreeReport {
     // 按父 PID 分组建索引：一次遍历，避免每个节点都扫全表
     let mut children_by_parent: HashMap<u32, Vec<usize>> = HashMap::new();
     for (index, entry) in table.iter().enumerate() {
-        children_by_parent.entry(entry.ppid).or_default().push(index);
+        children_by_parent
+            .entry(entry.ppid)
+            .or_default()
+            .push(index);
     }
 
     // 根进程先算「已访问」：表里若把根自己写成它的后代（脏数据），不该把根收进来
@@ -286,7 +289,10 @@ mod tests {
         assert_eq!(report.total_subprocess_cpu, None);
         assert_eq!(report.cpu_measured_count, 0);
         assert_eq!(report.total_subprocess_cpu_text, "—（本拍无差分窗口）");
-        assert_eq!(report.total_subprocess_memory, 30, "内存与 CPU 无关，照常合计");
+        assert_eq!(
+            report.total_subprocess_memory, 30,
+            "内存与 CPU 无关，照常合计"
+        );
     }
 
     #[test]
@@ -315,7 +321,10 @@ mod tests {
 
         let busy = build_tree(1, &[hit(2, 1, "x", Some(12.34), 0)]);
         assert_eq!(busy.nodes[0].cpu_text, "12.3%");
-        assert_eq!(busy.nodes[0].memory_text, "—", "0 字节是「没测到」而不是 0M");
+        assert_eq!(
+            busy.nodes[0].memory_text, "—",
+            "0 字节是「没测到」而不是 0M"
+        );
     }
 
     #[test]
@@ -337,6 +346,9 @@ mod tests {
         let report = build_tree(5, &cycle_back_to_root);
         assert_eq!(report.subprocess_count, 1, "只该有 6 那一个子节点");
         assert_eq!(flat(&report), vec![(6, 5)]);
-        assert_eq!(report.total_subprocess_memory, 10, "根的内存不该被算进子进程合计");
+        assert_eq!(
+            report.total_subprocess_memory, 10,
+            "根的内存不该被算进子进程合计"
+        );
     }
 }

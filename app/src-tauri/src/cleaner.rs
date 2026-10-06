@@ -19,7 +19,8 @@
 //! 3. **「发了信号」与「进程真没了」是两件事。** 清理结果**只能**靠复核得出
 //!    （[`verify`]），且只统计**确认退出**的那些进程的内存。
 //!
-//! 批量与逐条的分工：**只有死锁 / 内存超限可批量**，孤儿（`ppid == 1`）
+//! 批量与逐条的分工：当前扫描只生成疑似死锁与孤儿；历史内存超限类型保留兼容。
+//! 孤儿（`ppid == 1`）
 //! **只允许逐条手动**——它与 launchd 刻意托管的常驻服务从 `ppid` 上分不开，
 //! 批量误杀等于静默丢任务。孤儿还要求「10 分钟内有会话写入」这条活动佐证
 //! （[`looks_orphan`]）。**宁可漏杀**是这一整块的定位。
@@ -155,7 +156,10 @@ pub fn kill_order(root: u32, table: &[ProcHit]) -> Vec<u32> {
         }
     }
     let mut descendants = Vec::new();
-    walk(&crate::trees::build_tree(root, table).nodes, &mut descendants);
+    walk(
+        &crate::trees::build_tree(root, table).nodes,
+        &mut descendants,
+    );
     descendants.reverse();
     descendants.push(root);
     descendants
@@ -401,7 +405,10 @@ pub struct CleanVerification {
 }
 
 /// 复核终止结果。等 [`RECHECK_DELAY`] 让 SIGTERM / SIGKILL 都落地，再重新采一次表。
-pub fn verify(signaled: &[KillStep], memory_by_pid: &std::collections::HashMap<u32, u64>) -> CleanVerification {
+pub fn verify(
+    signaled: &[KillStep],
+    memory_by_pid: &std::collections::HashMap<u32, u64>,
+) -> CleanVerification {
     std::thread::sleep(RECHECK_DELAY);
     let monitor = crate::procmon::ProcessMonitor::new();
     let table = monitor.table();
@@ -536,7 +543,10 @@ mod tests {
             hit(11, 12, "a-again"),
         ];
         let order = kill_order(10, &table);
-        assert!(order.contains(&11) && order.contains(&12), "环不该把后代从树里吃掉");
+        assert!(
+            order.contains(&11) && order.contains(&12),
+            "环不该把后代从树里吃掉"
+        );
         assert_eq!(order.last(), Some(&10), "根必须排最后");
         assert_eq!(
             order.iter().filter(|p| **p == 11).count(),
@@ -569,14 +579,21 @@ mod tests {
             "launchd 托管的常驻服务必有活动佐证，不能当孤儿杀"
         );
         let not_orphan = anomaly(50, 42, "/bin/node", AnomalyType::Orphan);
-        assert!(!looks_orphan(&not_orphan, &none_active()), "父进程还在就不是孤儿");
+        assert!(
+            !looks_orphan(&not_orphan, &none_active()),
+            "父进程还在就不是孤儿"
+        );
     }
 
     // ── 计划：安全规则逐条 ──────────────────────────────────────
 
     #[test]
     fn a_plan_that_matches_everywhere_signals_the_tree_children_first() {
-        let table = vec![hit(10, 5, "npm"), hit(11, 10, "node"), hit(12, 11, "esbuild")];
+        let table = vec![
+            hit(10, 5, "npm"),
+            hit(11, 10, "node"),
+            hit(12, 11, "esbuild"),
+        ];
         let a = anomaly(10, 5, "/opt/homebrew/bin/npm", AnomalyType::Hung);
         let p = plan(&[a], &table, &table, &no_one(), &none_active(), true);
         assert_eq!(p.signal_targets(), vec![12, 11, 10], "子孙先于父");
@@ -619,7 +636,11 @@ mod tests {
         fresh[0].is_zombie = true;
         let a = anomaly(10, 5, "/opt/homebrew/bin/npm", AnomalyType::Hung);
         let p = plan(&[a], &scanned, &fresh, &no_one(), &none_active(), true);
-        assert_eq!(p.steps[0].action, PlanAction::Gone, "僵尸不占信号，也不占内存");
+        assert_eq!(
+            p.steps[0].action,
+            PlanAction::Gone,
+            "僵尸不占信号，也不占内存"
+        );
     }
 
     #[test]
@@ -648,11 +669,25 @@ mod tests {
         let scanned = vec![hit(50, 1, "node")];
         let a = anomaly(50, 1, "/opt/homebrew/bin/node", AnomalyType::Orphan);
         // 批量：拒
-        let batch = plan(&[a.clone()], &scanned, &scanned, &no_one(), &none_active(), true);
+        let batch = plan(
+            &[a.clone()],
+            &scanned,
+            &scanned,
+            &no_one(),
+            &none_active(),
+            true,
+        );
         assert!(batch.signal_targets().is_empty());
         assert_eq!(batch.steps[0].action, PlanAction::OrphanNeedsNaming);
         // 逐条点名：仍要有活动佐证，没有就还是不杀
-        let named = plan(&[a.clone()], &scanned, &scanned, &no_one(), &none_active(), false);
+        let named = plan(
+            &[a.clone()],
+            &scanned,
+            &scanned,
+            &no_one(),
+            &none_active(),
+            false,
+        );
         assert_eq!(named.steps[0].action, PlanAction::OrphanNoEvidence);
         // 点名 + 有佐证 ⇒ 说明它其实是常驻服务，不当孤儿处理
         let mut active = HashSet::new();

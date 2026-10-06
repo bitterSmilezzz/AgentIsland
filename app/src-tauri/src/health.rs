@@ -1,8 +1,7 @@
 //! 智能体健康度评估 + 卡死/僵卡的三态判定。
 //!
-//! 对齐 Swift `AgentHealthEvaluator`（v0.0.73 起）与 `ActivityEngine` 里那段 `isHung`。
-//! 两者必须一起搬：健康度报告的第一个扣分维度就是卡死，而「卡死」是**时间性**判定——
-//! Rust 此前连 `isHung` 这个概念都没有（`grep hung` 零命中）。
+//! CPU 与疑似卡死沿用既有口径；内存由持续观测趋势提供证据。
+//! 绝对 RSS 大小只作展示，不作为异常或内存泄漏判据。
 
 use crate::models::AgentSnapshot;
 use serde::Serialize;
@@ -17,10 +16,14 @@ use serde::Serialize;
 pub const RUNAWAY_CPU_THRESHOLD: f64 = 70.0;
 pub const RUNAWAY_DURATION_MS: i64 = 300_000;
 
-/// 「物理内存严重过高」的门槛。**健康度与持续驻留守护共用这一个数**：
-/// Swift 侧 `AgentHealthEvaluator` 与 `AgentResilienceGuard` 各写了一遍 `2GB`
-/// （两处都叫 `twoGB`），改一处就会让「健康度说严重」与「守护会不会告警」对不上。
-pub const MEMORY_SEVERE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// RSS only gates trend analysis; absolute size is not evidence of a fault.
+pub const MEMORY_OBSERVATION_FLOOR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryGrowth {
+    pub increase_bytes: u64,
+    pub elapsed_ms: i64,
+}
 
 /// 健康等级。`serde` 出的是给界面做类名/图标用的 ASCII 码，
 /// 中文等级在 [`Report::grade_label`] 里（与 Swift `HealthGrade.rawValue` 逐字相同）。
@@ -63,7 +66,13 @@ pub struct Report {
 }
 
 impl Report {
-    fn make(score: i32, grade: Grade, summary: String, issues: Vec<String>, suggestion: String) -> Report {
+    fn make(
+        score: i32,
+        grade: Grade,
+        summary: String,
+        issues: Vec<String>,
+        suggestion: String,
+    ) -> Report {
         Report {
             // Swift 在初始化器里钳制；照搬，免得上游改了扣分表就漏出 0..100
             score: score.clamp(0, 100),
@@ -119,6 +128,13 @@ pub fn is_hung(
 
 /// 100 分制纯函数，零副作用（与 Swift 同名函数同口径）。
 pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
+    evaluate_with_memory_growth(snapshot, None)
+}
+
+pub fn evaluate_with_memory_growth(
+    snapshot: &AgentSnapshot,
+    growth: Option<MemoryGrowth>,
+) -> Report {
     if !snapshot.process_running {
         return Report::not_running();
     }
@@ -145,14 +161,16 @@ pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
         }
     }
 
-    // 3. 内存驻留集（RSS）溢出与泄露倾向
-    const ONE_AND_HALF_GB: u64 = 1536 * 1024 * 1024;
-    if snapshot.memory_bytes >= MEMORY_SEVERE_BYTES {
+    // Stable resident memory (including large Electron process trees) is normal.
+    // Only the guard's continuously observed growth can affect this dimension.
+    if let Some(growth) = growth {
         deduction += 30;
-        issues.push(format!("物理内存严重过高 ({} ≥ 2.0GB)", snapshot.memory_text));
-    } else if snapshot.memory_bytes >= ONE_AND_HALF_GB {
-        deduction += 15;
-        issues.push(format!("物理内存占用偏大 ({} ≥ 1.5GB)", snapshot.memory_text));
+        issues.push(format!(
+            "内存连续增长：{} 分钟增加 {}（当前 {}）",
+            growth.elapsed_ms / 60_000,
+            crate::procmon::memory_text(growth.increase_bytes),
+            snapshot.memory_text
+        ));
     }
 
     let score = (100 - deduction).max(0);
@@ -182,7 +200,7 @@ pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
     let unevaluated_text = unevaluated.join(" 与 ");
 
     let summary = match grade {
-        Grade::Healthy => "运行平稳正常".to_string(),
+        Grade::Healthy => "当前未发现运行异常".to_string(),
         Grade::Partial => format!("已测维度无异常，{unevaluated_text}本轮未评估"),
         Grade::Attention => "资源占用略高".to_string(),
         Grade::Warning => "负载异常，建议关注".to_string(),
@@ -191,8 +209,8 @@ pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
 
     let suggestion = if snapshot.is_hung == Some(true) {
         "检测到死锁，建议点击「终止逃生舱」重置智能体进程".to_string()
-    } else if snapshot.memory_bytes >= MEMORY_SEVERE_BYTES {
-        "长会话存在内存泄露隐患，建议在新会话中重新开始".to_string()
+    } else if growth.is_some() {
+        "内存连续增长，请结合任务进展和系统内存压力检查；增长本身不等于泄漏".to_string()
     } else if snapshot.cpu_percent.is_some_and(|cpu| cpu >= 80.0) {
         "任务可能陷入重度计算或死循环，请检查终端日志".to_string()
     } else if !unevaluated.is_empty() {
@@ -205,7 +223,7 @@ pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
     } else if grade == Grade::Attention {
         "进程资源使用正常，可继续观测执行进展".to_string()
     } else {
-        "会话心跳活跃，内存与 CPU 分布均衡".to_string()
+        "继续观察任务进展；内存绝对占用量不作为异常依据".to_string()
     };
 
     Report::make(score, grade, summary, issues, suggestion)
@@ -215,7 +233,12 @@ pub fn evaluate(snapshot: &AgentSnapshot) -> Report {
 mod tests {
     use super::*;
 
-    fn snapshot(running: bool, is_hung: Option<bool>, cpu: Option<f64>, memory_text: &str) -> AgentSnapshot {
+    fn snapshot(
+        running: bool,
+        is_hung: Option<bool>,
+        cpu: Option<f64>,
+        memory_text: &str,
+    ) -> AgentSnapshot {
         snapshot_with_memory(running, is_hung, cpu, 0, memory_text)
     }
 
@@ -261,6 +284,21 @@ mod tests {
     }
 
     #[test]
+    fn stable_high_memory_is_not_an_abnormality() {
+        let report = evaluate(&snapshot_with_memory(
+            true,
+            Some(false),
+            Some(5.0),
+            4 * 1024 * 1024 * 1024,
+            "4 GB",
+        ));
+        assert_eq!(report.score, 100);
+        assert_eq!(report.grade, Grade::Healthy);
+        assert!(report.issues.is_empty());
+        assert!(!report.suggestion.contains("泄露"));
+    }
+
+    #[test]
     fn a_stopped_agent_is_healthy_by_definition_not_by_measurement() {
         // 没跑就谈不上资源占用：这一档不打分，也不去列表里找「没测的维度」
         let report = evaluate(&snapshot(false, None, None, "—"));
@@ -285,80 +323,92 @@ mod tests {
         let clean_but_blind = evaluate(&snapshot(true, None, Some(12.0), "180 MB"));
         assert_eq!(clean_but_blind.score, 100, "没测的维度不扣分");
         assert_eq!(clean_but_blind.grade, Grade::Partial);
-        assert_eq!(clean_but_blind.summary, "已测维度无异常，死锁/僵卡本轮未评估");
+        assert_eq!(
+            clean_but_blind.summary,
+            "已测维度无异常，死锁/僵卡本轮未评估"
+        );
         assert!(clean_but_blind.suggestion.contains("不等于全清"));
 
-        // 内存已经扣分时不许被「观测不全」盖掉：那一档正在喊话
+        // Observed CPU trouble must not be masked by missing hung observation.
         let troubled_and_blind = evaluate(&snapshot_with_memory(
             true,
             None,
-            Some(12.0),
+            Some(80.0),
             2 * 1024 * 1024 * 1024,
             "2.1 GB",
         ));
-        assert_eq!(troubled_and_blind.grade, Grade::Attention, "★ 70 分档，不是「观测不全」");
+        assert_eq!(
+            troubled_and_blind.grade,
+            Grade::Attention,
+            "已有 CPU 异常不是「观测不全」"
+        );
         assert_eq!(troubled_and_blind.summary, "资源占用略高");
     }
 
     #[test]
-    fn cpu_and_memory_deductions_use_the_same_thresholds_as_swift() {
-        assert_eq!(evaluate(&snapshot(true, Some(false), Some(80.0), "1.0 GB")).score, 75);
-        assert_eq!(evaluate(&snapshot(true, Some(false), Some(79.9), "1.0 GB")).score, 90);
-        assert_eq!(evaluate(&snapshot(true, Some(false), Some(50.0), "1.0 GB")).score, 90);
-        assert_eq!(evaluate(&snapshot(true, Some(false), Some(49.9), "1.0 GB")).score, 100);
-        let big = evaluate(&snapshot_with_memory(true, Some(false), Some(0.0), 2 * 1024 * 1024 * 1024, "2.0 GB"));
-        assert_eq!(big.score, 70, "2GB 扣 30");
-        let half = evaluate(&snapshot_with_memory(
-            true,
-            Some(false),
-            Some(0.0),
-            1536 * 1024 * 1024,
-            "1.5 GB",
-        ));
-        assert_eq!(half.score, 85, "1.5GB 扣 15，恰好还在「健康」线上");
-        assert_eq!(half.grade, Grade::Healthy);
-    }
-
-    #[test]
-    fn grade_boundaries_follow_the_same_ladder_as_swift() {
-        // 85 / 70 / 50 三条线：分数刚好落在线上时取**更严重**的那一档
-        let healthy = evaluate(&snapshot_with_memory(
-            true,
-            Some(false),
-            Some(0.0),
-            1536 * 1024 * 1024,
-            "1.5 GB",
-        ));
-        assert_eq!((healthy.score, healthy.grade), (85, Grade::Healthy));
-        let attention = evaluate(&snapshot_with_memory(
-            true,
-            Some(false),
-            Some(0.0),
-            2 * 1024 * 1024 * 1024,
-            "2.0 GB",
-        ));
-        assert_eq!((attention.score, attention.grade), (70, Grade::Attention));
-        let warning = evaluate(&snapshot(true, Some(true), Some(0.0), "1.0 GB"));
-        assert_eq!((warning.score, warning.grade), (50, Grade::Warning));
-        let critical = evaluate(&snapshot(true, Some(true), Some(50.0), "1.0 GB"));
+    fn cpu_thresholds_remain_independent_of_absolute_memory() {
         assert_eq!(
-            (critical.score, critical.grade),
-            (40, Grade::Critical),
-            "卡死 50 + CPU≥50 的 10 = 60 分扣分"
+            evaluate(&snapshot(true, Some(false), Some(80.0), "1.0 GB")).score,
+            75
+        );
+        assert_eq!(
+            evaluate(&snapshot(true, Some(false), Some(79.9), "1.0 GB")).score,
+            90
+        );
+        assert_eq!(
+            evaluate(&snapshot(true, Some(false), Some(50.0), "1.0 GB")).score,
+            90
+        );
+        assert_eq!(
+            evaluate(&snapshot(true, Some(false), Some(49.9), "1.0 GB")).score,
+            100
         );
     }
 
     #[test]
+    fn confirmed_growth_affects_health_and_is_not_called_a_leak() {
+        let snap =
+            snapshot_with_memory(true, Some(false), Some(0.0), 4 * 1024 * 1024 * 1024, "4 GB");
+        let growth = MemoryGrowth {
+            increase_bytes: 2 * 1024 * 1024 * 1024,
+            elapsed_ms: 600_000,
+        };
+        let report = evaluate_with_memory_growth(&snap, Some(growth));
+        assert_eq!((report.score, report.grade), (70, Grade::Attention));
+        assert!(report.issues[0].contains("连续增长"));
+        assert!(report.suggestion.contains("增长本身不等于泄漏"));
+        assert!(!report.suggestion.contains("重新开始"));
+        assert_eq!(
+            evaluate(&snap).score,
+            100,
+            "No observation window means no invented memory fault"
+        );
+    }
+
+    #[test]
+    fn grade_boundaries_follow_the_same_ladder_as_swift() {
+        let warning = evaluate(&snapshot(true, Some(true), Some(0.0), "1.0 GB"));
+        assert_eq!((warning.score, warning.grade), (50, Grade::Warning));
+        let critical = evaluate(&snapshot(true, Some(true), Some(50.0), "1.0 GB"));
+        assert_eq!((critical.score, critical.grade), (40, Grade::Critical));
+    }
+
+    #[test]
     fn score_is_clamped_to_the_hundred_point_scale() {
-        // 扣分表叠加后可以是负数，Swift 在初始化器里钳制；照搬
-        let worst = evaluate(&snapshot_with_memory(
-            true,
-            Some(true),
-            Some(95.0),
-            3 * 1024 * 1024 * 1024,
-            "3.0 GB",
-        ));
-        assert_eq!(worst.score, 0, "50 + 25 + 30 = 105 分扣分 → 钳到 0");
+        let worst = evaluate_with_memory_growth(
+            &snapshot_with_memory(
+                true,
+                Some(true),
+                Some(95.0),
+                3 * 1024 * 1024 * 1024,
+                "3.0 GB",
+            ),
+            Some(MemoryGrowth {
+                increase_bytes: 1024 * 1024 * 1024,
+                elapsed_ms: 600_000,
+            }),
+        );
+        assert_eq!(worst.score, 0);
         assert_eq!(worst.grade, Grade::Critical);
         assert_eq!(Report::not_running().score, 100);
     }
@@ -381,10 +431,23 @@ mod tests {
     fn is_hung_needs_a_sustained_observation_window_not_just_high_cpu() {
         let now = 10_000_000i64;
         // 观测窗口还没凑够：哪怕 CPU 一直高，也只能说「没测」
-        assert_eq!(is_hung(Some(now - 60_000), Some(now - 60_000), now, RUNAWAY_DURATION_MS), None);
+        assert_eq!(
+            is_hung(
+                Some(now - 60_000),
+                Some(now - 60_000),
+                now,
+                RUNAWAY_DURATION_MS
+            ),
+            None
+        );
         // 观测够久了，但高 CPU 是刚起来的 → 明确 false（不是 None）
         assert_eq!(
-            is_hung(Some(now - RUNAWAY_DURATION_MS), Some(now - 1_000), now, RUNAWAY_DURATION_MS),
+            is_hung(
+                Some(now - RUNAWAY_DURATION_MS),
+                Some(now - 1_000),
+                now,
+                RUNAWAY_DURATION_MS
+            ),
             Some(false)
         );
         // 两个窗口都够 → true
@@ -398,12 +461,33 @@ mod tests {
             Some(true)
         );
         // 观测够久但从来没高过 CPU → false
-        assert_eq!(is_hung(Some(now - RUNAWAY_DURATION_MS), None, now, RUNAWAY_DURATION_MS), Some(false));
+        assert_eq!(
+            is_hung(
+                Some(now - RUNAWAY_DURATION_MS),
+                None,
+                now,
+                RUNAWAY_DURATION_MS
+            ),
+            Some(false)
+        );
         // 从来没观测过 → None（不是 false）
-        assert_eq!(is_hung(None, Some(now - RUNAWAY_DURATION_MS), now, RUNAWAY_DURATION_MS), None);
+        assert_eq!(
+            is_hung(
+                None,
+                Some(now - RUNAWAY_DURATION_MS),
+                now,
+                RUNAWAY_DURATION_MS
+            ),
+            None
+        );
         // 边界取等号：恰好 5 分钟算「够」
         assert_eq!(
-            is_hung(Some(now - RUNAWAY_DURATION_MS + 1), None, now, RUNAWAY_DURATION_MS),
+            is_hung(
+                Some(now - RUNAWAY_DURATION_MS + 1),
+                None,
+                now,
+                RUNAWAY_DURATION_MS
+            ),
             None,
             "差 1ms 不算够"
         );

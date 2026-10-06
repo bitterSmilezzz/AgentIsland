@@ -238,12 +238,20 @@ impl LocalEventServer {
                 // `/session` 要写引擎里的自报登记表；其余路由只用事件通道
                 let (status, text) =
                     route(&path, &method, &body, &token_header, &engine, &url, &tx);
-                let header = Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap();
-                let response = Response::from_string(text).with_status_code(status).with_header(header);
+                let header = Header::from_bytes(
+                    &b"Content-Type"[..],
+                    &b"application/json; charset=utf-8"[..],
+                )
+                .unwrap();
+                let response = Response::from_string(text)
+                    .with_status_code(status)
+                    .with_header(header);
                 let _ = request.respond(response);
             }
         });
-        LocalEventServer { handle: Some(handle) }
+        LocalEventServer {
+            handle: Some(handle),
+        }
     }
 }
 
@@ -283,7 +291,10 @@ fn route(
             let removed = guard.self_reports.remove(agent_id.trim());
             return (
                 200,
-                format!(r#"{{"revoked":{}}}"#, if removed { "true" } else { "false" }),
+                format!(
+                    r#"{{"revoked":{}}}"#,
+                    if removed { "true" } else { "false" }
+                ),
             );
         }
         if *method != Method::Post {
@@ -303,9 +314,18 @@ fn notify_route(body: &str, untrusted: bool, tx: &Sender<AgentTaskEvent>) -> (u1
         return (400, r#"{"error":"invalid json"}"#);
     };
     let agent = doc.get("agent").and_then(|v| v.as_str()).unwrap_or("");
-    let event = doc.get("event").and_then(|v| v.as_str()).unwrap_or("completed");
-    let message = doc.get("message").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let detail = doc.get("detail").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let event = doc
+        .get("event")
+        .and_then(|v| v.as_str())
+        .unwrap_or("completed");
+    let message = doc
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let detail = doc
+        .get("detail")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     if agent.is_empty() {
         return (400, r#"{"error":"agent 必填"}"#);
     }
@@ -313,7 +333,12 @@ fn notify_route(body: &str, untrusted: bool, tx: &Sender<AgentTaskEvent>) -> (u1
         "attention" => "attention",
         "costSpike" | "cost_spike" | "alert" => "costSpike",
         "completed" => "completed",
-        _ => return (400, r#"{"error":"event 须为 completed|attention|costSpike"}"#),
+        _ => {
+            return (
+                400,
+                r#"{"error":"event 须为 completed|attention|costSpike"}"#,
+            )
+        }
     };
     let _ = tx.send(AgentTaskEvent {
         id: uuid_lite(),
@@ -485,7 +510,9 @@ fn bind_self_report(
         session_id.to_string(),
         pid,
         state,
-        json.get("detail").and_then(|v| v.as_str()).map(str::to_string),
+        json.get("detail")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         json.get("ask").and_then(|v| v.as_str()).map(str::to_string),
         json.get("ttl").and_then(|v| v.as_i64()),
     );
@@ -519,7 +546,9 @@ fn bind_self_report(
             }
         }
     }
-    let record = guard.self_reports.submit(submission, crate::tokens::now_ms());
+    let record = guard
+        .self_reports
+        .submit(submission, crate::tokens::now_ms());
     (
         200,
         format!(
@@ -656,11 +685,18 @@ mod session_tests {
             "文本要裁空白"
         );
         // TTL 被钳到上限：一亿毫秒那种「我一直都在」不许过
-        assert_eq!(record.expires_ms - record.received_ms, crate::selfreport::TTL_MAX_MS);
+        assert_eq!(
+            record.expires_ms - record.received_ms,
+            crate::selfreport::TTL_MAX_MS
+        );
         // 决定显示哪一档：自报说在工作、观测是空闲且**没有**强语义 ⇒ 采信自报
-        let (level, provenance) = crate::selfreport::resolve(ActivityLevel::Idle, false, Some(&record));
+        let (level, provenance) =
+            crate::selfreport::resolve(ActivityLevel::Idle, false, Some(&record));
         assert_eq!(level, ActivityLevel::Working);
-        assert_eq!(provenance, Some(crate::selfreport::Provenance::SelfReported));
+        assert_eq!(
+            provenance,
+            Some(crate::selfreport::Provenance::SelfReported)
+        );
         // 报表与界面拿到的就是拼好的后缀
         assert_eq!(
             crate::selfreport::Provenance::badge_suffix(provenance),
@@ -686,16 +722,17 @@ mod session_tests {
         assert!(body.contains(r#""bound":false"#), "{body}");
         assert!(body.contains(r#""reason":"pidMismatch""#), "{body}");
         assert!(
-            engine.lock().unwrap().self_reports.record("claude").is_none(),
+            engine
+                .lock()
+                .unwrap()
+                .self_reports
+                .record("claude")
+                .is_none(),
             "pid 不符的申报不许登记"
         );
         // pid 一致就放行
-        let (status, body) = bind_self_report(
-            r#"{"state":"idle","pid":4242}"#,
-            "claude",
-            "s-1",
-            &engine,
-        );
+        let (status, body) =
+            bind_self_report(r#"{"state":"idle","pid":4242}"#, "claude", "s-1", &engine);
         assert_eq!(status, 200);
         assert!(body.contains(r#""bound":true"#), "{body}");
     }
@@ -778,12 +815,18 @@ mod interop_tests {
         );
         // 更宽容的一侧：两处都给时正文为准（与 Swift 一致）
         assert_eq!(
-            resolve_session_ids("/session?agent=dim&session=from-query", r#"{"session":"from-body"}"#),
+            resolve_session_ids(
+                "/session?agent=dim&session=from-query",
+                r#"{"session":"from-body"}"#
+            ),
             ("dim".to_string(), "from-body".to_string())
         );
         // 正文没给 session 时回落到查询串
         assert_eq!(
-            resolve_session_ids("/session?agent=dim&session=from-query", r#"{"state":"idle"}"#),
+            resolve_session_ids(
+                "/session?agent=dim&session=from-query",
+                r#"{"state":"idle"}"#
+            ),
             ("dim".to_string(), "from-query".to_string())
         );
         // agent 也能从正文来（我们没有这条需求，但收下不伤人）
@@ -891,7 +934,11 @@ mod token_tests {
         write_new_token(&path, "太短").unwrap();
         assert_eq!(inspect_token(&path), Err(TokenDefect::BadShape));
         std::fs::write(&path, "zzzz0123456789abcdef0123456789abcdef01234567").unwrap();
-        assert_eq!(inspect_token(&path), Err(TokenDefect::BadShape), "非十六进制也不行");
+        assert_eq!(
+            inspect_token(&path),
+            Err(TokenDefect::BadShape),
+            "非十六进制也不行"
+        );
     }
 
     /// 新写的令牌必须是 0600、目录 0700 —— **哪怕 umask 放得更宽**。
@@ -904,7 +951,11 @@ mod token_tests {
         unsafe { libc::umask(previous) };
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "宽 umask 下也必须是 0600，实际 {mode:o}");
-        let dir_mode = std::fs::metadata(sandbox.path()).unwrap().permissions().mode() & 0o777;
+        let dir_mode = std::fs::metadata(sandbox.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(dir_mode, 0o700, "目录必须是 0700，实际 {dir_mode:o}");
     }
 
@@ -947,7 +998,10 @@ mod uuid_tests {
     fn two_calls_do_not_collide() {
         let a = webhook_uuid();
         let b = webhook_uuid();
-        assert_ne!(a, b, "连着取两次撞了 ⇒ 熵源没有生效（时钟播种的两个相邻值极可能相同）");
+        assert_ne!(
+            a, b,
+            "连着取两次撞了 ⇒ 熵源没有生效（时钟播种的两个相邻值极可能相同）"
+        );
         assert_eq!(a.len(), b.len());
     }
 

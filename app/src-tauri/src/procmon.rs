@@ -1,7 +1,7 @@
 use crate::models::AgentProfile;
 use std::collections::HashMap;
 use std::time::Instant;
-use sysinfo::{ProcessRefreshKind, UpdateKind, ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 /// 进程表快照 + CPU 差分（sysinfo 内部就是两拍 refresh 之间的差分）。
 /// 第一拍没有窗口，CPU 返回「没测」（None），不谎报 0。
@@ -50,35 +50,57 @@ impl ProcessMonitor {
 
     /// 刷新一拍。两次调用间隔即 CPU 差分窗口。
     pub fn refresh(&mut self) {
-        self.cpu_measured = self.last_refresh.is_some_and(|at| at.elapsed() >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-        self.sys.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
+        self.cpu_measured = self
+            .last_refresh
+            .is_some_and(|at| at.elapsed() >= sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        self.sys
+            .refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());
         self.last_refresh = Some(Instant::now());
         self.rebuild_rows();
     }
 
     /// 按档案匹配进程（名字前缀族 + 命令行提示 + 路径排除）。
     pub fn match_profile(&self, profile: &AgentProfile) -> Vec<ProcHit> {
-        self.rows.iter().filter(|row| !row.hit.is_zombie && profile_matches(profile, &row.hit.name, &row.hit.exe_path, &row.cmdline))
-            .map(|row| row.hit.clone()).collect()
+        self.rows
+            .iter()
+            .filter(|row| {
+                !row.hit.is_zombie
+                    && profile_matches(profile, &row.hit.name, &row.hit.exe_path, &row.cmdline)
+            })
+            .map(|row| row.hit.clone())
+            .collect()
     }
 
     /// 同一拍的名字、路径和命令行只组装一次，各档案复用，避免逐档案重建整张进程表。
     fn rebuild_rows(&mut self) {
-        self.rows = self.sys.processes().iter().map(|(pid, process)| {
-            let raw = process.name().to_string_lossy().to_lowercase();
-            ObservedProcess {
-                cmdline: process.cmd().iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join(" "),
-                hit: ProcHit {
-                    pid: pid.as_u32(),
-                    ppid: process.parent().map(|parent| parent.as_u32()).unwrap_or(0),
-                    name: raw.strip_suffix(".exe").unwrap_or(&raw).to_string(),
-                    exe_path: process.exe().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default(),
-                    memory: process.memory(),
-                    cpu: self.cpu_measured.then_some(process.cpu_usage() as f64),
-                    is_zombie: process.status() == sysinfo::ProcessStatus::Zombie,
-                },
-            }
-        }).collect();
+        self.rows = self
+            .sys
+            .processes()
+            .iter()
+            .map(|(pid, process)| {
+                let raw = process.name().to_string_lossy().to_lowercase();
+                ObservedProcess {
+                    cmdline: process
+                        .cmd()
+                        .iter()
+                        .map(|part| part.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    hit: ProcHit {
+                        pid: pid.as_u32(),
+                        ppid: process.parent().map(|parent| parent.as_u32()).unwrap_or(0),
+                        name: raw.strip_suffix(".exe").unwrap_or(&raw).to_string(),
+                        exe_path: process
+                            .exe()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        memory: process.memory(),
+                        cpu: self.cpu_measured.then_some(process.cpu_usage() as f64),
+                        is_zombie: process.status() == sysinfo::ProcessStatus::Zombie,
+                    },
+                }
+            })
+            .collect();
     }
 
     /// 进程树读取与档案匹配共用本拍数据，PID 顺序固定。
@@ -87,14 +109,16 @@ impl ProcessMonitor {
         table.sort_by_key(|hit| hit.pid);
         table
     }
-
 }
 
 // CPU/memory update each sample; immutable identity is loaded once per PID.
 // The generic refresh omits cmd and samples disk I/O that this application never uses.
 fn process_refresh_kind() -> ProcessRefreshKind {
-    ProcessRefreshKind::nothing().with_cpu().with_memory()
-        .with_exe(UpdateKind::OnlyIfNotSet).with_cmd(UpdateKind::OnlyIfNotSet)
+    ProcessRefreshKind::nothing()
+        .with_cpu()
+        .with_memory()
+        .with_exe(UpdateKind::OnlyIfNotSet)
+        .with_cmd(UpdateKind::OnlyIfNotSet)
 }
 
 /// 一个进程是否属于某个档案。**纯函数**：只看名字 / 可执行路径 / 命令行三个字符串。
@@ -169,7 +193,10 @@ mod cpu_window_regressions {
         let monitor = ProcessMonitor::new();
         let table = monitor.table();
         assert!(!table.is_empty());
-        assert!(table.iter().all(|hit| hit.cpu.is_none()), "首次采样不能伪报 CPU 0 或旧读数");
+        assert!(
+            table.iter().all(|hit| hit.cpu.is_none()),
+            "首次采样不能伪报 CPU 0 或旧读数"
+        );
     }
 }
 
@@ -180,9 +207,15 @@ mod optimization_regressions {
     #[test]
     fn node_hosted_cli_is_identified_by_its_real_command_line() {
         let mut child = std::process::Command::new("node")
-            .args(["-e", "setInterval(() => {}, 1000)", "agentisland-cli-probe-fixture"])
-            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-            .spawn().expect("Node fixture must start");
+            .args([
+                "-e",
+                "setInterval(() => {}, 1000)",
+                "agentisland-cli-probe-fixture",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("Node fixture must start");
         let mut monitor = ProcessMonitor::new();
         let mut profile = crate::registry::builtin().remove(0);
         profile.process_names.clear();
@@ -192,23 +225,41 @@ mod optimization_regressions {
         let mut found = false;
         for _ in 0..10 {
             monitor.refresh();
-            found |= monitor.match_profile(&profile).iter().any(|hit| hit.pid == child.id());
-            if found { break; }
+            found |= monitor
+                .match_profile(&profile)
+                .iter()
+                .any(|hit| hit.pid == child.id());
+            if found {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let _ = child.kill(); let _ = child.wait();
-        assert!(found, "refresh must populate cmd for Node-hosted CLI detection");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            found,
+            "refresh must populate cmd for Node-hosted CLI detection"
+        );
     }
 
     #[test]
     fn zombies_do_not_keep_an_agent_online() {
         let mut monitor = ProcessMonitor::new();
         let mut hit = monitor.table().into_iter().next().unwrap();
-        hit.name = "agentisland-fixture".into(); hit.is_zombie = true;
-        monitor.rows = vec![ObservedProcess { hit, cmdline: String::new() }];
+        hit.name = "agentisland-fixture".into();
+        hit.is_zombie = true;
+        monitor.rows = vec![ObservedProcess {
+            hit,
+            cmdline: String::new(),
+        }];
         let mut profile = crate::registry::builtin().remove(0);
         profile.process_names = vec!["agentisland-fixture".into()];
-        profile.cmdline_hints.clear(); profile.path_contains.clear(); profile.path_excludes.clear();
-        assert!(monitor.match_profile(&profile).is_empty(), "exited zombies are not live agents");
+        profile.cmdline_hints.clear();
+        profile.path_contains.clear();
+        profile.path_excludes.clear();
+        assert!(
+            monitor.match_profile(&profile).is_empty(),
+            "exited zombies are not live agents"
+        );
     }
 }

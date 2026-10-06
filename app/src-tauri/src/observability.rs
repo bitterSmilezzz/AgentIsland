@@ -113,10 +113,7 @@ pub fn evaluate(e: &Evidence) -> Verdict {
             )
         };
     }
-    Verdict::new(
-        Code::Observed,
-        format!("活跃会话 {} 个", e.active_sessions),
-    )
+    Verdict::new(Code::Observed, format!("活跃会话 {} 个", e.active_sessions))
 }
 
 /// Detect only proven access failures. A missing optional directory is not a
@@ -135,9 +132,6 @@ pub fn has_unreadable_source(profile: &AgentProfile) -> bool {
 pub fn has_local_detail_source(profile: &AgentProfile) -> bool {
     !profile.session_dirs.is_empty() || !profile.token_roots.is_empty()
 }
-
-
-
 
 impl Code {
     /// 文本出口（CSV/报告）用的写法。**必须与 serde 的 camelCase 表示同值**——
@@ -193,11 +187,7 @@ mod tests {
         // 陈旧的故障不参与判定：源早已修好却挂着一小时前的「读不到」，
         // 那是另一种谎报
         e.probe_health_fresh = false;
-        assert_eq!(
-            evaluate(&e).code,
-            Code::NoLocalData,
-            "过期的那条不算数"
-        );
+        assert_eq!(evaluate(&e).code, Code::NoLocalData, "过期的那条不算数");
         e.probe_health_fresh = true;
         e.probe_health = None;
         e.has_local_detail_source = false;
@@ -282,7 +272,8 @@ mod tests {
     }
 
     #[test]
-    fn outbound_codes_and_evidence_are_stable() {        let verdict = evaluate(&input());
+    fn outbound_codes_and_evidence_are_stable() {
+        let verdict = evaluate(&input());
         let json = serde_json::to_value(verdict).unwrap();
         assert_eq!(json["code"], "noLocalData");
         assert_eq!(json["summary"], "无本地明细：读不到会话与用量");
@@ -319,7 +310,6 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert!(!has_unreadable_source(&profile));
     }
-
 }
 
 #[cfg(test)]

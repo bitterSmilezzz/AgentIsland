@@ -10,8 +10,8 @@ use crate::models::DockEdge;
 /// **不要用「零引用」一刀切去删平台函数**。
 #[cfg(windows)]
 pub fn work_area_under_cursor() -> (f64, f64, f64, f64, f64) {
-    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
     use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     unsafe {
@@ -26,8 +26,8 @@ pub fn work_area_under_cursor() -> (f64, f64, f64, f64, f64) {
 
 #[cfg(windows)]
 pub fn work_area_at(x: i32, y: i32) -> (f64, f64, f64, f64, f64) {
-    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
     use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
     unsafe {
         let pt = POINT { x, y };
         let hmon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
@@ -36,7 +36,9 @@ pub fn work_area_at(x: i32, y: i32) -> (f64, f64, f64, f64, f64) {
 }
 
 #[cfg(windows)]
-fn work_area_of_monitor(hmon: windows_sys::Win32::Graphics::Gdi::HMONITOR) -> (f64, f64, f64, f64, f64) {
+fn work_area_of_monitor(
+    hmon: windows_sys::Win32::Graphics::Gdi::HMONITOR,
+) -> (f64, f64, f64, f64, f64) {
     use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
     use windows_sys::Win32::UI::HiDpi::GetDpiForMonitor;
 
@@ -121,10 +123,7 @@ pub fn work_area_under_window(window: &tauri::WebviewWindow) -> (f64, f64, f64, 
 /// 取不到目标屏时**逐级回落**（目标屏 → 主屏 → 兜底工作区），
 /// 宁可落在一块能用的屏上，也不要算出落在屏幕之外的坐标——
 /// 那会让窗口整个消失，而界面上没有任何提示。
-pub fn work_area_for_mode(
-    window: &tauri::WebviewWindow,
-    mode: &str,
-) -> (f64, f64, f64, f64, f64) {
+pub fn work_area_for_mode(window: &tauri::WebviewWindow, mode: &str) -> (f64, f64, f64, f64, f64) {
     match mode {
         "mainScreen" => window
             .primary_monitor()
@@ -173,7 +172,11 @@ fn named_monitor(window: &tauri::WebviewWindow, want_builtin: bool) -> Option<ta
 /// 任意逻辑坐标所在的显示器工作区。多显示器 + 不同 DPI 时按坐标选屏，
 /// 不能一律取主屏——否则副屏上的贴边会算到主屏的坐标空间里。
 #[cfg(not(windows))]
-pub fn work_area_at_logical(window: &tauri::WebviewWindow, x: f64, y: f64) -> (f64, f64, f64, f64, f64) {
+pub fn work_area_at_logical(
+    window: &tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+) -> (f64, f64, f64, f64, f64) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let s = if scale > 0.0 { scale } else { 1.0 };
     let monitor = window
@@ -250,7 +253,11 @@ pub fn clamp_sidebar_width(width: f64) -> f64 {
 /// 侧边栏没有上下两档，与其静默给一个奇怪的几何，不如按明确的一条回落。
 ///
 /// 返回 `(left, top, width, height)`，逻辑坐标。
-pub fn sidebar_frame(edge: DockEdge, width: f64, wa: (f64, f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+pub fn sidebar_frame(
+    edge: DockEdge,
+    width: f64,
+    wa: (f64, f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
     let (wx, wy, ww, wh, _scale) = wa;
     // 宽度既受记忆值也受工作区约束：窗口比工作区宽会让它有一截永远在屏幕外。
     // 工作区比下界还窄时**以工作区为准**（此时侧边栏铺满宽度）——
@@ -270,7 +277,13 @@ pub fn sidebar_frame(edge: DockEdge, width: f64, wa: (f64, f64, f64, f64, f64)) 
 ///
 /// `wa` 是 `(工作区 x, y, w, h, scale)`。**width/height 也是逻辑坐标**，
 /// 与 `wa` 同口径，不要在这里混物理像素。
-pub fn place_with(edge: DockEdge, anchor: f64, width: f64, height: f64, wa: (f64, f64, f64, f64, f64)) -> (f64, f64) {
+pub fn place_with(
+    edge: DockEdge,
+    anchor: f64,
+    width: f64,
+    height: f64,
+    wa: (f64, f64, f64, f64, f64),
+) -> (f64, f64) {
     let (wx, wy, ww, wh, _s) = wa;
     let (mut left, mut top);
     match edge {
@@ -341,8 +354,14 @@ mod sidebar_tests {
     #[test]
     fn the_width_is_clamped_and_never_wider_than_the_work_area() {
         // 记忆值超出上下界 ⇒ 钳回区间
-        assert_eq!(sidebar_frame(DockEdge::Right, 5_000.0, wa()).2, MAX_SIDEBAR_WIDTH);
-        assert_eq!(sidebar_frame(DockEdge::Right, 10.0, wa()).2, MIN_SIDEBAR_WIDTH);
+        assert_eq!(
+            sidebar_frame(DockEdge::Right, 5_000.0, wa()).2,
+            MAX_SIDEBAR_WIDTH
+        );
+        assert_eq!(
+            sidebar_frame(DockEdge::Right, 10.0, wa()).2,
+            MIN_SIDEBAR_WIDTH
+        );
 
         // 工作区比下界还窄（小屏/分屏）：宽度以工作区为上限，
         // 否则窗口会有一截永远在屏幕外，用户再也拖不回来
@@ -386,18 +405,30 @@ mod tests {
         let (w, h) = (300.0, 400.0);
 
         let (l, t) = place_with(DockEdge::Top, 0.5, w, h, WA);
-        assert!((l - (WA.0 + WA.2 / 2.0 - w / 2.0)).abs() < 1e-6, "top 水平未居中: {l}");
+        assert!(
+            (l - (WA.0 + WA.2 / 2.0 - w / 2.0)).abs() < 1e-6,
+            "top 水平未居中: {l}"
+        );
         assert!((t - WA.1).abs() < 1e-6, "top 未贴工作区上沿: {t}");
 
         let (l, t) = place_with(DockEdge::Bottom, 0.5, w, h, WA);
-        assert!((t - (WA.1 + WA.3 - h)).abs() < 1e-6, "bottom 未贴工作区下沿: {t}");
+        assert!(
+            (t - (WA.1 + WA.3 - h)).abs() < 1e-6,
+            "bottom 未贴工作区下沿: {t}"
+        );
 
         let (l, t) = place_with(DockEdge::Left, 0.5, w, h, WA);
         assert!((l - WA.0).abs() < 1e-6, "left 未贴工作区左沿: {l}");
-        assert!((t - (WA.1 + WA.3 / 2.0 - h / 2.0)).abs() < 1e-6, "left 垂直未居中: {t}");
+        assert!(
+            (t - (WA.1 + WA.3 / 2.0 - h / 2.0)).abs() < 1e-6,
+            "left 垂直未居中: {t}"
+        );
 
         let (l, t) = place_with(DockEdge::Right, 0.5, w, h, WA);
-        assert!((l - (WA.0 + WA.2 - w)).abs() < 1e-6, "right 未贴工作区右沿: {l}");
+        assert!(
+            (l - (WA.0 + WA.2 - w)).abs() < 1e-6,
+            "right 未贴工作区右沿: {l}"
+        );
     }
 
     /// 锚点 0/1 与 0.5 必须真的不同，否则「拖拽换位置」会被静默钳成居中。
@@ -427,8 +458,14 @@ mod tests {
         let (w, h) = (300.0, 400.0);
         for anchor in [-5.0, -0.1, 1.1, 9.0] {
             let (l, t) = place_with(DockEdge::Top, anchor, w, h, WA);
-            assert!(l >= WA.0 - 1e-6 && l <= WA.0 + WA.2 - w + 1e-6, "锚点 {anchor} 越界: {l}");
-            assert!(t >= WA.1 - 1e-6 && t <= WA.1 + WA.3 - h + 1e-6, "锚点 {anchor} 越界: {t}");
+            assert!(
+                l >= WA.0 - 1e-6 && l <= WA.0 + WA.2 - w + 1e-6,
+                "锚点 {anchor} 越界: {l}"
+            );
+            assert!(
+                t >= WA.1 - 1e-6 && t <= WA.1 + WA.3 - h + 1e-6,
+                "锚点 {anchor} 越界: {t}"
+            );
         }
     }
 
@@ -436,7 +473,16 @@ mod tests {
     /// 位置应稳定在工作区原点而不是 NaN——这正是 `place_with` 敢用 0×0 兜底的原因。
     #[test]
     fn zero_sized_fallback_is_not_nan() {
-        let (l, t) = place_with(DockEdge::Bottom, 0.5, 300.0, 400.0, (0.0, 0.0, 0.0, 0.0, 1.0));
-        assert!(l.is_finite() && t.is_finite(), "0×0 兜底出现非有限值: {l} {t}");
+        let (l, t) = place_with(
+            DockEdge::Bottom,
+            0.5,
+            300.0,
+            400.0,
+            (0.0, 0.0, 0.0, 0.0, 1.0),
+        );
+        assert!(
+            l.is_finite() && t.is_finite(),
+            "0×0 兜底出现非有限值: {l} {t}"
+        );
     }
 }

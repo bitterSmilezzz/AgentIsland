@@ -27,7 +27,10 @@ impl Rate {
 }
 
 const fn r(input: f64, output: f64) -> Rate {
-    Rate { input_per_million: input, output_per_million: output }
+    Rate {
+        input_per_million: input,
+        output_per_million: output,
+    }
 }
 
 /// 主流模型官方基准费率表。**顺序即语义**：`rate_for` 取第一条命中，
@@ -149,11 +152,15 @@ mod tests {
 
     #[test]
     fn rates_match_the_published_contract_including_order() {
-        let rows: Vec<(String, f64, f64)> = serde_json::from_str(include_str!("../tests/fixtures/contracts/rates.json")).unwrap();
+        let rows: Vec<(String, f64, f64)> =
+            serde_json::from_str(include_str!("../tests/fixtures/contracts/rates.json")).unwrap();
         assert_eq!(rows.len(), KNOWN_RATES.len());
         for ((pattern, input, output), (actual, rate)) in rows.iter().zip(KNOWN_RATES.iter()) {
             assert_eq!(pattern, actual);
-            assert_eq!((*input, *output), (rate.input_per_million, rate.output_per_million));
+            assert_eq!(
+                (*input, *output),
+                (rate.input_per_million, rate.output_per_million)
+            );
         }
     }
 
@@ -176,7 +183,7 @@ mod tests {
         // 靠下面的 parity 哨兵守「顺序与 Swift 一致」，不靠这里的取值断言。
         assert_eq!(rate_for("gpt-4o-mini"), rate_for("gpt-4o-mini-2024-08-06"));
         assert_ne!(rate_for("gpt-4o-mini"), rate_for("gpt-4o")); // (0.15,0.60) vs (2.5,10)
-        // "gpt-4o" 本身含 "gpt-4"：靠 gpt-4o 排在 gpt-4 前面才没掉到 (30,60)
+                                                                 // "gpt-4o" 本身含 "gpt-4"：靠 gpt-4o 排在 gpt-4 前面才没掉到 (30,60)
         assert_ne!(rate_for("gpt-4o"), rate_for("gpt-4"));
         assert_ne!(rate_for("gpt-4-turbo"), rate_for("gpt-4"));
         assert_eq!(rate_for("o1-mini"), rate_for("o1-mini-2024-09-12"));
@@ -185,16 +192,34 @@ mod tests {
         assert_ne!(rate_for("o3-mini"), rate_for("o3"));
         assert_ne!(rate_for("deepseek-reasoner"), rate_for("deepseek"));
         // 版本化 id 必须落到版本化条目上（同价，但语义上不该落成通用条目）
-        assert_eq!(rate_for("claude-3-5-haiku-20241022"), rate_for("claude-3-5-haiku"));
-        assert_eq!(rate_for("claude-3-opus-20240229"), rate_for("claude-3-opus"));
+        assert_eq!(
+            rate_for("claude-3-5-haiku-20241022"),
+            rate_for("claude-3-5-haiku")
+        );
+        assert_eq!(
+            rate_for("claude-3-opus-20240229"),
+            rate_for("claude-3-opus")
+        );
     }
 
     #[test]
     fn known_rates_are_the_ones_the_matrix_called_out() {
         // 23 号对照表点名的三处：haiku 旧实现给 (1.0,5.0) 而 Swift 是 (0.8,4.0)
-        assert_eq!(rate_for("claude-3-5-haiku"), Some(Rate { input_per_million: 0.8, output_per_million: 4.0 }));
+        assert_eq!(
+            rate_for("claude-3-5-haiku"),
+            Some(Rate {
+                input_per_million: 0.8,
+                output_per_million: 4.0
+            })
+        );
         // Swift 对 claude-3-7-sonnet 是 (3,15)
-        assert_eq!(rate_for("claude-3-7-sonnet"), Some(Rate { input_per_million: 3.0, output_per_million: 15.0 }));
+        assert_eq!(
+            rate_for("claude-3-7-sonnet"),
+            Some(Rate {
+                input_per_million: 3.0,
+                output_per_million: 15.0
+            })
+        );
         // glm 在 Swift 表里没有对应：旧 Rust 实现编了 (0.55,2.0)，现在必须估不出来
         assert_eq!(rate_for("glm-4"), None);
     }
@@ -211,7 +236,10 @@ mod tests {
 
     #[test]
     fn matching_is_case_insensitive_and_trims() {
-        assert_eq!(rate_for("  CLAUDE-3-7-SONNET  "), rate_for("claude-3-7-sonnet"));
+        assert_eq!(
+            rate_for("  CLAUDE-3-7-SONNET  "),
+            rate_for("claude-3-7-sonnet")
+        );
         assert_eq!(
             rate_for("anthropic/claude-3-5-sonnet-20241022"),
             rate_for("claude-3-5-sonnet")
@@ -240,7 +268,8 @@ mod tests {
         assert_eq!(text, "~$6.00");
 
         // 估不出来就什么都不报，不许回落成一个编的数
-        let (cost, text, estimated) = resolve_cost(0.0, Some("some-local-finetune"), Some(1_000_000));
+        let (cost, text, estimated) =
+            resolve_cost(0.0, Some("some-local-finetune"), Some(1_000_000));
         assert_eq!((cost, text, estimated), (0.0, String::new(), false));
 
         let (cost, text, estimated) = resolve_cost(0.0, None, None);

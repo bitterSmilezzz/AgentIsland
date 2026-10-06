@@ -291,6 +291,15 @@ impl TokenBreakdown {
     }
 }
 
+/// Internal identity and event revision selected by a database semantic query.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseSource {
+    pub keys: Vec<String>,
+    pub revision: Option<String>,
+    /// Event time from the selected row; WAL writes need not update the DB file mtime.
+    pub activity_ms: Option<i64>,
+}
+
 /// 一轮探测出来的「本轮上下文」：后台任务 + 子智能体 + Token 细分。
 ///
 /// ⚠️ **只能随一次探测的返回值活过**，不许存进按 agent id 索引的全局表。
@@ -299,6 +308,21 @@ impl TokenBreakdown {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionActiveContext {
+    /// Exact source selected by the semantic probe, not the newest unrelated file.
+    #[serde(skip)]
+    pub source_path: Option<String>,
+    /// Database primary key(s) from the exact semantic row; never sent to UI.
+    #[serde(skip)]
+    pub source_keys: Option<DatabaseSource>,
+    #[serde(skip)]
+    pub artifact: Option<crate::task_artifacts::Evidence>,
+    /// Immutable main-event version, independent of temporary plan body availability.
+    #[serde(skip)]
+    pub plan_event_version: Option<String>,
+    #[serde(skip)]
+    pub plan_identity_unavailable: bool,
+    #[serde(skip)]
+    pub attention_kind: Option<crate::tasks::AttentionKind>,
     pub background_tasks: Vec<BackgroundTask>,
     pub subagents: Vec<SubagentInfo>,
     /// `None` = 这一族不报 Token 细分（与「报 0」不同）
@@ -317,7 +341,7 @@ pub struct AgentSnapshot {
     /// 卡死 / 僵卡三态：`None` 是「本轮判不出」（连续观测不足阈值），**不是「没有」**。
     /// 判定规则见 [`crate::health::is_hung`]。
     pub is_hung: Option<bool>,
-    /// 100 分制健康度报告（[`crate::health::evaluate`]，对齐 Swift `AgentHealthEvaluator`）
+    /// 100 分制运行健康度；内存异常来自连续观测趋势，不由绝对 RSS 推断。
     pub health: crate::health::Report,
     pub process_running: bool,
     /// 装机探测的结论。`None` = 没核实（缓存未热、GUI 档案缺否定证据），
@@ -442,6 +466,8 @@ pub struct Export {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineState {
+    pub session_navigation: std::collections::HashMap<String, crate::session_navigation::Target>,
+    pub event_navigation: std::collections::HashMap<String, crate::session_navigation::Target>,
     pub snapshots: Vec<AgentSnapshot>,
     pub latest_event: Option<AgentTaskEvent>,
     /// 已发出但还没确认的事件条数（不含 `latest_event` 那条）。
@@ -535,7 +561,9 @@ mod tests {
         ] {
             assert!(!lv.label().trim().is_empty(), "{lv:?} 的 label 为空");
             assert!(
-                lv.label().chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                lv.label()
+                    .chars()
+                    .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
                 "{lv:?} 的 label 不是中文"
             );
         }
@@ -558,8 +586,16 @@ mod tests {
     /// 漏一个就有一侧的窗口永远定位到错误的坐标空间。
     #[test]
     fn dock_edge_is_horizontal_is_total_partition() {
-        for e in [DockEdge::Top, DockEdge::Bottom, DockEdge::Left, DockEdge::Right] {
-            assert!(e.is_horizontal() || !e.is_horizontal(), "{e:?} 的值不是布尔");
+        for e in [
+            DockEdge::Top,
+            DockEdge::Bottom,
+            DockEdge::Left,
+            DockEdge::Right,
+        ] {
+            assert!(
+                e.is_horizontal() || !e.is_horizontal(),
+                "{e:?} 的值不是布尔"
+            );
         }
         assert!(DockEdge::Top.is_horizontal());
         assert!(DockEdge::Bottom.is_horizontal());
@@ -611,8 +647,9 @@ mod tests {
         let value = serde_json::to_value(&snapshot).expect("快照应能序列化");
         let object = value.as_object().expect("快照应序列化成对象");
 
-        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
-            .expect("读不到 views.js——这条哨兵的存在意义就是跨文件对名字");
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+                .expect("读不到 views.js——这条哨兵的存在意义就是跨文件对名字");
         let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (index, _) in source.match_indices("snap.") {
             let rest = &source[index + "snap.".len()..];
@@ -624,7 +661,11 @@ mod tests {
                 names.insert(name);
             }
         }
-        assert!(names.len() >= 8, "只抓到 {} 个 snap. 字段，解析八成坏了", names.len());
+        assert!(
+            names.len() >= 8,
+            "只抓到 {} 个 snap. 字段，解析八成坏了",
+            names.len()
+        );
         let missing: Vec<&String> = names.iter().filter(|n| !object.contains_key(*n)).collect();
         assert!(
             missing.is_empty(),
@@ -639,9 +680,15 @@ mod tests {
     /// 从 `renderSidebar` 的 `class="..."` 里取 `sb-` 开头的类，逐个去 CSS 里找。
     #[test]
     fn every_sidebar_class_is_actually_styled() {
-        let views = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
-            .expect("读不到 views.js");
-        let css = ["sidebar.css", "panels.css"].map(|name| std::fs::read_to_string(format!("{}/../ui/css/{name}", env!("CARGO_MANIFEST_DIR"))).expect("读不到控件样式")).join("\n");
+        let views =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+                .expect("读不到 views.js");
+        let css = ["sidebar.css", "panels.css"]
+            .map(|name| {
+                std::fs::read_to_string(format!("{}/../ui/css/{name}", env!("CARGO_MANIFEST_DIR")))
+                    .expect("读不到控件样式")
+            })
+            .join("\n");
 
         // 扫**整个** views.js 里 `sb-` 开头的静态类名。
         // 一开始只扫 `renderSidebar` 的函数体，于是「档位页」这种后加的页面不在保护范围内——
@@ -650,7 +697,9 @@ mod tests {
         let mut cursor = 0;
         while let Some(index) = views[cursor..].find("class=\"") {
             let from = cursor + index + "class=\"".len();
-            let Some(end) = views[from..].find('"') else { break };
+            let Some(end) = views[from..].find('"') else {
+                break;
+            };
             for token in views[from..from + end].split_whitespace() {
                 // 只查静态类名；模板插值出来的（`${...}`）没法静态核对
                 if token.starts_with("sb-") && !token.contains("${") {
@@ -664,7 +713,10 @@ mod tests {
             "只从 renderSidebar 里抓到 {} 个 sb-* 类，解析八成坏了",
             classes.len()
         );
-        let missing: Vec<&String> = classes.iter().filter(|c| !css.contains(&format!(".{c}"))).collect();
+        let missing: Vec<&String> = classes
+            .iter()
+            .filter(|c| !css.contains(&format!(".{c}")))
+            .collect();
         assert!(
             missing.is_empty(),
             "sidebar.css 里没有这些类的样式：{missing:?}（界面不会报错，只会长得不对）"
@@ -684,8 +736,9 @@ mod tests {
         use crate::provider::{BackupInfo, CodexProfile, ProviderApplyResult, ProviderStatus};
         use crate::todos::TodoList;
 
-        let views = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
-            .expect("读不到 views.js");
+        let views =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+                .expect("读不到 views.js");
 
         let keys = |value: &serde_json::Value| -> std::collections::BTreeSet<String> {
             value
@@ -695,17 +748,19 @@ mod tests {
                 .cloned()
                 .collect()
         };
-        let profile = keys(&serde_json::to_value(CodexProfile {
-            id: "work".into(),
-            name: "工作账号".into(),
-            model: "gpt-5".into(),
-            provider_id: "acme".into(),
-            provider_name: "Acme".into(),
-            base_url: "https://api.example.invalid/v1".into(),
-            env_key: "ACME_API_KEY".into(),
-            wire_api: "responses".into(),
-        })
-        .unwrap());
+        let profile = keys(
+            &serde_json::to_value(CodexProfile {
+                id: "work".into(),
+                name: "工作账号".into(),
+                model: "gpt-5".into(),
+                provider_id: "acme".into(),
+                provider_name: "Acme".into(),
+                base_url: "https://api.example.invalid/v1".into(),
+                env_key: "ACME_API_KEY".into(),
+                wire_api: "responses".into(),
+            })
+            .unwrap(),
+        );
         let backup = keys(
             &serde_json::to_value(BackupInfo {
                 name: "config-1.toml".into(),
@@ -721,6 +776,15 @@ mod tests {
                 active_provider_id: None,
                 active_profile_id: None,
                 profile_count: 0,
+                configured_model: None,
+                configured_provider: None,
+                current_draft: None,
+                capture_notice: String::new(),
+                config_error: None,
+                revision: None,
+                last_applied: None,
+                drifted: false,
+                record_error: None,
                 limitations: crate::provider::PROVIDER_LIMITATIONS,
             })
             .unwrap(),
@@ -729,6 +793,7 @@ mod tests {
             &serde_json::to_value(ProviderApplyResult {
                 config_path: "/tmp/config.toml".into(),
                 backup_name: "config-1.toml".into(),
+                record_warning: None,
                 limitations: crate::provider::PROVIDER_LIMITATIONS,
             })
             .unwrap(),
@@ -750,10 +815,17 @@ mod tests {
         // 远程通知页的 DTO：**与档位页的 `status` 是两个不同的结构**，
         // 所以它用自己的前缀 `remote.`。两个都登记进哨兵——而不是让其中一个
         // 逃出检查范围（那正是 DTO 改名时静默失效的那种洞）。
-        let remote = keys(&serde_json::to_value(crate::remote::status(
-            None, &std::collections::HashMap::new(), &crate::remote::Policy::default(),
-            false, crate::remote::Now::at(0), &crate::remote::PresenceSignals::unavailable(),
-        )).unwrap());
+        let remote = keys(
+            &serde_json::to_value(crate::remote::status(
+                None,
+                &std::collections::HashMap::new(),
+                &crate::remote::Policy::default(),
+                false,
+                crate::remote::Now::at(0),
+                &crate::remote::PresenceSignals::unavailable(),
+            ))
+            .unwrap(),
+        );
 
         // 前缀 → 该前缀下允许的键
         for (prefix, allowed) in [
@@ -802,12 +874,8 @@ mod tests {
     #[test]
     fn the_two_shells_styles_cannot_bleed_into_each_other() {
         let read = |name: &str| {
-            std::fs::read_to_string(format!(
-                "{}/../ui/{}",
-                env!("CARGO_MANIFEST_DIR"),
-                name
-            ))
-            .unwrap_or_else(|e| panic!("读不到 {name}：{e}"))
+            std::fs::read_to_string(format!("{}/../ui/{}", env!("CARGO_MANIFEST_DIR"), name))
+                .unwrap_or_else(|e| panic!("读不到 {name}：{e}"))
         };
         // 先把块注释整段去掉：注释里会出现 `*`、`{`、反引号这些字符，
         // 不去掉的话「按 { 切选择器」会把注释当规则（我第一版就是这么被绊倒的）。
@@ -857,7 +925,10 @@ mod tests {
                 );
             }
         }
-        assert!(sidebar_rules >= 15, "只解析出 {sidebar_rules} 条 sidebar 规则，解析八成坏了");
+        assert!(
+            sidebar_rules >= 15,
+            "只解析出 {sidebar_rules} 条 sidebar 规则，解析八成坏了"
+        );
 
         // ② island.css：元素级选择器必须挂在 html.shell-island 之下
         let mut checked = 0;
@@ -887,7 +958,10 @@ mod tests {
                 );
             }
         }
-        assert!(checked >= 6, "只检查了 {checked} 条元素级规则，解析八成坏了");
+        assert!(
+            checked >= 6,
+            "只检查了 {checked} 条元素级规则，解析八成坏了"
+        );
 
         // ③ 形态类必须在样式表之前挂上（否则第一次绘制时收拢的规则还没生效）
         let script_at = html
@@ -910,8 +984,9 @@ mod tests {
     /// 与那条字段哨兵同一套路（读源文件，而不是跑界面）。
     #[test]
     fn both_shells_render_agent_rows_through_one_shared_model() {
-        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
-            .expect("读不到 views.js");
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
+                .expect("读不到 views.js");
 
         // 定义只有一处
         assert_eq!(
@@ -930,7 +1005,10 @@ mod tests {
         // 切「函数体」用**函数边界**（到下一个顶格 `}`），不要用「往后 N 个字符」——
         // 我第一版用 4000 字符，往函数里加几行注释就把它推过了窗口，于是哨兵误报。
         // 文本哨兵本来就脆，至少别让它的作用域随注释长度漂移。
-        for (func, label) in [("function rowHtml(", "灵动岛的行"), ("export function renderSidebar(", "侧边栏的行")] {
+        for (func, label) in [
+            ("function rowHtml(", "灵动岛的行"),
+            ("export function renderSidebar(", "侧边栏的行"),
+        ] {
             let start = source
                 .find(func)
                 .unwrap_or_else(|| panic!("views.js 里找不到 {func}——{label} 改名字了？"));

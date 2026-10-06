@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {pagePrompts,promptsListHtml} from '../app/ui/js/prompts-page.js';
+const html=promptsListHtml([{id:'fixture"',draft:{name:'<script>fixture</script>',body:'Private drafting text'}}]);
+assert.ok(!html.includes('<script>'));
+assert.ok(!html.includes('Private drafting text'));
+assert.match(html,/&lt;script&gt;/);assert.match(html,/fixture&quot;/);
+assert.match(pagePrompts(),/data-prompt-confirm hidden/);
+assert.match(pagePrompts(),/保存只更新提示词库/);
+assert.match(pagePrompts(),/data-prompt-target/);
+assert.match(pagePrompts(),/Claude Code · 默认目录/);
+console.log('PASS: prompt lists escape labels, omit bodies, and keep writes behind explicit preview');

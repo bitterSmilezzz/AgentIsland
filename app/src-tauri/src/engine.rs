@@ -1,13 +1,13 @@
 use crate::filemon::{time_ago_text, FileMonitor};
+use crate::health;
 use crate::installed::{self, InstalledApps};
 use crate::models::*;
-use crate::observability::{self, Evidence};
-use crate::health;
 use crate::notifier;
+use crate::observability::{self, Evidence};
+use crate::procmon::{memory_text, ProcessMonitor};
 use crate::remote;
 use crate::render;
 use crate::resilience;
-use crate::procmon::{memory_text, ProcessMonitor};
 use crate::session::{self, Signal};
 use crate::settings::Settings;
 use crate::tokens::now_ms;
@@ -41,6 +41,7 @@ pub struct ActivityEngine {
     /// 对 Raycast / 脚本调用不划算。不取时那一列印「—」**明说没取**，
     /// 而不是印 0（0 是「查了确实是零」，那是两件事）。
     pub refresh_usage: bool,
+    diagnostics: Option<crate::resource_diagnostics::Tick>,
     profiles: Vec<AgentProfile>,
     procmon: ProcessMonitor,
     filemon: FileMonitor,
@@ -70,6 +71,12 @@ pub struct ActivityEngine {
     token_cache: HashMap<String, (i64, TokenReport)>,
     pub event_rx: Option<Receiver<AgentTaskEvent>>,
 
+    pub task_sources: HashMap<String, crate::task_sources::Choice>,
+    #[cfg(target_os = "macos")]
+    pub claude_plan_runtime:
+        Option<std::sync::Arc<std::sync::Mutex<crate::claude_plan_runtime::Runtime>>>,
+    session_navigation: HashMap<String, crate::session_navigation::Target>,
+    event_navigation: HashMap<String, crate::session_navigation::Target>,
     pub latest_event: Option<AgentTaskEvent>,
     /// 已发出但用户还没确认的事件队列，`latest_event` 是它的队首。
     ///
@@ -90,11 +97,15 @@ pub struct ActivityEngine {
 }
 
 fn has_usage_location(profile: &AgentProfile) -> bool {
-    profile.token_roots.iter().any(|root| std::path::Path::new(root).is_dir() || (std::path::Path::new(root).is_file() && root.ends_with(".sqlite")))
-        || profile.session_database.as_ref().is_some_and(|database| {
-            matches!(database.schema, SessionSchema::OpenCode | SessionSchema::DimTasks | SessionSchema::MiniMaxRuntime)
-                && std::path::Path::new(&database.path).is_file()
-        })
+    profile.token_roots.iter().any(|root| {
+        std::path::Path::new(root).is_dir()
+            || (std::path::Path::new(root).is_file() && root.ends_with(".sqlite"))
+    }) || profile.session_database.as_ref().is_some_and(|database| {
+        matches!(
+            database.schema,
+            SessionSchema::OpenCode | SessionSchema::DimTasks | SessionSchema::MiniMaxRuntime
+        ) && std::path::Path::new(&database.path).is_file()
+    })
 }
 
 impl ActivityEngine {
@@ -106,6 +117,7 @@ impl ActivityEngine {
             demo_mode: false,
             // 默认开；CLI 单拍入口按需关掉
             refresh_usage: true,
+            diagnostics: None,
             profiles,
             procmon: ProcessMonitor::new(),
             filemon: FileMonitor::new(),
@@ -124,6 +136,11 @@ impl ActivityEngine {
             token_spike_streak: HashMap::new(),
             token_cache: HashMap::new(),
             event_rx: Some(event_rx),
+            task_sources: HashMap::new(),
+            #[cfg(target_os = "macos")]
+            claude_plan_runtime: None,
+            session_navigation: HashMap::new(),
+            event_navigation: HashMap::new(),
             latest_event: None,
             pending_events: VecDeque::new(),
             grand_total: TokenUsage::default(),
@@ -133,6 +150,14 @@ impl ActivityEngine {
             budget_status: crate::budget::BudgetStatus::Disabled,
             snapshots: vec![],
         }
+    }
+
+    /// Explicit observer mode; also prevents all outbound scheduling and secret reads.
+    pub fn enable_resource_diagnostics(&mut self) {
+        self.diagnostics = Some(Default::default());
+    }
+    pub fn resource_diagnostics(&self) -> Option<&crate::resource_diagnostics::Tick> {
+        self.diagnostics.as_ref()
     }
 
     fn enabled_profiles(&self) -> Vec<AgentProfile> {
@@ -145,8 +170,19 @@ impl ActivityEngine {
 
     /// 采样一拍并返回完整状态（在引擎线程执行）
     pub fn tick(&mut self) {
+        use crate::resource_diagnostics::{elapsed, Tick};
+        let tracking = self.diagnostics.is_some();
+        let start = tracking.then(std::time::Instant::now);
+        let mut measured = Tick::default();
+        self.task_sources.clear();
         if self.demo_mode {
             self.apply_demo();
+            if tracking {
+                measured.demo = true;
+                measured.total_us = elapsed(start);
+                measured.other_us = measured.total_us;
+                self.diagnostics = Some(measured);
+            }
             return;
         }
 
@@ -155,18 +191,22 @@ impl ActivityEngine {
         let working_window = self.settings.working_window;
         let min_working_hold = self.settings.min_working_hold;
 
-
+        let phase = tracking.then(std::time::Instant::now);
         self.procmon.refresh();
+        measured.process_us = elapsed(phase);
         let now = now_ms();
 
         // 装机探测按 TTL 刷（默认 5 分钟）：`/Applications` 枚举 + 逐个读 Info.plist
         // 在应用多时要几十毫秒，不该每拍都做。未热时全部档案的 `installed` 是 `None`，
         // 也就是「未核实」——这正是我们要的默认：宁可先不给结论。
+        let phase = tracking.then(std::time::Instant::now);
         self.installed.refresh_if_needed(installed::DEFAULT_MAX_AGE);
+        measured.installed_us = elapsed(phase);
 
         // 自报到期：**只盖戳，不删记录**，且放在采样里而不是另开定时器——
         // 到期与否只取决于墙钟，而采样每拍本来就在读同一个 `now`（Swift 同一条理由）
         self.self_reports.sweep_expired(now);
+        self.session_navigation.clear();
         let mut list: Vec<AgentSnapshot> = Vec::new();
         let mut total24 = 0i64;
         let mut total_all = 0i64;
@@ -176,29 +216,78 @@ impl ActivityEngine {
         let mut cost_estimated = false;
 
         for profile in self.enabled_profiles() {
+            measured.profiles += 1;
             let hits = self.procmon.match_profile(&profile);
             let process_running = !hits.is_empty();
             let pid = hits.iter().max_by_key(|h| h.memory).map(|h| h.pid);
             let memory: u64 = hits.iter().map(|h| h.memory).sum();
             // 多进程档案（Electron）取最大 CPU 分量作代表
-            let cpu: Option<f64> = hits.iter().filter_map(|h| h.cpu).fold(None, |acc: Option<f64>, c| {
-                Some(match acc {
-                    Some(a) => a.max(c),
-                    None => c,
-                })
-            });
+            let cpu: Option<f64> =
+                hits.iter()
+                    .filter_map(|h| h.cpu)
+                    .fold(None, |acc: Option<f64>, c| {
+                        Some(match acc {
+                            Some(a) => a.max(c),
+                            None => c,
+                        })
+                    });
 
+            let phase = tracking.then(std::time::Instant::now);
             let file_result = self
                 .filemon
                 .probe(&profile, self.settings.active_session_window);
             let candidates = self.filemon.probe_files(&profile);
-            let (probe, context) = self.probe_cached_multi(
+            measured.files_us += elapsed(phase);
+            measured.candidates += candidates.len();
+            let phase = tracking.then(std::time::Instant::now);
+            let (probe, mut context) = self.probe_cached_multi(
                 &profile.id,
                 profile.session_dialect,
                 &candidates,
                 profile.session_database.as_ref(),
                 now,
             );
+            measured.sessions_us += elapsed(phase);
+            #[cfg(target_os = "macos")]
+            if profile.id == "claude" {
+                if let Some(runtime) = &self.claude_plan_runtime {
+                    if let Ok(mut runtime) = runtime.lock() {
+                        let roots = profile
+                            .session_dirs
+                            .iter()
+                            .map(std::path::PathBuf::from)
+                            .collect::<Vec<_>>();
+                        runtime.with_cache(|capture| {
+                            crate::task_artifacts::attach_capture(
+                                &mut context,
+                                probe.signal.as_ref(),
+                                &roots,
+                                capture,
+                            )
+                        });
+                    }
+                }
+            }
+            if let Some(target) =
+                crate::session_navigation::resolve(&profile, context.source_path.as_deref())
+            {
+                self.session_navigation.insert(profile.id.clone(), target);
+            } else {
+                self.session_navigation.remove(&profile.id);
+            }
+            let source_age = crate::task_sources::source_age(&context, now);
+            if crate::task_sources::active_is_eligible(
+                probe.signal.as_ref(),
+                process_running,
+                source_age,
+                working_window,
+            ) {
+                if let Some(choice) =
+                    crate::task_sources::from_context(&profile, &context, probe.signal.as_ref())
+                {
+                    self.task_sources.insert(profile.id.clone(), choice);
+                }
+            }
             let level = self.decide_level(
                 &profile,
                 now,
@@ -215,10 +304,7 @@ impl ActivityEngine {
             // 对外那一拍：有可信自报就采信自报；与**强语义观测**对不上时标冲突并仍按观测走。
             // `has_session_signal` 直接从这一拍的 probe 拿，不需要 decide_level 回传
             // （它本来就把 probe 交给了调用方）。
-            let report = self
-                .self_reports
-                .believable(&profile.id, now)
-                .cloned();
+            let report = self.self_reports.believable(&profile.id, now).cloned();
             // 探测健康**由引擎按采样时钟盖章**（不是构造点取当前时间）：
             // 合成时间的测试才能稳定判定保质期
             let mut probe = probe;
@@ -229,36 +315,49 @@ impl ActivityEngine {
             let has_session_signal = probe.signal.is_some();
             let (level, provenance) =
                 crate::selfreport::resolve(level, has_session_signal, report.as_ref());
-
-            let token_usage = self.token_usage_cached(&profile);
-            let installed_state = self.installed.is_installed(&profile);
-            let observability = observability::evaluate(&Evidence {
-                level,
-                process_running,
-                installed: installed_state,
+            if matches!(
                 provenance,
-                // 原因链：**原文**带上，并按保质期判断它还算不算数。
-                // 目录层那道粗判（元数据/列举失败）作为兜底——它覆盖不到深层读取失败，
-                // 但那也不是「一切正常」的证据
-                probe_health: probe
-                    .health
-                    .as_ref()
-                    .map(|h| h.diagnostic_text())
-                    .or_else(|| {
-                        (process_running
-                            && level == ActivityLevel::Idle
-                            && observability::has_unreadable_source(&profile))
-                        .then(|| "已登记的本地会话源无法枚举；待机不代表真的空闲".to_string())
-                    }),
-                probe_health_fresh: probe
-                    .health
-                    .as_ref()
-                    .map(|h| h.is_fresh(now, HEALTH_TTL_MS))
-                    .unwrap_or(true),
-                has_local_detail_source: observability::has_local_detail_source(&profile),
-                active_sessions: file_result.active_sessions,
-                has_token_usage: token_usage.as_ref().is_some_and(|u| u.tokens_total > 0),
-            });
+                Some(
+                    crate::selfreport::Provenance::SelfReported
+                        | crate::selfreport::Provenance::Conflict
+                )
+            ) {
+                // Do not attach an observed file's conversation to a different self-report.
+                if let Some(target) = crate::session_navigation::resolve(&profile, None) {
+                    self.session_navigation.insert(profile.id.clone(), target);
+                }
+            }
+
+            let phase = tracking.then(std::time::Instant::now);
+            let token_usage = self.token_usage_cached(&profile);
+            measured.tokens_us += elapsed(phase);
+            let installed_state = self.installed.is_installed(&profile);
+            let observability =
+                observability::evaluate(&Evidence {
+                    level,
+                    process_running,
+                    installed: installed_state,
+                    provenance,
+                    // 原因链：**原文**带上，并按保质期判断它还算不算数。
+                    // 目录层那道粗判（元数据/列举失败）作为兜底——它覆盖不到深层读取失败，
+                    // 但那也不是「一切正常」的证据
+                    probe_health: probe.health.as_ref().map(|h| h.diagnostic_text()).or_else(
+                        || {
+                            (process_running
+                                && level == ActivityLevel::Idle
+                                && observability::has_unreadable_source(&profile))
+                            .then(|| "已登记的本地会话源无法枚举；待机不代表真的空闲".to_string())
+                        },
+                    ),
+                    probe_health_fresh: probe
+                        .health
+                        .as_ref()
+                        .map(|h| h.is_fresh(now, HEALTH_TTL_MS))
+                        .unwrap_or(true),
+                    has_local_detail_source: observability::has_local_detail_source(&profile),
+                    active_sessions: file_result.active_sessions,
+                    has_token_usage: token_usage.as_ref().is_some_and(|u| u.tokens_total > 0),
+                });
             if let Some(u) = &token_usage {
                 total24 += u.tokens24h;
                 total_all += u.tokens_total;
@@ -283,11 +382,9 @@ impl ActivityEngine {
                 (self.settings.runaway_duration_threshold * 1000.0) as i64,
             );
 
-            let work_stats = self.durations.stats(
-                &profile.id,
-                crate::duration::DEFAULT_WINDOW_MS,
-                now,
-            );
+            let work_stats =
+                self.durations
+                    .stats(&profile.id, crate::duration::DEFAULT_WINDOW_MS, now);
             let mut snapshot = AgentSnapshot {
                 id: profile.id.clone(),
                 name: profile.name.clone(),
@@ -318,7 +415,9 @@ impl ActivityEngine {
                     match &probe.signal {
                         Some(Signal::Active(_, action)) => action.clone(),
                         Some(Signal::Attention(_, msg)) => Some(msg.clone()),
-                        _ => report.as_ref().and_then(|r| r.ask.clone().or_else(|| r.detail.clone())),
+                        _ => report
+                            .as_ref()
+                            .and_then(|r| r.ask.clone().or_else(|| r.detail.clone())),
                     }
                 },
                 provenance,
@@ -345,6 +444,12 @@ impl ActivityEngine {
         // 放在排序之后、赋值之前：守护吃的是**这一拍的快照**，而 `list` 此刻还是局部量，
         // 于是不会和 `self.resilience` 的可变借用打架
         self.publish_guard_alerts(&list, now);
+        for snapshot in &mut list {
+            snapshot.health = health::evaluate_with_memory_growth(
+                snapshot,
+                self.resilience.memory_growth(&snapshot.id),
+            );
+        }
 
         self.snapshots = list;
         self.grand_total = TokenUsage {
@@ -358,6 +463,22 @@ impl ActivityEngine {
         // 预算评估放在总量算完、快照落地之后（Swift 侧同位置：`grandTotal` 一更新就评估）。
         // 单独抽成方法是为了让这段接线的口径能被用例直接观察。
         self.evaluate_budget(now);
+        if tracking {
+            let phase = std::time::Instant::now();
+            measured.file_cache = self.filemon.diagnostic_cache();
+            measured.token_cache = self.tokens.diagnostic_cache();
+            measured.cache_stats_us = elapsed(Some(phase));
+            measured.total_us = elapsed(start);
+            measured.other_us = measured.total_us.saturating_sub(
+                measured.process_us
+                    + measured.installed_us
+                    + measured.files_us
+                    + measured.sessions_us
+                    + measured.tokens_us
+                    + measured.cache_stats_us,
+            );
+            self.diagnostics = Some(measured);
+        }
     }
 
     /// Token 预算预警与超额告警。
@@ -447,7 +568,9 @@ impl ActivityEngine {
             return ActivityLevel::Offline;
         }
         // 进程在跑 ⇒ 续上连续观测窗口（首次插入即起点）
-        self.observed_running_since.entry(key.clone()).or_insert(now);
+        self.observed_running_since
+            .entry(key.clone())
+            .or_insert(now);
 
         // 资源证据独立于活动等级；确认/完成的提前返回也不能跳过它。
         // 熔断：CPU 连续 70% 以上达 5 分钟。阈值只从 health 那一个来源取——
@@ -474,13 +597,12 @@ impl ActivityEngine {
             }
         }
 
-
         // 强语义：attention 优先（同一指纹只提醒一次）
         if let Some(Signal::Attention(fp, message)) = &probe.signal {
             let fp = fp.clone();
             let message = message.clone();
             if self.alerted_fingerprints.insert(fp.clone()) {
-                self.push_event(AgentTaskEvent {
+                self.push_session_event(AgentTaskEvent {
                     id: fp.clone(),
                     agent_id: key.clone(),
                     agent_name: profile.name.clone(),
@@ -539,7 +661,7 @@ impl ActivityEngine {
                         self.work_started_at.remove(&key);
                         return ActivityLevel::Completed;
                     }
-                    self.push_event(AgentTaskEvent {
+                    self.push_session_event(AgentTaskEvent {
                         id: fp,
                         agent_id: key.clone(),
                         agent_name: profile.name.clone(),
@@ -641,7 +763,14 @@ impl ActivityEngine {
         level
     }
 
-    fn raise_cost_spike(&mut self, profile: &AgentProfile, pid: Option<u32>, message: &str, now: i64, once: &str) {
+    fn raise_cost_spike(
+        &mut self,
+        profile: &AgentProfile,
+        pid: Option<u32>,
+        message: &str,
+        now: i64,
+        once: &str,
+    ) {
         let dedupe_key = format!("{}:{}", profile.id, once);
         if let Some(last) = self.last_cost_spike.get(&dedupe_key) {
             if now - *last < 600_000 {
@@ -652,7 +781,7 @@ impl ActivityEngine {
         if self.last_cost_spike.len() > 200 {
             self.last_cost_spike.clear();
         }
-        self.push_event(AgentTaskEvent {
+        self.push_session_event(AgentTaskEvent {
             id: crate::webhook::webhook_uuid(),
             agent_id: profile.id.clone(),
             agent_name: profile.name.clone(),
@@ -682,6 +811,44 @@ impl ActivityEngine {
     ///
     /// 顺带把这条事件过一遍外发闸门并记账：**发不出去也要留痕**，
     /// 否则界面只能显示「最近没发过」，看不出是被静默时段挡下还是通道没配好。
+    fn push_session_event(&mut self, event: AgentTaskEvent) {
+        let target = self.session_navigation.get(&event.agent_id).cloned();
+        let id = event.id.clone();
+        self.push_event(event);
+        if let Some(target) = target {
+            self.event_navigation.insert(id, target);
+        }
+        let live: HashSet<String> = self.recent_events().iter().map(|e| e.id.clone()).collect();
+        self.event_navigation.retain(|id, _| live.contains(id));
+    }
+
+    pub fn navigation_target(
+        &self,
+        agent: &str,
+        event: Option<&str>,
+    ) -> Result<crate::session_navigation::Target, String> {
+        let profile = self
+            .profiles
+            .iter()
+            .find(|p| p.id == agent)
+            .ok_or("未找到智能体")?;
+        let target = if let Some(event) = event {
+            if !self
+                .recent_events()
+                .iter()
+                .any(|e| e.id == event && e.agent_id == agent)
+            {
+                return Err("这条提醒已更新，请重试".into());
+            }
+            self.event_navigation.get(event).cloned()
+        } else {
+            self.session_navigation.get(agent).cloned()
+        };
+        target
+            .or_else(|| crate::session_navigation::resolve(profile, None))
+            .ok_or("此智能体尚未接入桌面工具跳转".into())
+    }
+
     pub fn push_event(&mut self, event: AgentTaskEvent) {
         self.notify_outbound(&event);
         if self.latest_event.is_none() {
@@ -692,7 +859,9 @@ impl ActivityEngine {
         // 64 条的余量远大于真实告警频率（同类告警有 10 分钟冷却），所以这是纯保险。
         const MAX_PENDING_EVENTS: usize = 64;
         if self.pending_events.len() >= MAX_PENDING_EVENTS {
-            self.pending_events.pop_front();
+            if let Some(discarded) = self.pending_events.pop_front() {
+                self.event_navigation.remove(&discarded.id);
+            }
         }
         self.pending_events.push_back(event);
     }
@@ -702,11 +871,20 @@ impl ActivityEngine {
     /// `completed` 的 `seconds` 是「本次任务用时」：此刻 `work_started_at` 还没被清
     /// （`decide_level` 里先 `push_event` 再 `remove`），正好拿得到；其余类型按「刚刚」。
     fn notify_outbound(&mut self, event: &AgentTaskEvent) {
-        if event.externally_delivered { return; }
+        if self.diagnostics.is_some() || event.externally_delivered {
+            return;
+        }
         self.notify_outbound_with_presence(event, crate::power::presence_signals());
     }
 
-    fn notify_outbound_with_presence(&mut self, event: &AgentTaskEvent, presence: remote::PresenceSignals) {
+    fn notify_outbound_with_presence(
+        &mut self,
+        event: &AgentTaskEvent,
+        presence: remote::PresenceSignals,
+    ) {
+        if self.diagnostics.is_some() {
+            return;
+        }
         let Some(kind) = remote::EventKind::parse(&event.event_type) else {
             return;
         };
@@ -742,11 +920,15 @@ impl ActivityEngine {
             config,
             remote::Now::at(event.timestamp),
             presence,
-            false);
+            false,
+        );
     }
 
     /// 确认当前这条，推下一条（前端关掉横幅时调用）
     pub fn ack_latest_event(&mut self) {
+        if let Some(event) = &self.latest_event {
+            self.event_navigation.remove(&event.id);
+        }
         self.latest_event = self.pending_events.pop_front();
     }
 
@@ -760,18 +942,22 @@ impl ActivityEngine {
     /// 恰恰是「判定接上了没有」最容易出错的地方。
     fn publish_guard_alerts(&mut self, snapshots: &[AgentSnapshot], now: i64) {
         if !self.settings.auto_anomalies_alert {
+            self.resilience.observe_memory(snapshots, now);
             return;
         }
         let alerts = self.resilience.evaluate(snapshots, now);
         for alert in alerts {
-            self.push_event(AgentTaskEvent {
+            self.push_session_event(AgentTaskEvent {
                 id: crate::webhook::webhook_uuid(),
                 agent_id: alert.agent_id,
                 agent_name: alert.agent_name,
                 event_type: "attention".into(),
                 timestamp: now,
                 message: Some(alert.message),
-                detail: Some(format!("kind={} elapsed_ms={}", alert.kind, alert.elapsed_ms)),
+                detail: Some(format!(
+                    "kind={} elapsed_ms={}",
+                    alert.kind, alert.elapsed_ms
+                )),
                 duration: 0.0,
                 externally_delivered: false,
             });
@@ -789,21 +975,30 @@ impl ActivityEngine {
         database: Option<&crate::models::SessionDatabase>,
         // 采样时钟：由引擎盖章，不由探测层自己取当前时间
         now: i64,
-    ) -> (
-        session::SessionProbe,
-        crate::models::SessionActiveContext,
-    ) {
+    ) -> (session::SessionProbe, crate::models::SessionActiveContext) {
         let mut candidate_failure = None;
         for path in paths {
-            if path.is_empty() { continue; }
+            if path.is_empty() {
+                continue;
+            }
             // Binary session stores are handled by the declared database adapter,
             // not the UTF-8 tail reader; an idle healthy DB must not look unreadable.
-            if std::path::Path::new(path).extension().and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("db") || ext.eq_ignore_ascii_case("sqlite")) { continue; }
+            if std::path::Path::new(path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("db") || ext.eq_ignore_ascii_case("sqlite")
+                })
+            {
+                continue;
+            }
             // Cache raw input in the parser, never its state result: dialects
             // depend on file age and must re-evaluate even when metadata is stable.
-            let (probe, context) = session::probe_dialect(profile_id, dialect, path);
-            if probe.signal.is_some() { return (probe, context); }
+            let (probe, mut context) = session::probe_dialect(profile_id, dialect, path);
+            if probe.signal.is_some() {
+                context.source_path = Some(path.clone());
+                return (probe, context);
+            }
             if candidate_failure.is_none() && probe.health.is_some() {
                 candidate_failure = probe.health;
             }
@@ -821,10 +1016,13 @@ impl ActivityEngine {
                     | crate::models::SessionSchema::OpenCode
                     | crate::models::SessionSchema::MiniMaxRuntime
             )
-        })
-        else {
+        }) else {
             return (
-                session::SessionProbe { signal: None, subagent_count: 0, health: candidate_failure },
+                session::SessionProbe {
+                    signal: None,
+                    subagent_count: 0,
+                    health: candidate_failure,
+                },
                 crate::models::SessionActiveContext::default(),
             );
         };
@@ -840,24 +1038,37 @@ impl ActivityEngine {
         //   最后一个 part 的 `endTime`；
         // · `OpenCode`：看消息行 `time.completed` / `time.created`，且表名要现查
         //   （这一族跨版本改过名）。
+        let mut source_keys = None;
         let (probe, failure) = match database.schema {
-            crate::models::SessionSchema::DimTasks => session::probe_dim(database, file_age),
-            crate::models::SessionSchema::OpenCode => session::probe_opencode(database, file_age, now),
-            crate::models::SessionSchema::MiniMaxRuntime => crate::minimax::probe(database, now),
-            _ => session::probe_status_index(database, file_age, now),
+            crate::models::SessionSchema::DimTasks => {
+                session::probe_dim_source(database, file_age, &mut source_keys)
+            }
+            crate::models::SessionSchema::OpenCode => {
+                session::probe_opencode_source(database, file_age, now, &mut source_keys)
+            }
+            crate::models::SessionSchema::MiniMaxRuntime => {
+                crate::minimax::probe_source(database, now, &mut source_keys)
+            }
+            _ => session::probe_status_index_source(database, file_age, now, &mut source_keys),
         };
 
         (
             session::SessionProbe {
                 signal: probe.signal,
                 subagent_count: 0,
-                health: failure.map(|failure| session::SessionProbeHealth {
-                    failure,
-                    path: database.path.clone(),
-                    observed_at: now,
-                }).or(candidate_failure),
+                health: failure
+                    .map(|failure| session::SessionProbeHealth {
+                        failure,
+                        path: database.path.clone(),
+                        observed_at: now,
+                    })
+                    .or(candidate_failure),
             },
-            crate::models::SessionActiveContext::default(),
+            crate::models::SessionActiveContext {
+                source_path: source_keys.as_ref().map(|_| database.path.clone()),
+                source_keys,
+                ..Default::default()
+            },
         )
     }
 
@@ -872,7 +1083,8 @@ impl ActivityEngine {
         }
         let report = self.tokens.monitor(profile);
         let usage = report.usage.clone();
-        self.token_cache.insert(profile.id.clone(), (now_ms(), report));
+        self.token_cache
+            .insert(profile.id.clone(), (now_ms(), report));
         Some(usage)
     }
 
@@ -890,7 +1102,8 @@ impl ActivityEngine {
             return Some(report.clone());
         }
         let report = self.tokens.monitor(&profile);
-        self.token_cache.insert(agent_id.to_string(), (now_ms(), report.clone()));
+        self.token_cache
+            .insert(agent_id.to_string(), (now_ms(), report.clone()));
         Some(report)
     }
 
@@ -916,13 +1129,55 @@ impl ActivityEngine {
             category: "assistant".into(),
         };
         let demo: Vec<(AgentProfile, ActivityLevel, u64, Option<String>, i64)> = vec![
-            (mk("claude", "Claude", "\u{E8BD}", "🧠"), ActivityLevel::Attention, 430 << 20, Some("需要确认: …ift test".into()), 12_080_000),
-            (mk("antigravity", "Antigravity", "\u{E72C}", "⚛️"), ActivityLevel::Working, 310 << 20, Some("正在修改: IslandView.swift".into()), 1_600_000_000),
-            (mk("qoder", "Qoder", "\u{E943}", "🖥️"), ActivityLevel::Working, 877 << 20, Some("运行: chmod +x .scr.te-shots/shoot4.sh …".into()), 1_200_000_000),
-            (mk("dim", "DimAgent", "\u{E945}", "✨"), ActivityLevel::Idle, 277 << 20, None, 2_070_000),
-            (mk("workbuddy", "WorkBuddy", "\u{E756}", "💼"), ActivityLevel::Idle, 322 << 20, None, 2_760_000),
-            (mk("workbuddyai", "WorkBuddy AI", "\u{E774}", "🌐"), ActivityLevel::Idle, 362 << 20, None, 1_860_000),
-            (mk("codex", "ChatGPT / Codex", "\u{E99A}", "🤖"), ActivityLevel::Idle, 131 << 20, None, 0),
+            (
+                mk("claude", "Claude", "\u{E8BD}", "🧠"),
+                ActivityLevel::Attention,
+                430 << 20,
+                Some("需要确认: …ift test".into()),
+                12_080_000,
+            ),
+            (
+                mk("antigravity", "Antigravity", "\u{E72C}", "⚛️"),
+                ActivityLevel::Working,
+                310 << 20,
+                Some("正在修改: IslandView.swift".into()),
+                1_600_000_000,
+            ),
+            (
+                mk("qoder", "Qoder", "\u{E943}", "🖥️"),
+                ActivityLevel::Working,
+                877 << 20,
+                Some("运行: chmod +x .scr.te-shots/shoot4.sh …".into()),
+                1_200_000_000,
+            ),
+            (
+                mk("dim", "DimAgent", "\u{E945}", "✨"),
+                ActivityLevel::Idle,
+                277 << 20,
+                None,
+                2_070_000,
+            ),
+            (
+                mk("workbuddy", "WorkBuddy", "\u{E756}", "💼"),
+                ActivityLevel::Idle,
+                322 << 20,
+                None,
+                2_760_000,
+            ),
+            (
+                mk("workbuddyai", "WorkBuddy AI", "\u{E774}", "🌐"),
+                ActivityLevel::Idle,
+                362 << 20,
+                None,
+                1_860_000,
+            ),
+            (
+                mk("codex", "ChatGPT / Codex", "\u{E99A}", "🤖"),
+                ActivityLevel::Idle,
+                131 << 20,
+                None,
+                0,
+            ),
         ];
         self.snapshots = demo
             .into_iter()
@@ -952,10 +1207,18 @@ impl ActivityEngine {
                 work_stats: crate::duration::Stats::empty(),
                 provenance: None,
                 provenance_suffix: String::new(),
-                cpu_percent: Some(if level == ActivityLevel::Working { 34.0 } else { 1.2 }),
+                cpu_percent: Some(if level == ActivityLevel::Working {
+                    34.0
+                } else {
+                    1.2
+                }),
                 memory_bytes: mem,
                 memory_text: memory_text(mem),
-                last_activity_text: if level == ActivityLevel::Working { "刚刚".into() } else { "—".into() },
+                last_activity_text: if level == ActivityLevel::Working {
+                    "刚刚".into()
+                } else {
+                    "—".into()
+                },
                 token_usage: (t24 > 0).then(|| TokenUsage {
                     tokens24h: t24,
                     tokens_total: t24 * 23,
@@ -991,7 +1254,10 @@ impl ActivityEngine {
                 event_type: "attention".into(),
                 timestamp: now_ms(),
                 message: Some("需要确认: 是否允许执行 swift test".into()),
-                detail: Some("会话请求执行 shell 命令 swift test，等待用户批准。可在岛内直达终端或忽略。".into()),
+                detail: Some(
+                    "会话请求执行 shell 命令 swift test，等待用户批准。可在岛内直达终端或忽略。"
+                        .into(),
+                ),
                 duration: 0.0,
                 externally_delivered: false,
             });
@@ -1000,6 +1266,8 @@ impl ActivityEngine {
 
     pub fn state(&self) -> EngineState {
         EngineState {
+            session_navigation: self.session_navigation.clone(),
+            event_navigation: self.event_navigation.clone(),
             snapshots: self.snapshots.clone(),
             latest_event: self.latest_event.clone(),
             pending_events: self.pending_count(),
@@ -1010,8 +1278,14 @@ impl ActivityEngine {
             sidebar_edge: self.settings.sidebar_edge.clone(),
             sidebar_width: self.settings.sidebar_width,
             appearance: self.settings.appearance.clone(),
-            any_working: self.snapshots.iter().any(|s| s.level == ActivityLevel::Working),
-            has_attention: self.snapshots.iter().any(|s| s.level == ActivityLevel::Attention),
+            any_working: self
+                .snapshots
+                .iter()
+                .any(|s| s.level == ActivityLevel::Working),
+            has_attention: self
+                .snapshots
+                .iter()
+                .any(|s| s.level == ActivityLevel::Attention),
             demo: self.demo_mode,
         }
     }
@@ -1036,11 +1310,36 @@ fn demo_report() -> TokenReport {
     let peak_idx = hourly.len() - 3;
     hourly[peak_idx].1 = 2_830_000;
     let models = vec![
-        ModelUsage { model: "codex-5".into(), tokens: 5_340_000, cost: 6.10, cost_estimated: true },
-        ModelUsage { model: "claude-sonnet-4-5".into(), tokens: 2_760_000, cost: 3.22, cost_estimated: true },
-        ModelUsage { model: "claude-opus-4".into(), tokens: 2_070_000, cost: 9.41, cost_estimated: true },
-        ModelUsage { model: "gpt-4o".into(), tokens: 1_860_000, cost: 2.05, cost_estimated: true },
-        ModelUsage { model: "claude-haiku-4".into(), tokens: 489_000, cost: 0.31, cost_estimated: true },
+        ModelUsage {
+            model: "codex-5".into(),
+            tokens: 5_340_000,
+            cost: 6.10,
+            cost_estimated: true,
+        },
+        ModelUsage {
+            model: "claude-sonnet-4-5".into(),
+            tokens: 2_760_000,
+            cost: 3.22,
+            cost_estimated: true,
+        },
+        ModelUsage {
+            model: "claude-opus-4".into(),
+            tokens: 2_070_000,
+            cost: 9.41,
+            cost_estimated: true,
+        },
+        ModelUsage {
+            model: "gpt-4o".into(),
+            tokens: 1_860_000,
+            cost: 2.05,
+            cost_estimated: true,
+        },
+        ModelUsage {
+            model: "claude-haiku-4".into(),
+            tokens: 489_000,
+            cost: 0.31,
+            cost_estimated: true,
+        },
     ];
     TokenReport {
         usage: TokenUsage {
@@ -1085,7 +1384,7 @@ mod token_spike_rules {
             (200_000, Some(1_000_000), 1_000_000), // 档案下限更高 ⇒ 取它
             (200_000, None, 200_000),              // 无下限 ⇒ 取全局
             (2_000_000, Some(1_000_000), 2_000_000), // 全局更高 ⇒ 取全局
-            (200_000, Some(100_000), 200_000),      // 下限更低 ⇒ 取全局
+            (200_000, Some(100_000), 200_000),     // 下限更低 ⇒ 取全局
         ];
         for (global, floor, want) in cases {
             let got = floor.unwrap_or(0).max(global);
@@ -1176,7 +1475,8 @@ mod database_dispatch_tests {
             schema: S::DimTasks,
             status_sql: None,
         };
-        let (probe, _) = engine().probe_cached_multi("dim", D::GenericTail, &[], Some(&db), 1_000_000);
+        let (probe, _) =
+            engine().probe_cached_multi("dim", D::GenericTail, &[], Some(&db), 1_000_000);
         assert!(
             matches!(probe.signal, Some(crate::session::Signal::Completed(_))),
             "DimTasks 库必须由引擎路由到 probe_dim 并报完成，实际 {:?}",
@@ -1216,8 +1516,13 @@ mod database_dispatch_tests {
             schema: S::OpenCode,
             status_sql: None,
         };
-        let (probe, _) =
-            engine().probe_cached_multi("mimocode", D::GenericTail, &[], Some(&db), 1_757_000_000_000);
+        let (probe, _) = engine().probe_cached_multi(
+            "mimocode",
+            D::GenericTail,
+            &[],
+            Some(&db),
+            1_757_000_000_000,
+        );
         assert!(
             matches!(probe.signal, Some(crate::session::Signal::Completed(_))),
             "OpenCode 库必须由引擎路由到 probe_opencode 并报完成，实际 {:?}",
@@ -1249,7 +1554,8 @@ mod database_dispatch_tests {
             schema: S::DimTasks,
             status_sql: Some("SELECT id, state FROM sessions LIMIT 1".into()),
         };
-        let (probe, _) = engine().probe_cached_multi("dim", D::GenericTail, &[], Some(&db), 1_000_000);
+        let (probe, _) =
+            engine().probe_cached_multi("dim", D::GenericTail, &[], Some(&db), 1_000_000);
         assert!(
             probe.signal.is_none(),
             "DimTasks 的库被当成状态索引查了 —— 查出来的东西根本不是这一族要的：{:?}",
@@ -1264,12 +1570,22 @@ mod optimization_regressions {
     #[test]
     fn missing_usage_location_is_none_but_an_empty_readable_source_is_zero() {
         let sandbox = crate::testutil::Sandbox::new("missing-usage-source");
-        let mut profile = crate::registry::builtin().into_iter().find(|profile| profile.id == "codex").unwrap();
-        profile.token_roots = vec![sandbox.path().join("missing").to_string_lossy().into_owned()];
+        let mut profile = crate::registry::builtin()
+            .into_iter()
+            .find(|profile| profile.id == "codex")
+            .unwrap();
+        profile.token_roots = vec![sandbox
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned()];
         profile.session_database = None;
         let (_, rx) = std::sync::mpsc::channel();
         let mut engine = ActivityEngine::new(Settings::default(), rx);
-        assert!(engine.token_usage_cached(&profile).is_none(), "missing source is not measured zero");
+        assert!(
+            engine.token_usage_cached(&profile).is_none(),
+            "missing source is not measured zero"
+        );
         std::fs::create_dir_all(&profile.token_roots[0]).unwrap();
         assert_eq!(engine.token_usage_cached(&profile).unwrap().tokens24h, 0);
     }
@@ -1282,10 +1598,371 @@ mod optimization_regressions {
         let path = file.to_string_lossy().into_owned();
         let (_, rx) = std::sync::mpsc::channel();
         let mut engine = ActivityEngine::new(Settings::default(), rx);
-        let (probe, _) = engine.probe_cached_multi("qoder", SessionDialect::QoderTranscript, &[path.clone()], None, now_ms());
-        assert!(probe.health.is_some(), "candidate failures must not become silent no-signal results");
+        let (probe, _) = engine.probe_cached_multi(
+            "qoder",
+            SessionDialect::QoderTranscript,
+            &[path.clone()],
+            None,
+            now_ms(),
+        );
+        assert!(
+            probe.health.is_some(),
+            "candidate failures must not become silent no-signal results"
+        );
         std::fs::write(&file, "{}\n").unwrap();
-        let (probe, _) = engine.probe_cached_multi("qoder", SessionDialect::QoderTranscript, &[path], None, now_ms());
-        assert!(probe.health.is_none(), "a repaired source must recover on the next sample");
+        let (probe, _) = engine.probe_cached_multi(
+            "qoder",
+            SessionDialect::QoderTranscript,
+            &[path],
+            None,
+            now_ms(),
+        );
+        assert!(
+            probe.health.is_none(),
+            "a repaired source must recover on the next sample"
+        );
+    }
+}
+#[cfg(test)]
+mod database_task_source_tests {
+    use super::ActivityEngine;
+    use crate::{
+        models::{SessionDatabase, SessionDialect, SessionSchema},
+        task_sources, tasks,
+    };
+    const NOW: i64 = 1_757_000_000_000;
+    fn profile(agent: &str, db: &SessionDatabase) -> crate::models::AgentProfile {
+        let mut p = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == agent)
+            .unwrap();
+        p.session_database = Some(db.clone());
+        p
+    }
+    fn choice(db: &SessionDatabase, agent: &str) -> task_sources::Choice {
+        let mut engine = ActivityEngine::new(Default::default(), std::sync::mpsc::channel().1);
+        let (probe, context) =
+            engine.probe_cached_multi(agent, SessionDialect::GenericTail, &[], Some(db), NOW);
+        assert!(
+            probe.health.is_none(),
+            "database probe must really query the fixture"
+        );
+        let encoded = serde_json::to_string(&context).unwrap();
+        assert!(!encoded.contains(&db.path));
+        assert!(!encoded.contains("fixture-session"));
+        assert!(!encoded.contains("sourceKeys"));
+        if matches!(probe.signal, Some(crate::session::Signal::Active(..))) {
+            assert_eq!(task_sources::source_age(&context, NOW), Some(0.0));
+            assert!(task_sources::active_is_eligible(
+                probe.signal.as_ref(),
+                true,
+                task_sources::source_age(&context, NOW),
+                60.0
+            ));
+        }
+        let choice =
+            task_sources::from_context(&profile(agent, db), &context, probe.signal.as_ref())
+                .unwrap();
+        let output = serde_json::to_string(&choice).unwrap();
+        assert!(!output.contains(&db.path));
+        assert!(!output.contains("fixture-session"));
+        assert!(choice.source.thread_id.is_none());
+        assert!(!choice
+            .target
+            .as_ref()
+            .is_some_and(|target| target.exact_session));
+        choice
+    }
+    #[test]
+    fn database_sessions_are_distinct_stable_and_flow_into_the_task_store() {
+        for (case, agent, schema) in [
+            ("dim", "dim", SessionSchema::DimTasks),
+            ("old-open", "opencode", SessionSchema::OpenCode),
+            ("new-open", "mimocode", SessionSchema::OpenCode),
+            ("minimax", "minimaxcode", SessionSchema::MiniMaxRuntime),
+            ("index", "workbuddy", SessionSchema::StatusIndex),
+        ] {
+            let sandbox = crate::testutil::Sandbox::new(case);
+            let path = sandbox.path().join("source.sqlite");
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let db = SessionDatabase {
+                path: path.to_string_lossy().into(),
+                schema,
+                status_sql: (schema == SessionSchema::StatusIndex).then(|| {
+                    "SELECT id,status,updated_at FROM sessions ORDER BY updated_at DESC LIMIT 1"
+                        .into()
+                }),
+            };
+            match schema {
+                SessionSchema::DimTasks => conn.execute_batch("CREATE TABLE messages(messageId TEXT PRIMARY KEY,sessionId TEXT NOT NULL,role TEXT NOT NULL,parts TEXT NOT NULL,orderKey TEXT,createdAt TEXT,updatedAt TEXT); INSERT INTO messages VALUES('m1','fixture-session-a','assistant','[{\"type\":\"text\",\"endTime\":1}]','1','','');").unwrap(),
+                SessionSchema::OpenCode => {
+                    let (sessions,messages) = if case == "old-open" {("session","message")} else {("session_v2","session_message")};
+                    conn.execute_batch(&format!("CREATE TABLE {sessions}(id TEXT PRIMARY KEY,time_updated INTEGER);CREATE TABLE {messages}(id TEXT PRIMARY KEY,session_id TEXT,data TEXT);")).unwrap();
+                    conn.execute(&format!("INSERT INTO {sessions} VALUES('fixture-session-a',?1)"),[NOW]).unwrap();
+                    conn.execute(&format!("INSERT INTO {messages} VALUES('m1','fixture-session-a',?1)"),[format!(r#"{{"role":"user","time":{{"created":{NOW}}}}}"#)]).unwrap();
+                },
+                SessionSchema::MiniMaxRuntime => {
+                    conn.execute_batch("CREATE TABLE local_runtime_sessions(session_id TEXT,status TEXT,updated_at_ms INTEGER,archived INTEGER);CREATE TABLE local_runtime_token_usage(session_id TEXT,ts INTEGER);").unwrap();
+                    conn.execute("INSERT INTO local_runtime_sessions VALUES('fixture-session-a','started',?1,0)",[NOW]).unwrap();
+                },
+                SessionSchema::StatusIndex => {
+                    conn.execute_batch("CREATE TABLE sessions(id TEXT,status TEXT,updated_at INTEGER);").unwrap();
+                    conn.execute("INSERT INTO sessions VALUES('fixture-session-a','awaiting_approval',?1)",[NOW]).unwrap();
+                },
+            }
+            let a = choice(&db, agent);
+            let repeat = choice(&db, agent);
+            assert_eq!(a.source, repeat.source);
+            assert_eq!(a.observation.fingerprint, repeat.observation.fingerprint);
+            let store = tasks::Store {
+                path: sandbox.path().join("tasks.json"),
+            };
+            let data = store.create("第一个会话", None, 0, NOW).unwrap();
+            let first = data.tasks[0].id.clone();
+            let data = store
+                .link(&first, a.source.clone(), data.revision, NOW)
+                .unwrap();
+            let data = store.sync(&[a.observation.clone()], NOW).unwrap().unwrap();
+            let first_run = data.tasks[0].current_run_id.clone().unwrap();
+            assert!(store.sync(&[repeat.observation], NOW).unwrap().is_none());
+            match schema {
+                SessionSchema::DimTasks => {
+                    conn.execute(
+                        "UPDATE messages SET sessionId='fixture-session-b',messageId='m2'",
+                        [],
+                    )
+                    .unwrap();
+                }
+                SessionSchema::OpenCode => {
+                    let (sessions, messages) = if case == "old-open" {
+                        ("session", "message")
+                    } else {
+                        ("session_v2", "session_message")
+                    };
+                    conn.execute(&format!("UPDATE {sessions} SET id='fixture-session-b'"), [])
+                        .unwrap();
+                    conn.execute(
+                        &format!("UPDATE {messages} SET id='m2',session_id='fixture-session-b'"),
+                        [],
+                    )
+                    .unwrap();
+                }
+                SessionSchema::MiniMaxRuntime => {
+                    conn.execute(
+                        "UPDATE local_runtime_sessions SET session_id='fixture-session-b'",
+                        [],
+                    )
+                    .unwrap();
+                }
+                SessionSchema::StatusIndex => {
+                    conn.execute("UPDATE sessions SET id='fixture-session-b'", [])
+                        .unwrap();
+                }
+            }
+            let b = choice(&db, agent);
+            assert_ne!(a.source, b.source, "{case}: a DB is not a session");
+            assert!(
+                store.sync(&[b.observation.clone()], NOW).unwrap().is_none(),
+                "unbound new session must not update the old task"
+            );
+            let data = store
+                .create("第二个会话", None, data.revision, NOW)
+                .unwrap();
+            let second = data.tasks[1].id.clone();
+            let data = store
+                .link(&second, b.source.clone(), data.revision, NOW)
+                .unwrap();
+            let data = store.sync(&[b.observation], NOW).unwrap().unwrap();
+            assert_eq!(data.runs.len(), 2);
+            assert_eq!(
+                data.navigation_source(&first, Some(&first_run), None, data.revision)
+                    .unwrap(),
+                &a.source
+            );
+            assert!(data
+                .runs
+                .iter()
+                .all(|run| run.status != tasks::RunStatus::Accepted));
+            data.validate().unwrap();
+        }
+    }
+    #[test]
+    fn composite_workspace_keys_and_event_revisions_do_not_collapse() {
+        let sandbox = crate::testutil::Sandbox::new("zcode-source-composite");
+        let path = sandbox.path().join("index.sqlite");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE tasks(workspace_key TEXT,task_id TEXT,task_status TEXT,updated_at INTEGER,deleted INTEGER,archived INTEGER,PRIMARY KEY(workspace_key,task_id));").unwrap();
+        conn.execute(
+            "INSERT INTO tasks VALUES('workspace-a','fixture-session','awaiting_approval',?1,0,0)",
+            [NOW],
+        )
+        .unwrap();
+        let mut db = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "zcode")
+            .unwrap()
+            .session_database
+            .unwrap();
+        db.path = path.to_string_lossy().into();
+        let a = choice(&db, "zcode");
+        conn.execute("UPDATE tasks SET updated_at=?1", [NOW + 1])
+            .unwrap();
+        let updated = choice(&db, "zcode");
+        assert_eq!(a.source, updated.source);
+        assert_ne!(a.observation.fingerprint, updated.observation.fingerprint);
+        assert_eq!(
+            updated.observation.fingerprint,
+            choice(&db, "zcode").observation.fingerprint
+        );
+        conn.execute("UPDATE tasks SET workspace_key='workspace-b'", [])
+            .unwrap();
+        let b = choice(&db, "zcode");
+        assert_ne!(a.source, b.source);
+        conn.execute("UPDATE tasks SET workspace_key=''", [])
+            .unwrap();
+        let mut engine = ActivityEngine::new(Default::default(), std::sync::mpsc::channel().1);
+        let (probe, context) =
+            engine.probe_cached_multi("zcode", SessionDialect::GenericTail, &[], Some(&db), NOW);
+        assert!(
+            probe.signal.is_some(),
+            "missing identity preserves status evidence"
+        );
+        assert!(context.source_keys.is_none());
+        assert!(task_sources::from_context(
+            &profile("zcode", &db),
+            &context,
+            probe.signal.as_ref()
+        )
+        .is_none());
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "只读本机第三方会话库，不输出正文、路径或主键"]
+fn real_database_task_source_identity() {
+    let mut engine = ActivityEngine::new(Default::default(), std::sync::mpsc::channel().1);
+    let now = crate::tokens::now_ms();
+    for profile in crate::registry::builtin() {
+        let Some(db) = profile
+            .session_database
+            .as_ref()
+            .filter(|db| std::path::Path::new(&db.path).is_file())
+        else {
+            continue;
+        };
+        let (probe, context) =
+            engine.probe_cached_multi(&profile.id, profile.session_dialect, &[], Some(db), now);
+        let choice = crate::task_sources::from_context(&profile, &context, probe.signal.as_ref());
+        println!(
+            "agent={} semantic={} identity={} read_failure={}",
+            profile.id,
+            probe.signal.is_some(),
+            choice.is_some(),
+            probe.health.is_some()
+        );
+        if context.source_keys.is_some() {
+            assert!(choice.is_some());
+        }
+        if let Some(choice) = choice {
+            assert!(choice.source.thread_id.is_none());
+            assert_eq!(choice.source.session_id.len(), 64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod resource_diagnostic_tests {
+    use super::*;
+    fn engine() -> ActivityEngine {
+        let (_, rx) = std::sync::mpsc::channel();
+        ActivityEngine::new(Settings::default(), rx)
+    }
+    fn event() -> AgentTaskEvent {
+        AgentTaskEvent {
+            id: "fixture-event".into(),
+            agent_id: "fixture-agent".into(),
+            agent_name: "Fixture".into(),
+            event_type: "attention".into(),
+            message: Some("fixture-private-body".into()),
+            detail: None,
+            duration: 0.0,
+            timestamp: now_ms(),
+            externally_delivered: false,
+        }
+    }
+    #[test]
+    fn diagnostic_observer_skips_outbound_but_keeps_local_events() {
+        let mut observer = engine();
+        observer.settings.remote_policy.master_enabled = true;
+        observer.enable_resource_diagnostics();
+        observer.push_event(event());
+        observer.notify_outbound_with_presence(&event(), Default::default());
+        assert!(observer.latest_event.is_some());
+        assert!(observer.notifier.recent().is_empty());
+        // Ordinary engine still passes events to policy/ledger: observer mode is not a global mute.
+        let mut normal = engine();
+        normal.settings.remote_policy.master_enabled = false;
+        normal.notify_outbound_with_presence(&event(), Default::default());
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while normal.notifier.recent().is_empty() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(normal.notifier.recent().len(), 1);
+        assert!(matches!(
+            normal.notifier.recent()[0].outcome,
+            notifier::Outcome::Suppressed { .. }
+        ));
+        assert!(observer.notifier.recent().is_empty());
+    }
+    #[test]
+    fn diagnostics_describe_fixture_caches_without_identifiers_or_text_and_reset_for_demo() {
+        let sandbox = crate::testutil::Sandbox::new("resource-diag");
+        let path = sandbox.path().join("fixture-private-file.jsonl");
+        std::fs::write(&path,r#"{"type":"assistant","uuid":"fixture-private-id","message":{"model":"fixture-private-model","content":"fixture-private-body","usage":{"input_tokens":10,"output_tokens":2}}}
+"#).unwrap();
+        let mut e = engine();
+        let mut profile = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "claude")
+            .unwrap();
+        let root = sandbox.path().to_string_lossy().into_owned();
+        profile.session_dirs = vec![root.clone()];
+        profile.token_roots = vec![root.clone()];
+        profile.session_database = None;
+        e.profiles = vec![profile];
+        e.enable_resource_diagnostics();
+        e.tick();
+        let first = e.resource_diagnostics().unwrap();
+        assert_eq!(first.profiles, 1);
+        assert_eq!(first.candidates, 1);
+        assert_eq!(first.file_cache.roots, 1);
+        assert_eq!(first.file_cache.files, 1);
+        assert_eq!(first.token_cache.files, 1);
+        assert_eq!(first.token_cache.entries, 1);
+        assert!(first.token_cache.entry_capacity >= 1);
+        assert_eq!(e.grand_total.tokens_total, 12);
+        let encoded = serde_json::to_string(first).unwrap();
+        assert!(!encoded.contains("fixture-private"));
+        assert!(!encoded.contains(&root));
+        assert!(!encoded.contains("claude"));
+        assert!(
+            first.total_us
+                >= first.process_us
+                    + first.installed_us
+                    + first.files_us
+                    + first.sessions_us
+                    + first.tokens_us
+        );
+        e.tick();
+        assert_eq!(e.resource_diagnostics().unwrap().token_cache.entries, 1);
+        assert_eq!(e.grand_total.tokens_total, 12);
+        e.demo_mode = true;
+        e.tick();
+        let demo = e.resource_diagnostics().unwrap();
+        assert!(demo.demo);
+        assert_eq!(demo.token_cache.files, 0);
+        assert_eq!(demo.candidates, 0);
+        assert!(engine().resource_diagnostics().is_none());
     }
 }

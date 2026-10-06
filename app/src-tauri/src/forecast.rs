@@ -197,7 +197,10 @@ mod tests {
         assert_eq!(report.forecast_summary, "近期暂无活跃消耗，月末预估平稳");
         assert_eq!(report.total_days_in_month, 30);
         assert_eq!(report.days_remaining_in_month, 3, "9 月 27 日还剩 3 天");
-        assert_eq!(report.formatted_monthly_cost, "$0.00", "零成本按出口约定写 $0.00");
+        assert_eq!(
+            report.formatted_monthly_cost, "$0.00",
+            "零成本按出口约定写 $0.00"
+        );
         assert_eq!(report.formatted_monthly_tokens, "0");
     }
 
@@ -219,7 +222,10 @@ mod tests {
     #[test]
     fn with_no_cost_the_summary_omits_the_cost_clause_instead_of_writing_zero() {
         let report = evaluate(1_200_000, 0.0, 0, local_ms(2026, 9, 27, 12));
-        assert_eq!(report.forecast_summary, "按当前增速，预计月末总消耗 36.00M tokens");
+        assert_eq!(
+            report.forecast_summary,
+            "按当前增速，预计月末总消耗 36.00M tokens"
+        );
         assert!(!report.forecast_summary.contains("$"));
     }
 
@@ -292,12 +298,27 @@ mod tests {
     fn the_projection_cannot_overflow_or_run_to_infinity() {
         // Swift 的 `*` 在这里会 SIGTRAP（它的注释记着 `tokens --budget 9e18` 实测崩过）
         let report = evaluate(i64::MAX, f64::MAX, i64::MAX, local_ms(2026, 9, 27, 12));
-        assert_eq!(report.projected_month_end_tokens, i64::MAX, "饱和而不是 panic");
-        assert_eq!(report.projected_month_end_cost, COST_CEILING, "金额钳在上限");
+        assert_eq!(
+            report.projected_month_end_tokens,
+            i64::MAX,
+            "饱和而不是 panic"
+        );
+        assert_eq!(
+            report.projected_month_end_cost, COST_CEILING,
+            "金额钳在上限"
+        );
         assert!(report.projected_month_end_cost.is_finite());
         // 摘要也不该出现 Inf / NaN 字样
-        assert!(!report.forecast_summary.contains("inf"), "{}", report.forecast_summary);
-        assert!(!report.forecast_summary.contains("NaN"), "{}", report.forecast_summary);
+        assert!(
+            !report.forecast_summary.contains("inf"),
+            "{}",
+            report.forecast_summary
+        );
+        assert!(
+            !report.forecast_summary.contains("NaN"),
+            "{}",
+            report.forecast_summary
+        );
     }
 
     #[test]

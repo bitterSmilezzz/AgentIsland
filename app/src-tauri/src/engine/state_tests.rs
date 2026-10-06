@@ -329,7 +329,11 @@ fn repeated_completion_fingerprints_do_not_repeat_notifications() {
     let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(104_000));
     let done = Some(Signal::Completed("done-once".into()));
     replay.sample_with_write(104_000, true, None, done.clone(), write);
-    let event = replay.engine.latest_event.take().expect("4 秒的实质工作应算一次完成");
+    let event = replay
+        .engine
+        .latest_event
+        .take()
+        .expect("4 秒的实质工作应算一次完成");
     assert_eq!(event.event_type, "completed");
     assert!(
         (event.duration - 4.0).abs() < 1e-9,
@@ -349,7 +353,13 @@ fn a_flash_of_work_shorter_than_the_threshold_is_not_a_task() {
     let mut replay = Replay::new();
     replay.sample(100_000, true, Some(20.0), None); // 起点 100_000
     let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(102_000));
-    replay.sample_with_write(102_000, true, None, Some(Signal::Completed("flash".into())), write);
+    replay.sample_with_write(
+        102_000,
+        true,
+        None,
+        Some(Signal::Completed("flash".into())),
+        write,
+    );
     assert!(
         replay.engine.latest_event.is_none(),
         "2 秒的抖动不该算一次任务"
@@ -373,13 +383,17 @@ fn a_flash_of_work_shorter_than_the_threshold_is_not_a_task() {
         Some(Signal::Completed("real".into())),
         write,
     );
-    let stats = replay.engine.durations.stats(
-        "fixture-agent",
-        crate::duration::DEFAULT_WINDOW_MS,
-        108_000,
-    );
+    let stats =
+        replay
+            .engine
+            .durations
+            .stats("fixture-agent", crate::duration::DEFAULT_WINDOW_MS, 108_000);
     assert_eq!(stats.task_count, 1);
-    assert!((stats.total_work_time - 5.0).abs() < 1e-9, "{}", stats.total_work_time);
+    assert!(
+        (stats.total_work_time - 5.0).abs() < 1e-9,
+        "{}",
+        stats.total_work_time
+    );
 }
 
 #[test]
@@ -449,7 +463,7 @@ fn alarming_snapshot(running: bool) -> AgentSnapshot {
             process_running: running,
             installed: Some(true),
             probe_health: None,
-                probe_health_fresh: false,
+            probe_health_fresh: false,
             has_local_detail_source: false,
             has_token_usage: false,
         }),
@@ -461,7 +475,7 @@ fn alarming_snapshot(running: bool) -> AgentSnapshot {
         provenance: None,
         provenance_suffix: String::new(),
         cpu_percent: Some(97.0),
-        memory_bytes: crate::health::MEMORY_SEVERE_BYTES + 1,
+        memory_bytes: crate::health::MEMORY_OBSERVATION_FLOOR_BYTES + 1,
         memory_text: "2.4 GB".into(),
         last_activity_text: "—".into(),
         token_usage: None,
@@ -481,23 +495,36 @@ fn alarming_snapshot(running: bool) -> AgentSnapshot {
 fn two_alerts_in_one_tick_both_reach_the_user() {
     let (_, rx) = mpsc::channel();
     let mut engine = ActivityEngine::new(Settings::default(), rx);
-    let snap = alarming_snapshot(true);
+    let mut snap = alarming_snapshot(true);
     let start = 1_000_000i64;
 
     // 第一拍：两个条件都刚成立，只记起点
     engine.publish_guard_alerts(&[snap.clone()], start);
     assert!(engine.latest_event.is_none(), "刚成立不告警");
 
-    // 第二拍：卡死 3 分钟 + 内存 5 分钟同时到点 ⇒ 两条
-    engine.publish_guard_alerts(&[snap.clone()], start + crate::resilience::MEMORY_THRESHOLD_MS);
+    // Dense memory observations without publishing; then two alerts in one tick.
+    for tick in 1..20 {
+        snap.memory_bytes += 128 * 1024 * 1024;
+        engine
+            .resilience
+            .observe_memory(&[snap.clone()], start + tick * 30_000);
+    }
+    snap.memory_bytes += 128 * 1024 * 1024;
+    engine.publish_guard_alerts(
+        &[snap.clone()],
+        start + 2 * crate::resilience::MEMORY_THRESHOLD_MS,
+    );
     let first = engine.latest_event.clone().expect("队首应有一条");
     assert_eq!(first.event_type, "attention");
-    assert!(first.message.as_deref().unwrap().contains("死锁"), "先发卡死那条");
+    assert!(
+        first.message.as_deref().unwrap().contains("死锁"),
+        "先发卡死那条"
+    );
     assert_eq!(engine.pending_count(), 1, "第二条在排队，不许被顶掉");
 
     engine.ack_latest_event();
     let second = engine.latest_event.clone().expect("确认后应推下一条");
-    assert!(second.message.as_deref().unwrap().contains("内存长期占用过高"));
+    assert!(second.message.as_deref().unwrap().contains("内存连续增长"));
     assert_ne!(second.id, first.id, "两条是各自的事件，不是同一条重复上屏");
 
     engine.ack_latest_event();
@@ -514,7 +541,10 @@ fn the_anomaly_alert_switch_actually_gates_the_publication() {
     let snap = alarming_snapshot(true);
     let start = 1_000_000i64;
     engine.publish_guard_alerts(&[snap.clone()], start);
-    engine.publish_guard_alerts(&[snap.clone()], start + crate::resilience::MEMORY_THRESHOLD_MS);
+    engine.publish_guard_alerts(
+        &[snap.clone()],
+        start + crate::resilience::MEMORY_THRESHOLD_MS,
+    );
     assert!(engine.latest_event.is_none());
     assert_eq!(engine.pending_count(), 0);
 
@@ -524,7 +554,10 @@ fn the_anomaly_alert_switch_actually_gates_the_publication() {
     let reopened = start + 2 * crate::resilience::MEMORY_THRESHOLD_MS;
     engine.publish_guard_alerts(&[snap.clone()], reopened);
     assert!(engine.latest_event.is_none(), "打开的那一拍才开始计时");
-    engine.publish_guard_alerts(&[snap.clone()], reopened + crate::resilience::MEMORY_THRESHOLD_MS);
+    engine.publish_guard_alerts(
+        &[snap.clone()],
+        reopened + crate::resilience::MEMORY_THRESHOLD_MS,
+    );
     assert!(engine.latest_event.is_some(), "打开后照旧发得出来");
 }
 
@@ -543,10 +576,14 @@ fn the_pending_queue_is_bounded_and_keeps_the_newest() {
             message: Some(format!("第 {i} 条")),
             detail: None,
             duration: 0.0,
-                externally_delivered: false,
+            externally_delivered: false,
         });
     }
-    assert!(engine.pending_count() <= 64, "待发队列必须有界：{}", engine.pending_count());
+    assert!(
+        engine.pending_count() <= 64,
+        "待发队列必须有界：{}",
+        engine.pending_count()
+    );
     // 队首仍是最早那条（用户先看到它），队尾是最后进来的
     assert_eq!(engine.latest_event.as_ref().unwrap().id, "ev-0");
     let mut last = None;
@@ -661,10 +698,22 @@ fn a_negative_or_absurd_budget_from_a_hand_edited_file_is_normalized_away() {
 fn changed_cpu_threshold_controls_real_decision_path() {
     let mut replay = Replay::new();
     replay.engine.settings.cpu_threshold = 23.0;
-    assert_eq!(replay.sample(100_000, true, Some(20.0), None), ActivityLevel::Idle);
-    assert_eq!(replay.sample(101_000, true, Some(24.0), None), ActivityLevel::Working);
-    assert_eq!(replay.sample(102_000, true, Some(20.0), None), ActivityLevel::Working);
-    assert_eq!(replay.sample(112_000, true, Some(20.0), None), ActivityLevel::Idle);
+    assert_eq!(
+        replay.sample(100_000, true, Some(20.0), None),
+        ActivityLevel::Idle
+    );
+    assert_eq!(
+        replay.sample(101_000, true, Some(24.0), None),
+        ActivityLevel::Working
+    );
+    assert_eq!(
+        replay.sample(102_000, true, Some(20.0), None),
+        ActivityLevel::Working
+    );
+    assert_eq!(
+        replay.sample(112_000, true, Some(20.0), None),
+        ActivityLevel::Idle
+    );
 }
 
 #[test]
@@ -680,30 +729,155 @@ fn automatic_outbound_uses_presence_and_never_forwards_external_events() {
     replay.engine.settings.remote_policy.master_enabled = true;
     replay.engine.settings.remote_policy.only_when_away = true;
     let mut event = AgentTaskEvent {
-        id: "fixture-notify".into(), agent_id: "fixture-agent".into(), agent_name: "Fixture".into(),
-        event_type: "attention".into(), timestamp: 100_000, message: None, detail: None,
-        duration: 0.0, externally_delivered: true,
+        id: "fixture-notify".into(),
+        agent_id: "fixture-agent".into(),
+        agent_name: "Fixture".into(),
+        event_type: "attention".into(),
+        timestamp: 100_000,
+        message: None,
+        detail: None,
+        duration: 0.0,
+        externally_delivered: true,
     };
     replay.engine.push_event(event.clone());
     std::thread::sleep(Duration::from_millis(20));
     assert!(replay.engine.notifier.recent().is_empty());
     event.externally_delivered = false;
-    replay.engine.notify_outbound_with_presence(&event, crate::remote::PresenceSignals {
-        screen_locked: false, display_asleep: false, idle_seconds: Some(1.0),
-    });
+    replay.engine.notify_outbound_with_presence(
+        &event,
+        crate::remote::PresenceSignals {
+            screen_locked: false,
+            display_asleep: false,
+            idle_seconds: Some(1.0),
+        },
+    );
     for _ in 0..100 {
-        if !replay.engine.notifier.recent().is_empty() { break; }
+        if !replay.engine.notifier.recent().is_empty() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(matches!(replay.engine.notifier.recent()[0].outcome, crate::notifier::Outcome::Suppressed { .. }));
+    assert!(matches!(
+        replay.engine.notifier.recent()[0].outcome,
+        crate::notifier::Outcome::Suppressed { .. }
+    ));
 }
 
 #[test]
 fn high_cpu_evidence_is_updated_even_during_attention() {
     let mut replay = Replay::new();
     replay.engine.settings.runaway_cpu_threshold = 80.0;
-    replay.sample(100_000, true, Some(90.0), Some(Signal::Attention("fixture-attention".into(), "fixture".into())));
-    assert_eq!(replay.engine.high_cpu_since.get(&replay.profile.id), Some(&100_000));
-    replay.sample(101_000, true, Some(20.0), Some(Signal::Attention("fixture-attention".into(), "fixture".into())));
-    assert!(!replay.engine.high_cpu_since.contains_key(&replay.profile.id));
+    replay.sample(
+        100_000,
+        true,
+        Some(90.0),
+        Some(Signal::Attention(
+            "fixture-attention".into(),
+            "fixture".into(),
+        )),
+    );
+    assert_eq!(
+        replay.engine.high_cpu_since.get(&replay.profile.id),
+        Some(&100_000)
+    );
+    replay.sample(
+        101_000,
+        true,
+        Some(20.0),
+        Some(Signal::Attention(
+            "fixture-attention".into(),
+            "fixture".into(),
+        )),
+    );
+    assert!(!replay
+        .engine
+        .high_cpu_since
+        .contains_key(&replay.profile.id));
+}
+
+#[test]
+fn memory_growth_health_observation_is_independent_of_notifications() {
+    let (_, rx) = mpsc::channel();
+    let mut engine = ActivityEngine::new(Settings::default(), rx);
+    engine.settings.auto_anomalies_alert = false;
+    let mut snap = alarming_snapshot(true);
+    snap.is_hung = Some(false);
+    snap.cpu_percent = Some(2.0);
+    for tick in 0..=20 {
+        snap.memory_bytes =
+            crate::health::MEMORY_OBSERVATION_FLOOR_BYTES + tick * 128 * 1024 * 1024;
+        engine.publish_guard_alerts(&[snap.clone()], tick as i64 * 30_000);
+    }
+    assert!(engine.latest_event.is_none());
+    assert_eq!(engine.pending_count(), 0);
+    let report = crate::health::evaluate_with_memory_growth(
+        &snap,
+        engine.resilience.memory_growth(&snap.id),
+    );
+    assert_eq!(report.grade, crate::health::Grade::Attention);
+    assert!(report.issues[0].contains("连续增长"));
+}
+
+#[test]
+fn reminder_navigation_freezes_its_session_and_rejects_stale_events() {
+    let (_, rx) = mpsc::channel();
+    let mut engine = ActivityEngine::new(Settings::default(), rx);
+    let profile = engine.profiles.iter().find(|p| p.id == "codex").unwrap();
+    let first = crate::session_navigation::resolve(
+        profile,
+        Some("/fixture/rollout-019c6e27-e55b-73d1-87d8-4e01f1f75043.jsonl"),
+    )
+    .unwrap();
+    let second = crate::session_navigation::resolve(
+        profile,
+        Some("/fixture/rollout-019c6e27-e55b-73d1-87d8-4e01f1f75044.jsonl"),
+    )
+    .unwrap();
+    engine
+        .session_navigation
+        .insert("codex".into(), first.clone());
+    let event = |id: &str| AgentTaskEvent {
+        id: id.into(),
+        agent_id: "codex".into(),
+        agent_name: "Codex".into(),
+        event_type: "attention".into(),
+        timestamp: 0,
+        message: Some("确认测试".into()),
+        detail: None,
+        duration: 0.0,
+        externally_delivered: false,
+    };
+    engine.push_session_event(event("observed"));
+    engine
+        .session_navigation
+        .insert("codex".into(), second.clone());
+    assert_eq!(
+        engine
+            .navigation_target("codex", Some("observed"))
+            .unwrap()
+            .url,
+        first.url
+    );
+    assert_eq!(
+        engine.navigation_target("codex", None).unwrap().url,
+        second.url
+    );
+    assert!(engine
+        .navigation_target("traework", Some("observed"))
+        .is_err());
+    engine.push_event(event("external"));
+    assert!(
+        !engine
+            .navigation_target("codex", Some("external"))
+            .unwrap()
+            .exact_session
+    );
+    engine.ack_latest_event();
+    assert!(engine.navigation_target("codex", Some("observed")).is_err());
+    assert!(!engine.event_navigation.contains_key("observed"));
+    for i in 0..100 {
+        engine.push_session_event(event(&format!("queued-{i}")));
+    }
+    assert!(engine.event_navigation.len() <= 65);
+    assert!(engine.navigation_target("codex", Some("queued-0")).is_err());
 }

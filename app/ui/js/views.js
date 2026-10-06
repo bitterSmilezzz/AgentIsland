@@ -1,11 +1,90 @@
+import { trendCardHtml, bindTrend, hourRecords } from './usage-trend.js';
+import { reportPanelHtml, bindReport, visibleReportPanel, openUsageReport } from './report-panel.js';
+import { pageSessions, hydrateSessions, refreshSessions } from './sessions-page.js';
+import { bindQuickNavigation } from './quick-navigation.js';
+import { pagePrompts, hydratePrompts } from './prompts-page.js';
+import { workspaceFlow, workspaceRoute, workspaceReceiptLabel, workspaceWritable } from './workspace-flow.js';
+import { getTaskAttention, taskAttentionHtml, bindTaskAttention, taskCoversEvent, taskCoversSnapshot } from './task-attention.js';
+import { pageTasks, hydrateTasks, refreshTasks, selectTaskProject, selectTask } from './tasks-page.js';
+import { pageWindowLayout, hydrateWindowLayout, selectLayoutRule, selectLayoutRecovery } from './window-layout-page.js';
+import { pageWorkspaces, hydrateWorkspaces } from './workspaces-page.js';
+import { modelDirectoryHtml, bindModelWorkspace, bindModelDirectory } from './models-page.js';
+import { pageConnections, hydrateConnections } from './connections-page.js';
+import { pageMcp, hydrateMcp } from './mcp-page.js';
+import {pageClaudePlan,hydrateClaudePlan} from './claude-plan-page.js';
+import { PageCache, pageRequest } from './page-host.js';
+import { healthReason, agentNextStep } from './agent-actions.js';
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
 import { agentIcon } from './agent-icons.js';
 import { isIsland, isWorkbench } from './shell.js';
-import { getState, setState, saveSettings, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyAppearance, applyEdge, applyLayout } from './main.js';
+import { captureNavigation, stageNavigation, navigationActive, focusNavigation } from './island-navigation.js';
+import { getState, setState, saveSettings, expand, collapse, armCollapseTimer, scheduleRender, resizeToContent, applyEdge, applyLayout, retainWorkbenchControls } from './main.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Keep the outgoing page visible while the destination arrives.
+const outgoingPages = new WeakMap();
+const pageTransitions = new WeakMap();
+const workbenchScroll = new Map();
+const workbenchPagesCache = new PageCache();
+function rememberPage(root, key, selector) {
+  const previous = root.dataset.motionRoute;
+  const node = root.querySelector(selector);
+  if (previous == null || previous === key || !node?.cloneNode) return;
+  const opacity = Number(getComputedStyle(node).opacity);
+  pageTransitions.get(root)?.forEach(animation => animation.cancel());
+  root.querySelectorAll('[data-page-outgoing]').forEach(n => n.remove());
+  node.parentElement.classList.remove('page-motion-host');
+  pageTransitions.delete(root);
+  outgoingPages.delete(root);
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const rect = node.getBoundingClientRect();
+  const parentRect = node.parentElement.getBoundingClientRect();
+  const copy = node.cloneNode(true);
+  copy.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+  copy.removeAttribute('id');
+  copy.classList.remove('card-enter');
+  copy.setAttribute('aria-hidden', 'true');
+  copy.inert = true;
+  copy.dataset.pageOutgoing = '';
+  outgoingPages.set(root, { copy, width: rect.width, height: rect.height, top: rect.top - parentRect.top, opacity });
+}
+function pageMotion(root, key, selector) {
+  const previous = root.dataset.motionRoute;
+  root.dataset.motionRoute = key;
+  const changed = previous != null && previous !== key;
+  const node = root.querySelector(selector);
+  const outgoing = outgoingPages.get(root);
+  outgoingPages.delete(root);
+  if (changed && node?.animate && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const returning = key === 'list' || key === 'overview';
+    const direction = returning ? -1 : 1;
+    const duration = returning ? 260 : 320;
+    const animations = [];
+    pageTransitions.set(root, animations);
+    const stationary = isWorkbench();
+    if (outgoing) {
+      const host = node.parentElement;
+      host.classList.add('page-motion-host');
+      const { copy, width, height, top, opacity } = outgoing;
+      Object.assign(copy.style, { position: 'absolute', top: `${top}px`, left: '0', width: `${width}px`, height: `${height}px`, margin: '0', zIndex: '2', pointerEvents: 'none', overflow: 'hidden' });
+      host.appendChild(copy);
+      const leaving = copy.animate([{ opacity, transform: 'translateX(0)' }, { opacity: 0, transform: stationary ? 'none' : `translateX(${-direction * 10}px)` }], { duration: stationary ? 100 : duration * .7, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
+      animations.push(leaving);
+      leaving.finished.catch(() => {}).finally(() => { copy.remove(); if (pageTransitions.get(root) === animations) host.classList.remove('page-motion-host'); });
+    }
+    animations.push(node.animate([
+      { opacity: 0, transform: stationary ? 'none' : `translateX(${direction * 14}px)` },
+      { opacity: 1, transform: 'translateX(0)' },
+    ], { duration: stationary ? 220 : duration, delay: stationary ? 70 : 0, fill: 'backwards', easing: 'cubic-bezier(.22,1,.36,1)' }));
+    Promise.all(animations.map(a => a.finished.catch(() => {}))).then(() => {
+      if (pageTransitions.get(root) === animations) pageTransitions.delete(root);
+    });
+  }
+  return changed;
+}
 
 // MARK: Token 格式化（与 Rust/Win 端同口径）
 
@@ -33,11 +112,14 @@ function eventSummary(ev) {
   return `${ev.agent_name} 任务完成`;
 }
 
-/// 横幅标题：类型前缀只在消息本身没有带上时才加（防「需要确认: 需要确认: …」）
-function bannerTitle(ev) {
-  const prefix = ev.event_type === 'completed' ? '已完成' : ev.event_type === 'costSpike' ? '告警' : '需要确认';
+/// Attention status already lives in the header; preserve the actual requested action.
+export function bannerTitle(ev) {
+  if (ev.event_type === 'attention') {
+    return String(ev.message ?? '').trim().replace(/^(?:(?:需要确认|等待确认操作|等待确认|待确认)[：:\s]*)+/u, '').trim() || '等待你的确认';
+  }
+  const prefix = ev.event_type === 'completed' ? '已完成' : '告警';
   const msg = eventSummary(ev);
-  return msg.startsWith('已完成') || msg.startsWith('需要确认') || msg.startsWith('告警') ? msg : `${prefix}: ${msg}`;
+  return msg.startsWith(prefix) ? msg : `${prefix}：${msg}`;
 }
 
 // MARK: 状态 → 颜色（ActivityLevel 色阶，主题切换由 CSS 变量承担）
@@ -141,6 +223,19 @@ const ICONS = {
   warn: '<svg viewBox="0 0 16 16"><path d="M8 1.5 15 14H1L8 1.5zM7.3 6v4h1.4V6H7.3zm.7 7a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8z"/></svg>',
 };
 
+// A single stroke weight and optical box for the island toolbar.
+function islandToolbarIcon(name) {
+  const paths = {
+    search: '<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 4.5 4.5"/>',
+    settings: '<path d="M4 7h3m4 0h9M4 17h9m4 0h3"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="17" r="2"/>',
+    top: '<path d="m7 14 5-5 5 5"/>',
+    bottom: '<path d="m7 10 5 5 5-5"/>',
+    left: '<path d="m14 7-5 5 5 5"/>',
+    right: '<path d="m10 7 5 5-5 5"/>',
+  };
+  return `<svg class="island-toolbar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] ?? paths.top}</svg>`;
+}
+
 // MARK: 贴边反向倒角形状（curl 10 / 圆角 18，四边互为镜像）
 
 export function notchPathD(w, h, edge) {
@@ -190,14 +285,14 @@ export function renderSliver() {
   const root = document.getElementById('root');
   const eng = st.engine;
   const working = !!eng?.any_working;
-  const alert = !!eng?.has_attention || eng?.latest_event?.event_type === 'costSpike';
+  const alert = !!getTaskAttention()?.total || !!getTaskAttention()?.error || !!eng?.has_attention || eng?.latest_event?.event_type === 'costSpike';
 
   const edge = st.settings?.dock_edge ?? 'top';
   const hitClass = edge === 'top' ? 'hit-top' : edge === 'bottom' ? 'hit-bottom'
     : edge === 'left' ? 'hit-left' : 'hit-right';
   const vertical = edge === 'left' || edge === 'right';
 
-  // 「收起时隐藏微细条」：不画那条可见的细条，但**保留热区**。
+  // 「收起后隐藏贴条」：不画那条可见的细条，但**保留热区**。
   //
   // 为什么保留：微细条是收起态唯一的唤回入口（`mouseenter` 即展开）。
   // 连热区一起去掉的话，窗口会变成一块看不见也点不到的死区——
@@ -237,7 +332,8 @@ function headerPresentation(eng) {
     // 还有几条在排队：不显示它就等于把队列藏起来——用户会以为「关掉这条就没事了」。
     // 计数来自 Rust 的 `pending_events`（不含正在显示的这条）。
     const pending = eng.pending_events ?? 0;
-    const base = ev.externally_delivered ? (isCost ? '外部告警' : '外部确认') : isCost ? '告警' : '待确认';
+    const resource = !ev.externally_delivered && /(?:^|\s)kind=(?:memory|hung)\b/.test(ev.detail ?? '');
+    const base = ev.externally_delivered ? (isCost ? '外部告警' : '外部确认') : isCost ? '用量提醒' : resource ? '资源提醒' : '待确认';
     return {
       title: ev.agent_name,
       subtitle: eventSummary(ev),
@@ -256,19 +352,14 @@ function headerPresentation(eng) {
       iconChar: '\uE7C2',
     };
   }
-  const active = visible.find((s) => s.level === 'working' && s.current_action);
-  if (active) {
-    const others = visible.filter((s) => s.level === 'working').length - 1;
-    return { title: active.name, subtitle: active.current_action, badge: others > 0 ? `+${others}` : '工作中', tint: 'var(--working)', icon: ICONS.terminal };
-  }
   const workingCount = visible.filter((s) => s.level === 'working').length;
   const completedCount = visible.filter((s) => s.level === 'completed').length;
   const uncertainCount = visible.filter((s) => s.level === 'idle' && s.observability?.code && s.observability.code !== 'observed').length;
-  const text = workingCount > 0 ? `${workingCount} 个 Agent 正在工作`
-    : completedCount > 0 ? `${completedCount} 个任务已完成`
-      : uncertainCount > 0 ? `${uncertainCount} 个 Agent 状态待核实`
-        : visible.length === 0 ? '暂无运行中的 Agent' : '全部 Agent 待机';
-  return { title: text, subtitle: null, badge: null, tint: workingCount > 0 ? 'var(--working)' : uncertainCount > 0 ? 'var(--warning)' : 'var(--idle)', icon: null };
+  const badge = workingCount > 0 ? `${workingCount} 工作中`
+    : completedCount > 0 ? `${completedCount} 已完成`
+      : uncertainCount > 0 ? `${uncertainCount} 待核实`
+        : visible.length ? '待机' : null;
+  return { title: '智能体', badge, tint: workingCount > 0 ? 'var(--working)' : uncertainCount > 0 ? 'var(--warning)' : 'var(--idle)' };
 }
 
 // MARK: Agent 行（AgentRowView）
@@ -281,7 +372,8 @@ function healthChip(snap) {
   const health = snap.health;
   if (!health || health.grade === 'healthy') return '';
   const tips = [health.summary, ...(health.issues ?? []), health.suggestion].filter(Boolean).join(' · ');
-  return `<span class="health-chip" data-grade="${esc(health.grade)}" title="${esc(tips)}">${esc(health.score)}</span>`;
+  const label = healthReason(snap)?.label ?? (health.grade === 'partial' ? '观测不全' : '资源提醒');
+  return `<span class="health-chip" data-grade="${esc(health.grade)}" title="${esc(`运行健康度 ${health.score}/100 · ${tips}`)}">${label}</span>`;
 }
 
 /// 「可观测性判定」在界面上的说法。**只有这一份**：
@@ -325,8 +417,11 @@ export function agentRowModel(snap) {
 
 function rowHtml(snap) {
   const model = agentRowModel(snap);
+  const target = getState().engine?.session_navigation?.[snap.id];
+  const next = taskCoversSnapshot(getTaskAttention(), snap, target) ? null : agentNextStep(snap, target);
+  const followup = next ? `<div class="agent-next-step"><span title="${esc(`${next.kind}：${next.detail}`)}">${esc(next.detail)}</span>${next.action ? `<button type="button" data-open-agent="${esc(snap.id)}" data-expected-url="${esc(target?.url ?? '')}" aria-label="${esc(`${snap.name}：${next.action}`)}" title="${esc(next.hint)}">${esc(next.action)}${ICONS.chevRight}</button>` : ''}</div>` : '';
   return `
-    <button type="button" class="row" data-agent="${esc(model.id)}" aria-label="${esc(model.name)}：${esc(model.statusText)}，查看详情">
+    <div class="agent-entry"><button type="button" class="row" data-agent="${esc(model.id)}" aria-label="${esc(model.name)}：${esc(model.statusText)}，查看详情">
       <div class="row-line1">
         ${agentIcon(snap, 'island-agent-icon')}
         <div class="row-name-col">
@@ -336,8 +431,8 @@ function rowHtml(snap) {
         <div class="island-row-usage"><strong>${model.tokensText}</strong><span>24h tokens</span></div>
         ${healthChip(snap)}
       </div>
-      ${model.hasAction ? `<div class="action-bar" title="${esc(model.actionText)}">${esc(model.actionText)}</div>` : model.activityText ? `<div class="island-row-activity">${esc(model.activityText)}</div>` : ''}
-    </button>`;
+      ${model.hasAction && snap.level !== 'attention' ? `<div class="action-bar" title="${esc(model.actionText)}">${esc(model.actionText)}</div>` : ''}
+    </button>${followup}</div>`;
 }
 
 // MARK: 主卡（IslandView.expandedCard）
@@ -358,47 +453,74 @@ export function renderCard() {
   if (st.route === 'tokenAnalytics') {
     content = pageAnalytics(eng);
   } else if (st.route === 'settings') {
-    content = `<div class="page island-settings" data-island-settings-page><div class="page-header"><button type="button" class="icon-btn" data-back aria-label="返回监控">${ICONS.chevLeft}</button><span class="page-title">设置</span></div>${pageSettings()}</div>`;
+    content = `<div class="page island-settings" data-island-settings-page><div class="page-header"><button type="button" class="icon-btn" data-back aria-label="返回监控">${ICONS.chevLeft}</button><span class="page-title">设置</span><span class="settings-save-status">自动保存</span></div><div class="island-settings-body">${pageSettings()}</div></div>`;
   } else if (st.route.startsWith('agentDetail:')) {
     content = pageAgentDetail(eng, st.route.split(':')[1]);
   } else {
     content = listCard(eng, st, visible, dark, edge);
   }
 
-  root.innerHTML = `
-    <div class="card dock-${edge}">
-      <div class="card-inner">${content}</div>
-    </div>`;
-
+  const existing = root.querySelector('.card');
+  if (isIsland() && root.dataset.motionRoute === st.route && navigationActive(existing)) return;
+  const previousRoute = root.dataset.motionRoute;
+  if (previousRoute != null && previousRoute !== st.route) clearTimeout(st.collapseTimer);
+  const focused = document.activeElement;
+  const focusLabel = root.dataset.motionRoute === st.route && root.contains?.(focused) ? focused?.getAttribute('aria-label') : null;
+  let captured = isIsland() ? captureNavigation(existing, root.dataset.motionRoute, st.route, st.route === 'list') : null;
+  if (!isIsland()) rememberPage(root, st.route, '.card-inner');
+  const opening = !existing;
+  const markup = `<div class="card-inner${opening ? ' card-enter' : ''}">${content}</div>`;
+  if (isIsland() && existing) {
+    existing.className = `card dock-${edge}`;
+    existing.innerHTML = markup;
+  } else root.innerHTML = `<div class="card dock-${edge}">${markup}</div>`;
+  const changed = root.dataset.motionRoute != null && root.dataset.motionRoute !== st.route;
+  if (isIsland()) root.dataset.motionRoute = st.route;
+  else pageMotion(root, st.route, '.card-inner');
   bindCardEvents(eng, st);
+  bindTaskAttention(root);
+  const card = root.querySelector('.card');
+  if (captured?.layoutOnly) {
+    // A newly sampled action can add/remove a row just after returning. Give
+    // that height change the same continuous surface instead of a second jump.
+    card.style.maxHeight = 'none';
+    const next = card.getBoundingClientRect();
+    card.style.maxHeight = '';
+    if (Math.abs(next.height - captured.from.height) <= 1 && Math.abs(next.width - captured.from.width) <= 1) {
+      captured.copy.remove(); captured = null;
+    }
+  }
+  if (captured && card) {
+    stageNavigation(card, captured);
+    if (captured.layoutOnly && focusLabel) [...root.querySelectorAll('[aria-label]')].find(n => n.getAttribute('aria-label') === focusLabel)?.focus({ preventScroll: true });
+  }
+  else if (isIsland() && changed && card) focusNavigation(card, st.route, previousRoute);
+  else if (focusLabel) [...root.querySelectorAll('[aria-label]')].find(n => n.getAttribute('aria-label') === focusLabel)?.focus({ preventScroll: true });
+  if (changed && card) resizeToContent();
 }
 
 function listCard(eng, st, visible, dark, edge) {
   const hp = headerPresentation(eng);
   const gt = eng.grand_total ?? {};
-  const hasSummary = (gt.tokens24h ?? 0) > 0 || (gt.tokens_total ?? 0) > 0;
   const ev = eng.latest_event;
+  const canOpenEvent = !!(eng.event_navigation?.[ev?.id] ?? eng.session_navigation?.[ev?.agent_id]);
 
-  const chev = edge === 'top' ? ICONS.chevUp : edge === 'bottom' ? ICONS.chevDown : edge === 'left' ? ICONS.chevLeft : ICONS.chevRight;
-  const themeIcon = dark ? ICONS.sun : ICONS.moon;
+  const chev = islandToolbarIcon(edge);
 
-  const banner = ev ? `
-    <div class="divider"></div>
+  const banner = ev && !taskCoversEvent(getTaskAttention(), eng) ? `
     <div class="banner" style="background:color-mix(in srgb, ${ev.event_type === 'costSpike' ? 'var(--danger)' : 'var(--warning)'} 10%, transparent)">
       <div class="line1">
-        <span class="icon" style="color:${ev.event_type === 'costSpike' ? 'var(--danger)' : 'var(--warning)'}">${ev.event_type === 'completed' ? '\uE73E' : '\uE7BA'}</span>
-        <span class="title" style="color:${ev.event_type === 'costSpike' ? 'var(--danger)' : 'var(--warning)'}">${esc(bannerTitle(ev))}</span>
-        <button type="button" class="mini-btn" data-banner-detail>${st.lastEventDetail ? '原因 ˄' : '原因 ˅'}</button>
-        <button type="button" class="mini-btn" data-banner-close style="padding:2px 5px">${ICONS.close}</button>
+        <button type="button" class="banner-message" data-banner-detail aria-expanded="${!!st.lastEventDetail}" aria-controls="island-event-detail" title="${esc(eventSummary(ev))}" aria-label="${esc(bannerTitle(ev))}，${st.lastEventDetail ? '收起' : '展开'}完整提醒">${esc(bannerTitle(ev))}</button>
+        ${canOpenEvent ? `<button type="button" class="banner-control" data-agent-jump="${esc(ev.agent_id)}" aria-label="打开 ${esc(ev.agent_name)} 工具" title="打开工具">${ICONS.chevRight}</button>` : ''}
+        <button type="button" class="banner-control" data-banner-close aria-label="忽略这条提醒" title="忽略提醒">${ICONS.close}</button>
       </div>
-      ${st.lastEventDetail && ev.detail ? `<div class="detail">${esc(ev.detail)}</div>` : ''}
-      <div class="actions"><span class="mini-btn jump" data-agent-jump="${esc(ev.agent_id)}">${ICONS.jump}直达</span></div>
+      <div class="detail" id="island-event-detail"${st.lastEventDetail ? '' : ' hidden'}>${esc(eventSummary(ev))}${ev.detail ? `<p>${esc(ev.detail)}</p>` : ''}</div>
     </div>` : '';
 
   const search = st.searchActive ? `
     <div class="searchbar">
       ${ICONS.search.replace('<svg', '<svg width="10" height="10" style="color:var(--cyan)"')}
-      <input id="searchInput" placeholder="按名称或 CLI 快速过滤..." value="${esc(st.searchText ?? '')}" />
+      <input id="searchInput" placeholder="搜索名称或 CLI…" value="${esc(st.searchText ?? '')}" />
     </div>` : '';
 
   const filtered = st.searchActive && st.searchText
@@ -407,42 +529,38 @@ function listCard(eng, st, visible, dark, edge) {
 
   const list = filtered.length === 0
     ? `<div class="empty">${st.searchActive ? `${navigationIcon('search')}<span>未找到匹配「${esc(st.searchText)}」的智能体</span>`
-      : `${navigationIcon('terminal')}<span>没有活跃的 Agent</span>`}</div>`
+      : `${navigationIcon('terminal')}<span>暂无在线智能体</span>`}</div>`
     : `<div class="list">${filtered.map(rowHtml).join('')}</div>`;
 
-  const summary = hasSummary ? `
-    <button type="button" class="summary" data-analytics aria-label="查看用量分析">
-      <span class="island-summary-metric"><span>最近 24 小时</span><strong>${compact(gt.tokens24h)}</strong><small>${costText(gt.cost24h, gt.cost_estimated) || 'tokens'}</small></span>
-      <span class="island-summary-metric"><span>累计用量</span><strong>${compact(gt.tokens_total)}</strong><small>${costText(gt.cost_total, gt.cost_estimated) || 'tokens'}</small></span>
-      <span class="island-summary-link">用量分析 ${navigationIcon('chart')}</span>
-    </button>` : '';
+  const summary = `
+    <button type="button" class="summary" data-analytics aria-label="查看用量分析" title="Token 用量 · 查看分析">
+      <span class="island-summary-metric"><span>24h</span><strong>${gt.tokens24h == null ? '—' : compact(gt.tokens24h)}</strong></span>
+      <span class="island-summary-metric"><span>累计</span><strong>${gt.tokens_total == null ? '—' : compact(gt.tokens_total)}</strong></span>
+      <span class="island-summary-link" aria-hidden="true">${ICONS.chevRight}</span>
+    </button>`;
 
-  const statusColor = eng.has_attention ? 'var(--warning)' : eng.any_working ? 'var(--working)' : 'var(--idle)';
+  const statusColor = hp.tint;
 
   return `
     <div class="header" data-drag>
       <div class="status-dot" style="background:${statusColor}"></div>
       <div class="header-titles">
         <div class="header-line1">
-          <span class="header-title">${esc(hp.title)}</span>
+          <span class="header-title" title="${esc(hp.title)}">${esc(hp.title)}</span>
           ${eng.demo ? '<span class="badge" style="color:var(--cyan);background:color-mix(in srgb, var(--cyan) 14%, transparent);border:0.5px solid color-mix(in srgb, var(--cyan) 35%, transparent)">演示数据</span>' : ''}
           ${hp.badge ? `<span class="badge" style="color:${hp.tint};background:color-mix(in srgb, ${hp.tint} 14%, transparent);border:0.5px solid color-mix(in srgb, ${hp.tint} 35%, transparent)">${esc(hp.badge)}</span>` : ''}
         </div>
-        ${hp.subtitle ? `<div class="header-line2">
-          <span style="color:${hp.tint};font-family:var(--font-icon)">${hp.iconChar ?? ''}</span>
-          <span class="sub" style="color:${hp.tint}">${esc(hp.subtitle)}</span></div>` : ''}
+        <span class="header-count">${visible.length} 在线</span>
       </div>
       <div class="header-icons">
-        <span class="header-count">本机 · ${visible.length} 在线</span>
-        <button type="button" class="icon-btn" data-search title="即时搜索过滤 (/)" aria-label="搜索智能体">${ICONS.search}</button>
-        <button type="button" class="icon-btn" data-theme title="外观主题" aria-label="切换外观">${themeIcon}</button>
-        <button type="button" class="icon-btn" data-analytics title="Token 用量分析" aria-label="用量分析">${navigationIcon('chart')}</button>
-        <button type="button" class="icon-btn" data-island-settings title="设置" aria-label="设置">${navigationIcon('gear')}</button>
+        <button type="button" class="icon-btn" data-search title="搜索（/）" aria-label="搜索智能体">${islandToolbarIcon('search')}</button>
+        <button type="button" class="icon-btn" data-island-settings title="设置" aria-label="设置">${islandToolbarIcon('settings')}</button>
         <button type="button" class="icon-btn" data-collapse title="收起灵动岛" aria-label="收起灵动岛">${chev}</button>
       </div>
     </div>
     <div class="divider"></div>
     ${banner}
+    <div data-task-attention-slot>${taskAttentionHtml(getTaskAttention(), eng)}</div>
     ${search}
     ${list}
     ${summary}`;
@@ -473,40 +591,18 @@ function renderReportBody(report) {
   const remaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate());
   const hourly = report.hourly30d;
 
-  // 趋势（近 24h）
-  const pts = [];
-  let max = 1;
-  const cutoff = Date.now() - 24 * 3600 * 1000;
-  for (const [ts, v] of hourly) if (ts >= cutoff) { pts.push([ts, v]); if (v > max) max = v; }
-  const W = 270, H = 96;
-  const xy = pts.map(([ts, v], i) => [4 + (pts.length === 1 ? W / 2 - 4 : i / (pts.length - 1) * (W - 8)), H - 16 - v / max * (H - 30)]);
-  const line = xy.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
-  const area = `${line} L${xy.length ? xy[xy.length - 1][0].toFixed(1) : W - 4},${H - 14} L${xy.length ? xy[0][0].toFixed(1) : 4},${H - 14} Z`;
-  const peakIdx = pts.reduce((bi, _, i) => (pts[i][1] > pts[bi][1] ? i : bi), 0);
-
-  // 热力图（近 24 格）
-  const heat = [];
-  for (let i = 23; i >= 0; i--) {
-    const bucket = (Date.now() - i * 3600 * 1000);
-    const ts = bucket - bucket % 3600000;
-    const v = hourly.find(([t]) => t === ts)?.[1] ?? 0;
-    const alpha = v <= 0 ? 0.08 : Math.max(0.15, Math.sqrt(v / Math.max(1, max)) * 0.9);
-    heat.push(`<i style="background:color-mix(in srgb, var(--cyan) ${Math.round(alpha * 100)}%, transparent)"></i>`);
-  }
+  const records=hourRecords(hourly),peak24=Math.max(1,...records.map(record=>record.tokens??0));
+  const heat=records.map(record=>{const label=`${new Date(record.ts).toLocaleString()} · ${record.tokens===null?'无小时记录':`${record.tokens} tokens`}`;const alpha=record.tokens===null?0:record.tokens===0?0.08:Math.max(0.15,Math.sqrt(record.tokens/peak24)*0.9);return `<i role="img" aria-label="${esc(label)}" title="${esc(label)}"${record.tokens===null?' class="is-missing"':''} style="background:color-mix(in srgb, var(--cyan) ${Math.round(alpha*100)}%, transparent)"></i>`;});
 
   const maxTool = Math.max(1, ...report.models24h.map((m) => m.tokens));
-  const t24 = report.models24h.reduce((a, m) => a + m.tokens, 0);
 
   return `
-    <div class="segmented" data-seg>
-      <div class="on">24h</div><div data-range="7">7天</div><div data-range="30">30天</div>
-    </div>
     <div class="card-box usage-forecast">
-      <h4>月末用量与成本预测</h4>
+      <h4>月底前预估</h4>
       <div class="totals" style="margin-top:8px;justify-content:flex-start;gap:14px">
-        <div><div class="big-num" style="font-size:14px">${compact(u.tokens24h * remaining)}</div><div class="num-label">预估月末消耗</div></div>
-        <div><div class="big-num c-working" style="font-size:14px">${costText(u.cost24h, u.cost_estimated) ? `~$${(u.cost24h * remaining).toFixed(2)}` : '—'}</div><div class="num-label">预估月末费用</div></div>
-        <div><div class="big-num" style="font-size:14px">${remaining} 天</div><div class="num-label">当月剩余自然日</div></div>
+        <div><div class="big-num" style="font-size:14px">${compact(u.tokens24h * remaining)}</div><div class="num-label">剩余用量</div></div>
+        <div><div class="big-num c-working" style="font-size:14px">${costText(u.cost24h, u.cost_estimated) ? `~$${(u.cost24h * remaining).toFixed(2)}` : '—'}</div><div class="num-label">剩余费用</div></div>
+        <div><div class="big-num" style="font-size:14px">${remaining} 天</div><div class="num-label">剩余天数</div></div>
       </div>
     </div>
     <div class="card-box usage-totals">
@@ -516,34 +612,20 @@ function renderReportBody(report) {
         <div><div class="big-num">${compact(u.tokens_total)}</div><div class="num-label">累计</div></div>
       </div>
     </div>
-    <div class="card-box usage-trend">
-      <div style="display:flex;align-items:center"><h4>使用趋势</h4>
-        <span style="margin-left:auto;font-size:9.5px;color:var(--cyan);font-family:var(--font-mono)">峰值 ${compact(max)}</span></div>
-      <svg class="usage-trend" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="最近 24 小时用量趋势" style="margin-top:6px">
-        ${[1, 2, 3].map((i) => `<line x1="4" x2="${W - 4}" y1="${(H - 16) * i / 4}" y2="${(H - 16) * i / 4}" stroke="var(--hairline)" stroke-width="0.5"/>`).join('')}
-        ${xy.length > 1 ? `
-          <path d="${area}" fill="color-mix(in srgb, var(--cyan) 14%, transparent)"/>
-          <path d="${line}" fill="none" stroke="var(--cyan)" stroke-width="1.4"/>
-          <circle cx="${xy[peakIdx][0]}" cy="${xy[peakIdx][1]}" r="3" fill="var(--cyan)" stroke="#fff" stroke-width="1"/>` : ''}
-      </svg>
-      <div style="display:flex;justify-content:space-between;font-size:8px;color:var(--text-faint)">
-        <span>${pts.length ? new Date(pts[0][0]).toTimeString().slice(0, 5) : ''}</span>
-        <span>${pts.length ? new Date(pts[pts.length - 1][0]).toTimeString().slice(0, 5) : ''}</span>
-      </div>
-    </div>
+    ${trendCardHtml()}
     <div class="card-box usage-rhythm">
-      <div style="display:flex;align-items:center"><span style="font-size:10.5px;color:var(--text-faint)">24h 协同节律</span>
-        <span style="margin-left:auto;font-size:9.5px;color:var(--text)">活跃 ${heat.filter((h) => !h.includes('8%')).length}/24h</span></div>
+      <div style="display:flex;align-items:center"><span style="font-size:10.5px;color:var(--text-faint)">24 个小时桶</span>
+        <span style="margin-left:auto;font-size:9.5px;color:var(--text)">有记录 ${records.filter(record=>record.tokens!==null).length}/24</span></div>
       <div class="heat">${heat.join('')}</div>
     </div>
     <div class="card-box usage-models">
-      <h4>按工具用量</h4>
+      <h4>按模型用量 · 24h</h4>
       ${report.models24h.map((m) => `
         <div class="model-row">
           <div class="top"><span>${esc(m.model)}</span>
             <span class="r"><span class="tk">${compact(m.tokens)}</span><span class="cost">${costText(m.cost, m.cost_estimated)}</span></span></div>
           <div class="hbar"><i style="width:${Math.max(2, 100 * m.tokens / maxTool)}%"></i></div>
-        </div>`).join('') || '<div class="c-faint" style="font-size:10px;margin-top:6px">暂无按工具明细</div>'}
+        </div>`).join('') || '<div class="c-faint" style="font-size:10px;margin-top:6px">暂无模型明细</div>'}
     </div>`;
 }
 
@@ -559,7 +641,7 @@ export function pageAgentDetail(eng, agentId) {
         ${agentIcon(snap ?? { id: agentId, name })}
         <div class="page-titles">
           <div class="t">${esc(name)}</div>
-          <div class="s">Agent 详情 · 双口径总览 + 按模型拆分</div>
+          <div class="s">用量与模型</div>
         </div>
       </div>
       <div class="divider"></div>
@@ -583,13 +665,13 @@ function renderDetailBody(report, snap) {
     <div class="card-box">
       <div class="totals" style="gap:16px">
         <div><div class="big-num" style="font-size:14px">${compact(u.tokens24h)}</div><div class="num-label">24h 用量</div></div>
-        <div><div class="big-num" style="font-size:14px">${costText(u.cost24h, u.cost_estimated) || '—'}</div><div class="num-label">24h 花费</div></div>
+        <div><div class="big-num" style="font-size:14px">${costText(u.cost24h, u.cost_estimated) || '—'}</div><div class="num-label">24h 费用</div></div>
         <div><div class="big-num" style="font-size:14px">${compact(u.tokens_total)}</div><div class="num-label">累计</div></div>
-        <div><div class="big-num" style="font-size:14px">${costText(u.cost_total, u.cost_estimated) || '—'}</div><div class="num-label">累计花费</div></div>
+        <div><div class="big-num" style="font-size:14px">${costText(u.cost_total, u.cost_estimated) || '—'}</div><div class="num-label">累计费用</div></div>
       </div>
     </div>
     <div class="card-box">
-      <h4>按模型拆分（24h）</h4>
+      <h4>模型用量 · 24h</h4>
       ${report.models24h.map((m) => {
     const maxT = Math.max(1, ...report.models24h.map((x) => x.tokens));
     return `<div class="model-row" data-model="${esc(m.model)}">
@@ -599,7 +681,7 @@ function renderDetailBody(report, snap) {
         </div>`;
   }).join('') || `
         <div class="c-faint" style="font-size:11px;margin-top:6px">未发现本地明细</div>
-        <div class="c-faint" style="font-size:9.5px;margin-top:4px">该档案登记的明细源本轮没有可读取的用量记录；「没取到」不等于「真的零用量」。</div>`}
+        <div class="c-faint" style="font-size:9.5px;margin-top:4px">暂无可读取的用量记录。— 表示尚未获取数据。</div>`}
     </div>`;
 }
 
@@ -644,6 +726,7 @@ function bindCardEvents(eng, st) {
     if (st.route.startsWith('agentDetail:')) { st.route = 'list'; }
     else { st.route = 'list'; }
     renderCard();
+    resizeToContent();
   }));
 
   const searchBtn = root.querySelector('[data-search]');
@@ -653,18 +736,10 @@ function bindCardEvents(eng, st) {
     renderCard();
   });
 
-  const themeBtn = root.querySelector('[data-theme]');
-  if (themeBtn) themeBtn.addEventListener('click', () => {
-    const dark = document.documentElement.classList.contains('theme-dark');
-    st.settings.appearance = dark ? 'light' : 'dark';
-    applyAppearance(st.settings.appearance);
-    saveSettings({ appearance: st.settings.appearance }).catch(() => {});
-    renderCard();
-  });
-
   root.querySelectorAll('[data-analytics]').forEach((el) => el.addEventListener('click', () => {
     st.route = 'tokenAnalytics';
     renderCard();
+    resizeToContent();
   }));
 
   root.querySelector('[data-island-settings]')?.addEventListener('click', () => {
@@ -677,32 +752,28 @@ function bindCardEvents(eng, st) {
   const collapseBtn = root.querySelector('[data-collapse]');
   if (collapseBtn) collapseBtn.addEventListener('click', collapse);
 
-  root.querySelectorAll('[data-agent]').forEach((el) => el.addEventListener('click', () => {
-    st.route = `agentDetail:${el.dataset.agent}`;
-    renderCard();
-    hydrateReport();
-  }));
-
   const jump = root.querySelector('[data-agent-jump]');
-  if (jump) jump.addEventListener('click', (e) => {
-    e.stopPropagation();
-    // 直达窗口：Windows 端后续接 Win32 激活；v1 回到详情页
-    st.route = `agentDetail:${jump.dataset.agentJump}`;
-    renderCard();
-    hydrateReport();
-  });
+  if (jump) {
+    const target = eng.event_navigation?.[eng.latest_event?.id];
+    jump.title = target?.hint ?? '打开工具；此提醒暂不支持定位会话';
+    jump.setAttribute('aria-label', target?.exactSession ? `打开 ${eng.latest_event.agent_name} 对应会话` : `打开 ${eng.latest_event?.agent_name ?? '智能体'} 工具`);
+    jump.addEventListener('click', e => { e.stopPropagation(); openAgentSession(jump, jump.dataset.agentJump, eng.latest_event?.id, target?.url); });
+  }
 
   const bannerDetail = root.querySelector('[data-banner-detail]');
   if (bannerDetail) bannerDetail.addEventListener('click', (e) => {
     e.stopPropagation();
     st.lastEventDetail = !st.lastEventDetail;
     renderCard();
+    resizeToContent();
+    root.querySelector('[data-banner-detail]')?.focus();
   });
 
   const bannerClose = root.querySelector('[data-banner-close]');
   if (bannerClose) bannerClose.addEventListener('click', async (e) => {
     e.stopPropagation();
     bannerClose.closest('.banner').style.display = 'none';
+    resizeToContent();
     await invoke('clear_latest_event').catch(() => {});
   });
 
@@ -729,8 +800,8 @@ function bindCardEvents(eng, st) {
 
   bindRowClicks(st);
 
-  root.addEventListener('mouseleave', () => { if (st.expanded) armCollapseTimer(); });
-  root.addEventListener('mouseenter', () => clearTimeout(st.collapseTimer));
+  root.onmouseleave = () => { if (st.expanded && !navigationActive(root.querySelector('.card'))) armCollapseTimer(); };
+  root.onmouseenter = () => clearTimeout(st.collapseTimer);
 
   // 自愈高度：横幅/字体/异步内容造成的滞后由周期校正兜底
   if (!globalThis.__heightHealer) {
@@ -744,33 +815,65 @@ function bindCardEvents(eng, st) {
   if (st.route === 'tokenAnalytics' || st.route.startsWith('agentDetail:')) hydrateReport();
 }
 
+async function openAgentSession(button, agent, event, expectedUrl) {
+  if (button.disabled) return;
+  clearTimeout(getState().collapseTimer);
+  button.disabled = true;
+  try {
+    await invoke('open_agent_session', { agent, event: event ?? null, expectedUrl: expectedUrl || null });
+  } catch (error) {
+    const hint = document.createElement('div');
+    hint.className = 'agent-open-error'; hint.setAttribute('role', 'alert');
+    hint.textContent = String(error?.message ?? error);
+    button.closest('.agent-entry, .wb-agent-entry, .banner')?.querySelector('.agent-open-error')?.remove();
+    button.closest('.agent-entry, .wb-agent-entry, .banner')?.appendChild(hint);
+    resizeToContent();
+  } finally { if (button.isConnected) button.disabled = false; }
+}
+
 function bindRowClicks(st) {
+  document.querySelectorAll('[data-open-agent]').forEach(el => {
+    el.onclick = event => { event.stopPropagation(); openAgentSession(el, el.dataset.openAgent, null, el.dataset.expectedUrl); };
+  });
   document.querySelectorAll('[data-agent]').forEach((el) => {
     el.onclick = () => {
       st.route = `agentDetail:${el.dataset.agent}`;
       renderCard();
-      hydrateReport();
     };
   });
 }
 
 export async function hydrateReport() {
   const st = getState();
-  const bodies = [...document.querySelectorAll('[data-report-root]')];
+  const bodies = [...document.querySelectorAll('[data-report-root]')].filter(body => !body.closest('[data-page-outgoing]'));
   await Promise.all(bodies.map(async (body) => {
     const page = body.closest('[data-page]');
     const analytics = page?.dataset.page === 'tokenAnalytics';
     // 空 ID 是后端约定的全部启用档案汇总，不取第一个在线工具。
     const agentId = analytics ? '' : page?.dataset.agentId ?? '';
-    const report = await invoke('get_report', { agentId }).catch(() => null);
+    const current=pageRequest(body);
+    body.setAttribute('aria-busy','true');
+    let report;
+    try{report=await invoke('get_report',{agentId});}
+    catch{
+      if(!current())return;
+      body.setAttribute('aria-busy','false');
+      if(body.dataset.reportReady!=='true'&&!body.querySelector('[data-usage-read-error]'))body.replaceChildren();
+      if(!body.querySelector('[data-usage-read-error]'))body.insertAdjacentHTML('afterbegin',`<div class="usage-read-error" data-usage-read-error><p role="status">用量读取失败${body.dataset.reportReady==='true'?'，保留上次内容':''}。请重试。</p><button type="button" class="mini-btn" data-usage-retry>重试</button></div>`);
+      body.querySelector('[data-usage-retry]').onclick=()=>hydrateReport();return;
+    }
     // 导航可能已经换页；过期响应不写入新页面。
-    if (!body.isConnected) return;
+    if (!current()) return;
+    body.setAttribute('aria-busy','false');
+    body.dataset.reportReady = 'true';
     if (!report) {
-      body.innerHTML = `<div class="report-empty">${navigationIcon('chart')}<span>暂无本地明细数据</span></div>`;
+      body.innerHTML = `<div class="report-empty">${navigationIcon('chart')}<span>暂无用量明细</span></div>`;
       return;
     }
     const snap = st.engine?.snapshots.find((entry) => entry.id === agentId);
+    const focus=document.activeElement;const rangeFocused=body.contains(focus)&&(focus.hasAttribute('data-usage-range')||focus.hasAttribute('data-usage-retry'));
     body.innerHTML = analytics ? renderReportBody(report) : renderDetailBody(report, snap);
+    if(analytics){bindTrend(body.querySelector('[data-usage-trend]'),report.hourly30d,body.dataset.trendRange??'24',range=>{body.dataset.trendRange=range;});if(rangeFocused)body.querySelector(`[data-usage-range="${body.dataset.trendRange}"]`)?.focus({preventScroll:true});}
   }));
   if (isIsland()) await resizeToContent();
 }
@@ -806,43 +909,29 @@ export async function hydrateReport() {
 // 报告**只读不改**：`report` 命令已经能生成 md / csv，而报告是拿去对账的东西，
 // 从界面上写盘会多出一条「写到哪去了」的路径。所以这里只生成 + 复制，
 // 要落盘用 CLI——那条路已经验过（原子写、写失败 exit 1）。
-export function pageReport() {
-  return `
-    <div class="sb-page" data-report-panel>
-      <div class="wb-report-actions">
-        <div class="wb-format-group" role="group" aria-label="报告格式">
-          <button type="button" class="mini-btn" data-report-format="md" aria-pressed="false">Markdown</button>
-          <button type="button" class="mini-btn" data-report-format="csv" aria-pressed="false">CSV</button>
-        </div>
-        <button type="button" class="mini-btn" data-report-copy disabled>复制报告</button>
-      </div>
-      <pre class="wb-report-body is-placeholder" data-report-text>选择 Markdown 或 CSV 生成用量报告。
-生成后可复制内容用于记录或核对。</pre>
-    </div>`;
-}
+export function pageReport() { return reportPanelHtml(); }
 
-/** 生成报告文本。取数走 `report_text` 命令，与 CLI 的 `agentisland report` 同一对函数。 */
 export async function hydrateReportPanel(format) {
-  const box = document.querySelector('[data-report-text]');
-  if (!box) return;
-  if (!format) return;
-  const panel = box.closest('[data-report-panel]');
-  panel.querySelectorAll('[data-report-format]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.reportFormat === format)));
-  panel.querySelector('[data-report-copy]').disabled = true;
-  box.classList.remove('is-placeholder');
-  box.textContent = '生成中…';
-  try {
-    const text = await invoke('report_text', { format });
-    if (!box.isConnected || panel.querySelector('[aria-pressed="true"]')?.dataset.reportFormat !== format) return;
-    box.textContent = text ?? '';
-    panel.querySelector('[data-report-copy]').disabled = !text;
-  } catch (error) {
-    if (!box.isConnected || panel.querySelector('[aria-pressed="true"]')?.dataset.reportFormat !== format) return;
-    box.textContent = `生成失败：${error}`;
-  }
+  const panel=visibleReportPanel();if(panel&&format)await bindReport(panel).generate(format);
 }
 
 export function pageProvider() {
+  if (isWorkbench) return `<div class="model-workspace" data-model-workspace>
+    <div class="model-navigation" aria-label="模型与连接视图">
+      <button type="button" class="mini-btn" data-model-view="tools" aria-pressed="true" aria-controls="model-tools">工具配置</button>
+      <button type="button" class="mini-btn" data-model-view="models" aria-pressed="false" aria-controls="model-directory">模型目录</button>
+      <button type="button" class="mini-btn" data-model-view="extensions" aria-pressed="false" aria-controls="model-extensions">扩展配置</button>
+      <button type="button" class="mini-btn" data-model-view="prompts" aria-pressed="false" aria-controls="model-prompts">提示词</button>
+      <button type="button" class="mini-btn" data-model-view="services" aria-pressed="false" aria-controls="model-services">服务连接</button>
+    </div>
+    <section id="model-tools" data-model-panel="tools" aria-label="Codex 工具配置"><h2 class="model-tool-title">Codex <span>本机配置</span></h2>
+      <div class="sb-page" data-provider-root><div class="sb-empty">加载中…</div></div>
+    </section>
+    <section id="model-directory" data-model-panel="models" aria-label="本机配置模型目录" hidden><div data-model-directory><div class="sb-empty">加载中…</div></div></section>
+    <section id="model-extensions" data-model-panel="extensions" aria-label="扩展与来源能力" hidden>${pageMcp()}${pageClaudePlan()}</section>
+    <section id="model-prompts" data-model-panel="prompts" aria-label="提示词与用户指令" hidden>${pagePrompts()}</section>
+    <section id="model-services" data-model-panel="services" aria-label="外部服务连接" hidden>${pageConnections()}</section>
+  </div>`;
   return `
     <div class="sb-page" data-provider-root>
       <div class="sb-empty">加载中…</div>
@@ -866,27 +955,29 @@ function workbenchMonitor(eng) {
   if (route.startsWith('agentDetail:')) return pageAgentDetail(eng, route.slice('agentDetail:'.length));
   const running = eng.snapshots.filter(isVisible);
   if (running.length === 0) {
-    return `<div class="wb-empty">${navigationIcon('terminal')}<strong>还没有检测到运行中的智能体</strong><span>启动本机编码工具后，运行状态会显示在这里。</span></div>`;
+    return `<div class="wb-empty">${navigationIcon('terminal')}<strong>暂无在线智能体</strong><span>启动编码工具后即可查看状态。</span></div>`;
   }
   return running
     .map((snap) => {
       const model = agentRowModel(snap);
-      const detail = [model.statusText, model.actionText || model.activityText].filter(Boolean).join(' · ');
-      return `<button type="button" class="wb-agent" data-agent="${esc(model.id)}">
+      const target = eng.session_navigation?.[snap.id];
+      const next = agentNextStep(snap, target);
+      const detail = [model.statusText, next ? null : model.actionText || model.activityText].filter(Boolean).join(' · ');
+      return `<div class="wb-agent-entry"><button type="button" class="wb-agent" data-agent="${esc(model.id)}">
         ${agentIcon(snap, 'wb-agent-glyph')}
         <span class="name">${escapeHtml(model.name)}</span>
         <span class="tokens">${escapeHtml(model.tokensText)}</span>
         <span class="meta"><i class="wb-state-dot" style="background:${model.statusColor}"></i>${escapeHtml(detail)}</span>
-      </button>`;
+      </button>${next ? `<div class="agent-next-step"><span title="${esc(next.kind)}：${esc(next.detail)}">${esc(next.detail)}</span>${next.action ? `<button type="button" data-open-agent="${esc(snap.id)}" data-expected-url="${esc(target?.url ?? '')}" aria-label="${esc(snap.name)}：${esc(next.action)}" title="${esc(next.hint)}">${esc(next.action)}${navigationIcon('forward')}</button>` : ''}</div>` : ''}</div>`;
     })
     .join('');
 }
 
 // 工作台导航独立于智能体详情路由；周期采样只更新实时监控区。
 const workbenchPages = [
-  ['overview', '概览', 'square'], ['tokenAnalytics', '用量分析', 'chart'],
-  ['todo', '待办事项', 'check'], ['provider', 'Codex 档位', 'sliders'],
-  ['report', '导出报告', 'document'], ['agents', '智能体管理', 'terminal'],
+  ['overview', '概览', 'square'], ['sessions', '会话', 'terminal'], ['tokenAnalytics', '用量分析', 'chart'],
+  ['todo', '待办事项', 'check'], ['provider', '模型与连接', 'sliders'],
+  ['tasks', '任务', 'check'], ['workspaces', '工作空间', 'square'], ['windows', '窗口排列', 'square'], ['agents', '智能体管理', 'terminal'],
   ['remote', '远程通知', 'bell'], ['settings', '设置', 'gear'],
 ];
 
@@ -899,24 +990,42 @@ function navigationIcon(kind) {
     document: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9ZM14 3v6h6M8 13h8M8 17h5"/>',
     terminal: '<rect x="3" y="4" width="18" height="16" rx="4"/><path d="m7 9 3 3-3 3m6 0h4"/>',
     bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
+    forward: '<path d="m9 6 6 6-6 6"/>',
     gear: '<circle cx="12" cy="12" r="3"/><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-2v-3l3-1 1-3-3-2V7l-3-1-1-3Z"/>',
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] ?? paths.square}</svg>`;
 }
 
 const workbenchDescriptions = {
-  tokenAnalytics: '了解用量规模、趋势与模型构成。净消耗不含缓存读取。',
-  todo: '把接下来的工作记在这里，完成后轻轻勾选。',
-  provider: '管理本机 Codex 配置档位，查看当前配置与备份。',
-  report: '将本机用量整理成便于记录和核对的报告。',
-  agents: '选择需要关注的智能体，保持监控列表清晰。',
-  remote: '配置通知通道，在离开电脑时接收重要状态。',
-  settings: '按你的工作习惯调整外观、采样与通知。',
+  tokenAnalytics: '用量、趋势与模型分布。净消耗不含缓存读取。',
+  todo: '记录待办，勾选完成。',
+  sessions: '查看可信来源，进入会话或关联任务。',
+  tasks: '整理任务、运行记录与需处理事项。',
+  workspaces:'组合项目、工具、配置与窗口布局。',
+  windows: '预览排列所选工具窗口，并可撤销。',
+  provider: '管理工具配置、模型目录与服务地址。',
+  report: '导出本机用量报告。',
+  agents: '选择要监控的智能体。',
+  remote: '离开电脑时接收状态通知。',
+  settings: '调整外观、采样与通知。',
 };
 
 function navigationSummary(engine) {
   if (!engine) return '<span class="nav-machine-label">本机状态</span><p>等待采样</p>';
   return `<span class="nav-machine-label">本机状态</span><div class="nav-machine-values"><div><strong>${engine.snapshots.filter(isVisible).length}</strong><span>在线</span></div><div><strong>${compact(engine.grand_total.tokens24h)}</strong><span>24h tokens</span></div></div><p>数据保存在本机</p>`;
+}
+
+const attentionMarkup = new WeakMap();
+export function renderTaskAttentionOnly() {
+  document.querySelectorAll('[data-task-attention-slot]').forEach(slot => {
+    const html=taskAttentionHtml(getTaskAttention(),getState().engine);
+    if (attentionMarkup.get(slot) === html) return;
+    const focused=document.activeElement;
+    const focusAction=slot.contains(focused) ? ['data-task-summary-detail','data-task-summary-source','data-task-summary-list'].find(key=>focused.hasAttribute(key)) : null;
+    slot.innerHTML=html; attentionMarkup.set(slot,html);
+    bindTaskAttention(slot);
+    if (focusAction) slot.querySelector(`[${focusAction}]`)?.focus({preventScroll:true});
+  });
 }
 
 export function renderNavSummaryOnly() {
@@ -930,84 +1039,174 @@ export function renderWorkbench() {
     snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
     latest_event: null, any_working: false, has_attention: false,
   };
-  const selected = st.workbenchPage ?? 'overview';
+  const showReport=st.workbenchPage==='report';
+  const desired=showReport?'tokenAnalytics':st.workbenchPage;
+  const selected = workbenchPages.some(([key]) => key === desired) ? desired : 'overview';
+  st.workbenchPage = selected;
   const title = workbenchPages.find(([key]) => key === selected)?.[1] ?? '概览';
   const root = document.getElementById('root');
+  if (root.querySelector('.wb-content') && root.dataset.motionRoute === selected) {
+    workspaceFlow.route(selected);renderWorkspaceBanner();focusWorkspaceTarget();
+    renderWorkbenchMonitorOnly();
+    if(showReport)openUsageReport(root);
+    return;
+  }
   const section = (heading, content, attrs = '') => `<section class="wb-section"><h2 class="wb-section-title">${heading}</h2><div class="wb-section-body" ${attrs}>${content}</div></section>`;
   let content;
   if (selected === 'overview') {
-    content = `<div class="wb-intro"><div><p class="wb-eyebrow">你的本机工作空间</p><h1>工作概览</h1><p>关注正在运行的智能体，安排接下来的工作。</p></div><div class="wb-summary" data-wb-summary>${workbenchSummary(eng)}</div></div>
+    content = `<div class="wb-intro"><div><p class="wb-eyebrow">本机工作台</p><h1>工作概览</h1><p>查看运行状态，安排待办。</p></div><div class="wb-summary" data-wb-summary>${workbenchSummary(eng)}</div></div>
       <div class="wb-grid">
         <div class="wb-col wb-col-main">
+          <div data-task-attention-slot>${taskAttentionHtml(getTaskAttention(), eng)}</div>
           ${section('实时监控', workbenchMonitor(eng), `data-wb-monitor data-detail-route="${esc(st.route)}"`)}
           ${section('待办事项', pageTodo())}
-          ${section('导出报告', pageReport())}
         </div>
         <div class="wb-col">
-          ${section('用量分析', pageAnalytics(eng))}
-          ${section('Codex 档位', pageProvider())}
+          <section class="wb-section wb-tools"><h2 class="wb-section-title">常用工具</h2><div class="wb-section-body">
+          ${[['tokenAnalytics', '用量分析', 'chart', '查看趋势与模型消耗'], ['provider', '模型与连接', 'sliders', '管理配置、模型与备份'], ['report', '导出报告', 'document', '生成 Markdown 或 CSV']].map(([key, label, icon, detail]) => `<button type="button" class="wb-tool" data-wb-nav="${key}">${navigationIcon(icon)}<span><strong>${label}</strong><small>${detail}</small></span>${navigationIcon('forward')}</button>`).join('')}
+          </div></section>
         </div>
       </div>`;
   } else {
     const pages = {
-      tokenAnalytics: () => pageAnalytics(eng), provider: pageProvider, todo: pageTodo,
-      report: pageReport, settings: pageSettings, remote: pageRemote, agents: pageAgents,
+      tokenAnalytics: () => `<details class="usage-report" data-usage-report><summary>用量报告<span>Markdown · CSV</span></summary>${pageReport()}</details>${pageAnalytics(eng)}`, provider: pageProvider, todo: pageTodo, tasks: pageTasks, sessions: pageSessions, windows: pageWindowLayout,workspaces:pageWorkspaces,
+      report: () => pageReport(), settings: pageSettings, remote: pageRemote, agents: pageAgents,
     };
     const icon = workbenchPages.find(([key]) => key === selected)?.[2];
     content = `<div class="wb-single" data-workbench-page="${selected}"><div class="wb-page-heading"><span class="wb-page-icon">${navigationIcon(icon)}</span><div><h1>${title}</h1><p>${workbenchDescriptions[selected] ?? ''}</p></div></div>${pages[selected]?.() ?? ''}</div>`;
   }
-  root.innerHTML = `<div class="wb">
+  const previousContent = root.querySelector('.wb-content');
+  if (previousContent) workbenchScroll.set(root.dataset.motionRoute, previousContent.scrollTop);
+  rememberPage(root, selected, '.wb-content');
+  const restored = workbenchPagesCache.take(selected);
+  if (root.querySelector('.wb')) {
+    workbenchPagesCache.remember(root.dataset.motionRoute, previousContent);
+    const nextContent = restored ?? document.createElement('div');
+    nextContent.setAttribute('tabindex', '-1');
+    nextContent.setAttribute('aria-label', '工作台内容');
+    nextContent.className = `wb-content${selected === 'overview' ? ' wb-overview' : ''}`;
+    if (!restored) nextContent.innerHTML = content;
+    previousContent.replaceWith(nextContent);
+    if(restored)nextContent.querySelector('[data-skills-packages]')?.dispatchEvent(new Event('skill-package-resume'));
+    nextContent.scrollTop = workbenchScroll.get(selected) ?? 0;
+    root.querySelector('.wb-head-title').textContent = title;
+    root.querySelector('[data-wb-status]').textContent = workbenchStatus(st.engine);
+    root.querySelectorAll('.wb-nav-item').forEach(button => {
+      const active = button.dataset.wbNav === selected;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-current', active ? 'page' : 'false');
+    });
+    renderNavSummaryOnly();
+  } else root.innerHTML = `<div class="wb">
     <nav class="wb-nav" aria-label="工作台导航">
       <div class="wb-brand">${navigationIcon('square')}<span>AgentIsland<small>本机智能体工作台</small></span></div>
-      <div class="wb-nav-label">工作空间</div>
-      ${workbenchPages.map(([key, label, icon], index) => `${index === 5 ? '<div class="wb-nav-label wb-nav-divider">管理</div>' : ''}<button type="button" class="wb-nav-item${selected === key ? ' is-active' : ''}" data-wb-nav="${key}" aria-current="${selected === key ? 'page' : 'false'}">${navigationIcon(icon)}<span>${label}</span></button>`).join('')}
+      <div class="wb-nav-label">工作</div>
+      ${workbenchPages.map(([key, label, icon], index) => `${key === 'windows' ? '<div class="wb-nav-label wb-nav-divider">管理</div>' : ''}<button type="button" class="wb-nav-item${selected === key ? ' is-active' : ''}" data-wb-nav="${key}" aria-current="${selected === key ? 'page' : 'false'}">${navigationIcon(icon)}<span>${label}</span></button>`).join('')}
       <div class="wb-nav-footer" data-nav-summary>${navigationSummary(st.engine)}</div>
     </nav>
     <main class="wb-main">
-      <header class="wb-head" data-tauri-drag-region><span class="wb-head-title">${title}</span><div class="wb-status" data-wb-status>${workbenchStatus(st.engine)}</div><div class="wb-head-actions"><button type="button" class="mini-btn" data-wb-hide>收起窗口</button></div></header>
-      <div class="wb-content${selected === 'overview' ? ' wb-overview' : ''}">${content}</div>
+      <header class="wb-head" data-tauri-drag-region><span class="wb-head-title">${title}</span><div class="wb-status" data-wb-status>${workbenchStatus(st.engine)}</div><div class="wb-head-actions"><button type="button" class="mini-btn" data-wb-quick aria-keyshortcuts="Meta+K Control+K">前往 <kbd>⌘K</kbd></button><button type="button" class="mini-btn" data-wb-hide>收起窗口</button></div></header>
+      <div tabindex="-1" aria-label="工作台内容" class="wb-content${selected === 'overview' ? ' wb-overview' : ''}">${content}</div>
     </main>
   </div>`;
-  if (selected === 'overview' || selected === 'tokenAnalytics') hydrateReport();
-  if (selected === 'overview' || selected === 'provider') hydrateProvider();
+  retainWorkbenchControls(workbenchPagesCache.retainedControls);
+  pageMotion(root, selected, '.wb-content');
+  if (!restored || restored.querySelector('[data-provider-root], [data-todo-root], [data-remote-root], [data-tasks-root], [data-sessions-root]')?.dataset.pageReady !== 'true') {
+  if (selected === 'tokenAnalytics') hydrateReport();
+  if (selected === 'provider') hydrateProvider();
+  if (selected === 'sessions') hydrateSessions(id => { selectTask(id); st.workbenchPage='tasks'; st.route='list'; renderWorkbench(); }, () => getState().windowVisible !== false);
+  if (selected === 'tasks') hydrateTasks(() => getState().windowVisible !== false);
+  if (selected === 'windows') hydrateWindowLayout();
+  if (selected === 'workspaces') hydrateWorkspaces(openWorkspaceStep);
   if (selected === 'overview' || selected === 'todo') hydrateTodo();
   if (selected === 'remote') hydrateRemote();
-  if (selected === 'settings') bindSettings();
-  if (selected === 'agents') bindAgents();
+  if (!restored && selected === 'settings') bindSettings();
+  if (!restored && selected === 'agents') bindAgents();
+  }
   bindWorkbench();
+  const quick=bindQuickNavigation({items:workbenchPages.map(([key,label])=>({key,label,aliases:({provider:'模型 接口 档位 MCP Skills 提示词',windows:'布局 排列',tokenAnalytics:'token tokens 费用 趋势',todo:'todos 待办',sessions:'会话 来源 历史',tasks:'任务 运行 结果 问题',workspaces:'项目 组合',settings:'偏好 外观 通知'}[key]??'')})).concat([{key:'report',label:'用量报告',aliases:'导出 export Markdown CSV'}]),current:()=>getState().workbenchPage,navigate:key=>{if(key==='report'){getState().workbenchPage='report';renderWorkbench();}else root.querySelector(`.wb-nav-item[data-wb-nav="${key}"]`)?.click();}});
+  const quickButton=root.querySelector('[data-wb-quick]');if(quickButton)quickButton.onclick=quick.open;
+  renderTaskAttentionOnly();
+  if (restored && selected === 'tasks') refreshTasks();
+  if (restored && selected === 'sessions') refreshSessions();
+  if (restored && selected === 'overview') renderWorkbenchMonitorOnly();
+  workspaceFlow.route(selected);
+  renderWorkspaceBanner();
+  root.querySelector('[data-workspaces-root]')?.renderWorkspaceProgress?.();
+  focusWorkspaceTarget();
+  if(showReport)openUsageReport(root);
   root.querySelectorAll('[data-wb-nav]').forEach((button) => {
     button.onclick = () => {
+      if (st.workbenchPage === button.dataset.wbNav) return;
       st.workbenchPage = button.dataset.wbNav;
       st.route = st.workbenchPage === 'tokenAnalytics' ? 'tokenAnalytics' : 'list';
       renderWorkbench();
-      root.querySelector(`[data-wb-nav="${st.workbenchPage}"]`)?.focus({ preventScroll: true });
+      if(button.dataset.wbNav!=='report')root.querySelector(`.wb-nav-item[data-wb-nav="${st.workbenchPage}"]`)?.focus({ preventScroll: true });
     };
   });
 }
 
+let workspaceTarget=null;
+function openWorkspaceStep(step,recovery=null){
+  if(!step.available)return;
+  const page={project:'tasks',profile:'provider',layout:'windows',tool:'agents'}[step.kind];if(!page)return;
+  workspaceTarget={...step,recovery};
+  if(step.kind==='project')selectTaskProject(step.target_id);
+  if(step.kind==='layout'){if(recovery)selectLayoutRecovery(recovery.recovery_id);else selectLayoutRule(step.target_id);}
+  getState().workbenchPage=page;getState().route='list';renderWorkbench();
+}
+function focusWorkspaceTarget(){
+  if(!workspaceTarget)return;
+  const step=workspaceTarget;
+  if(getState().workbenchPage!==({project:'tasks',profile:'provider',layout:'windows',tool:'agents'}[step.kind])){workspaceTarget=null;return;}
+  if(step.kind==='project'||step.kind==='layout'){
+    if(step.kind==='layout'){const root=document.querySelector('[data-layout-root]');if(step.recovery)root?.focusWorkspaceRecovery?.();else root?.selectWorkspaceRule?.();}
+    workspaceTarget=null;return;
+  }
+  const selector=step.recovery?'[data-restore]':step.kind==='profile'?'[data-profile-row]':'[data-agent-toggle]';
+  const rows=[...document.querySelectorAll(selector)];
+  const target=rows.find(e=>(step.recovery?e.dataset.restore:step.kind==='profile'?e.dataset.profileRow:e.dataset.agentToggle)===(step.recovery?step.recovery.recovery_id:step.target_id));
+  if(!target){
+    const box=document.querySelector(step.kind==='profile'?'[data-provider-root]':'[data-agents-root]');
+    if(box&&(step.kind==='tool'||box.dataset.pageReady==='true')){
+      workspaceTarget=null;let note=box.querySelector('[data-workspace-target-status]');
+      if(!note){note=document.createElement('p');note.dataset.workspaceTargetStatus='';note.className='sb-note';note.setAttribute('role','status');box.prepend(note);}
+      note.textContent=step.recovery?'恢复备份未在当前列表中，请刷新核对。':step.kind==='profile'?'所选档位未在当前列表中，请刷新核对。':'所选工具未在管理列表中，请核对安装与监控设置。';
+    }
+    return;
+  }
+  workspaceTarget=null;
+  for(let parent=target.parentElement;parent;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
+  const focus=step.recovery?target:step.kind==='profile'?target.querySelector('[data-switch]'):target;
+  if(focus&&!focus.disabled)focus.focus({preventScroll:true});else{target.tabIndex=-1;target.focus({preventScroll:true});}
+  target.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+}
+
+function renderWorkspaceBanner(){
+ const main=document.querySelector('.wb-main');if(!main)return;
+ let banner=main.querySelector('[data-workspace-flow]');
+ if(!banner){banner=document.createElement('div');banner.className='workspace-flow';banner.dataset.workspaceFlow='';main.querySelector('[data-wb-status]').before(banner);}
+ const session=workspaceFlow.session,intent=workspaceFlow.intent;
+ banner.hidden=!session||!intent||workspaceRoute(intent.kind)!==getState().workbenchPage;
+ main.querySelector('.wb-head-title').hidden=!banner.hidden;
+ if(banner.hidden)return;
+ const receipt=workspaceFlow.receipt(intent.kind);
+ banner.innerHTML=`<span><strong>${esc(session.name)}</strong><small>${workspaceFlow.pending?'正在处理分项':!workspaceWritable(intent.kind)?'查看关联内容':intent.recovery?'核对后恢复':receipt?esc(workspaceReceiptLabel(receipt.state)):'预览后应用'}</small></span><button type="button" class="mini-btn" data-workspace-return>返回组合</button>`;
+ banner.querySelector('button').onclick=()=>{getState().workbenchPage='workspaces';getState().route='list';renderWorkbench();document.querySelector('[data-workspace-close]')?.focus({preventScroll:true});};
+}
+workspaceFlow.onChange=()=>{renderWorkspaceBanner();document.querySelector('[data-workspaces-root]')?.renderWorkspaceProgress?.();};
+const verifyWorkspace=args=>invoke('workspace_preview',args);
+
 function workbenchSummary(eng) {
-  const count = eng.snapshots.filter(isVisible).length;
-  return `<div><strong>${count}</strong><span>在线智能体</span></div><div><strong>${compact(eng.grand_total.tokens24h)}</strong><span>24 小时 tokens</span></div>`;
+  const running = eng.snapshots.filter(isVisible);
+  const count = running.length;
+  const attention = running.filter(s => s.level === 'attention').length;
+  return `<div><strong>${count}</strong><span>在线智能体</span></div><div><strong>${compact(eng.grand_total.tokens24h)}</strong><span>24h tokens</span></div><div><strong>${attention}</strong><span>待确认</span></div>`;
 }
 
 /** 报告面板的交互：生成（两种格式）与复制。 */
 function bindReportPanel() {
-  const root = document.getElementById('root');
-  root.querySelectorAll('[data-report-format]').forEach((el) => {
-    el.onclick = () => {
-      hydrateReportPanel(el.dataset.reportFormat);
-    };
-  });
-  root.querySelector('[data-report-copy]')?.addEventListener('click', async () => {
-    const box = root.querySelector('[data-report-text]');
-    if (!box?.textContent) return;
-    // 复制走剪贴板 API；失败要说出来，不能让按钮「点了没反应」
-    try {
-      await navigator.clipboard.writeText(box.textContent);
-    } catch (error) {
-      box.textContent = `复制失败（${error}）：内容仍在下面，手动选中即可。\n${box.textContent}`;
-    }
-  });
+  document.querySelectorAll('[data-report-panel]').forEach(panel=>{if(!panel.closest('[data-page-outgoing]'))bindReport(panel);});
 }
 
 /**
@@ -1019,6 +1218,7 @@ function bindReportPanel() {
  */
 export function renderWorkbenchMonitorOnly() {
   renderNavSummaryOnly();
+  renderTaskAttentionOnly();
   const box = document.querySelector('[data-wb-monitor]');
   const eng = getState().engine;
   if (!eng) return;
@@ -1037,6 +1237,9 @@ export function renderWorkbenchMonitorOnly() {
 /** 点 Agent 进详情。监控列表在整页与局部重画两条路上都要绑，只写一处。 */
 function bindWorkbenchAgentClicks() {
   const root = document.getElementById('root');
+  root.querySelectorAll('[data-open-agent]').forEach(button => {
+    button.onclick = () => openAgentSession(button, button.dataset.openAgent, null, button.dataset.expectedUrl || null);
+  });
   root.querySelectorAll('[data-agent]').forEach((el) => {
     el.onclick = () => {
       getState().route = `agentDetail:${el.dataset.agent}`;
@@ -1052,9 +1255,8 @@ function bindWorkbenchAgentClicks() {
 /** 工作台自己的交互：关掉自己、报告面板、点 Agent 进详情。 */
 function bindWorkbench() {
   const root = document.getElementById('root');
-  root.querySelector('[data-wb-hide]')?.addEventListener('click', () => {
-    invoke('hide_workbench').catch(() => {});
-  });
+  const hide = root.querySelector('[data-wb-hide]');
+  if (hide) hide.onclick = () => invoke('hide_workbench').catch(() => {});
   bindReportPanel();
   bindWorkbenchAgentClicks();
 }
@@ -1079,7 +1281,7 @@ export function renderSidebar() {
     // 03-approach §3：首层极简，重页面从这里进
     { key: 'settings', label: '设置', count: 0 },
     { key: 'remote', label: '远程通知', count: 0 },
-    { key: 'agents', label: 'Agent 启停', count: 0 },
+    { key: 'agents', label: '监控管理', count: 0 },
   ];
   const route = ['list', 'tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents']
     .includes(st.route) ? st.route : 'list';
@@ -1098,7 +1300,7 @@ export function renderSidebar() {
   } else if (route === 'tokenAnalytics') {
     body = pageAnalytics(eng);
   } else if (running.length === 0) {
-    body = '<div class="sb-empty">还没有检测到运行中的智能体</div>';
+    body = '<div class="sb-empty">暂无在线智能体</div>';
   } else {
     body = running
       // 参数命名成 `snap`（而不是 `s`）是**有意的**：`models.rs` 有一条跨文件哨兵，
@@ -1121,15 +1323,15 @@ export function renderSidebar() {
   }
 
   const header = route === 'settings'
-    ? { t: '高级设置', s: '改完立即生效 · 越界自动夹回' }
+    ? { t: '设置', s: '修改自动保存' }
     : route === 'remote'
     ? { t: '远程通知', s: '密钥只进系统钥匙串' }
     : route === 'agents'
-    ? { t: 'Agent 启停', s: '关掉只是不再监控，不会终止进程' }
+    ? { t: '监控管理', s: '仅控制监控，应用继续运行' }
     : route === 'tokenAnalytics'
     ? { t: 'Token 用量', s: '净消耗 · 不含缓存读取' }
     : route === 'provider'
-      ? { t: 'Codex 档位', s: '切换本机已有的 provider 配置' }
+      ? { t: 'Codex 档位', s: '管理模型与接口' }
       : route === 'todo'
         // 这条分支是**看着截图补的**：待办页原先落到下面的 else，表头写着「智能体 / 全部正常」。
         // 静态检查与冒烟都发现不了——它们只看「有没有报错」。
@@ -1137,6 +1339,7 @@ export function renderSidebar() {
         : { t: '智能体', s: attention > 0 ? `${attention} 个等待确认` : '全部正常' };
 
   const root = document.getElementById('root');
+  rememberPage(root, route, '.sb-body');
   root.innerHTML = `
     <div class="sb">
       <nav class="sb-nav" aria-label="主导航">
@@ -1155,11 +1358,13 @@ export function renderSidebar() {
       </nav>
       <main class="sb-main">
         <div class="sb-head"><div class="t">${header.t}</div><div class="s">${header.s}</div></div>
-        <div class="sb-body">${body}</div>
+        <div class="sb-body">${route === 'list' ? `<div data-task-attention-slot>${taskAttentionHtml(getTaskAttention(), eng)}</div>` : ''}${body}</div>
       </main>
     </div>`;
 
 
+  bindTaskAttention(root);
+  pageMotion(root, route, '.sb-body');
   if (focusKey) root.querySelector(`[data-nav="${focusKey}"]`)?.focus({ preventScroll: true });
   root.querySelector('.sb-body').scrollTop = scrollTop;
   if (route === 'settings') bindSettings();
@@ -1202,7 +1407,9 @@ export function renderSidebarDetail() {
   const agentId = st.route.startsWith('agentDetail:') ? st.route.split(':')[1] : '';
   const body = document.querySelector('.sb-body');
   if (!body) return;
+  rememberPage(document.getElementById('root'), st.route, '.sb-body');
   body.innerHTML = `<div class="sb-page">${pageAgentDetail(eng, agentId)}</div>`;
+  pageMotion(document.getElementById('root'), st.route, '.sb-body');
   body.querySelector('[data-back]')?.addEventListener('click', () => { st.route = 'list'; renderSidebar(); });
 }
 
@@ -1249,14 +1456,14 @@ export function pageAgents() {
         <input type="checkbox" data-agent-toggle="${escapeHtml(id)}">
         ${agentIcon({ id })}
         <span class="name">${escapeHtml(id)}</span>
-        <span class="meta">已关（本拍没出现）</span>
+        <span class="meta">未监控 · 未检测到</span>
       </label>`)
     .join('');
 
   return `<div class="sb-page" data-agents-root>
-    <div class="sb-note">关掉某个 Agent 只是不再监控它，不会终止它的进程。变更立即生效。</div>
-    <div class="sb-hint">启用后出现在监控列表中；关闭后仍可在这里重新启用。</div>
-    ${rows || '<div class="sb-empty">这一拍没有采集到任何 Agent</div>'}
+    <div class="sb-note">选择要监控的智能体。关闭监控后，应用继续运行。</div>
+    <div class="sb-hint">随时可重新开启监控。</div>
+    ${rows || '<div class="sb-empty">暂无可监控的智能体</div>'}
     ${orphans}
   </div>`;
 }
@@ -1322,7 +1529,9 @@ export function pageRemote() {
 export async function hydrateRemote() {
   const root = document.querySelector('[data-remote-root]');
   if (!root) return;
+  const currentRequest = pageRequest(root);
   const remote = await invoke('remote_status').catch(() => null);
+  if (!currentRequest()) return;
   if (!remote) {
     root.innerHTML = '<div class="sb-empty">读不到远程通知状态（命令没接上？）</div>';
     return;
@@ -1394,6 +1603,7 @@ export async function hydrateRemote() {
       <div class="sb-note">${escapeHtml(remote.limitations ?? '')}</div>
       <div data-remote-history class="sb-note"></div><button type="button" class="mini-btn" data-remote-refresh>刷新发送记录</button>
     </details>`;
+  root.dataset.pageReady = 'true';
   bindRemote();
   hydrateRemoteHistory();
   scheduleLayoutLog();
@@ -1531,49 +1741,49 @@ function bindRemote() {
 /// 然后怀疑是自己手滑了。集中一份之后，改一处就够。
 const SETTING_FIELDS = [
   { group: '通用与外观', items: [
-    { key: 'shell_mode', label: '形态', type: 'select', hint: '灵动岛与侧边栏并存，默认灵动岛',
+    { key: 'shell_mode', label: '界面形态', type: 'select',
       options: [['island', '灵动岛'], ['sidebar', '侧边栏']] },
-    { key: 'appearance', label: '外观', type: 'select', hint: '浅色 / 深色 / 跟随系统',
+    { key: 'appearance', label: '外观', type: 'select',
       options: [['system', '跟随系统'], ['light', '浅色'], ['dark', '深色']] },
     { key: 'dock_edge', label: '贴边位置', type: 'select',
       options: [['top', '上'], ['bottom', '下'], ['left', '左'], ['right', '右']] },
-    { key: 'sidebar_edge', label: '侧边栏靠', type: 'select', hint: '宽度拖出来后会记住',
+    { key: 'sidebar_edge', label: '侧边栏位置', type: 'select', hint: '拖动调整宽度，自动记忆',
       options: [['left', '左边'], ['right', '右边']] },
     { key: 'notification_policy', label: '通知策略', type: 'select',
       options: [['standard', '标准'], ['focus', '专注免打扰'], ['silent', '完全静默']] },
   ]},
   { group: '引擎与性能', items: [
-    { key: 'sample_interval', label: '有活动时采样间隔', type: 'number', unit: '秒', min: 0.5, max: 600, step: 0.5 },
-    { key: 'idle_sample_interval', label: '全闲置时采样间隔', type: 'number', unit: '秒', min: 0.5, max: 600, step: 0.5,
-      hint: '有活动间隔不得大于它（会自动拉平）' },
+    { key: 'sample_interval', label: '活动采样间隔', type: 'number', unit: '秒', min: 0.5, max: 600, step: 0.5 },
+    { key: 'idle_sample_interval', label: '闲置采样间隔', type: 'number', unit: '秒', min: 0.5, max: 600, step: 0.5,
+      hint: '至少与活动采样间隔相同' },
     { key: 'working_window', label: '工作判定窗口', type: 'number', unit: '秒', min: 10, max: 300, step: 5,
-      hint: '该窗口内有文件写入即判为工作中' },
-    { key: 'min_working_hold', label: '工作态最短保持', type: 'number', unit: '秒', min: 1, max: 300, step: 1,
-      hint: '防抖：工作信号消失后至少保持这么久' },
+      hint: '窗口内有文件写入，视为工作中' },
+    { key: 'min_working_hold', label: '工作状态保持', type: 'number', unit: '秒', min: 1, max: 300, step: 1,
+      hint: '工作信号消失后延续此时长' },
     { key: 'active_session_window', label: '活跃会话窗口', type: 'number', unit: '秒', min: 60, max: 3600, step: 60 },
     { key: 'cpu_threshold', label: 'CPU 工作阈值', type: 'number', unit: '%', min: 1, max: 50, step: 1 },
     { key: 'collapse_delay', label: '自动收起延迟', type: 'number', unit: '秒', min: 0.2, max: 5, step: 0.1 },
     { key: 'battery_saver_enabled', label: '电池供电时降频', type: 'bool' },
-    { key: 'runaway_cpu_alert', label: '持续高负载告警', type: 'bool', hint: '关掉只关告警，不影响健康度判定' },
-    { key: 'runaway_cpu_threshold', label: '高负载判定阈值', type: 'number', unit: '%', min: 10, max: 100, step: 1 },
-    { key: 'runaway_duration_threshold', label: '需持续多久', type: 'number', unit: '秒', min: 30, max: 3600, step: 30 },
+    { key: 'runaway_cpu_alert', label: '持续高负载告警', type: 'bool', hint: '仅控制提醒，保留健康度判定' },
+    { key: 'runaway_cpu_threshold', label: '高负载阈值', type: 'number', unit: '%', min: 10, max: 100, step: 1 },
+    { key: 'runaway_duration_threshold', label: '高负载持续时间', type: 'number', unit: '秒', min: 30, max: 3600, step: 30 },
   ]},
   { group: 'Token 与预算', items: [
     { key: 'token_alert_enabled', label: 'Token 暴涨告警', type: 'bool' },
     { key: 'token_alert_threshold', label: '暴涨阈值', type: 'number', unit: 'token/分', min: 1000, max: 10000000, step: 1000 },
-    { key: 'daily_token_budget', label: '每日 Token 预算', type: 'number', unit: 'token', min: 0, max: 1000000000, step: 100000,
-      hint: '0 = 未设。滚动 24 小时口径，不是自然日' },
-    { key: 'budget_alert_enabled', label: '预算告警', type: 'bool', hint: '关掉只关告警，不影响用量统计' },
+    { key: 'daily_token_budget', label: '24h Token 预算', type: 'number', unit: 'token', min: 0, max: 1000000000, step: 100000,
+      hint: '滚动 24 小时统计；0 表示未设置' },
+    { key: 'budget_alert_enabled', label: '预算告警', type: 'bool', hint: '仅控制提醒，保留用量统计' },
   ]},
   { group: '提醒', items: [
     { key: 'play_completion_sound', label: '完成提示音', type: 'bool' },
-    { key: 'auto_anomalies_alert', label: '异常驻留告警', type: 'bool', hint: '关掉只关告警，不影响卡死与健康度判定' },
+    { key: 'auto_anomalies_alert', label: '异常驻留告警', type: 'bool', hint: '仅控制提醒，保留卡死与健康度判定' },
   ]},
   { group: '界面与系统', items: [
     { key: 'compact_view', label: '紧凑视图', type: 'bool' },
-    { key: 'hide_docked_sliver', label: '收起时隐藏微细条', type: 'bool' },
+    { key: 'hide_docked_sliver', label: '收起后隐藏贴条', type: 'bool' },
     { key: 'global_hot_key_enabled', label: '全局热键', type: 'bool',
-      hint: '快捷键 Cmd/Ctrl+Shift+I（展开 / 收起，与托盘同一个动作）' },
+      hint: 'Cmd/Ctrl+Shift+I' },
     { key: 'launch_at_login', label: '开机自启', type: 'bool' },
     { key: 'menu_bar_badge_mode', label: '菜单栏徽标', type: 'select',
       options: [['iconOnly', '仅图标'], ['activeCount', '活跃任务数'], ['tokenUsage', '今日 Token']] },
@@ -1587,21 +1797,27 @@ const SETTING_FIELDS = [
 export function pageSettings() {
   const st = getState();
   const s = st.settings ?? {};
-  const body = SETTING_FIELDS.map((group) => `
-    <div class="sb-group">
-      <div class="sb-group-title">${escapeHtml(group.group)}</div>
-      ${group.items.map((f) => settingRow(f, s[f.key])).join('')}
-    </div>`).join('');
-
-  return `<div class="sb-page" data-settings-root>
-    <div class="sb-note">保存后无需重启，监控阈值在下一次采样生效。数值超出范围会被自动夹回合法区间。</div>
-    ${body}
+  const fields = new Map(SETTING_FIELDS.flatMap(group => group.items.map(field => [field.key, field])));
+  const common = [
+    { title: '界面', keys: ['appearance', 'dock_edge'] },
+    { title: '通知与系统', keys: ['notification_policy', 'play_completion_sound', 'global_hot_key_enabled', 'launch_at_login'] },
+  ];
+  const commonKeys = new Set(common.flatMap(group => group.keys));
+  const groupHtml = (title, items) => `<section class="settings-section"><h2>${escapeHtml(title)}</h2>${items.map(field => settingRow(field, s[field.key])).join('')}</section>`;
+  const advanced = SETTING_FIELDS.map(group => groupHtml(group.group, group.items.filter(field => !commonKeys.has(field.key)))).join('');
+  return `<div class="sb-page settings-page" data-settings-root>
+    ${common.map(group => groupHtml(group.title, group.keys.map(key => fields.get(key)))).join('')}
+    <details class="settings-more" data-settings-more${st.settingsAdvancedOpen ? ' open' : ''}>
+      <summary><span>更多设置</span><span class="settings-more-caption">布局、采样与预算</span>${ICONS.chevRight}</summary>
+      <p class="settings-footnote">监控阈值下次采样生效，超出范围的数值自动调整。</p>
+      ${advanced}
+    </details>
   </div>`;
 }
 
 function settingRow(field, raw) {
   const id = escapeHtml(field.key);
-  const hint = field.hint ? `<div class="sb-hint">${escapeHtml(field.hint)}</div>` : '';
+  const hint = field.hint ? `<span class="sb-hint">${escapeHtml(field.hint)}</span>` : '';
   let control;
   if (field.type === 'bool') {
     control = `<input type="checkbox" data-set="${id}"${raw ? ' checked' : ''}>`;
@@ -1617,14 +1833,17 @@ function settingRow(field, raw) {
       min="${field.min}" max="${field.max}" step="${field.step}">${field.unit ? `<span class="sb-unit">${escapeHtml(field.unit)}</span>` : ''}`;
   }
   return `<label class="sb-set">
-    <span class="sb-set-label">${escapeHtml(field.label)}</span>
+    <span class="sb-set-copy"><span class="sb-set-label">${escapeHtml(field.label)}</span>${hint}</span>
     <span class="sb-set-ctl">${control}</span>
-  </label>${hint}`;
+  </label>`;
 }
 
 /// 绑定设置页的输入。**写盘失败要明说**：静默失败会让用户以为改掉了。
 export function bindSettings() {
   const st = getState();
+  document.querySelectorAll('[data-settings-more]').forEach(details => {
+    details.addEventListener('toggle', () => { st.settingsAdvancedOpen = details.open; });
+  });
   const root = document.querySelector('[data-settings-root]');
   if (!root) return;
   root.querySelectorAll('[data-set]').forEach((el) => {
@@ -1639,7 +1858,7 @@ export function bindSettings() {
         if (el.value.trim() === '') return;
         value = Number(el.value);
         if (!Number.isFinite(value)) {
-          el.closest('.sb-set')?.appendChild(notice('这一栏只收数字'));
+          el.closest('.sb-set')?.appendChild(notice('请输入数字'));
           return;
         }
         // 越界就地夹回并回填，别让界面显示一个不会被采用的数
@@ -1671,7 +1890,7 @@ export function bindSettings() {
           if (actual === null) return;
           el.checked = actual;
           if (!actual && value) {
-            el.closest('.sb-set')?.appendChild(notice('系统没有注册开机自启，开机时不会自动运行'));
+            el.closest('.sb-set')?.appendChild(notice('开机自启未成功，请重试'));
           }
         }
         // 全局热键：注册由后端每 5 秒对齐一次，这里只需把组合键写在页面上，
@@ -1698,212 +1917,322 @@ function notice(text) {
 }
 
 export function pageSettingsHeaderLabel() {
-  return '高级设置';
+  return '设置';
 }
 
 
-/// 填档位页。三个数据源各自独立取，**任何一项失败都明说失败**，不静默留空：
-/// 「读不到」与「没有档位」在界面上是两件事，混起来用户会以为自己的配置丢了。
+/// Each source retains its own error; unreadable data must not become an empty list.
 export async function hydrateProvider() {
   const root = document.querySelector('[data-provider-root]');
   if (!root) return;
+  const workspace = root.closest('[data-model-workspace]');
+  bindModelWorkspace(workspace, () => hydrateConnections(workspace.querySelector('[data-connections-root]')), () => {hydrateMcp(workspace.querySelector('[data-mcp-root]'));hydrateClaudePlan(workspace.querySelector('[data-claude-plan]'));}, () => hydratePrompts(workspace.querySelector('[data-prompts-root]')));
+  const currentRequest = pageRequest(root);
   const status = await invoke('provider_status').catch(() => null);
+  if (!currentRequest()) return;
   if (!status) {
-    root.innerHTML = '<div class="sb-empty">读不到 Codex 状态（命令没接上？）</div>';
+    root.innerHTML = '<div class="sb-empty" role="alert">配置读取失败。</div><button type="button" class="mini-btn" data-provider-retry>重试</button>';
+    root.querySelector('[data-provider-retry]').onclick = hydrateProvider;
+    const directory = workspace?.querySelector('[data-model-directory]');
+    if (directory) directory.innerHTML = '<div class="sb-empty" role="alert">配置读取失败，无法生成目录。请回到工具配置重试。</div>';
     return;
   }
-  const profiles = await invoke('provider_list_profiles').catch(() => []);
-  const backups = await invoke('provider_list_backups').catch(() => []);
-  renderProviderPage(root, status, profiles, backups);
+  const errors = [];
+  const profiles = await invoke('provider_list_profiles').catch(() => {
+    errors.push('档位清单读取失败，请重试。'); return null;
+  });
+  const backups = await invoke('provider_list_backups').catch(() => {
+    errors.push('备份清单读取失败，请重试。'); return null;
+  });
+  if (!currentRequest()) return;
+  renderProviderPage(root, status, profiles ?? [], backups ?? [], errors, profiles !== null);
+  root.dataset.pageReady = 'true';
+  focusWorkspaceTarget();
   scheduleLayoutLog();
 }
 
-function renderProviderPage(root, status, profiles, backups) {
-  // ① 能力边界：**逐字**用 Rust 给的那段，界面不自己编一句话
-  const limitations = `<div class="sb-note" data-limitations>${escapeHtml(status.limitations ?? '')}</div>`;
+function providerField(key, label, value = '') {
+  return `<label class="sb-field"><span>${label}</span><input aria-label="${label}" data-field="${key}" value="${escapeHtml(value)}" autocomplete="off" /></label>`;
+}
 
-  // ② 当前生效：读不到就直说读不到（不说「无」——那会被读成「没在切换」）
+export function renderProviderPage(root, status, profiles, backups, errors = [], profilesAvailable = true) {
+  const directory = root.closest('[data-model-workspace]')?.querySelector('[data-model-directory]');
+  if (directory) {
+    const kind=directory.querySelector('.model-directory')?.dataset.catalogKind;
+    const query=directory.querySelector('[data-catalog-query]')?.value;
+    directory.innerHTML = modelDirectoryHtml(status, profiles, profilesAvailable, kind, query);
+    bindModelDirectory(directory);
+  }
   const activeName = status.active_profile_id
     ? (profiles.find((profile) => profile.id === status.active_profile_id)?.name ?? status.active_profile_id)
     : null;
-  // 记进状态给导航角标用（03-approach §3：Provider 角标显示当前档位名）。
-  // 读不到就记空串——角标空着是对的，显示成别的名字才是撒谎。
   getState().providerActiveName = activeName ?? '';
-  const activeLine = status.installed
-    ? (status.active_profile_id
-        ? `生效中：<b>${escapeHtml(activeName)}</b>（provider <code>${escapeHtml(status.active_provider_id ?? '')}</code>）`
-        : `生效中：<b>不是本应用的档位</b>（读到的 provider 是 <code>${escapeHtml(status.active_provider_id ?? '未设置')}</code>）`)
-    : '未检测到 Codex 配置（没装，或还没跑过一次）';
-
+  const model = status.configured_model ?? '未指定';
+  const provider = status.configured_provider ?? '默认接口';
+  const activeLine = status.config_error
+    ? `<div role="alert">${escapeHtml(status.config_error)}</div>`
+    : `当前配置：<b>${escapeHtml(model)}</b> · ${escapeHtml(provider)}<div class="meta">${activeName ? `与档位「${escapeHtml(activeName)}」一致` : '无唯一匹配档位'}</div>`;
+  const limitations = `<div class="sb-note" data-limitations>${escapeHtml(status.limitations ?? '')}</div>`;
+  const summary = `<div class="sb-profile provider-current" data-status>${activeLine}<div class="meta">新会话或重启后使用此配置。</div></div>`;
   if (root.closest('.wb-overview')) {
-    root.innerHTML = `${limitations}<div class="sb-kv" data-status>${activeLine}</div><p class="wb-provider-count">${profiles.length} 个本机档位 · ${backups.length} 份备份</p><button type="button" class="mini-btn" data-provider-open>管理档位</button>`;
+    root.innerHTML = `${summary}${status.drifted ? '<div class="sb-note">配置已变化，请到档位页核对。</div>' : ''}
+      <p class="wb-provider-count">${errors.length ? '档位或备份读取失败' : `${profiles.length} 个本机档位 · ${backups.length} 份备份`}</p>
+      <button type="button" class="mini-btn" data-provider-open>管理档位</button>`;
     root.querySelector('[data-provider-open]').onclick = () => {
-      getState().workbenchPage = 'provider';
-      getState().route = 'list';
-      renderWorkbench();
+      getState().workbenchPage = 'provider'; getState().route = 'list'; renderWorkbench();
     };
     return;
   }
-
-  // ③ 档位列表：每条带「切换」，生效中的标出来
+  const drift = status.drifted ? `<div class="sb-note provider-drift" role="status">
+    <b>配置与上次应用记录不同</b><p>上次目标：${escapeHtml(status.last_applied?.model ?? '')} · ${escapeHtml(status.last_applied?.provider_id ?? '')}。可能来自其他工具或手动修改。</p>
+    <div class="actions"><button type="button" class="mini-btn" data-reapply${status.revision && status.last_applied?.wire_api === 'responses' ? '' : ' disabled'}>重新应用上次配置</button>
+    <button type="button" class="mini-btn" data-keep-current${status.revision ? '' : ' disabled'}>保留当前配置</button></div></div>` : '';
+  const warnings = [...errors, ...(status.record_error ? [status.record_error] : [])]
+    .map(text => `<div class="sb-note" role="alert">${escapeHtml(text)}</div>`).join('');
   const rows = profiles.length === 0
-    ? '<div class="sb-empty">还没有档位。先在下面建一个。</div>'
-    : profiles
-        .map((profile) => {
-          const isActive = profile.id === status.active_profile_id;
-          return `<div class="sb-profile" data-profile-row="${escapeHtml(profile.id)}">
-            <div class="name">${escapeHtml(profile.name)}${isActive ? '<span class="sb-tag">生效中</span>' : ''}</div>
-            <div class="meta">${escapeHtml(profile.model)} · ${escapeHtml(profile.provider_id)} · ${escapeHtml(profile.base_url)}</div>
-            <div class="meta">key 来自环境变量 <code>${escapeHtml(profile.env_key)}</code></div>
-            <div class="actions">
-              ${isActive ? '' : `<button type="button" class="mini-btn" data-switch="${escapeHtml(profile.id)}">切换到此档</button>`}
-              <button type="button" class="mini-btn" data-delete="${escapeHtml(profile.id)}">删除</button>
-            </div>
-          </div>`;
-        })
-        .join('');
-
-  // ④ 备份：还原是破坏性动作，所以也要确认
-  const backupRows = backups.length === 0
-    ? '<div class="sb-empty">还没有备份。第一次切换时才会产生。</div>'
-    : backups
-        .slice(0, 8)
-        .map(
-          (backup) => `<div class="sb-backup">
-            <span class="name">${escapeHtml(backup.name)}</span>
-            <button type="button" class="mini-btn" data-restore="${escapeHtml(backup.name)}">还原</button>
-          </div>`,
-        )
-        .join('');
-
-  // ⑤ 新增档位：字段与 Rust 侧的 `CodexProfile` 同名（哨兵会盯着这些名字）
-  const form = `
-    <div class="sb-form">
-      <label class="sb-field"><span>档位标识</span><input aria-label="档位标识" data-field="id" placeholder="标识（字母数字 - _ .，例如 work）" /></label>
-      <label class="sb-field"><span>档位显示名</span><input aria-label="档位显示名" data-field="name" placeholder="显示名（可留空，用标识）" /></label>
-      <label class="sb-field"><span>模型</span><input aria-label="模型" data-field="model" placeholder="模型（例如 gpt-5）" /></label>
-      <label class="sb-field"><span>Provider 标识</span><input aria-label="Provider 标识" data-field="provider_id" placeholder="provider 标识（例如 acme）" /></label>
-      <label class="sb-field"><span>Provider 显示名</span><input aria-label="Provider 显示名" data-field="provider_name" placeholder="provider 显示名（可留空）" /></label>
-      <label class="sb-field"><span>API 地址</span><input aria-label="API 地址" data-field="base_url" placeholder="base_url（https://…/v1）" /></label>
-      <label class="sb-field"><span>密钥环境变量名</span><input aria-label="密钥环境变量名" data-field="env_key" placeholder="环境变量名（只存名字，不存值，例如 ACME_API_KEY）" /></label>
-      <select aria-label="API 协议" data-field="wire_api"><option value="responses">responses</option><option value="chat">chat</option></select>
-      <button type="button" class="mini-btn" data-save-profile>保存档位</button>
-    </div>`;
-
-  root.innerHTML = `
-    ${limitations}
-    <div class="sb-kv" data-status>${activeLine}</div>
-    <div class="sb-section">档位</div>
-    ${rows}
-    <div class="sb-section">新增档位</div>
-    ${form}
-    <div class="sb-section">备份（切换前自动生成）</div>
-    ${backupRows}
-    <div class="sb-confirm" data-confirm hidden></div>`;
-
+    ? `<div class="sb-empty">${errors.length ? '档位清单暂不可用。' : '暂无档位。保存当前配置或添加档位。'}</div>`
+    : profiles.map((profile) => `<div class="sb-profile" data-profile-row="${escapeHtml(profile.id)}">
+        <div class="name">${escapeHtml(profile.name)}${profile.id === status.active_profile_id ? '<span class="sb-tag">配置一致</span>' : ''}</div>
+        <button type="button" class="provider-model" data-edit="${escapeHtml(profile.id)}" aria-label="编辑档位 ${escapeHtml(profile.name)} 的模型与接口">${escapeHtml(profile.model)} <span>编辑</span></button>
+        <div class="meta">${escapeHtml(profile.provider_id)} · ${escapeHtml(profile.base_url)}</div>${profile.wire_api !== 'responses' ? '<p class="sb-note">旧 Chat 档位：需核对接口并改为 Responses。</p>' : ''}
+        <div class="actions"><button type="button" class="mini-btn" data-switch="${escapeHtml(profile.id)}"${status.revision && profile.wire_api === 'responses' ? '' : ' disabled'}>预览并应用</button>
+        <button type="button" class="mini-btn" data-delete="${escapeHtml(profile.id)}">删除</button></div></div>`).join('');
+  const backupRows = backups.length === 0 ? '<div class="sb-empty">应用前自动备份。</div>'
+    : backups.slice(0, 8).map((backup) => `<div class="sb-backup"><span class="name">${escapeHtml(backup.name)}</span>
+        <button type="button" class="mini-btn" data-restore="${escapeHtml(backup.name)}"${status.revision ? '' : ' disabled'}>对比并还原</button></div>`).join('');
+  root.innerHTML = `${summary}${drift}${warnings}
+    <div class="provider-toolbar"><button type="button" class="mini-btn" data-capture${status.current_draft ? '' : ' disabled'}>保存当前配置</button>
+    <button type="button" class="mini-btn" data-new-profile>添加档位</button><button type="button" class="mini-btn" data-provider-refresh>刷新</button></div>
+    ${status.capture_notice ? `<p class="sb-note">${escapeHtml(status.capture_notice)}</p>` : ''}
+    <div class="sb-section">已保存档位</div>${rows}
+    <details class="provider-editor" data-provider-editor><summary>档位编辑器</summary>
+      <form class="sb-form" data-provider-form>
+        <div class="sb-section" data-editor-title>添加档位</div>
+        ${providerField('name', '档位名称')}${providerField('model', '模型')}
+        <label class="sb-field"><span>接口来源</span><select aria-label="接口来源" data-provider-template><option value="">自定义接口</option><option value="@responses">Responses 协议模板</option>${profiles.map(profile => `<option value="${escapeHtml(profile.id)}">已保存：${escapeHtml(profile.name)}</option>`).join('')}</select></label>
+        <details data-provider-advanced><summary>接口与高级字段</summary><div class="sb-form">
+          ${providerField('id', '档位标识')}${providerField('provider_id', 'Provider 标识')}
+          ${providerField('provider_name', 'Provider 名称')}${providerField('base_url', 'API 地址')}
+          ${providerField('env_key', '密钥环境变量名')}
+          <label class="sb-field"><span>API 协议</span><select aria-label="API 协议" data-field="wire_api"><option value="responses">Responses</option><option value="chat" disabled>Chat · 旧档位，需改为 Responses</option></select></label>
+        </div></details>
+        <p class="sb-note">保存后需单独应用。密钥使用环境变量，API 地址不能含认证信息。</p>
+        <div class="actions"><button type="submit" class="mini-btn" data-save-profile>保存档位</button><button type="button" class="mini-btn" data-cancel-edit>取消编辑</button></div>
+        <div data-editor-error role="alert"></div>
+      </form>
+    </details>
+    <details class="provider-backups"><summary>备份与还原（${backups.length}）</summary>${backupRows}</details>
+    <details class="provider-transfer"><summary>导入与导出</summary><p class="sb-note">仅支持 AgentIsland 档位文件。导出至下载目录，包含配置与环境变量名，不含密钥。</p><div class="actions"><button type="button" class="mini-btn" data-profile-export>导出档位</button><label class="mini-btn provider-file">选择文件并预览<input type="file" accept=".json,application/json" aria-label="选择档位文件并预览" data-profile-import /></label></div></details>
+    ${isWorkbench ? '<div class="actions"><button type="button" class="mini-btn" data-open-extensions>管理 MCP 与 Skills</button></div>' : '<details class="provider-capabilities" data-capabilities><summary>本机 MCP 与 Skills</summary><div data-capability-list></div></details>'}
+    ${limitations}<div class="sb-confirm" data-confirm role="dialog" aria-modal="true" aria-label="确认配置操作" tabindex="-1" hidden></div>`;
   bindProviderEvents(root, status, profiles);
 }
 
 function bindProviderEvents(root, status, profiles) {
   const confirmBox = root.querySelector('[data-confirm]');
-
-  const askConfirm = (text, onConfirm) => {
+  const editor = root.querySelector('[data-provider-editor]');
+  const form = root.querySelector('[data-provider-form]');
+  let editorHasDraft = false;
+  form.addEventListener('input', () => { editorHasDraft = true; });
+  form.addEventListener('change', () => { editorHasDraft = true; });
+  form.addEventListener('reset', () => { editorHasDraft = false; });
+  let returnFocus;
+  const closeConfirm = () => {
+    confirmBox.hidden = true;
+    const navigation = root.closest('[data-model-workspace]')?.querySelector('.model-navigation');
+    if (navigation) navigation.inert = false;
+    for (const child of root.children) child.inert = false;
+    returnFocus?.focus();
+  };
+  const askConfirm = (text, onConfirm, label = '确认') => {
+    returnFocus = document.activeElement;
     confirmBox.hidden = false;
-    confirmBox.innerHTML = `<div class="text">${text}</div>
-      <div class="actions"><button type="button" class="mini-btn" data-yes>确认</button><button type="button" class="mini-btn" data-no>取消</button></div>`;
-    confirmBox.querySelector('[data-yes]').onclick = async () => {
-      confirmBox.hidden = true;
+    const navigation = root.closest('[data-model-workspace]')?.querySelector('.model-navigation');
+    if (navigation) navigation.inert = true;
+    for (const child of root.children) child.inert = child !== confirmBox;
+    confirmBox.innerHTML = `<div class="text">${text}</div><div class="actions"><button type="button" class="mini-btn" data-yes>${escapeHtml(label)}</button><button type="button" class="mini-btn" data-no>取消</button></div>`;
+    confirmBox.querySelector('[data-yes]').onclick = async (event) => {
+      event.currentTarget.disabled = true;
+      closeConfirm();
       await onConfirm();
     };
-    confirmBox.querySelector('[data-no]').onclick = () => {
-      confirmBox.hidden = true;
+    confirmBox.querySelector('[data-no]').onclick = closeConfirm;
+    confirmBox.onkeydown = (event) => {
+      if (event.key === 'Escape') closeConfirm();
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        const yes = confirmBox.querySelector('[data-yes]'), no = confirmBox.querySelector('[data-no]');
+        (document.activeElement === yes ? no : yes).focus();
+      }
     };
+    confirmBox.querySelector('[data-no]').focus();
+    confirmBox.scrollIntoView({ block: 'nearest' });
   };
-
-  root.querySelectorAll('[data-switch]').forEach((el) => {
-    el.onclick = () => {
-      const id = el.dataset.switch;
-      const profile = profiles.find((p) => p.id === id);
-      // 确认框里写清**会发生什么**：改哪个文件、模型与 provider 会变成什么
-      askConfirm(
-        `把 <code>${escapeHtml(profile?.model ?? '')}</code> / <code>${escapeHtml(profile?.provider_id ?? '')}</code> ` +
-          `写进 <code>${escapeHtml(status.config_path ?? '')}</code>？<br/>` +
-          '切换前会先备份；正在运行的 Codex 需要重启才会用上新配置。',
-        async () => {
-          // 变量名 `applied` 是**约定的**：`models.rs` 的档位字段哨兵按 `applied.` / `status.` /
-          // `profile.` / `backup.` 四个前缀扫这个文件，并断言这些键真的在 DTO 里。
-          // 换个名字就等于把这段代码移出哨兵的保护面。
-          //
-          // 失败也**不挂在 `applied.` 上**：那会把一个客户端临时对象混进「DTO 字段」的地盘，
-          // 哨兵会（正确地）报「DTO 里没有这个键」。失败单独一个变量。
-          let failure = '';
-          const applied = await invoke('provider_apply_profile', { id }).catch((error) => {
-            failure = String(error);
-            return null;
-          });
-          if (failure || !applied) {
-            await hydrateProvider();
-            showProviderToast(root, `切换失败：${failure || '命令没有返回结果'}`);
-            return;
-          }
-          await hydrateProvider();
-          showProviderToast(
-            root,
-            `已切换，备份：${applied.backup_name}。${applied.limitations ?? ''}`,
-          );
-        },
-      );
-    };
+  const apply = async (command, args) => {
+    let failure = '';
+    const context=command==='provider_apply_profile'?workspaceFlow.operationContext('profile',args.id):null;
+    const applied = await workspaceFlow.execute('profile', args.id, verifyWorkspace, () => invoke(context?'workspace_apply_profile':command, { ...args, revision: status.revision, ...(context?{context}:{}) })).catch(error => { failure = String(error); return null; });
+    await hydrateProvider();
+    showProviderToast(root, failure || !applied ? `应用失败：${failure || '命令没有返回结果'}`
+      : `${applied.record_warning || '配置已写入'}。备份：${applied.backup_name}。请开启新会话，必要时重启 Codex。`);
+  };
+  const preview = (choice, callback) => askConfirm(
+    `<b>Codex 配置目标</b><br/>模型：${escapeHtml(status.configured_model ?? '未指定')} → ${escapeHtml(choice.model)}<br/>
+    Provider：${escapeHtml(status.configured_provider ?? '原生默认')} → ${escapeHtml(choice.provider_id)}<br/>
+    API 地址：${escapeHtml(choice.base_url)}<br/>写入 ${escapeHtml(status.config_path ?? '')}，先自动备份。运行中的会话不会立即换模型。`, callback);
+  root.querySelectorAll('[data-switch]').forEach(el => { el.onclick = () => {
+    const choice = profiles.find(p => p.id === el.dataset.switch);
+    if (choice) preview(choice, () => apply('provider_apply_profile', { id: choice.id, expectedProfile: choice }));
+  }; });
+  const workspace = root.closest('[data-model-workspace]');
+  const directory = workspace?.querySelector('[data-model-directory]');
+  if (directory) directory.onclick = event => {
+    const button = event.target.closest('[data-model-profile],[data-catalog-edit]');
+    if (!button || button.disabled || !confirmBox.hidden) return;
+    const choice = profiles.find(profile => profile.id === (button.dataset.modelProfile ?? button.dataset.catalogEdit));
+    if (!choice) return;
+    if (editor.open || editorHasDraft) {
+      const feedback = directory.querySelector('[data-model-feedback]');
+      feedback.hidden = false;
+      feedback.textContent = '请先在工具配置中保存或取消编辑。';
+      return;
+    }
+    workspace.querySelector('[data-model-view="tools"]').click();
+    root.querySelectorAll(button.dataset.catalogEdit ? '[data-edit]' : '[data-switch]').forEach(control => {
+      if ((control.dataset.switch ?? control.dataset.edit) === choice.id) { control.focus(); control.click(); }
+    });
+  };
+  root.querySelector('[data-reapply]')?.addEventListener('click', () => {
+    if (status.last_applied) preview(status.last_applied, () => apply('provider_reapply', {}));
   });
-
-  root.querySelectorAll('[data-restore]').forEach((el) => {
-    el.onclick = () => {
-      const name = el.dataset.restore;
-      askConfirm(
-        `用备份 <code>${escapeHtml(name)}</code> 覆盖当前 <code>config.toml</code>？<br/>这会丢掉备份之后的改动。`,
-        async () => {
-          const error = await invoke('provider_restore_backup', { name }).catch((e) => String(e));
-          await hydrateProvider();
-          showProviderToast(root, error ? `还原失败：${error}` : `已从 ${name} 还原`);
-        },
-      );
-    };
+  root.querySelector('[data-keep-current]')?.addEventListener('click', async () => {
+    const error = await invoke('provider_keep_current', { revision: status.revision }).catch(() => '保留失败，请刷新后重试');
+    await hydrateProvider();
+    showProviderToast(root, error || '已保留当前配置，并解除上次应用记录；Codex 配置文件未改动。');
   });
-
-  root.querySelectorAll('[data-delete]').forEach((el) => {
-    el.onclick = () => {
-      const id = el.dataset.delete;
-      askConfirm(`删除档位 <code>${escapeHtml(id)}</code>？（不会动 config.toml）`, async () => {
-        const error = await invoke('provider_delete_profile', { id }).catch((e) => String(e));
-        await hydrateProvider();
-        showProviderToast(root, error ? `删除失败：${error}` : `已删除 ${id}`);
-      });
-    };
+  root.querySelector('[data-provider-refresh]').onclick = () => {
+    if (editor.open) askConfirm('刷新会关闭编辑器并丢弃未保存内容。继续？', hydrateProvider);
+    else hydrateProvider();
+  };
+  root.querySelectorAll('[data-restore]').forEach(el => { el.onclick = async () => {
+    const name = el.dataset.restore;
+    let failure;
+    const diff = await invoke('provider_preview_backup', { name }).catch(() => { failure = '备份预览失败，请刷新后重试'; return null; });
+    if (!diff) { showProviderToast(root, failure); return; }
+    if (diff.writable !== true) { showProviderToast(root, '当前配置或备份含私有字段或未支持形式，保持只读；未创建备份或还原。'); return; }
+    const labels = ['模型', 'Provider', 'API 地址', '密钥环境变量名', '协议'];
+    const table = `<table class="provider-diff"><thead><tr><th>字段</th><th>当前</th><th>备份</th></tr></thead><tbody>${labels.map((label, i) => `<tr${diff.current[i] !== diff.backup[i] ? ' class="changed"' : ''}><th>${label}</th><td>${escapeHtml(diff.current[i])}</td><td>${escapeHtml(diff.backup[i])}</td></tr>`).join('')}</tbody></table>`;
+    if (diff.identical) { showProviderToast(root, '备份与当前配置完全相同，无需还原。'); return; }
+    askConfirm(`<b>还原 ${escapeHtml(name)}</b>${table}${diff.mcp_changes?.length ? `<p>MCP 变更</p><ul>${diff.mcp_changes.map(change => `<li>${escapeHtml(change)}</li>`).join('')}</ul>` : ''}${diff.skills_changes?.length ? `<p>Skills 变更</p><ul>${diff.skills_changes.map(change => `<li>${escapeHtml(change)}</li>`).join('')}</ul>` : ''}<p>将还原完整 config.toml（含 MCP、Skills 与其他设置），并先备份当前文件。预览不展示密钥或认证信息。</p>`, async () => {
+      let failure = '';
+      const context=workspaceFlow.operationContext('profile',name,true);
+      const restored = await workspaceFlow.execute('profile', name, verifyWorkspace, () => invoke(context?'workspace_restore_profile':'provider_restore_backup', { name, revision: diff.revision, backupRevision: diff.backup_revision, ...(context?{context}:{}) }), true).catch(() => { failure = '配置或备份已变化，或无法写入；请刷新核对'; return null; });
+      await hydrateProvider(); showProviderToast(root, !restored ? `还原未完成：${failure || '未收到结果'}` : `${restored.record_warning || '配置已还原'}。还原前备份：${restored.backup_name}。请开启新会话。`);
+    });
+  }; });
+  root.querySelector('[data-profile-export]').onclick = async () => {
+    const path = await invoke('provider_export_file').catch(() => null);
+    showProviderToast(root, path === null ? '导出失败，请检查档位清单与下载目录权限后重试。' : `已保存到 ${path}；仅包含配置字段与环境变量名。`);
+  };
+  root.querySelector('[data-profile-import]').onchange = async (event) => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    if (file.size > 65536) { showProviderToast(root, '文件不能超过 64 KB'); return; }
+    const text = await file.text().catch(() => null);
+    if (text === null) { showProviderToast(root, '文件不可读'); return; }
+    const result = await invoke('provider_preview_import', { text }).catch(() => null);
+    if (!result) { showProviderToast(root, '导入预览失败：仅支持版本 1 档位文件，拒绝额外字段、无效接口与重复 ID。'); return; }
+    if (!result.added.length) { showProviderToast(root, `没有新档位；跳过 ${result.skipped.length} 个已有 ID。`); return; }
+    askConfirm(`<b>将增加 ${result.added.length} 个档位</b><p>${result.added.map(p => escapeHtml(p.name)).join('、')}</p><p>跳过 ${result.skipped.length} 个已有 ID，保留本机档位。导入后不会应用到 Codex。</p>`, async () => {
+      const count = await invoke('provider_import_bundle', { text, revision: result.revision }).catch(() => null);
+      await hydrateProvider(); showProviderToast(root, count === null ? '导入失败，清单可能已变化；请重新预览。' : `已导入 ${count} 个档位。`);
+    });
+  };
+  let inventoryLoaded = false;
+  root.querySelector('[data-open-extensions]')?.addEventListener('click', () => workspace?.querySelector('[data-model-view="extensions"]')?.click());
+  root.querySelector('[data-capabilities]')?.addEventListener('toggle', async (event) => {
+    if (!event.target.open || inventoryLoaded) return;
+    inventoryLoaded = true;
+    const list = root.querySelector('[data-capability-list]'); list.textContent = '读取本机清单…';
+    const result = await invoke('provider_capabilities').catch(() => null);
+    if (!root.isConnected) return;
+    if (!result) { list.textContent = '清单不可读；关闭后重新展开可重试。'; inventoryLoaded = false; return; }
+    list.innerHTML = `<p class="sb-note">只读清单：Codex MCP，以及 Codex、Claude Code 与共享 Skills。加载状态需在客户端确认；不执行命令或连接服务。</p>${result.notices.map(n => `<p class="sb-note" role="alert">${escapeHtml(n)}</p>`).join('')}${result.items.length ? result.items.map(item => `<div class="sb-profile"><div class="name">${escapeHtml(item.name)} <span class="sb-tag">${escapeHtml(item.kind)}</span></div><div class="meta">${escapeHtml(item.target)} · ${escapeHtml(item.status)}<br/>${escapeHtml(item.source)}</div></div>`).join('') : '<p class="sb-empty">检查范围内未发现配置或技能目录。</p>'}`;
   });
-
-  const saveBtn = root.querySelector('[data-save-profile]');
-  if (saveBtn) {
-    saveBtn.onclick = async () => {
-      const profile = {};
-      root.querySelectorAll('[data-field]').forEach((el) => {
-        profile[el.dataset.field] = el.value.trim();
-      });
-      const saved = await invoke('provider_save_profile', { profile }).catch((e) => ({ error: String(e) }));
-      await hydrateProvider();
-      // 校验在 Rust 侧：**原话带回界面**，不在这里翻译成自己的说法
-      showProviderToast(root, saved?.error ? `保存失败：${saved.error}` : `已保存档位 ${saved.id}`);
-    };
-  }
+  root.querySelectorAll('[data-delete]').forEach(el => { el.onclick = () => {
+    const id = el.dataset.delete;
+    askConfirm(`删除档位 ${escapeHtml(id)}？Codex 配置文件不会改动。`, async () => {
+      const error = await invoke('provider_delete_profile', { id }).catch(e => String(e));
+      await hydrateProvider(); showProviderToast(root, error ? `删除失败：${error}` : '档位已删除');
+    });
+  }; });
+  const fillForm = (choice, editing = false) => {
+    editorHasDraft = true;
+    for (const control of form.querySelectorAll('[data-field]')) {
+      const value = choice[control.dataset.field] ?? '';
+      control.value = value; control.defaultValue = value;
+      if (control.dataset.field === 'id') control.readOnly = editing;
+    }
+    const template = root.querySelector('[data-provider-template]');
+    if (template) template.value = profiles.find(p => p.provider_id === choice.provider_id && p.base_url === choice.base_url && p.env_key === choice.env_key && p.wire_api === choice.wire_api)?.id ?? '';
+    root.querySelector('[data-editor-error]').textContent = '';
+    root.querySelector('[data-editor-title]').textContent = editing ? '编辑档位' : '保存为新档位';
+    editor.open = true;
+    root.querySelector('[data-provider-advanced]').open = !choice.base_url;
+    form.querySelector('[data-field="name"]').focus();
+    editor.scrollIntoView({ block: 'nearest' });
+  };
+  const uniqueId = () => {
+    let index = 1; while (profiles.some(p => p.id === `profile-${index}`)) index++;
+    return `profile-${index}`;
+  };
+  const start = (choice, editing = false) => {
+    const open = () => fillForm(choice, editing);
+    if (editor.open) askConfirm('替换编辑器中的内容？未保存的内容会丢失。', open); else open();
+  };
+  root.querySelector('[data-capture]').onclick = () => {
+    if (status.current_draft) start({ ...status.current_draft, id: uniqueId(), name: '' });
+  };
+  root.querySelector('[data-new-profile]').onclick = () => start({ id: uniqueId(), provider_id: 'custom', provider_name: '自定义接口', wire_api: 'responses', env_key: 'CODEX_API_KEY' });
+  root.querySelectorAll('[data-edit]').forEach(el => { el.onclick = () => {
+    const choice = profiles.find(p => p.id === el.dataset.edit); if (choice) start(choice, true);
+  }; });
+  root.querySelector('[data-provider-template]')?.addEventListener('change', (event) => {
+    const protocol = event.target.value === '@responses' ? 'responses' : null;
+    const choice = protocol ? { provider_id: 'custom', provider_name: '自定义接口', base_url: '', env_key: 'CODEX_API_KEY', wire_api: protocol, model: '' } : profiles.find(p => p.id === event.target.value);
+    if (!choice) { root.querySelector('[data-provider-advanced]').open = true; return; }
+    for (const key of ['provider_id', 'provider_name', 'base_url', 'env_key', 'wire_api']) {
+      form.querySelector(`[data-field="${key}"]`).value = choice[key];
+    }
+    if (protocol) root.querySelector('[data-provider-advanced]').open = true;
+    const modelControl = form.querySelector('[data-field="model"]');
+    if (!modelControl.value) modelControl.value = choice.model;
+  });
+  root.querySelector('[data-cancel-edit]').onclick = () => {
+    const reset = () => { form.reset(); editor.open = false; const feedback=directory?.querySelector('[data-model-feedback]'); if(feedback){feedback.hidden=true;feedback.textContent='';} };
+    askConfirm('关闭编辑器并丢弃未保存内容？', reset);
+  };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    const profile = {};
+    form.querySelectorAll('[data-field]').forEach(control => { profile[control.dataset.field] = control.value.trim(); });
+    const button = root.querySelector('[data-save-profile]');
+    button.disabled = true;
+    try {
+      await invoke('provider_save_profile', { profile });
+      await hydrateProvider(); showProviderToast(root, '档位已保存，应用前可预览差异。');
+    } catch (error) {
+      root.querySelector('[data-editor-error]').textContent = `保存失败：${String(error)}。原有内容已保留。`;
+      root.querySelector('[data-provider-advanced]').open = true;
+    } finally { button.disabled = false; }
+  };
 }
 
 function showProviderToast(root, text) {
   const toast = root.querySelector('[data-toast]') ?? document.createElement('div');
-  toast.className = 'sb-toast';
-  toast.setAttribute('data-toast', '');
-  toast.textContent = text;
-  root.appendChild(toast);
-  // 同上：Toast 会随重画消失，失败信息另写一份到应用日志
-  invoke('log_from_ui', { message: `[provider] ${text}` }).catch(() => {});
+  toast.className = 'sb-toast'; toast.setAttribute('data-toast', ''); toast.setAttribute('role', 'status');
+  toast.textContent = text; root.appendChild(toast);
+  // Config details belong in the UI, not the application log.
 }
 
 // MARK: - 待办页（Phase 3）
@@ -1921,12 +2250,15 @@ export function pageTodo() {
 export async function hydrateTodo() {
   const root = document.querySelector('[data-todo-root]');
   if (!root) return;
+  const currentRequest = pageRequest(root);
   const todo = await invoke('todos_list').catch(() => null);
+  if (!currentRequest()) return;
   if (!todo) {
     root.innerHTML = '<div class="sb-empty">读不到待办清单</div>';
     return;
   }
   renderTodoPage(root, todo);
+  root.dataset.pageReady = 'true';
   scheduleLayoutLog();
 }
 
@@ -1958,7 +2290,7 @@ function renderTodoPage(root, todo) {
     ${broken}
     ${rows}
     <div class="sb-todo-add">
-      <input aria-label="新增待办" data-todo-input placeholder="加一条待办，回车确认" maxlength="500" />
+      <input aria-label="新增待办" data-todo-input placeholder="输入待办，回车添加" maxlength="500" />
     </div>
     <div class="sb-todo-foot">${clearBtn}</div>`;
 

@@ -2,9 +2,11 @@ use super::*;
 
 const CLAUDE: &str = include_str!("../../tests/fixtures/session/claude-lifecycle.jsonl");
 const CODEX: &str = include_str!("../../tests/fixtures/session/codex-lifecycle.jsonl");
-const CODEX_QUESTION: &str = include_str!("../../tests/fixtures/session/codex-question-function.jsonl");
+const CODEX_QUESTION: &str =
+    include_str!("../../tests/fixtures/session/codex-question-function.jsonl");
 const CODEX_MESSAGES: &str = include_str!("../../tests/fixtures/session/codex-messages.jsonl");
-const CODEX_REPEATED: &str = include_str!("../../tests/fixtures/session/codex-repeated-command.jsonl");
+const CODEX_REPEATED: &str =
+    include_str!("../../tests/fixtures/session/codex-repeated-command.jsonl");
 const CLINE: &str = include_str!("../../tests/fixtures/session/cline-lifecycle.json");
 const FIXTURE_PATH: &str = "/synthetic/session-fixture";
 
@@ -36,7 +38,11 @@ fn probe_dialect0(
 }
 
 fn assert_no_signal(probe: SessionProbe) {
-    assert!(probe.signal.is_none(), "expected no semantic signal: {:?}", probe.signal);
+    assert!(
+        probe.signal.is_none(),
+        "expected no semantic signal: {:?}",
+        probe.signal
+    );
     assert_eq!(probe.subagent_count, 0);
 }
 
@@ -44,7 +50,10 @@ fn active_fingerprint(probe: SessionProbe, action_contains: &str) -> String {
     match probe.signal {
         Some(Signal::Active(fingerprint, Some(action))) => {
             assert!(!fingerprint.is_empty());
-            assert!(action.contains(action_contains), "unexpected action: {action}");
+            assert!(
+                action.contains(action_contains),
+                "unexpected action: {action}"
+            );
             fingerprint
         }
         signal => panic!("expected active work, got {signal:?}"),
@@ -73,8 +82,14 @@ fn completed_fingerprint(probe: SessionProbe) -> String {
 
 #[test]
 fn claude_open_tool_is_active_until_its_matching_result() {
-    active_fingerprint(probe_claude(&prefix(CLAUDE, 2), FIXTURE_PATH), "cargo check");
-    active_fingerprint(probe_claude(&prefix(CLAUDE, 3), FIXTURE_PATH), "cargo check");
+    active_fingerprint(
+        probe_claude(&prefix(CLAUDE, 2), FIXTURE_PATH),
+        "cargo check",
+    );
+    active_fingerprint(
+        probe_claude(&prefix(CLAUDE, 3), FIXTURE_PATH),
+        "cargo check",
+    );
     assert_no_signal(probe_claude(&prefix(CLAUDE, 4), FIXTURE_PATH));
 }
 
@@ -86,14 +101,26 @@ fn claude_question_is_attention_until_its_result() {
 
 #[test]
 fn claude_final_response_completes_via_public_file_probe() {
-    completed_fingerprint(probe_dialect0("claude", crate::models::SessionDialect::GenericTail, &fixture_path("claude-lifecycle.jsonl")));
+    completed_fingerprint(probe_dialect0(
+        "claude",
+        crate::models::SessionDialect::GenericTail,
+        &fixture_path("claude-lifecycle.jsonl"),
+    ));
 }
 
 #[test]
 fn roo_code_id_uses_cline_session_dialect() {
     let path = fixture_path("cline-lifecycle.json");
-    let aligned = completed_fingerprint(probe_dialect0("roo-code", crate::models::SessionDialect::GenericTail, &path));
-    let legacy = completed_fingerprint(probe_dialect0("roo", crate::models::SessionDialect::GenericTail, &path));
+    let aligned = completed_fingerprint(probe_dialect0(
+        "roo-code",
+        crate::models::SessionDialect::GenericTail,
+        &path,
+    ));
+    let legacy = completed_fingerprint(probe_dialect0(
+        "roo",
+        crate::models::SessionDialect::GenericTail,
+        &path,
+    ));
     assert_eq!(aligned, legacy);
 }
 
@@ -121,14 +148,27 @@ fn codex_function_question_matches_output_by_call_id() {
 #[test]
 fn codex_completion_survives_accounting_but_new_user_turn_clears_it() {
     let completed = completed_fingerprint(probe_codex(&prefix(CODEX, 8), FIXTURE_PATH));
-    assert_eq!(completed_fingerprint(probe_codex(&prefix(CODEX, 9), FIXTURE_PATH)), completed);
+    assert_eq!(
+        completed_fingerprint(probe_codex(&prefix(CODEX, 9), FIXTURE_PATH)),
+        completed
+    );
     assert_no_signal(probe_codex(&prefix(CODEX, 10), FIXTURE_PATH));
-    assert_no_signal(probe_dialect0("codex", crate::models::SessionDialect::GenericTail, &fixture_path("codex-lifecycle.jsonl")));
+    assert_no_signal(probe_dialect0(
+        "codex",
+        crate::models::SessionDialect::GenericTail,
+        &fixture_path("codex-lifecycle.jsonl"),
+    ));
 }
 
 #[test]
 fn codex_reasoning_invalidates_old_completion_without_a_user_record() {
-    let lines: Vec<String> = CODEX.lines().skip(7).take(2).chain(CODEX.lines().skip(10)).map(str::to_owned).collect();
+    let lines: Vec<String> = CODEX
+        .lines()
+        .skip(7)
+        .take(2)
+        .chain(CODEX.lines().skip(10))
+        .map(str::to_owned)
+        .collect();
     assert_no_signal(probe_codex(&lines, FIXTURE_PATH));
 }
 
@@ -137,7 +177,11 @@ fn codex_ordinary_user_and_assistant_messages_never_claim_completion() {
     for line in CODEX_MESSAGES.lines() {
         assert_no_signal(probe_codex(&[line.to_owned()], FIXTURE_PATH));
     }
-    assert_no_signal(probe_dialect0("codex", crate::models::SessionDialect::GenericTail, &fixture_path("codex-messages.jsonl")));
+    assert_no_signal(probe_dialect0(
+        "codex",
+        crate::models::SessionDialect::GenericTail,
+        &fixture_path("codex-messages.jsonl"),
+    ));
 }
 
 #[test]
@@ -150,10 +194,25 @@ fn codex_unresolved_command_survives_commentary_and_premature_completion() {
 
 #[test]
 fn codex_call_identity_is_stable_and_distinguishes_repeated_commands() {
-    let first = active_fingerprint(probe_codex(&prefix(CODEX_REPEATED, 1), FIXTURE_PATH), "cargo check");
-    assert_eq!(active_fingerprint(probe_codex(&prefix(CODEX_REPEATED, 1), FIXTURE_PATH), "cargo check"), first);
-    let second = active_fingerprint(probe_codex(&prefix(CODEX_REPEATED, 3), FIXTURE_PATH), "cargo check");
-    assert_ne!(first, second, "different calls must not share their notification identity");
+    let first = active_fingerprint(
+        probe_codex(&prefix(CODEX_REPEATED, 1), FIXTURE_PATH),
+        "cargo check",
+    );
+    assert_eq!(
+        active_fingerprint(
+            probe_codex(&prefix(CODEX_REPEATED, 1), FIXTURE_PATH),
+            "cargo check"
+        ),
+        first
+    );
+    let second = active_fingerprint(
+        probe_codex(&prefix(CODEX_REPEATED, 3), FIXTURE_PATH),
+        "cargo check",
+    );
+    assert_ne!(
+        first, second,
+        "different calls must not share their notification identity"
+    );
 }
 
 #[test]
@@ -164,24 +223,54 @@ fn cline_command_is_active_and_approval_replaces_it() {
 
 #[test]
 fn cline_output_clears_old_approval_and_completion_ends_work() {
-    active_fingerprint(probe_cline(&cline_prefix(4), FIXTURE_PATH), "Synthetic build output.");
-    completed_fingerprint(probe_dialect0("cline", crate::models::SessionDialect::GenericTail, &fixture_path("cline-lifecycle.json")));
+    active_fingerprint(
+        probe_cline(&cline_prefix(4), FIXTURE_PATH),
+        "Synthetic build output.",
+    );
+    completed_fingerprint(probe_dialect0(
+        "cline",
+        crate::models::SessionDialect::GenericTail,
+        &fixture_path("cline-lifecycle.json"),
+    ));
 }
 
 #[test]
 fn broken_jsonl_tail_does_not_hide_last_complete_record() {
-    active_fingerprint(probe_dialect0("codex", crate::models::SessionDialect::GenericTail, &fixture_path("codex-broken-tail.jsonl")), "cargo check");
+    active_fingerprint(
+        probe_dialect0(
+            "codex",
+            crate::models::SessionDialect::GenericTail,
+            &fixture_path("codex-broken-tail.jsonl"),
+        ),
+        "cargo check",
+    );
 }
 
 #[test]
 fn empty_malformed_missing_and_unknown_sessions_have_no_signal() {
     for profile in ["claude", "codex", "cline"] {
-        for name in ["empty.jsonl", "invalid.jsonl", "fixture-does-not-exist.jsonl"] {
-            assert_no_signal(probe_dialect0(profile, crate::models::SessionDialect::GenericTail, &fixture_path(name)));
+        for name in [
+            "empty.jsonl",
+            "invalid.jsonl",
+            "fixture-does-not-exist.jsonl",
+        ] {
+            assert_no_signal(probe_dialect0(
+                profile,
+                crate::models::SessionDialect::GenericTail,
+                &fixture_path(name),
+            ));
         }
     }
-    assert_no_signal(probe_dialect0("cline", crate::models::SessionDialect::GenericTail, &fixture_path("cline-malformed.json")));
-    assert_no_signal(probe_dialect0("unknown-fixture-dialect", crate::models::SessionDialect::GenericTail, &fixture_path("claude-lifecycle.jsonl")));
+    assert_no_signal(probe_dialect0(
+        "cline",
+        crate::models::SessionDialect::GenericTail,
+        &fixture_path("cline-malformed.json"),
+    ));
+    assert_no_signal(probe_dialect0(
+        "unknown-fixture-dialect",
+        crate::models::SessionDialect::GenericTail,
+        &fixture_path("claude-lifecycle.jsonl"),
+    ));
 }
 
 #[test]
@@ -190,56 +279,71 @@ fn output_records_without_requests_do_not_recreate_work_or_attention() {
         assert_no_signal(probe_claude(&[line.to_owned()], FIXTURE_PATH));
     }
     for index in [3, 6] {
-        assert_no_signal(probe_codex(&[CODEX.lines().nth(index).unwrap().to_owned()], FIXTURE_PATH));
+        assert_no_signal(probe_codex(
+            &[CODEX.lines().nth(index).unwrap().to_owned()],
+            FIXTURE_PATH,
+        ));
     }
 }
 
-    /// 用户中断撤销在途命令：不得把 Agent 永久钉在 working。
-    ///
-    /// 症状（Rust 侧实测）：中断之后仍返回 `Active("运行: sleep 999")`，
-    /// 于是每一拍都拿到在途信号，滞回与完成分支永远走不到——
-    /// 2s 快采样与高频扫描被一起锁住，耗电与 CPU 双输。
-    /// Swift 侧同名用例：`多智能体高级: 用户中断撤销在途命令: 不得把 Agent 永久钉在 working`。
-    #[test]
-    fn a_user_interruption_voids_the_calls_it_interrupted() {
-        let sandbox = crate::testutil::Sandbox::new("interrupt");
-        let path = sandbox.path().join("s.jsonl");
-        let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
-        let interrupt = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
-        std::fs::write(&path, format!("{bash}\n{interrupt}\n")).unwrap();
-        assert_no_signal(probe_dialect0("claude", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()));
-    }
+/// 用户中断撤销在途命令：不得把 Agent 永久钉在 working。
+///
+/// 症状（Rust 侧实测）：中断之后仍返回 `Active("运行: sleep 999")`，
+/// 于是每一拍都拿到在途信号，滞回与完成分支永远走不到——
+/// 2s 快采样与高频扫描被一起锁住，耗电与 CPU 双输。
+/// Swift 侧同名用例：`多智能体高级: 用户中断撤销在途命令: 不得把 Agent 永久钉在 working`。
+#[test]
+fn a_user_interruption_voids_the_calls_it_interrupted() {
+    let sandbox = crate::testutil::Sandbox::new("interrupt");
+    let path = sandbox.path().join("s.jsonl");
+    let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
+    let interrupt = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+    std::fs::write(&path, format!("{bash}\n{interrupt}\n")).unwrap();
+    assert_no_signal(probe_dialect0(
+        "claude",
+        crate::models::SessionDialect::GenericTail,
+        path.to_str().unwrap(),
+    ));
+}
 
-    /// 撤销只作用于中断之前的调用——中断之后重新发起的命令仍然是在途。
-    /// 这一条与上一条成对：只做前半截会把「真的在跑」也一并抹掉。
-    #[test]
-    fn a_command_started_after_the_interruption_is_still_in_flight() {
-        let sandbox = crate::testutil::Sandbox::new("interrupt2");
-        let path = sandbox.path().join("s.jsonl");
-        let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
-        let interrupt = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
-        let swift = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu2","name":"Bash","input":{"command":"swift test"}}]}}"#;
-        std::fs::write(&path, format!("{bash}\n{interrupt}\n{swift}\n")).unwrap();
-        active_fingerprint(
-            probe_dialect0("claude", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()),
-            "swift test",
-        );
-    }
+/// 撤销只作用于中断之前的调用——中断之后重新发起的命令仍然是在途。
+/// 这一条与上一条成对：只做前半截会把「真的在跑」也一并抹掉。
+#[test]
+fn a_command_started_after_the_interruption_is_still_in_flight() {
+    let sandbox = crate::testutil::Sandbox::new("interrupt2");
+    let path = sandbox.path().join("s.jsonl");
+    let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
+    let interrupt = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+    let swift = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu2","name":"Bash","input":{"command":"swift test"}}]}}"#;
+    std::fs::write(&path, format!("{bash}\n{interrupt}\n{swift}\n")).unwrap();
+    active_fingerprint(
+        probe_dialect0(
+            "claude",
+            crate::models::SessionDialect::GenericTail,
+            path.to_str().unwrap(),
+        ),
+        "swift test",
+    );
+}
 
-    /// 长行里出现中断短语不算数：多半是在转述别人的话。
-    /// 与 Swift 的 `line.count <= 400` 同闸。
-    #[test]
-    fn an_interruption_phrase_inside_a_long_line_does_not_void_anything() {
-        let sandbox = crate::testutil::Sandbox::new("interrupt3");
-        let path = sandbox.path().join("s.jsonl");
-        let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
-        let long_quote = format!(
-            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}}}}"#,
-            "Request interrupted by user ".repeat(30)
-        );
-        std::fs::write(&path, format!("{bash}\n{long_quote}\n")).unwrap();
-        active_fingerprint(
-            probe_dialect0("claude", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()),
-            "sleep 999",
-        );
-    }
+/// 长行里出现中断短语不算数：多半是在转述别人的话。
+/// 与 Swift 的 `line.count <= 400` 同闸。
+#[test]
+fn an_interruption_phrase_inside_a_long_line_does_not_void_anything() {
+    let sandbox = crate::testutil::Sandbox::new("interrupt3");
+    let path = sandbox.path().join("s.jsonl");
+    let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 999"}}]}}"#;
+    let long_quote = format!(
+        r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+        "Request interrupted by user ".repeat(30)
+    );
+    std::fs::write(&path, format!("{bash}\n{long_quote}\n")).unwrap();
+    active_fingerprint(
+        probe_dialect0(
+            "claude",
+            crate::models::SessionDialect::GenericTail,
+            path.to_str().unwrap(),
+        ),
+        "sleep 999",
+    );
+}

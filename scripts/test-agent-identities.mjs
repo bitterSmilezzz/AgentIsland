@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
       getBoundingClientRect: () => ({ width: 0, height: 0 }), focus: noop, remove: noop,
     });
     globalThis.document = {
-      documentElement: mk(), body: mk(), getElementById: () => mk(), createElement: mk,
+      documentElement: mk(), body: mk(), getElementById: () => mk(), createElement: tag => { const node=mk(); if(tag==='dialog')node.querySelector=()=>mk(); return node; },
       querySelector: () => null, querySelectorAll: () => [], addEventListener: noop,
       createTextNode: () => mk(),
     };
@@ -90,5 +90,12 @@ if (process.argv[2]) {
   mkdirSync(process.argv[2], { recursive:true });
   for (const [name, html] of Object.entries(rendered)) writeFileSync(`${process.argv[2]}/${name}.html`, html);
 }
+const event = {id:'navigation-fixture',agent_id:'aider',agent_name:'Aider',event_type:'attention',message:'确认测试'};
+setState({route:'list',expanded:true,settings:{dock_edge:'top',disabled_agents:[]},engine:{snapshots:[],grand_total:{},latest_event:event}});
+views.renderCard();
+assert.ok(!root.innerHTML.includes('data-agent-jump'), 'CLI-only reminders must not advertise an application jump');
+setState({engine:{snapshots:[],grand_total:{},latest_event:{...event,agent_id:'codex'},event_navigation:{'navigation-fixture':{exactSession:true,url:'codex://threads/fixture'}}}});
+views.renderCard();
+assert.ok(root.innerHTML.includes('data-agent-jump="codex"'), 'a captured GUI session must retain its reminder action');
 console.log('PASS: every built-in has a graphic, safe custom fallback and all five UI identity locations');
 process.exit(0);

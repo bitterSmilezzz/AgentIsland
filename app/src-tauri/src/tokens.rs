@@ -48,7 +48,11 @@ fn stamp_of(path: &Path) -> Option<Stamp> {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_nanos() as i64)
         .unwrap_or(0);
-    Some(Stamp { inode, mtime_ns, size: meta.len() })
+    Some(Stamp {
+        inode,
+        mtime_ns,
+        size: meta.len(),
+    })
 }
 
 /// 一条待统计的明细：(unix ms, 模型, tokens, cost)
@@ -98,7 +102,10 @@ fn fold(events: Vec<Entry>, carry: Vec<Entry>, cutoff_ms: i64) -> (Vec<Entry>, i
     if kept.len() > MAX_DETAIL_PER_FILE {
         let mut order: Vec<usize> = (0..kept.len()).collect();
         order.sort_by_key(|&i| kept[i].0);
-        let doomed: HashSet<usize> = order.into_iter().take(kept.len() - MAX_DETAIL_PER_FILE).collect();
+        let doomed: HashSet<usize> = order
+            .into_iter()
+            .take(kept.len() - MAX_DETAIL_PER_FILE)
+            .collect();
         let mut survivors: Vec<Entry> = Vec::with_capacity(MAX_DETAIL_PER_FILE);
         for (index, event) in kept.into_iter().enumerate() {
             if doomed.contains(&index) {
@@ -126,7 +133,19 @@ struct UsageLine {
 
 impl TokenUsageMonitor {
     pub fn new() -> Self {
-        TokenUsageMonitor { states: HashMap::new() }
+        TokenUsageMonitor {
+            states: HashMap::new(),
+        }
+    }
+
+    pub fn diagnostic_cache(&self) -> crate::resource_diagnostics::Cache {
+        crate::resource_diagnostics::Cache {
+            files: self.states.len(),
+            entries: self.states.values().map(|s| s.entries.len()).sum(),
+            entry_capacity: self.states.values().map(|s| s.entries.capacity()).sum(),
+            dedup_keys: self.states.values().map(|s| s.seen_ids.len()).sum(),
+            dedup_capacity: self.states.values().map(|s| s.seen_ids.capacity()).sum(),
+        }
     }
 
     pub fn monitor(&mut self, profile: &crate::models::AgentProfile) -> TokenReport {
@@ -144,9 +163,15 @@ impl TokenUsageMonitor {
         let mut profile_files = HashSet::new();
         let mut all_models: HashMap<String, (i64, f64, bool)> = HashMap::new();
 
-        let rooted_database = profile.token_roots.iter().filter(|p| Path::new(p).is_file()).find_map(|p| query_inclusive_messages(p, cutoff24));
+        let rooted_database = profile
+            .token_roots
+            .iter()
+            .filter(|p| Path::new(p).is_file())
+            .find_map(|p| query_inclusive_messages(p, cutoff24));
         for root in &profile.token_roots {
-            if rooted_database.is_some() { break; }
+            if rooted_database.is_some() {
+                break;
+            }
             if !Path::new(root).is_dir() {
                 continue;
             }
@@ -168,14 +193,16 @@ impl TokenUsageMonitor {
                     continue;
                 }
                 let path = entry.path().to_path_buf();
-                if !profile_files.insert(path.to_string_lossy().into_owned()) { continue; }
+                if !profile_files.insert(path.to_string_lossy().into_owned()) {
+                    continue;
+                }
                 let (t24, c24, tt, ct, m) = self.parse_file(&path, cutoff24);
                 tokens24 += t24;
                 cost24 += c24;
                 tokens_total += tt;
                 cost_total += ct;
-                for (model,(tk,co)) in self.summarize(&path.to_string_lossy(),0).4 {
-                    merge_model(&mut all_models,model,tk,co,true);
+                for (model, (tk, co)) in self.summarize(&path.to_string_lossy(), 0).4 {
+                    merge_model(&mut all_models, model, tk, co, true);
                 }
                 // JSONL 方言不带记录成本：这里的成本全部是 `cost::estimate_cost` 估出来的
                 if c24 > 0.0 || ct > 0.0 {
@@ -197,10 +224,16 @@ impl TokenUsageMonitor {
             cost_total += part.cost_total;
             cost_estimated |= part.cost_estimated && (part.cost24 > 0.0 || part.cost_total > 0.0);
             for model in part.models {
-                merge_model(&mut all_models,model.model,model.tokens,model.cost,model.cost_estimated);
+                merge_model(
+                    &mut all_models,
+                    model.model,
+                    model.tokens,
+                    model.cost,
+                    model.cost_estimated,
+                );
             }
-            for model in database_series(profile,cutoff24).0 {
-                merge_model(&mut models,model.model,model.tokens,model.cost,false);
+            for model in database_series(profile, cutoff24).0 {
+                merge_model(&mut models, model.model, model.tokens, model.cost, false);
             }
         }
 
@@ -220,7 +253,9 @@ impl TokenUsageMonitor {
         let mut hourly: HashMap<i64, i64> = HashMap::new();
         let cutoff30 = now_ms() - 30 * 24 * 3600 * 1000;
         for (path, st) in &self.states {
-            if !profile_files.contains(path) { continue; }
+            if !profile_files.contains(path) {
+                continue;
+            }
             for (ts, _, tokens, _) in &st.entries {
                 if *ts < cutoff30 || *tokens <= 0 {
                     continue;
@@ -229,13 +264,21 @@ impl TokenUsageMonitor {
                 *hourly.entry(hour).or_insert(0) += tokens;
             }
         }
-        for (hour,tokens) in database_series(profile,cutoff30).1 {
+        for (hour, tokens) in database_series(profile, cutoff30).1 {
             *hourly.entry(hour).or_default() += tokens;
         }
         let mut hourly30d: Vec<(i64, i64)> = hourly.into_iter().collect();
         hourly30d.sort_by_key(|kv| kv.0);
-        let mut models_total: Vec<ModelUsage> = all_models.into_iter().map(|(model,(tokens,cost,estimated))| ModelUsage {model,tokens,cost,cost_estimated:cost>0.0 && estimated}).collect();
-        models_total.sort_by(|a,b| b.tokens.cmp(&a.tokens));
+        let mut models_total: Vec<ModelUsage> = all_models
+            .into_iter()
+            .map(|(model, (tokens, cost, estimated))| ModelUsage {
+                model,
+                tokens,
+                cost,
+                cost_estimated: cost > 0.0 && estimated,
+            })
+            .collect();
+        models_total.sort_by(|a, b| b.tokens.cmp(&a.tokens));
         TokenReport {
             usage: TokenUsage {
                 tokens24h: tokens24,
@@ -264,7 +307,12 @@ impl TokenUsageMonitor {
         let cutoff = now.saturating_sub(range_ms);
         let mut tokens = 0i64;
         let mut cost = 0f64;
-        if let Some(part) = profile.token_roots.iter().filter(|p| Path::new(p).is_file()).find_map(|p| query_inclusive_messages(p, cutoff)) {
+        if let Some(part) = profile
+            .token_roots
+            .iter()
+            .filter(|p| Path::new(p).is_file())
+            .find_map(|p| query_inclusive_messages(p, cutoff))
+        {
             return (part.tokens24, part.cost24);
         }
         for root in &profile.token_roots {
@@ -293,7 +341,10 @@ impl TokenUsageMonitor {
                 cost += c;
             }
         }
-        if let Some(part) = query_declared_database(profile,cutoff) { tokens += part.tokens24; cost += part.cost24; }
+        if let Some(part) = query_declared_database(profile, cutoff) {
+            tokens += part.tokens24;
+            cost += part.cost24;
+        }
         (tokens, cost)
     }
 
@@ -315,7 +366,8 @@ impl TokenUsageMonitor {
                 let st = self.states.get(&key).unwrap();
                 // 增量续读四个条件缺一不可：没折过东西（折入的去重看不见已折掉的键）、
                 // 同一个 inode、上次停在整行边界、文件确实变长了
-                let can_append = !st.revisable_usage && st.rolled_count == 0
+                let can_append = !st.revisable_usage
+                    && st.rolled_count == 0
                     && st.ended_with_newline
                     && prev.inode == stamp.inode
                     && stamp.size > prev.size;
@@ -344,7 +396,9 @@ impl TokenUsageMonitor {
             if item.1.revisable {
                 if let Some(id) = &item.1.id {
                     if let Some(index) = positions.get(id).copied() {
-                        if item.1.tokens > unique[index].1.tokens { unique[index] = item; }
+                        if item.1.tokens > unique[index].1.tokens {
+                            unique[index] = item;
+                        }
                         continue;
                     }
                     positions.insert(id.clone(), unique.len());
@@ -381,18 +435,28 @@ impl TokenUsageMonitor {
             } else {
                 Vec::new()
             };
-            let mut model_totals: HashMap<String,(i64,f64)> = HashMap::new();
-            for (_,model,tokens,cost) in fresh.iter().chain(carry.iter()) {
-                let value=model_totals.entry(model.clone()).or_default(); value.0+=tokens; value.1+=cost;
+            let mut model_totals: HashMap<String, (i64, f64)> = HashMap::new();
+            for (_, model, tokens, cost) in fresh.iter().chain(carry.iter()) {
+                let value = model_totals.entry(model.clone()).or_default();
+                value.0 += tokens;
+                value.1 += cost;
             }
             let (kept, folded_tokens, folded_cost, folded_count) =
                 fold(fresh, carry, now - RETENTION_MS);
-            if !can_append { st.rolled_models.clear(); }
-            for (_,model,tokens,cost) in &kept {
-                let value=model_totals.entry(model.clone()).or_default(); value.0-=tokens; value.1-=cost;
+            if !can_append {
+                st.rolled_models.clear();
             }
-            for (model,(tokens,cost)) in model_totals {
-                if tokens>0 || cost>0.0 { let value=st.rolled_models.entry(model).or_default(); value.0+=tokens;value.1+=cost; }
+            for (_, model, tokens, cost) in &kept {
+                let value = model_totals.entry(model.clone()).or_default();
+                value.0 -= tokens;
+                value.1 -= cost;
+            }
+            for (model, (tokens, cost)) in model_totals {
+                if tokens > 0 || cost > 0.0 {
+                    let value = st.rolled_models.entry(model).or_default();
+                    value.0 += tokens;
+                    value.1 += cost;
+                }
             }
             st.entries = kept;
             st.rolled_tokens += folded_tokens;
@@ -439,7 +503,11 @@ impl TokenUsageMonitor {
         let Some(st) = self.states.get(key) else {
             return (0, 0.0, 0, 0.0, HashMap::new());
         };
-        let mut models: HashMap<String, (i64, f64)> = if cutoff24 == 0 { st.rolled_models.clone() } else { HashMap::new() };
+        let mut models: HashMap<String, (i64, f64)> = if cutoff24 == 0 {
+            st.rolled_models.clone()
+        } else {
+            HashMap::new()
+        };
         let mut tokens24 = 0i64;
         let mut cost24 = 0f64;
         let mut detail_tokens = 0i64;
@@ -484,46 +552,58 @@ fn parse_usage_line(line: &str) -> Option<UsageLine> {
         return None;
     }
     let doc: Value = serde_json::from_str(line).ok()?;
-    if doc.get("providerData").is_some() { return parse_provider_usage(&doc); }
+    if doc.get("providerData").is_some() {
+        return parse_provider_usage(&doc);
+    }
     let obj = doc.as_object()?;
 
-    let (usage, model, cached_key, id, fresh_input, revisable): (Value, Option<String>, &str, Option<String>, bool, bool) =
-        if let Some(msg) = obj.get("message") {
-            let usage = msg.get("usage")?.clone();
-            let model = msg.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let id = msg.get("id")
-                .or_else(|| obj.get("id"))
-                .or_else(|| obj.get("uuid"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            (usage, model, "cache_read_input_tokens", id, true, true)
-        } else if obj.get("type").and_then(|v| v.as_str()) == Some("token_usage_record") {
-            let payload = obj.get("payload")?;
-            let usage = payload.get("usage")?.clone();
-            let id = payload
-                .get("response_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            // 这一族记录里**没有模型名**（payload 只有 response_id / turn_id / usage 一族），
-            // 所以落 unknown——旧实现写死 "gpt-5"，那是编的
-            (usage, None, "cached_input_tokens", id, false, false)
-        } else if let Some(resp) = obj.get("response") {
-            // ZCode rollout：response.usage {inputTokens, outputTokens, cacheRead/WriteTokens}
-            let usage = resp.get("usage")?.clone();
-            let model = obj
-                .get("model")
-                .and_then(|m| m.get("modelId"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let id = obj
-                .get("requestId")
-                .or_else(|| resp.get("responseId"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            (usage, model, "cacheReadTokens", id, false, false)
-        } else {
-            return None;
-        };
+    let (usage, model, cached_key, id, fresh_input, revisable): (
+        Value,
+        Option<String>,
+        &str,
+        Option<String>,
+        bool,
+        bool,
+    ) = if let Some(msg) = obj.get("message") {
+        let usage = msg.get("usage")?.clone();
+        let model = msg
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let id = msg
+            .get("id")
+            .or_else(|| obj.get("id"))
+            .or_else(|| obj.get("uuid"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        (usage, model, "cache_read_input_tokens", id, true, true)
+    } else if obj.get("type").and_then(|v| v.as_str()) == Some("token_usage_record") {
+        let payload = obj.get("payload")?;
+        let usage = payload.get("usage")?.clone();
+        let id = payload
+            .get("response_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        // 这一族记录里**没有模型名**（payload 只有 response_id / turn_id / usage 一族），
+        // 所以落 unknown——旧实现写死 "gpt-5"，那是编的
+        (usage, None, "cached_input_tokens", id, false, false)
+    } else if let Some(resp) = obj.get("response") {
+        // ZCode rollout：response.usage {inputTokens, outputTokens, cacheRead/WriteTokens}
+        let usage = resp.get("usage")?.clone();
+        let model = obj
+            .get("model")
+            .and_then(|m| m.get("modelId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let id = obj
+            .get("requestId")
+            .or_else(|| resp.get("responseId"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        (usage, model, "cacheReadTokens", id, false, false)
+    } else {
+        return None;
+    };
 
     let get = |key: &str| usage.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
     // snake_case 与 camelCase 两种拼法都认（实测各方言各用一种：Anthropic/Codex 用
@@ -534,14 +614,28 @@ fn parse_usage_line(line: &str) -> Option<UsageLine> {
     // Anthropic input is already exclusive of cache reads. Cache creation is fresh input.
     // OpenAI/ZCode rollout input is inclusive, so only those dialects subtract reads.
     let cache_write = if fresh_input {
-        let split = usage.get("cache_creation").map(|v| {
-            v.get("ephemeral_5m_input_tokens").and_then(Value::as_i64).unwrap_or(0).max(0)
-                + v.get("ephemeral_1h_input_tokens").and_then(Value::as_i64).unwrap_or(0).max(0)
-        }).unwrap_or(0);
+        let split = usage
+            .get("cache_creation")
+            .map(|v| {
+                v.get("ephemeral_5m_input_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    .max(0)
+                    + v.get("ephemeral_1h_input_tokens")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                        .max(0)
+            })
+            .unwrap_or(0);
         get("cache_creation_input_tokens").max(split).max(0)
-    } else { 0 };
-    let net = if fresh_input { input.max(0) + cache_write + output.max(0) }
-        else { (input - cached.max(0).min(input)).max(0) + output.max(0) };
+    } else {
+        0
+    };
+    let net = if fresh_input {
+        input.max(0) + cache_write + output.max(0)
+    } else {
+        (input - cached.max(0).min(input)).max(0) + output.max(0)
+    };
     if net <= 0 {
         return None;
     }
@@ -562,7 +656,14 @@ fn parse_usage_line(line: &str) -> Option<UsageLine> {
         .and_then(parse_iso_ms)
         .unwrap_or_else(now_ms);
 
-    Some(UsageLine { id, tokens: net, cost, model: name, ts_ms, revisable })
+    Some(UsageLine {
+        id,
+        tokens: net,
+        cost,
+        model: name,
+        ts_ms,
+        revisable,
+    })
 }
 
 pub fn parse_iso_ms_pub(s: &str) -> Option<i64> {
@@ -573,28 +674,121 @@ pub fn parse_iso_ms_pub(s: &str) -> Option<i64> {
 /// Ignore in-flight messages and prefer explicit cache-miss counters when supplied.
 fn parse_provider_usage(doc: &Value) -> Option<UsageLine> {
     let kind = doc.get("type")?.as_str()?;
-    let completed = matches!(doc.get("status").or_else(|| doc.pointer("/message/status")).and_then(Value::as_str), Some("completed" | "complete" | "success"));
-    let assistant = matches!(doc.get("role").or_else(|| doc.pointer("/message/role")).and_then(Value::as_str), Some("assistant" | "assistant_message"));
-    if kind != "function_call" && !(kind == "message" && completed && assistant) { return None; }
+    let completed = matches!(
+        doc.get("status")
+            .or_else(|| doc.pointer("/message/status"))
+            .and_then(Value::as_str),
+        Some("completed" | "complete" | "success")
+    );
+    let assistant = matches!(
+        doc.get("role")
+            .or_else(|| doc.pointer("/message/role"))
+            .and_then(Value::as_str),
+        Some("assistant" | "assistant_message")
+    );
+    if kind != "function_call" && !(kind == "message" && completed && assistant) {
+        return None;
+    }
     let provider = doc.get("providerData")?;
-    let usage = provider.get("usage").or_else(|| doc.pointer("/message/usage"));
+    let usage = provider
+        .get("usage")
+        .or_else(|| doc.pointer("/message/usage"));
     let raw = provider.get("rawUsage");
-    if usage.is_none() && raw.is_none() { return None; }
+    if usage.is_none() && raw.is_none() {
+        return None;
+    }
     let number = |paths: &[&str]| -> Option<i64> {
-        paths.iter().find_map(|p| doc.pointer(p).and_then(Value::as_i64)).map(|v| v.max(0))
+        paths
+            .iter()
+            .find_map(|p| doc.pointer(p).and_then(Value::as_i64))
+            .map(|v| v.max(0))
     };
-    let input = number(&["/providerData/usage/inputTokens", "/providerData/usage/input_tokens", "/providerData/rawUsage/prompt_tokens", "/message/usage/input_tokens"]).unwrap_or(0);
-    let output = number(&["/providerData/usage/outputTokens", "/providerData/usage/output_tokens", "/providerData/rawUsage/completion_tokens", "/message/usage/output_tokens"]).unwrap_or(0);
-    let direct_cached = number(&["/providerData/usage/input_details/cached_tokens", "/providerData/usage/inputDetails/cachedTokens", "/providerData/usage/inputTokensDetails/cachedTokens", "/providerData/usage/cachedInputTokens", "/providerData/usage/cache_read_input_tokens", "/providerData/rawUsage/prompt_cache_hit_tokens", "/providerData/rawUsage/cache_read_input_tokens"]).unwrap_or(0);
-    let details = usage.and_then(|u| u.get("input_details").or_else(|| u.get("inputDetails")).or_else(|| u.get("inputTokensDetails"))).or_else(|| raw.and_then(|r| r.get("prompt_tokens_details")));
-    let detail_cache = |v: &Value| v.get("cached_tokens").or_else(||v.get("cachedTokens")).and_then(Value::as_i64).unwrap_or(0).max(0);
-    let cached = details.map(|v| v.as_array().map(|a| a.iter().map(detail_cache).find(|n| *n>0).unwrap_or(0)).unwrap_or_else(||detail_cache(v))).filter(|n| *n>0).unwrap_or(direct_cached);
-    let fresh = number(&["/providerData/rawUsage/prompt_cache_miss_tokens"]).filter(|n| *n>0).unwrap_or_else(|| (input-cached).max(0));
+    let input = number(&[
+        "/providerData/usage/inputTokens",
+        "/providerData/usage/input_tokens",
+        "/providerData/rawUsage/prompt_tokens",
+        "/message/usage/input_tokens",
+    ])
+    .unwrap_or(0);
+    let output = number(&[
+        "/providerData/usage/outputTokens",
+        "/providerData/usage/output_tokens",
+        "/providerData/rawUsage/completion_tokens",
+        "/message/usage/output_tokens",
+    ])
+    .unwrap_or(0);
+    let direct_cached = number(&[
+        "/providerData/usage/input_details/cached_tokens",
+        "/providerData/usage/inputDetails/cachedTokens",
+        "/providerData/usage/inputTokensDetails/cachedTokens",
+        "/providerData/usage/cachedInputTokens",
+        "/providerData/usage/cache_read_input_tokens",
+        "/providerData/rawUsage/prompt_cache_hit_tokens",
+        "/providerData/rawUsage/cache_read_input_tokens",
+    ])
+    .unwrap_or(0);
+    let details = usage
+        .and_then(|u| {
+            u.get("input_details")
+                .or_else(|| u.get("inputDetails"))
+                .or_else(|| u.get("inputTokensDetails"))
+        })
+        .or_else(|| raw.and_then(|r| r.get("prompt_tokens_details")));
+    let detail_cache = |v: &Value| {
+        v.get("cached_tokens")
+            .or_else(|| v.get("cachedTokens"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0)
+    };
+    let cached = details
+        .map(|v| {
+            v.as_array()
+                .map(|a| a.iter().map(detail_cache).find(|n| *n > 0).unwrap_or(0))
+                .unwrap_or_else(|| detail_cache(v))
+        })
+        .filter(|n| *n > 0)
+        .unwrap_or(direct_cached);
+    let fresh = number(&["/providerData/rawUsage/prompt_cache_miss_tokens"])
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| (input - cached).max(0));
     let tokens = fresh + output;
-    if tokens == 0 { return None; }
-    let model = ["/providerData/requestModelId", "/requestModelName", "/providerData/requestModelName", "/providerData/model"].iter().find_map(|p| doc.pointer(p).and_then(Value::as_str));
-    let ts_ms = ["completedAt", "completed_at", "timestamp", "createdAt", "created_at"].iter().find_map(|p| doc.get(p)).and_then(|v| v.as_str().and_then(parse_iso_ms).or_else(|| v.as_i64().map(|n| if n < 1_000_000_000_000 { n*1000 } else { n })))?;
-    Some(UsageLine { id: doc.get("id").and_then(Value::as_str).map(str::to_owned), tokens, cost: model.and_then(|m| cost::estimate_cost(m,tokens)).unwrap_or(0.0), model: short_model_name(model), ts_ms, revisable: true })
+    if tokens == 0 {
+        return None;
+    }
+    let model = [
+        "/providerData/requestModelId",
+        "/requestModelName",
+        "/providerData/requestModelName",
+        "/providerData/model",
+    ]
+    .iter()
+    .find_map(|p| doc.pointer(p).and_then(Value::as_str));
+    let ts_ms = [
+        "completedAt",
+        "completed_at",
+        "timestamp",
+        "createdAt",
+        "created_at",
+    ]
+    .iter()
+    .find_map(|p| doc.get(p))
+    .and_then(|v| {
+        v.as_str().and_then(parse_iso_ms).or_else(|| {
+            v.as_i64()
+                .map(|n| if n < 1_000_000_000_000 { n * 1000 } else { n })
+        })
+    })?;
+    Some(UsageLine {
+        id: doc.get("id").and_then(Value::as_str).map(str::to_owned),
+        tokens,
+        cost: model
+            .and_then(|m| cost::estimate_cost(m, tokens))
+            .unwrap_or(0.0),
+        model: short_model_name(model),
+        ts_ms,
+        revisable: true,
+    })
 }
 
 fn parse_iso_ms(s: &str) -> Option<i64> {
@@ -611,10 +805,12 @@ fn parse_iso_ms(s: &str) -> Option<i64> {
         return None;
     }
     // 一律按 UTC 计算（本地时区偏差只影响桶归属，不影响总量）
-    Some(days_from_civil(dp[0], dp[1], dp[2]) * 86_400_000
-        + tp[0] * 3_600_000
-        + tp[1] * 60_000
-        + tp.get(2).copied().unwrap_or(0) * 1_000)
+    Some(
+        days_from_civil(dp[0], dp[1], dp[2]) * 86_400_000
+            + tp[0] * 3_600_000
+            + tp[1] * 60_000
+            + tp.get(2).copied().unwrap_or(0) * 1_000,
+    )
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -653,12 +849,15 @@ struct UsagePart {
     models: Vec<ModelUsage>,
 }
 
-fn query_declared_database(profile: &crate::models::AgentProfile, cutoff: i64) -> Option<UsagePart> {
+fn query_declared_database(
+    profile: &crate::models::AgentProfile,
+    cutoff: i64,
+) -> Option<UsagePart> {
     let database = profile.session_database.as_ref()?;
     match database.schema {
-        SessionSchema::OpenCode => query_open_code(&database.path,cutoff),
-        SessionSchema::DimTasks => query_dim_tasks(&database.path,cutoff),
-        SessionSchema::MiniMaxRuntime => query_minimax(&database.path,cutoff),
+        SessionSchema::OpenCode => query_open_code(&database.path, cutoff),
+        SessionSchema::DimTasks => query_dim_tasks(&database.path, cutoff),
+        SessionSchema::MiniMaxRuntime => query_minimax(&database.path, cutoff),
         SessionSchema::StatusIndex => None,
     }
 }
@@ -666,39 +865,56 @@ fn query_declared_database(profile: &crate::models::AgentProfile, cutoff: i64) -
 /// ZCode CLI's canonical message ledger: input includes cache reads, output includes reasoning.
 /// A database token root replaces its mirrored JSONL roots when this schema is readable.
 fn query_inclusive_messages(path: &str, cutoff: i64) -> Option<UsagePart> {
-    let connection=sqlite::open_readonly(path).ok()?;
+    let connection = sqlite::open_readonly(path).ok()?;
     const NET: &str = "MAX(COALESCE(json_extract(data,'$.tokens.input'),0)-MAX(COALESCE(json_extract(data,'$.tokens.cache.read'),0),0),0)+MAX(COALESCE(json_extract(data,'$.tokens.output'),0),0)";
     let base=format!("SELECT time_created, {NET} AS t, MAX(COALESCE(json_extract(data,'$.cost'),0),0) AS c FROM message WHERE json_valid(data) AND json_extract(data,'$.role')='assistant'");
     let (tokens_total,cost_total,tokens24,cost24)=connection.query_row(&format!("SELECT COALESCE(SUM(t),0),COALESCE(SUM(c),0),COALESCE(SUM(CASE WHEN time_created>=?1 THEN t ELSE 0 END),0),COALESCE(SUM(CASE WHEN time_created>=?1 THEN c ELSE 0 END),0) FROM ({base})"),[cutoff],|r| Ok((column_i64(r,0),column_f64(r,1),column_i64(r,2),column_f64(r,3)))).ok()?;
     let models=collect_models(&connection,&format!("SELECT COALESCE(json_extract(data,'$.modelID'),json_extract(data,'$.modelId'),'unknown'),SUM({NET}),SUM(MAX(COALESCE(json_extract(data,'$.cost'),0),0)) FROM message WHERE json_valid(data) AND json_extract(data,'$.role')='assistant' GROUP BY 1 ORDER BY 2 DESC"));
-    Some(UsagePart { tokens_total,cost_total,tokens24,cost24,models,cost_estimated:false })
+    Some(UsagePart {
+        tokens_total,
+        cost_total,
+        tokens24,
+        cost24,
+        models,
+        cost_estimated: false,
+    })
 }
 
 /// Share timestamp/model projections across 24h tables and 30d charts.
-fn database_series(profile: &crate::models::AgentProfile, cutoff: i64) -> (Vec<ModelUsage>,Vec<(i64,i64)>) {
-    let projection = || -> Option<(rusqlite::Connection,String)> {
-        if let Some(path)=profile.token_roots.iter().find(|p| Path::new(p).is_file()) {
-            let c=sqlite::open_readonly(path).ok()?;
+fn database_series(
+    profile: &crate::models::AgentProfile,
+    cutoff: i64,
+) -> (Vec<ModelUsage>, Vec<(i64, i64)>) {
+    let projection = || -> Option<(rusqlite::Connection, String)> {
+        if let Some(path) = profile.token_roots.iter().find(|p| Path::new(p).is_file()) {
+            let c = sqlite::open_readonly(path).ok()?;
             let sql="SELECT time_created AS ts,COALESCE(json_extract(data,'$.modelID'),json_extract(data,'$.modelId'),'unknown') AS model,MAX(COALESCE(json_extract(data,'$.tokens.input'),0)-MAX(COALESCE(json_extract(data,'$.tokens.cache.read'),0),0),0)+MAX(COALESCE(json_extract(data,'$.tokens.output'),0),0) AS t,MAX(COALESCE(json_extract(data,'$.cost'),0),0) AS c FROM message WHERE json_valid(data) AND json_extract(data,'$.role')='assistant'";
-            c.prepare(sql).ok()?; return Some((c,sql.into()));
+            c.prepare(sql).ok()?;
+            return Some((c, sql.into()));
         }
-        let db=profile.session_database.as_ref()?;
-        let c=sqlite::open_readonly(&db.path).ok()?;
+        let db = profile.session_database.as_ref()?;
+        let c = sqlite::open_readonly(&db.path).ok()?;
         let sql=match db.schema {
             SessionSchema::MiniMaxRuntime => "SELECT ts,COALESCE(model,'unknown') AS model,MAX(COALESCE(input_tokens,0),0)+MAX(COALESCE(cache_write_tokens,0),0)+MAX(COALESCE(output_tokens,0),0)+MAX(COALESCE(reasoning_tokens,0),0) AS t,MAX(COALESCE(cost_usd,0),0) AS c FROM local_runtime_token_usage".into(),
             SessionSchema::OpenCode => format!("SELECT time_created AS ts,COALESCE(json_extract(data,'$.modelID'),'unknown') AS model,COALESCE(json_extract(data,'$.tokens.input'),0)+COALESCE(json_extract(data,'$.tokens.output'),0)+COALESCE(json_extract(data,'$.tokens.reasoning'),0)+COALESCE(json_extract(data,'$.tokens.cache.write'),0) AS t,COALESCE(json_extract(data,'$.cost'),0) AS c FROM {} WHERE json_extract(data,'$.role')='assistant'",sqlite::OpenCodeTables::resolve(&c)?.message),
             SessionSchema::DimTasks => "SELECT CAST((julianday(createdAt)-2440587.5)*86400000+0.5 AS INTEGER) AS ts,COALESCE(modelId,'unknown') AS model,MAX(COALESCE(json_extract(usage,'$.promptTokens'),0)-COALESCE(json_extract(usage,'$.cacheReadTokens'),0),0)+COALESCE(json_extract(usage,'$.completionTokens'),0) AS t,COALESCE(cost,0) AS c FROM usage_ledger".into(),
             SessionSchema::StatusIndex => return None,
         };
-        Some((c,sql))
+        Some((c, sql))
     };
-    let Some((c,sql))=projection() else { return (vec![],vec![]); };
+    let Some((c, sql)) = projection() else {
+        return (vec![], vec![]);
+    };
     let models=collect_models(&c,&format!("SELECT model,SUM(t),SUM(c) FROM ({sql}) WHERE ts >= {cutoff} GROUP BY model ORDER BY 2 DESC"));
-    let mut buckets=Vec::new();
-    if let Ok(mut stmt)=c.prepare(&format!("SELECT ts-ts%3600000,SUM(t) FROM ({sql}) WHERE ts >= ?1 GROUP BY 1")) {
-        if let Ok(rows)=stmt.query_map([cutoff],|r| Ok((column_i64(r,0),column_i64(r,1)))) { buckets.extend(rows.flatten()); }
+    let mut buckets = Vec::new();
+    if let Ok(mut stmt) = c.prepare(&format!(
+        "SELECT ts-ts%3600000,SUM(t) FROM ({sql}) WHERE ts >= ?1 GROUP BY 1"
+    )) {
+        if let Ok(rows) = stmt.query_map([cutoff], |r| Ok((column_i64(r, 0), column_i64(r, 1)))) {
+            buckets.extend(rows.flatten());
+        }
     }
-    (models,buckets)
+    (models, buckets)
 }
 
 /// 把一份用量并进模型表。`estimated` 按位或——同名模型可能两个来源都有。
@@ -838,7 +1054,14 @@ fn query_minimax(path: &str, cutoff: i64) -> Option<UsagePart> {
         &format!("SELECT COALESCE(SUM({NET}),0), COALESCE(SUM(MAX(COALESCE(cost_usd,0),0)),0), COALESCE(SUM(CASE WHEN ts>=?1 THEN {NET} ELSE 0 END),0), COALESCE(SUM(CASE WHEN ts>=?1 THEN MAX(COALESCE(cost_usd,0),0) ELSE 0 END),0) FROM local_runtime_token_usage"),
         [cutoff], |row| Ok((column_i64(row,0),column_f64(row,1),column_i64(row,2),column_f64(row,3)))).ok()?;
     let models = collect_models(&connection, &format!("SELECT COALESCE(model,'unknown'), SUM({NET}), SUM(MAX(COALESCE(cost_usd,0),0)) FROM local_runtime_token_usage GROUP BY 1 ORDER BY 2 DESC"));
-    Some(UsagePart { tokens_total, cost_total, tokens24, cost24, models, cost_estimated:false })
+    Some(UsagePart {
+        tokens_total,
+        cost_total,
+        tokens24,
+        cost24,
+        models,
+        cost_estimated: false,
+    })
 }
 
 /// DimAgent 方言：`usage_ledger`。净 token = (promptTokens − cacheReadTokens，**下限 0**)
@@ -940,7 +1163,6 @@ pub fn compact(n: i64) -> String {
     format!("{n}")
 }
 
-
 /// 本地时间的分量 `(年, 月, 日, 时, 分, 秒)`。审计报告与预估都要按**用户的钟表**说话，
 /// 所以只在这一处读本地时区，别处不许再各写一遍（时区一分散就会有人忘掉偏移）。
 pub fn local_time_parts(now_ms: i64) -> Option<(i32, i32, i32, i32, i32, i32)> {
@@ -954,7 +1176,6 @@ pub fn local_time_parts(now_ms: i64) -> Option<(i32, i32, i32, i32, i32, i32)> {
         tm.tm_sec,
     ))
 }
-
 
 #[cfg(test)]
 mod compact_tests {
@@ -971,7 +1192,11 @@ mod compact_tests {
     fn thresholds_and_suffixes_match_the_swift_reference() {
         assert_eq!(compact(0), "0");
         assert_eq!(compact(999), "999");
-        assert_eq!(compact(9_999), "9999", "一万以下不打 k（旧实现从 1000 就打）");
+        assert_eq!(
+            compact(9_999),
+            "9999",
+            "一万以下不打 k（旧实现从 1000 就打）"
+        );
         assert_eq!(compact(10_000), "10.0k");
         assert_eq!(compact(820_000), "820.0k");
         assert_eq!(compact(1_000_000), "1.00M");
@@ -986,7 +1211,16 @@ mod compact_tests {
 
     #[test]
     fn the_unit_only_ever_goes_up_as_the_number_grows() {
-        let seq = [0i64, 999, 9_999, 10_000, 999_999, 1_000_000, 12_345_678, 1_000_000_000];
+        let seq = [
+            0i64,
+            999,
+            9_999,
+            10_000,
+            999_999,
+            1_000_000,
+            12_345_678,
+            1_000_000_000,
+        ];
         let rank = |unit: char| match unit {
             'B' => 3,
             'M' => 2,
@@ -996,7 +1230,11 @@ mod compact_tests {
         let mut previous = 0;
         for value in seq {
             let text = compact(value);
-            let unit = text.chars().rev().find(|c| c.is_ascii_alphabetic()).unwrap_or(' ');
+            let unit = text
+                .chars()
+                .rev()
+                .find(|c| c.is_ascii_alphabetic())
+                .unwrap_or(' ');
             assert!(
                 rank(unit) >= previous,
                 "量级倒退了：{value} → {text}（上一个量级 {previous}）"
@@ -1036,83 +1274,143 @@ mod tests {
         let now = now_ms();
         connection.execute("INSERT INTO local_runtime_token_usage VALUES(?1,100,20,5,10000,20000,0.25,'fixture-new')",[now]).unwrap();
         connection.execute("INSERT INTO local_runtime_token_usage VALUES(?1,200,30,0,10000,20000,0.75,'fixture-old')",[now-172800000]).unwrap();
-        let mut profile = crate::registry::builtin().into_iter().find(|p| p.id=="minimaxcode").unwrap();
+        let mut profile = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "minimaxcode")
+            .unwrap();
         profile.session_database.as_mut().unwrap().path = path.to_string_lossy().into();
         let mut monitor = TokenUsageMonitor::new();
         let report = monitor.monitor(&profile);
-        assert_eq!(report.usage.tokens24h,20125);
-        assert_eq!(report.usage.tokens_total,40355);
-        assert_eq!(report.models24h.len(),1);
-        assert_eq!(report.models_total.len(),2);
-        assert_eq!(report.hourly30d.iter().map(|(_,t)| t).sum::<i64>(),40355);
-        assert_eq!(monitor.range_totals(&profile,86400000,now).0,20125);
-        assert_eq!(monitor.range_totals(&profile,604800000,now).0,40355);
+        assert_eq!(report.usage.tokens24h, 20125);
+        assert_eq!(report.usage.tokens_total, 40355);
+        assert_eq!(report.models24h.len(), 1);
+        assert_eq!(report.models_total.len(), 2);
+        assert_eq!(report.hourly30d.iter().map(|(_, t)| t).sum::<i64>(), 40355);
+        assert_eq!(monitor.range_totals(&profile, 86400000, now).0, 20125);
+        assert_eq!(monitor.range_totals(&profile, 604800000, now).0, 40355);
     }
 
     #[test]
     fn claude_content_blocks_and_stream_updates_count_one_complete_call() {
         let sandbox = crate::testutil::Sandbox::new("claude-call-identity");
         let path = sandbox.path().join("calls.jsonl");
-        let record = |uuid: &str, output: i64| format!(r#"{{"uuid":"{uuid}","timestamp":"2026-10-02T00:00:00Z","message":{{"id":"msg-one","model":"claude-test","usage":{{"input_tokens":100,"output_tokens":{output}}}}}}}"#);
-        fs::write(&path, format!("{}\n{}\n",record("block-1",10),record("block-2",30))).unwrap();
-        let mut monitor=TokenUsageMonitor::new();
-        assert_eq!(monitor.parse_file(&path,0).2,130);
+        let record = |uuid: &str, output: i64| {
+            format!(
+                r#"{{"uuid":"{uuid}","timestamp":"2026-10-02T00:00:00Z","message":{{"id":"msg-one","model":"claude-test","usage":{{"input_tokens":100,"output_tokens":{output}}}}}}}"#
+            )
+        };
+        fs::write(
+            &path,
+            format!("{}\n{}\n", record("block-1", 10), record("block-2", 30)),
+        )
+        .unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        assert_eq!(monitor.parse_file(&path, 0).2, 130);
         use std::io::Write;
-        writeln!(fs::OpenOptions::new().append(true).open(&path).unwrap(),"{}",record("block-3",50)).unwrap();
-        assert_eq!(monitor.parse_file(&path,0).2,150);
-        assert_eq!(monitor.parse_file(&path,0).2,150);
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&path).unwrap(),
+            "{}",
+            record("block-3", 50)
+        )
+        .unwrap();
+        assert_eq!(monitor.parse_file(&path, 0).2, 150);
+        assert_eq!(monitor.parse_file(&path, 0).2, 150);
     }
 
     #[test]
     fn workbuddy_provider_arrays_and_completed_calls_use_exclusive_input() {
-        let doc=r#"{"id":"call-1","type":"message","role":"assistant","status":"completed","completedAt":"2026-10-02T00:00:00Z","providerData":{"requestModelId":"fixture","usage":{"inputTokens":1000,"outputTokens":50,"inputTokensDetails":[{"cached_tokens":900}]},"rawUsage":{"prompt_cache_miss_tokens":0}}}"#;
-        assert_eq!(parse_usage_line(doc).unwrap().tokens,150);
-        assert!(parse_usage_line(&doc.replace("completed","in_progress")).is_none());
-        let function=doc.replace("\"type\":\"message\"","\"type\":\"function_call\"").replace("\"status\":\"completed\"","\"status\":\"in_progress\"");
-        assert_eq!(parse_usage_line(&function).unwrap().tokens,150);
+        let doc = r#"{"id":"call-1","type":"message","role":"assistant","status":"completed","completedAt":"2026-10-02T00:00:00Z","providerData":{"requestModelId":"fixture","usage":{"inputTokens":1000,"outputTokens":50,"inputTokensDetails":[{"cached_tokens":900}]},"rawUsage":{"prompt_cache_miss_tokens":0}}}"#;
+        assert_eq!(parse_usage_line(doc).unwrap().tokens, 150);
+        assert!(parse_usage_line(&doc.replace("completed", "in_progress")).is_none());
+        let function = doc
+            .replace("\"type\":\"message\"", "\"type\":\"function_call\"")
+            .replace("\"status\":\"completed\"", "\"status\":\"in_progress\"");
+        assert_eq!(parse_usage_line(&function).unwrap().tokens, 150);
     }
 
     #[test]
     fn zcode_canonical_database_replaces_mirror_and_preserves_periods() {
-        let sandbox=crate::testutil::Sandbox::new("zcode-canonical-usage");
-        let db=sandbox.path().join("db.sqlite");
-        let c=rusqlite::Connection::open(&db).unwrap();
-        c.execute_batch("CREATE TABLE message(id TEXT,time_created INTEGER,data TEXT);").unwrap();
-        let now=now_ms();
+        let sandbox = crate::testutil::Sandbox::new("zcode-canonical-usage");
+        let db = sandbox.path().join("db.sqlite");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE message(id TEXT,time_created INTEGER,data TEXT);")
+            .unwrap();
+        let now = now_ms();
         c.execute("INSERT INTO message VALUES('new',?1,?2)",rusqlite::params![now,r#"{"role":"assistant","modelID":"new","tokens":{"input":1000,"output":100,"reasoning":60,"cache":{"read":900}}}"#]).unwrap();
-        c.execute("INSERT INTO message VALUES('old',?1,?2)",rusqlite::params![now-172800000,r#"{"role":"assistant","modelID":"old","tokens":{"input":200,"output":30}}"#]).unwrap();
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM message",[],|r|r.get::<_,i64>(0)).unwrap(),2);
-        assert_eq!(c.query_row("SELECT COUNT(*) FROM message WHERE json_valid(data)",[],|r|r.get::<_,i64>(0)).unwrap(),2);
-        assert_eq!(query_inclusive_messages(&db.to_string_lossy(),now-86400000).unwrap().tokens_total,430);
-        fs::write(sandbox.path().join("mirror.jsonl"),format!("{}\n",claude_line("mirror"))).unwrap();
-        let mut p=one_root_profile("fixture",&sandbox.path().to_string_lossy());
-        p.token_roots.insert(0,db.to_string_lossy().into());
-        let mut m=TokenUsageMonitor::new();let r=m.monitor(&p);
-        assert_eq!(r.usage.tokens24h,200);assert_eq!(r.usage.tokens_total,430);
-        assert_eq!(r.models24h.len(),1);assert_eq!(r.models_total.len(),2);
-        assert_eq!(r.hourly30d.iter().map(|(_,t)|t).sum::<i64>(),430);
-        assert_eq!(m.range_totals(&p,86400000,now).0,200);
+        c.execute(
+            "INSERT INTO message VALUES('old',?1,?2)",
+            rusqlite::params![
+                now - 172800000,
+                r#"{"role":"assistant","modelID":"old","tokens":{"input":200,"output":30}}"#
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM message", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM message WHERE json_valid(data)",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            query_inclusive_messages(&db.to_string_lossy(), now - 86400000)
+                .unwrap()
+                .tokens_total,
+            430
+        );
+        fs::write(
+            sandbox.path().join("mirror.jsonl"),
+            format!("{}\n", claude_line("mirror")),
+        )
+        .unwrap();
+        let mut p = one_root_profile("fixture", &sandbox.path().to_string_lossy());
+        p.token_roots.insert(0, db.to_string_lossy().into());
+        let mut m = TokenUsageMonitor::new();
+        let r = m.monitor(&p);
+        assert_eq!(r.usage.tokens24h, 200);
+        assert_eq!(r.usage.tokens_total, 430);
+        assert_eq!(r.models24h.len(), 1);
+        assert_eq!(r.models_total.len(), 2);
+        assert_eq!(r.hourly30d.iter().map(|(_, t)| t).sum::<i64>(), 430);
+        assert_eq!(m.range_totals(&p, 86400000, now).0, 200);
     }
 
     #[test]
     fn cumulative_models_include_folded_jsonl_history() {
-        let sandbox=crate::testutil::Sandbox::new("models-history");
+        let sandbox = crate::testutil::Sandbox::new("models-history");
         fs::write(sandbox.path().join("history.jsonl"),"{\"timestamp\":\"2020-01-01T00:00:00Z\",\"message\":{\"model\":\"historic\",\"usage\":{\"input_tokens\":100,\"output_tokens\":20}}}\n").unwrap();
-        let r=TokenUsageMonitor::new().monitor(&one_root_profile("fixture",&sandbox.path().to_string_lossy()));
-        assert_eq!(r.usage.tokens_total,120);assert!(r.models24h.is_empty());
-        assert_eq!(r.models_total[0].tokens,120);assert_eq!(r.models_total[0].model,"historic");
+        let r = TokenUsageMonitor::new().monitor(&one_root_profile(
+            "fixture",
+            &sandbox.path().to_string_lossy(),
+        ));
+        assert_eq!(r.usage.tokens_total, 120);
+        assert!(r.models24h.is_empty());
+        assert_eq!(r.models_total[0].tokens, 120);
+        assert_eq!(r.models_total[0].model, "historic");
     }
 
     #[test]
     #[ignore = "Opt-in local counters only comparison; never prints session text"]
     fn local_vibe_reference_totals_match_runtime_reader() {
-        let path=std::env::var("AGENTISLAND_TOKEN_REFERENCE").expect("counter reference path required");
-        let expected:Value=serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let path =
+            std::env::var("AGENTISLAND_TOKEN_REFERENCE").expect("counter reference path required");
+        let expected: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         for p in crate::registry::builtin() {
-            if let Some(total)=expected.get(&p.id).and_then(Value::as_i64) {
-                let report=TokenUsageMonitor::new().monitor(&p);
-                assert_eq!(report.usage.tokens_total,total,"{} counter contract",p.id);
-                println!("{}: counters match",p.id);
+            if let Some(total) = expected.get(&p.id).and_then(Value::as_i64) {
+                let report = TokenUsageMonitor::new().monitor(&p);
+                assert_eq!(
+                    report.usage.tokens_total, total,
+                    "{} counter contract",
+                    p.id
+                );
+                println!("{}: counters match", p.id);
             }
         }
     }
@@ -1147,14 +1445,30 @@ mod tests {
         let a = crate::testutil::Sandbox::new("hourly-agent-a");
         let b = crate::testutil::Sandbox::new("hourly-agent-b");
         let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
-        std::fs::write(a.path().join("a.jsonl"), format!("{}\n", codex_record_at(150, 0, 0, "a", &timestamp))).unwrap();
-        std::fs::write(b.path().join("b.jsonl"), format!("{}\n", codex_record_at(20, 0, 0, "b", &timestamp))).unwrap();
+        std::fs::write(
+            a.path().join("a.jsonl"),
+            format!("{}\n", codex_record_at(150, 0, 0, "a", &timestamp)),
+        )
+        .unwrap();
+        std::fs::write(
+            b.path().join("b.jsonl"),
+            format!("{}\n", codex_record_at(20, 0, 0, "b", &timestamp)),
+        )
+        .unwrap();
         let mut monitor = TokenUsageMonitor::new();
         let first = one_root_profile("a", &a.path().to_string_lossy());
         let second = one_root_profile("b", &b.path().to_string_lossy());
         assert_eq!(sum_hourly(&monitor.monitor(&first)), 150);
-        assert_eq!(sum_hourly(&monitor.monitor(&second)), 20, "an agent chart must only use its own source files");
-        assert_eq!(sum_hourly(&monitor.monitor(&first)), 150, "cache reuse cannot contaminate the original agent");
+        assert_eq!(
+            sum_hourly(&monitor.monitor(&second)),
+            20,
+            "an agent chart must only use its own source files"
+        );
+        assert_eq!(
+            sum_hourly(&monitor.monitor(&first)),
+            150,
+            "cache reuse cannot contaminate the original agent"
+        );
     }
 
     #[test]
@@ -1162,15 +1476,30 @@ mod tests {
         let sandbox = crate::testutil::Sandbox::new("overlap-token-roots");
         std::fs::create_dir_all(sandbox.path().join("nested")).unwrap();
         let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
-        std::fs::write(sandbox.path().join("nested/a.jsonl"), format!("{}\n", codex_record_at(150, 0, 0, "a", &timestamp))).unwrap();
+        std::fs::write(
+            sandbox.path().join("nested/a.jsonl"),
+            format!("{}\n", codex_record_at(150, 0, 0, "a", &timestamp)),
+        )
+        .unwrap();
         let mut profile = one_root_profile("a", &sandbox.path().to_string_lossy());
-        profile.token_roots.push(sandbox.path().join("nested").to_string_lossy().into_owned());
+        profile
+            .token_roots
+            .push(sandbox.path().join("nested").to_string_lossy().into_owned());
         let report = TokenUsageMonitor::new().monitor(&profile);
-        assert_eq!(report.usage.tokens24h, 150, "one physical source reached through two roots must not be counted twice");
+        assert_eq!(
+            report.usage.tokens24h, 150,
+            "one physical source reached through two roots must not be counted twice"
+        );
     }
 
     fn codex_record(input: i64, cached: i64, output: i64, response_id: &str) -> String {
-        codex_record_at(input, cached, output, response_id, "2020-01-01T00:00:00.000Z")
+        codex_record_at(
+            input,
+            cached,
+            output,
+            response_id,
+            "2020-01-01T00:00:00.000Z",
+        )
     }
 
     fn codex_record_at(
@@ -1233,7 +1562,8 @@ mod tests {
         // 本机真实一行的数值（codex）：input 43449 / cached 41728 / output 200。
         // Swift 口径 = max(input-cached,0)+output = 1921；
         // 旧 Rust 口径 = input+output+cache_write = 43649（虚高 23 倍，整批 29 倍）。
-        let parsed = parse_usage_line(&codex_record(43_449, 41_728, 200, "resp-1")).expect("应解析");
+        let parsed =
+            parse_usage_line(&codex_record(43_449, 41_728, 200, "resp-1")).expect("应解析");
         assert_eq!(parsed.tokens, 1_921, "缓存命中的上下文不许当新输入全额计");
         assert_ne!(parsed.tokens, 43_649, "43649 是被修掉的那个数");
         // 缓存命中比输入还多时下限为 0，不许出现负数
@@ -1245,11 +1575,18 @@ mod tests {
     fn codex_reads_only_the_token_usage_record_family() {
         // 同一份日志里两族并存（本机 26 份里 21 份两者都有）：只认一族，否则同一笔用量计两遍
         let other_family = r#"{"type":"event_msg","timestamp":"2020-01-01T00:00:00.000Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":50}}}}"#;
-        assert!(parse_usage_line(other_family).is_none(), "另一族不得再被计入");
+        assert!(
+            parse_usage_line(other_family).is_none(),
+            "另一族不得再被计入"
+        );
 
         let parsed = parse_usage_line(&codex_record(1_000, 900, 50, "resp-7")).expect("应解析");
         assert_eq!(parsed.tokens, 150);
-        assert_eq!(parsed.id.as_deref(), Some("resp-7"), "去重键取自 payload.response_id");
+        assert_eq!(
+            parsed.id.as_deref(),
+            Some("resp-7"),
+            "去重键取自 payload.response_id"
+        );
         // 这一族记录里没有模型名：落 unknown，不许编一个
         assert_eq!(parsed.model, "unknown");
     }
@@ -1298,7 +1635,10 @@ mod tests {
 
         let mut monitor = TokenUsageMonitor::new();
         let report = monitor.monitor(&one_root_profile("dedup", &dir.to_string_lossy()));
-        assert_eq!(report.usage.tokens_total, 350, "同一 response_id 抄两遍只算一次");
+        assert_eq!(
+            report.usage.tokens_total, 350,
+            "同一 response_id 抄两遍只算一次"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1310,7 +1650,11 @@ mod tests {
         // 再加一遍（这里是 150+110=260），而正确答案是「按现在这一份算，110」。
         let dir = temp_dir("rewrite");
         let file = dir.join("session.jsonl");
-        std::fs::write(&file, format!("{}\n", codex_record(10_000, 9_000, 1_000, "old-long-id"))).unwrap();
+        std::fs::write(
+            &file,
+            format!("{}\n", codex_record(10_000, 9_000, 1_000, "old-long-id")),
+        )
+        .unwrap();
         let mut monitor = TokenUsageMonitor::new();
         let profile = one_root_profile("rewrite", &dir.to_string_lossy());
         assert_eq!(monitor.monitor(&profile).usage.tokens_total, 2_000);
@@ -1366,7 +1710,11 @@ mod tests {
         let mut monitor = TokenUsageMonitor::new();
         let report = monitor.monitor(&one_root_profile("window", &dir.to_string_lossy()));
         assert_eq!(report.usage.tokens_total, 450, "三条都要进累计");
-        assert_eq!(sum_hourly(&report), 450, "29 天前与 8 天前那两条也得画得出来");
+        assert_eq!(
+            sum_hourly(&report),
+            450,
+            "29 天前与 8 天前那两条也得画得出来"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1384,7 +1732,10 @@ mod tests {
 
         let mut monitor = TokenUsageMonitor::new();
         let report = monitor.monitor(&one_root_profile("fold", &dir.to_string_lossy()));
-        assert_eq!(report.usage.tokens_total, 300, "折入保和：掉出窗口的那条仍计累计");
+        assert_eq!(
+            report.usage.tokens_total, 300,
+            "折入保和：掉出窗口的那条仍计累计"
+        );
         assert_eq!(sum_hourly(&report), 150, "图表只画窗口内的那条");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1431,7 +1782,10 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir()
-            .join(format!("agentisland-tokens-{}-{stamp}-{name}", std::process::id()))
+            .join(format!(
+                "agentisland-tokens-{}-{stamp}-{name}",
+                std::process::id()
+            ))
             .to_string_lossy()
             .to_string()
     }
@@ -1456,36 +1810,55 @@ mod tests {
         let sample = "2026-09-27T02:43:12Z";
         let ms = parse_iso_ms(sample).expect("应能解析");
         assert_eq!(iso_utc_from_ms(ms), "2026-09-27T02:43:12.000Z");
-        assert_eq!(parse_iso_ms(&iso_utc_from_ms(ms)), Some(ms), "秒级必须往返一致");
+        assert_eq!(
+            parse_iso_ms(&iso_utc_from_ms(ms)),
+            Some(ms),
+            "秒级必须往返一致"
+        );
         // 闰年与月末边界（civil_from_days 是自写算法，这里钉住两处易错点）
-        assert_eq!(iso_utc_from_ms(parse_iso_ms("2024-02-29T12:00:00Z").unwrap()),
-                   "2024-02-29T12:00:00.000Z");
-        assert_eq!(iso_utc_from_ms(parse_iso_ms("2026-12-31T23:59:59Z").unwrap()),
-                   "2026-12-31T23:59:59.000Z");
+        assert_eq!(
+            iso_utc_from_ms(parse_iso_ms("2024-02-29T12:00:00Z").unwrap()),
+            "2024-02-29T12:00:00.000Z"
+        );
+        assert_eq!(
+            iso_utc_from_ms(parse_iso_ms("2026-12-31T23:59:59Z").unwrap()),
+            "2026-12-31T23:59:59.000Z"
+        );
     }
 
     #[test]
     fn open_code_source_applies_swift_net_rule_and_role_filter() {
         let path = temp_db("oc.db");
-        seed(&path, &[
-            "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
-            // assistant：10 + 20 + 5 = 35；cache.read 999 **不计**
-            r#"INSERT INTO message VALUES ('s1', '{"role":"assistant","modelID":"oc1","tokens":{"input":10,"output":20,"reasoning":5,"cache":{"read":999}},"cost":0.5}', 1000)"#,
-            // user 行整条不计（五万 token 也不能进账）
-            r#"INSERT INTO message VALUES ('s1', '{"role":"user","modelID":"oc1","tokens":{"input":50000},"cost":9.9}', 1000)"#,
-            // 24h 窗口外的 assistant 行：只进累计
-            r#"INSERT INTO message VALUES ('s2', '{"role":"assistant","modelID":"oc2","tokens":{"input":200,"output":0,"reasoning":0},"cost":2.0}', 0)"#,
-        ]);
+        seed(
+            &path,
+            &[
+                "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
+                // assistant：10 + 20 + 5 = 35；cache.read 999 **不计**
+                r#"INSERT INTO message VALUES ('s1', '{"role":"assistant","modelID":"oc1","tokens":{"input":10,"output":20,"reasoning":5,"cache":{"read":999}},"cost":0.5}', 1000)"#,
+                // user 行整条不计（五万 token 也不能进账）
+                r#"INSERT INTO message VALUES ('s1', '{"role":"user","modelID":"oc1","tokens":{"input":50000},"cost":9.9}', 1000)"#,
+                // 24h 窗口外的 assistant 行：只进累计
+                r#"INSERT INTO message VALUES ('s2', '{"role":"assistant","modelID":"oc2","tokens":{"input":200,"output":0,"reasoning":0},"cost":2.0}', 0)"#,
+            ],
+        );
         let part = query_open_code(&path, 500).expect("正常库应读到");
         assert_eq!(part.tokens_total, 235, "累计 = 35 + 200;user 行不计");
         assert_eq!(part.tokens24, 35, "24h 只算窗口内的 assistant 行");
-        assert!((part.cost_total - 2.5).abs() < 1e-9, "cost={}", part.cost_total);
+        assert!(
+            (part.cost_total - 2.5).abs() < 1e-9,
+            "cost={}",
+            part.cost_total
+        );
         assert!((part.cost24 - 0.5).abs() < 1e-9);
         assert!(!part.cost_estimated, "SQLite 的成本是记录值，不是估价");
         assert_eq!(part.models.len(), 2);
         assert_eq!(part.models[0].model, "oc2", "按 token 降序");
         assert_eq!(part.models[0].tokens, 200);
-        let oc1 = part.models.iter().find(|m| m.model == "oc1").expect("应有 oc1");
+        let oc1 = part
+            .models
+            .iter()
+            .find(|m| m.model == "oc1")
+            .expect("应有 oc1");
         assert_eq!(oc1.tokens, 35);
         assert!(!oc1.cost_estimated);
         let _ = std::fs::remove_file(&path);
@@ -1502,17 +1875,23 @@ mod tests {
         ];
 
         let legacy = temp_db("legacy-oc.db");
-        seed(&legacy, &[
-            "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
-            &rows[0].replace("{T}", "message"),
-            &rows[1].replace("{T}", "message"),
-        ]);
+        seed(
+            &legacy,
+            &[
+                "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
+                &rows[0].replace("{T}", "message"),
+                &rows[1].replace("{T}", "message"),
+            ],
+        );
         let current = temp_db("current-oc.db");
-        seed(&current, &[
-            "CREATE TABLE session_message (session_id TEXT, data TEXT, time_created INTEGER)",
-            &rows[0].replace("{T}", "session_message"),
-            &rows[1].replace("{T}", "session_message"),
-        ]);
+        seed(
+            &current,
+            &[
+                "CREATE TABLE session_message (session_id TEXT, data TEXT, time_created INTEGER)",
+                &rows[0].replace("{T}", "session_message"),
+                &rows[1].replace("{T}", "session_message"),
+            ],
+        );
 
         let legacy_part = query_open_code(&legacy, 500).expect("老 schema 应读到");
         let current_part = query_open_code(&current, 500).expect("当前 schema 也应读到");
@@ -1563,11 +1942,14 @@ mod tests {
         // 一列里只要有一行是 REAL，SUM 就整体变浮点。若直接按 i64 取值会当场失败并让
         // 整份统计消失——正是 Swift 侧「经 Double 中转」防的那件事。
         let path = temp_db("real.db");
-        seed(&path, &[
-            "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
-            r#"INSERT INTO message VALUES ('s', '{"role":"assistant","modelID":"oc1","tokens":{"input":10,"output":0.0,"reasoning":0},"cost":0.5}', 1000)"#,
-            r#"INSERT INTO message VALUES ('s', '{"role":"assistant","modelID":"oc1","tokens":{"input":20,"output":0.0,"reasoning":0},"cost":0.5}', 1000)"#,
-        ]);
+        seed(
+            &path,
+            &[
+                "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER)",
+                r#"INSERT INTO message VALUES ('s', '{"role":"assistant","modelID":"oc1","tokens":{"input":10,"output":0.0,"reasoning":0},"cost":0.5}', 1000)"#,
+                r#"INSERT INTO message VALUES ('s', '{"role":"assistant","modelID":"oc1","tokens":{"input":20,"output":0.0,"reasoning":0},"cost":0.5}', 1000)"#,
+            ],
+        );
         let part = query_open_code(&path, 0).expect("REAL 列也要读得到，而不是整份消失");
         assert_eq!(part.tokens_total, 30);
         let _ = std::fs::remove_file(&path);
@@ -1593,12 +1975,15 @@ mod tests {
         // 且成本保持「记录值」（不置 cost_estimated），模型拆分也要出来。
         let path = temp_db("e2e.db");
         // time_created 用「现在」：24h 口径才有意义（用绝对小数字会落在 1970 年）
-        seed(&path, &[&format!(
-            "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER); \
+        seed(
+            &path,
+            &[&format!(
+                "CREATE TABLE message (session_id TEXT, data TEXT, time_created INTEGER); \
              INSERT INTO message VALUES ('s', '{{\"role\":\"assistant\",\"modelID\":\"oc1\",\
              \"tokens\":{{\"input\":100,\"output\":200,\"reasoning\":300}},\"cost\":1.25}}', {});",
-            now_ms()
-        )]);
+                now_ms()
+            )],
+        );
         let profile = crate::models::AgentProfile {
             bundle_ids: vec![],
             id: "fixture".into(),
@@ -1646,8 +2031,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("session.jsonl"), format!("{}\n", claude_line("claude-3-7-sonnet")))
-            .unwrap();
+        std::fs::write(
+            dir.join("session.jsonl"),
+            format!("{}\n", claude_line("claude-3-7-sonnet")),
+        )
+        .unwrap();
         let profile = crate::models::AgentProfile {
             bundle_ids: vec![],
             id: "jsonl-fixture".into(),
@@ -1669,7 +2057,10 @@ mod tests {
         let mut monitor = TokenUsageMonitor::new();
         let report = monitor.monitor(&profile);
         assert_eq!(report.usage.tokens_total, 4000);
-        assert!(report.usage.cost_estimated, "JSONL 的成本是估出来的，必须带标记");
+        assert!(
+            report.usage.cost_estimated,
+            "JSONL 的成本是估出来的，必须带标记"
+        );
         assert_eq!(report.models24h.len(), 1);
         assert!(report.models24h[0].cost_estimated, "按模型那一层也要带标记");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1680,7 +2071,10 @@ mod tests {
         // 状态索引只回答「最新一条状态」：它不是缺数据，是没这个概念——
         // 因此即便库存在、能打开，也不该贡献任何 token
         let path = temp_db("status.db");
-        seed(&path, &["CREATE TABLE tasks (id TEXT, task_status TEXT, updated_at TEXT)"]);
+        seed(
+            &path,
+            &["CREATE TABLE tasks (id TEXT, task_status TEXT, updated_at TEXT)"],
+        );
         let profile = crate::models::AgentProfile {
             bundle_ids: vec![],
             id: "zcode-fixture".into(),
@@ -1711,7 +2105,6 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
-
 
 #[cfg(test)]
 mod range_tests {
@@ -1782,7 +2175,10 @@ mod range_tests {
         assert!(day_cost > 0.0, "成本也要随区间缩放：{day_cost}");
 
         let (week_tokens, _) = monitor.range_totals(&profile, 7 * 86_400_000, now);
-        assert_eq!(week_tokens, 4_000, "7 天档仍只含最近那条（另一条是 14 天前）");
+        assert_eq!(
+            week_tokens, 4_000,
+            "7 天档仍只含最近那条（另一条是 14 天前）"
+        );
 
         let (month_tokens, month_cost) = monitor.range_totals(&profile, 30 * 86_400_000, now);
         assert_eq!(month_tokens, 8_000, "30 天档两条都在");
@@ -1819,7 +2215,10 @@ mod range_tests {
             category: "assistant".into(),
         };
         let mut monitor = TokenUsageMonitor::new();
-        assert_eq!(monitor.range_totals(&profile, 24 * 3_600_000, now_ms()), (0, 0.0));
+        assert_eq!(
+            monitor.range_totals(&profile, 24 * 3_600_000, now_ms()),
+            (0, 0.0)
+        );
     }
 }
 
@@ -1837,10 +2236,8 @@ mod iso_parsing_tests {
         let ms = parse_iso_ms("2026-09-24T12:34:56.789Z").expect("应当解析得出来");
         // 不写死期望值（那需要另一次可信换算），而是**自洽**地钉：
         // 时分秒各自换算后与整体求和必须一致
-        let expect = days_from_civil(2026, 9, 24) * 86_400_000
-            + 12 * 3_600_000
-            + 34 * 60_000
-            + 56 * 1_000;
+        let expect =
+            days_from_civil(2026, 9, 24) * 86_400_000 + 12 * 3_600_000 + 34 * 60_000 + 56 * 1_000;
         assert_eq!(ms, expect);
         // 毫秒位被丢掉了：这条解析只到秒，而调用方需要的是「新鲜度」不是「精确时刻」
         assert_eq!(ms % 1_000, 0);
@@ -1863,7 +2260,13 @@ mod iso_parsing_tests {
     /// 至少是可解释的。
     #[test]
     fn unrecognisable_shapes_return_none_rather_than_a_guess() {
-        for bad in ["", "not a date", "2026-09-24", "2026-09-24 12:34:56", "T12:34:56"] {
+        for bad in [
+            "",
+            "not a date",
+            "2026-09-24",
+            "2026-09-24 12:34:56",
+            "T12:34:56",
+        ] {
             assert_eq!(parse_iso_ms(bad), None, "{bad:?} 不该被猜成某个时刻");
         }
     }
@@ -1872,13 +2275,28 @@ mod iso_parsing_tests {
     #[test]
     fn the_civil_date_conversion_handles_leap_years_and_month_ends() {
         // 2024-02-29 存在，2023-02-29 不存在 ⇒ 后者应当被折进 3 月而不是 2 月
-        assert_eq!(days_from_civil(2024, 2, 29) - days_from_civil(2024, 2, 28), 1);
-        assert_eq!(days_from_civil(2024, 3, 1) - days_from_civil(2024, 2, 28), 2);
+        assert_eq!(
+            days_from_civil(2024, 2, 29) - days_from_civil(2024, 2, 28),
+            1
+        );
+        assert_eq!(
+            days_from_civil(2024, 3, 1) - days_from_civil(2024, 2, 28),
+            2
+        );
         // 月末连续：2 月末 → 3 月初只差一天
-        assert_eq!(days_from_civil(2024, 3, 1) - days_from_civil(2024, 2, 29), 1);
+        assert_eq!(
+            days_from_civil(2024, 3, 1) - days_from_civil(2024, 2, 29),
+            1
+        );
         // 跨年连续
-        assert_eq!(days_from_civil(2025, 1, 1) - days_from_civil(2024, 12, 31), 1);
+        assert_eq!(
+            days_from_civil(2025, 1, 1) - days_from_civil(2024, 12, 31),
+            1
+        );
         // 世纪闰年：1900 不是闰年，2000 是
-        assert_eq!(days_from_civil(2000, 3, 1) - days_from_civil(2000, 2, 29), 1);
+        assert_eq!(
+            days_from_civil(2000, 3, 1) - days_from_civil(2000, 2, 29),
+            1
+        );
     }
 }

@@ -101,7 +101,12 @@ pub fn build_timeline(range: TokenTimeRange, now_ms: i64) -> Timeline {
     let mut tokens = 0i64;
     let mut cost = 0f64;
     for profile in crate::registry::builtin() {
-        if profile.token_roots.is_empty() && !profile.session_database.as_ref().is_some_and(|db| db.schema == crate::models::SessionSchema::MiniMaxRuntime) {
+        if profile.token_roots.is_empty()
+            && !profile
+                .session_database
+                .as_ref()
+                .is_some_and(|db| db.schema == crate::models::SessionSchema::MiniMaxRuntime)
+        {
             continue;
         }
         let (range_tokens, range_cost) =
@@ -109,7 +114,11 @@ pub fn build_timeline(range: TokenTimeRange, now_ms: i64) -> Timeline {
         let available = profile
             .token_roots
             .iter()
-            .any(|root| std::path::Path::new(root).is_dir()) || profile.session_database.as_ref().is_some_and(|db| db.schema == crate::models::SessionSchema::MiniMaxRuntime && std::path::Path::new(&db.path).is_file());
+            .any(|root| std::path::Path::new(root).is_dir())
+            || profile.session_database.as_ref().is_some_and(|db| {
+                db.schema == crate::models::SessionSchema::MiniMaxRuntime
+                    && std::path::Path::new(&db.path).is_file()
+            });
         // 既没读到用量、也没找到本地统计源的档案不进报告：一行全是 0 的「未发现」
         // 会把「这台机器没装这个工具」混进用量分布里
         if range_tokens == 0 && !available {
@@ -179,13 +188,18 @@ pub fn generate_markdown(timeline: &Timeline, grand_total: &TokenUsage, now_ms: 
     md.push_str("| :--- | :--- | :--- | :--- |\n\n");
     for source in sorted_sources(&timeline.sources) {
         // 按来源 id 解析费率（与 Swift 传 `modelId: s.agentId` 一致）
-        let resolved = crate::cost::resolve_cost(source.cost, Some(&source.agent_id), Some(source.tokens));
+        let resolved =
+            crate::cost::resolve_cost(source.cost, Some(&source.agent_id), Some(source.tokens));
         let fee = if resolved.1.is_empty() {
             "$0.00".to_string()
         } else {
             resolved.1.clone()
         };
-        let status = if source.is_available { "已连接" } else { "未发现" };
+        let status = if source.is_available {
+            "已连接"
+        } else {
+            "未发现"
+        };
         md.push_str(&format!(
             "| `{}` | {} | {} | {} |\n",
             source.agent_id,
@@ -203,13 +217,18 @@ pub fn generate_csv(timeline: &Timeline, now_ms: i64) -> String {
     let mut csv = String::from("\u{FEFF}");
     csv.push_str("报表时间,周期,Agent,Tokens,费用,状态\n");
     for source in sorted_sources(&timeline.sources) {
-        let resolved = crate::cost::resolve_cost(source.cost, Some(&source.agent_id), Some(source.tokens));
+        let resolved =
+            crate::cost::resolve_cost(source.cost, Some(&source.agent_id), Some(source.tokens));
         let fee = if resolved.1.is_empty() {
             "$0.00".to_string()
         } else {
             resolved.1.clone()
         };
-        let status = if source.is_available { "已连接" } else { "未发现" };
+        let status = if source.is_available {
+            "已连接"
+        } else {
+            "未发现"
+        };
         csv.push_str(&format!(
             "\"{}\",\"{}\",\"{}\",{},\"{}\",\"{}\"\n",
             timestamp_text(now_ms),
@@ -225,20 +244,16 @@ pub fn generate_csv(timeline: &Timeline, now_ms: i64) -> String {
 
 pub fn markdown_export(timeline: &Timeline, grand_total: &TokenUsage, now_ms: i64) -> Export {
     Export {
-        filename: crate::audit::default_filename("md", now_ms).replace(
-            "AgentIsland_Audit_",
-            "AgentIsland_TokenReport_",
-        ),
+        filename: crate::audit::default_filename("md", now_ms)
+            .replace("AgentIsland_Audit_", "AgentIsland_TokenReport_"),
         content: generate_markdown(timeline, grand_total, now_ms),
     }
 }
 
 pub fn csv_export(timeline: &Timeline, now_ms: i64) -> Export {
     Export {
-        filename: crate::audit::default_filename("csv", now_ms).replace(
-            "AgentIsland_Audit_",
-            "AgentIsland_TokenReport_",
-        ),
+        filename: crate::audit::default_filename("csv", now_ms)
+            .replace("AgentIsland_Audit_", "AgentIsland_TokenReport_"),
         content: generate_csv(timeline, now_ms),
     }
 }
@@ -300,12 +315,21 @@ mod tests {
             vec![source("claude", 1_200_000, 0.42, true)],
         );
         let md = generate_markdown(&report, &grand(280_000_000, 19.37), 1_700_000_000_000);
-        assert!(md.starts_with("# AgentIsland Token 消费与用量分析报表\n"), "{md}");
+        assert!(
+            md.starts_with("# AgentIsland Token 消费与用量分析报表\n"),
+            "{md}"
+        );
         assert!(md.contains("- 统计周期：最近 30 天 (30d)\n"), "{md}");
-        assert!(md.contains("- 周期内 Token 消耗：**1.20M** (1200000 tokens)\n"), "{md}");
+        assert!(
+            md.contains("- 周期内 Token 消耗：**1.20M** (1200000 tokens)\n"),
+            "{md}"
+        );
         assert!(md.contains("- 周期内费用估算：**$0.42**\n"), "{md}");
         assert!(md.contains("- 累计历史总用量：280.00M ($19.37)\n"), "{md}");
-        assert!(md.contains("| `claude` | 1.20M | $0.42 | 已连接 |\n"), "{md}");
+        assert!(
+            md.contains("| `claude` | 1.20M | $0.42 | 已连接 |\n"),
+            "{md}"
+        );
         assert!(
             md.contains("> 生成自 AgentIsland (macOS AI 智能体监控灵动岛)\n"),
             "{md}"
@@ -327,14 +351,20 @@ mod tests {
         // 未发现的来源：费用格仍是 `$0.00`，由「状态」列去说「未发现」
         let report = timeline(
             TokenTimeRange::Day,
-            vec![source("gemini", 0, 0.0, false), source("claude", 1000, 0.002, true)],
+            vec![
+                source("gemini", 0, 0.0, false),
+                source("claude", 1000, 0.002, true),
+            ],
         );
         let md = generate_markdown(&report, &grand(0, 0.0), 1_700_000_000_000);
         assert!(md.contains("| `gemini` | 0 | $0.00 | 未发现 |\n"), "{md}");
         assert!(!md.contains("| — |"), "费用格不许出现 —：{md}");
         // 小于一分钱写 `<$0.01`（`format_cost` 的口径），而且**不带 `~`**：
         // 这是记录值，不是估的
-        assert!(md.contains("| `claude` | 1000 | <$0.01 | 已连接 |\n"), "{md}");
+        assert!(
+            md.contains("| `claude` | 1000 | <$0.01 | 已连接 |\n"),
+            "{md}"
+        );
     }
 
     /// 估价标记：**行内的 `~`** 才是用户真正看得见的那个信号。
@@ -361,13 +391,19 @@ mod tests {
         );
 
         // 来源 id 不在费率表里 ⇒ 不估、也不标（不许凭空编一个成本）
-        let unpriced = timeline(TokenTimeRange::Day, vec![source("gemini", 1_000, 0.0, true)]);
+        let unpriced = timeline(
+            TokenTimeRange::Day,
+            vec![source("gemini", 1_000, 0.0, true)],
+        );
         let md = generate_markdown(&unpriced, &grand(0, 0.0), 1_700_000_000_000);
         assert!(md.contains("| `gemini` | 1000 | $0.00 | 已连接 |"), "{md}");
         assert!(!md.contains('~'), "费率表里没有的 id 不许估价：{md}");
 
         // 有记录成本就照实写，不估
-        let recorded = timeline(TokenTimeRange::Day, vec![source("claude", 1_000, 0.5, true)]);
+        let recorded = timeline(
+            TokenTimeRange::Day,
+            vec![source("claude", 1_000, 0.5, true)],
+        );
         let md = generate_markdown(&recorded, &grand(0, 0.0), 1_700_000_000_000);
         assert!(md.contains("| `claude` | 1000 | $0.50 | 已连接 |"), "{md}");
         assert!(!md.contains('~'), "{md}");
@@ -396,7 +432,10 @@ mod tests {
     fn the_csv_has_a_bom_and_quotes_the_text_fields() {
         let report = timeline(
             TokenTimeRange::Day,
-            vec![source("claude", 1234, 0.5, true), source("gemini", 0, 0.0, false)],
+            vec![
+                source("claude", 1234, 0.5, true),
+                source("gemini", 0, 0.0, false),
+            ],
         );
         let csv = generate_csv(&report, 1_700_000_000_000);
         assert!(csv.starts_with('\u{FEFF}'), "Excel 需要 BOM，否则中文乱码");
@@ -407,8 +446,14 @@ mod tests {
         // 按用量降序 ⇒ claude（1234）在前、gemini（0）在后
         let claude_row = csv.lines().nth(1).unwrap();
         let gemini_row = csv.lines().nth(2).unwrap();
-        assert!(claude_row.contains("\"claude\",1234,\"$0.50\",\"已连接\""), "{claude_row}");
-        assert!(gemini_row.contains("\"gemini\",0,\"$0.00\",\"未发现\""), "{gemini_row}");
+        assert!(
+            claude_row.contains("\"claude\",1234,\"$0.50\",\"已连接\""),
+            "{claude_row}"
+        );
+        assert!(
+            gemini_row.contains("\"gemini\",0,\"$0.00\",\"未发现\""),
+            "{gemini_row}"
+        );
         // 每行列数固定（Tokens 不加引号，其余加），脚本按逗号切才稳
         for line in csv.lines().skip(1) {
             assert_eq!(line.split(',').count(), 6, "{line}");
@@ -419,7 +464,10 @@ mod tests {
     fn an_export_carries_the_report_filename_shape_and_the_same_instant_as_its_body() {
         let report = timeline(TokenTimeRange::Day, vec![]);
         let export = markdown_export(&report, &grand(0, 0.0), 1_700_000_000_000);
-        assert!(export.filename.starts_with("AgentIsland_TokenReport_"), "{export:?}");
+        assert!(
+            export.filename.starts_with("AgentIsland_TokenReport_"),
+            "{export:?}"
+        );
         assert!(export.filename.ends_with(".md"), "{export:?}");
         let stamp = &export.filename["AgentIsland_TokenReport_".len()..export.filename.len() - 3];
         let compact: String = stamp.chars().filter(|c| c.is_ascii_digit()).collect();

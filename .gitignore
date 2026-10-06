@@ -53,3 +53,6 @@ app/src-tauri/gen/schemas/
 windows/AgentIsland.Wpf/bin/
 windows/AgentIsland.Wpf/obj/
 windows/.vs/
+
+# Python test-script bytecode
+__pycache__/

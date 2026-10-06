@@ -40,7 +40,6 @@ impl BudgetStatus {
     pub fn is_exceeded(&self) -> bool {
         matches!(self, BudgetStatus::Exceeded { .. })
     }
-
 }
 
 impl Default for BudgetStatus {
@@ -80,7 +79,12 @@ impl BudgetTracker {
     /// 评估用量。**只有跨级时**才给 `alert_message`（同一级别不重复报）。
     ///
     /// 返回 `(状态, 可选的一句话说给用户听)`
-    pub fn evaluate(&mut self, used_24h: i64, budget: i64, _now_ms: i64) -> (BudgetStatus, Option<String>) {
+    pub fn evaluate(
+        &mut self,
+        used_24h: i64,
+        budget: i64,
+        _now_ms: i64,
+    ) -> (BudgetStatus, Option<String>) {
         // `now_ms` 目前不参与判定（滚动口径下不需要日历日）。保留参数是为了让调用方
         // 不必在跨日那一刻改接口，也为了让「曾经按自然日重置」这条历史在签名上留个位置。
         if budget <= 0 {
@@ -205,14 +209,17 @@ mod tests {
     fn only_a_fall_below_seventy_five_percent_rearms_the_alert() {
         let mut tracker = BudgetTracker::new();
         tracker.evaluate(900, 1_000, 0); // 报 warning
-        // 回到 80%（仍然 warning 级）：不重新武装，也不重复报
+                                         // 回到 80%（仍然 warning 级）：不重新武装，也不重复报
         let (_, alert) = tracker.evaluate(800, 1_000, 0);
         assert_eq!(alert, None);
         // 落到 75% 以上、80% 以下：级别仍是 normal，但**不**重新武装
         let (status, alert) = tracker.evaluate(760, 1_000, 0);
         assert!(matches!(status, BudgetStatus::Normal { .. }));
         assert_eq!(alert, None);
-        assert_eq!(tracker.last_notified_level, 1, "76% 不重新武装（滞回在下一次越线时才起作用）");
+        assert_eq!(
+            tracker.last_notified_level, 1,
+            "76% 不重新武装（滞回在下一次越线时才起作用）"
+        );
         // 再冲上 80%：因为没重新武装，所以**不报**
         let (_, alert) = tracker.evaluate(820, 1_000, 0);
         assert_eq!(alert, None);
@@ -297,10 +304,25 @@ mod status_predicate_tests {
 
     #[test]
     fn only_the_exceeded_level_counts_as_exceeded() {
-        assert!(BudgetStatus::Exceeded { used: 101, budget: 100, ratio: 1.01 }.is_exceeded());
+        assert!(BudgetStatus::Exceeded {
+            used: 101,
+            budget: 100,
+            ratio: 1.01
+        }
+        .is_exceeded());
         // 预警**不是**超限：80% 那一档要发的是预警而不是「已超」
-        assert!(!BudgetStatus::Warning { used: 85, budget: 100, ratio: 0.85 }.is_exceeded());
-        assert!(!BudgetStatus::Normal { used: 10, budget: 100, ratio: 0.1 }.is_exceeded());
+        assert!(!BudgetStatus::Warning {
+            used: 85,
+            budget: 100,
+            ratio: 0.85
+        }
+        .is_exceeded());
+        assert!(!BudgetStatus::Normal {
+            used: 10,
+            budget: 100,
+            ratio: 0.1
+        }
+        .is_exceeded());
         assert!(!BudgetStatus::Disabled.is_exceeded(), "没设预算时不谈超限");
         let _ = status;
     }

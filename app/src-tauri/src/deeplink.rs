@@ -93,7 +93,10 @@ pub fn parse(url: &str) -> Option<Action> {
             Action::Agent(id)
         }
         "settings" => {
-            let tab = params.get("tab").cloned().unwrap_or_else(|| "general".into());
+            let tab = params
+                .get("tab")
+                .cloned()
+                .unwrap_or_else(|| "general".into());
             Action::Settings(tab)
         }
         "notify" => Action::Notify {
@@ -212,7 +215,10 @@ mod tests {
     fn the_scheme_is_case_insensitive_but_the_rest_is_not() {
         assert_eq!(parse("AGENTISLAND://toggle"), Some(Action::Toggle));
         // 主机段大小写不敏感（系统派发时可能变形），而 id 必须原样
-        assert_eq!(parse("agentisland://Agent?id=claude"), Some(Action::Agent("claude".into())));
+        assert_eq!(
+            parse("agentisland://Agent?id=claude"),
+            Some(Action::Agent("claude".into()))
+        );
     }
 
     #[test]
@@ -290,7 +296,12 @@ mod tests {
         }
         .reveals_window());
         // 其余都要把用户正在看的东西展开
-        for action in [Action::Toggle, Action::Expand, Action::Analytics, Action::Toolbox] {
+        for action in [
+            Action::Toggle,
+            Action::Expand,
+            Action::Analytics,
+            Action::Toolbox,
+        ] {
             assert!(action.reveals_window(), "{action:?} 应当展开窗口");
         }
     }
@@ -356,8 +367,8 @@ mod bundle_registration {
     #[test]
     fn the_src_plist_declares_the_deep_link_scheme() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("读不到 {}", path.display()));
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("读不到 {}", path.display()));
         assert!(
             text.contains("CFBundleURLTypes"),
             "Info.plist 里没有 CFBundleURLTypes —— 深链永远不会被派发到这里"
@@ -373,6 +384,4 @@ mod bundle_registration {
             super::SCHEME
         );
     }
-
-
 }

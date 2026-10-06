@@ -246,7 +246,10 @@ fn candidate_names(cli: &str) -> Vec<String> {
 }
 
 pub fn scan_clis(names: &[String]) -> HashSet<String> {
-    let mut dirs = path_list().into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    let mut dirs = path_list()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
     dirs.extend(extra_dirs());
     let mut found = HashSet::new();
     for cli in names {
@@ -400,7 +403,10 @@ mod tests {
             bundle_scanner(bundles(&["com.example.app"], true)),
         );
         cache.refresh();
-        assert_eq!(cache.is_installed(&profile_with(&["fixture"], &[])), Some(true));
+        assert_eq!(
+            cache.is_installed(&profile_with(&["fixture"], &[])),
+            Some(true)
+        );
         assert_eq!(
             cache.is_installed(&profile_with(&["other"], &["com.example.app"])),
             Some(true)
@@ -420,7 +426,10 @@ mod tests {
         let gui = profile_with(&["Code"], &["com.microsoft.VSCode"]);
         assert_eq!(cache.is_installed(&gui), None);
         // 纯 CLI 档案没有 bundle id，不受这条影响——否定成立
-        assert_eq!(cache.is_installed(&profile_with(&["codex"], &[])), Some(false));
+        assert_eq!(
+            cache.is_installed(&profile_with(&["codex"], &[])),
+            Some(false)
+        );
     }
 
     #[test]
@@ -440,7 +449,10 @@ mod tests {
             bundle_scanner(bundles(&[], true)),
         );
         cache.refresh();
-        assert_eq!(cache.is_installed(&profile_with(&["fixture"], &[])), Some(true));
+        assert_eq!(
+            cache.is_installed(&profile_with(&["fixture"], &[])),
+            Some(true)
+        );
         cache.refresh();
         assert_eq!(
             cache.is_installed(&profile_with(&["fixture"], &[])),
@@ -467,7 +479,6 @@ mod tests {
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-
     #[test]
     fn plist_reader_takes_xml_and_refuses_binary() {
         let xml = br#"<?xml version="1.0"?>
@@ -475,7 +486,10 @@ mod tests {
   <key>CFBundleIdentifier</key>
   <string>com.example.app</string>
 </dict></plist>"#;
-        assert_eq!(bundle_id_from_plist(xml).as_deref(), Some("com.example.app"));
+        assert_eq!(
+            bundle_id_from_plist(xml).as_deref(),
+            Some("com.example.app")
+        );
         assert_eq!(bundle_id_from_plist(b"bplist00\x00\x01binary"), None);
         assert_eq!(bundle_id_from_plist(b"not a plist"), None);
     }
@@ -530,10 +544,16 @@ mod tests {
         );
         // 没装：CLI 名字查得到，文件不存在
         cache.refresh();
-        assert_eq!(cache.is_installed(&profile_with(&["fixture"], &[])), Some(false));
+        assert_eq!(
+            cache.is_installed(&profile_with(&["fixture"], &[])),
+            Some(false)
+        );
         // 装上：同一份缓存重扫后转为命中
         std::fs::write(dir.join("fixture"), b"#!/bin/sh\n").unwrap();
         cache.refresh();
-        assert_eq!(cache.is_installed(&profile_with(&["fixture"], &[])), Some(true));
+        assert_eq!(
+            cache.is_installed(&profile_with(&["fixture"], &[])),
+            Some(true)
+        );
     }
 }

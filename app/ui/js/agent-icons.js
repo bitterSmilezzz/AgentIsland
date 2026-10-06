@@ -6,7 +6,7 @@ export const agentIdentities = Object.freeze({
   claude: ['Claude', 'claude', '#a55d40', '#e3a58a'],
   codex: ['ChatGPT / Codex', 'codex', undefined, undefined, 'chatgpt.png'],
   cursor: ['Cursor', 'cursor'],
-  vscode: ['VS Code', 'vscode', '#326c99', '#8fbce0'],
+  vscode: ['VS Code', 'vscode', '#326c99', '#8fbce0', 'vscode.png'],
   cline: ['Cline', 'cline'],
   'roo-code': ['Roo Code', 'roocode'],
   opencode: ['OpenCode', 'opencode'],
@@ -15,7 +15,9 @@ export const agentIdentities = Object.freeze({
   goose: ['Goose', 'goose', '#716642', '#cbc09b'],
   aider: ['Aider', 'aider', '#476d58', '#9ac5ac'],
   windsurf: ['Windsurf', 'windsurf', '#38786f', '#96c8be'],
-  trae: ['Trae', 'trae', '#3f7559', '#98c7aa', 'trae.png'],
+  traework: ['TraeWork', 'trae', undefined, undefined, 'traework.png'],
+  doubaowork: ['豆包工作', 'doubaowork', undefined, undefined, 'doubaowork.png'],
+  trae: ['Trae CN', 'trae', '#3f7559', '#98c7aa', 'trae.png'],
   qoder: ['Qoder', 'qoder', '#715b9b', '#bba8db', 'qoder.png'],
   // This registry id is Tencent ima.copilot, not GitHub Copilot.
   copilot: ['ima.copilot', 'ima', '#5b6898', '#abb7df', 'ima.svg'],
@@ -25,7 +27,6 @@ export const agentIdentities = Object.freeze({
   hermes: ['Hermes Agent', 'hermesagent', '#92733f', '#d6c091'],
   continue: ['Continue', 'continue', '#52715b', '#a9c6af'],
   dsh: ['DeepSeek Harness', 'deepseek', '#4a65a2', '#a6bbed', 'dsh.svg'],
-  'vibe-usage': ['Vibe Usage', 'vibeusage', '#806946', '#d1bb96', 'vibeusage.png'],
   openviking: ['OpenViking', 'openviking', '#616993', '#b1b9de', 'openviking.svg'],
 });
 
@@ -34,9 +35,10 @@ export const agentIdentities = Object.freeze({
 const artworkScale = Object.freeze({
   'workbuddy.png': 128 / 102, 'workbuddyai.png': 128 / 102,
   'minimaxcode.png': 128 / 102, 'qoder.png': 128 / 100,
-  'dim.png': 128 / 104, 'vibeusage.png': 128 / 104,
+  'dim.png': 128 / 104,
   'chatgpt.png': 128 / 104, 'zcode.png': 128 / 105,
-  'mimodesktop.png': 128 / 105,
+  'doubaowork.png': 128 / 104, 'mimodesktop.png': 128 / 105, 'vscode.png': 128 / 104,
+  'traework.png': 128 / 104,
 });
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch =>

@@ -102,8 +102,6 @@ pub enum Signal {
     Active(String, Option<String>),
 }
 
-
-
 /// 会话尾部强语义解析（genericTail 方言族）。
 /// 只读尾部有界字节；解析失败返回无信号，绝不谎报待机。
 /// **已经有解析器的方言**。
@@ -154,7 +152,7 @@ pub fn probe_dialect(
         // 已声明、尚无解析器：如实无信号，**不拿猜的解析器顶上去**
         return (SessionProbe::default(), Context::default());
     }
-    (probe_by_id(profile_id, path), Context::default())
+    probe_by_id_context(profile_id, path)
 }
 
 /// Qoder 的会话定位：取 `session_dirs` 下**最近修改**的那个 `.jsonl`。
@@ -243,26 +241,36 @@ fn probe_antigravity_dialect(path: &str) -> (SessionProbe, crate::models::Sessio
 }
 
 fn probe_by_id(profile_id: &str, path: &str) -> SessionProbe {
+    probe_by_id_context(profile_id, path).0
+}
+
+fn probe_by_id_context(
+    profile_id: &str,
+    path: &str,
+) -> (SessionProbe, crate::models::SessionActiveContext) {
     // 「读不到」**必须**留下理由：此前这里把每种失败都塌成「无信号」，
     // 于是界面上「会话源读不到」与「这个 Agent 真没在忙」完全一样
     let lines = match read_tail_lines(path) {
         Ok(l) => l,
         Err(failure) => {
-            return SessionProbe {
-                signal: None,
-                subagent_count: 0,
-                health: Some(SessionProbeHealth {
-                    failure,
-                    path: path.to_string(),
-                    observed_at: 0, // 由引擎按采样时钟盖章
-                }),
-            }
+            return (
+                SessionProbe {
+                    signal: None,
+                    subagent_count: 0,
+                    health: Some(SessionProbeHealth {
+                        failure,
+                        path: path.to_string(),
+                        observed_at: 0, // 由引擎按采样时钟盖章
+                    }),
+                },
+                Default::default(),
+            );
         }
     };
     if lines.is_empty() {
-        return SessionProbe::default();
+        return (SessionProbe::default(), Default::default());
     }
-    match profile_id {
+    let probe = match profile_id {
         "claude" => probe_claude(&lines, path),
         "codex" => probe_codex(&lines, path),
         // Cline / Roo Code 的 `ui_messages.json` 是**一个跨行 JSON 数组**，
@@ -270,8 +278,35 @@ fn probe_by_id(profile_id: &str, path: &str) -> SessionProbe {
         // **逐行方言**成立，不能在这里统一判
         "cline" | "roo-code" | "roo" => probe_cline(&lines, path),
         "zcode" => probe_zcode(&lines, path),
-        _ => SessionProbe { signal: None, subagent_count: 0, health: None },
+        _ => SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: None,
+        },
+    };
+    let mut context = crate::models::SessionActiveContext::default();
+    if matches!(profile_id, "codex" | "claude") {
+        context.artifact = crate::task_artifacts::selected(&lines, path, probe.signal.as_ref());
     }
+    if profile_id == "claude" {
+        context.attention_kind =
+            crate::task_artifacts::claude_attention_kind(&lines, path, probe.signal.as_ref());
+    }
+    #[cfg(target_os = "macos")]
+    if profile_id == "claude" {
+        let roots = dirs::home_dir()
+            .map(|home| vec![home.join(".claude/projects"), home.join(".claude/sessions")])
+            .unwrap_or_default();
+        let version = crate::task_artifacts::selected_plan_version(
+            &lines,
+            path,
+            probe.signal.as_ref(),
+            &roots,
+        );
+        context.plan_identity_unavailable = version.is_err();
+        context.plan_event_version = version.ok().flatten();
+    }
+    (probe, context)
 }
 
 // Cache bounded raw lines on the sampling thread. Semantic age, state and
@@ -294,7 +329,7 @@ thread_local! {
 const TAIL_MEMO_BYTES: usize = 4 * 1024 * 1024;
 const TAIL_MEMO_ENTRY_BYTES: usize = 512 * 1024;
 
-fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
+pub(crate) fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
     // model-io 一类的会话文件单行可达数 MB（请求体全量内嵌），
     // 固定小窗口里可能没有完整行。改为：读末尾大缓冲 → 以最后一个 \n 为界，
     // 只保留缓冲内的完整行（首段残行丢弃）。
@@ -302,29 +337,43 @@ fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
     // **每一类失败给出不同的理由**（与 Swift `SessionProbeFailure` 同形）：
     // 打不开、读不了、太大，是三件事——「都是读不到」会把修法也一起丢掉
     let mut f = File::open(path).map_err(|_| SessionProbeFailure::UnreadableFile)?;
-    let metadata = f.metadata().map_err(|_| SessionProbeFailure::UnreadableFile)?;
+    let metadata = f
+        .metadata()
+        .map_err(|_| SessionProbeFailure::UnreadableFile)?;
     let len = metadata.len();
     #[cfg(unix)]
-    let inode = { use std::os::unix::fs::MetadataExt; metadata.ino() };
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        metadata.ino()
+    };
     #[cfg(not(unix))]
     let inode = 0;
-    let stamp = TailStamp { len, modified: metadata.modified().ok(), inode };
+    let stamp = TailStamp {
+        len,
+        modified: metadata.modified().ok(),
+        inode,
+    };
     let cached = TAIL_MEMO.with(|memo| {
         let mut memo = memo.borrow_mut();
         let index = memo.iter().position(|entry| entry.path == path)?;
         let entry = memo.remove(index)?;
-        if entry.stamp != stamp || stamp.modified.is_none() { return None; }
+        if entry.stamp != stamp || stamp.modified.is_none() {
+            return None;
+        }
         let lines = entry.lines.clone();
         memo.push_back(entry);
         Some(lines)
     });
-    if let Some(lines) = cached { return Ok(lines); }
+    if let Some(lines) = cached {
+        return Ok(lines);
+    }
     // 超出上限是**有意的降级**而非故障：单行可达数 MB，固定小窗口里可能没有完整行
     let start = len.saturating_sub(MAX_TAIL);
     f.seek(SeekFrom::Start(start))
         .map_err(|_| SessionProbeFailure::UnreadableFile)?;
     let mut bytes = Vec::new();
-    f.take(MAX_TAIL).read_to_end(&mut bytes)
+    f.take(MAX_TAIL)
+        .read_to_end(&mut bytes)
         .map_err(|_| SessionProbeFailure::UnreadableFile)?;
     // A byte window can start inside a UTF-8 character. Drop the incomplete first
     // line before decoding, rather than treating a valid transcript as unreadable.
@@ -339,15 +388,27 @@ fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
     let text = std::str::from_utf8(complete).map_err(|_| SessionProbeFailure::UnreadableFile)?;
     // Only allocate the last 600 non-empty lines; removing the first element
     // repeatedly copies the remaining vector and becomes quadratic on busy logs.
-    let mut lines: Vec<String> = text.lines().rev().filter(|line| !line.trim().is_empty())
-        .take(600).map(str::to_owned).collect();
+    let mut lines: Vec<String> = text
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(600)
+        .map(str::to_owned)
+        .collect();
     lines.reverse();
     let bytes: usize = lines.iter().map(String::len).sum();
     if bytes <= TAIL_MEMO_ENTRY_BYTES && stamp.modified.is_some() {
         TAIL_MEMO.with(|memo| {
             let mut memo = memo.borrow_mut();
-            memo.push_back(TailMemo { path: path.into(), stamp, lines: lines.clone(), bytes });
-            while memo.len() > 16 || memo.iter().map(|entry| entry.bytes).sum::<usize>() > TAIL_MEMO_BYTES {
+            memo.push_back(TailMemo {
+                path: path.into(),
+                stamp,
+                lines: lines.clone(),
+                bytes,
+            });
+            while memo.len() > 16
+                || memo.iter().map(|entry| entry.bytes).sum::<usize>() > TAIL_MEMO_BYTES
+            {
                 memo.pop_front();
             }
         });
@@ -355,7 +416,14 @@ fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
     Ok(lines)
 }
 
-fn fingerprint(path: &str, key: &str) -> String {
+/// On-demand readers must not retain transcript text in a pooled worker's tail cache.
+pub(crate) fn read_tail_lines_transient(path: &str) -> Result<Vec<String>, SessionProbeFailure> {
+    let result = read_tail_lines(path);
+    TAIL_MEMO.with(|memo| memo.borrow_mut().retain(|entry| entry.path != path));
+    result
+}
+
+pub(crate) fn fingerprint(path: &str, key: &str) -> String {
     format!("{:x}:{:x}", md5_lite(path), md5_lite(key))
 }
 
@@ -384,7 +452,10 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
 
     // 读到了一堆行、却**没有一行**解析得出 JSON ⇒ 「我们读不懂这份文件」，
     // 而不是「读懂了、确实没事」。这两件事在 `doctor` 里必须分开说。
-    if !lines.iter().any(|l| serde_json::from_str::<Value>(l).is_ok()) {
+    if !lines
+        .iter()
+        .any(|l| serde_json::from_str::<Value>(l).is_ok())
+    {
         return undecodable(path);
     }
 
@@ -394,11 +465,17 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
         if last_interruption.is_some_and(|cut| index <= cut) {
             break;
         }
-        let Ok(doc) = serde_json::from_str::<Value>(line) else { continue };
-        let obj = match doc.as_object() { Some(o) => o, None => continue };
+        let Ok(doc) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let obj = match doc.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
         let type_ = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if obj.get("isSidechain") == Some(&Value::Bool(true)) {
             sidechains += 1;
+            continue; // A child transcript entry must not replace the main session's state.
         }
         if type_ != "assistant" {
             continue;
@@ -411,13 +488,13 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
             continue;
         };
 
-        let mut tool_use: Option<&Value> = None;
+        let mut tools = Vec::new();
         let mut has_text = false;
         let mut text = String::new();
         for item in content {
             let it = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
             if it == "tool_use" {
-                tool_use = Some(item);
+                tools.push(item);
             } else if it == "text" {
                 has_text = true;
                 if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
@@ -426,30 +503,50 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
             }
         }
 
-        if let Some(tu) = tool_use {
-            let tool_id = tu.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let tool_name = tu.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let tool_input = tu.get("input").cloned().unwrap_or(Value::Null);
-            let closed = tail_has_tool_result(lines, tool_id);
-
-            if !closed {
-                if tool_name == "AskUserQuestion" || tool_name == "ExitPlanMode" {
-                    let question = claude_question_text(&tool_input)
-                        .unwrap_or_else(|| "等待你确认".into());
-                    return SessionProbe {
-                        signal: Some(Signal::Attention(fingerprint(path, tool_id), question)),
-                        subagent_count: sidechains,
-                        health: None,
+        if !tools.is_empty() {
+            // Human gates take precedence within a parallel batch. A closed trailing
+            // call cannot conceal an earlier unanswered question or plan approval.
+            let pending: Vec<_> = tools
+                .into_iter()
+                .rev()
+                .filter(|tu| {
+                    tu.get("id").and_then(Value::as_str).is_some_and(|id| {
+                        !id.is_empty()
+                            && id.len() <= 256
+                            && !id.chars().any(char::is_control)
+                            && !tail_has_tool_result(&lines[index + 1..], id)
+                    })
+                })
+                .collect();
+            let chosen = pending
+                .iter()
+                .find(|tu| {
+                    matches!(
+                        tu.get("name").and_then(Value::as_str),
+                        Some("AskUserQuestion" | "ExitPlanMode")
+                    )
+                })
+                .or_else(|| pending.first());
+            if let Some(tu) = chosen {
+                let id = tu.get("id").and_then(Value::as_str).unwrap();
+                let name = tu.get("name").and_then(Value::as_str).unwrap_or("工具");
+                let input = tu.get("input").unwrap_or(&Value::Null);
+                let signal = if matches!(name, "AskUserQuestion" | "ExitPlanMode") {
+                    let question = if name == "AskUserQuestion" {
+                        claude_question_text(input).unwrap_or_else(|| "请回答问题".into())
+                    } else {
+                        "请确认实现方案".into()
                     };
-                }
-                let action = describe_claude_tool(tool_name, &tool_input);
+                    Signal::Attention(fingerprint(path, id), question)
+                } else {
+                    Signal::Active(fingerprint(path, id), describe_claude_tool(name, input))
+                };
                 return SessionProbe {
-                    signal: Some(Signal::Active(fingerprint(path, tool_id), action)),
+                    signal: Some(signal),
                     subagent_count: sidechains,
                     health: None,
                 };
             }
-            // 工具已收口：继续向前找更早的未收口调用
             continue;
         }
 
@@ -462,7 +559,11 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
             };
         }
     }
-    SessionProbe { signal: None, subagent_count: sidechains, health: None }
+    SessionProbe {
+        signal: None,
+        subagent_count: sidechains,
+        health: None,
+    }
 }
 
 /// 中断短语表。与 Swift `AgentSessionInspector.interruptionPhrases` 逐条同值——
@@ -496,6 +597,9 @@ fn is_interruption_notice(line: &str) -> bool {
     let Ok(doc) = serde_json::from_str::<Value>(line) else {
         return false;
     };
+    if doc.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
     let type_ = doc.get("type").and_then(|v| v.as_str()).unwrap_or("");
     if type_ == "user" {
         return true;
@@ -513,7 +617,14 @@ fn tail_has_tool_result(lines: &[String], tool_use_id: &str) -> bool {
         if !line.contains(tool_use_id) {
             continue;
         }
-        let Ok(doc) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(doc) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if doc.get("type").and_then(Value::as_str) != Some("user")
+            || doc.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        {
+            continue;
+        }
         let Some(content) = doc
             .get("message")
             .and_then(|m| m.get("content"))
@@ -547,7 +658,18 @@ fn one_line(s: &str, max: usize) -> String {
 }
 
 fn describe_claude_tool(name: &str, input: &Value) -> Option<String> {
-    let get = |key: &str| input.get(key).and_then(|v| v.as_str()).map(|s| s.to_string());
+    let secret = input
+        .get("isSecret")
+        .or_else(|| input.get("is_secret"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    let get = |key: &str| {
+        input
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|text| !secret && !crate::private_text::known_private(text))
+            .map(|s| s.to_string())
+    };
     Some(match name {
         "Bash" | "BashOutput" | "KillShell" => match get("command") {
             Some(c) => format!("运行: {}", one_line(&c, 100)),
@@ -579,14 +701,32 @@ fn describe_claude_tool(name: &str, input: &Value) -> Option<String> {
 }
 
 fn claude_question_text(input: &Value) -> Option<String> {
-    if let Some(qs) = input.get("questions").and_then(|v| v.as_array()) {
-        for q in qs {
-            if let Some(t) = q.get("question").and_then(|v| v.as_str()) {
-                return Some(t.to_string());
-            }
-        }
+    let secret = |value: &Value| {
+        value
+            .get("isSecret")
+            .or_else(|| value.get("is_secret"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    };
+    if secret(input) {
+        return None;
     }
-    input.get("message").and_then(|v| v.as_str()).map(|s| s.to_string())
+    let text = if let Some(qs) = input.get("questions").and_then(Value::as_array) {
+        if qs.iter().any(secret) {
+            return None;
+        }
+        qs.iter().find_map(|q| {
+            q.get("question")
+                .and_then(Value::as_str)
+                .filter(|t| !t.trim().is_empty())
+        })
+    } else {
+        input.get("message").and_then(Value::as_str)
+    }?;
+    if text.trim().is_empty() || crate::private_text::known_private(text) {
+        return None;
+    }
+    Some(one_line(text, 140))
 }
 
 // MARK: Codex rollout JSONL
@@ -594,30 +734,47 @@ fn claude_question_text(input: &Value) -> Option<String> {
 fn probe_codex(lines: &[String], path: &str) -> SessionProbe {
     // Read the bounded tail in order: tool outputs are only meaningful when they
     // resolve a call with the same ID. Accounting and ordinary messages are neutral.
-    if !lines.iter().any(|l| serde_json::from_str::<Value>(l).is_ok()) {
+    if !lines
+        .iter()
+        .any(|l| serde_json::from_str::<Value>(l).is_ok())
+    {
         return undecodable(path);
     }
     let mut open: HashMap<String, (usize, String, bool, String)> = HashMap::new();
     let mut completion: Option<String> = None;
     for (index, line) in lines.iter().enumerate() {
-        let Ok(doc) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(doc) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         let type_ = doc.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if type_ != "response_item" && type_ != "event_msg" {
             continue;
         }
-        let Some(payload) = doc.get("payload") else { continue };
+        let Some(payload) = doc.get("payload") else {
+            continue;
+        };
         let pt = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match pt {
             "function_call" | "custom_tool_call" => {
-                let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("command");
-                let args = payload.get("arguments").or_else(|| payload.get("input"))
-                    .and_then(|v| v.as_str()).unwrap_or("");
-                let id = payload.get("call_id").and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty()).map(str::to_owned)
+                let name = payload
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("command");
+                let args = payload
+                    .get("arguments")
+                    .or_else(|| payload.get("input"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let id = payload
+                    .get("call_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
                     .unwrap_or_else(|| format!("record-{index}"));
                 let question = name == "request_user_input";
                 let description = if question {
-                    serde_json::from_str::<Value>(args).ok()
+                    serde_json::from_str::<Value>(args)
+                        .ok()
                         .and_then(|input| claude_question_text(&input))
                         .unwrap_or_else(|| "等待你确认".into())
                 } else {
@@ -632,7 +789,9 @@ fn probe_codex(lines: &[String], path: &str) -> SessionProbe {
                 }
             }
             "task_complete" => {
-                let turn = payload.get("turn_id").and_then(|v| v.as_str())
+                let turn = payload
+                    .get("turn_id")
+                    .and_then(|v| v.as_str())
                     .unwrap_or(line);
                 completion = Some(fingerprint(path, turn));
             }
@@ -644,17 +803,26 @@ fn probe_codex(lines: &[String], path: &str) -> SessionProbe {
             _ => {}
         }
     }
-    if let Some((id, (_, _, question, description))) = open.iter()
-        .max_by_key(|(_, (index, _, _, _))| index) {
+    if let Some((id, (_, _, question, description))) =
+        open.iter().max_by_key(|(_, (index, _, _, _))| index)
+    {
         let id = fingerprint(path, id);
         let signal = if *question {
             Signal::Attention(id, description.clone())
         } else {
             Signal::Active(id, Some(description.clone()))
         };
-        return SessionProbe { signal: Some(signal), subagent_count: 0, health: None };
+        return SessionProbe {
+            signal: Some(signal),
+            subagent_count: 0,
+            health: None,
+        };
     }
-    SessionProbe { signal: completion.map(Signal::Completed), subagent_count: 0, health: None }
+    SessionProbe {
+        signal: completion.map(Signal::Completed),
+        subagent_count: 0,
+        health: None,
+    }
 }
 
 // MARK: Cline / Roo ui_messages.json（JSON 数组投影）
@@ -676,13 +844,25 @@ fn undecodable(path: &str) -> SessionProbe {
 fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
     let joined: String = lines.concat();
     let Ok(doc) = serde_json::from_str::<Value>(&joined) else {
-        return SessionProbe { signal: None, subagent_count: 0, health: None };
+        return SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: None,
+        };
     };
     let Some(arr) = doc.as_array() else {
-        return SessionProbe { signal: None, subagent_count: 0, health: None };
+        return SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: None,
+        };
     };
     let Some(el) = arr.last() else {
-        return SessionProbe { signal: None, subagent_count: 0, health: None };
+        return SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: None,
+        };
     };
     // 当前这条消息在数组里的下标。只有看最后一条时它就是 `len-1`，
     // 但**要显式取出来**：下面 attention 分支的指纹靠它区分「同一条」与「新一条」。
@@ -696,7 +876,11 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
         .to_string();
 
     if matches!(ask, "command" | "tool" | "followup" | "plan_mode_respond") {
-        let msg = if text.is_empty() { "等待你确认".to_string() } else { one_line(&text, 80) };
+        let msg = if text.is_empty() {
+            "等待你确认".to_string()
+        } else {
+            one_line(&text, 80)
+        };
         return SessionProbe {
             signal: Some(Signal::Attention(
                 // **指纹里必须带这条消息在数组里的下标。**
@@ -739,12 +923,19 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
     }
     if say == "completion_result" {
         return SessionProbe {
-            signal: Some(Signal::Completed(fingerprint(path, &text.chars().take(64).collect::<String>()))),
+            signal: Some(Signal::Completed(fingerprint(
+                path,
+                &text.chars().take(64).collect::<String>(),
+            ))),
             subagent_count: 0,
             health: None,
         };
     }
-    SessionProbe { signal: None, subagent_count: 0, health: None }
+    SessionProbe {
+        signal: None,
+        subagent_count: 0,
+        health: None,
+    }
 }
 
 // MARK: - StatusIndex 方言（Swift `inspectStatusDatabase`）
@@ -791,13 +982,7 @@ const REQUEST_STATES: [&str; 15] = [
 ];
 
 /// 完成态词表（Swift 同口径的五个）
-const COMPLETED_STATES: [&str; 5] = [
-    "completed",
-    "complete",
-    "done",
-    "succeeded",
-    "success",
-];
+const COMPLETED_STATES: [&str; 5] = ["completed", "complete", "done", "succeeded", "success"];
 
 /// 库文件保质期：24h（Swift `fileAge(path) <= 24 * 3600`）
 const STATUS_INDEX_MAX_AGE_SECS: f64 = 24.0 * 3600.0;
@@ -833,6 +1018,16 @@ pub fn probe_status_index(
     file_age_secs: f64,
     now_ms: i64,
 ) -> (SessionProbe, Option<SessionProbeFailure>) {
+    probe_status_index_source(database, file_age_secs, now_ms, &mut None)
+}
+
+pub(crate) fn probe_status_index_source(
+    database: &crate::models::SessionDatabase,
+    file_age_secs: f64,
+    now_ms: i64,
+    source_keys: &mut Option<crate::models::DatabaseSource>,
+) -> (SessionProbe, Option<SessionProbeFailure>) {
+    *source_keys = None;
     if file_age_secs > STATUS_INDEX_MAX_AGE_SECS {
         return (SessionProbe::default(), None);
     }
@@ -840,7 +1035,9 @@ pub fn probe_status_index(
         // 档案声明了这一方言却没给查询：**说清是读不到**，而不是当成「没有终态」
         return (
             SessionProbe::default(),
-            Some(SessionProbeFailure::UnreadableDatabase("档案声明了 statusIndex 方言却没给 status_sql".into())),
+            Some(SessionProbeFailure::UnreadableDatabase(
+                "档案声明了 statusIndex 方言却没给 status_sql".into(),
+            )),
         );
     };
     let connection = match crate::sqlite::open_readonly(&database.path) {
@@ -861,16 +1058,23 @@ pub fn probe_status_index(
         Err(error) => {
             return (
                 SessionProbe::default(),
-                Some(SessionProbeFailure::UnreadableDatabase(format!("{} · 查询：{sql}", error))),
+                Some(SessionProbeFailure::UnreadableDatabase(format!(
+                    "{} · 查询：{sql}",
+                    error
+                ))),
             )
         }
     };
+    let scoped = stmt.column_count() > 3;
     let mut rows = match stmt.query([]) {
         Ok(rows) => rows,
         Err(error) => {
             return (
                 SessionProbe::default(),
-                Some(SessionProbeFailure::UnreadableDatabase(format!("{} · 查询：{sql}", error))),
+                Some(SessionProbeFailure::UnreadableDatabase(format!(
+                    "{} · 查询：{sql}",
+                    error
+                ))),
             )
         }
     };
@@ -882,13 +1086,28 @@ pub fn probe_status_index(
         Err(error) => {
             return (
                 SessionProbe::default(),
-                Some(SessionProbeFailure::UnreadableDatabase(format!("{error} · 查询：{sql}"))),
+                Some(SessionProbeFailure::UnreadableDatabase(format!(
+                    "{error} · 查询：{sql}"
+                ))),
             )
         }
     };
     let id: String = row.get(0).unwrap_or_default();
-    let status: String = row.get::<_, Option<String>>(1).unwrap_or_default().unwrap_or_default();
-    let raw_time: f64 = row.get::<_, Option<f64>>(2).unwrap_or_default().unwrap_or_default();
+    let keys = if scoped {
+        row.get::<_, String>(3)
+            .ok()
+            .and_then(|scope| database_source_keys(vec![scope, id.clone()]))
+    } else {
+        database_source_keys(vec![id.clone()])
+    };
+    let status: String = row
+        .get::<_, Option<String>>(1)
+        .unwrap_or_default()
+        .unwrap_or_default();
+    let raw_time: f64 = row
+        .get::<_, Option<f64>>(2)
+        .unwrap_or_default()
+        .unwrap_or_default();
 
     // 毫秒 / 秒 epoch 兼容（Swift 同一条）：有的产品写秒，有的写毫秒
     let epoch = if raw_time > MILLIS_EPOCH_FLOOR {
@@ -902,7 +1121,10 @@ pub fn probe_status_index(
     } else {
         file_age_secs
     };
-    let fingerprint = fingerprint(&database.path, &if id.is_empty() { &database.path } else { &id });
+    let fingerprint = fingerprint(
+        &database.path,
+        &if id.is_empty() { &database.path } else { &id },
+    );
     let normalized_status = normalized(&status);
 
     if REQUEST_STATES.contains(&normalized_status.as_str()) {
@@ -910,11 +1132,20 @@ pub fn probe_status_index(
         let approval = normalized_status.contains("approval")
             || normalized_status.contains("permission")
             || normalized_status.contains("confirm");
+        *source_keys = keys.map(|mut source| {
+            source.revision = Some(raw_time.to_bits().to_string());
+            source
+        });
         return (
             SessionProbe {
                 signal: Some(Signal::Attention(
                     fingerprint,
-                    if approval { "等待你批准操作" } else { "等待你选择或确认" }.into(),
+                    if approval {
+                        "等待你批准操作"
+                    } else {
+                        "等待你选择或确认"
+                    }
+                    .into(),
                 )),
                 subagent_count: 0,
                 health: None,
@@ -925,6 +1156,10 @@ pub fn probe_status_index(
     if COMPLETED_STATES.contains(&normalized_status.as_str())
         && age <= STATUS_COMPLETED_MAX_AGE_SECS
     {
+        *source_keys = keys.map(|mut source| {
+            source.revision = Some(raw_time.to_bits().to_string());
+            source
+        });
         return (
             SessionProbe {
                 signal: Some(Signal::Completed(fingerprint)),
@@ -958,9 +1193,15 @@ fn now_secs() -> f64 {
 
 fn probe_zcode(lines: &[String], path: &str) -> SessionProbe {
     for line in lines.iter().rev() {
-        let Ok(doc) = serde_json::from_str::<Value>(line) else { continue };
-        let Some(resp) = doc.get("response") else { continue };
-        let Some(tool_calls) = resp.get("toolCalls").and_then(|v| v.as_array()) else { continue };
+        let Ok(doc) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(resp) = doc.get("response") else {
+            continue;
+        };
+        let Some(tool_calls) = resp.get("toolCalls").and_then(|v| v.as_array()) else {
+            continue;
+        };
 
         // 取最近一次请求里最后一个有意义的工具调用作为实时动作
         for tc in tool_calls.iter().rev() {
@@ -979,7 +1220,10 @@ fn probe_zcode(lines: &[String], path: &str) -> SessionProbe {
             if fresh {
                 return SessionProbe {
                     signal: Some(Signal::Active(
-                        fingerprint(path, &doc.get("requestId").and_then(|v| v.as_str()).unwrap_or("")),
+                        fingerprint(
+                            path,
+                            &doc.get("requestId").and_then(|v| v.as_str()).unwrap_or(""),
+                        ),
                         action,
                     )),
                     subagent_count: 0,
@@ -987,7 +1231,11 @@ fn probe_zcode(lines: &[String], path: &str) -> SessionProbe {
                 };
             }
             // 最近请求已陈旧：回到双信号近似（进程 + 文件写入/CPU）
-            return SessionProbe { signal: None, subagent_count: 0, health: None };
+            return SessionProbe {
+                signal: None,
+                subagent_count: 0,
+                health: None,
+            };
         }
         // 该行无工具调用（纯推理/回答）：看时间戳决定是否算活动
         let ts_ms = doc
@@ -997,14 +1245,25 @@ fn probe_zcode(lines: &[String], path: &str) -> SessionProbe {
             .unwrap_or(0);
         if super::tokens::now_ms() - ts_ms < 180_000 {
             return SessionProbe {
-                signal: Some(Signal::Active(fingerprint(path, "zcode-reasoning"), Some("正在推理".into()))),
+                signal: Some(Signal::Active(
+                    fingerprint(path, "zcode-reasoning"),
+                    Some("正在推理".into()),
+                )),
                 subagent_count: 0,
                 health: None,
             };
         }
-        return SessionProbe { signal: None, subagent_count: 0, health: None };
+        return SessionProbe {
+            signal: None,
+            subagent_count: 0,
+            health: None,
+        };
     }
-    SessionProbe { signal: None, subagent_count: 0, health: None }
+    SessionProbe {
+        signal: None,
+        subagent_count: 0,
+        health: None,
+    }
 }
 
 // MARK: 供 Token 监控复用的按行读取
@@ -1075,17 +1334,24 @@ mod health_chain {
     fn an_unreadable_file_carries_a_reason_and_an_empty_one_does_not() {
         // ① 文件在，但内容解析不出任何东西 ⇒ 「读到了、但没信号」：**没有**理由
         let sandbox = write(&[r#"{"type":"user","content":"hi"}"#]);
-        let ok = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap()).0;
+        let ok = probe_dialect(
+            "claude",
+            crate::models::SessionDialect::GenericTail,
+            sandbox.path().join("s.jsonl").to_str().unwrap(),
+        )
+        .0;
         assert!(ok.signal.is_none());
-        assert!(
-            ok.health.is_none(),
-            "读到了只是没信号，不该报「读不到」"
-        );
+        assert!(ok.health.is_none(), "读到了只是没信号，不该报「读不到」");
 
         // ② 文件读不出来（这里用「路径是目录」构造）⇒ **有**理由
         let dir_sandbox = crate::testutil::Sandbox::new("healthdir");
         std::fs::create_dir_all(dir_sandbox.path().join("s.jsonl")).unwrap();
-        let broken = probe_dialect("claude", crate::models::SessionDialect::GenericTail, dir_sandbox.path().join("s.jsonl").to_str().unwrap()).0;
+        let broken = probe_dialect(
+            "claude",
+            crate::models::SessionDialect::GenericTail,
+            dir_sandbox.path().join("s.jsonl").to_str().unwrap(),
+        )
+        .0;
         assert!(broken.signal.is_none());
         let health = broken.health.expect("读不到就必须留下理由");
         assert_eq!(health.failure, SessionProbeFailure::UnreadableFile);
@@ -1102,7 +1368,12 @@ mod health_chain {
     #[test]
     fn a_window_with_no_parseable_line_is_reported_as_undecodable() {
         let sandbox = write(&["这不是 JSON", "这也不是"]);
-        let probe = probe_dialect("claude", crate::models::SessionDialect::GenericTail, sandbox.path().join("s.jsonl").to_str().unwrap()).0;
+        let probe = probe_dialect(
+            "claude",
+            crate::models::SessionDialect::GenericTail,
+            sandbox.path().join("s.jsonl").to_str().unwrap(),
+        )
+        .0;
         let health = probe.health.expect("读不懂就必须留下理由");
         assert_eq!(health.failure, SessionProbeFailure::UndecodableFile);
         assert!(health.diagnostic_text().contains("格式与解析器不匹配"));
@@ -1123,7 +1394,12 @@ mod health_chain {
             "[\n  {\n    \"type\": \"ask\", \"ask\": \"command\", \"text\": \"ls\"\n  }\n]",
         )
         .unwrap();
-        let probe = probe_dialect("cline", crate::models::SessionDialect::GenericTail, path.to_str().unwrap()).0;
+        let probe = probe_dialect(
+            "cline",
+            crate::models::SessionDialect::GenericTail,
+            path.to_str().unwrap(),
+        )
+        .0;
         assert!(
             probe.health.is_none(),
             "跨行数组不是「读不懂」：{:?}",
@@ -1183,7 +1459,10 @@ mod health_chain {
             observed_at: now,
         };
         assert!(health.is_fresh(now, 10 * 60 * 1000), "刚观测到的算新鲜");
-        assert!(health.is_fresh(now + 10 * 60 * 1000, 10 * 60 * 1000), "边界取等号");
+        assert!(
+            health.is_fresh(now + 10 * 60 * 1000, 10 * 60 * 1000),
+            "边界取等号"
+        );
         assert!(
             !health.is_fresh(now + 10 * 60 * 1000 + 1, 10 * 60 * 1000),
             "超过保质期就不再算数"
@@ -1218,7 +1497,10 @@ mod health_chain {
                 observed_at: 0,
             };
             let text = health.diagnostic_text();
-            assert!(text.contains(needle), "{failure:?} 的文案缺「{needle}」：{text}");
+            assert!(
+                text.contains(needle),
+                "{failure:?} 的文案缺「{needle}」：{text}"
+            );
         }
     }
 }
@@ -1232,7 +1514,13 @@ mod health_chain {
 /// 顺序与 Swift 侧逐条一致。
 fn qoder_tool_hint(input: &Value) -> String {
     for key in [
-        "command", "file_path", "path", "pattern", "prompt", "description", "toolName",
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "prompt",
+        "description",
+        "toolName",
     ] {
         if let Some(text) = input.get(key).and_then(|v| v.as_str()) {
             if !text.is_empty() {
@@ -1281,7 +1569,12 @@ const QODER_REQUEST_TOOLS: [&str; 4] = [
 ///
 /// 指纹认不出来时退到**会话文件**的身份（`session_key`）而不是当前轮次 id：
 /// 按轮次退会让每一次续跑都换个新指纹，等于把这条修复要治的病原地复发。
-fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &str) -> SessionProbe {
+fn probe_qoder(
+    lines: &[String],
+    path: &str,
+    file_age_secs: f64,
+    session_key: &str,
+) -> SessionProbe {
     struct Row {
         id: String,
         role: String,
@@ -1294,9 +1587,15 @@ fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &s
 
     let mut rows: Vec<Row> = Vec::with_capacity(lines.len());
     for raw in lines {
-        let Ok(doc) = serde_json::from_str::<Value>(raw) else { continue };
-        let Some(message) = doc.get("message") else { continue };
-        let Some(role) = message.get("role").and_then(|v| v.as_str()) else { continue };
+        let Ok(doc) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        let Some(message) = doc.get("message") else {
+            continue;
+        };
+        let Some(role) = message.get("role").and_then(|v| v.as_str()) else {
+            continue;
+        };
 
         let mut uses = Vec::new();
         let mut results = Vec::new();
@@ -1304,11 +1603,15 @@ fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &s
             for block in blocks {
                 match block.get("type").and_then(|v| v.as_str()) {
                     Some("tool_use") => {
-                        let Some(name) = block.get("name").and_then(|v| v.as_str()) else { continue };
-                        let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let hint = qoder_tool_hint(
-                            block.get("input").unwrap_or(&Value::Null),
-                        );
+                        let Some(name) = block.get("name").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let id = block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let hint = qoder_tool_hint(block.get("input").unwrap_or(&Value::Null));
                         uses.push((name.to_string(), id, hint));
                     }
                     Some("tool_result") => {
@@ -1321,7 +1624,11 @@ fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &s
             }
         }
         rows.push(Row {
-            id: message.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            id: message
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             role: role.to_string(),
             stop_reason: message
                 .get("stop_reason")
@@ -1330,7 +1637,11 @@ fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &s
                 .to_string(),
             uses,
             results,
-            prompt_id: doc.get("promptId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            prompt_id: doc
+                .get("promptId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             is_human_input: doc.get("humanInput").is_some(),
         });
     }
@@ -1381,7 +1692,11 @@ fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &s
     // 「你一发出指令，岛就说上一件事完成了」，而它等的正是这条新指令。
     if let Some(last) = rows.last() {
         if last.role == "user" && last.is_human_input {
-            let id = if turn_id.is_empty() { last.id.clone() } else { turn_id };
+            let id = if turn_id.is_empty() {
+                last.id.clone()
+            } else {
+                turn_id
+            };
             return SessionProbe {
                 signal: Some(Signal::Active(
                     fingerprint(path, &format!("qoder-turn-{id}")),
@@ -1430,15 +1745,16 @@ fn probe_qoder(lines: &[String], path: &str, file_age_secs: f64, session_key: &s
         };
     }
     // ③ 工具都收口了：看模型是怎么停的
-    if last_assistant.stop_reason == "end_turn"
-        || last_assistant.stop_reason == "stop_sequence"
-    {
+    if last_assistant.stop_reason == "end_turn" || last_assistant.stop_reason == "stop_sequence" {
         // 完成态只保留一小段时间，之后自然回到「待机」——与其他方言同口径
         if file_age_secs > 15.0 * 60.0 {
             return SessionProbe::default();
         }
         return SessionProbe {
-            signal: Some(Signal::Completed(fingerprint(path, &completion_fingerprint))),
+            signal: Some(Signal::Completed(fingerprint(
+                path,
+                &completion_fingerprint,
+            ))),
             subagent_count: 0,
             health: None,
         };
@@ -1553,7 +1869,10 @@ mod qoder_tests {
     fn a_completion_goes_stale_after_fifteen_minutes() {
         let lines = vec![r#"{"promptId":"p1","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[]}}"#.to_string()];
         let fresh = probe_qoder(&lines, "/tmp/x.jsonl", 10.0 * 60.0, "sess");
-        assert!(matches!(fresh.signal, Some(Signal::Completed(_))), "15 分钟内应当仍是完成态");
+        assert!(
+            matches!(fresh.signal, Some(Signal::Completed(_))),
+            "15 分钟内应当仍是完成态"
+        );
         let stale = probe_qoder(&lines, "/tmp/x.jsonl", 16.0 * 60.0, "sess");
         assert!(stale.signal.is_none(), "过了 15 分钟就该自然回到待机");
     }
@@ -1581,7 +1900,9 @@ mod qoder_tests {
             ("user", "", "p2", true, ""),
         ]);
         match run(&s).signal {
-            Some(Signal::Active(_, action)) => assert_eq!(action.as_deref(), Some("正在处理你的新指令")),
+            Some(Signal::Active(_, action)) => {
+                assert_eq!(action.as_deref(), Some("正在处理你的新指令"))
+            }
             other => panic!("应当是「正在处理新指令」：{other:?}"),
         }
     }
@@ -1633,7 +1954,10 @@ mod qoder_tests {
     /// 按轮次退会让每一次续跑都换个新指纹，等于把上面那条修复要治的病原地复发。
     #[test]
     fn an_unrecognised_turn_falls_back_to_the_session_identity() {
-        let lines = vec![r#"{"message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[]}}"#.to_string()];
+        let lines = vec![
+            r#"{"message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[]}}"#
+                .to_string(),
+        ];
         let a = probe_qoder(&lines, "/tmp/x.jsonl", 60.0, "sess-A");
         let b = probe_qoder(&lines, "/tmp/x.jsonl", 60.0, "sess-A");
         match (a.signal, b.signal) {
@@ -1703,10 +2027,7 @@ fn probe_dsh(path: &str, file_age_secs: f64) -> SessionProbe {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Some(rows) = root
-        .get("record")
-        .and_then(|r| r.get("rows"))
-    else {
+    let Some(rows) = root.get("record").and_then(|r| r.get("rows")) else {
         return SessionProbe::default();
     };
 
@@ -1813,10 +2134,7 @@ mod dsh_tests {
     }
 
     fn run(sandbox: &crate::testutil::Sandbox) -> SessionProbe {
-        probe_dsh(
-            sandbox.path().join("sess-42.json").to_str().unwrap(),
-            60.0,
-        )
+        probe_dsh(sandbox.path().join("sess-42.json").to_str().unwrap(), 60.0)
     }
 
     /// ① 等确认优先：投影里挂着待批准的 id 就先问用户，
@@ -1949,7 +2267,10 @@ fn probe_antigravity(
         .map(|obj| {
             (
                 obj.get("step_index").and_then(|v| v.as_i64()).unwrap_or(0),
-                obj.get("type").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                obj.get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 obj.get("tool_calls")
                     .and_then(|v| v.as_array())
                     .is_some_and(|a| !a.is_empty()),
@@ -1965,7 +2286,9 @@ fn probe_antigravity(
         let mut finished: std::collections::HashSet<String> = Default::default();
         let (mut p, mut c, mut cr, mut cw, mut th, mut tot) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
         for raw in lines {
-            let Ok(obj) = serde_json::from_str::<Value>(raw) else { continue };
+            let Ok(obj) = serde_json::from_str::<Value>(raw) else {
+                continue;
+            };
             let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
             // Token 细分：源可能把 usage 放在三个不同的键下
@@ -2018,9 +2341,16 @@ fn probe_antigravity(
             // `manage_task` 的 kill 动作
             if let Some(calls) = obj.get("tool_calls").and_then(|v| v.as_array()) {
                 for call in calls {
-                    let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                    let name = call
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_lowercase();
                     if (name.contains("managetask") || name.contains("manage_task"))
-                        && call.get("args").and_then(|a| a.get("Action")).and_then(|v| v.as_str())
+                        && call
+                            .get("args")
+                            .and_then(|a| a.get("Action"))
+                            .and_then(|v| v.as_str())
                             == Some("kill")
                     {
                         if let Some(tid) = call
@@ -2043,7 +2373,9 @@ fn probe_antigravity(
             let mut sub_roles: Vec<(String, String)> = Vec::new();
             let mut sub_finished: std::collections::HashSet<String> = Default::default();
             for raw in lines {
-                let Ok(obj) = serde_json::from_str::<Value>(raw) else { continue };
+                let Ok(obj) = serde_json::from_str::<Value>(raw) else {
+                    continue;
+                };
                 let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
                 if content.contains("Created the following subagents:") {
@@ -2090,7 +2422,9 @@ fn probe_antigravity(
                 .into_iter()
                 .filter(|id| !sub_finished.contains(id))
                 .map(|id| {
-                    let (role, model) = roles.next().unwrap_or(("子智能体".into(), "inherit".into()));
+                    let (role, model) = roles
+                        .next()
+                        .unwrap_or(("子智能体".into(), "inherit".into()));
                     SubagentInfo {
                         conversation_id: id,
                         role,
@@ -2113,7 +2447,11 @@ fn probe_antigravity(
     }
 
     // 从尾部逆序推导当前状态
-    for obj in lines.iter().rev().filter_map(|raw| serde_json::from_str::<Value>(raw).ok()) {
+    for obj in lines
+        .iter()
+        .rev()
+        .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
+    {
         let step_index = obj.get("step_index").and_then(|v| v.as_i64()).unwrap_or(0);
         let step_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let fp = fingerprint(path, &format!("antigravity-step-{step_index}"));
@@ -2148,22 +2486,25 @@ fn probe_antigravity(
                         })
                         .filter(|q| !q.is_empty())
                         .unwrap_or_else(|| "等待你的确认".into());
-                    return (attention_like(path, &format!("ask-{step_index}"), &question), context.clone());
+                    return (
+                        attention_like(path, &format!("ask-{step_index}"), &question),
+                        context.clone(),
+                    );
                 }
             }
 
             // ② 正在执行工具调用。**保护期只有 5 分钟**——
             // 之后那行仍留在文件里，但不代表它还在跑。
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
+                return (
+                    SessionProbe::default(),
+                    crate::models::SessionActiveContext::default(),
+                );
             }
             let action = tool_calls
                 .and_then(|c| c.first())
                 .and_then(|c| c.get("args"))
-                .and_then(|a| {
-                    a.get("toolAction")
-                        .or_else(|| a.get("toolSummary"))
-                })
+                .and_then(|a| a.get("toolAction").or_else(|| a.get("toolSummary")))
                 .and_then(|v| v.as_str())
                 .map(|s| one_line(s, 100))
                 .or_else(|| {
@@ -2192,13 +2533,19 @@ fn probe_antigravity(
                     context.clone(),
                 );
             }
-            return (SessionProbe::default(), crate::models::SessionActiveContext::default()); // 15 分钟后自然转入待机
+            return (
+                SessionProbe::default(),
+                crate::models::SessionActiveContext::default(),
+            ); // 15 分钟后自然转入待机
         }
 
         // ④ 只有思考、无工具也无最终内容 ⇒ 正在思考规划
         if !thinking.is_empty() {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
+                return (
+                    SessionProbe::default(),
+                    crate::models::SessionActiveContext::default(),
+                );
             }
             return (active_like(path, &fp, "思考规划中"), context.clone());
         }
@@ -2206,7 +2553,10 @@ fn probe_antigravity(
         // ⑤ 用户刚发完输入，模型正在启动准备
         if step_type == "USER_INPUT" {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
+                return (
+                    SessionProbe::default(),
+                    crate::models::SessionActiveContext::default(),
+                );
             }
             return (active_like(path, &fp, "思考规划中"), context.clone());
         }
@@ -2214,7 +2564,10 @@ fn probe_antigravity(
         // ⑥ 工具输出返回，等待下一拍调度
         if step_type == "TOOL_OUTPUT" {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
+                return (
+                    SessionProbe::default(),
+                    crate::models::SessionActiveContext::default(),
+                );
             }
             return (active_like(path, &fp, "处理中"), context.clone());
         }
@@ -2222,7 +2575,10 @@ fn probe_antigravity(
         // ⑦ 系统通知 / 任务完成结果
         if step_type == "SYSTEM_MESSAGE" {
             if file_age_secs > ANTIGRAVITY_ACTIVE_MAX_AGE_SECS {
-                return (SessionProbe::default(), crate::models::SessionActiveContext::default());
+                return (
+                    SessionProbe::default(),
+                    crate::models::SessionActiveContext::default(),
+                );
             }
             return (active_like(path, &fp, "处理任务结果中"), context.clone());
         }
@@ -2264,7 +2620,9 @@ mod antigravity_tests {
     /// ① `ask_question` 没被回答 ⇒ 等确认，且把问题原文带出来。
     #[test]
     fn an_unanswered_question_is_attention_with_its_text() {
-        let lines = lines_of(&[r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"ask_question","args":{"questions":"[{\"question\":\"要不要继续？\"}]"}}]}"#]);
+        let lines = lines_of(&[
+            r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"ask_question","args":{"questions":"[{\"question\":\"要不要继续？\"}]"}}]}"#,
+        ]);
         match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal {
             Some(Signal::Attention(_, message)) => assert_eq!(message, "要不要继续？"),
             other => panic!("应当是等确认：{other:?}"),
@@ -2278,13 +2636,18 @@ mod antigravity_tests {
     /// 用 6 分钟的旧行去判在途，就会得到一个永远亮着的指示灯。
     #[test]
     fn an_old_tool_call_line_is_not_still_running() {
-        let lines = lines_of(&[r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"run_terminal","args":{"toolAction":"npm test"}}]}"#]);
+        let lines = lines_of(&[
+            r#"{"step_index":7,"type":"ASSISTANT","tool_calls":[{"name":"run_terminal","args":{"toolAction":"npm test"}}]}"#,
+        ]);
         assert!(matches!(
             probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal,
             Some(Signal::Active(_, _))
         ));
         assert!(
-            probe_antigravity(&lines, "/tmp/x.jsonl", 6.0 * 60.0).0.signal.is_none(),
+            probe_antigravity(&lines, "/tmp/x.jsonl", 6.0 * 60.0)
+                .0
+                .signal
+                .is_none(),
             "超过 5 分钟保护期就不该再说它在跑"
         );
     }
@@ -2294,11 +2657,16 @@ mod antigravity_tests {
     fn a_final_answer_completes_and_then_goes_stale() {
         let lines = lines_of(&[r#"{"step_index":9,"type":"ASSISTANT","content":"改好了"}"#]);
         assert!(matches!(
-            probe_antigravity(&lines, "/tmp/x.jsonl", 10.0 * 60.0).0.signal,
+            probe_antigravity(&lines, "/tmp/x.jsonl", 10.0 * 60.0)
+                .0
+                .signal,
             Some(Signal::Completed(_))
         ));
         assert!(
-            probe_antigravity(&lines, "/tmp/x.jsonl", 16.0 * 60.0).0.signal.is_none(),
+            probe_antigravity(&lines, "/tmp/x.jsonl", 16.0 * 60.0)
+                .0
+                .signal
+                .is_none(),
             "完成态过了 15 分钟就该自然回到待机"
         );
     }
@@ -2307,7 +2675,9 @@ mod antigravity_tests {
     /// 只看 `status == "DONE"` 会把「正在想」判成「干完了」。
     #[test]
     fn done_with_active_thinking_is_not_yet_complete() {
-        let lines = lines_of(&[r#"{"step_index":9,"type":"ASSISTANT","status":"DONE","thinking":"再想想"}"#]);
+        let lines = lines_of(&[
+            r#"{"step_index":9,"type":"ASSISTANT","status":"DONE","thinking":"再想想"}"#,
+        ]);
         match probe_antigravity(&lines, "/tmp/x.jsonl", 60.0).0.signal {
             Some(Signal::Active(_, action)) => {
                 assert_eq!(action.as_deref(), Some("思考规划中"))
@@ -2391,7 +2761,13 @@ fn antigravity_action_text(raw: &str) -> String {
         .to_string();
     let mut text: String = one_line(&cleaned, 40);
     // 剥掉开头的工具链前缀
-    for prefix in ["arch ", "/usr/bin/arch ", "env ", "SDKROOT=", "TIMER=periodic "] {
+    for prefix in [
+        "arch ",
+        "/usr/bin/arch ",
+        "env ",
+        "SDKROOT=",
+        "TIMER=periodic ",
+    ] {
         if let Some(rest) = text.strip_prefix(prefix) {
             text = rest.trim_start().to_string();
         }
@@ -2428,7 +2804,9 @@ mod antigravity_context_tests {
     /// 交付了就该消失——留着会让用户以为机器上还挂着活，而那正是它显示这个胶囊的目的。
     #[test]
     fn only_undelivered_background_tasks_are_listed() {
-        let running = ctx_of(&[r#"{"content":"Tool is running as a background task with task id: t-1 running command: npm test"}"#]);
+        let running = ctx_of(&[
+            r#"{"content":"Tool is running as a background task with task id: t-1 running command: npm test"}"#,
+        ]);
         assert_eq!(running.background_tasks.len(), 1, "在跑的要列出来");
         assert_eq!(running.background_tasks[0].id, "t-1");
         assert!(
@@ -2468,7 +2846,9 @@ mod antigravity_context_tests {
             none.token_breakdown
         );
 
-        let some = ctx_of(&[r#"{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":30,"thoughtsTokenCount":5,"totalTokenCount":155}}"#]);
+        let some = ctx_of(&[
+            r#"{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"cachedContentTokenCount":30,"thoughtsTokenCount":5,"totalTokenCount":155}}"#,
+        ]);
         let tb = some.token_breakdown.expect("读到了就该有");
         assert_eq!(tb.prompt_tokens, 100);
         assert_eq!(tb.completion_tokens, 20);
@@ -2498,12 +2878,9 @@ mod antigravity_context_tests {
 /// Antigravity 偶尔把 id 写成 `tasks/t-1` 这种带路径的形式，而完成消息里写的是
 /// `t-1`——不归一化就永远配不上对，于是「已完成的任务」继续挂在胶囊上。
 fn normalize_task_id(raw: &str) -> String {
-    let trimmed = raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ' ') || c.is_whitespace());
-    trimmed
-        .rsplit('/')
-        .next()
-        .unwrap_or(trimmed)
-        .to_string()
+    let trimmed =
+        raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ' ') || c.is_whitespace());
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 
 /// 从 `conversationId` 字段里抽子智能体 id；抽不到再退回「按文本猜」。
@@ -2531,11 +2908,16 @@ fn extract_subagent_ids(content: &str) -> Vec<String> {
         if let Some(at) = content.find("Created the following subagents:") {
             let after = &content[at + "Created the following subagents:".len()..];
             for token in after.split(|c: char| {
-                matches!(c, ' ' | ',' | ';' | '\n' | '\r' | '\t' | '[' | ']' | '(' | ')' | '{' | '}' | '"')
+                matches!(
+                    c,
+                    ' ' | ',' | ';' | '\n' | '\r' | '\t' | '[' | ']' | '(' | ')' | '{' | '}' | '"'
+                )
             }) {
                 let trimmed = token.trim();
                 if !trimmed.is_empty()
-                    && (trimmed.contains("conv-") || trimmed.contains("subagent-") || trimmed.len() >= 8)
+                    && (trimmed.contains("conv-")
+                        || trimmed.contains("subagent-")
+                        || trimmed.len() >= 8)
                 {
                     ids.push(trimmed.to_string());
                 }
@@ -2554,7 +2936,9 @@ fn extract_subagent_roles(content: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     // 该字段在同一行 JSON 里，形如 "Subagents":[{"Role":"…","Model":"…"}]
     for chunk in content.split("\"Subagents\"").skip(1) {
-        let Some(role) = quoted_field(chunk, "Role") else { continue };
+        let Some(role) = quoted_field(chunk, "Role") else {
+            continue;
+        };
         let model = quoted_field(chunk, "Model").unwrap_or_else(|| "inherit".into());
         out.push((role, model));
     }
@@ -2589,7 +2973,9 @@ mod subagent_tests {
     /// 用户会以为还有活。
     #[test]
     fn only_unfinished_subagents_are_listed() {
-        let running = ctx_of(&[r#"{"content":"Created the following subagents: [{\"conversationId\":\"conv-a\"},{\"conversationId\":\"conv-b\"}]"}"#]);
+        let running = ctx_of(&[
+            r#"{"content":"Created the following subagents: [{\"conversationId\":\"conv-a\"},{\"conversationId\":\"conv-b\"}]"}"#,
+        ]);
         assert_eq!(running.subagents.len(), 2, "两个都该列出来");
         assert_eq!(running.subagents[0].conversation_id, "conv-a");
 
@@ -2609,7 +2995,9 @@ mod subagent_tests {
     /// 角色/模型**按顺序配对**——文本那一侧没有角色，按 id 查是查不到的。
     #[test]
     fn the_role_and_model_are_paired_by_position() {
-        let ctx = ctx_of(&[r#"{"content":"Created the following subagents: [{\"conversationId\":\"conv-a\"},{\"conversationId\":\"conv-b\"}]","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"Role":"查日志","Model":"gpt-x"}]}}]}"#]);
+        let ctx = ctx_of(&[
+            r#"{"content":"Created the following subagents: [{\"conversationId\":\"conv-a\"},{\"conversationId\":\"conv-b\"}]","tool_calls":[{"name":"invoke_subagent","args":{"Subagents":[{"Role":"查日志","Model":"gpt-x"}]}}]}"#,
+        ]);
         assert_eq!(ctx.subagents[0].role, "查日志");
         assert_eq!(ctx.subagents[0].model.as_deref(), Some("gpt-x"));
         // 第二个没有对应角色 ⇒ 落回「子智能体 / inherit」，不硬凑
@@ -2636,7 +3024,8 @@ mod subagent_tests {
         );
         assert_eq!(with_struct, vec!["conv-real".to_string()]);
         // 没有结构化字段才按文本猜
-        let text_only = extract_subagent_ids("Created the following subagents: conv-text-1, subagent-2");
+        let text_only =
+            extract_subagent_ids("Created the following subagents: conv-text-1, subagent-2");
         assert!(text_only.contains(&"conv-text-1".to_string()));
         assert!(text_only.contains(&"subagent-2".to_string()));
     }
@@ -2648,7 +3037,11 @@ mod status_index_tests {
     use crate::models::{SessionDatabase, SessionSchema};
 
     /// 造一个 zcode 形状的状态索引库（真库 DDL 抄结构，不含真实数据）
-    fn zcode_fixture(tag: &str, ddl: &str, rows: &[(&str, &str, i64)]) -> (crate::testutil::Sandbox, String) {
+    fn zcode_fixture(
+        tag: &str,
+        ddl: &str,
+        rows: &[(&str, &str, i64)],
+    ) -> (crate::testutil::Sandbox, String) {
         let sandbox = crate::testutil::Sandbox::new(tag);
         let path = sandbox.path().join("tasks-index.sqlite");
         let conn = rusqlite::Connection::open(&path).unwrap();
@@ -2711,7 +3104,10 @@ mod status_index_tests {
             &[("t1", "completed", FIXED_NOW_MS)],
         );
         // 照搬真机上那条坏 SQL：查 `id`，而表里只有 `task_id`
-        let broken = db(&path, "SELECT id, task_status, updated_at FROM tasks LIMIT 1;");
+        let broken = db(
+            &path,
+            "SELECT id, task_status, updated_at FROM tasks LIMIT 1;",
+        );
         let (probe, failure) = probe_status_index(&broken, 0.0, FIXED_NOW_MS);
         assert!(probe.signal.is_none(), "坏查询不该凭空造出信号");
         let failure = failure.expect("prepare 失败必须留下原因，否则它与「没有终态」同形");
@@ -2759,10 +3155,16 @@ mod status_index_tests {
     /// 库不存在 = 这个 Agent 没跑过，**不是故障**（与 Swift `.missing` 同口径）
     #[test]
     fn a_missing_database_is_not_a_failure() {
-        let (probe, failure) =
-            probe_status_index(&db("/nonexistent/tasks-index.sqlite", ZCODE_SQL), 0.0, FIXED_NOW_MS);
+        let (probe, failure) = probe_status_index(
+            &db("/nonexistent/tasks-index.sqlite", ZCODE_SQL),
+            0.0,
+            FIXED_NOW_MS,
+        );
         assert!(probe.signal.is_none());
-        assert!(failure.is_none(), "库不存在不该报「读不到」——那是「没跑过」");
+        assert!(
+            failure.is_none(),
+            "库不存在不该报「读不到」——那是「没跑过」"
+        );
     }
 
     // ── 判定语义 ────────────────────────────────────────────────
@@ -2825,7 +3227,8 @@ mod status_index_tests {
             ZCODE_DDL,
             &[("t1", "pending_approval", FIXED_NOW_MS)],
         );
-        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 25.0 * 3600.0, FIXED_NOW_MS);
+        let (probe, failure) =
+            probe_status_index(&db(&path, ZCODE_SQL), 25.0 * 3600.0, FIXED_NOW_MS);
         assert!(probe.signal.is_none());
         assert!(failure.is_none(), "过期不是故障");
         drop(sandbox);
@@ -2882,16 +3285,26 @@ mod status_index_tests {
             "「running」不在词表里，无信号是对的，实际 {:?}",
             probe.signal
         );
-        assert!(failure.is_none(), "「running」是我们不关心的状态，不是读不到");
+        assert!(
+            failure.is_none(),
+            "「running」是我们不关心的状态，不是读不到"
+        );
         drop(sandbox);
     }
 
     #[test]
     fn request_vocabulary_matches_the_published_contract() {
-        let words: Vec<String> = serde_json::from_str(include_str!("../tests/fixtures/contracts/request-states.json")).unwrap();
+        let words: Vec<String> = serde_json::from_str(include_str!(
+            "../tests/fixtures/contracts/request-states.json"
+        ))
+        .unwrap();
         assert_eq!(words.len(), REQUEST_STATES.len());
-        for word in &words { assert!(REQUEST_STATES.contains(&word.as_str()), "缺少 {word}"); }
-        for word in REQUEST_STATES { assert!(words.iter().any(|entry| entry == word), "多出 {word}"); }
+        for word in &words {
+            assert!(REQUEST_STATES.contains(&word.as_str()), "缺少 {word}");
+        }
+        for word in REQUEST_STATES {
+            assert!(words.iter().any(|entry| entry == word), "多出 {word}");
+        }
     }
 
     /// 对**本机真实状态索引库**跑一遍——`--ignored` 手动探针。
@@ -2909,7 +3322,9 @@ mod status_index_tests {
     #[ignore = "需要本机真实的 statusIndex 库；手动探针"]
     fn real_status_index_probe() {
         for profile in crate::registry::builtin() {
-            let Some(database) = &profile.session_database else { continue };
+            let Some(database) = &profile.session_database else {
+                continue;
+            };
             if database.schema != SessionSchema::StatusIndex {
                 continue;
             }
@@ -2932,7 +3347,8 @@ mod status_index_tests {
             assert!(
                 failure.is_none(),
                 "{} 的真实 statusSQL 跑不通：{:?}——夹具与真库已经不一致，需要重新采集 DDL",
-                profile.id, failure
+                profile.id,
+                failure
             );
         }
     }
@@ -2942,12 +3358,17 @@ mod status_index_tests {
     #[test]
     fn every_status_index_profile_declares_its_query() {
         for profile in crate::registry::builtin() {
-            let Some(database) = &profile.session_database else { continue };
+            let Some(database) = &profile.session_database else {
+                continue;
+            };
             if database.schema != SessionSchema::StatusIndex {
                 continue;
             }
             assert!(
-                database.status_sql.as_deref().is_some_and(|s| !s.trim().is_empty()),
+                database
+                    .status_sql
+                    .as_deref()
+                    .is_some_and(|s| !s.trim().is_empty()),
                 "{} 声明了 statusIndex 方言却没有 status_sql",
                 profile.id
             );
@@ -2996,7 +3417,8 @@ mod zcode_probe_tests {
         let back = super::super::tokens::parse_iso_ms_pub(&iso)
             .expect("自己生成的 ISO 串必须能被自己的解析器读回来");
         assert_eq!(
-            back / 1000, secs,
+            back / 1000,
+            secs,
             "epoch→ISO 的逆算法写错了：{iso} 解回来是 {back}，而原值是 {secs}"
         );
         iso
@@ -3007,7 +3429,6 @@ mod zcode_probe_tests {
             r#"{{"type":"model-io","requestId":"{request_id}","completedAt":"{completed}","response":{{"toolCalls":{tools},"text":"ok"}}}}"#
         )
     }
-
 
     /// 三分钟内的、带工具调用 ⇒ 在活动，动作取自**最后一个**工具调用。
     #[test]
@@ -3046,7 +3467,11 @@ mod zcode_probe_tests {
     #[test]
     fn a_stale_response_gives_no_signal() {
         for offset in [-600, -3600, -86_400] {
-            let l = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "req-3", &completed_at(offset));
+            let l = line(
+                r#"[{"name":"Bash","input":{"command":"ls"}}]"#,
+                "req-3",
+                &completed_at(offset),
+            );
             let probe = probe_zcode(&[l], "/p.jsonl");
             assert!(
                 probe.signal.is_none(),
@@ -3061,14 +3486,25 @@ mod zcode_probe_tests {
     /// 反了的话，用户会看到「刚跑完一次请求」而其实那次是很久以前的。
     #[test]
     fn only_the_lastest_request_counts() {
-        let fresh = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "new", &completed_at(-10));
-        let old = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "old", &completed_at(-3600));
+        let fresh = line(
+            r#"[{"name":"Bash","input":{"command":"ls"}}]"#,
+            "new",
+            &completed_at(-10),
+        );
+        let old = line(
+            r#"[{"name":"Bash","input":{"command":"ls"}}]"#,
+            "old",
+            &completed_at(-3600),
+        );
         // 文件里按时间先后追加，所以「旧」在前
         let probe = probe_zcode(&[old.clone(), fresh.clone()], "/p.jsonl");
         assert!(probe.signal.is_some(), "最后一条是新鲜的 ⇒ 应当有信号");
 
         let probe = probe_zcode(&[fresh, old], "/p.jsonl");
-        assert!(probe.signal.is_none(), "最后一条是陈旧的 ⇒ 不该回退去报新鲜的");
+        assert!(
+            probe.signal.is_none(),
+            "最后一条是陈旧的 ⇒ 不该回退去报新鲜的"
+        );
     }
 
     /// 认不出的行要跳过，而不是让整条解析失败。
@@ -3077,7 +3513,11 @@ mod zcode_probe_tests {
     /// 一行坏就整份放弃的话，用户会看到「没有会话信号」而不是真实的活动。
     #[test]
     fn unrecognised_lines_are_skipped() {
-        let good = line(r#"[{"name":"Bash","input":{"command":"ls"}}]"#, "req-4", &completed_at(-10));
+        let good = line(
+            r#"[{"name":"Bash","input":{"command":"ls"}}]"#,
+            "req-4",
+            &completed_at(-10),
+        );
         let lines = vec![
             "不是 JSON".to_string(),
             r#"{"type":"other"}"#.to_string(),
@@ -3114,7 +3554,9 @@ fn real_session_side_by_side() {
     fn newest(dir: &str, ext: &str, limit: usize) -> Vec<PathBuf> {
         let mut out: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
         fn walk(dir: &Path, ext: &str, out: &mut Vec<(std::time::SystemTime, PathBuf)>) {
-            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return;
+            };
             for e in rd.flatten() {
                 let p = e.path();
                 if p.is_dir() {
@@ -3147,9 +3589,18 @@ fn real_session_side_by_side() {
         for path in newest(&dir, "jsonl", 8) {
             let p = path.to_string_lossy().to_string();
             let lines = crate::session::read_tail_lines(&p).unwrap_or_default();
-            let signal = if label == "codex" { probe_codex(&lines, &p) } else { probe_zcode(&lines, &p) };
+            let signal = if label == "codex" {
+                probe_codex(&lines, &p)
+            } else {
+                probe_zcode(&lines, &p)
+            };
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            println!("  {:<10} {:<40} 行数 {}", verdict(&signal.signal), &name[..40.min(name.len())], lines.len());
+            println!(
+                "  {:<10} {:<40} 行数 {}",
+                verdict(&signal.signal),
+                &name[..40.min(name.len())],
+                lines.len()
+            );
         }
     }
 }
@@ -3175,7 +3626,7 @@ const DIM_MAX_AGE_SECS: f64 = 24.0 * 3600.0;
 const DIM_COMPLETED_MAX_AGE_SECS: f64 = 15.0 * 60.0;
 
 /// 取最新一条会话的最近 32 行（与 Swift 同一条查询、同一个上限）。
-const DIM_ROWS_SQL: &str = "SELECT rowid, role, parts FROM messages \
+const DIM_ROWS_SQL: &str = "SELECT rowid, role, parts, sessionId FROM messages \
      WHERE sessionId = (SELECT sessionId FROM messages ORDER BY rowid DESC LIMIT 1) \
      ORDER BY rowid DESC LIMIT 32;";
 
@@ -3183,6 +3634,15 @@ pub fn probe_dim(
     database: &crate::models::SessionDatabase,
     file_age_secs: f64,
 ) -> (SessionProbe, Option<SessionProbeFailure>) {
+    probe_dim_source(database, file_age_secs, &mut None)
+}
+
+pub(crate) fn probe_dim_source(
+    database: &crate::models::SessionDatabase,
+    file_age_secs: f64,
+    source_keys: &mut Option<crate::models::DatabaseSource>,
+) -> (SessionProbe, Option<SessionProbeFailure>) {
+    *source_keys = None;
     if file_age_secs > DIM_MAX_AGE_SECS {
         return (SessionProbe::default(), None);
     }
@@ -3190,7 +3650,10 @@ pub fn probe_dim(
         Ok(connection) => connection,
         Err(crate::sqlite::Failure::Missing) => return (SessionProbe::default(), None),
         Err(crate::sqlite::Failure::OpenFailed(detail)) => {
-            return (SessionProbe::default(), Some(SessionProbeFailure::UnreadableDatabase(detail)))
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(detail)),
+            )
         }
     };
     let mut stmt = match connection.prepare(DIM_ROWS_SQL) {
@@ -3217,17 +3680,17 @@ pub fn probe_dim(
             )
         }
     };
-    let mut newest: Option<(i64, String, String)> = None;
+    let mut newest: Option<(i64, String, String, Option<String>)> = None;
     while let Ok(Some(row)) = rows.next() {
         let id: i64 = row.get(0).unwrap_or(0);
         let role: String = row.get(1).unwrap_or_default();
         let parts: String = row.get(2).unwrap_or_default();
         // SQL 已按 rowid 倒序，**第一条就是最新那条**；后面的行只是为了「有行」这件事本身
         if newest.is_none() {
-            newest = Some((id, role, parts));
+            newest = Some((id, role, parts, row.get::<_, String>(3).ok()));
         }
     }
-    let Some((id, role, parts)) = newest else {
+    let Some((id, role, parts, session_id)) = newest else {
         return (SessionProbe::default(), None);
     };
     if role != "assistant" {
@@ -3245,9 +3708,13 @@ pub fn probe_dim(
     if file_age_secs > DIM_COMPLETED_MAX_AGE_SECS {
         return (SessionProbe::default(), None);
     }
+    *source_keys = session_id.and_then(|key| database_source_keys(vec![key]));
     (
         SessionProbe {
-            signal: Some(Signal::Completed(fingerprint(&database.path, &format!("dim-{id}")))),
+            signal: Some(Signal::Completed(fingerprint(
+                &database.path,
+                &format!("dim-{id}"),
+            ))),
             subagent_count: 0,
             health: None,
         },
@@ -3289,7 +3756,10 @@ mod dim_probe_tests {
         let path = dir.path().join("dimcode.sqlite");
         let conn = rusqlite::Connection::open(&path).expect("应当建得出库");
         conn.execute_batch(REAL_DDL).expect("真库 DDL 应当能建表");
-        Db { _dir: dir, path: path.to_string_lossy().to_string() }
+        Db {
+            _dir: dir,
+            path: path.to_string_lossy().to_string(),
+        }
     }
 
     fn database(path: &str) -> SessionDatabase {
@@ -3365,7 +3835,12 @@ mod dim_probe_tests {
             "assistant",
             r#"[{"type":"text","text":"好了","endTime":1730000000000}]"#,
         );
-        insert(&db, 2, "tool_result", r#"[{"type":"text","text":"等批准"}]"#);
+        insert(
+            &db,
+            2,
+            "tool_result",
+            r#"[{"type":"text","text":"等批准"}]"#,
+        );
         let (probe, _) = probe_dim(&database(&db.path), 60.0);
         assert!(
             probe.signal.is_none(),
@@ -3496,46 +3971,57 @@ const OPENCODE_ACTIVE_MAX_AGE_SECS: f64 = 300.0;
 
 fn table_exists(connection: &rusqlite::Connection, name: &str) -> bool {
     connection
-        .prepare(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1",
-        )
-        .and_then(|mut stmt| stmt.query([name]).map(|mut rows| rows.next().is_ok_and(|r| r.is_some())))
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1")
+        .and_then(|mut stmt| {
+            stmt.query([name])
+                .map(|mut rows| rows.next().is_ok_and(|r| r.is_some()))
+        })
         .unwrap_or(false)
 }
 
 /// 纯函数版判定（形状与真机一致）。`rows` 按 rowid 降序，**第一条就是最新一条**。
-fn opencode_signal(
+fn opencode_signal(rows: &[(String, String)], agent_id: &str, now_ms: i64) -> Option<Signal> {
+    opencode_signal_source(rows, agent_id, now_ms).map(|(signal, _)| signal)
+}
+
+fn opencode_signal_source(
     rows: &[(String, String)],
     agent_id: &str,
     now_ms: i64,
-) -> Option<Signal> {
+) -> Option<(Signal, i64)> {
     let (id, json) = rows.first()?;
     let object: serde_json::Value = serde_json::from_str(json).ok()?;
-    let moment = |key: &str| -> Option<i64> {
-        object
-            .get("time")?
-            .get(key)?
-            .as_i64()
-    };
+    let moment = |key: &str| -> Option<i64> { object.get("time")?.get(key)?.as_i64() };
     let fingerprint = format!("{agent_id}-msg-{id}");
+    let fresh = |time: i64, limit: f64| {
+        now_ms
+            .checked_sub(time)
+            .is_some_and(|age| age >= 0 && age <= limit as i64 * 1000)
+    };
     match object.get("role").and_then(|r| r.as_str()).unwrap_or("") {
         "assistant" => {
             if let Some(completed) = moment("completed") {
-                if now_ms - completed <= OPENCODE_COMPLETED_MAX_AGE_SECS as i64 * 1000 {
-                    return Some(Signal::Completed(fingerprint));
+                if fresh(completed, OPENCODE_COMPLETED_MAX_AGE_SECS) {
+                    return Some((Signal::Completed(fingerprint), completed));
                 }
                 return None;
             }
             let created = moment("created")?;
-            if now_ms - created <= OPENCODE_ACTIVE_MAX_AGE_SECS as i64 * 1000 {
-                return Some(Signal::Active(fingerprint, Some("正在生成回复".into())));
+            if fresh(created, OPENCODE_ACTIVE_MAX_AGE_SECS) {
+                return Some((
+                    Signal::Active(fingerprint, Some("正在生成回复".into())),
+                    created,
+                ));
             }
             None
         }
         "user" => {
             let created = moment("created")?;
-            if now_ms - created <= OPENCODE_ACTIVE_MAX_AGE_SECS as i64 * 1000 {
-                return Some(Signal::Active(fingerprint, Some("思考规划中".into())));
+            if fresh(created, OPENCODE_ACTIVE_MAX_AGE_SECS) {
+                return Some((
+                    Signal::Active(fingerprint, Some("思考规划中".into())),
+                    created,
+                ));
             }
             None
         }
@@ -3554,6 +4040,16 @@ pub fn probe_opencode(
     file_age_secs: f64,
     now_ms: i64,
 ) -> (SessionProbe, Option<SessionProbeFailure>) {
+    probe_opencode_source(database, file_age_secs, now_ms, &mut None)
+}
+
+pub(crate) fn probe_opencode_source(
+    database: &crate::models::SessionDatabase,
+    file_age_secs: f64,
+    now_ms: i64,
+    source_keys: &mut Option<crate::models::DatabaseSource>,
+) -> (SessionProbe, Option<SessionProbeFailure>) {
+    *source_keys = None;
     if file_age_secs > OPENCODE_MAX_AGE_SECS {
         return (SessionProbe::default(), None);
     }
@@ -3561,7 +4057,10 @@ pub fn probe_opencode(
         Ok(connection) => connection,
         Err(crate::sqlite::Failure::Missing) => return (SessionProbe::default(), None),
         Err(crate::sqlite::Failure::OpenFailed(detail)) => {
-            return (SessionProbe::default(), Some(SessionProbeFailure::UnreadableDatabase(detail)))
+            return (
+                SessionProbe::default(),
+                Some(SessionProbeFailure::UnreadableDatabase(detail)),
+            )
         }
     };
     let message_table = ["session_message", "message"]
@@ -3581,7 +4080,7 @@ pub fn probe_opencode(
         );
     };
     let sql = format!(
-        "SELECT id, data FROM {message_table} \
+        "SELECT id, data, session_id FROM {message_table} \
          WHERE session_id = (SELECT id FROM {session_table} ORDER BY time_updated DESC LIMIT 1) \
          ORDER BY rowid DESC LIMIT 8;"
     );
@@ -3590,10 +4089,13 @@ pub fn probe_opencode(
         Err(error) => {
             return (
                 SessionProbe::default(),
-                Some(SessionProbeFailure::UnreadableDatabase(format!("{error} · 查询：{sql}"))),
+                Some(SessionProbeFailure::UnreadableDatabase(format!(
+                    "{error} · 查询：{sql}"
+                ))),
             )
         }
     };
+    let mut selected_keys = None;
     let mut rows_out: Vec<(String, String)> = Vec::new();
     {
         let mut rows = match stmt.query([]) {
@@ -3601,7 +4103,9 @@ pub fn probe_opencode(
             Err(error) => {
                 return (
                     SessionProbe::default(),
-                    Some(SessionProbeFailure::UnreadableDatabase(format!("{error} · 查询：{sql}"))),
+                    Some(SessionProbeFailure::UnreadableDatabase(format!(
+                        "{error} · 查询：{sql}"
+                    ))),
                 )
             }
         };
@@ -3609,22 +4113,40 @@ pub fn probe_opencode(
             let id: String = row.get(0).unwrap_or_default();
             let data: String = row.get(1).unwrap_or_default();
             if !id.is_empty() && !data.is_empty() {
+                if rows_out.is_empty() {
+                    selected_keys = row
+                        .get::<_, String>(2)
+                        .ok()
+                        .and_then(|key| database_source_keys(vec![key]));
+                }
                 rows_out.push((id, data));
             }
         }
     }
-    match opencode_signal(&rows_out, &database.path, now_ms) {
-        Some(signal) => (
-            SessionProbe { signal: Some(signal), subagent_count: 0, health: None },
-            None,
-        ),
+    match opencode_signal_source(&rows_out, &database.path, now_ms) {
+        Some((signal, activity_ms)) => {
+            *source_keys = selected_keys.map(|mut source| {
+                source.activity_ms = Some(activity_ms);
+                source
+            });
+            (
+                SessionProbe {
+                    signal: Some(signal),
+                    subagent_count: 0,
+                    health: None,
+                },
+                None,
+            )
+        }
         None => (SessionProbe::default(), None),
     }
 }
 
 #[cfg(test)]
 mod opencode_signal_tests {
-    use super::{opencode_signal, Signal, OPENCODE_ACTIVE_MAX_AGE_SECS, OPENCODE_COMPLETED_MAX_AGE_SECS};
+    use super::{
+        opencode_signal, Signal, OPENCODE_ACTIVE_MAX_AGE_SECS, OPENCODE_COMPLETED_MAX_AGE_SECS,
+    };
 
     const MIN: i64 = 60_000;
     fn now() -> i64 {
@@ -3637,13 +4159,28 @@ mod opencode_signal_tests {
         )]
     }
 
+    #[test]
+    fn future_and_extreme_timestamps_never_report_activity_or_completion() {
+        for timestamp in [now() + 1, i64::MAX, i64::MIN] {
+            let created = format!("{{\"created\":{timestamp}}}");
+            let completed = format!("{{\"created\":{},\"completed\":{timestamp}}}", now());
+            assert!(opencode_signal(&rows("user", &created), "fixture", now()).is_none());
+            assert!(opencode_signal(&rows("assistant", &created), "fixture", now()).is_none());
+            assert!(opencode_signal(&rows("assistant", &completed), "fixture", now()).is_none());
+        }
+    }
+
     /// **DDL 与形状都逐字抄自本机真库** `~/.local/share/mimocode/mimocode.db`
     /// （`message(id, session_id, agent_id, time_created, time_updated, data)`，
     /// 实测最新一行 `role=assistant` 且 `time.completed` 是整数）。
     #[test]
     fn a_finished_assistant_reply_within_fifteen_minutes_is_completed() {
         let t = now() - 3 * MIN;
-        let signal = opencode_signal(&rows("assistant", &format!(r#"{{"completed":{t}}}"#)), "mimocode", now());
+        let signal = opencode_signal(
+            &rows("assistant", &format!(r#"{{"completed":{t}}}"#)),
+            "mimocode",
+            now(),
+        );
         assert!(
             matches!(signal, Some(Signal::Completed(ref f)) if f == "mimocode-msg-msg_1"),
             "应报完成且指纹带 agent 与消息 id，实际 {signal:?}"
@@ -3655,7 +4192,12 @@ mod opencode_signal_tests {
     fn a_completion_older_than_fifteen_minutes_stops_counting() {
         let t = now() - (OPENCODE_COMPLETED_MAX_AGE_SECS as i64 + 60) * 1000;
         assert!(
-            opencode_signal(&rows("assistant", &format!(r#"{{"completed":{t}}}"#)), "mimocode", now()).is_none(),
+            opencode_signal(
+                &rows("assistant", &format!(r#"{{"completed":{t}}}"#)),
+                "mimocode",
+                now()
+            )
+            .is_none(),
             "过了 15 分钟就不该再算刚完成"
         );
     }
@@ -3664,7 +4206,11 @@ mod opencode_signal_tests {
     #[test]
     fn an_assistant_row_that_is_still_generating_is_active() {
         let t = now() - 30_000;
-        let signal = opencode_signal(&rows("assistant", &format!(r#"{{"created":{t}}}"#)), "mimocode", now());
+        let signal = opencode_signal(
+            &rows("assistant", &format!(r#"{{"created":{t}}}"#)),
+            "mimocode",
+            now(),
+        );
         assert!(
             matches!(signal, Some(Signal::Active(_, ref a)) if a.as_deref() == Some("正在生成回复")),
             "实际 {signal:?}"
@@ -3677,7 +4223,12 @@ mod opencode_signal_tests {
     fn a_stalled_generation_stops_being_active_after_five_minutes() {
         let t = now() - (OPENCODE_ACTIVE_MAX_AGE_SECS as i64 + 30) * 1000;
         assert!(
-            opencode_signal(&rows("assistant", &format!(r#"{{"created":{t}}}"#)), "mimocode", now()).is_none(),
+            opencode_signal(
+                &rows("assistant", &format!(r#"{{"created":{t}}}"#)),
+                "mimocode",
+                now()
+            )
+            .is_none(),
             "卡住的生成超过 5 分钟就不该再报在途"
         );
     }
@@ -3686,7 +4237,11 @@ mod opencode_signal_tests {
     #[test]
     fn a_fresh_user_row_is_thinking() {
         let t = now() - 20_000;
-        let signal = opencode_signal(&rows("user", &format!(r#"{{"created":{t}}}"#)), "mimocode", now());
+        let signal = opencode_signal(
+            &rows("user", &format!(r#"{{"created":{t}}}"#)),
+            "mimocode",
+            now(),
+        );
         assert!(
             matches!(signal, Some(Signal::Active(_, ref a)) if a.as_deref() == Some("思考规划中")),
             "实际 {signal:?}"
@@ -3703,7 +4258,12 @@ mod opencode_signal_tests {
         );
         let t = now();
         assert!(
-            opencode_signal(&rows("tool", &format!(r#"{{"created":{t}}}"#)), "mimocode", now()).is_none(),
+            opencode_signal(
+                &rows("tool", &format!(r#"{{"created":{t}}}"#)),
+                "mimocode",
+                now()
+            )
+            .is_none(),
             "不认识的 role 不该被猜成某种状态"
         );
     }
@@ -3717,10 +4277,21 @@ mod opencode_signal_tests {
 #[ignore = "读本机真实 OpenCode/MiMo Code 会话库，只在需要手工取证时跑"]
 fn real_opencode_library_probe() {
     let home = std::env::var("HOME").unwrap_or_default();
-    let now_ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let now_ms = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    };
     for (label, path) in [
-        ("opencode", format!("{home}/.local/share/opencode/opencode.db")),
-        ("mimocode", format!("{home}/.local/share/mimocode/mimocode.db")),
+        (
+            "opencode",
+            format!("{home}/.local/share/opencode/opencode.db"),
+        ),
+        (
+            "mimocode",
+            format!("{home}/.local/share/mimocode/mimocode.db"),
+        ),
     ] {
         if !std::path::Path::new(&path).exists() {
             println!("{label}: 本机没有这个库");
@@ -3739,7 +4310,10 @@ fn real_opencode_library_probe() {
                 Some(Signal::Active(_, a)) => format!("active · {}", a.clone().unwrap_or_default()),
                 Some(Signal::Completed(_)) => "completed".to_string(),
             };
-            println!("{label:<9} file_age={age:>8.0}s  {kind:<22} 失败={:?}", failure.is_some());
+            println!(
+                "{label:<9} file_age={age:>8.0}s  {kind:<22} 失败={:?}",
+                failure.is_some()
+            );
         }
     }
 }
@@ -3753,10 +4327,19 @@ mod optimization_regressions {
         let file = sandbox.path().join("session.jsonl");
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(20);
         std::fs::write(&file, "old\n").unwrap();
-        std::fs::File::options().write(true).open(&file).unwrap().set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
         assert_eq!(read_tail_lines(file.to_str().unwrap()).unwrap(), ["old"]);
         std::fs::write(&file, "new\n").unwrap();
-        assert_eq!(read_tail_lines(file.to_str().unwrap()).unwrap(), ["new"], "same-size rewrites invalidate the raw cache");
+        assert_eq!(
+            read_tail_lines(file.to_str().unwrap()).unwrap(),
+            ["new"],
+            "same-size rewrites invalidate the raw cache"
+        );
         for i in 0..24 {
             let path = sandbox.path().join(format!("{i}.jsonl"));
             std::fs::write(&path, "x".repeat(400_000)).unwrap();
@@ -3781,4 +4364,18 @@ mod optimization_regressions {
         assert_eq!(lines.len(), 2);
         assert_eq!(lines.last().map(String::as_str), Some("{}"));
     }
+}
+
+/// Only parser-owned primary keys participate in a database identity.
+pub(crate) fn database_source_keys(keys: Vec<String>) -> Option<crate::models::DatabaseSource> {
+    (!keys.is_empty()
+        && keys.len() <= 2
+        && keys.iter().all(|key| {
+            !key.trim().is_empty() && key.len() <= 512 && !key.chars().any(char::is_control)
+        }))
+    .then_some(crate::models::DatabaseSource {
+        keys,
+        revision: None,
+        activity_ms: None,
+    })
 }

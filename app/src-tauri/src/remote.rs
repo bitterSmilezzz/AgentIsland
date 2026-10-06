@@ -84,7 +84,10 @@ impl Channel {
         let url = match self {
             Channel::Ntfy => &config.topic_or_url,
             // 只支持 465，一定是 TLS
-            Channel::SmtpEmail | Channel::FeishuBot | Channel::WechatPushPlus | Channel::QqPushPlus => return None,
+            Channel::SmtpEmail
+            | Channel::FeishuBot
+            | Channel::WechatPushPlus
+            | Channel::QqPushPlus => return None,
             Channel::CustomHttp | Channel::QqOneBot => &config.url_template,
         };
         url.to_lowercase().starts_with("http://").then_some(
@@ -120,10 +123,22 @@ impl Channel {
     pub fn missing_field(self, config: &ChannelConfig, has_secret: bool) -> Option<&'static str> {
         match self {
             Channel::FeishuBot => (!has_secret).then_some("请保存飞书机器人 Webhook 地址"),
-            Channel::WechatPushPlus | Channel::QqPushPlus => (!has_secret).then_some("请保存 PushPlus Token"),
+            Channel::WechatPushPlus | Channel::QqPushPlus => {
+                (!has_secret).then_some("请保存 PushPlus Token")
+            }
             Channel::QqOneBot => {
-                if crate::im::onebot_url(&config.url_template).is_none() { return Some("请填写 OneBot HTTP 服务地址（不含认证参数）"); }
-                if config.topic_or_url.parse::<u64>().ok().filter(|id| *id > 0).is_none() { return Some("请填写有效的 QQ 群号"); }
+                if crate::im::onebot_url(&config.url_template).is_none() {
+                    return Some("请填写 OneBot HTTP 服务地址（不含认证参数）");
+                }
+                if config
+                    .topic_or_url
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|id| *id > 0)
+                    .is_none()
+                {
+                    return Some("请填写有效的 QQ 群号");
+                }
                 None
             }
             Channel::Ntfy => {
@@ -245,11 +260,15 @@ fn text(map: &Map<String, Value>, key: &str) -> String {
 }
 
 fn flag(map: &Map<String, Value>, key: &str, fallback: bool) -> bool {
-    wire_value(map, key).and_then(|v| v.as_bool()).unwrap_or(fallback)
+    wire_value(map, key)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(fallback)
 }
 
 fn integer(map: &Map<String, Value>, key: &str, fallback: i64) -> i64 {
-    wire_value(map, key).and_then(|v| v.as_i64()).unwrap_or(fallback)
+    wire_value(map, key)
+        .and_then(|v| v.as_i64())
+        .unwrap_or(fallback)
 }
 
 /// 手写解码：每个字段各自回落默认值（与 Swift 的 `decodeIfPresent` 同口径）。
@@ -334,7 +353,9 @@ impl Policy {
     /// 读出即归一化：损坏或越界的值可能在落盘时就写进去了，读这条路是唯一防线。
     pub fn normalized(&self) -> Policy {
         let mut copy = self.clone();
-        copy.throttle_seconds = copy.throttle_seconds.clamp(THROTTLE_RANGE.0, THROTTLE_RANGE.1);
+        copy.throttle_seconds = copy
+            .throttle_seconds
+            .clamp(THROTTLE_RANGE.0, THROTTLE_RANGE.1);
         copy.away_idle_seconds = copy.away_idle_seconds.clamp(IDLE_RANGE.0, IDLE_RANGE.1);
         // 写坏的静默时段必须退化成「不静默」，而不是整天把通知吞掉——
         // 后者是静默失效，用户永远看不见，正是最难查的那类 bug
@@ -606,7 +627,9 @@ pub fn status(
         label: channel.label().to_string(),
         secret_name: channel.default_secret_name(),
         credential_stored: has_secret,
-        readiness: channel.missing_field(config, has_secret).map(str::to_string),
+        readiness: channel
+            .missing_field(config, has_secret)
+            .map(str::to_string),
         insecure_endpoint: channel.insecure_endpoint(config).map(str::to_string),
         plaintext_secret: channel
             .plaintext_secret_in_template(config)
@@ -618,9 +641,18 @@ pub fn status(
         away_now: policy.is_away(presence),
         away_reason: policy.present_reason(presence),
         allows: vec![
-            (EventKind::Completed.as_str(), policy.allows(EventKind::Completed)),
-            (EventKind::Attention.as_str(), policy.allows(EventKind::Attention)),
-            (EventKind::CostSpike.as_str(), policy.allows(EventKind::CostSpike)),
+            (
+                EventKind::Completed.as_str(),
+                policy.allows(EventKind::Completed),
+            ),
+            (
+                EventKind::Attention.as_str(),
+                policy.allows(EventKind::Attention),
+            ),
+            (
+                EventKind::CostSpike.as_str(),
+                policy.allows(EventKind::CostSpike),
+            ),
         ],
         throttled: 0,
         policy,
@@ -654,7 +686,7 @@ mod tests {
         ChannelConfig {
             smtp_host: "smtp.example.com".into(),
             smtp_user: "me@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
-            smtp_to: "you@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
+            smtp_to: "you@example.com".into(),  // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
             smtp_port: port,
             ..ChannelConfig::default()
         }
@@ -695,7 +727,10 @@ mod tests {
             ..Policy::default()
         }
         .normalized();
-        assert_eq!((ok.quiet_start.as_str(), ok.quiet_end.as_str()), ("22:00", "07:00"));
+        assert_eq!(
+            (ok.quiet_start.as_str(), ok.quiet_end.as_str()),
+            ("22:00", "07:00")
+        );
     }
 
     #[test]
@@ -875,7 +910,10 @@ mod tests {
         // 明文 http：配齐了也要单独警告
         let plaintext = Channel::Ntfy.insecure_endpoint(&ntfy("http://ntfy.sh/island"));
         assert!(plaintext.unwrap().starts_with("地址是明文 http://"));
-        assert_eq!(Channel::Ntfy.insecure_endpoint(&ntfy("https://ntfy.sh/island")), None);
+        assert_eq!(
+            Channel::Ntfy.insecure_endpoint(&ntfy("https://ntfy.sh/island")),
+            None
+        );
         // SMTP 只走 465，一定是 TLS，没有这一条警告
         assert_eq!(Channel::SmtpEmail.insecure_endpoint(&smtp(465)), None);
 
@@ -913,7 +951,10 @@ mod tests {
             "smtpUser":"me","smtpTo":"you","includeActionDetail":true
         }"#;
         let parsed: ChannelConfig = serde_json::from_str(json).expect("坏一个字段不该让整条解不开");
-        assert_eq!(parsed.smtp_port, 465, "端口类型错 ⇒ 回落默认，而不是解析出 587");
+        assert_eq!(
+            parsed.smtp_port, 465,
+            "端口类型错 ⇒ 回落默认，而不是解析出 587"
+        );
         assert!(parsed.use_json_body, "布尔类型错 ⇒ 回落默认");
         assert_eq!(parsed.smtp_to, "you", "其余字段照读");
         assert!(parsed.include_action_detail);
@@ -933,8 +974,8 @@ mod tests {
         assert!(policy.send_attention, "没写的键取默认");
         assert_eq!(policy.normalized().throttle_seconds, 15, "越界在读时被钳");
         // 以后新增的字段出现在旧存档里 ⇒ 直接被忽略
-        let future: Policy =
-            serde_json::from_str(r#"{"masterEnabled":true,"brandNewKnob":42}"#).expect("未知键应忽略");
+        let future: Policy = serde_json::from_str(r#"{"masterEnabled":true,"brandNewKnob":42}"#)
+            .expect("未知键应忽略");
         assert!(future.master_enabled);
     }
 
@@ -979,7 +1020,10 @@ mod tests {
             &channels,
             &policy,
             false,
-            Now { ms: 0, minutes_of_day: Some(23 * 60) },
+            Now {
+                ms: 0,
+                minutes_of_day: Some(23 * 60),
+            },
             &PresenceSignals::unavailable(),
         );
         assert_eq!(snapshot.kind, "ntfy");
@@ -1034,7 +1078,8 @@ mod wire_roundtrip_regressions {
         config.url_template = "https://example.com/notify".into();
         config.body_template = "{body}".into();
         config.include_action_detail = true;
-        let loaded: ChannelConfig = serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        let loaded: ChannelConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
         assert_eq!(loaded, config);
     }
 }

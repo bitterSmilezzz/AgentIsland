@@ -176,7 +176,6 @@ impl TaskDurationTracker {
         stats.refresh_text();
         stats
     }
-
 }
 
 // 参考实现里还有一个 `prune(olderThan:)`，**但它在 Swift 侧也从未被调用**——
@@ -199,7 +198,10 @@ mod tests {
             0,
             "0 与负数都不该记"
         );
-        assert_eq!(tracker.stats("claude", DEFAULT_WINDOW_MS, 1_000), Stats::empty());
+        assert_eq!(
+            tracker.stats("claude", DEFAULT_WINDOW_MS, 1_000),
+            Stats::empty()
+        );
     }
 
     #[test]
@@ -213,7 +215,10 @@ mod tests {
         // 丢的是**最早**的：最长的那条（10+149）必须还在
         assert_eq!(stats.max_duration, 159.0, "上限到期时丢最早、留最新");
         // 另一个 Agent 不受影响
-        assert_eq!(tracker.stats("gemini", DEFAULT_WINDOW_MS, 1_000).task_count, 0);
+        assert_eq!(
+            tracker.stats("gemini", DEFAULT_WINDOW_MS, 1_000).task_count,
+            0
+        );
     }
 
     #[test]
@@ -283,7 +288,17 @@ mod tests {
         let mut tracker = TaskDurationTracker::new();
         tracker.record("claude", 10.0, 1_000);
         tracker.record("gemini", 90.0, 1_000);
-        assert_eq!(tracker.stats("claude", DEFAULT_WINDOW_MS, 1_000).total_work_time, 10.0);
-        assert_eq!(tracker.stats("gemini", DEFAULT_WINDOW_MS, 1_000).total_work_time, 90.0);
+        assert_eq!(
+            tracker
+                .stats("claude", DEFAULT_WINDOW_MS, 1_000)
+                .total_work_time,
+            10.0
+        );
+        assert_eq!(
+            tracker
+                .stats("gemini", DEFAULT_WINDOW_MS, 1_000)
+                .total_work_time,
+            90.0
+        );
     }
 }

@@ -117,7 +117,11 @@ impl TodoStore {
             return Err(format!("待办内容超过 {MAX_TEXT_CHARS} 字"));
         }
         let (mut items, broken) = self.load();
-        let broken_backup = if broken { self.stash_broken(now_ms) } else { None };
+        let broken_backup = if broken {
+            self.stash_broken(now_ms)
+        } else {
+            None
+        };
         let next_id = items
             .iter()
             .filter_map(|t| t.id.parse::<u64>().ok())
@@ -265,7 +269,11 @@ mod tests {
         store.toggle("2").unwrap();
         let after = store.clear_done().unwrap();
         assert_eq!(
-            after.items.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+            after
+                .items
+                .iter()
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>(),
             vec!["未完成 A", "未完成 C"],
             "清已完成不该动未完成的"
         );

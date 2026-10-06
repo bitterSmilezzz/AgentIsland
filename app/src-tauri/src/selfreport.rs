@@ -380,10 +380,17 @@ mod tests {
     fn text_is_truncated_by_characters_not_dropped() {
         assert_eq!(clamp_text(None), None);
         assert_eq!(clamp_text(Some("   ".into())), None, "全空白等于没提");
-        assert_eq!(clamp_text(Some("  有内容  ".into())).as_deref(), Some("有内容"));
+        assert_eq!(
+            clamp_text(Some("  有内容  ".into())).as_deref(),
+            Some("有内容")
+        );
         let long = "字".repeat(TEXT_LIMIT + 50);
         let clamped = clamp_text(Some(long)).unwrap();
-        assert_eq!(clamped.chars().count(), TEXT_LIMIT, "按字截断（不是按字节）");
+        assert_eq!(
+            clamped.chars().count(),
+            TEXT_LIMIT,
+            "按字截断（不是按字节）"
+        );
     }
 
     #[test]
@@ -396,14 +403,20 @@ mod tests {
             registry.believable("claude", 31_000).is_none(),
             "到期那一毫秒就不该再采信"
         );
-        assert!(registry.believable("gemini", 1_000).is_none(), "没自报过的没有");
+        assert!(
+            registry.believable("gemini", 1_000).is_none(),
+            "没自报过的没有"
+        );
     }
 
     #[test]
     fn expiry_stamps_the_record_instead_of_deleting_it() {
         let mut registry = Registry::new();
         registry.submit(submission(ReportedState::Working, Some(15_000)), 0);
-        assert!(registry.sweep_expired(10_000).is_empty(), "还没到期，不该盖戳");
+        assert!(
+            registry.sweep_expired(10_000).is_empty(),
+            "还没到期，不该盖戳"
+        );
         assert_eq!(registry.sweep_expired(15_000), vec!["claude".to_string()]);
         // 盖过戳就不再重复报（采样每拍都会调它）
         assert!(registry.sweep_expired(20_000).is_empty());
@@ -424,7 +437,10 @@ mod tests {
         let second = registry.submit(submission(ReportedState::Idle, Some(60_000)), 30_000);
         assert!(!second.expired);
         assert_eq!(registry.len(), 1, "同一个 agent 只留一条");
-        assert_eq!(registry.record("claude").unwrap().state, ReportedState::Idle);
+        assert_eq!(
+            registry.record("claude").unwrap().state,
+            ReportedState::Idle
+        );
         assert!(registry.believable("claude", 31_000).is_some());
     }
 
@@ -462,10 +478,21 @@ mod tests {
             ReportedState::Idle,
         ] {
             assert_eq!(ReportedState::parse(state.as_str()), Some(state));
-            assert_ne!(state.level(), ActivityLevel::Offline, "自报没有「离线」这一档");
+            assert_ne!(
+                state.level(),
+                ActivityLevel::Offline,
+                "自报没有「离线」这一档"
+            );
         }
-        assert_eq!(ReportedState::parse("offline"), None, "离线是观测才有的结论");
-        assert_eq!(ReportedState::parse("  WORKING "), Some(ReportedState::Working));
+        assert_eq!(
+            ReportedState::parse("offline"),
+            None,
+            "离线是观测才有的结论"
+        );
+        assert_eq!(
+            ReportedState::parse("  WORKING "),
+            Some(ReportedState::Working)
+        );
         assert_eq!(ReportedState::parse("干活中"), None, "认不出就拒绝，不猜");
     }
 
@@ -479,7 +506,10 @@ mod tests {
         assert_eq!(parse_pid(Some(&json!(0))), Err(Rejection::BadPid));
         assert_eq!(parse_pid(Some(&json!(-1))), Err(Rejection::BadPid));
         // 这个数走 32 位截断会变成 2：截断后的 pid 去比对名字是靠运气
-        assert_eq!(parse_pid(Some(&json!(4_294_967_298u64))), Err(Rejection::BadPid));
+        assert_eq!(
+            parse_pid(Some(&json!(4_294_967_298u64))),
+            Err(Rejection::BadPid)
+        );
         assert_eq!(parse_pid(Some(&json!("abc"))), Err(Rejection::BadPid));
         assert_eq!(parse_pid(Some(&json!(true))), Err(Rejection::BadPid));
         // 归一化时顺手挡掉非正 pid
@@ -519,10 +549,16 @@ mod provenance_tests {
     fn without_a_report_observed_and_inferred_are_told_apart_and_offline_gets_nothing() {
         // 读到会话强语义 ⇒ 观测
         let (level, p) = resolve(ActivityLevel::Working, true, None);
-        assert_eq!((level, p), (ActivityLevel::Working, Some(Provenance::Observed)));
+        assert_eq!(
+            (level, p),
+            (ActivityLevel::Working, Some(Provenance::Observed))
+        );
         // 只有 CPU/写入兜底 ⇒ 推断
         let (level, p) = resolve(ActivityLevel::Idle, false, None);
-        assert_eq!((level, p), (ActivityLevel::Idle, Some(Provenance::Inferred)));
+        assert_eq!(
+            (level, p),
+            (ActivityLevel::Idle, Some(Provenance::Inferred))
+        );
         // 离线：不给出处——「它说了什么」在进程都不在时不成立
         let (level, p) = resolve(ActivityLevel::Offline, false, None);
         assert_eq!((level, p), (ActivityLevel::Offline, None));
@@ -533,10 +569,16 @@ mod provenance_tests {
         let record = report(ReportedState::Working);
         // 观测只是「空闲」（弱信号），自报说在工作 ⇒ 采信自报
         let (level, p) = resolve(ActivityLevel::Idle, false, Some(&record));
-        assert_eq!((level, p), (ActivityLevel::Working, Some(Provenance::SelfReported)));
+        assert_eq!(
+            (level, p),
+            (ActivityLevel::Working, Some(Provenance::SelfReported))
+        );
         // 观测与会话信号一致时也采信（不冲突）
         let (level, p) = resolve(ActivityLevel::Working, true, Some(&record));
-        assert_eq!((level, p), (ActivityLevel::Working, Some(Provenance::SelfReported)));
+        assert_eq!(
+            (level, p),
+            (ActivityLevel::Working, Some(Provenance::SelfReported))
+        );
     }
 
     #[test]
@@ -555,23 +597,39 @@ mod provenance_tests {
     fn a_report_for_a_process_that_is_gone_is_a_conflict() {
         let record = report(ReportedState::Working);
         let (level, p) = resolve(ActivityLevel::Offline, false, Some(&record));
-        assert_eq!((level, p), (ActivityLevel::Offline, Some(Provenance::Conflict)));
+        assert_eq!(
+            (level, p),
+            (ActivityLevel::Offline, Some(Provenance::Conflict))
+        );
     }
 
     #[test]
     fn only_the_two_remarkable_provenances_get_a_badge() {
         assert_eq!(Provenance::SelfReported.badge_text(), Some("自报"));
         assert_eq!(Provenance::Conflict.badge_text(), Some("自报冲突"));
-        assert_eq!(Provenance::Observed.badge_text(), None, "观测是常态，不挂标签");
+        assert_eq!(
+            Provenance::Observed.badge_text(),
+            None,
+            "观测是常态，不挂标签"
+        );
         assert_eq!(Provenance::Inferred.badge_text(), None, "推断也是常态");
         // 后缀由 Rust 拼好：界面不自己拼「 · 自报」
-        assert_eq!(Provenance::badge_suffix(Some(Provenance::SelfReported)), " · 自报");
-        assert_eq!(Provenance::badge_suffix(Some(Provenance::Conflict)), " · 自报冲突");
+        assert_eq!(
+            Provenance::badge_suffix(Some(Provenance::SelfReported)),
+            " · 自报"
+        );
+        assert_eq!(
+            Provenance::badge_suffix(Some(Provenance::Conflict)),
+            " · 自报冲突"
+        );
         assert_eq!(Provenance::badge_suffix(Some(Provenance::Observed)), "");
         assert_eq!(Provenance::badge_suffix(None), "");
         // 完整说法（报表/CLI 用）
         assert_eq!(Provenance::Observed.explain_text(), "观测（会话强语义）");
-        assert_eq!(Provenance::SelfReported.explain_text(), "自报（带令牌、TTL 内）");
+        assert_eq!(
+            Provenance::SelfReported.explain_text(),
+            "自报（带令牌、TTL 内）"
+        );
         for p in [
             Provenance::SelfReported,
             Provenance::Observed,

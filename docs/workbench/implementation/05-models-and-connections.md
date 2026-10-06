@@ -1,0 +1,84 @@
+# 05 · 模型、档位与外部连接
+
+当前实现：工作台原 provider 路由归为模型与连接，内部工具配置/模型目录保留同一 DOM 草稿。目录读取现有状态与档位，以模型、接口、协议、端点和认证变量引用区分目标；只说明配置来源，不验证服务可用性。现有 Codex 写入、备份与导入导出继续使用原命令。服务连接偏好与本地 CRUD 已接入工作台第三视图；只存环境变量引用，保存不出网、不宣称 connected。New API 公开状态与 Magpie 服务身份支持手动后台 GET，严格限时、响应边界、受控错误与版本核对；结果有读取时间，不等同模型/用量授权。目录/用量、CC Switch 接口、真服务兼容与全量原生配置回归仍待完成。
+
+## 1. 内建能力优先
+
+本页主线是 AgentIsland 自己的模型、接口、档位与配置快照能力，来自上游能力拆解；不要求安装 CC Switch/Magpie/New API。外部连接和状态读取只作为可选互操作，不计为融合完成。本地目录已能直接选择已保存档位，复用同一预览、冲突、备份和应用链路；编辑器折叠不丢失未保存保护，取消编辑后才能继续。再逐工具补真实适配、MCP/Skills 管理及接口治理。网关路由执行另行设计，不能用状态读取代替。
+
+
+现有 provider.rs 管理Codex配置、备份、预览与revision冲突；capabilities.rs只读MCP/Skills。模型与连接页先包裹现有功能，不另造profile存储。旧provider导航映射到新页面的Codex配置子区；后端旧命令保持，导入导出白名单与凭据边界不放宽。
+
+页面分“工具配置 / 服务连接 / 模型目录”。首版只显示已接入内容；模型目录不是假定所有工具均可使用的模型列表。列表明确“配置目标”，运行模型从历史来源显示。
+
+## 2. 连接目标数据
+
+`connections.v1.json`：schema_version、revision、items。Connection字段：id、kind（new_api/magpie/cc_switch）、name、base_url、credential_ref、enabled、created_ms、updated_ms。当前 credential_ref 为 null 或 `{kind: environment, name: 大写环境变量名}`，不接受值；钥匙串来源尚未实现，未知来源拒绝而不占位；手动检测才读取环境变量值。后续后端条目必须绑定连接身份，不能引用任意远程通知条目，不把Bearer token放URL，不读取厂商OAuth凭据复用登录。
+
+当前连接检测为独立瞬态 DTO：connection_id、status（readable/disabled/offline/auth_failed/permission_denied/unsupported/error）、checked_at_ms、service_version、reason、models_verified、usage_verified；两项权限当前均 false，untested/testing 由界面管理。后续能力独立验收，禁止把 readable 升格为 connected。禁用连接停止刷新，隐藏页面停止非必要轮询；重连不悄悄变更客户端配置。
+
+## 3. 服务适配器
+
+| 适配器能力 | 实现原则 |
+| --- | --- |
+| inspect_connection | 手动触发；限制超时/响应大小/重定向；返回版本与授权能力 |
+| list_models | 只显示来源与缓存时间；未支持时不伪造空模型列表 |
+| read_usage | 保存口径、范围、货币与来源；不与本机净消耗相加 |
+| open_console | 独立动作，不表示API已连接；限制服务地址协议 |
+| admin_write | 后续真服务验证后单独开放；不在首版默认实现 |
+
+New API/Magpie/CC Switch不是同一API，不共享猜测路由。接入前为具体版本建立受控响应夹具，核对权限、401/403、版本变化与业务错误。若某产品没有已核实只读接口，先提供打开控制台或标为未验证，不跑有初始化写副作用的命令当只读探测。
+
+## 4. 拟新增命令
+
+`connections_list`、`connection_save(config, expected_revision)`、`connection_remove(id, expected_revision)`、`connection_test(id)`、`connection_models(id)`、`connection_usage(id, range)`、`connection_open_console(id)`。
+
+读取返回不包含密钥；手动测试说明将访问所配服务。鉴权失败不自动轮询重试，断网保留缓存并标时点。传输层只允许明确HTTP/HTTPS协议，拒绝凭据URL、未知协议；重定向不得向其他origin转发认证。错误与日志不含响应secret或任意完整配置。
+
+## 5. 跨工具配置扩展
+
+目标Adapter接口：scan/read_redacted/preview_patch/apply_patch/list_backups/restore。每个工具先有真实文件/协议与写入范围证据，再启用写能力。实际首版仍只有已支持的Codex；不能用“在本机没装”验证不支持的工具。
+
+apply带config revision与预览revision，外部修改后拒绝；写前备份，保留非目标字段，原子写后重新读取受控字段验证。失败返回哪些步骤发生了，不能虚报原文件未改变。restore同样先备份当前文件并检查目标备份revision。写后显示“新会话/重启后读取”等实际生效范围，不自动kill工具。
+
+## 6. 验收
+
+现有profile保存/预览/应用/重应用/保留当前/备份/还原/导入导出回归；native profile和特殊认证继续明确拒绝。连接覆盖无凭据、401/403、断线、timeout、错误JSON、过大响应、版本不符、缓存过期、取消页面请求、不同origin重定向。测试使用本地mock与假认证引用；不把真实服务key写文件或输出。
+
+## 7. 当前内建 MCP 配置管理
+
+新增 mcp_config 管理已核实 Codex 用户级配置；工作台扩展分区提供 HTTP 与 stdio 本地进程条目的新增、编辑、启停、删除。命令 mcp_inspect、mcp_preview(operation,revision)、mcp_apply(operation,revision,plan_id)，均由后台选择实际配置路径，apply 与档位共享 Mutex。草稿只允许 transport 白名单及变量名引用，名称保持稳定；参数用字符串 JSON 数组，不损失空参数和空格。
+
+预览绑定配置与完整操作 hash；写前普通文件/限额/结构/已知私有字段核对，原子备份、复核来源、原子写与读回，重复备份名拒覆盖。失败保留草稿；配置冲突可刷新 revision，输入不重置，再手动预览。还原共用原有备份流程并展示 MCP 条目恢复/移除/内容还原，明确覆盖完整配置；未返回原秘密值。
+
+只支持已核实的本地变量名/HTTP认证引用；静态 env/header、远程 env 对象、混合传输等未支持形式使文件保留只读，不把未知字段强行改写。普通高级工具策略保留。Skills 用户目录启停见第 9 节，macOS 本地安装、恢复和记录清理流程见 [12](12-local-skill-packages.md)；其他工具 MCP 写入、插件内 MCP 和真实客户端加载尚未验收；标准技能包已适配两工具用户级安装与手动同步，见12。依据 [官方 MCP 配置](https://developers.openai.com/codex/mcp/)及[配置参考](https://developers.openai.com/codex/config-reference/)，具体执行证据见独立 review。
+
+## 8. Codex 协议写入边界
+
+当前官方配置参考将 wire_api 限为 Responses。档位的结构解析继续读取旧 Chat，避免一个旧条目导致整份库不可用；新增/更新保存、捕获当前配置及纯应用计划增加 Responses 写能力校验，应用拒绝发生在备份和目标写入前。旧库导入/导出仍保留原协议，导入不使旧协议获得应用能力。工作台档位、模型目录及重应用入口按协议禁用，旧协议保留可见编辑选项，需核对服务后手动更改。此边界针对本应用的档位写入，不宣称校验整个客户端配置；完整历史备份还原不自动改写协议，客户端可加载性仍需原生验收。
+
+依据 [官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。本机 CLI 版本仅核实为 0.160.0，未用真实用户配置运行测试请求或解析诊断，不推导服务端 Responses 支持。
+
+## 9. 内建用户 Skills 启停
+
+skills_config 只扫描官方用户目录 ~/.agents/skills 的本地 SKILL.md 元数据，不读取技能内容。后端解析所选 ID 为本机文件路径；UI 不提交路径或 URI。软链接使用目标路径，已有别名覆盖按目标匹配，冲突覆盖拒绝。配置状态与客户端加载分开，运行中不执行技能或重启客户端。
+
+skills_inspect / skills_preview / skills_apply 共用配置写入锁与 MCP 内部通用事务：完整配置限额/已知私有字段检查、配置版本、目录身份元数据、操作 hash、写前备份、复核、原子写和读回。目录身份使用逻辑/目标路径、长度、mtime；它不是内容校验和，无法识别刻意保留同一元数据的替换。任意外部进程在最后核验后改文件仍有竞态边界，不声称跨进程事务锁。
+
+启停仅修改 [[skills.config]]，保留其他字段；清单与配置各 200 项限制，未知/坏结构拒绝，容量不隐式清历史。旧目录/其他工具仍只读展示，不把用户目录覆盖当成所有项目或插件的实际生效证明。写入后提示重启 Codex 核对；备份预览补 Skills 启停差异，不展示完整路径。依据 [官方 Skills 文档](https://learn.chatgpt.com/docs/build-skills)。macOS 本地目录安装、更新与持久恢复见 [12](12-local-skill-packages.md)；标准 YAML 元数据有界解析已接入；Codex / Claude Code 用户级手动同步已接入；两工具用户级正文编辑、预览与整包恢复已接入；其他工具适配继续按整体方案推进。
+
+配置备份发布与只读保护见 ADR 0033：档位、MCP/Skills、还原前备份采用校验后原子占用新名字，同名/并发冲突不覆盖旧备份；不支持发布方式就失败关闭。档位及还原复用私有字段/未支持配置保护，数组/表数组递归检测；预览 writable 与后端再校验保持一致，已识别私有配置不能复制到新备份。
+
+内建提示词管理已接入，流程与边界见 [11](11-prompts-and-instructions.md)：本地库 CRUD、用户指令精确预览、备份/还原，不依赖上游应用；不改项目规则或自动启动工具。
+
+## 10. 内建接口目录
+
+模型目录提供模型/接口两种局部视图与本地查找；不新增上游产品菜单。接口目录按 provider、原始端点、协议、认证变量引用分组，一个接口列出其模型与保存档位；模型目录身份同样包含认证引用，不将同地址的不同账户配置合并。空值保持未知，不猜测默认地址或服务能力。
+
+数据派生自现有受控档位和成功读取的当前配置，无第二套存储，无后台请求；当前配置读取失败时不推导配置目标，应用受既有版本/协议/写能力保护。每个档位可预览应用或定位原编辑器；未保存草稿阻止操作。搜索仅查配置标签、模型、地址与引用名，视图/筛选在切页和重绘间保留，不搜索凭据值。局部切换使用既有动效 token，减少动效时关闭。
+
+接口行保留完整地址、协议与认证变量引用，档位名称/模型分层显示；短按钮具备具体档位的可访问名称。局部视图支持左右方向键循环、Home/End，切换后焦点跟随按钮并保留查找；搜索输入和带修饰键操作不被拦截。窄窗行内操作换行，浅深主题选中态清晰，零结果有状态提示。
+
+这是接口配置整理与受控选择能力，仍需接口预算的可信归因与后续路由执行独立验收；不把本地模型清单当成服务端授权列表或运行中模型。
+
+Skills 安装记录逐项预览移入废纸篓与折叠历史已接入，容量满额可继续核对并移出记录；保留包可手动取回，不声称释放磁盘，目标/配置不变。范围与验证见 [12](12-local-skill-packages.md)。

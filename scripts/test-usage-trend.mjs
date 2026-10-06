@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {trendSeries,trendPlot,trendHtml,hourRecords,trendCardHtml} from '../app/ui/js/usage-trend.js';
+const hour=3600000,now=Date.UTC(2026,9,5,12,27),end=Math.floor(now/hour)*hour;
+const data=[[end,20],[end-2*hour,10],[end-2*hour,5],[end-25*hour,40],[end-8*24*hour,80],[end-29*24*hour,120],[end+hour,999],[end+1,100],[end-3*hour,-1],[NaN,1],[end-4*hour,Infinity]];
+const recent=trendSeries(data,'24',now);assert.equal(recent.points.length,2);assert.equal(recent.peak,20);assert.equal(recent.points[0][1],15);
+assert.equal(trendSeries(data,'7',now).points.length,3);assert.equal(trendSeries(data,'30',now).points.length,5);assert.equal(trendSeries(data,'bad',now).range,'24');
+const plot=trendPlot(recent);assert.equal((plot.path.match(/M/g)||[]).length,2,'missing hour breaks the line');assert.equal((plot.path.match(/L/g)||[]).length,0);
+assert(Math.abs(plot.points[1].x-plot.points[0].x-262*2/23)<1e-8,'real time rather than uniform record index');
+const adjacent=trendPlot(trendSeries([[end-hour,1],[end,2]],'24',now));assert.equal((adjacent.path.match(/L/g)||[]).length,1);
+const records=hourRecords(data,now);assert.equal(records.length,24);assert.equal(records.filter(r=>r.tokens!==null).length,2);assert.equal(records[22].tokens,null);
+assert.equal(hourRecords([[end,0]],now).at(-1).tokens,0,'recorded zero differs from missing');
+assert.match(trendHtml(trendSeries([],'7',now)),/暂无小时记录/);assert.match(trendHtml(trendSeries([[end,10]],'24',now)),/<circle/,'single recorded bucket remains visible');
+assert(!trendHtml(recent).includes('NaN'));assert.match(trendCardHtml(),/趋势范围/);
+assert(trendCardHtml().indexOf('data-usage-range="24"')<trendCardHtml().indexOf('data-usage-range="7"'));
+console.log('PASS: actual time positioning, 24/168/720 hour windows, missing gaps, duplicates, future/invalid exclusion, recorded zero, empty/single point and range order');

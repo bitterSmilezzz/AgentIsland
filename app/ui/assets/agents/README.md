@@ -5,19 +5,21 @@ launch, runtime CDN, network request or icon font is required.
 
 ## Verified product artwork
 
-Verification date: 2026-10-02. File-level source, version, processing and SHA-256
-are recorded in [official-sources.json](official-sources.json). The nine application
+Verification dates: 2026-10-02 and 2026-10-03. File-level source, version, processing and SHA-256
+are recorded in [official-sources.json](official-sources.json). The application
 icons were resolved from each installed bundle's Info.plist CFBundleIconFile,
 with bundle identifier checked against the monitored product. ICNS/ICO conversion
 only changes format and resolution; artwork and colors are preserved.
 
 | Asset | Verified source |
 | --- | --- |
+| `traework.png` | TRAE SOLO CN 0.1.69 / TraeWork, `cn.trae.solo.app`, current bundle icon |
+| `doubaowork.png` | DoubaoWork 2.31.10, `com.work.pc.doubao`, current bundle icon |
+| `vscode.png` | Visual Studio Code 1.140.0, `com.microsoft.VSCode`, current bundle icon |
 | `chatgpt.png` | ChatGPT / Codex 26.930.21537, `com.openai.codex`, current bundle icon |
 | `dim.png` | DimAgent 0.9.51, `com.dimcode.app` |
 | `zcode.png` | ZCode 3.14.4, `dev.zcode.app` |
 | `qoder.png` | Qoder 0.4.3, `com.qoder.app` |
-| `vibeusage.png` | Vibe Usage 0.7.0, `ai.vibecafe.vibe-usage` |
 | `workbuddy.png` | WorkBuddy 5.6.2, `com.tencent.workbuddy.mac` |
 | `workbuddyai.png` | WorkBuddy AI 5.6.2, `com.workbuddy.workbuddy-ai` |
 | `ima.svg` | [ima official site](https://ima.qq.com/), declared favicon |
@@ -52,7 +54,7 @@ create additional Agent entries.
 
 ## Original fallback artwork
 
-`vscode.svg`, `aider.svg`, `continue.svg` and `customagent.svg` are original
+`aider.svg`, `continue.svg` and `customagent.svg` are original
 AgentIsland identification pictograms under the repository MIT license
 (copyright 2026 bitterSmilezzz), not claimed official logos. The custom SVG is
 used only for unknown/custom identities. All status colors remain separate.

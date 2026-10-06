@@ -81,7 +81,10 @@ pub fn hostname() -> String {
     if !ok {
         return "localhost".to_string();
     }
-    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+    let end = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
     let name = String::from_utf8_lossy(&buffer[..end]).trim().to_string();
     if name.is_empty() {
         "localhost".to_string()
@@ -137,7 +140,11 @@ pub fn run(
 }
 
 fn code_of(line: &str) -> i64 {
-    line.chars().take(3).collect::<String>().parse().unwrap_or(-1)
+    line.chars()
+        .take(3)
+        .collect::<String>()
+        .parse()
+        .unwrap_or(-1)
 }
 
 /// 读一条回复并检查状态码；多行回复（`250-…`）必须读到 `250 ` 那行为止。
@@ -458,7 +465,13 @@ mod tests {
     #[test]
     fn a_full_session_walks_the_documented_command_sequence() {
         let mut session = Scripted::new(happy_script());
-        let outcome = run(&mut session, &target(), "Qoder · 等待你确认", "Qoder · 等待你确认（刚刚）", 0);
+        let outcome = run(
+            &mut session,
+            &target(),
+            "Qoder · 等待你确认",
+            "Qoder · 等待你确认（刚刚）",
+            0,
+        );
         assert_eq!(outcome, Outcome::Delivered);
         assert_eq!(session.closed, 1, "跑完也要关连接");
 
@@ -474,7 +487,10 @@ mod tests {
         assert_eq!(written[6], "DATA");
         assert!(written[7].starts_with(&format!("From: {FAKE_USER_AND_FROM}")));
         assert!(written[8].starts_with(&format!("To: {FAKE_TO}")));
-        assert!(written[9].starts_with("Subject: =?UTF-8?B?"), "主题要 RFC 2047 编码");
+        assert!(
+            written[9].starts_with("Subject: =?UTF-8?B?"),
+            "主题要 RFC 2047 编码"
+        );
         assert!(written[10].starts_with("Date: "));
         assert_eq!(written[11], "MIME-Version: 1.0");
         assert_eq!(written[12], "Content-Type: text/plain; charset=utf-8");
@@ -492,7 +508,10 @@ mod tests {
         let cases: Vec<(Vec<Option<&str>>, &str)> = vec![
             (vec![None], "问候：服务器无响应（超时）"),
             (vec![Some("220 hi")], "EHLO：服务器无响应"),
-            (vec![Some("220 hi"), Some("250 ok"), Some("500 no")], "AUTH LOGIN：回复 500"),
+            (
+                vec![Some("220 hi"), Some("250 ok"), Some("500 no")],
+                "AUTH LOGIN：回复 500",
+            ),
             (
                 vec![
                     Some("220 hi"),
@@ -572,13 +591,13 @@ mod tests {
         ]);
         let outcome = run(&mut session, &target(), "s", "b", 0);
         assert_eq!(outcome, Outcome::Delivered);
-        assert_eq!(session.written[1], "AUTH LOGIN", "问候的续行读完后才能到 AUTH");
+        assert_eq!(
+            session.written[1], "AUTH LOGIN",
+            "问候的续行读完后才能到 AUTH"
+        );
 
         // 续行之后回来的码与首行不一致 ⇒ 视为回复流被打断
-        let mut broken = Scripted::new(vec![
-            Some("220-hi"),
-            Some("421 断了"),
-        ]);
+        let mut broken = Scripted::new(vec![Some("220-hi"), Some("421 断了")]);
         match run(&mut broken, &target(), "s", "b", 0) {
             Outcome::Failed { reason, .. } => assert_eq!(reason, "问候：回复流被打断"),
             other => panic!("应失败，实际 {other:?}"),
@@ -628,7 +647,10 @@ mod tests {
         // 偏移形如 +0800 / -0500
         let offset = tail.rsplit(' ').next().unwrap();
         assert_eq!(offset.len(), 5, "{stamp}");
-        assert!(offset.starts_with('+') || offset.starts_with('-'), "{stamp}");
+        assert!(
+            offset.starts_with('+') || offset.starts_with('-'),
+            "{stamp}"
+        );
         assert!(offset[1..].chars().all(|c| c.is_ascii_digit()), "{stamp}");
     }
 

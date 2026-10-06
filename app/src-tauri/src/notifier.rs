@@ -15,8 +15,8 @@
 //! ③ **被策略挡下不算失败**，也不该记成成功：它记的是「为什么没发」。
 
 use crate::remote::{Channel, ChannelConfig, Now, Policy, PresenceSignals};
-use crate::secret::{self, SecretStore};
 use crate::render::{self, Inputs, Request};
+use crate::secret::{self, SecretStore};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -28,14 +28,21 @@ use std::time::Duration;
 pub enum Outcome {
     Delivered,
     /// 被策略挡下（总开关关、该类事件关、节流命中、静默时段）——不算失败，也不该记成功
-    Suppressed { reason: String },
+    Suppressed {
+        reason: String,
+    },
     /// 配置不完整（没填 key / 主机 / 收件人）
-    NotConfigured { reason: String },
+    NotConfigured {
+        reason: String,
+    },
     /// 送出但对方没接受，带可给人看的短说明（HTTP 状态码或 SMTP 回复码）。
     /// `permanent` = 对端**明确拒绝**（404 主题不存在、535 授权码错、550 拒绝中继）：
     /// 再试一次也是同一个结果。这一位既决定要不要重试，也决定界面怎么说——
     /// 把「配置就是错的」显示成「链路在抖」会把人引向完全错误的排查方向。
-    Failed { reason: String, permanent: bool },
+    Failed {
+        reason: String,
+        permanent: bool,
+    },
 }
 
 impl Outcome {
@@ -385,7 +392,8 @@ impl Notifier {
                 &config,
                 now,
                 &presence,
-                bypass_policy);
+                bypass_policy,
+            );
         });
     }
 
@@ -526,12 +534,7 @@ mod tests {
         PresenceSignals::unavailable()
     }
 
-    fn run(
-        notifier: &mut Notifier,
-        kind: EventKind,
-        policy: &Policy,
-        at: i64,
-    ) -> Outcome {
+    fn run(notifier: &mut Notifier, kind: EventKind, policy: &Policy, at: i64) -> Outcome {
         notifier.attempt(
             &inputs(kind),
             policy,
@@ -539,7 +542,8 @@ mod tests {
             &ntfy(),
             now(at),
             &unavailable(),
-            false)
+            false,
+        )
     }
 
     #[test]
@@ -562,7 +566,8 @@ mod tests {
             &ntfy(),
             now(2_000),
             &unavailable(),
-            true);
+            true,
+        );
         assert_eq!(
             bypassed,
             Outcome::Suppressed {
@@ -622,8 +627,14 @@ mod tests {
                 idle_seconds: Some(1.0),
                 ..PresenceSignals::default()
             },
-            false);
-        assert_eq!(quiet, Outcome::Suppressed { reason: "静默时段".into() });
+            false,
+        );
+        assert_eq!(
+            quiet,
+            Outcome::Suppressed {
+                reason: "静默时段".into()
+            }
+        );
 
         // bypass 绕过这两条 ⇒ 这次要真的走传输
         let bypassed = notifier.attempt(
@@ -636,7 +647,8 @@ mod tests {
                 idle_seconds: Some(1.0),
                 ..PresenceSignals::default()
             },
-            true);
+            true,
+        );
         assert_eq!(bypassed, Outcome::Delivered);
         assert_eq!(seen.lock().unwrap().len(), 1);
 
@@ -649,7 +661,8 @@ mod tests {
             &ChannelConfig::default(),
             at,
             &unavailable(),
-            true);
+            true,
+        );
         assert_eq!(
             unconfigured,
             Outcome::NotConfigured {
@@ -672,7 +685,8 @@ mod tests {
             &ntfy(),
             now(1_000),
             &present,
-            false);
+            false,
+        );
         assert_eq!(by_default, Outcome::Delivered, "默认不要求「人不在」");
 
         let (mut strict, _) = fixture(Outcome::Delivered);
@@ -687,11 +701,15 @@ mod tests {
             &ntfy(),
             now(1_000),
             &present,
-            false);
+            false,
+        );
         match blocked {
             Outcome::Suppressed { reason } => {
                 assert!(reason.starts_with("有人在机器前（"), "{reason}");
-                assert!(reason.contains("距上次输入 3 秒"), "要说得清为什么被挡：{reason}");
+                assert!(
+                    reason.contains("距上次输入 3 秒"),
+                    "要说得清为什么被挡：{reason}"
+                );
             }
             other => panic!("应被挡下，实际 {other:?}"),
         }
@@ -705,7 +723,10 @@ mod tests {
         let (mut notifier, _) = fixture(Outcome::Delivered);
         let policy = enabled();
         // 先配好、发成功一次 ⇒ 节流窗口被占住
-        assert_eq!(run(&mut notifier, EventKind::Attention, &policy, 1_000), Outcome::Delivered);
+        assert_eq!(
+            run(&mut notifier, EventKind::Attention, &policy, 1_000),
+            Outcome::Delivered
+        );
         // 同一时刻把配置改坏再试：必须报配置问题，不许报「节流命中」
         let outcome = notifier.attempt(
             &inputs(EventKind::Attention),
@@ -714,7 +735,8 @@ mod tests {
             &ChannelConfig::default(),
             now(1_500),
             &unavailable(),
-            false);
+            false,
+        );
         assert_eq!(
             outcome,
             Outcome::NotConfigured {
@@ -728,7 +750,10 @@ mod tests {
     fn the_throttle_window_holds_and_a_failure_releases_it() {
         let (mut notifier, seen) = fixture(Outcome::Delivered);
         let policy = enabled(); // 节流 90 秒
-        assert_eq!(run(&mut notifier, EventKind::Attention, &policy, 1_000), Outcome::Delivered);
+        assert_eq!(
+            run(&mut notifier, EventKind::Attention, &policy, 1_000),
+            Outcome::Delivered
+        );
         assert_eq!(
             run(&mut notifier, EventKind::Attention, &policy, 1_000 + 89_999),
             Outcome::Suppressed {
@@ -744,7 +769,10 @@ mod tests {
         );
 
         // 不同事件类型各有各的窗口
-        assert_eq!(run(&mut notifier, EventKind::CostSpike, &policy, 1_000 + 90_000), Outcome::Delivered);
+        assert_eq!(
+            run(&mut notifier, EventKind::CostSpike, &policy, 1_000 + 90_000),
+            Outcome::Delivered
+        );
 
         // 失败必须撤回占位，否则一次抖动会吞掉后面一整段
         let (mut failing, _) = fixture(Outcome::Failed {
@@ -779,7 +807,8 @@ mod tests {
                 &ntfy(),
                 now(1_000 + i),
                 &unavailable(),
-                false);
+                false,
+            );
         }
         let recent = notifier.recent();
         assert_eq!(recent.len(), HISTORY_LIMIT);
@@ -849,7 +878,8 @@ mod tests {
             &config,
             now(1_000),
             &unavailable(),
-            false);
+            false,
+        );
         match &outcome {
             Outcome::Failed { reason, .. } => assert!(reason.contains("连接失败"), "{reason}"),
             other => panic!("应报连接失败，实际 {other:?}"),
@@ -946,7 +976,8 @@ mod tests {
         let recent = notifier.recent_view();
         assert_eq!(recent.len(), 1);
         assert!(
-            !recent[0].text.contains("s3cret-value-9") && !recent[0].title.contains("s3cret-value-9"),
+            !recent[0].text.contains("s3cret-value-9")
+                && !recent[0].title.contains("s3cret-value-9"),
             "账本里不许出现密钥：{:?}",
             recent[0]
         );
@@ -991,7 +1022,11 @@ mod tests {
         let rendered = format!("{outcome:?}");
         assert!(!rendered.contains("s3cret-value-9"), "{rendered}");
         let recent = notifier.recent_view();
-        assert!(!recent[0].text.contains("s3cret-value-9"), "{}", recent[0].text);
+        assert!(
+            !recent[0].text.contains("s3cret-value-9"),
+            "{}",
+            recent[0].text
+        );
     }
 
     #[test]

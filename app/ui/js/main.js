@@ -1,3 +1,6 @@
+import { refreshSessions } from './sessions-page.js';
+import { startTaskAttention, refreshTaskAttention } from './task-attention.js';
+import { selectTask, refreshTasks } from './tasks-page.js';
 // AgentIsland 前端入口：状态管理、贴边交互、渲染调度
 import {
   hydrateProvider,
@@ -7,19 +10,25 @@ import {
   renderCard,
   renderSidebar,
   renderNavSummaryOnly,
+  renderTaskAttentionOnly,
   renderSidebarDetail,
   renderSliver,
   renderWorkbench,
   renderWorkbenchMonitorOnly,
   sliverSize,
 } from './views.js';
-import { invoke } from './tauri.js';
+import { invoke, listen, waitForTauri } from './tauri.js';
+import { navigationActive, resizeNavigation } from './island-navigation.js';
 import { DraftGuard } from './window-lifecycle.js';
 const draftGuard = new DraftGuard();
 function updateWorkbenchDraftStatus() {
   if (isWorkbench()) invoke('set_workbench_draft', { dirty: draftGuard.dirty }).catch(() => {});
 }
-import { agentIdFromIntent, subscribeNavigation } from './navigation.js';
+export function retainWorkbenchControls(controls) {
+  draftGuard.retain(controls);
+  updateWorkbenchDraftStatus();
+}
+import { agentIdFromIntent, taskIdFromIntent, subscribeNavigation } from './navigation.js';
 import { isSidebar, isWorkbench, SHELL } from './shell.js';
 
 let windowVisible = true;
@@ -67,11 +76,20 @@ export function applyLayout() {
   root.classList.add(edgeClass());
 }
 
+let appearanceEpoch = 0;
 export function applyAppearance(mode) {
   const m = (mode ?? 'system').toLowerCase();
   const dark = m === 'dark' || (m !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
-  document.documentElement.classList.toggle('theme-dark', dark);
-  document.documentElement.classList.toggle('theme-light', !dark);
+  const html = document.documentElement;
+  if (html.classList.contains('theme-dark') === dark && html.classList.contains('theme-light') === !dark) return;
+  const epoch = ++appearanceEpoch;
+  // Foreground/background interpolation crosses an unreadable same-color midpoint.
+  html.classList.add('theme-switching');
+  html.classList.toggle('theme-dark', dark);
+  html.classList.toggle('theme-light', !dark);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (epoch === appearanceEpoch) html.classList.remove('theme-switching');
+  }));
 }
 
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -108,7 +126,7 @@ export async function expand() {
   }
 
   const h = Math.min(card ? card.getBoundingClientRect().height : 480, 520);
-  const w = 330;
+  const w = card ? Math.ceil(card.getBoundingClientRect().width) : 330;
   const cs = card ? getComputedStyle(card) : null;
   const rs = getComputedStyle(root);
 
@@ -166,23 +184,33 @@ export function scheduleRender() {
 }
 
 /// 按卡片内容自适应窗口高度（引擎数据变化后窗口跟随）
+let pendingResize = null;
 export async function resizeToContent() {
   if (!windowVisible) return;
   const card = document.querySelector('.card');
   if (!card) return;
-  card.style.maxHeight = 'none';
-  const h = Math.min(card.getBoundingClientRect().height, 520);
-  card.style.maxHeight = '';
-  if (Math.abs(window.innerHeight - h) > 6) {
-    await invoke('place_island', { width: 330, height: h }).catch(() => {});
+  if (navigationActive(card)) {
+    const route = state.route;
+    return resizeNavigation(card, invoke, () => state.expanded && state.route === route && windowVisible && card.isConnected,
+      () => { if (state.route === 'list') scheduleRender(); });
   }
+  card.style.maxHeight = 'none';
+  const rect = card.getBoundingClientRect();
+  const height = Math.ceil(Math.min(rect.height, 520));
+  const width = Math.ceil(rect.width);
+  card.style.maxHeight = '';
+  const key = `${state.route}:${width}:${height}`;
+  if (pendingResize?.key === key) return pendingResize.promise;
+  if (Math.abs(window.innerHeight - height) <= 1 && Math.abs(window.innerWidth - width) <= 1) return;
+  const promise = invoke('place_island', { width, height }).catch(() => {});
+  pendingResize = { key, promise };
+  try { await promise; } finally { if (pendingResize?.promise === promise) pendingResize = null; }
 }
 
 // MARK: 启动
 
 async function boot() {
   // **先等 Tauri 的全局 API 就绪**，再动任何 invoke（理由见 tauri.js 的注释）。
-  const { waitForTauri } = await import('./tauri.js');
   const gate = await waitForTauri();
   invoke('log_from_ui', {
     message: `Tauri API ${gate.ready ? '就绪' : '**未就绪**'}（等了 ${gate.waitedMs}ms）`,
@@ -224,7 +252,6 @@ async function boot() {
     message: `shell=${document.documentElement.className || '(未设置)'}`,
   }).catch(() => {});
 
-  const { listen } = await import('./tauri.js');
   await listen('ui://visibility', async (event) => {
     windowVisible = event.payload === true;
     state.windowVisible = windowVisible;
@@ -241,6 +268,7 @@ async function boot() {
     if (!windowVisible) return;
     if (snapshot) state.engine = snapshot;
     refreshVisibleWindow();
+    refreshTaskAttention();
   });
   windowVisible = (await invoke('window_is_visible').catch(() => true)) !== false;
   state.windowVisible = windowVisible;
@@ -268,25 +296,36 @@ async function boot() {
       }
     }
   });
+  await startTaskAttention(() => {
+    if (!windowVisible) return;
+    if (isWorkbench() || isSidebar()) renderTaskAttentionOnly();
+    else scheduleRender();
+  }, () => windowVisible);
+
   if (isWorkbench()) {
     // 工作台默认概览，启动路由也可进入独立功能页。
     // 数据型面板进入时填充，采样只更新实时区域，保留表单草稿。
     document.addEventListener('focusin', event => draftGuard.focus(event.target), true);
     document.addEventListener('input', event => { draftGuard.changed(event.target); updateWorkbenchDraftStatus(); }, true);
     document.addEventListener('change', event => { draftGuard.changed(event.target); updateWorkbenchDraftStatus(); }, true);
+    document.addEventListener('reset', event => queueMicrotask(() => {
+      if (event.defaultPrevented) return;
+      draftGuard.commit(event.target.querySelectorAll('input,select,textarea'));
+      updateWorkbenchDraftStatus();
+    }), true);
     updateWorkbenchDraftStatus();
     if (!state.bootRoute) {
       const savedPage = localStorage.getItem('agentisland.workbench.page');
-      if (['overview', 'tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report'].includes(savedPage)) {
+      if (['overview', 'tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report', 'tasks', 'sessions', 'windows'].includes(savedPage)) {
         state.workbenchPage = savedPage;
         state.route = savedPage === 'overview' ? 'list' : savedPage;
       }
     }
     if (state.bootRoute) {
       state.route = state.bootRoute;
-      state.workbenchPage = ['tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report'].includes(state.bootRoute) ? state.bootRoute : 'overview';
+      state.workbenchPage = ['tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report', 'tasks', 'sessions', 'windows','workspaces'].includes(state.bootRoute) ? state.bootRoute : 'overview';
     }
-    refreshVisibleWindow = () => { applyLayout(); renderWorkbenchMonitorOnly(); };
+    refreshVisibleWindow = () => { applyLayout(); renderWorkbenchMonitorOnly(); if (state.workbenchPage === 'tasks') refreshTasks(); if (state.workbenchPage === 'sessions') refreshSessions(); };
     renderWorkbench();
     await listen('engine://tick', (e) => {
       state.engine = e.payload;
@@ -298,6 +337,13 @@ async function boot() {
         // 只唤回当前工作台，保留页面、表单草稿与滚动位置。
         await showWorkbench();
         return;
+      }
+      if (intent === 'Tasks' || intent.startsWith('Task(')) {
+        const id=taskIdFromIntent(intent);
+        if (intent !== 'Tasks' && !id) return;
+        state.workbenchPage='tasks'; state.route='list';
+        selectTask(id); renderWorkbench();
+        await showWorkbench(); return;
       }
       if (intent.startsWith('Agent(')) {
         const id = agentIdFromIntent(intent);
@@ -311,9 +357,10 @@ async function boot() {
         state.route = 'list';
         state.workbenchPage = 'report';
       } else { return; }
+      const exportReport=state.workbenchPage==='report';
       renderWorkbench();
       await showWorkbench();
-      if (state.workbenchPage === 'report') await hydrateReportPanel('md');
+      if (exportReport) await hydrateReportPanel('md');
     });
     return;
   }

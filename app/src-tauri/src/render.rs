@@ -99,7 +99,11 @@ pub fn dropping_json_quotes(text: &str) -> &str {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() >= 2 && chars[0] == '"' && chars[chars.len() - 1] == '"' {
         let start = text.char_indices().nth(1).map(|(i, _)| i).unwrap_or(0);
-        let end = text.char_indices().nth(chars.len() - 1).map(|(i, _)| i).unwrap_or(text.len());
+        let end = text
+            .char_indices()
+            .nth(chars.len() - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
         return &text[start..end];
     }
     text
@@ -152,7 +156,9 @@ pub fn sensitive_header(name: &str) -> bool {
 /// URL 里的密钥常见形态：`?token=xxx` / `&key=xxx` / `.../<SendKey>.send`。
 /// 预览与日志都必须过这一层——密钥泄漏最常见的路径就是「把完整 URL 打印出来了」。
 pub fn masked_url(url: &str) -> String {
-    if let Some((base, _)) = url.split_once("/bot/v2/hook/") { return format!("{base}/bot/v2/hook/••••••"); }
+    if let Some((base, _)) = url.split_once("/bot/v2/hook/") {
+        return format!("{base}/bot/v2/hook/••••••");
+    }
     let mut out = url.to_string();
     for query in ["access_token", "token", "sendkey", "key", "webhook"] {
         let needle = format!("{query}=");
@@ -270,7 +276,11 @@ impl Request {
             let mut body = self.body.clone();
             if self.response_check.is_some() {
                 if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&body) {
-                    for key in ["token", "sign"] { if json.get(key).is_some() { json[key] = serde_json::json!("••••••"); } }
+                    for key in ["token", "sign"] {
+                        if json.get(key).is_some() {
+                            json[key] = serde_json::json!("••••••");
+                        }
+                    }
                     body = json.to_string();
                 }
             }
@@ -342,7 +352,10 @@ pub fn render(inputs: &Inputs, config: &ChannelConfig) -> Message {
     };
     // 正文首行自带 Agent 名：`X-Title` 这类头字段在 ASCII 约束下可能被接收端截断，
     // 而正文是裸 UTF-8 字节，一定到得了
-    let mut lines = vec![format!("{} · {}（{}）", inputs.agent_name, state, qualifier)];
+    let mut lines = vec![format!(
+        "{} · {}（{}）",
+        inputs.agent_name, state, qualifier
+    )];
     if config.include_action_detail {
         if let Some(detail) = inputs.action_detail.as_deref().filter(|d| !d.is_empty()) {
             lines.push(format!("动作：{}", first_chars(detail, 80)));
@@ -408,7 +421,9 @@ pub fn render_request(
     masked_preview: bool,
 ) -> Request {
     match channel {
-        Channel::FeishuBot | Channel::WechatPushPlus | Channel::QqPushPlus | Channel::QqOneBot => crate::im::request(message, channel, config, secret, masked_preview),
+        Channel::FeishuBot | Channel::WechatPushPlus | Channel::QqPushPlus | Channel::QqOneBot => {
+            crate::im::request(message, channel, config, secret, masked_preview)
+        }
         Channel::Ntfy => {
             // 形态按官方文档：POST https://<服务器>/<主题>，标题与优先级走 X-Title / X-Priority
             let starts_with_http = config.topic_or_url.starts_with("http");
@@ -436,7 +451,8 @@ pub fn render_request(
                     HttpField::new("X-Priority", if message.urgent { "4" } else { "3" }),
                 ],
                 body: capped.body,
-                smtp: None, response_check: None,
+                smtp: None,
+                response_check: None,
             }
         }
         Channel::CustomHttp => {
@@ -498,7 +514,8 @@ pub fn render_request(
                 method: "POST".into(),
                 headers,
                 body,
-                smtp: None, response_check: None,
+                smtp: None,
+                response_check: None,
             }
         }
         Channel::SmtpEmail => {
@@ -595,7 +612,10 @@ mod tests {
         // 实测过的坑：中文头值会被静默丢弃，对端只收到 `Qoder · `
         let encoded = header_value("Qoder · 等待你确认");
         assert!(encoded.is_ascii(), "头值必须纯 ASCII：{encoded}");
-        assert_eq!(encoded, "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85%E4%BD%A0%E7%A1%AE%E8%AE%A4");
+        assert_eq!(
+            encoded,
+            "Qoder%20%C2%B7%20%E7%AD%89%E5%BE%85%E4%BD%A0%E7%A1%AE%E8%AE%A4"
+        );
         assert_eq!(header_value("a b"), "a%20b");
     }
 
@@ -654,10 +674,16 @@ mod tests {
         // 下面这条地址是**故意**构造成「像直接粘了密钥」的样子，用来测遮蔽函数本身
         let masked_query = masked_url("https://ntfy.sh/island?key=ABCDEFGHIJKLMNOP"); // nosec: 夹具，值为占位串
         assert!(!masked_query.contains("ABCDEFGHIJKLMNOP"), "{masked_query}");
-        assert!(masked_query.contains("key=AB"), "留首尾便于核对自己填的是哪一条");
+        assert!(
+            masked_query.contains("key=AB"),
+            "留首尾便于核对自己填的是哪一条"
+        );
         // Server酱 形态：密钥在主机名首段
         let masked_host = masked_url("https://ABCDEFGHIJKLMNOPQRSTUVWXYZ012345.send/notify");
-        assert!(!masked_host.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"), "{masked_host}");
+        assert!(
+            !masked_host.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"),
+            "{masked_host}"
+        );
         // 正常域名与主题名照原样
         assert_eq!(
             masked_url("https://sctapi.ftqq.com/my-agent-island-topic"),
@@ -687,12 +713,18 @@ mod tests {
             ..ChannelConfig::default()
         };
         let detailed = render(&inputs, &loud);
-        assert_eq!(detailed.body, "Qoder · 等待你确认（刚刚）\n动作：git push --force\n要不要继续");
+        assert_eq!(
+            detailed.body,
+            "Qoder · 等待你确认（刚刚）\n动作：git push --force\n要不要继续"
+        );
     }
 
     #[test]
     fn only_completed_is_non_urgent_and_it_reports_the_task_duration() {
-        let done = render(&Inputs::new("Claude", EventKind::Completed, 200.0), &ChannelConfig::default());
+        let done = render(
+            &Inputs::new("Claude", EventKind::Completed, 200.0),
+            &ChannelConfig::default(),
+        );
         assert_eq!(done.title, "Claude · 任务完成");
         assert_eq!(done.body, "Claude · 任务完成（用时 3分）");
         assert!(!done.urgent, "完成不算紧急：不该在半夜用最高优先级叫醒人");
@@ -761,8 +793,15 @@ mod tests {
             None,
             false,
         );
-        assert!(long.body.len() <= NTFY_BYTE_LIMIT, "正文 {} 字节超限", long.body.len());
-        assert!(long.body.starts_with("Qoder · 等待你确认（刚刚）"), "首行必须留住");
+        assert!(
+            long.body.len() <= NTFY_BYTE_LIMIT,
+            "正文 {} 字节超限",
+            long.body.len()
+        );
+        assert!(
+            long.body.starts_with("Qoder · 等待你确认（刚刚）"),
+            "首行必须留住"
+        );
         assert!(long.headers[0].value.len() <= 255, "头值有 255 字节预算");
     }
 
@@ -775,10 +814,22 @@ mod tests {
             url_template: "https://x/y?key={key}".into(),
             ..ChannelConfig::default()
         };
-        let json = render_request(&message, Channel::CustomHttp, &json_config, Some("S3cret"), false);
-        assert_eq!(json.url, "https://x/y?key=S3cret", "密钥本身不编码：它本来就是 URL 的一部分");
+        let json = render_request(
+            &message,
+            Channel::CustomHttp,
+            &json_config,
+            Some("S3cret"),
+            false,
+        );
+        assert_eq!(
+            json.url, "https://x/y?key=S3cret",
+            "密钥本身不编码：它本来就是 URL 的一部分"
+        );
         assert_eq!(json.headers[0].value, "application/json");
-        assert_eq!(json.body, "{\"title\":\"Qoder · 等待你确认\",\"body\":\"Qoder · 等待你确认（刚刚）\"}");
+        assert_eq!(
+            json.body,
+            "{\"title\":\"Qoder · 等待你确认\",\"body\":\"Qoder · 等待你确认（刚刚）\"}"
+        );
 
         let form = render_request(
             &message,
@@ -792,7 +843,11 @@ mod tests {
         );
         assert_eq!(form.headers[0].value, "application/x-www-form-urlencoded");
         // 表单体里空格是 `+`（不是 %20），但其余仍然百分号编码
-        assert!(form.body.starts_with("title=Qoder+%C2%B7+"), "{}", form.body);
+        assert!(
+            form.body.starts_with("title=Qoder+%C2%B7+"),
+            "{}",
+            form.body
+        );
         assert!(form.body.contains("content=Qoder+"), "{}", form.body);
     }
 
@@ -805,7 +860,10 @@ mod tests {
         };
         let request = render_request(&message, Channel::CustomHttp, &config, Some("S3cret"), true);
         let summary = request.masked_preview();
-        assert!(!summary.contains("S3cret"), "预览里不许出现密钥原文：{summary}");
+        assert!(
+            !summary.contains("S3cret"),
+            "预览里不许出现密钥原文：{summary}"
+        );
         assert!(summary.contains("key=S3••et"), "留首尾便于核对：{summary}");
         // 没密钥时也走掩码，而不是留一个空洞
         let without = render_request(&message, Channel::CustomHttp, &config, None, true);
@@ -817,7 +875,7 @@ mod tests {
         let config = ChannelConfig {
             smtp_host: "smtp.example.com".into(),
             smtp_user: "me@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
-            smtp_to: "you@example.com".into(), // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
+            smtp_to: "you@example.com".into(),  // nosec: 测试夹具里的假邮箱（保留域名），不是真地址
             ..ChannelConfig::default()
         };
         let message = render(&attention(), &config);
@@ -829,13 +887,22 @@ mod tests {
 
         let with = render_request(&message, Channel::SmtpEmail, &config, Some("hunter2"), true);
         let target = with.smtp.as_ref().expect("有密钥就该给出目标");
-        assert_eq!((target.host.as_str(), target.port), ("smtp.example.com", 465));
+        assert_eq!(
+            (target.host.as_str(), target.port),
+            ("smtp.example.com", 465)
+        );
         assert_eq!(target.password, "••••••", "预览里的密码恒为固定掩码");
         let summary = with.masked_preview();
         assert!(!summary.contains("hunter2"));
         assert!(summary.contains("SMTP smtp.example.com:465"));
 
-        let real = render_request(&message, Channel::SmtpEmail, &config, Some("hunter2"), false);
+        let real = render_request(
+            &message,
+            Channel::SmtpEmail,
+            &config,
+            Some("hunter2"),
+            false,
+        );
         assert_eq!(real.smtp.unwrap().password, "hunter2", "真发时才是原值");
     }
 
@@ -844,7 +911,8 @@ mod tests {
         let args = PreviewArgs::default();
         assert!(args.agent_name.is_empty(), "缺项由命令层兜底成示例值");
         let parsed: PreviewArgs =
-            serde_json::from_str(r#"{"agentName":"Claude","kind":"costSpike","seconds":90}"#).unwrap();
+            serde_json::from_str(r#"{"agentName":"Claude","kind":"costSpike","seconds":90}"#)
+                .unwrap();
         assert_eq!(parsed.agent_name, "Claude");
         assert_eq!(EventKind::parse(&parsed.kind), Some(EventKind::CostSpike));
         assert_eq!(EventKind::parse("nonsense"), None);

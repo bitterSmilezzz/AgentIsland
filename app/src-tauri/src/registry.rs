@@ -72,7 +72,7 @@ pub fn builtin() -> Vec<AgentProfile> {
                 schema: SessionSchema::StatusIndex,
                 // 真库实测：`tasks` 的主键是 (workspace_key, task_id)，**没有 `id` 列**
                 status_sql: Some(
-                    "SELECT task_id, task_status, updated_at FROM tasks WHERE deleted = 0 AND archived = 0 ORDER BY updated_at DESC LIMIT 1;"
+                    "SELECT task_id, task_status, updated_at, workspace_key FROM tasks WHERE deleted = 0 AND archived = 0 ORDER BY updated_at DESC LIMIT 1;"
                         .into(),
                 ),
             }),
@@ -299,21 +299,58 @@ pub fn builtin() -> Vec<AgentProfile> {
         },
         AgentProfile {
             id: "trae".into(),
-            name: "Trae".into(),
+            name: "Trae CN".into(),
             glyph: "\u{E7C3}".into(),
             emoji: "🛳️".into(),
-            process_names: vec!["Trae".into()],
-            bundle_ids: vec!["cn.trae.solo.app".into(), "com.trae.ai".into()],
+            process_names: vec!["Trae CN".into(), "Electron".into()],
+            bundle_ids: vec!["cn.trae.app".into()],
             cmdline_hints: vec![],
             path_excludes: vec![],
-            path_contains: vec![],
+            path_contains: vec!["/trae cn.app/".into(), "/trae cn.exe".into(), "\\trae cn.exe".into()],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
-            session_dirs: vec![a(&["Trae", "User", "workspaceStorage"]), a(&["Trae CN", "User", "workspaceStorage"])],
+            session_dirs: vec![a(&["Trae CN", "User", "workspaceStorage"])],
             token_roots: vec![],
             token_alert_floor: None,
             session_dialect: SessionDialect::GenericTail,
             session_database: None,
             category: "codeEditor".into(),
+        },
+        AgentProfile {
+            id: "traework".into(),
+            name: "TraeWork".into(),
+            glyph: "\u{E7C3}".into(),
+            emoji: "🛳️".into(),
+            process_names: vec!["TRAE SOLO CN".into(), "Electron".into()],
+            bundle_ids: vec!["cn.trae.solo.app".into()],
+            cmdline_hints: vec![],
+            path_excludes: vec![],
+            path_contains: vec!["/trae solo cn.app/".into()],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            session_dirs: vec![],
+            token_roots: vec![],
+            token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
+            session_database: None,
+            category: "assistant".into(),
+        },
+        AgentProfile {
+            id: "doubaowork".into(),
+            name: "豆包工作".into(),
+            glyph: "\u{E7BB}".into(),
+            emoji: "🫘".into(),
+            process_names: vec!["DoubaoWork".into()],
+            bundle_ids: vec!["com.work.pc.doubao".into()],
+            cmdline_hints: vec![],
+            path_contains: vec!["/doubaowork.app/contents/macos/".into()],
+            path_excludes: vec![],
+            cpu_floor: Some(DESKTOP_CPU_FLOOR),
+            // No verified local session or token contract yet; browser storage is not a session log.
+            session_dirs: vec![],
+            token_roots: vec![],
+            token_alert_floor: None,
+            session_dialect: SessionDialect::GenericTail,
+            session_database: None,
+            category: "assistant".into(),
         },
         // ===== v0.0.209：补齐 macOS 端有、这里没有的 12 个档案 =====
         // 逐条对齐 `Sources/AgentIslandCore/AgentRegistry.swift` 的同名档案。
@@ -513,27 +550,6 @@ pub fn builtin() -> Vec<AgentProfile> {
             category: "assistant".into(),
         },
         AgentProfile {
-            id: "vibe-usage".into(),
-            name: "Vibe Usage".into(),
-            glyph: "\u{E4CA}".into(),
-            emoji: "📊".into(),
-            process_names: vec!["vibe-usage".into(), "Vibe Usage".into()],
-            bundle_ids: vec!["ai.vibecafe.vibe-usage".into()],
-            cmdline_hints: vec![],
-            path_contains: vec![],
-            path_excludes: vec![],
-            cpu_floor: Some(DESKTOP_CPU_FLOOR),
-            session_dirs: vec![
-                p(&[".vibe-usage"]),
-                p(&["Library", "Application Support", "Vibe Usage"]),
-            ],
-            token_roots: vec![],
-            token_alert_floor: None,
-            session_dialect: SessionDialect::GenericTail,
-            session_database: None,
-            category: "assistant".into(),
-        },
-        AgentProfile {
             id: "openviking".into(),
             name: "OpenViking".into(),
             glyph: "\u{F4A3}".into(),
@@ -623,7 +639,10 @@ mod tests {
         }));
         let opencode = get("opencode");
         assert_eq!(opencode.cpu_floor, Some(20.0));
-        assert!(opencode.token_roots.is_empty(), "no reliable local token detail source");
+        assert!(
+            opencode.token_roots.is_empty(),
+            "no reliable local token detail source"
+        );
         assert!(get("cline").token_roots.is_empty());
         assert!(profiles.iter().all(|p| p.id != "roo"));
         assert_eq!(get("roo-code").name, "Roo Code");
@@ -637,9 +656,10 @@ mod tests {
         let rollout = std::path::Path::new(".zcode").join("cli").join("rollout");
         assert_eq!(zcode.session_dirs.len(), 1);
         assert!(std::path::Path::new(&zcode.session_dirs[0]).ends_with(&rollout));
-        assert_eq!(zcode.token_roots.len(),2);
-        assert!(std::path::Path::new(&zcode.token_roots[0]).ends_with(std::path::Path::new(".zcode/cli/db/db.sqlite")));
-        assert_eq!(zcode.token_roots[1],zcode.session_dirs[0]);
+        assert_eq!(zcode.token_roots.len(), 2);
+        assert!(std::path::Path::new(&zcode.token_roots[0])
+            .ends_with(std::path::Path::new(".zcode/cli/db/db.sqlite")));
+        assert_eq!(zcode.token_roots[1], zcode.session_dirs[0]);
     }
 
     /// 声明了 SQLite 库的档案：**方言必须与库对应**，且库路径只在档案里出现一次。
@@ -669,15 +689,28 @@ mod tests {
 
         let zcode = db("zcode");
         assert_eq!(zcode.schema, SessionSchema::StatusIndex);
-        assert!(ends_with(&zcode.path, &[".zcode", "v2", "tasks-index.sqlite"]));
+        assert!(ends_with(
+            &zcode.path,
+            &[".zcode", "v2", "tasks-index.sqlite"]
+        ));
 
         let opencode = db("opencode");
         assert_eq!(opencode.schema, SessionSchema::OpenCode);
-        assert!(ends_with(&opencode.path, &[".local", "share", "opencode", "opencode.db"]));
+        assert!(ends_with(
+            &opencode.path,
+            &[".local", "share", "opencode", "opencode.db"]
+        ));
 
         let mimocode = db("mimocode");
-        assert_eq!(mimocode.schema, SessionSchema::OpenCode, "同表 fork 复用同一方言");
-        assert!(ends_with(&mimocode.path, &[".local", "share", "mimocode", "mimocode.db"]));
+        assert_eq!(
+            mimocode.schema,
+            SessionSchema::OpenCode,
+            "同表 fork 复用同一方言"
+        );
+        assert!(ends_with(
+            &mimocode.path,
+            &[".local", "share", "mimocode", "mimocode.db"]
+        ));
 
         // 方言决定明细从哪里来：走 OpenCode 库的档案**不该**再有 JSONL 采集根，
         // 否则同一笔用量会被两处各算一遍
@@ -711,15 +744,49 @@ mod parity {
     #[test]
     fn the_registry_contains_only_current_agent_identities() {
         let ids: Vec<String> = builtin().into_iter().map(|p| p.id).collect();
-        // 合并桌面 ChatGPT 与 Codex；Ego Lite 是供 Agent 使用的浏览器。
-        assert_eq!(ids.len(), 25, "档案数：{ids:?}");
-        assert!(!ids.iter().any(|id| id == "chatgpt" || id == "ego-browser"));
+        // 合并桌面 ChatGPT 与 Codex；浏览器与用量统计工具不属于智能体。
+        assert_eq!(ids.len(), 26, "档案数：{ids:?}");
+        assert!(!ids
+            .iter()
+            .any(|id| id == "chatgpt" || id == "ego-browser" || id == "vibe-usage"));
         for id in [
-            "qoder", "copilot", "workbuddy", "workbuddy-ai", "antigravity", "hermes",
-            "continue", "codex", "dsh", "vibe-usage", "openviking", "minimaxcode",
+            "qoder",
+            "copilot",
+            "workbuddy",
+            "workbuddy-ai",
+            "antigravity",
+            "hermes",
+            "continue",
+            "codex",
+            "dsh",
+            "openviking",
+            "minimaxcode",
+            "doubaowork",
+            "traework",
         ] {
             assert!(ids.iter().any(|i| i == id), "缺档案 {id}");
         }
+    }
+
+    #[test]
+    fn trae_variants_and_doubao_work_have_distinct_process_owners() {
+        for (name, exe, expected) in [
+            ("Electron", "/Applications/TRAE SOLO CN.app/Contents/MacOS/Electron", vec!["traework"]),
+            ("Electron", "/Applications/Trae CN.app/Contents/MacOS/Electron", vec!["trae"]),
+            ("Trae CN.exe", r"C:\Tools\Trae CN.exe", vec!["trae"]),
+            ("DoubaoWork", "/Applications/DoubaoWork.app/Contents/MacOS/DoubaoWork", vec!["doubaowork"]),
+            ("Doubao", "/Applications/Doubao.app/Contents/MacOS/Doubao", vec![]),
+            ("DoubaoWork Browser", "/Applications/DoubaoWork.app/Contents/Helpers/DoubaoWork Browser.app/Contents/MacOS/DoubaoWork Browser", vec![]),
+            ("Electron", "/Applications/Unrelated.app/Contents/MacOS/Electron", vec![]),
+            ("Electron", "/tmp/trae-playground/Unrelated.app/Contents/MacOS/Electron", vec![]),
+        ] {
+            let owners: Vec<_> = builtin().into_iter().filter(|p| profile_matches(p, name, exe, "")).map(|p| p.id).collect();
+            assert_eq!(owners, expected, "{exe}");
+        }
+        let work = find("doubaowork");
+        assert!(work.session_dirs.is_empty() && work.token_roots.is_empty());
+        assert_eq!(work.bundle_ids, vec!["com.work.pc.doubao"]);
+        assert!(find("trae").bundle_ids.contains(&"cn.trae.app".to_string()));
     }
 
     #[test]
@@ -728,13 +795,20 @@ mod parity {
         assert_eq!(profile.name, "ChatGPT / Codex");
         assert_eq!(profile.bundle_ids, vec!["com.openai.codex"]);
         for (name, exe, cmd) in [
-            ("ChatGPT", "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", ""),
+            (
+                "ChatGPT",
+                "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+                "",
+            ),
             ("Codex", "/Applications/Codex.app/Contents/MacOS/Codex", ""),
             ("codex.exe", "C:/Tools/codex.exe", ""),
             ("node", "/usr/bin/node", "node /tools/codex/bin/codex.js"),
         ] {
-            let owners: Vec<_> = builtin().into_iter()
-                .filter(|p| profile_matches(p, name, exe, cmd)).map(|p| p.id).collect();
+            let owners: Vec<_> = builtin()
+                .into_iter()
+                .filter(|p| profile_matches(p, name, exe, cmd))
+                .map(|p| p.id)
+                .collect();
             assert_eq!(owners, vec!["codex"], "desktop and CLI each have one owner");
         }
         assert_eq!(profile.token_roots.len(), 1);
@@ -754,12 +828,18 @@ mod parity {
         let cn_exe = "/Applications/WorkBuddy.app/Contents/MacOS/Electron";
         let intl_exe = "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron";
 
-        assert!(profile_matches(&cn, "electron", cn_exe, ""), "国内版应当命中自己的路径");
+        assert!(
+            profile_matches(&cn, "electron", cn_exe, ""),
+            "国内版应当命中自己的路径"
+        );
         assert!(
             !profile_matches(&intl, "electron", cn_exe, ""),
             "国内版的进程**不得**被国外版认领"
         );
-        assert!(profile_matches(&intl, "electron", intl_exe, ""), "国外版应当命中自己的路径");
+        assert!(
+            profile_matches(&intl, "electron", intl_exe, ""),
+            "国外版应当命中自己的路径"
+        );
         assert!(
             !profile_matches(&cn, "electron", intl_exe, ""),
             "国外版的进程**不得**被国内版认领"
@@ -795,7 +875,12 @@ mod parity {
         // 用 workbuddy 验机制：它的锚点足够具体
         let cn = find("workbuddy");
         // 进程名对、锚点不对 ⇒ 不匹配
-        assert!(!profile_matches(&cn, "electron", "/Applications/Other.app/Contents/MacOS/Electron", ""));
+        assert!(!profile_matches(
+            &cn,
+            "electron",
+            "/Applications/Other.app/Contents/MacOS/Electron",
+            ""
+        ));
 
         // 顺带**如实记录** openviking 的锚点很宽（macOS 侧声明的就是裸子串
         // `openviking`）：名字对而路径也含 openviking 时必然匹配。
@@ -853,10 +938,12 @@ mod dialect_declaration {
             ("roo-code", D::ClineTasks),
         ];
         for (id, dialect) in expected {
-            let profile = builtin().into_iter().find(|p| p.id == id).expect("档案应当在");
+            let profile = builtin()
+                .into_iter()
+                .find(|p| p.id == id)
+                .expect("档案应当在");
             assert_eq!(
-                profile.session_dialect,
-                dialect,
+                profile.session_dialect, dialect,
                 "{id} 的方言声明与 macOS 端不一致"
             );
         }
@@ -949,9 +1036,16 @@ mod dialect_declaration {
 /// 合并后的 ChatGPT / Codex 使用 Codex 会话源；Ego Lite 浏览器不属于 Agent 档案。
 /// `vscode` 是 Rust 独有的明细缺口，不是与归档 SwiftUI 的对拍缺口。
 #[cfg(test)]
-const KNOWN_UNCOVERED: [&str; 11] = [
-    "aider", "continue", "copilot", "cursor", "goose", "hermes",
-    "openviking", "trae", "vibe-usage", "windsurf",
+const KNOWN_UNCOVERED: [&str; 10] = [
+    "aider",
+    "continue",
+    "copilot",
+    "cursor",
+    "goose",
+    "hermes",
+    "openviking",
+    "trae",
+    "windsurf",
     // Rust 独有档案，不是对拍缺口（见表头注释）
     "vscode",
 ];
@@ -969,7 +1063,10 @@ fn covered_by_rust(p: &AgentProfile) -> bool {
     let by_file = match p.session_dialect {
         D::QoderTranscript | D::DshProjection | D::AntigravityBrain | D::ClineTasks => true,
         D::GenericTail => {
-            matches!(p.id.as_str(), "claude" | "codex" | "cline" | "roo-code" | "roo" | "zcode")
+            matches!(
+                p.id.as_str(),
+                "claude" | "codex" | "cline" | "roo-code" | "roo" | "zcode"
+            )
         }
     };
     // 库路现在认三种 schema，**每个走各自的函数**（认错就永远没信号，而界面看不出异样）：
@@ -977,7 +1074,10 @@ fn covered_by_rust(p: &AgentProfile) -> bool {
     // · `DimTasks`：不看 status，看最新一条 assistant 末个 part 的 `endTime`；
     // · `OpenCode`：看消息行 `time.completed` / `time.created`，表名还要现查。
     let by_database = p.session_database.as_ref().is_some_and(|db| {
-        matches!(db.schema, S::StatusIndex | S::DimTasks | S::OpenCode | S::MiniMaxRuntime)
+        matches!(
+            db.schema,
+            S::StatusIndex | S::DimTasks | S::OpenCode | S::MiniMaxRuntime
+        )
     });
     by_file || by_database
 }

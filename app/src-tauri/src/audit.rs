@@ -76,8 +76,10 @@ pub fn cell(text: &str) -> String {
 /// 文本字段（id / name / 等级 / 证据），数字走的是不走 `escape_csv` 的那些列，
 /// 所以按文本判就够。
 fn starts_like_formula(text: &str) -> bool {
-    matches!(text.chars().next(), Some('=') | Some('+') | Some('-') | Some('@'))
-        || text.starts_with('\t')
+    matches!(
+        text.chars().next(),
+        Some('=') | Some('+') | Some('-') | Some('@')
+    ) || text.starts_with('\t')
         || text.starts_with('\r')
 }
 
@@ -130,10 +132,7 @@ pub fn generate_markdown(
 ) -> String {
     let mut md = String::new();
     md.push_str("# AgentIsland 智能体运维与 Token 消耗审计报告\n\n");
-    md.push_str(&format!(
-        "- **生成时间**：{}\n",
-        timestamp_text(now_ms)
-    ));
+    md.push_str(&format!("- **生成时间**：{}\n", timestamp_text(now_ms)));
     md.push_str(&format!("- **监控智能体总数**：{} 个\n", snapshots.len()));
 
     let running_count = snapshots.iter().filter(|s| s.process_running).count();
@@ -323,16 +322,24 @@ pub fn generate_csv(snapshots: &[AgentSnapshot], now_ms: i64) -> String {
             escape_csv(&snap.name),
             escape_csv(snap.level.as_str()),
             pid,
-            snap.cpu_percent.map(|cpu| format!("{cpu:.1}")).unwrap_or_default(),
+            snap.cpu_percent
+                .map(|cpu| format!("{cpu:.1}"))
+                .unwrap_or_default(),
             snap.memory_bytes.to_string(),
             report.score.to_string(),
             escape_csv(report.grade.label()),
             // 空 = 没取到（与同一行的 PID/CPU 列同口径），0 = 取到了确实是零。
             // 折成 0 会让电子表格把「监控不了」求和成「没花钱」。
             usage.map(|u| u.tokens24h.to_string()).unwrap_or_default(),
-            usage.map(|u| format!("{:.4}", u.cost24h)).unwrap_or_default(),
-            usage.map(|u| u.tokens_total.to_string()).unwrap_or_default(),
-            usage.map(|u| format!("{:.4}", u.cost_total)).unwrap_or_default(),
+            usage
+                .map(|u| format!("{:.4}", u.cost24h))
+                .unwrap_or_default(),
+            usage
+                .map(|u| u.tokens_total.to_string())
+                .unwrap_or_default(),
+            usage
+                .map(|u| format!("{:.4}", u.cost_total))
+                .unwrap_or_default(),
             escape_csv(verdict.code.as_str()),
             escape_csv(verdict.evidence.first().map_or("", String::as_str)),
         ];
@@ -453,9 +460,15 @@ mod tests {
         // 攻击路径：`agentisland://notify?...message=x%0A%7C...` ⇒ 真换行 + 竖线
         let injected = format!("正常{}| 注入列{}## 注入小节", '\n', '\r');
         let out = cell(&injected);
-        assert!(!out.contains('\n') && !out.contains('\r'), "换行必须被折成空格：{out:?}");
+        assert!(
+            !out.contains('\n') && !out.contains('\r'),
+            "换行必须被折成空格：{out:?}"
+        );
         assert!(out.contains("\\|"), "竖线必须转义：{out:?}");
-        assert!(!out.contains(" | "), "转义后不该再出现未转义的列分隔符：{out:?}");
+        assert!(
+            !out.contains(" | "),
+            "转义后不该再出现未转义的列分隔符：{out:?}"
+        );
         // 反斜杠不转义（它不是列分隔符，转它只会让文本变样）
         assert_eq!(cell("C:\\path"), "C:\\path");
 
@@ -499,10 +512,21 @@ mod tests {
         let mut without = snapshot("Gemini", ActivityLevel::Working);
         without.token_usage = None;
 
-        let md = generate_markdown(&[with.clone(), without.clone()], &[], None, 1_700_000_000_000);
+        let md = generate_markdown(
+            &[with.clone(), without.clone()],
+            &[],
+            None,
+            1_700_000_000_000,
+        );
         assert!(md.contains("其中 1 个智能体**本轮没取到用量**"), "{md}");
-        assert!(md.contains("| Gemini | — | — | — | — |"), "没取到要印整行 —：{md}");
-        assert!(md.contains("| Claude | 1.20M | $0.42 | 3.60M | $1.26 |"), "{md}");
+        assert!(
+            md.contains("| Gemini | — | — | — | — |"),
+            "没取到要印整行 —：{md}"
+        );
+        assert!(
+            md.contains("| Claude | 1.20M | $0.42 | 3.60M | $1.26 |"),
+            "{md}"
+        );
 
         // CSV 同口径：空列而不是 0
         let csv = generate_csv(&[with, without], 1_700_000_000_000);
@@ -511,7 +535,10 @@ mod tests {
         assert_eq!(columns[9], "", "Tokens_24h 该是空列：{gemini_row}");
         assert_eq!(columns[10], "", "Cost_24h 该是空列：{gemini_row}");
         let claude_row = csv.lines().find(|l| l.contains("Claude")).unwrap();
-        assert!(claude_row.contains(",1200000,0.4200,3600000,1.2600,"), "{claude_row}");
+        assert!(
+            claude_row.contains(",1200000,0.4200,3600000,1.2600,"),
+            "{claude_row}"
+        );
     }
 
     #[test]
@@ -521,8 +548,14 @@ mod tests {
         // 面板那份总量更大（离线但有用量的源不在这份列表里）
         let grand = usage(9_600_000, 3.36);
         let md = generate_markdown(&snaps, &[], Some(&grand), 1_700_000_000_000);
-        assert!(md.contains("**24h Token 消耗**：9.60M tokens"), "头条要用面板口径：{md}");
-        assert!(md.contains("下表逐条相加为 1.20M tokens"), "差额必须写出来：{md}");
+        assert!(
+            md.contains("**24h Token 消耗**：9.60M tokens"),
+            "头条要用面板口径：{md}"
+        );
+        assert!(
+            md.contains("下表逐条相加为 1.20M tokens"),
+            "差额必须写出来：{md}"
+        );
         assert!(md.contains("差额来自离线但仍有用量记录"), "{md}");
 
         // 两边一致时不该多嘴
@@ -535,11 +568,14 @@ mod tests {
         let history = vec![event("completed", 192.0), event("attention", 0.0)];
         let md = generate_markdown(&[], &history, None, 1_700_000_000_000);
         assert!(md.contains("| 3分12秒 |"), "完成事件要带精确时长：{md}");
-        assert!(md.contains("Task" ) == false);
+        assert!(md.contains("Task") == false);
         // 不适用（0）印 `—`，不是「0秒」——「没记」与「零秒」是两件事
         assert!(md.contains("| — | Claude 等待确认操作 |"), "{md}");
         assert!(!md.contains("0秒"), "不适用不该印 0 秒：{md}");
-        assert!(md.contains("Claude 任务完成 (3分12秒)"), "摘要要带时长（Swift summaryText 同口径）：{md}");
+        assert!(
+            md.contains("Claude 任务完成 (3分12秒)"),
+            "摘要要带时长（Swift summaryText 同口径）：{md}"
+        );
     }
 
     #[test]
@@ -552,7 +588,10 @@ mod tests {
         };
         let md = generate_markdown(&[blind], &[], None, 1_700_000_000_000);
         assert!(md.contains("### 会话源不可读"), "{md}");
-        assert!(md.contains("**Qoder**：session_dirs 存在但当前用户不可读"), "{md}");
+        assert!(
+            md.contains("**Qoder**：session_dirs 存在但当前用户不可读"),
+            "{md}"
+        );
     }
 
     #[test]
@@ -597,7 +636,10 @@ mod tests {
     #[test]
     fn an_export_carries_a_filename_from_the_same_instant_as_its_content() {
         let export = markdown_export(&[], &[], None, 1_700_000_000_000);
-        assert!(export.filename.starts_with("AgentIsland_Audit_"), "{export:?}");
+        assert!(
+            export.filename.starts_with("AgentIsland_Audit_"),
+            "{export:?}"
+        );
         assert!(export.filename.ends_with(".md"), "{export:?}");
         // 文件名里那串时间戳必须与报告正文里的「生成时间」是同一拍
         let stamp = &export.filename["AgentIsland_Audit_".len()..export.filename.len() - 3];
@@ -672,10 +714,15 @@ mod csv_tests {
     /// 正常值不许被无端加撇号：报告里绝大多数单元都不该变。
     #[test]
     fn ordinary_values_are_left_alone() {
-        for ordinary in ["Codex", "claude-dev", "工作中", "512", "1.5", "等待你批准操作"] {
+        for ordinary in [
+            "Codex",
+            "claude-dev",
+            "工作中",
+            "512",
+            "1.5",
+            "等待你批准操作",
+        ] {
             assert_eq!(escape_csv(ordinary), ordinary, "{ordinary:?} 不该被改写");
         }
     }
-
-
 }

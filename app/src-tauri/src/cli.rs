@@ -24,18 +24,58 @@ pub const EXIT_USAGE: i32 = 2;
 /// 刻意用**数组**而不是 map：顺序即文档里的顺序，读的人一眼看到
 /// 「已实现」与「未实现」的分界在哪。
 pub const COMMANDS: &[(&str, bool, &str)] = &[
-    ("status", true, "所有 Agent 的运行态快照（-w 动态监控，--json 供脚本）"),
+    (
+        "status",
+        true,
+        "所有 Agent 的运行态快照（-w 动态监控，--json 供脚本）",
+    ),
     ("doctor", true, "这个 Agent 是真闲着，还是我根本没看到它"),
-    ("tokens", true, "24h 用量明细、成本与月末预测（--budget 打印进度条）"),
-    ("state", true, "读 App 进程内的实时状态（谁在跑、这一拍的状态是谁说的）"),
-    ("selftest", true, "用假数据断言核心判定逻辑（验证构建本身而非本机状态）"),
-    ("check", true, "排查异常驻留与持续高负载（只读，不终止任何进程）"),
+    (
+        "tokens",
+        true,
+        "24h 用量明细、成本与月末预测（--budget 打印进度条）",
+    ),
+    (
+        "state",
+        true,
+        "读 App 进程内的实时状态（谁在跑、这一拍的状态是谁说的）",
+    ),
+    (
+        "selftest",
+        true,
+        "用假数据断言核心判定逻辑（验证构建本身而非本机状态）",
+    ),
+    (
+        "check",
+        true,
+        "排查异常驻留与持续高负载（只读，不终止任何进程）",
+    ),
     ("clean", true, "终止异常进程（-n 只预览；孤儿须逐条点名）"),
-    ("open", true, "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export|workbench）"),
-    ("notify", true, "向本机 App 投递一次事件（--kind completed|attention|costspike）"),
-    ("report", true, "生成 Markdown / CSV 运维报告（-o 写盘、--format md|csv）"),
-    ("raycast", true, "导出 Raycast Extension 命令清单（--json 已是默认）"),
-    ("top", true, "持续观测看板（r 刷新、q 退出；不接管终端的全屏 TUI）"),
+    (
+        "open",
+        true,
+        "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export|workbench）",
+    ),
+    (
+        "notify",
+        true,
+        "向本机 App 投递一次事件（--kind completed|attention|costspike）",
+    ),
+    (
+        "report",
+        true,
+        "生成 Markdown / CSV 运维报告（-o 写盘、--format md|csv）",
+    ),
+    (
+        "raycast",
+        true,
+        "导出 Raycast Extension 命令清单（--json 已是默认）",
+    ),
+    (
+        "top",
+        true,
+        "持续观测看板（r 刷新、q 退出；不接管终端的全屏 TUI）",
+    ),
 ];
 
 /// 入口。返回 `None` 表示「不是 CLI 调用」，交回给 UI 走。
@@ -143,7 +183,9 @@ fn sample_once() -> (Vec<crate::models::AgentSnapshot>, crate::models::TokenUsag
 /// **默认 `false`**（与 Swift `StatusCommand` 同口径）：本机实测同步取用量多花 5 秒，
 /// 而 Raycast / 脚本调用是这条命令的主要场景。不取时那一列印 `—`，**明说没取**——
 /// 印 0 是在说「查了、确实是零」，那是另一件事。
-fn sample_once_with(want_usage: bool) -> (Vec<crate::models::AgentSnapshot>, crate::models::TokenUsage) {
+fn sample_once_with(
+    want_usage: bool,
+) -> (Vec<crate::models::AgentSnapshot>, crate::models::TokenUsage) {
     let (_tx, rx) = mpsc::channel();
     let mut engine = engine::ActivityEngine::new(Settings::load(), rx);
     engine.refresh_usage = want_usage;
@@ -357,8 +399,16 @@ fn tokens_cmd(flags: &[String]) -> i32 {
     }
 
     println!("Token 用量");
-    println!("  24h     {} tokens   {}", tokens::compact(total.tokens24h), cost_text(total.cost24h, total.cost_estimated));
-    println!("  累计    {} tokens   {}", tokens::compact(total.tokens_total), cost_text(total.cost_total, total.cost_estimated));
+    println!(
+        "  24h     {} tokens   {}",
+        tokens::compact(total.tokens24h),
+        cost_text(total.cost24h, total.cost_estimated)
+    );
+    println!(
+        "  累计    {} tokens   {}",
+        tokens::compact(total.tokens_total),
+        cost_text(total.cost_total, total.cost_estimated)
+    );
     println!("  {}", f.forecast_summary);
     if has("--budget") {
         let budget = Settings::load().daily_token_budget;
@@ -382,11 +432,10 @@ fn tokens_cmd(flags: &[String]) -> i32 {
 /// 返回值里的进程表是 `clean` 复核身份的依据，**必须与异常同源**——
 /// 拿一张新表去复核一张旧表列出的异常，等于没复核。
 ///
-/// 判定顺序与门槛对齐 Swift `AgentCleaner.detectAnomalies`（逐条对应）：
-/// 遍历**档案的全部匹配进程**（不是只看根 pid——死锁与超限都是单进程性质），
-/// 先排掉 GUI 主进程，再依次判死锁 / 孤儿 / 超限，命中一条就 `continue`。
+/// 遍历档案的全部匹配进程，排除GUI主进程，再判疑似卡死与孤儿。
+/// 单次扫描没有内存趋势证据，高RSS不能作为清理理由。
 fn scan_anomalies() -> AnomalyScan {
-    use crate::cleaner::{Anomaly, AnomalyType};
+    use crate::cleaner::Anomaly;
     let (snapshots, _) = sample_once();
     let monitor = crate::procmon::ProcessMonitor::new();
     let table = monitor.table();
@@ -400,62 +449,9 @@ fn scan_anomalies() -> AnomalyScan {
             .iter()
             .find(|s| s.id == profile.id)
             .is_some_and(|s| s.is_hung == Some(true));
-        let name = profile.name.clone();
         for entry in monitor.match_profile(&profile) {
-            // pid 1 是 launchd；僵尸占着 pid 但不是活进程
-            if entry.pid <= 1 || entry.is_zombie {
-                continue;
-            }
-            // **GUI 主进程永不作为可清理对象**：它是用户正在用的应用本体，
-            // 杀它等于关掉编辑器（可能丢未保存内容）。
-            // Swift 同口径：开着大项目的 Electron IDE 占 2.5GB 完全正常。
-            if is_standard_app_bundle(&entry.exe_path) {
-                continue;
-            }
-            let cpu = entry.cpu.unwrap_or(0.0);
-            let make = |kind: AnomalyType, reason: &str| Anomaly {
-                pid: entry.pid,
-                // 真实父进程：**孤儿判定完全依赖这一位**。填 0 会让「父进程还在」
-                // 与「父进程查不到」都变成孤儿，等于把常驻服务当成遗孤。
-                ppid: entry.ppid,
-                profile_id: profile.id.clone(),
-                agent_name: name.clone(),
-                // 扫描时刻的可执行身份：动手前的复核就靠它
-                command_path: crate::cleaner::identity(&entry),
-                memory_bytes: entry.memory,
-                anomaly_type: kind,
-                reason: reason.to_string(),
-            };
-            // ① 死锁：档案级聚合判定 + **单进程** CPU 门槛。
-            //    聚合高负载时单个子进程 >10% 属正常（Swift 侧同一条注释），
-            //    按单条判定会把正常渲染进程列成「疑似死锁」。
-            if hung && cpu > HUNG_CPU_FLOOR {
-                out.push(make(
-                    AnomalyType::Hung,
-                    &format!("持续过载超阈值（单进程 CPU {cpu:.1}%）"),
-                ));
-                continue;
-            }
-            // ② 孤儿：父进程已转 launchd。判定本身留在 `cleaner::looks_orphan`
-            //    （有独立用例钉住「两条缺一不可」），这里只负责按它的结论分流。
-            if entry.ppid == 1 && !profile.process_names.is_empty() {
-                let candidate = make(
-                    AnomalyType::Orphan,
-                    "主控终端已关闭，已脱离原会话成为孤儿进程（PPID=1）",
-                );
-                // 有活动佐证 = launchd 托管的常驻服务在干活 ⇒ 跳过，
-                // 且**连超限也不报**（Swift 同口径：这里 continue 掉整条分支）
-                if crate::cleaner::looks_orphan(&candidate, &recently_active) {
-                    out.push(candidate);
-                }
-                continue;
-            }
-            // ③ 内存超限（Swift 同阈值：> 2.0GB）
-            if entry.memory > OVERWEIGHT_BYTES {
-                out.push(make(
-                    AnomalyType::Overweight,
-                    "物理内存持续占用超过 2.0GB，疑似堆内存泄露或超长上下文堆积",
-                ));
+            if let Some(anomaly) = classify_process(&profile, &entry, hung, &recently_active) {
+                out.push(anomaly);
             }
         }
     }
@@ -471,8 +467,45 @@ fn scan_anomalies() -> AnomalyScan {
 
 /// 单进程 CPU 门槛（Swift 同值 10.0）
 const HUNG_CPU_FLOOR: f64 = 10.0;
-/// 内存超限门槛：2 GiB（Swift 同值 2_147_483_648）
-const OVERWEIGHT_BYTES: u64 = 2_147_483_648;
+/// Pure decision shared by check and clean; no process can be terminated here.
+fn classify_process(
+    profile: &crate::models::AgentProfile,
+    entry: &crate::procmon::ProcHit,
+    hung: bool,
+    recently_active: &HashSet<String>,
+) -> Option<crate::cleaner::Anomaly> {
+    use crate::cleaner::{Anomaly, AnomalyType};
+    if entry.pid <= 1 || entry.is_zombie || is_standard_app_bundle(&entry.exe_path) {
+        return None;
+    }
+    let make = |kind, reason: String| Anomaly {
+        pid: entry.pid,
+        ppid: entry.ppid,
+        profile_id: profile.id.clone(),
+        agent_name: profile.name.clone(),
+        command_path: crate::cleaner::identity(entry),
+        memory_bytes: entry.memory,
+        anomaly_type: kind,
+        reason,
+    };
+    if let Some(cpu) = entry.cpu.filter(|cpu| hung && *cpu > HUNG_CPU_FLOOR) {
+        return Some(make(
+            AnomalyType::Hung,
+            format!("持续过载超阈值（单进程 CPU {cpu:.1}%）"),
+        ));
+    }
+    if entry.ppid == 1 && !profile.process_names.is_empty() {
+        let candidate = make(
+            AnomalyType::Orphan,
+            "主控终端已关闭，已脱离原会话成为孤儿进程（PPID=1）".into(),
+        );
+        if crate::cleaner::looks_orphan(&candidate, recently_active) {
+            return Some(candidate);
+        }
+    }
+    // RSS size alone is neither a fault nor authorization to terminate a process.
+    None
+}
 
 /// 标准 App 主进程（`/Applications/x.app/Contents/MacOS/...`）。判据同 Swift。
 fn is_standard_app_bundle(path: &str) -> bool {
@@ -528,15 +561,13 @@ fn check(_flags: &[String]) -> i32 {
         );
     }
     println!();
-    println!(
-        "`check` 只看不杀。先用 `agentisland clean -n` 预览要动哪些，再去掉 `-n` 终止。"
-    );
+    println!("`check` 只看不杀。先用 `agentisland clean -n` 预览要动哪些，再去掉 `-n` 终止。");
     EXIT_OK
 }
 
 /// `clean`：**逐条**终止，动手前按可执行身份复核。
 ///
-/// 批量（`clean` 不带位置参数）只处理**可批量**的那些（死锁 / 内存超限）；
+/// 批量（`clean` 不带位置参数）只处理可批量的疑似卡死；
 /// 孤儿**一律要逐条点名**——`ppid == 1` 与 launchd 刻意托管的常驻服务分不开，
 /// 批量误杀等于静默丢任务。给孤儿 ID 就是逐条。
 ///
@@ -597,7 +628,11 @@ fn clean_cmd(flags: &[String], positional: &[String]) -> i32 {
             "  {} · pid {} · {} · {}",
             step.action.label(),
             step.pid,
-            if step.identity.is_empty() { "—" } else { &step.identity },
+            if step.identity.is_empty() {
+                "—"
+            } else {
+                &step.identity
+            },
             step.anomaly
         );
     }
@@ -645,9 +680,7 @@ fn clean_cmd(flags: &[String], positional: &[String]) -> i32 {
 }
 
 /// 复核只认**真正发了信号**的那些步骤。
-fn signaled_steps(
-    plan: &crate::cleaner::KillPlan,
-) -> Vec<crate::cleaner::KillStep> {
+fn signaled_steps(plan: &crate::cleaner::KillPlan) -> Vec<crate::cleaner::KillStep> {
     plan.steps
         .iter()
         .filter(|s| s.action.signals())
@@ -808,10 +841,26 @@ fn raycast() -> i32 {
     let (snapshots, _) = sample_once();
     let mut commands: Vec<serde_json::Value> = vec![
         raycast_command("toggle", "Toggle AgentIsland", "展开或收起灵动岛监控面板"),
-        raycast_command("analytics", "Token Analytics", "打开 Token 用量与成本预测分析"),
-        raycast_command("toolbox", "Agent Workbench & Diagnostics", "打开维护工作台与死锁排查"),
-        raycast_command("clean", "Clean Orphan & Hung Agents", "一键安全清理挂起死锁与孤儿后台进程"),
-        raycast_command("export", "Export Audit Report", "导出 Markdown 运维审计报告至剪贴板"),
+        raycast_command(
+            "analytics",
+            "Token Analytics",
+            "打开 Token 用量与成本预测分析",
+        ),
+        raycast_command(
+            "toolbox",
+            "Agent Workbench & Diagnostics",
+            "打开维护工作台与死锁排查",
+        ),
+        raycast_command(
+            "clean",
+            "Clean Orphan & Hung Agents",
+            "一键安全清理挂起死锁与孤儿后台进程",
+        ),
+        raycast_command(
+            "export",
+            "Export Audit Report",
+            "导出 Markdown 运维审计报告至剪贴板",
+        ),
     ];
     // 每个可见 Agent 一条「直达详情」，与 Swift 侧同一口径：只给看到的那种
     for s in snapshots.iter().filter(|s| s.process_running) {
@@ -877,7 +926,10 @@ fn open_cmd(positional: &[String]) -> i32 {
             EXIT_OK
         }
         Ok(status) => {
-            eprintln!("✗ 系统派发失败（退出码 {:?}）——App 是不是没在跑？", status.code());
+            eprintln!(
+                "✗ 系统派发失败（退出码 {:?}）——App 是不是没在跑？",
+                status.code()
+            );
             EXIT_FAIL
         }
         Err(error) => {
@@ -930,9 +982,12 @@ fn top(flags: &[String]) -> i32 {
             .filter(|s| s.process_running)
             .collect();
         // 有活动 / 全离线两档节奏，同引擎的降频口径（v0.0.200 起与 Swift 一致）
-        let any_working = online
-            .iter()
-            .any(|s| matches!(s.level, crate::models::ActivityLevel::Working | crate::models::ActivityLevel::Attention));
+        let any_working = online.iter().any(|s| {
+            matches!(
+                s.level,
+                crate::models::ActivityLevel::Working | crate::models::ActivityLevel::Attention
+            )
+        });
         let interval = if any_working {
             engine.settings.sample_interval
         } else {
@@ -942,7 +997,11 @@ fn top(flags: &[String]) -> i32 {
         if is_tty {
             print!("\x1b[H\x1b[2J");
         }
-        println!("AgentIsland 持续观测 · {} · 采样 {}s · Ctrl-C 退出", audit::timestamp_text(now), interval);
+        println!(
+            "AgentIsland 持续观测 · {} · 采样 {}s · Ctrl-C 退出",
+            audit::timestamp_text(now),
+            interval
+        );
         println!();
         println!(
             "{:<18} {:<10} {:>7} {:>7} {:>10}  {}",
@@ -977,7 +1036,9 @@ fn top(flags: &[String]) -> i32 {
         if once {
             return EXIT_OK;
         }
-        std::thread::sleep(std::time::Duration::from_secs_f64(interval.clamp(0.5, 30.0)));
+        std::thread::sleep(std::time::Duration::from_secs_f64(
+            interval.clamp(0.5, 30.0),
+        ));
     }
 }
 
@@ -1178,7 +1239,10 @@ mod tests {
         // 双击启动走的就是这条路：不能被 CLI 拦下
         assert_eq!(try_run(&["agentisland".into()]), None);
         assert_eq!(try_run(&["agentisland".into(), "--demo".into()]), None);
-        assert_eq!(try_run(&["agentisland".into(), "--shell=sidebar".into()]), None);
+        assert_eq!(
+            try_run(&["agentisland".into(), "--shell=sidebar".into()]),
+            None
+        );
     }
 
     /// 单拍入口**不许**出现 CPU 读数。
@@ -1210,7 +1274,10 @@ mod tests {
             let code = try_run(&["agentisland".into(), name.to_string()]);
             assert!(code.is_some(), "{name} 应当能分派");
             let entry = COMMANDS.iter().find(|(n, _, _)| *n == name);
-            assert!(entry.map(|(_, done, _)| *done) == Some(true), "{name} 应当标为已实现");
+            assert!(
+                entry.map(|(_, done, _)| *done) == Some(true),
+                "{name} 应当标为已实现"
+            );
         }
         // `clean` 不在这里面调：它会终止进程，由
         // `the_destructive_subcommand_is_never_auto_invoked_by_tests` 盯着。
@@ -1271,9 +1338,15 @@ mod tests {
     /// 认不出的 `open` 目标是**用法错**（退出码 2），不是运行失败。
     #[test]
     fn an_unknown_open_target_is_a_usage_error() {
-        assert_eq!(try_run(&["agentisland".into(), "open".into(), "nope".into()]), Some(EXIT_USAGE));
+        assert_eq!(
+            try_run(&["agentisland".into(), "open".into(), "nope".into()]),
+            Some(EXIT_USAGE)
+        );
         // 少参数也是用法错
-        assert_eq!(try_run(&["agentisland".into(), "open".into(), "agent".into()]), Some(EXIT_USAGE));
+        assert_eq!(
+            try_run(&["agentisland".into(), "open".into(), "agent".into()]),
+            Some(EXIT_USAGE)
+        );
     }
 
     #[test]
@@ -1341,6 +1414,38 @@ mod usage_flag_tests {
         assert!(
             !source.contains("if !self.refresh_usage || profile.token_roots.is_empty() {\n            return None;\n        }\n        if let Some((_, report)) = self.token_cache"),
             "get_report 不该被 refresh_usage 关掉"
+        );
+    }
+}
+
+#[cfg(test)]
+mod memory_anomaly_tests {
+    use super::*;
+
+    #[test]
+    fn single_sample_high_rss_is_never_a_cleanup_candidate() {
+        let profile = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "codex")
+            .unwrap();
+        let entry = crate::procmon::ProcHit {
+            pid: 42,
+            ppid: 40,
+            name: "codex".into(),
+            exe_path: "/test/codex".into(),
+            memory: 8 * 1024 * 1024 * 1024,
+            cpu: Some(2.0),
+            is_zombie: false,
+        };
+        assert!(classify_process(&profile, &entry, false, &HashSet::new()).is_none());
+        let mut hung = entry;
+        hung.cpu = Some(97.0);
+        assert_eq!(
+            classify_process(&profile, &hung, true, &HashSet::new())
+                .unwrap()
+                .anomaly_type,
+            crate::cleaner::AnomalyType::Hung,
+            "a separate hung verdict must still work"
         );
     }
 }

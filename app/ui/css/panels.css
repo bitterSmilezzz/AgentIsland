@@ -145,6 +145,35 @@ html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-setting
   cursor: default;
 }
 
+
+/* Codex uses the same understated controls in both full-page shells. */
+[data-provider-root] .provider-toolbar,
+[data-provider-root] .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+[data-provider-root] .provider-toolbar { margin: 8px 0; }
+[data-provider-root] .provider-current { margin-top: 0; overflow-wrap: anywhere; }
+[data-provider-root] .sb-profile .name { flex-wrap: wrap; overflow-wrap: anywhere; }
+[data-provider-root] .sb-confirm { overflow-wrap: anywhere; }
+[data-provider-root] .provider-model {
+  appearance: none; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  padding: 4px 0; border: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: 12px; cursor: pointer; text-align: left; overflow-wrap: anywhere;
+}
+[data-provider-root] .provider-model span { font-size: 11px; color: var(--text-muted); }
+[data-provider-root] .provider-model:hover { text-decoration: underline; }
+[data-provider-root] :is(button, input, select, summary):focus-visible {
+  outline: 2px solid var(--text-muted); outline-offset: 2px;
+}
+[data-provider-root] :is(.provider-editor, .provider-backups) {
+  border-top: 1px solid var(--border); margin: 8px 0; padding-top: 8px;
+}
+[data-provider-root] summary { cursor: pointer; font-size: 12px; color: var(--text-muted); padding: 6px 0; }
+[data-provider-root] [data-provider-advanced] > .sb-form { padding: 6px 0; }
+[data-provider-root] .sb-form :is(input, select) { min-width: 0; width: 100%; box-sizing: border-box; }
+[data-provider-root] .provider-drift p { margin: 4px 0 8px; overflow-wrap: anywhere; }
+[data-provider-root] [data-editor-error] { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+[data-provider-root] .sb-confirm[hidden] { display: none; }
+[data-provider-root] .sb-backup .name { min-width: 0; overflow-wrap: anywhere; }
+[data-provider-root] button:disabled { opacity: .5; cursor: default; }
 /* ── 待办页（Phase 3）──────────────────────────────────────────────
    极简：无分组、无日期、无优先级。做完的只加一条删除线，不下沉。 */
 
@@ -378,3 +407,64 @@ html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-setting
 html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) [data-remote-root] .sb-set-ctl input:not([type='checkbox']),
 html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) [data-remote-root] .sb-set-ctl select { min-width: 0; width: 100%; box-sizing: border-box; }
 html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .remote-intro .sb-group-title { color: var(--text); font-size: 14px; letter-spacing: 0; }
+
+/* Secondary configuration tools stay folded within the existing provider page. */
+.provider-transfer, .provider-capabilities { margin-top: 12px; }
+.provider-file { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.provider-file input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.provider-file:focus-within { outline: 2px solid var(--text); outline-offset: 2px; }
+.provider-diff { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 11px; table-layout: fixed; }
+.provider-diff th, .provider-diff td { padding: 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; border-bottom: 1px solid var(--border); }
+.provider-diff th:first-child { width: 22%; }
+.provider-diff .changed { background: var(--surface-inset); font-weight: 600; }
+
+/* Outgoing pages are inert overlays, clipped inside their existing container. */
+.page-motion-host { position: relative; overflow: hidden; }
+[data-page-outgoing] { pointer-events: none !important; user-select: none; }
+
+/* Settings: common decisions first; detailed thresholds stay one disclosure away. */
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page { padding-top: 4px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-section { margin: 4px 0 10px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-section > h2 { margin: 0 0 4px; font-size: 10px; font-weight: 500; color: var(--text-muted); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; min-height: 36px; padding: 7px 0; border-bottom: 1px solid var(--border-subtle); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set:last-child { border-bottom: 0; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set-copy .sb-hint { margin: 0; font-size: 10px; line-height: 1.5; color: var(--text-muted); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set-label { font-size: 11px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl select { width: 116px; border: 0; background: transparent; padding: 4px 0 4px 4px; text-align-last: right; font-size: 11px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl input[type='number'] { width: 68px; min-height: 26px; padding: 4px 6px; background: var(--surface-inset); border-color: var(--border-subtle); font-size: 11px; font-variant-numeric: tabular-nums; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl input[type='checkbox'] { appearance: none; width: 30px; height: 18px; position: relative; border-radius: 10px; border: 1px solid var(--border); background: var(--control-hover); cursor: pointer; transition: background 140ms ease; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl input[type='checkbox']::before { content: ''; position: absolute; width: 12px; height: 12px; top: 2px; left: 2px; border-radius: 50%; background: var(--text-muted); transition: transform 140ms ease, background 140ms ease; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl input[type='checkbox']:checked { background: var(--working); border-color: var(--working); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl input[type='checkbox']:checked::before { transform: translateX(12px); background: var(--switch-thumb); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set > .sb-warn { grid-column: 1 / -1; margin: 0; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more { border-top: 1px solid var(--border-subtle); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; list-style: none; cursor: pointer; font-size: 11px; color: var(--text); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more > summary::-webkit-details-marker { display: none; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more-caption { margin-left: auto; color: var(--text-muted); font-size: 9px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more > summary svg { width: 10px; height: 10px; fill: currentColor; transition: transform 160ms ease; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more[open] > summary svg { transform: rotate(90deg); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 5px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-footnote { font-size: 10px; line-height: 1.6; margin: 2px 0 12px; color: var(--text-muted); }
+@media (prefers-reduced-motion: reduce) { html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl input[type='checkbox'], html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .sb-set .sb-set-ctl input[type='checkbox']::before, html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .settings-page .settings-more > summary svg { transition: none; } }
+
+/* One compact task projection, shared by the three shells. */
+.task-attention { padding: 11px 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface-inset); color: var(--text); }
+.task-attention-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 7px; font-size: 11px; }
+.task-attention-head > strong { color: var(--warning); font-weight: 600; }
+.task-attention-head > span { color: var(--text-faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+.task-attention.is-failure .task-attention-head > strong { color: var(--danger); }
+.task-attention-row { display: flex; align-items: center; gap: 10px; }
+.task-attention button { background: transparent; border: 0; color: inherit; font: inherit; text-align: left; }
+.task-attention-title, .task-attention-error > button { min-width: 0; flex: 1; padding: 0; }
+.task-attention-title strong, .task-attention-error strong { display: block; font-size: 12px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-attention small { display: block; margin-top: 4px; color: var(--text-muted); font-size: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-attention .task-attention-open { flex-shrink: 0; padding: 6px 7px; border-radius: 6px; color: var(--accent); font-size: 10px; }
+.task-attention button:hover { color: var(--accent); }
+.task-attention .task-attention-open:hover { background: var(--control-hover); }
+.task-attention button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.task-attention button:disabled { opacity: .5; }
+.task-attention-feedback { color: var(--text-muted); font-size: 10px; line-height: 1.5; margin-top: 7px; overflow-wrap: anywhere; }
+html.shell-island [data-task-attention-slot]:not(:empty) { margin: 8px 11px 0; }
+.shell-sidebar [data-task-attention-slot]:not(:empty) { margin-bottom: 14px; }
+.wb-col [data-task-attention-slot]:empty { display: none; }

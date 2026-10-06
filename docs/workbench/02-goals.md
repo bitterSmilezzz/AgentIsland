@@ -1,5 +1,7 @@
 # 02 · 目标与非目标
 
+> 本文保留早期目标记录；当前功能融合与平台路线以 [26 号整体方案](26-product-master-plan.md)与 [25 号融合细节](25-feature-integration-plan.md)为准。平台顺序已确定为 macOS → Windows → Linux → Web 与移动端；Android / iOS 将独立定制。
+
 ## 1. 目标
 
 把 AgentIsland 从「macOS 灵动岛监控器」扩展为**跨平台轻量工作台**，

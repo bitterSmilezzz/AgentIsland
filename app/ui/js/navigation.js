@@ -12,6 +12,14 @@ export function agentIdFromIntent(intent) {
   }
 }
 
+export function taskIdFromIntent(intent) {
+  if (!intent.startsWith('Task(') || !intent.endsWith(')')) return null;
+  try {
+    const id = JSON.parse(intent.slice(5,-1));
+    return typeof id === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id) ? id : null;
+  } catch { return null; }
+}
+
 // 先装订阅，再逐批消费启动缓存；空批次确认后 Rust 才发实时事件。
 export async function subscribeNavigation(handler) {
   const process = async event => {

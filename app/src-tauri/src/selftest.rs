@@ -106,7 +106,9 @@ struct Harness {
 
 impl Harness {
     fn new(profile_id: &str) -> Option<Self> {
-        let profile = crate::registry::builtin().into_iter().find(|p| p.id == profile_id)?;
+        let profile = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == profile_id)?;
         let (_tx, rx) = std::sync::mpsc::channel();
         Some(Harness {
             engine: ActivityEngine::new(Settings::default(), rx),
@@ -167,7 +169,11 @@ pub fn run() -> Report {
             Some(format!("{level:?}")),
         );
     } else {
-        runner.check("内置档案 dim 存在", false, Some("注册表里找不到 dim".into()));
+        runner.check(
+            "内置档案 dim 存在",
+            false,
+            Some("注册表里找不到 dim".into()),
+        );
     }
 
     // 2. 进程在 + 窗口内有写入 ⇒ working
@@ -197,7 +203,13 @@ pub fn run() -> Report {
 
         // 5. 新写入出现 ⇒ 从 idle 升级为 working（同一台引擎连续两拍）
         let _ = harness.decide(now, true, Some(0.0), None, write_at(now, 300_000));
-        let level = harness.decide(now + 2_000, true, Some(0.0), None, Some(std::time::SystemTime::now()));
+        let level = harness.decide(
+            now + 2_000,
+            true,
+            Some(0.0),
+            None,
+            Some(std::time::SystemTime::now()),
+        );
         runner.check(
             "新写入出现后从 idle 升级为 working",
             level == ActivityLevel::Working,
@@ -221,7 +233,11 @@ pub fn run() -> Report {
     }
     // 「没有活动信号」与「刚刚活动过」是两件事
     let none_text = time_ago_text(None);
-    runner.check("没有活动信号 ⇒ —（不是「刚刚」）", none_text == "—", Some(none_text));
+    runner.check(
+        "没有活动信号 ⇒ —（不是「刚刚」）",
+        none_text == "—",
+        Some(none_text),
+    );
 
     // 7. 注册表完整性
     let profiles = crate::registry::builtin();
@@ -242,7 +258,11 @@ pub fn run() -> Report {
             s.len()
         })),
     );
-    runner.check("注册表含 dim", ids.contains(&"dim"), Some(format!("{ids:?}")));
+    runner.check(
+        "注册表含 dim",
+        ids.contains(&"dim"),
+        Some(format!("{ids:?}")),
+    );
     runner.check(
         "内置档案数量 ≥ 12",
         profiles.len() >= 12,
@@ -322,14 +342,24 @@ pub fn run() -> Report {
         Some(format!("{unqualified:?}")),
     );
     // 观测了但不足阈值：同样必须是「判不出」
-    let too_short = crate::health::is_hung(Some(now - 60_000), None, now, crate::health::RUNAWAY_DURATION_MS);
+    let too_short = crate::health::is_hung(
+        Some(now - 60_000),
+        None,
+        now,
+        crate::health::RUNAWAY_DURATION_MS,
+    );
     runner.check(
         "观测窗口不足阈值 ⇒ 仍然是「判不出」",
         too_short.is_none(),
         Some(format!("{too_short:?}")),
     );
     // 观测够久 + 持续高 CPU ⇒ 明确判成卡死
-    let runaway = crate::health::is_hung(Some(now - 600_000), Some(now - 600_000), now, crate::health::RUNAWAY_DURATION_MS);
+    let runaway = crate::health::is_hung(
+        Some(now - 600_000),
+        Some(now - 600_000),
+        now,
+        crate::health::RUNAWAY_DURATION_MS,
+    );
     runner.check(
         "连续 10 分钟高 CPU ⇒ 明确判成卡死",
         runaway == Some(true),
@@ -342,7 +372,11 @@ pub fn run() -> Report {
         tracker.record("selftest", 10.0, now - 1_000);
         tracker.record("selftest", 20.0, now - 2_000);
         // 窗口外的那次不算：否则「过去 24 小时」这句话就是假的
-        tracker.record("selftest", 999.0, now - crate::duration::DEFAULT_WINDOW_MS - 1);
+        tracker.record(
+            "selftest",
+            999.0,
+            now - crate::duration::DEFAULT_WINDOW_MS - 1,
+        );
         let stats = tracker.stats("selftest", crate::duration::DEFAULT_WINDOW_MS, now);
         runner.check(
             "任务效能：两次记录 ⇒ 合计 30 秒、平均 15 秒、最长 20 秒（窗口外不算）",
@@ -376,7 +410,10 @@ pub fn run() -> Report {
         let pending_after_add = store.snapshot(0).pending;
         let toggled = store.toggle("1").map(|t| t.pending).unwrap_or(9) == 1;
         let removed = store.remove("2").map(|t| t.items.len()).unwrap_or(9) == 1;
-        let cleared = store.clear_done().map(|t| t.items.is_empty()).unwrap_or(false);
+        let cleared = store
+            .clear_done()
+            .map(|t| t.items.is_empty())
+            .unwrap_or(false);
         runner.check(
             "待办：加两条 ⇒ 未完成 2；勾一条 ⇒ 1；删一条 ⇒ 剩 1；清已完成 ⇒ 空",
             added && pending_after_add == 2 && toggled && removed && cleared,
@@ -392,7 +429,11 @@ pub fn run() -> Report {
         let _ = std::fs::write(broken_dir.join("todos.json"), "{ 这不是 JSON");
         let snapshot = broken.snapshot(4_242);
         let stashed = snapshot.broken_backup.as_deref() == Some("todos.json.broken-4242");
-        let recovered = broken.add("恢复之后", 5_000).map(|t| t.items.len()).unwrap_or(9) == 1;
+        let recovered = broken
+            .add("恢复之后", 5_000)
+            .map(|t| t.items.len())
+            .unwrap_or(9)
+            == 1;
         runner.check(
             "待办：清单文件读坏 ⇒ 显示空清单、原文件留档、之后还能继续加",
             snapshot.items.is_empty() && stashed && recovered,
@@ -413,8 +454,7 @@ pub fn run() -> Report {
         use std::sync::Arc;
 
         let blind = |ids: &[&str]| {
-            let ids: std::collections::HashSet<String> =
-                ids.iter().map(|s| (*s).into()).collect();
+            let ids: std::collections::HashSet<String> = ids.iter().map(|s| (*s).into()).collect();
             Arc::new(move || BundleScanResult {
                 ids: ids.clone(),
                 // GUI 档案在没有应用包证据的平台上永远拿不到否定结论
@@ -464,7 +504,9 @@ pub fn run() -> Report {
         runner.check(
             "装机探测：缓存未热给「未核实」、命中才给「已安装」、缺应用包证据不判「未安装」",
             cold_state == None && warm_state == Some(true) && gui == None,
-            Some(format!("cold={cold_state:?} warm={warm_state:?} gui={gui:?}")),
+            Some(format!(
+                "cold={cold_state:?} warm={warm_state:?} gui={gui:?}"
+            )),
         );
     }
 
@@ -546,14 +588,22 @@ mod tests {
             }],
         };
         assert_eq!(failing.exit_code(), 1);
-        assert!(failing.text().contains("（实际：实际值）"), "{}", failing.text());
+        assert!(
+            failing.text().contains("（实际：实际值）"),
+            "{}",
+            failing.text()
+        );
     }
 
     #[test]
     fn the_ago_text_matches_the_reference_including_the_nil_case() {
         assert_eq!(time_ago_text(Some(2.0)), "刚刚");
         assert_eq!(time_ago_text(Some(4.4)), "刚刚");
-        assert_eq!(time_ago_text(Some(5.0)), "5s 前", "阈值是 5 秒：四舍五入到 5 就不再是「刚刚」");
+        assert_eq!(
+            time_ago_text(Some(5.0)),
+            "5s 前",
+            "阈值是 5 秒：四舍五入到 5 就不再是「刚刚」"
+        );
         assert_eq!(
             time_ago_text(Some(9.0)),
             "9s 前",
@@ -562,8 +612,16 @@ mod tests {
         assert_eq!(time_ago_text(Some(30.0)), "30s 前");
         assert_eq!(time_ago_text(Some(120.0)), "2m 前");
         assert_eq!(time_ago_text(Some(7_200.0)), "2h 前");
-        assert_eq!(time_ago_text(Some(200_000.0)), "55h 前", "没有「天」这一档，与参考实现一致");
+        assert_eq!(
+            time_ago_text(Some(200_000.0)),
+            "55h 前",
+            "没有「天」这一档，与参考实现一致"
+        );
         assert_eq!(time_ago_text(None), "—");
-        assert_eq!(time_ago_text(Some(-5.0)), "刚刚", "负数来自时钟回拨，按 0 处理");
+        assert_eq!(
+            time_ago_text(Some(-5.0)),
+            "刚刚",
+            "负数来自时钟回拨，按 0 处理"
+        );
     }
 }
