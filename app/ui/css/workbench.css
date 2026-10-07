@@ -2,7 +2,7 @@
 .shell-workbench { --wb-gap: 20px; --wb-radius: 16px; }
 .shell-workbench body { background: var(--surface); color: var(--text); font: 13px/1.45 var(--font-text); overflow: hidden; }
 .wb { display: grid; grid-template-columns: 202px minmax(0, 1fr); height: 100dvh; }
-.wb-nav { display: flex; flex-direction: column; padding: 24px 12px 16px; background: var(--nav-material); border-right: 1px solid var(--border); min-height: 0; overflow-y: auto; }
+.wb-nav { display: flex; flex-direction: column; padding: 24px 12px 16px; background: var(--nav-material); border-right: 1px solid var(--border); min-height: 0; overflow: hidden; }
 .platform-mac .wb-nav { padding-top: 66px; }
 .wb-brand { display: flex; align-items: center; gap: 10px; padding: 8px 10px 27px; font-size: 15px; font-weight: 650; letter-spacing: -.3px; }
 .wb-brand svg { width: 28px; height: 28px; color: var(--accent); flex: none; }
@@ -434,3 +434,25 @@ html.shell-workbench .connection-row .sb-tag[data-connection-state="offline"]{co
 .claude-plan-records .connection-row>div:first-child{display:grid;gap:3px}
 .claude-plan-records small{color:var(--text-faint);font-size:10px}
 @media(prefers-reduced-motion:reduce){.claude-plan-chevron{transition:none}}
+
+/* Keep the frame and live status visible; only the navigation list scrolls. */
+.wb-brand { flex: none; padding-bottom: 20px; }
+.wb-nav-links { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px; margin: -4px; scroll-padding-block: 6px; scrollbar-width: thin; }
+.wb-nav-item { padding-block: 8px; min-height: 30px; }
+.wb-nav-footer { flex: none; margin-top: 14px; }
+@media (max-height: 650px) {
+  .platform-mac .wb-nav { padding-top: 42px; }
+  .wb-nav { padding-bottom: 10px; }
+  .wb-brand { padding: 4px 8px 10px; font-size: 14px; }
+  .wb-brand svg { width: 28px; height: 28px; }
+  .wb-brand small { display: none; }
+  .wb-nav-item { min-height: 28px; padding-block: 4px; margin-block: 1px; }
+  .wb-nav-label { padding-bottom: 6px; }
+  .wb-nav-divider { margin-top: 10px; }
+  .wb-nav-footer { padding: 8px 10px; margin-top: 8px; border-radius: 9px; }
+  .wb-nav-footer .nav-machine-values { margin-top: 6px; gap: 6px; grid-template-columns: .7fr 1.3fr; }
+  .wb-nav-footer .nav-machine-values div { flex-direction: row; align-items: baseline; gap: 4px; }
+  .wb-nav-footer .nav-machine-values strong { font-size: 13px; }
+  .wb-nav-footer .nav-machine-values span { white-space: nowrap; }
+  .wb-nav-footer p { margin-top: 6px; }
+}

@@ -299,7 +299,7 @@ export function renderSliver() {
   // 用户只能靠托盘或快捷键把它叫出来，而那两样在 macOS 侧还要用户自己知道。
   // 所以「隐藏」隐藏的是**胶囊把手**，不是交互面积。
   const hidden = st.settings?.hide_docked_sliver === true;
-  const status = alert ? '有提醒' : working ? '工作中' : '待机';
+  const status = alert ? '有提醒' : !eng ? '等待采样' : working ? '工作中' : '待机';
   const className = `sliver ${vertical ? 'vertical' : ''} ${hitClass} ${working ? 'working' : ''} ${alert ? 'alert' : ''}${hidden ? ' sliver-invisible' : ''}`;
   const existing = root.querySelector('#sliver');
   // 周期采样只更新状态，保留动画相位与键盘焦点。
@@ -440,7 +440,7 @@ function rowHtml(snap) {
 export function renderCard() {
   const st = getState();
   const eng = st.engine ?? {
-    snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
+    snapshots: [], grand_total: {},
     latest_event: null, any_working: false, has_attention: false,
     dock_edge: st.settings?.dock_edge ?? 'top',
   };
@@ -528,7 +528,7 @@ function listCard(eng, st, visible, dark, edge) {
     : visible;
 
   const list = filtered.length === 0
-    ? `<div class="empty">${st.searchActive ? `${navigationIcon('search')}<span>未找到匹配「${esc(st.searchText)}」的智能体</span>`
+    ? `<div class="empty"${!st.engine ? ' role="status"' : ''}>${!st.engine ? `${navigationIcon('terminal')}<span>等待采样</span>` : st.searchActive ? `${navigationIcon('search')}<span>未找到匹配「${esc(st.searchText)}」的智能体</span>`
       : `${navigationIcon('terminal')}<span>暂无在线智能体</span>`}</div>`
     : `<div class="list">${filtered.map(rowHtml).join('')}</div>`;
 
@@ -550,7 +550,7 @@ function listCard(eng, st, visible, dark, edge) {
           ${eng.demo ? '<span class="badge" style="color:var(--cyan);background:color-mix(in srgb, var(--cyan) 14%, transparent);border:0.5px solid color-mix(in srgb, var(--cyan) 35%, transparent)">演示数据</span>' : ''}
           ${hp.badge ? `<span class="badge" style="color:${hp.tint};background:color-mix(in srgb, ${hp.tint} 14%, transparent);border:0.5px solid color-mix(in srgb, ${hp.tint} 35%, transparent)">${esc(hp.badge)}</span>` : ''}
         </div>
-        <span class="header-count">${visible.length} 在线</span>
+        <span class="header-count">${st.engine ? `${visible.length} 在线` : '等待采样'}</span>
       </div>
       <div class="header-icons">
         <button type="button" class="icon-btn" data-search title="搜索（/）" aria-label="搜索智能体">${islandToolbarIcon('search')}</button>
@@ -951,6 +951,7 @@ function workbenchStatus(engine) {
 
 /** 工作台左栏：监控列表。与侧边栏同一份显示模型（`agentRowModel`）。 */
 function workbenchMonitor(eng) {
+  if (!eng) return `<div class="wb-empty" role="status">${navigationIcon('terminal')}<strong>等待采样</strong><span>正在读取本机运行状态。</span></div>`;
   const route = getState().route;
   if (route.startsWith('agentDetail:')) return pageAgentDetail(eng, route.slice('agentDetail:'.length));
   const running = eng.snapshots.filter(isVisible);
@@ -1035,10 +1036,7 @@ export function renderNavSummaryOnly() {
 
 export function renderWorkbench() {
   const st = getState();
-  const eng = st.engine ?? {
-    snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
-    latest_event: null, any_working: false, has_attention: false,
-  };
+  const eng = st.engine;
   const showReport=st.workbenchPage==='report';
   const desired=showReport?'tokenAnalytics':st.workbenchPage;
   const selected = workbenchPages.some(([key]) => key === desired) ? desired : 'overview';
@@ -1100,8 +1098,10 @@ export function renderWorkbench() {
   } else root.innerHTML = `<div class="wb">
     <nav class="wb-nav" aria-label="工作台导航">
       <div class="wb-brand">${navigationIcon('square')}<span>AgentIsland<small>本机智能体工作台</small></span></div>
+      <div class="wb-nav-links">
       <div class="wb-nav-label">工作</div>
       ${workbenchPages.map(([key, label, icon], index) => `${key === 'windows' ? '<div class="wb-nav-label wb-nav-divider">管理</div>' : ''}<button type="button" class="wb-nav-item${selected === key ? ' is-active' : ''}" data-wb-nav="${key}" aria-current="${selected === key ? 'page' : 'false'}">${navigationIcon(icon)}<span>${label}</span></button>`).join('')}
+      </div>
       <div class="wb-nav-footer" data-nav-summary>${navigationSummary(st.engine)}</div>
     </nav>
     <main class="wb-main">
@@ -1198,6 +1198,7 @@ workspaceFlow.onChange=()=>{renderWorkspaceBanner();document.querySelector('[dat
 const verifyWorkspace=args=>invoke('workspace_preview',args);
 
 function workbenchSummary(eng) {
+  if (!eng) return '<div><strong>—</strong><span>在线智能体</span></div><div><strong>—</strong><span>24h tokens</span></div><div><strong>—</strong><span>待确认</span></div>';
   const running = eng.snapshots.filter(isVisible);
   const count = running.length;
   const attention = running.filter(s => s.level === 'attention').length;
@@ -1221,7 +1222,6 @@ export function renderWorkbenchMonitorOnly() {
   renderTaskAttentionOnly();
   const box = document.querySelector('[data-wb-monitor]');
   const eng = getState().engine;
-  if (!eng) return;
   const summary = document.querySelector('[data-wb-summary]');
   if (summary) summary.innerHTML = workbenchSummary(eng);
   const statusEl = document.querySelector('[data-wb-status]');
@@ -1266,7 +1266,7 @@ export function renderSidebar() {
   const scrollTop = document.querySelector('.sb-body')?.scrollTop ?? 0;
   const st = getState();
   const eng = st.engine ?? {
-    snapshots: [], grand_total: { tokens24h: 0, tokens_total: 0, cost24h: 0, cost_total: 0 },
+    snapshots: [], grand_total: {},
     latest_event: null, any_working: false, has_attention: false,
   };
   const running = eng.snapshots.filter(isVisible);
@@ -1299,6 +1299,8 @@ export function renderSidebar() {
     body = pageProvider();
   } else if (route === 'tokenAnalytics') {
     body = pageAnalytics(eng);
+  } else if (!st.engine) {
+    body = '<div class="sb-empty" role="status">等待采样</div>';
   } else if (running.length === 0) {
     body = '<div class="sb-empty">暂无在线智能体</div>';
   } else {
@@ -1336,7 +1338,7 @@ export function renderSidebar() {
         // 这条分支是**看着截图补的**：待办页原先落到下面的 else，表头写着「智能体 / 全部正常」。
         // 静态检查与冒烟都发现不了——它们只看「有没有报错」。
         ? { t: '待办', s: `未完成 ${st.todosPending ?? 0} 条` }
-        : { t: '智能体', s: attention > 0 ? `${attention} 个等待确认` : '全部正常' };
+        : { t: '智能体', s: !st.engine ? '等待采样' : attention > 0 ? `${attention} 个等待确认` : '全部正常' };
 
   const root = document.getElementById('root');
   rememberPage(root, route, '.sb-body');

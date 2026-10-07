@@ -4,7 +4,7 @@
 
 **main 使用 Rust/Tauri 开发。** Rust 负责监控、会话解析、配置与 CLI；静态 Web UI 提供灵动岛、贴边侧栏及工作台，macOS 使用系统窗口控制和材质。SwiftUI 与旧 WPF 实现保存在 [归档分支](https://github.com/bitterSmilezzz/AgentIsland/tree/codex/archive-swiftui)，归档规则见 [ADR 0016](docs/adr/0016-rust-only-main.md)。
 
-> 本文档描述 **v0.0.289** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.290** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 
@@ -47,7 +47,7 @@ macOS 默认作为菜单栏常驻应用启动，显示灵动岛贴条与菜单�
 ./agentisland report --format csv
 ```
 
-CLI 命令的参数与边界以 `agentisland help` 为准。清理命令会终止进程，请先查看检查结果并核实目标；单次采样的死锁判定为“本次未评估”，持续监控才积累足够观测证据。
+`agentisland open workbench` 打开工作台，`agentisland open workbench-hide` 收起工作台。CLI 命令的参数与边界以 `agentisland help` 为准。清理命令会终止进程，请先查看检查结果并核实目标；单次采样的死锁判定为“本次未评估”，持续监控才积累足够观测证据。
 
 ## 构建与验证
 

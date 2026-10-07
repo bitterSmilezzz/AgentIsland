@@ -27,6 +27,9 @@ pub enum Action {
     /// 工作台（第三个独立窗口）。与 `Toolbox` 的区别：
     /// `Toolbox` 是「跳到工具箱那一块」，而它是**把整块面板叫到前面**。
     Workbench,
+    /// 收起工作台（隐藏而非销毁）。与关闭按钮同一条 conceal 路径；
+    /// 自动化/验收用它开关工作台，不碰任何任务或配置状态。
+    WorkbenchHide,
     /// 设置页（独立窗口，不经岛内路由）
     Settings(String),
     /// 跳到工作台的清理区——**不直接杀进程**
@@ -48,7 +51,10 @@ impl Action {
     /// `settings` 与 `notify` 除外：前者是独立窗口（岛保持当前形态），
     /// 后者只在岛里加一条事件、不该把用户正在做的事打断。
     pub fn reveals_window(&self) -> bool {
-        !matches!(self, Action::Settings(_) | Action::Notify { .. })
+        !matches!(
+            self,
+            Action::Settings(_) | Action::Notify { .. } | Action::WorkbenchHide
+        )
     }
 }
 
@@ -82,6 +88,7 @@ pub fn parse(url: &str) -> Option<Action> {
         "analytics" => Action::Analytics,
         "toolbox" => Action::Toolbox,
         "workbench" => Action::Workbench,
+        "workbench-hide" => Action::WorkbenchHide,
         "clean" => Action::Clean,
         "export" => Action::Export,
         "agent" => {
@@ -207,6 +214,12 @@ mod tests {
         assert_eq!(parse("agentisland://toolbox"), Some(Action::Toolbox));
         // 工作台深链：三个窗口都在时，这条必须能把面板叫到前面
         assert_eq!(parse("agentisland://workbench"), Some(Action::Workbench));
+        // 收起工作台：与关闭按钮同一条路径，不改任何任务/配置状态
+        assert_eq!(
+            parse("agentisland://workbench-hide"),
+            Some(Action::WorkbenchHide)
+        );
+        assert!(!Action::WorkbenchHide.reveals_window());
         assert_eq!(parse("agentisland://clean"), Some(Action::Clean));
         assert_eq!(parse("agentisland://export"), Some(Action::Export));
     }

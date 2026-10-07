@@ -54,7 +54,7 @@ pub const COMMANDS: &[(&str, bool, &str)] = &[
     (
         "open",
         true,
-        "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export|workbench）",
+        "控制 App 展开/折叠/直达（toggle|expand|collapse|analytics|toolbox|export|workbench|workbench-hide）",
     ),
     (
         "notify",
@@ -897,28 +897,36 @@ fn raycast_command(name: &str, title: &str, description: &str) -> serde_json::Va
 
 /// 控制本机 App：展开 / 收起 / 直达某页。
 ///
-/// 走深链 URL 并**交给系统去派发**，而不是自己发 HTTP：
-/// 深链是本仓与 macOS 之间已约定的入口，换一条路就多一处两边可能不一致的地方。
-/// 系统派发失败时如实说失败——`open` 静默退出 0 会让脚本以为窗口开了。
-fn open_cmd(positional: &[String]) -> i32 {
+/// 解析 CLI 目标为深链；不调用系统或改变窗口状态。
+fn open_url(positional: &[String]) -> Result<String, i32> {
     let target = positional.first().map(String::as_str).unwrap_or("toggle");
     let url = match target {
-        "toggle" | "expand" | "collapse" | "analytics" | "toolbox" | "export" | "workbench" => {
+        "toggle" | "expand" | "collapse" | "analytics" | "toolbox" | "export" | "workbench"
+        | "workbench-hide" => {
             format!("agentisland://{target}")
         }
         "agent" => {
             // 直达某个 Agent：`open agent <id>`
             let Some(id) = positional.get(1) else {
                 eprintln!("用法: agentisland open agent <id>");
-                return EXIT_USAGE;
+                return Err(EXIT_USAGE);
             };
             format!("agentisland://agent?id={}", urlencode(id))
         }
         _ => {
             eprintln!("✗ 认不出的目标 `{target}`");
-            eprintln!("  可用: toggle | expand | collapse | analytics | toolbox | export | workbench | agent <id>");
-            return EXIT_USAGE;
+            eprintln!("  可用: toggle | expand | collapse | analytics | toolbox | export | workbench | workbench-hide | agent <id>");
+            return Err(EXIT_USAGE);
         }
+    };
+    Ok(url)
+}
+
+/// 将已核对的深链交给系统派发，失败时保留真实退出状态。
+fn open_cmd(positional: &[String]) -> i32 {
+    let url = match open_url(positional) {
+        Ok(url) => url,
+        Err(code) => return code,
     };
     match std::process::Command::new("open").arg(&url).status() {
         Ok(status) if status.success() => {
@@ -1322,16 +1330,26 @@ mod tests {
                 "缺少 {label} 窗口声明"
             );
         }
-        // ② 深链认得它
+        // ② 深链认得它（含对称的收起动作）
         assert_eq!(
             crate::deeplink::parse("agentisland://workbench"),
             Some(crate::deeplink::Action::Workbench)
         );
-        // ③ CLI 的 `open` 能构造出那条 URL（不真派发系统）
-        let code = try_run(&["agentisland".into(), "open".into(), "workbench".into()]);
-        assert!(
-            code.is_some(),
-            "`open workbench` 应当被接受（认不出的目标是用法错，会返回 2）"
+        assert_eq!(
+            crate::deeplink::parse("agentisland://workbench-hide"),
+            Some(crate::deeplink::Action::WorkbenchHide)
+        );
+        // ③ 与生产命令共用 URL 构造，不调用系统派发或触碰桌面。
+        for target in ["workbench", "workbench-hide"] {
+            assert_eq!(
+                open_url(&[target.into()]),
+                Ok(format!("agentisland://{target}"))
+            );
+        }
+        assert_eq!(open_url(&[]), Ok("agentisland://toggle".into()));
+        assert_eq!(
+            open_url(&["agent".into(), "a&b=c".into()]),
+            Ok("agentisland://agent?id=a%26b%3Dc".into())
         );
     }
 

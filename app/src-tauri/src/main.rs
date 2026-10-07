@@ -3066,10 +3066,15 @@ fn menu_bar_icon() -> tauri::image::Image<'static> {
 
 fn reveal_workbench_window(app: &AppHandle) {
     let handle = app.clone();
-    queue_window_task(app, move || match ensure_window(&handle, "workbench") {
+    queue_window_task(app, move || reveal_workbench_window_now(&handle));
+}
+
+// Only called on the main thread, after leaving IPC/deep-link runtime locks.
+fn reveal_workbench_window_now(handle: &AppHandle) {
+    match ensure_window(handle, "workbench") {
         Ok(window) => {
             if !background_test_requested() {
-                set_dock_presence(&handle, true);
+                set_dock_presence(handle, true);
                 let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
@@ -3077,7 +3082,7 @@ fn reveal_workbench_window(app: &AppHandle) {
             let _ = window.emit("ui://visibility", true);
         }
         Err(error) => log_line(&format!("[window] workbench creation failed: {error}")),
-    });
+    }
 }
 
 #[tauri::command]
@@ -4022,6 +4027,10 @@ pub fn handle_deep_link(app: &AppHandle, url: &str) -> bool {
         if matches!(action, deeplink::Action::Workbench) {
             reveal_workbench_window(app);
         }
+    } else if matches!(action, deeplink::Action::WorkbenchHide) {
+        // 与 `workbench` 对称的收起：走关闭按钮同一条 conceal 路径
+        // （隐藏而非销毁，90 秒无草稿后才释放），不触碰任务或配置状态。
+        conceal_workbench_window(app);
     } else if let deeplink::Action::Settings(tab) = &action {
         // 设置是独立窗口：先把它显示出来，岛保持当前形态
         if let Some(win) = app.get_webview_window("settings") {
@@ -4203,17 +4212,40 @@ fn main() {
             if std::env::args().any(|arg| arg == "--dock-smoke") {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    reveal_workbench_window(&handle);
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    conceal_workbench_window(&handle);
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    reveal_workbench_window(&handle);
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    if let Some(window) = handle.get_webview_window("workbench") {
-                        let _ = window.close();
+                    // The driver verifies the native policy before acknowledging each
+                    // stage. Fixed sleeps raced the first WebView creation on cold boot.
+                    for stage in ["default", "open", "hide", "reopen", "close"] {
+                        let (send, receive) = std::sync::mpsc::channel();
+                        let app = handle.clone();
+                        queue_window_task(&handle, move || {
+                            match stage {
+                                "open" | "reopen" => reveal_workbench_window_now(&app),
+                                "hide" => conceal_workbench_window(&app),
+                                "close" => {
+                                    if let Some(window) = app.get_webview_window("workbench") {
+                                        let _ = window.close();
+                                    }
+                                }
+                                _ => {}
+                            }
+                            let _ = send.send(());
+                        });
+                        if receive
+                            .recv_timeout(std::time::Duration::from_secs(30))
+                            .is_err()
+                        {
+                            handle.exit(2);
+                            return;
+                        }
+                        use std::io::Write;
+                        println!("DOCK_SMOKE_READY {stage}");
+                        let _ = std::io::stdout().flush();
+                        let mut ack = String::new();
+                        if std::io::stdin().read_line(&mut ack).is_err() || ack != "continue\n" {
+                            handle.exit(2);
+                            return;
+                        }
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(2));
                     handle.exit(0);
                 });
             }
