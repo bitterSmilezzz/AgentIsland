@@ -928,7 +928,25 @@ fn open_cmd(positional: &[String]) -> i32 {
         Ok(url) => url,
         Err(code) => return code,
     };
-    match std::process::Command::new("open").arg(&url).status() {
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = std::env::current_exe()
+            .and_then(std::fs::canonicalize)
+            .map_err(|_| "无法核对当前 CLI 的位置")
+            .and_then(|executable| mac_cli_bundle(&executable));
+        match bundle {
+            Ok(Some(bundle)) => {
+                command.arg("-a").arg(bundle);
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                eprintln!("✗ {reason}");
+                return EXIT_FAIL;
+            }
+        }
+    }
+    match command.arg(&url).status() {
         Ok(status) if status.success() => {
             println!("已请求系统打开 {url}");
             EXIT_OK
@@ -945,6 +963,47 @@ fn open_cmd(positional: &[String]) -> i32 {
             EXIT_FAIL
         }
     }
+}
+
+/// Prefer the shipped app rather than another copy registered for the URL scheme.
+/// A standalone CLI without an adjacent app keeps the system registration contract.
+#[cfg(target_os = "macos")]
+fn mac_cli_bundle(
+    executable: &std::path::Path,
+) -> Result<Option<std::path::PathBuf>, &'static str> {
+    let directory = executable.parent().ok_or("无法核对当前 CLI 的位置")?;
+    let contents = directory.parent();
+    let in_bundle = matches!(
+        directory.file_name().and_then(|name| name.to_str()),
+        Some("MacOS" | "Helpers")
+    ) && contents
+        .and_then(|path| path.file_name())
+        .is_some_and(|name| name == "Contents")
+        && contents
+            .and_then(|path| path.parent())
+            .and_then(|path| path.extension())
+            .is_some_and(|ext| ext == "app");
+    let bundle = if in_bundle {
+        contents
+            .and_then(|path| path.parent())
+            .ok_or("无法核对应用包的位置")?
+            .to_path_buf()
+    } else {
+        directory.join("AgentIsland.app")
+    };
+    // Broken or dangling paired packages must not silently select another app.
+    if !in_bundle
+        && std::fs::symlink_metadata(&bundle)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Ok(None);
+    }
+    if !bundle.join("Contents/MacOS/agentisland").is_file()
+        || !bundle.join("Contents/Info.plist").is_file()
+    {
+        return Err("对应的 AgentIsland 应用包不完整，请重新解压发布包");
+    }
+    Ok(Some(bundle))
 }
 
 /// 查询串里只可能出现 agent id，但**仍然编码**：
@@ -1350,6 +1409,72 @@ mod tests {
         assert_eq!(
             open_url(&["agent".into(), "a&b=c".into()]),
             Ok("agentisland://agent?id=a%26b%3Dc".into())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shipped_cli_selects_its_app_from_all_packaged_locations() {
+        let sandbox = crate::testutil::Sandbox::new("cli-dispatch");
+        let distribution = sandbox.path().join("Release folder '中文'");
+        let bundle = distribution.join("AgentIsland.app");
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(bundle.join("Contents/Helpers")).unwrap();
+        std::fs::write(bundle.join("Contents/MacOS/agentisland"), b"fixture").unwrap();
+        std::fs::write(bundle.join("Contents/Info.plist"), b"fixture").unwrap();
+        for path in [
+            distribution.join("agentisland"),
+            bundle.join("Contents/MacOS/agentisland"),
+            bundle.join("Contents/Helpers/agentisland"),
+        ] {
+            assert_eq!(mac_cli_bundle(&path), Ok(Some(bundle.clone())));
+        }
+        let renamed = distribution.join("AgentIsland Review.app");
+        std::fs::rename(&bundle, &renamed).unwrap();
+        assert_eq!(
+            mac_cli_bundle(&renamed.join("Contents/Helpers/agentisland")),
+            Ok(Some(renamed))
+        );
+        assert_eq!(
+            mac_cli_bundle(&distribution.join("agentisland")),
+            Ok(None),
+            "standalone CLI retains the system scheme fallback"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn damaged_paired_app_never_falls_back_to_another_registered_copy() {
+        let sandbox = crate::testutil::Sandbox::new("cli-damaged-app");
+        let cli = sandbox.path().join("agentisland");
+        let bundle = sandbox.path().join("AgentIsland.app");
+        std::fs::create_dir(&bundle).unwrap();
+        assert!(mac_cli_bundle(&cli).is_err());
+        assert!(mac_cli_bundle(&bundle.join("Contents/Helpers/agentisland")).is_err());
+        std::fs::remove_dir(&bundle).unwrap();
+        std::os::unix::fs::symlink(sandbox.path().join("missing.app"), &bundle).unwrap();
+        assert!(
+            mac_cli_bundle(&cli).is_err(),
+            "a dangling paired app is a packaging failure"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cli_symlink_resolves_back_to_the_distributed_app() {
+        let sandbox = crate::testutil::Sandbox::new("cli-symlink");
+        let distribution = sandbox.path().join("release");
+        let bundle = distribution.join("AgentIsland.app");
+        std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::write(bundle.join("Contents/Info.plist"), b"fixture").unwrap();
+        std::fs::write(bundle.join("Contents/MacOS/agentisland"), b"fixture").unwrap();
+        let cli = distribution.join("agentisland");
+        std::fs::write(&cli, b"fixture").unwrap();
+        let link = sandbox.path().join("agentisland");
+        std::os::unix::fs::symlink(&cli, &link).unwrap();
+        assert_eq!(
+            mac_cli_bundle(&std::fs::canonicalize(link).unwrap()),
+            Ok(Some(std::fs::canonicalize(bundle).unwrap()))
         );
     }
 

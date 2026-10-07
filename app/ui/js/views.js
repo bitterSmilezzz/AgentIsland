@@ -36,7 +36,7 @@ function rememberPage(root, key, selector) {
   const opacity = Number(getComputedStyle(node).opacity);
   pageTransitions.get(root)?.forEach(animation => animation.cancel());
   root.querySelectorAll('[data-page-outgoing]').forEach(n => n.remove());
-  node.parentElement.classList.remove('page-motion-host');
+  root.querySelectorAll('.page-motion-host').forEach(host => host.classList.remove('page-motion-host'));
   pageTransitions.delete(root);
   outgoingPages.delete(root);
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -76,9 +76,9 @@ function pageMotion(root, key, selector) {
       leaving.finished.catch(() => {}).finally(() => { copy.remove(); if (pageTransitions.get(root) === animations) host.classList.remove('page-motion-host'); });
     }
     animations.push(node.animate([
-      { opacity: 0, transform: stationary ? 'none' : `translateX(${direction * 14}px)` },
+      { opacity: stationary ? .55 : 0, transform: stationary ? 'none' : `translateX(${direction * 14}px)` },
       { opacity: 1, transform: 'translateX(0)' },
-    ], { duration: stationary ? 220 : duration, delay: stationary ? 70 : 0, fill: 'backwards', easing: 'cubic-bezier(.22,1,.36,1)' }));
+    ], { duration: stationary ? 220 : duration, delay: 0, fill: 'backwards', easing: 'cubic-bezier(.22,1,.36,1)' }));
     Promise.all(animations.map(a => a.finished.catch(() => {}))).then(() => {
       if (pageTransitions.get(root) === animations) pageTransitions.delete(root);
     });
@@ -1041,8 +1041,10 @@ export function renderWorkbench() {
   const desired=showReport?'tokenAnalytics':st.workbenchPage;
   const selected = workbenchPages.some(([key]) => key === desired) ? desired : 'overview';
   st.workbenchPage = selected;
-  const title = workbenchPages.find(([key]) => key === selected)?.[1] ?? '概览';
+  const navigationPage = selected === 'todo' ? 'tasks' : selected;
+  const title = workbenchPages.find(([key]) => key === navigationPage)?.[1] ?? '概览';
   const root = document.getElementById('root');
+  const taskViewSwitch = navigationPage === 'tasks' && ['todo','tasks'].includes(root.dataset.motionRoute);
   if (root.querySelector('.wb-content') && root.dataset.motionRoute === selected) {
     workspaceFlow.route(selected);renderWorkspaceBanner();focusWorkspaceTarget();
     renderWorkbenchMonitorOnly();
@@ -1070,12 +1072,16 @@ export function renderWorkbench() {
       tokenAnalytics: () => `<details class="usage-report" data-usage-report><summary>用量报告<span>Markdown · CSV</span></summary>${pageReport()}</details>${pageAnalytics(eng)}`, provider: pageProvider, todo: pageTodo, tasks: pageTasks, sessions: pageSessions, windows: pageWindowLayout,workspaces:pageWorkspaces,
       report: () => pageReport(), settings: pageSettings, remote: pageRemote, agents: pageAgents,
     };
-    const icon = workbenchPages.find(([key]) => key === selected)?.[2];
-    content = `<div class="wb-single" data-workbench-page="${selected}"><div class="wb-page-heading"><span class="wb-page-icon">${navigationIcon(icon)}</span><div><h1>${title}</h1><p>${workbenchDescriptions[selected] ?? ''}</p></div></div>${pages[selected]?.() ?? ''}</div>`;
+    const icon = workbenchPages.find(([key]) => key === navigationPage)?.[2];
+    const taskNavigation = navigationPage === 'tasks' ? `<nav class="wb-task-navigation" aria-label="任务视图">${[['tasks','任务看板'],['todo','待办事项']].map(([key,label])=>`<button type="button" class="mini-btn" data-wb-task-view data-wb-nav="${key}" aria-current="${selected===key?'page':'false'}">${label}</button>`).join('')}</nav>` : '';
+    const description = navigationPage === 'tasks' ? '整理待办、任务与运行记录。' : workbenchDescriptions[selected] ?? '';
+    const panel = pages[selected]?.() ?? '';
+    content = `<div class="wb-single" data-workbench-page="${selected}"><div class="wb-page-heading"><span class="wb-page-icon">${navigationIcon(icon)}</span><div><h1>${title}</h1><p>${description}</p></div></div>${taskNavigation}${navigationPage==='tasks'?`<div data-task-view-panel>${panel}</div>`:panel}</div>`;
   }
   const previousContent = root.querySelector('.wb-content');
   if (previousContent) workbenchScroll.set(root.dataset.motionRoute, previousContent.scrollTop);
-  rememberPage(root, selected, '.wb-content');
+  const motionSurface = taskViewSwitch ? '[data-task-view-panel]' : '.wb-content';
+  rememberPage(root, selected, motionSurface);
   const restored = workbenchPagesCache.take(selected);
   if (root.querySelector('.wb')) {
     workbenchPagesCache.remember(root.dataset.motionRoute, previousContent);
@@ -1090,7 +1096,7 @@ export function renderWorkbench() {
     root.querySelector('.wb-head-title').textContent = title;
     root.querySelector('[data-wb-status]').textContent = workbenchStatus(st.engine);
     root.querySelectorAll('.wb-nav-item').forEach(button => {
-      const active = button.dataset.wbNav === selected;
+      const active = button.dataset.wbNav === navigationPage;
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-current', active ? 'page' : 'false');
     });
@@ -1100,7 +1106,7 @@ export function renderWorkbench() {
       <div class="wb-brand">${navigationIcon('square')}<span>AgentIsland<small>本机智能体工作台</small></span></div>
       <div class="wb-nav-links">
       <div class="wb-nav-label">工作</div>
-      ${workbenchPages.map(([key, label, icon], index) => `${key === 'windows' ? '<div class="wb-nav-label wb-nav-divider">管理</div>' : ''}<button type="button" class="wb-nav-item${selected === key ? ' is-active' : ''}" data-wb-nav="${key}" aria-current="${selected === key ? 'page' : 'false'}">${navigationIcon(icon)}<span>${label}</span></button>`).join('')}
+      ${workbenchPages.filter(([key])=>key!=='todo').map(([key, label, icon]) => `${key === 'windows' ? '<div class="wb-nav-label wb-nav-divider">管理</div>' : ''}<button type="button" class="wb-nav-item${navigationPage === key ? ' is-active' : ''}" data-wb-nav="${key}" aria-current="${navigationPage === key ? 'page' : 'false'}">${navigationIcon(icon)}<span>${label}</span></button>`).join('')}
       </div>
       <div class="wb-nav-footer" data-nav-summary>${navigationSummary(st.engine)}</div>
     </nav>
@@ -1110,7 +1116,7 @@ export function renderWorkbench() {
     </main>
   </div>`;
   retainWorkbenchControls(workbenchPagesCache.retainedControls);
-  pageMotion(root, selected, '.wb-content');
+  pageMotion(root, selected, motionSurface);
   if (!restored || restored.querySelector('[data-provider-root], [data-todo-root], [data-remote-root], [data-tasks-root], [data-sessions-root]')?.dataset.pageReady !== 'true') {
   if (selected === 'tokenAnalytics') hydrateReport();
   if (selected === 'provider') hydrateProvider();
@@ -1124,7 +1130,7 @@ export function renderWorkbench() {
   if (!restored && selected === 'agents') bindAgents();
   }
   bindWorkbench();
-  const quick=bindQuickNavigation({items:workbenchPages.map(([key,label])=>({key,label,aliases:({provider:'模型 接口 档位 MCP Skills 提示词',windows:'布局 排列',tokenAnalytics:'token tokens 费用 趋势',todo:'todos 待办',sessions:'会话 来源 历史',tasks:'任务 运行 结果 问题',workspaces:'项目 组合',settings:'偏好 外观 通知'}[key]??'')})).concat([{key:'report',label:'用量报告',aliases:'导出 export Markdown CSV'}]),current:()=>getState().workbenchPage,navigate:key=>{if(key==='report'){getState().workbenchPage='report';renderWorkbench();}else root.querySelector(`.wb-nav-item[data-wb-nav="${key}"]`)?.click();}});
+  const quick=bindQuickNavigation({items:workbenchPages.map(([key,label])=>({key,label,aliases:({provider:'模型 接口 档位 MCP Skills 提示词',windows:'布局 排列',tokenAnalytics:'token tokens 费用 趋势',todo:'todos 待办',sessions:'会话 来源 历史',tasks:'任务 看板 运行 结果 问题',workspaces:'项目 组合',settings:'偏好 外观 通知'}[key]??'')})).concat([{key:'report',label:'用量报告',aliases:'导出 export Markdown CSV'}]),current:()=>getState().workbenchPage,navigate:key=>{if(key==='report'){getState().workbenchPage='report';renderWorkbench();}else if(key==='todo'){getState().workbenchPage='todo';getState().route='list';renderWorkbench();root.querySelector('[data-wb-task-view][data-wb-nav="todo"]')?.focus({preventScroll:true});}else root.querySelector(`.wb-nav-item[data-wb-nav="${key}"]`)?.click();}});
   const quickButton=root.querySelector('[data-wb-quick]');if(quickButton)quickButton.onclick=quick.open;
   renderTaskAttentionOnly();
   if (restored && selected === 'tasks') refreshTasks();
@@ -1141,7 +1147,10 @@ export function renderWorkbench() {
       st.workbenchPage = button.dataset.wbNav;
       st.route = st.workbenchPage === 'tokenAnalytics' ? 'tokenAnalytics' : 'list';
       renderWorkbench();
-      if(button.dataset.wbNav!=='report')root.querySelector(`.wb-nav-item[data-wb-nav="${st.workbenchPage}"]`)?.focus({ preventScroll: true });
+      if(button.dataset.wbNav!=='report') {
+        const selector=button.hasAttribute('data-wb-task-view') ? `[data-wb-task-view][data-wb-nav="${st.workbenchPage}"]` : `.wb-nav-item[data-wb-nav="${st.workbenchPage==='todo'?'tasks':st.workbenchPage}"]`;
+        root.querySelector(selector)?.focus({preventScroll:true});
+      }
     };
   });
 }

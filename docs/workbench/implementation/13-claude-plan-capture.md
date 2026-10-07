@@ -61,4 +61,4 @@ python3 scripts/test-claude-plan-client.py
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml real_client_ -- --ignored
 ```
 
-脚本不自动下载或更新客户端，也不构成OS级网络隔离；本机mock验证客户端处理路径，不能证明真实服务或原生UI通过。已观察到该版本的原始tool输入含plan及planFilePath，优先走既有transcript精确读取，hook覆盖层只服务缺正文的方言。官方来源：[安装](https://code.claude.com/docs/en/setup#install-with-npm)、[人工交互工具](https://code.claude.com/docs/en/hooks#tools-that-require-user-interaction)、[配置目录与网关变量](https://code.claude.com/docs/en/env-vars)。
+脚本不自动下载或更新客户端。子进程使用独立 HOME、配置与临时目录，macOS sandbox-exec 只允许访问本机 mock 的临时端口、禁止读日常 HOME 的文件内容及写测试根之外；路径校验所需元数据仍可读。运行前实际验证其他端口连接及日常 HOME 列举被拒绝，版本检查与客户端均使用相同策略。独立目录不等于隔离证明，旧取证不追改为具有系统隔离；新取证仍只证明本机 mock 下客户端路径，不能证明真实服务或原生UI通过。已观察到该版本的原始tool输入含plan及planFilePath，优先走既有transcript精确读取，hook覆盖层只服务缺正文的方言。官方来源：[安装](https://code.claude.com/docs/en/setup#install-with-npm)、[人工交互工具](https://code.claude.com/docs/en/hooks#tools-that-require-user-interaction)、[配置目录与网关变量](https://code.claude.com/docs/en/env-vars)。

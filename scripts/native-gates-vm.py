@@ -18,7 +18,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ['ui-smoke.sh', 'test-dock-presence.py', 'test-app-instance.py',
-           'measure-memory.py', 'memory-soak.py', 'test-native-motion.py']
+           'measure-memory.py', 'memory-soak.py', 'test-native-motion.py', 'test-cli-native.py']
 
 
 def vm_running(rows, name):
@@ -49,7 +49,7 @@ def guest_verified(meta):
     return (meta.get('platform') == 'Darwin' and meta.get('virtualized') == '1'
             and isinstance(meta.get('console_uid'), int) and meta['console_uid'] >= 500
             and meta.get('console_uid') == meta.get('uid')
-            and meta.get('python_ready') is True)
+            and meta.get('python_ready') is True and meta.get('console_unlocked') is True)
 
 
 def run(args, **options):
@@ -63,7 +63,7 @@ def main():
                         default=os.environ.get('NATIVE_TEST_USER'))
     parser.add_argument('--check-only', action='store_true')
     parser.add_argument('--motion-only', action='store_true',
-                        help='Run the visible synthetic four-edge motion gate instead of the three release gates')
+                        help='Run the visible synthetic four-edge motion gate instead of the default release gates')
     parser.add_argument('--identity', default=os.environ.get('NATIVE_TEST_IDENTITY'),
                         help='Existing SSH identity path; never copied into the guest or evidence')
     args = parser.parse_args()
@@ -81,12 +81,13 @@ def main():
            f'{args.user}@{ip}']
     if args.identity:
         ssh[1:1] = ['-i', str(Path(args.identity).expanduser()), '-o', 'IdentitiesOnly=yes']
-    probe = '''import json,os,subprocess,sys
+    probe = '''import json,os,subprocess,sys,plistlib
 from pathlib import Path
 v=subprocess.run(['sysctl','-n','kern.hv_vmm_present'],capture_output=True,text=True)
+console=plistlib.loads(subprocess.check_output(['ioreg','-n','Root','-d1','-a']))
 print(json.dumps({'platform':subprocess.check_output(['uname','-s'],text=True).strip(),
 'virtualized':v.stdout.strip(),'console_uid':os.stat('/dev/console').st_uid,'uid':os.getuid(),
-'python_ready':True,'home':str(Path.home()),'python':sys.executable,
+'python_ready':True,'console_unlocked':console.get('IOConsoleLocked') is False,'home':str(Path.home()),'python':sys.executable,
 'os_build':subprocess.check_output(['sw_vers','-buildVersion'],text=True).strip()}))'''
     # Existing user runtimes only; system Python may trigger an interactive CLT install.
     probe_command = ('for p in "$HOME/miniconda3/bin/python3" "$HOME/miniconda/bin/python3"; do '
@@ -133,9 +134,12 @@ if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(pro
     quoted = shlex.quote(target)
     with archive.open('rb') as stream:
         run(ssh + [f'mkdir -m 700 {quoted} && tar -xf - -C {quoted}'], stdin=stream, timeout=180)
-    guest = '''import hashlib,json,os,subprocess,sys
+    guest = '''import hashlib,json,os,subprocess,sys,plistlib
 from pathlib import Path
 root=Path.cwd()
+console=plistlib.loads(subprocess.check_output(['ioreg','-n','Root','-d1','-a']))
+if console.get('IOConsoleLocked') is not False:
+    raise SystemExit('Native acceptance requires an unlocked console')
 lock=Path.home()/'.agentisland-native-gates.lock'
 try:
     lock.mkdir(mode=0o700)
@@ -147,11 +151,16 @@ def unlock():
     (lock/'owner.json').unlink()
     lock.rmdir()
 atexit.register(unlock)
+awake=subprocess.Popen(['caffeinate','-diu','-t','600'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+def release_awake():
+    awake.terminate()
+    awake.wait(timeout=5)
+atexit.register(release_awake)
 for name,expected in json.loads((root/'manifest.json').read_text()).items():
     assert hashlib.sha256((root/name).read_bytes()).hexdigest()==expected, 'Artifact identity mismatch'
 subprocess.run(['codesign','--verify','--strict','dist/AgentIsland.app'],check=True)
 env=dict(os.environ,UI_SMOKE_BIN=str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland'),POLICY_HELPER=str(root/'.build/policy-helper'))
-commands=[['bash','scripts/ui-smoke.sh','--isolated-session'],[sys.executable,'scripts/test-dock-presence.py','--isolated-session'],[sys.executable,'scripts/test-app-instance.py','--cold']]
+commands=[['bash','scripts/ui-smoke.sh','--isolated-session'],[sys.executable,'scripts/test-dock-presence.py','--isolated-session'],[sys.executable,'scripts/test-app-instance.py','--cold'],[sys.executable,'scripts/test-cli-native.py']]
 if MOTION_ONLY:
     commands=[[sys.executable,'scripts/test-native-motion.py','--binary',str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland')]]
 for command in commands:
@@ -170,8 +179,8 @@ print('ALL GATES PASS',flush=True)
                 data = json.loads(captured.stdout)
                 (evidence / f'motion-{edge}.json').write_text(json.dumps(data))
     receipt = {'schema_version': 1, 'vm': args.vm, 'manifest': manifest,
-               'gates': ['motion-four-edges'] if args.motion_only else ['ui', 'dock', 'single-instance'],
-               'guest_verified': True, 'os_build': host_build, 'exit_code': result.returncode,
+               'gates': ['motion-four-edges'] if args.motion_only else ['ui', 'dock', 'single-instance', 'cli-native'],
+               'guest_verified': True, 'console_unlocked': True, 'os_build': host_build, 'exit_code': result.returncode,
                'passed': result.returncode == 0 and 'ALL GATES PASS' in (evidence / 'gates.log').read_text()}
     (evidence / 'receipt.json').write_text(json.dumps(receipt, indent=2))
     print('Native gate evidence:', evidence.relative_to(ROOT), flush=True)

@@ -28,7 +28,7 @@ export function bindQuickNavigation({items,current,navigate}){
  dialog.querySelector('button').onclick=close;
  dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)close();}});
  input.oninput=()=>{selected=0;render();};
- input.onkeydown=event=>{if(event.isComposing)return;if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();if(found.length){selected=(selected+(event.key==='ArrowDown'?1:-1)+found.length)%found.length;render();}}else if(event.key==='Enter'){event.preventDefault();choose();}};
+ input.onkeydown=event=>{if(event.isComposing)return;if(event.key==='Escape'){event.preventDefault();close();}else if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();if(found.length){selected=(selected+(event.key==='ArrowDown'?1:-1)+found.length)%found.length;render();}}else if(event.key==='Enter'){event.preventDefault();choose();}};
  results.onclick=event=>{const row=event.target.closest('[data-quick-index]');if(row){selected=Number(row.dataset.quickIndex);choose();}};
  document.addEventListener('keydown',event=>{if((event.metaKey||event.ctrlKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='k'&&!event.isComposing){if(!document.querySelector('.wb'))return;event.preventDefault();open();}});
  return state;

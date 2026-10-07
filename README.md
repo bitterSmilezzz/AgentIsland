@@ -4,13 +4,13 @@
 
 **main 使用 Rust/Tauri 开发。** Rust 负责监控、会话解析、配置与 CLI；静态 Web UI 提供灵动岛、贴边侧栏及工作台，macOS 使用系统窗口控制和材质。SwiftUI 与旧 WPF 实现保存在 [归档分支](https://github.com/bitterSmilezzz/AgentIsland/tree/codex/archive-swiftui)，归档规则见 [ADR 0016](docs/adr/0016-rust-only-main.md)。
 
-> 本文档描述 **v0.0.291** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
+> 本文档描述 **v0.0.292** 的行为；版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 
 - **灵动岛**：小型贴边把手、实时智能体列表、当前动作、用量摘要；支持搜索、详情与用量分析，离开后自动收起。
 - **侧边栏**：持续显示监控、用量、档位、待办、设置、远程通知和智能体管理；左右贴边与宽度可配置。
-- **工作台**：概览显示实时监控、待办与常用入口，分组导航进入独立功能页；切页保持导航与顶栏，采样不会重置正在输入的内容，当前窗口内切页与隐藏唤回保留编辑内容。
+- **工作台**：概览显示实时监控、待办与常用入口，分组导航进入独立功能页，任务入口内切换任务看板与待办事项；切页保持导航与顶栏，采样不会重置正在输入的内容，当前窗口内切页与隐藏唤回保留编辑内容。
 - **监控**：ChatGPT 桌面端与 Codex CLI 合并为一条“ChatGPT / Codex”，共用 Codex 会话及用量来源；Ego Lite 等供 Agent 使用的浏览器不列为内置 Agent。进程、文件与会话证据共同判定运行状态；会话源读不到、无本地明细和未接入明细源分别呈现，详情与 doctor 共用诊断口径。
 - **桌面身份**：Trae CN 与 TraeWork 分别识别，TraeWork 兼容 TRAE SOLO CN 应用包；豆包工作独立识别 macOS 主进程。豆包工作与 TraeWork 提供进程和 CPU 活动，会话事件与 Token 明细尚无已验证本地来源。
 - **用量**：读取本机 JSONL / SQLite 等记录，统计最近 24 小时与累计净消耗；缓存读取不重复计入，缓存创建按来源计入新鲜用量；费用估算用 `~` 标记。
@@ -47,7 +47,7 @@ macOS 默认作为菜单栏常驻应用启动，显示灵动岛贴条与菜单�
 ./agentisland report --format csv
 ```
 
-`agentisland open workbench` 打开工作台，`agentisland open workbench-hide` 收起工作台。CLI 命令的参数与边界以 `agentisland help` 为准。清理命令会终止进程，请先查看检查结果并核实目标；单次采样的死锁判定为“本次未评估”，持续监控才积累足够观测证据。
+`agentisland open workbench` 打开工作台，`agentisland open workbench-hide` 收起工作台。macOS 随包 CLI 优先打开对应应用；单独移动 CLI 且没有同目录应用时使用系统注册的应用。CLI 命令的参数与边界以 `agentisland help` 为准。清理命令会终止进程，请先查看检查结果并核实目标；单次采样的死锁判定为“本次未评估”，持续监控才积累足够观测证据。
 
 ## 构建与验证
 

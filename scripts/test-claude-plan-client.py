@@ -1,6 +1,7 @@
 from pathlib import Path
-import subprocess,threading,json,time,re,os,shlex
+import subprocess,threading,json,time,re,os,shlex,sys
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+if sys.platform != 'darwin': raise SystemExit('Controlled client acceptance requires macOS.')
 ROOT=Path(__file__).resolve().parent.parent/'.scratch/claude-real-client'
 ROOT.mkdir(parents=True,exist_ok=True)
 old=ROOT/'hook-input.json'
@@ -33,14 +34,31 @@ class API(BaseHTTPRequestHandler):
   events=[('message_start',{'type':'message_start','message':start}),('content_block_start',{'type':'content_block_start','index':0,'content_block':block}),('content_block_stop',{'type':'content_block_stop','index':0}),('message_delta',{'type':'message_delta','delta':{'stop_reason':stop,'stop_sequence':None},'usage':{'output_tokens':10}}),('message_stop',{'type':'message_stop'})]
   for event,payload in events:self.wfile.write(('event: '+event+'\ndata: '+json.dumps(payload)+'\n\n').encode())
 server=ThreadingHTTPServer(('127.0.0.1',0),API);threading.Thread(target=server.serve_forever,daemon=True).start()
-env={'PATH':'/usr/bin:/bin','CLAUDE_CONFIG_DIR':str(CONFIG),'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1','DISABLE_TELEMETRY':'1','DISABLE_ERROR_REPORTING':'1','DISABLE_UPDATES':'1','ANTHROPIC_API_KEY':'fixture-only','ANTHROPIC_BASE_URL':'http://127.0.0.1:'+str(server.server_port)} # nosec: loopback fixture-only key, never a real credential
+HOME_FIXTURE=ROOT/'fixture-home';HOME_FIXTURE.mkdir(exist_ok=True)
+TMP=ROOT/'tmp';TMP.mkdir(exist_ok=True)
+profile=('(version 1) (allow default) (deny network*) '
+         '(allow network-outbound (remote ip "localhost:'+str(server.server_port)+'")) '
+         '(deny file-read-data (require-all (subpath '+json.dumps(str(Path.home().resolve()),ensure_ascii=False)+') '
+         '(require-not (subpath '+json.dumps(str(ROOT.resolve()),ensure_ascii=False)+')))) '
+         '(deny file-write* (require-not (subpath '+json.dumps(str(ROOT.resolve()),ensure_ascii=False)+')))')
+isolation=['/usr/bin/sandbox-exec','-p',profile]
+env={'HOME':str(HOME_FIXTURE),'XDG_CONFIG_HOME':str(HOME_FIXTURE/'.config'),'TMPDIR':str(TMP),'PATH':'/usr/bin:/bin','CLAUDE_CONFIG_DIR':str(CONFIG),'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1','DISABLE_TELEMETRY':'1','DISABLE_ERROR_REPORTING':'1','DISABLE_UPDATES':'1','ANTHROPIC_API_KEY':'fixture-only','ANTHROPIC_BASE_URL':'http://127.0.0.1:'+str(server.server_port)} # nosec: loopback fixture-only key, never a real credential
 binary=ROOT/'runtime/node_modules/@anthropic-ai/claude-code-darwin-arm64/claude'
 if not binary.is_file(): raise SystemExit('Install pinned official CLI in .scratch/claude-real-client/runtime first; see test documentation.')
 subprocess.run(['/usr/bin/codesign','--verify','--strict',str(binary)],check=True,capture_output=True)
-version=subprocess.run([str(binary),'--version'],cwd=WORK,env=env,check=True,capture_output=True,text=True).stdout.strip()
+# A real denied socket and directory read prove the policy, not just its text.
+probe=('import socket,errno,os; s=socket.socket(); '
+       'assert s.connect_ex(("127.0.0.1",9)) in (errno.EPERM,errno.EACCES); '
+       's.close(); '
+       '\ntry: os.listdir('+repr(str(Path.home().resolve()))+')'
+       '\nexcept PermissionError: pass'
+       '\nelse: raise AssertionError("daily home readable")')
+subprocess.run(isolation+['/usr/bin/python3','-B','-c',probe],cwd=WORK,env=env,
+               stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,timeout=5)
+version=subprocess.run(isolation+[str(binary),'--version'],cwd=WORK,env=env,check=True,capture_output=True,text=True).stdout.strip()
 if version!='2.1.291 (Claude Code)':raise SystemExit('Client version differs from verified fixture version.')
 cmd=[str(binary),'--print','--input-format','stream-json','--output-format','stream-json','--verbose','--restricted','--strict-mcp-config','--setting-sources','','--settings',str(settings),'--permission-mode','plan','--permission-prompts','host','--permission-prompt-tool','stdio','--tools','ExitPlanMode','--model','claude-sonnet-4-6']
-p=subprocess.Popen(cmd,cwd=WORK,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+p=subprocess.Popen(isolation+cmd,cwd=WORK,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
 records=[]
 def reader():
  for line in p.stdout:
@@ -58,6 +76,6 @@ p.stdin.write(json.dumps({'type':'user','message':{'role':'user','content':'Pres
 try:p.wait(timeout=35)
 except subprocess.TimeoutExpired:p.terminate();p.wait(timeout=5)
 server.shutdown();(ROOT/'client-output.json').write_text(json.dumps(records));(ROOT/'client-stderr.txt').write_text(p.stderr.read())
-print(json.dumps({'version':version,'exit':p.returncode,'requests':len(requests),'hookObserved':(ROOT/'hook-input.json').exists(),'recordTypes':[r.get('type') for r in records]},ensure_ascii=False))
+print(json.dumps({'version':version,'systemIsolationVerified':True,'exit':p.returncode,'requests':len(requests),'hookObserved':(ROOT/'hook-input.json').exists(),'recordTypes':[r.get('type') for r in records]},ensure_ascii=False))
 
 if p.returncode!=0 or not (ROOT/'hook-input.json').exists():raise SystemExit(1)

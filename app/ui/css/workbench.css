@@ -440,6 +440,9 @@ html.shell-workbench .connection-row .sb-tag[data-connection-state="offline"]{co
 .wb-nav-links { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px; margin: -4px; scroll-padding-block: 6px; scrollbar-width: thin; }
 .wb-nav-item { padding-block: 8px; min-height: 30px; }
 .wb-nav-footer { flex: none; margin-top: 14px; }
+.wb-task-navigation { display:flex; gap:4px; padding-bottom:12px; margin-bottom:24px; border-bottom:1px solid var(--border); }
+.shell-workbench .wb-task-navigation .mini-btn { background:transparent; border-color:transparent; box-shadow:none; color:var(--text-muted); }
+.shell-workbench .wb-task-navigation .mini-btn[aria-current="page"] { background:var(--surface-raised); border-color:var(--border); color:var(--text); }
 @media (max-height: 650px) {
   .platform-mac .wb-nav { padding-top: 42px; }
   .wb-nav { padding-bottom: 10px; }

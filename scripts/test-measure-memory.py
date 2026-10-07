@@ -27,6 +27,29 @@ class Native:
         return self.values.get(pid)
 
 class Tests(unittest.TestCase):
+    def enumerator(self):
+        # Exercise the real native process-list method without loading libproc.
+        return measure.Native.__new__(measure.Native)
+    @patch.object(measure.subprocess, 'Popen')
+    def test_only_the_created_observer_pid_is_excluded(self, popen):
+        child=popen.return_value.__enter__.return_value
+        child.pid=99;child.returncode=0
+        child.communicate.return_value=('10 private-main\n99 /bin/ps\n100 /bin/ps\n101 other-tool\n','')
+        self.assertEqual(self.enumerator().processes(),[(10,'private-main'),(100,'/bin/ps'),(101,'other-tool')])
+        self.assertEqual(popen.call_args.args[0],['ps','-axo','pid=,comm='])
+    @patch.object(measure.subprocess, 'Popen')
+    def test_observer_timeout_is_reaped_and_not_reported_as_an_empty_list(self, popen):
+        child=popen.return_value.__enter__.return_value
+        child.communicate.side_effect=[measure.subprocess.TimeoutExpired('ps',5),('','')]
+        with self.assertRaises(measure.subprocess.TimeoutExpired):self.enumerator().processes()
+        child.kill.assert_called_once_with()
+        self.assertEqual(child.communicate.call_count,2)
+    @patch.object(measure.subprocess, 'Popen')
+    def test_failed_observer_does_not_produce_a_partial_success(self, popen):
+        child=popen.return_value.__enter__.return_value
+        child.pid=99;child.returncode=3
+        child.communicate.return_value=('10 private-main\n','private-error')
+        with self.assertRaises(measure.subprocess.CalledProcessError):self.enumerator().processes()
     def test_invalid_limits_fail_before_native_access(self):
         for extra in (['--pid','0'],['--pid','10','--seconds','3601'],['--pid','10','--interval','61']):
             with patch.object(measure.sys,'platform','darwin'),patch.object(measure.sys,'argv',['measure',*extra]),patch.object(measure,'Native',side_effect=AssertionError('must not touch native')),contextlib.redirect_stderr(io.StringIO()):
@@ -36,6 +59,15 @@ class Tests(unittest.TestCase):
         native=Native();native.groups.pop(90)
         result=measure.sample(10,native,collector_pid=90)
         self.assertEqual(result['attribution'],'main-only');self.assertEqual(len(result['members']),1)
+    def test_main_only_is_not_a_complete_application_total(self):
+        for groups in ({10:7,20:7,30:8}, {10:7,20:7,30:8,90:7}, {20:7,30:8,90:9}):
+            with self.subTest(groups=groups):
+                native=Native();native.groups=groups
+                result=measure.sample(10,native,collector_pid=90)
+                self.assertEqual(result['attribution'],'main-only')
+                self.assertEqual(result['known_member_footprint_mib'],10)
+                self.assertFalse(result['complete'])
+                self.assertIsNone(result['total_footprint_mib'])
     def test_native_layout_matches_installed_sdk(self):
         self.assertEqual(ctypes.sizeof(measure.RusageV2),160)
         self.assertEqual(measure.RusageV2.start.offset,80)

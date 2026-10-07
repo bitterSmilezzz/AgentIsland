@@ -15,7 +15,7 @@
 | [04 · macOS 窗口布局](04-macos-window-layouts.md) | 枚举、预览、权限、应用/部分失败/撤销 | 01；显示依赖 02 |
 | [05 · 模型与连接](05-models-and-connections.md) | 现有档位归位、外部只读连接、配置适配 | 01、02 |
 | [06 · 平台适配](06-platform-adaptation.md) | Windows、Linux 交付项与 Web/移动边界 | macOS 完整验收后进入实现 |
-| [14 · 隔离原生验收](14-native-vm-acceptance.md) | VM 身份、产物一致性、UI/Dock/单实例门禁及证据边界 | 07、08 |
+| [14 · 隔离原生验收](14-native-vm-acceptance.md) | VM 身份、产物一致性、UI/Dock/单实例/CLI门禁及证据边界 | 07、08 |
 | [07 · 实施与验收](07-delivery-and-acceptance.md) | 小批次交付、退出条件与验证命令 | 贯穿全部 |
 | [11 · 提示词与用户指令](11-prompts-and-instructions.md) | 本地提示词库、Codex/Claude Code 用户指令预览/备份/还原与生效边界 | 02、05 |
 | [12 · 本地 Skills 安装与恢复](12-local-skill-packages.md) | macOS 本地目录预览、发布/更新、持久恢复、记录移出与完整目标边界 | 02、05 |

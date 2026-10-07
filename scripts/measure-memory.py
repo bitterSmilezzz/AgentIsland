@@ -49,12 +49,24 @@ class Native:
             'idle_wakeups', 'interrupt_wakeups', 'pageins', 'disk_read', 'disk_write')}
 
     def processes(self):
-        result = subprocess.run(['ps', '-axo', 'pid=,comm='], capture_output=True,
-                                text=True, errors='replace', timeout=5, check=True)
+        command = ['ps', '-axo', 'pid=,comm=']
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, errors='replace') as observer:
+            try:
+                output, _ = observer.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                observer.kill()
+                observer.communicate()
+                raise
+            if observer.returncode:
+                raise subprocess.CalledProcessError(observer.returncode, command)
+            observer_pid = observer.pid
         rows = []
-        for row in result.stdout.splitlines():
+        for row in output.splitlines():
             values = row.strip().split(None, 1)
-            if len(values) == 2 and values[0].isdigit():
+            # The snapshot contains this exact child, which has exited before
+            # coalition reads. Exclude our observer, never other processes by name.
+            if len(values) == 2 and values[0].isdigit() and int(values[0]) != observer_pid:
                 rows.append((int(values[0]), values[1]))
         return rows
 
@@ -71,7 +83,8 @@ def role(pid, main, command):
 
 def summarize(members, attribution, unresolved, stable):
     readable = [member['footprint_mib'] for member in members if member['footprint_mib'] is not None]
-    complete = bool(members) and len(readable) == len(members) and unresolved == 0 and stable
+    complete = (attribution == 'observed-resource-coalition' and bool(members)
+                and len(readable) == len(members) and unresolved == 0 and stable)
     return {'attribution': attribution, 'members': members,
             'known_member_footprint_mib': round(sum(readable), 2),
             'total_footprint_mib': round(sum(readable), 2) if complete else None,

@@ -27,10 +27,10 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(vm.private_address('192.168.64.3'), '192.168.64.3')
 
     def test_virtualized_logged_in_aqua_required(self):
-        meta = dict(platform='Darwin', virtualized='1', console_uid=501, uid=501, python_ready=True)
+        meta = dict(platform='Darwin', virtualized='1', console_uid=501, uid=501, python_ready=True, console_unlocked=True)
         self.assertTrue(vm.guest_verified(meta))
         for change in [dict(platform='Linux'), dict(virtualized='0'), dict(console_uid=0),
-                       dict(console_uid='501'), dict(uid=502), dict(python_ready=False)]:
+                       dict(console_uid='501'), dict(uid=502), dict(python_ready=False), dict(console_unlocked=False), dict(console_unlocked=None)]:
             self.assertFalse(vm.guest_verified(dict(meta, **change)))
         self.assertFalse(vm.guest_verified({}))
 

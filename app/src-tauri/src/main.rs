@@ -840,7 +840,7 @@ fn apply_window_appearance(app: &AppHandle, mode: &str) {
     }
 }
 
-/// Native UI regression always runs without showing windows or registering user controls.
+/// Background modes suppress user controls; isolated UI smoke explicitly shows its test workbench.
 fn background_test_requested() -> bool {
     std::env::args().any(|a| {
         matches!(
@@ -3737,6 +3737,42 @@ const UI_SMOKE_JS: &str = r#"(function () {
       }
       await clickAll('[data-nav]');
       await clickAll('[data-wb-nav]');
+      var taskNav = document.querySelector('.wb-nav [data-wb-nav="tasks"]');
+      if (document.documentElement.classList.contains('shell-workbench')) {
+        if (!taskNav) throw new Error('工作台任务导航缺失');
+        taskNav.click(); await wait(240);
+        var todoView = document.querySelector('[data-wb-task-view][data-wb-nav="todo"]');
+        if (!todoView || document.querySelector('.wb-nav [data-wb-nav="todo"]')) throw new Error('任务入口未归并');
+        todoView.click(); await wait(240);
+        var todoInput = document.querySelector('[data-todo-input]');
+        if (!todoInput || taskNav.getAttribute('aria-current') !== 'page') throw new Error('待办视图或父导航丢失');
+        todoInput.value = '任务分类验收草稿'; todoInput.dispatchEvent(new Event('input', { bubbles: true }));
+        document.querySelector('[data-wb-task-view][data-wb-nav="tasks"]').click(); await wait(240);
+        if (!document.querySelector('[data-tasks-root]')) throw new Error('任务看板不可达');
+        document.querySelector('[data-wb-task-view][data-wb-nav="todo"]').click(); await wait(240);
+        todoInput = document.querySelector('[data-todo-input]');
+        if (!todoInput || todoInput.value !== '任务分类验收草稿') throw new Error('待办分类切换丢失草稿');
+        todoInput.value = ''; todoInput.dispatchEvent(new Event('input', { bubbles: true }));
+        var quickButton = document.querySelector('[data-wb-quick]'); quickButton.focus(); quickButton.click();
+        var quickInput = document.querySelector('#quick-navigation-input');
+        quickInput.value = '设置'; quickInput.dispatchEvent(new Event('input', { bubbles: true }));
+        quickInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(80);
+        if (document.querySelector('dialog.quick-navigation[open]') || document.activeElement !== quickButton) throw new Error('快捷导航Escape未关闭并恢复焦点');
+        document.querySelector('.wb-nav [data-wb-nav="overview"]').click();
+        document.querySelector('.wb-nav [data-wb-nav="tasks"]').click();
+        document.querySelector('[data-wb-task-view][data-wb-nav="todo"]').click();
+        if (document.visibilityState !== 'visible') throw new Error('中断动效验收需要可见工作台');
+        var motion = root().getAnimations({ subtree: true }).filter(function (animation) {
+          return animation.effect.getComputedTiming().iterations !== Infinity;
+        });
+        await Promise.race([
+          Promise.all(motion.map(function (animation) { return animation.finished.catch(function () {}); })),
+          wait(3000).then(function () { throw new Error('工作台动效未在期限内完成'); })
+        ]);
+        await wait(0);
+        if (document.querySelector('.page-motion-host, [data-page-outgoing]')) throw new Error('跨页中断动效留下裁切或离场层');
+        snap('任务分类草稿、快捷导航Escape与中断清理通过');
+      }
       var overview = document.querySelector('[data-wb-nav="overview"]');
       if (overview) { overview.click(); await wait(300); }
       await clickAll('[data-analytics]');
@@ -3835,8 +3871,12 @@ const UI_SMOKE_JS: &str = r#"(function () {
       // 拍图时左栏看着是空的，而代码里写着 `还没有检测到运行中的智能体`。
       // 分不清是「没进 DOM」还是「11px + opacity .5 太暗」——前者是 bug、后者是观感，
       // 修法完全不同。直接问 DOM，不靠眼睛。
-      var monitorBox = document.querySelector('[data-wb-monitor]');
-      var emptyEl = document.querySelector('.wb-empty');
+      if (document.documentElement.classList.contains('shell-workbench')) {
+        document.querySelector('.wb-nav [data-wb-nav="overview"]').click(); await wait(300);
+        if (!document.querySelector('.wb-content.wb-overview:not([data-page-outgoing]) [data-wb-monitor]')) throw new Error('概览监控区域缺失');
+      }
+      var monitorBox = document.querySelector('.wb-content:not([data-page-outgoing]) [data-wb-monitor]');
+      var emptyEl = monitorBox && monitorBox.querySelector('.wb-empty');
       window.__uiSmoke.emptyState = {
         monitorBox: !!monitorBox,
         runningAgents: monitorBox ? monitorBox.querySelectorAll('[data-agent]').length : -1,
@@ -3915,6 +3955,12 @@ fn schedule_ui_smoke(app: &tauri::AppHandle) {
 
         for label in ["island", "sidebar", "workbench"] {
             if let Some(w) = app.get_webview_window(label) {
+                // WKWebView throttles animations while hidden. The explicit
+                // isolated smoke needs a visible surface for completion checks.
+                if label == "workbench" && w.show().is_err() {
+                    log_line("[smoke] 工作台无法显示，动效验收不能执行");
+                    continue;
+                }
                 let _ = w.eval(UI_SMOKE_JS);
             }
         }
