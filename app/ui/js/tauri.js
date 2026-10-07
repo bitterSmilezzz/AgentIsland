@@ -22,10 +22,23 @@ export async function waitForTauri(timeoutMs = 5000) {
   }
   return { ready: true, waitedMs: Date.now() - started };
 }
+let motionProbeReportDelay = 0;
+// Explicit native probe only: the backend refuses this capability on ordinary startup.
+export async function setMotionProbeReportDelay(delay) {
+  if (![0, 650].includes(delay)) throw new Error('Invalid motion probe delay');
+  await invoke('motion_probe_frame');
+  motionProbeReportDelay = delay;
+}
 export async function invoke(cmd, args = {}) {
   const t = window.__TAURI__;
   if (!t?.core?.invoke) throw new Error('Tauri API 未就绪');
-  return t.core.invoke(cmd, args);
+  const result = t.core.invoke(cmd, args);
+  if (cmd === 'get_report' && motionProbeReportDelay) {
+    // Attach the rejection handler immediately, even while delivery is delayed.
+    const [response] = await Promise.all([result, new Promise(resolve => setTimeout(resolve, motionProbeReportDelay))]);
+    return response;
+  }
+  return result;
 }
 
 export async function listen(event, handler) {

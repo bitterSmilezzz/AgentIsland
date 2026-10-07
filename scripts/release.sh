@@ -44,6 +44,8 @@ scripts/test-scan-secrets.sh
 python3 scripts/test-version.py
 python3 scripts/test-native-gates-vm.py
 python3 scripts/test-memory-soak.py
+python3 scripts/test-native-motion-result.py
+node scripts/test-native-motion.mjs
 node scripts/test-first-snapshot.mjs
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml
 

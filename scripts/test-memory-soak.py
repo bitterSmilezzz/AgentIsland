@@ -87,6 +87,9 @@ class Tests(unittest.TestCase):
                                      clock.read, clock.sleep)
             protocol.transition('workbench', b'[window] created workbench', 3)
             self.assertEqual(clock.now, 0)
+            self.assertEqual(run.call_args.args[0],
+                             ['open', '-a', str(BINARY.parents[2]), 'agentisland://workbench'],
+                             'resource protocol must target the measured bundle, not another registered copy')
 
     def test_sleep_rechecks_deadline(self):
         clock = Clock()

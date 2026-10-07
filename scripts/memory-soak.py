@@ -56,7 +56,10 @@ class Protocol:
     def transition(self, target, marker, timeout):
         self.check()
         offset = self.log.stat().st_size
-        subprocess.run([str(self.binary), 'open', target], check=True, timeout=15,
+        # Multiple acceptance bundles can have the same scheme registration.
+        # Bind native dispatch to the measured bundle; the global CLI handler is
+        # a separate delivery check, not a reliable selector for this protocol.
+        subprocess.run(['open', '-a', str(self.binary.parents[2]), f'agentisland://{target}'], check=True, timeout=15,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = self.clock() + timeout
         while self.clock() < deadline:

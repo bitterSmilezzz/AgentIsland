@@ -32,6 +32,7 @@ mod mcp_config;
 mod memory;
 mod minimax;
 mod models;
+mod motion_probe;
 mod navigation;
 mod notifier;
 mod observability;
@@ -751,8 +752,8 @@ fn get_boot_args() -> BootArgs {
         .map(|a| a["--route=".len()..].to_string())
         .unwrap_or_default();
     BootArgs {
-        demo: args.iter().any(|a| a == "--demo"),
-        expand: args.iter().any(|a| a == "--expand"),
+        demo: args.iter().any(|a| a == "--demo") || motion_probe::requested(),
+        expand: args.iter().any(|a| a == "--expand") || motion_probe::requested(),
         route,
     }
 }
@@ -856,7 +857,9 @@ fn background_test_requested() -> bool {
 /// sequence. Deliberately *not* part of `background_test_requested`: the Dock
 /// regression needs the real reveal/conceal path, which that predicate disables.
 fn isolated_instance_requested() -> bool {
-    background_test_requested() || std::env::args().any(|a| a == "--dock-smoke")
+    background_test_requested()
+        || motion_probe::requested()
+        || std::env::args().any(|a| a == "--dock-smoke")
 }
 
 // Tauri executes run_on_main_thread inline when already on the main thread.
@@ -3128,7 +3131,7 @@ fn truncate_log_if_oversized(path: &std::path::Path) -> Option<u64> {
 }
 
 pub(crate) fn log_line(msg: &str) {
-    let filename = if background_test_requested() {
+    let filename = if isolated_instance_requested() {
         format!("agentisland-test-{}.log", std::process::id())
     } else {
         "agentisland-tauri.log".to_string()
@@ -3358,6 +3361,7 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/agent-icons.js",
     "js/agent-actions.js",
     "js/island-navigation.js",
+    "js/motion-probe.js",
     "js/main.js",
     "js/navigation.js",
     "js/window-lifecycle.js",
@@ -4106,11 +4110,17 @@ fn main() {
     }
     let (tx, rx) = mpsc::channel::<models::AgentTaskEvent>();
     let mut settings = Settings::load();
-    if background_test_requested() {
+    if background_test_requested() || motion_probe::requested() {
         settings.remote_policy.master_enabled = false;
     }
+    if motion_probe::requested() {
+        settings.shell_mode = "island".into();
+        settings.dock_edge = motion_probe::edge_from(std::env::args());
+        settings.dock_anchor = 0.5;
+        settings.hide_docked_sliver = false;
+    }
     let mut engine = ActivityEngine::new(settings, rx);
-    let demo = std::env::args().any(|a| a == "--demo");
+    let demo = std::env::args().any(|a| a == "--demo") || motion_probe::requested();
     engine.demo_mode = demo;
     #[cfg(target_os = "macos")]
     if !demo && !isolated_instance_requested() {
@@ -4462,6 +4472,9 @@ fn main() {
                 log_line("[smoke] 已按 --ui-smoke 打开界面冒烟");
                 schedule_ui_smoke(app.handle());
             }
+            if motion_probe::requested() {
+                motion_probe::schedule(app.handle());
+            }
 
             if std::env::args().any(|a| a == "--memory-smoke") {
                 window_smoke::schedule(app.handle());
@@ -4474,6 +4487,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            motion_probe::motion_probe_frame,
+            motion_probe::motion_probe_finish,
             get_boot_args,
             connections_list,
             connection_test,
@@ -4972,10 +4987,10 @@ mod ui_symbol_sentinel {
                 }
                 // 命令函数名在下一行：`fn name(` / `fn name<T>(`
                 if let Some(next) = lines.peek() {
-                    let trimmed = next
-                        .trim()
+                    let trimmed = next.trim().strip_prefix("pub ").unwrap_or(next.trim());
+                    let trimmed = trimmed
                         .strip_prefix("fn ")
-                        .or_else(|| next.trim().strip_prefix("async fn "))
+                        .or_else(|| trimmed.strip_prefix("async fn "))
                         .unwrap_or("");
                     if let Some(name) = trimmed.split(['(', '<']).next() {
                         if !name.is_empty() {

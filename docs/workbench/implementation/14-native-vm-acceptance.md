@@ -39,3 +39,19 @@ NATIVE_TEST_USER=<guest-user> NATIVE_TEST_VM=<existing-vm> scripts/release.sh <v
 初次收起并取得新回收日志后开始空闲计时，按真实单调时间采集 0/5/10/15/20/25/30 分钟七拍。随后完成 20 次创建/采样/隐藏/真实回收；每次系统派发、目标启动身份与新日志标记都复核，失败停止，不追加完成结论。每行是独立 JSON，保留主进程/可归属成员的测量状态及缺失值，原始日志正文不输出。
 
 完成只证明协议执行，`budget_assessed=false` 明示资源预算仍需分析；无法完整归属的样本不补零、不变为预算通过。空 VM 仍不能代表带用户会话和监控负载的常驻预算。六项协议回归覆盖满 30 分钟、完整 20 次、目标身份/采样失败、旧日志拒绝及新标记核对；不将虚拟时钟测试写成实际长时验收。
+
+长时驱动的派发绑定被测 bundle（`open -a <exact-bundle> agentisland://…`），避免来宾保留多份测试包时全局 scheme 选错目标。每次仍核对同一 PID/启动身份与新原生日志，不接受其他包动作。此协议不证明全局 CLI 的 LaunchServices 选择正确；该项独立验收。驱动与被测应用版本不同步时，另记驱动哈希，不改写已通过门禁的原 manifest。
+
+## 原生动画专项
+
+```sh
+NATIVE_TEST_USER=<guest-user> /usr/bin/python3 scripts/native-gates-vm.py --vm <existing-vm> --motion-only
+```
+
+专项使用同一身份/签名/哈希门禁和来宾互斥锁，依次启动四个显式 `--motion-smoke` 实例；只读 AppKit frame 与 WebKit 卡片几何配对，覆盖设置、用量、Agent 详情进返，快速逆向及 650ms 晚到报告。合成 Agent 不证明真实工具会话跳转；测试不恢复 hooks、不启用远程通知。正常启动拒绝探针命令，不动态加载动画驱动。
+
+每个场景检查锚点漂移、裁切、非预期反向、中间帧与最终收敛。原生包络和 WebKit 视口尚未同步的帧不能混用坐标系，最终必须同步；探针带 IPC 开销，帧间隔只算仪器数据，不证明生产帧率或视觉品质。Tauri 全局接口只读，晚到报告通过经后端探针校验的薄封装延迟交付，不改写全局 invoke。
+
+专项 receipt 的 gates 只有 `motion-four-edges`，不能抵扣默认 UI / Dock / 单实例三门禁；四边逐帧 JSON 留在该次证据目录。失败、不完整场景或缺失结果不接受，不能用纯算法夹具宣布原生通过。
+
+本轮正式产物的专项证据在 `.build/vm/acceptance-ac998be781e84c0bb6487c0f686c1bea/`，receipt passed=true，四边各9场景通过。先前驱动改写只读 Tauri API 导致未进入测试，已修正并以只读夹具回归；不将该次失败视为产品动画失败，也不以当前几何通过宣布全部 UX-01 或整版品质完成。

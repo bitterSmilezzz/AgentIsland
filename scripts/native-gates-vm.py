@@ -18,7 +18,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ['ui-smoke.sh', 'test-dock-presence.py', 'test-app-instance.py',
-           'measure-memory.py', 'memory-soak.py']
+           'measure-memory.py', 'memory-soak.py', 'test-native-motion.py']
 
 
 def vm_running(rows, name):
@@ -62,6 +62,8 @@ def main():
     parser.add_argument('--user', required=not bool(os.environ.get('NATIVE_TEST_USER')),
                         default=os.environ.get('NATIVE_TEST_USER'))
     parser.add_argument('--check-only', action='store_true')
+    parser.add_argument('--motion-only', action='store_true',
+                        help='Run the visible synthetic four-edge motion gate instead of the three release gates')
     parser.add_argument('--identity', default=os.environ.get('NATIVE_TEST_IDENTITY'),
                         help='Existing SSH identity path; never copied into the guest or evidence')
     args = parser.parse_args()
@@ -140,21 +142,35 @@ try:
 except FileExistsError:
     raise SystemExit('Native acceptance lock already exists; inspect the guest before retrying')
 import atexit
-atexit.register(lock.rmdir)
+(lock/'owner.json').write_text(json.dumps({'pid':os.getpid()}))
+def unlock():
+    (lock/'owner.json').unlink()
+    lock.rmdir()
+atexit.register(unlock)
 for name,expected in json.loads((root/'manifest.json').read_text()).items():
     assert hashlib.sha256((root/name).read_bytes()).hexdigest()==expected, 'Artifact identity mismatch'
 subprocess.run(['codesign','--verify','--strict','dist/AgentIsland.app'],check=True)
 env=dict(os.environ,UI_SMOKE_BIN=str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland'),POLICY_HELPER=str(root/'.build/policy-helper'))
 commands=[['bash','scripts/ui-smoke.sh','--isolated-session'],[sys.executable,'scripts/test-dock-presence.py','--isolated-session'],[sys.executable,'scripts/test-app-instance.py','--cold']]
+if MOTION_ONLY:
+    commands=[[sys.executable,'scripts/test-native-motion.py','--binary',str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland')]]
 for command in commands:
     print('GATE '+Path(command[1]).name,flush=True)
-    subprocess.run(command,env=env,check=True,timeout=180)
+    subprocess.run(command,env=env,check=True,timeout=360 if MOTION_ONLY else 180)
 print('ALL GATES PASS',flush=True)
-'''
+'''.replace('MOTION_ONLY', repr(args.motion_only))
     with (evidence / 'gates.log').open('w') as log:
         result = subprocess.run(ssh + [f'cd {quoted} && {python} -c {shlex.quote(guest)}'],
                                 stdout=log, stderr=subprocess.STDOUT, timeout=600)
+    if args.motion_only:
+        for edge in ('top', 'bottom', 'left', 'right'):
+            artifact = quoted + '/.build/motion/' + edge + '.json'
+            captured = subprocess.run(ssh + ['cat ' + artifact], capture_output=True, text=True, timeout=15)
+            if captured.returncode == 0:
+                data = json.loads(captured.stdout)
+                (evidence / f'motion-{edge}.json').write_text(json.dumps(data))
     receipt = {'schema_version': 1, 'vm': args.vm, 'manifest': manifest,
+               'gates': ['motion-four-edges'] if args.motion_only else ['ui', 'dock', 'single-instance'],
                'guest_verified': True, 'os_build': host_build, 'exit_code': result.returncode,
                'passed': result.returncode == 0 and 'ALL GATES PASS' in (evidence / 'gates.log').read_text()}
     (evidence / 'receipt.json').write_text(json.dumps(receipt, indent=2))
