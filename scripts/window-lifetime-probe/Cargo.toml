@@ -1,0 +1,12 @@
+[package]
+name = "agentisland-window-lifetime-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tao = "=0.37.1"
+objc2 = "=0.6.4"
+
+[patch.crates-io]
+tao = { path = "../../vendor/tao" }

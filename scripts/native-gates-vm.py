@@ -117,8 +117,25 @@ if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(pro
 }
 ''')
     run(['swiftc', str(source), '-o', str(helper)], capture_output=True, timeout=120)
+    lifetime_target = ROOT / '.build/window-lifetime-target'
+    run(['cargo', 'build', '--locked', '--quiet', '--manifest-path',
+         str(ROOT / 'scripts/window-lifetime-probe/Cargo.toml')],
+        env=dict(os.environ, CARGO_TARGET_DIR=str(lifetime_target)), timeout=180)
+    lifetime_helper = evidence / 'window-lifetime-probe'
+    lifetime_helper.write_bytes((lifetime_target / 'debug/agentisland-window-lifetime-probe').read_bytes())
+    lifetime_helper.chmod(0o700)
+    run(['codesign', '--force', '--sign', '-', str(lifetime_helper)], capture_output=True)
     files = {f'scripts/{name}': ROOT / 'scripts' / name for name in SCRIPTS}
     files['.build/policy-helper'] = helper
+    files['.build/window-lifetime-probe'] = lifetime_helper
+    for name in ['scripts/window-lifetime-probe/Cargo.toml',
+                 'scripts/window-lifetime-probe/Cargo.lock',
+                 'scripts/window-lifetime-probe/src/main.rs',
+                 'vendor/tao/src/platform_impl/macos/window.rs',
+                 'vendor/tao/src/platform_impl/macos/view.rs',
+                 'vendor/tao/src/platform_impl/macos/window_delegate.rs',
+                 'app/src-tauri/Cargo.toml', 'app/src-tauri/Cargo.lock']:
+        files[name] = ROOT / name
     files['dist/AgentIsland.app/Contents/MacOS/agentisland'] = binary
     manifest = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in files.items()}
     (evidence / 'manifest.json').write_text(json.dumps(manifest))
@@ -127,7 +144,7 @@ if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(pro
         bundle.add(app, arcname='dist/AgentIsland.app')
         bundle.add(ROOT / 'app/ui', arcname='app/ui')
         for name, path in files.items():
-            if name.startswith('scripts/') or name.startswith('.build/'):
+            if name != 'dist/AgentIsland.app/Contents/MacOS/agentisland':
                 bundle.add(path, arcname=name)
         bundle.add(evidence / 'manifest.json', arcname='manifest.json')
     target = meta['home'] + '/agentisland-native-' + evidence.name
@@ -159,12 +176,13 @@ atexit.register(release_awake)
 for name,expected in json.loads((root/'manifest.json').read_text()).items():
     assert hashlib.sha256((root/name).read_bytes()).hexdigest()==expected, 'Artifact identity mismatch'
 subprocess.run(['codesign','--verify','--strict','dist/AgentIsland.app'],check=True)
+subprocess.run(['codesign','--verify','--strict','.build/window-lifetime-probe'],check=True)
 env=dict(os.environ,UI_SMOKE_BIN=str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland'),POLICY_HELPER=str(root/'.build/policy-helper'))
-commands=[['bash','scripts/ui-smoke.sh','--isolated-session'],[sys.executable,'scripts/test-dock-presence.py','--isolated-session'],[sys.executable,'scripts/test-app-instance.py','--cold'],[sys.executable,'scripts/test-cli-native.py']]
+commands=[['bash','scripts/ui-smoke.sh','--isolated-session'],[sys.executable,'scripts/test-dock-presence.py','--isolated-session'],[sys.executable,'scripts/test-app-instance.py','--cold'],[sys.executable,'scripts/test-cli-native.py'],['.build/window-lifetime-probe']]
 if MOTION_ONLY:
     commands=[[sys.executable,'scripts/test-native-motion.py','--binary',str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland')]]
 for command in commands:
-    print('GATE '+Path(command[1]).name,flush=True)
+    print('GATE '+Path(command[1] if len(command)>1 else command[0]).name,flush=True)
     subprocess.run(command,env=env,check=True,timeout=360 if MOTION_ONLY else 180)
 print('ALL GATES PASS',flush=True)
 '''.replace('MOTION_ONLY', repr(args.motion_only))
@@ -179,7 +197,7 @@ print('ALL GATES PASS',flush=True)
                 data = json.loads(captured.stdout)
                 (evidence / f'motion-{edge}.json').write_text(json.dumps(data))
     receipt = {'schema_version': 1, 'vm': args.vm, 'manifest': manifest,
-               'gates': ['motion-four-edges'] if args.motion_only else ['ui', 'dock', 'single-instance', 'cli-native'],
+               'gates': ['motion-four-edges'] if args.motion_only else ['ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime'],
                'guest_verified': True, 'console_unlocked': True, 'os_build': host_build, 'exit_code': result.returncode,
                'passed': result.returncode == 0 and 'ALL GATES PASS' in (evidence / 'gates.log').read_text()}
     (evidence / 'receipt.json').write_text(json.dumps(receipt, indent=2))

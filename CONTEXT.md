@@ -239,16 +239,16 @@ _Avoid_: 把自己做成 agent、把 agent 的请求接到自己进程里（那�
 ## 进行中的改造
 
 **跨平台工作台**（[docs/workbench/](docs/workbench/README.md)）：把本项目从单一灵动岛形态
-扩展为**双形态并存**的轻量工作台，并融合 CC Switch（API Provider 档位切换）与 ToDos。
+扩展为灵动岛、侧边栏与工作台三种形态，并融合 CC Switch（API Provider 档位切换）与 ToDos。
 
-- 形态由 `shell_mode` 决定：`island`（默认，老用户零感知）/ `sidebar`。两者**并存**而非互斥——
-  灵动岛保住的「不打断注意力」与侧边栏的「键盘可达 + 信息容量」不可互相替代。
+- 形态由 `shell_mode` 决定：`island`（默认）/ `sidebar` / `workbench`。
+  灵动岛承载即时状态与轻操作，侧边栏提供常驻概览，工作台承载任务、配置与窗口管理。
   **模式名只用一代**：旧名降为后台兼容读取，不出现在 UI 上。
-- Rust 核心约 15,800 行 / 14 个 agent 档案，Swift 核心约 15,700 行 / 25 个档案
-  （`wc -l` 口径：`app/src-tauri/src` 与 `Sources/AgentIslandCore`）——
-  **两者不是「原型与复用」关系，是并列的第二份独立实现**（Rust 缺 12 个 id、1 种方言，
-  且 TokenBudget / Forecast / Health / Resilience / TaskDuration / RemoteNotify 等模块在 Rust 侧
-  尚不存在）。改哪一侧前先看 [ADR 0010](docs/adr/0010-swift-freeze-and-rust-prerequisites.md)。
+- Rust 是当前唯一交付实现；预算、预测、健康观测、连续增长提醒、任务时长和远程通知
+  分别由 `budget`、`forecast`、`health`、`resilience`、`duration` 与 `remote`/`notifier` 等模块承担。
+  Agent 身份以 `registry` 声明为准。Swift 是独立历史实现，保存在归档分支，不能当作运行时共享核心。
+  模块存在不代表平台与行为验收全部完成；迁移决策见 [ADR 0010](docs/adr/0010-swift-freeze-and-rust-prerequisites.md)，
+  当前主线边界见 [ADR 0016](docs/adr/0016-rust-only-main.md)。
 - 上述口径定案后应沉淀进本文件或 `docs/adr/`，`docs/workbench/` 只承载进行中的设计。
 
 **远程操控与一键全配**（[docs/workbench/22-remote-control-and-one-tap-setup.md](docs/workbench/22-remote-control-and-one-tap-setup.md)）：

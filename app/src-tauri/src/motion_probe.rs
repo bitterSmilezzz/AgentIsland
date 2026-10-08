@@ -1,5 +1,21 @@
 //! Explicit, visible regression probe. Never enabled by normal application startup.
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager};
+
+static PROBE_STARTED: AtomicBool = AtomicBool::new(false);
+
+// eval may succeed against the initial blank document. Wait for the real
+// synthetic page and start once in that document, rather than guessing load time.
+const START_SCRIPT: &str = r#"(() => {
+  if (window.__agentIslandMotionProbeStarted || document.readyState !== 'complete'
+      || !window.__TAURI__?.core?.invoke || !document.querySelector('.card [data-agent]')) return;
+  window.__agentIslandMotionProbeStarted = true;
+  import('/js/motion-probe.js').then(module => module.runMotionProbe()).catch(async () => {
+    const invoke = window.__TAURI__.core.invoke;
+    await invoke('log_from_ui', {message:'MOTION_START_FAILED: probe import or startup rejected'});
+    await invoke('motion_probe_finish', {passed:false});
+  });
+})()"#;
 
 pub fn requested() -> bool {
     std::env::args().any(|arg| arg == "--motion-smoke")
@@ -16,6 +32,7 @@ pub fn motion_probe_frame(window: tauri::WebviewWindow) -> Result<serde_json::Va
     if !requested() || window.label() != "island" {
         return Err("Native motion probe is not enabled".into());
     }
+    PROBE_STARTED.store(true, Ordering::Relaxed);
     #[cfg(target_os = "macos")]
     {
         let (send, receive) = std::sync::mpsc::channel();
@@ -69,15 +86,19 @@ pub fn motion_probe_finish(app: AppHandle, passed: bool) -> Result<(), String> {
 pub fn schedule(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        if let Some(window) = app.get_webview_window("island") {
-            if window
-                .eval("import('/js/motion-probe.js').then(module => module.runMotionProbe())")
-                .is_err()
-            {
-                app.exit(2);
+        for _ in 0..60 {
+            if PROBE_STARTED.load(Ordering::Relaxed) {
+                return;
             }
-        } else {
+            if let Some(window) = app.get_webview_window("island") {
+                if window.eval(START_SCRIPT).is_err() {
+                    app.exit(2);
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if !PROBE_STARTED.load(Ordering::Relaxed) {
             app.exit(2);
         }
     });

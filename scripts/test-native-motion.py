@@ -92,6 +92,13 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        if isinstance(error, subprocess.TimeoutExpired):
+            reason = f'Native process exceeded {error.timeout} seconds'
+        elif isinstance(error, ValueError):
+            reason = str(error)
+        else:
+            reason = type(error).__name__
+        print(json.dumps({'native_motion_error': reason}), file=sys.stderr)
         print('Native motion acceptance incomplete; no quality verdict.', file=sys.stderr)
         sys.exit(2)

@@ -62,7 +62,7 @@ python3 scripts/test-cli-dispatch.py --binary dist/agentisland
 
 # VM 路径核实虚拟化、Aqua、系统 build 与产物身份，不以一个旗标冒充隔离。
 if [[ -n "${NATIVE_TEST_VM:-}" ]]; then
-    step "隔离 macOS VM 原生验收（UI / Dock / 单实例 / CLI）"
+    step "隔离 macOS VM 原生验收（UI / Dock / 单实例 / CLI / 窗口释放）"
     # On macOS the system Python can read Tart's local ARP metadata; a separately
     # installed interpreter may be denied by Local Network privacy (empty ARP).
     /usr/bin/python3 scripts/native-gates-vm.py --vm "$NATIVE_TEST_VM"
@@ -73,6 +73,8 @@ elif [[ "${ALLOW_DESKTOP_UI:-0}" == "1" ]]; then
     python3 scripts/test-dock-presence.py --isolated-session
     python3 scripts/test-app-instance.py --cold
     python3 scripts/test-cli-native.py --allow-desktop
+    CARGO_TARGET_DIR="$PWD/.build/window-lifetime-target" cargo build --locked --quiet --manifest-path scripts/window-lifetime-probe/Cargo.toml
+    .build/window-lifetime-target/debug/agentisland-window-lifetime-probe --allow-desktop
 else
     die "原生验收需要 NATIVE_TEST_VM 指定真实隔离 VM；未运行原生门禁，不发布"
 fi

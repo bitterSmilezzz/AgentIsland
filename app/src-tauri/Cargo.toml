@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.293"
+version = "0.0.294"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -87,3 +87,8 @@ windows-sys = { version = "0.59", features = [
 strip = true
 lto = true
 codegen-units = 1
+
+# Tao 0.37.1 retains an owned alloc/init NSWindow pointer twice on macOS.
+# Keep this narrow, reproducible fix until an upstream release adopts ownership.
+[patch.crates-io]
+tao = { path = "../../vendor/tao" }
