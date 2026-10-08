@@ -31,6 +31,7 @@ export class DraftGuard {
   }
   value(control) { return control.type === 'checkbox' ? !!control.checked : control.value; }
   isFormControl(control) {
-    return ['INPUT', 'SELECT', 'TEXTAREA'].includes(control?.tagName) && control.type !== 'search';
+    return ['INPUT', 'SELECT', 'TEXTAREA'].includes(control?.tagName) && control.type !== 'search'
+      && !Object.hasOwn(control.dataset ?? {}, 'draftIgnore');
   }
 }

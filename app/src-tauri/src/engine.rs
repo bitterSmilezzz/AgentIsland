@@ -31,6 +31,9 @@ const HEALTH_TTL_MS: i64 = 10 * 60 * 1000;
 /// 连续多少档超阈值才发 token 暴涨告警。与 Swift `ActivityEngine.tokenSpikeConfirmations` 同值。
 pub const TOKEN_SPIKE_CONFIRMATIONS: u32 = 3;
 
+mod tool_budgets;
+pub(crate) use tool_budgets::ToolBudgetReport;
+
 pub struct ActivityEngine {
     pub settings: Settings,
     pub demo_mode: bool,
@@ -93,6 +96,7 @@ pub struct ActivityEngine {
     pub budget: crate::budget::BudgetTracker,
     /// 当前预算状态（界面绑定；Swift 侧是 `@Published budgetStatus`）
     pub budget_status: crate::budget::BudgetStatus,
+    tool_budgets: tool_budgets::ToolBudgetTrackers,
     pub snapshots: Vec<AgentSnapshot>,
 }
 
@@ -148,6 +152,7 @@ impl ActivityEngine {
             durations: crate::duration::TaskDurationTracker::new(),
             budget: crate::budget::BudgetTracker::new(),
             budget_status: crate::budget::BudgetStatus::Disabled,
+            tool_budgets: tool_budgets::ToolBudgetTrackers::default(),
             snapshots: vec![],
         }
     }
@@ -463,6 +468,7 @@ impl ActivityEngine {
         // 预算评估放在总量算完、快照落地之后（Swift 侧同位置：`grandTotal` 一更新就评估）。
         // 单独抽成方法是为了让这段接线的口径能被用例直接观察。
         self.evaluate_budget(now);
+        self.evaluate_tool_budgets(now);
         if tracking {
             let phase = std::time::Instant::now();
             measured.file_cache = self.filemon.diagnostic_cache();

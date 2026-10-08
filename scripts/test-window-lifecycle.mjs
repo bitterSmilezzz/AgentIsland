@@ -50,3 +50,10 @@ console.log('PASS: explicit form reset releases the lease and later edits remain
 
 assert.equal(newer.ownsRequest(),true,"a hidden cached page retains ownership of a mutation receipt");
 assert.equal(older.ownsRequest(),false,"a replaced request cannot apply a mutation receipt");
+
+const managedGuard = new DraftGuard();
+const managedInput = {...text, value:'current selection', dataset:{draftIgnore:''}};
+managedGuard.changed(managedInput); assert.equal(managedGuard.dirty,false,'controller-managed values do not create phantom drafts');
+const lease = {tagName:'INPUT',type:'checkbox',checked:false,defaultChecked:false,dataset:{},isConnected:true};
+lease.checked=true;managedGuard.changed(lease);assert.equal(managedGuard.dirty,true,'pending writes and hidden drafts retain the window');
+lease.checked=false;assert.equal(managedGuard.dirty,false,'successful save or cancellation of every draft releases the window');

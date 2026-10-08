@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,8 @@ pub struct Settings {
     /// 日预算（token）。**0 = 未设**（与 Swift `dailyTokenBudget` 同键同默认同区间）。
     /// 口径是滚动 24 小时，不是自然日——见 `budget.rs` 的模块头。
     pub daily_token_budget: i64,
+    /// 每个工具的本机滚动 24h 净 token 预算；不代表服务商配额。
+    pub tool_token_budgets: BTreeMap<String, i64>,
     /// 预算告警开关（Swift `budgetAlertEnabled`，默认开）。
     /// 关掉它只关告警，不影响用量统计与卡片。
     pub budget_alert_enabled: bool,
@@ -102,6 +104,7 @@ impl Default for Settings {
             auto_anomalies_alert: true,
             token_alert_threshold: 200_000,
             daily_token_budget: 0,
+            tool_token_budgets: BTreeMap::new(),
             budget_alert_enabled: true,
             remote_kind: "ntfy".into(),
             remote_policy: crate::remote::Policy::default(),
@@ -262,6 +265,9 @@ impl Settings {
         let current = value.as_object_mut().ok_or("设置不是对象")?;
         let fields = patch.as_object().ok_or("设置变更必须是对象")?;
         for (key, field) in fields {
+            if key == "tool_token_budgets" && current.get(key) != Some(field) {
+                return Err("工具预算请在用量分析中逐项保存".into());
+            }
             if !current.contains_key(key) {
                 return Err(format!("未知设置项：{key}"));
             }
@@ -332,6 +338,20 @@ impl Settings {
         // 与 Swift `SettingLimits.dailyTokenBudgetRange` 同区间（0…1e9）。
         // 手改 settings.json 写进一个负预算会让「超额」永远成立
         s.daily_token_budget = s.daily_token_budget.clamp(0, 1_000_000_000);
+        s.tool_token_budgets = s
+            .tool_token_budgets
+            .into_iter()
+            .filter(|(id, value)| {
+                !id.is_empty()
+                    && id.len() <= 64
+                    && *value > 0
+                    && id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            })
+            .take(128)
+            .map(|(id, value)| (id, value.min(1_000_000_000)))
+            .collect();
         s.dock_anchor = s.dock_anchor.clamp(0.0, 1.0);
         // 两个枚举字段：认得的值以外一律回落出厂值。
         // 回落到「默认值」而不是「第一个变体」——默认值才是这个键出厂时的样子。
@@ -973,6 +993,10 @@ mod ui_parity {
     /// 要么是「这一页还没有、已在待办里」。后者不允许长期留在这里——
     /// 每补一页就从这里移走一条，名单空了这条断言就自动收紧成「零例外」。
     const MANAGED_ELSEWHERE: &[(&str, &str)] = &[
+        (
+            "tool_token_budgets",
+            "工作台用量分析的工具预算逐项编辑，带并发版本校验",
+        ),
         ("sidebar_width", "侧边栏直接拖拽调整（记宽度），不是滑块"),
         (
             "dock_anchor",

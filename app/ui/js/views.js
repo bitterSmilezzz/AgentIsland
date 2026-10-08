@@ -1,4 +1,5 @@
 import { trendCardHtml, bindTrend, hourRecords } from './usage-trend.js';
+import { toolBudgetsHtml, bindToolBudgets } from './tool-budgets.js';
 import { reportPanelHtml, bindReport, visibleReportPanel, openUsageReport } from './report-panel.js';
 import { pageSessions, hydrateSessions, refreshSessions } from './sessions-page.js';
 import { bindQuickNavigation } from './quick-navigation.js';
@@ -1069,7 +1070,7 @@ export function renderWorkbench() {
       </div>`;
   } else {
     const pages = {
-      tokenAnalytics: () => `<details class="usage-report" data-usage-report><summary>用量报告<span>Markdown · CSV</span></summary>${pageReport()}</details>${pageAnalytics(eng)}`, provider: pageProvider, todo: pageTodo, tasks: pageTasks, sessions: pageSessions, windows: pageWindowLayout,workspaces:pageWorkspaces,
+      tokenAnalytics: () => `${toolBudgetsHtml()}<details class="usage-report" data-usage-report><summary>用量报告<span>Markdown · CSV</span></summary>${pageReport()}</details>${pageAnalytics(eng)}`, provider: pageProvider, todo: pageTodo, tasks: pageTasks, sessions: pageSessions, windows: pageWindowLayout,workspaces:pageWorkspaces,
       report: () => pageReport(), settings: pageSettings, remote: pageRemote, agents: pageAgents,
     };
     const icon = workbenchPages.find(([key]) => key === navigationPage)?.[2];
@@ -1118,7 +1119,7 @@ export function renderWorkbench() {
   retainWorkbenchControls(workbenchPagesCache.retainedControls);
   pageMotion(root, selected, motionSurface);
   if (!restored || restored.querySelector('[data-provider-root], [data-todo-root], [data-remote-root], [data-tasks-root], [data-sessions-root]')?.dataset.pageReady !== 'true') {
-  if (selected === 'tokenAnalytics') hydrateReport();
+  if (selected === 'tokenAnalytics') { hydrateReport(); bindToolBudgets(root); }
   if (selected === 'provider') hydrateProvider();
   if (selected === 'sessions') hydrateSessions(id => { selectTask(id); st.workbenchPage='tasks'; st.route='list'; renderWorkbench(); }, () => getState().windowVisible !== false);
   if (selected === 'tasks') hydrateTasks(() => getState().windowVisible !== false);

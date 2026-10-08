@@ -794,6 +794,34 @@ fn get_settings(state: State<SharedEngine>) -> Settings {
 }
 
 #[tauri::command]
+fn tool_budget_list(state: State<SharedEngine>) -> crate::engine::ToolBudgetReport {
+    state.lock().unwrap().tool_budget_report()
+}
+
+#[tauri::command]
+fn tool_budget_set(
+    state: State<SharedEngine>,
+    app: AppHandle,
+    agent_id: String,
+    budget: i64,
+    expected_budget: i64,
+) -> Result<crate::engine::ToolBudgetReport, String> {
+    let (report, settings) = {
+        let mut engine = state.lock().unwrap();
+        let dir = crate::settings::config_dir();
+        engine.set_tool_budget(
+            &agent_id,
+            budget,
+            expected_budget,
+            (!background_test_requested()).then_some(dir.as_path()),
+        )?;
+        (engine.tool_budget_report(), engine.settings.clone())
+    };
+    let _ = app.emit("settings://changed", &settings);
+    Ok(report)
+}
+
+#[tauri::command]
 fn save_settings(
     state: State<SharedEngine>,
     app: AppHandle,
@@ -3371,6 +3399,8 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/tasks-page.js",
     "js/sessions-page.js",
     "js/report-panel.js",
+    "js/tool-budget-state.js",
+    "js/tool-budgets.js",
     "js/usage-trend.js",
     "js/workspaces-page.js",
     "js/workspace-flow.js",
@@ -4614,6 +4644,8 @@ fn main() {
             set_workbench_draft,
             drain_navigation,
             get_settings,
+            tool_budget_list,
+            tool_budget_set,
             save_settings,
             patch_settings,
             remote_status,
