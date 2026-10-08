@@ -4,6 +4,10 @@
 
 ## 运行契约
 
+宿主桌面不得被验收占用：用户已要求停止前台干扰，旧的宿主 AXRaise、frontmost、cliclick 与聚焦后截图驱动停用。现有发布门禁通过 SSH 在来宾执行；需要画面和输入的专项优先使用无宿主窗口的来宾通路。尚不能后台完成的场景保留未完成，既有桌面授权旗标不能抵消当前用户约束。
+
+当前本地原生窗口专项采用 Tart 2.40.1 的无窗口实验 VNC，通过 loopback RFB 驱动来宾；[对应版本 Run.swift](https://github.com/cirruslabs/tart/blob/2.40.1/Sources/tart/Commands/Run.swift) 在 noGraphics 路径不打开 Screen Sharing，[FullFledgedVNC.swift](https://github.com/cirruslabs/tart/blob/2.40.1/Sources/tart/VNC/FullFledgedVNC.swift) 创建临时认证。启动输出中的连接凭据仅在控制器内存消费，禁止落日志、argv、文件或剪贴板；关闭宿主/来宾剪贴板共享。该驱动是本地诊断夹具，需独立验证帧积压、实际前台目标、几何与生命周期，不因连接成功宣布业务通过，也不替代每次发布的五门禁。
+
 宿主提供已签名的 `dist/AgentIsland.app`、Swift 编译器及现有 SSH 公钥通路；来宾需要已登录 Aqua、与宿主相同系统 build、用户目录中的 Miniconda Python。用户名必须明确提供，不从报告猜测。可用 `NATIVE_TEST_IDENTITY` 指定既有 SSH 身份路径，身份文件不复制到来宾或证据包。
 
 ```sh

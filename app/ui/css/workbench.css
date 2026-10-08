@@ -329,8 +329,8 @@ html:is(.shell-sidebar,.shell-workbench) .sb-empty { padding: 24px 10px; color: 
 .layout-result-head { justify-content: space-between; }
 .layout-result-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .layout-result-row > span { flex: 1; min-width: 180px; }
-.layout-result-row strong { font-size: 12px; font-weight: 500; }
-.layout-result-row small { display: block; font-size: 11px; color: var(--text-muted); line-height: 1.6; margin-top: 4px; }
+.layout-result-row strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 12px; font-weight: 500; }
+.layout-result-row small { display: block; overflow-wrap: anywhere; font-size: 11px; color: var(--text-muted); line-height: 1.6; margin-top: 4px; }
 .layout-result-row b { font-size: 11px; font-weight: 500; color: var(--text-muted); }
 .layout-result-row label { font-size: 11px; display: flex; align-items: center; gap: 6px; }
 .layout-space :is(button,input,select,[data-layout-windows]):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

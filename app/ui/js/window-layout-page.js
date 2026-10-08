@@ -7,6 +7,15 @@ export function selectLayoutRecovery(id){requestedRecovery=id;document.querySele
 export function selectLayoutRule(id){requestedRule=id;document.querySelector('[data-layout-root]')?.selectWorkspaceRule?.();}
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const labels = { applied: '已排列', failed: '未完成', skipped: '已跳过', restored: '已恢复', conflict: '需确认恢复' };
+export function layoutResultRowsMarkup(windows, names, restoring = false) {
+  return windows.map(w => {
+    const name = names.get(w.window_id);
+    const title = name?.title?.trim() || '未命名窗口';
+    const identity = `${name?.order ? `${name.order} · ` : ''}${title}`;
+    const details = [name?.application, w.reason, w.actual_rect ? `${Math.round(w.actual_rect.width)} × ${Math.round(w.actual_rect.height)} pt` : null].filter(Boolean).join(' · ');
+    return `<div class="layout-result-row"><span><strong title="${esc(identity)}">${esc(identity)}</strong><small>${esc(details)}</small></span><b>${esc(restoring && w.status === 'applied' ? '已恢复' : labels[w.status] ?? w.status)}</b>${w.status === 'conflict' ? `<label><input type="checkbox" data-layout-force="${esc(w.window_id)}" aria-label="${esc(`${identity}${name?.application ? `，${name.application}` : ''}：覆盖后续调整，恢复原位置`)}">覆盖后续调整，恢复原位置</label>` : ''}</div>`;
+  }).join('');
+}
 export function pageWindowLayout() {
   return `<section class="layout-space" data-layout-root>
     <div class="layout-toolbar"><p data-layout-status role="status" aria-live="polite">正在检查窗口能力</p><button type="button" class="mini-btn" data-layout-permission hidden>去授权</button><button type="button" class="mini-btn" data-layout-refresh>读取窗口</button></div>
@@ -43,7 +52,7 @@ export async function hydrateWindowLayout() {
   if (!root || root.layoutReady) return;
   root.layoutReady = true;
   let snapshot = null, selection = [], preview = null, result = null, rules = null, resultTitle = '排列结果', busy = false, expiryTimer = null, loadedRule = null;
-  const names = new Map();
+  let windowNames = new Map(), resultNames = new Map();
   const status = root.querySelector('[data-layout-status]');
   const screen = root.querySelector('[data-layout-screen]');
   const template = root.querySelector('[data-layout-template]');
@@ -89,7 +98,7 @@ export async function hydrateWindowLayout() {
   function results() {
     const box = root.querySelector('[data-layout-results]'); box.hidden = !result;
     if (!result) return;
-    box.innerHTML = `<div class="layout-result-head"><h2>${resultTitle}</h2>${result.undo_available ? `<button type="button" class="mini-btn" data-layout-undo>${resultTitle==='历史恢复结果'?'撤销恢复':'撤销排列'}</button>` : ''}</div>${result.record_warning?`<p class="layout-note" role="alert">${esc(result.record_warning)}</p>`:''}${result.windows.map(w => `<div class="layout-result-row"><span><strong>${esc(names.get(w.window_id) ?? '窗口')}</strong><small>${esc(w.reason ?? '')}${w.actual_rect ? ` · ${Math.round(w.actual_rect.width)} × ${Math.round(w.actual_rect.height)}` : ''}</small></span><b>${esc(resultTitle==='历史恢复结果'&&w.status==='applied'?'已恢复':labels[w.status] ?? w.status)}</b>${w.status === 'conflict' ? `<label><input type="checkbox" data-layout-force="${esc(w.window_id)}">覆盖后续调整，恢复原位置</label>` : ''}</div>`).join('')}`;
+    box.innerHTML = `<div class="layout-result-head"><h2>${resultTitle}</h2>${result.undo_available ? `<button type="button" class="mini-btn" data-layout-undo>${resultTitle==='历史恢复结果'?'撤销恢复':'撤销排列'}</button>` : ''}</div>${result.record_warning?`<p class="layout-note" role="alert">${esc(result.record_warning)}</p>`:''}${layoutResultRowsMarkup(result.windows, resultNames, resultTitle === '历史恢复结果')}`;
     box.querySelector('[data-layout-undo]')?.addEventListener('click', () => run(async () => {
       const forceIds = [...box.querySelectorAll('[data-layout-force]:checked')].map(e => e.dataset.layoutForce);
       const next = await workspaceFlow.execute('layout', result.operation_id, args=>invoke('workspace_preview',args), () => invoke('window_layout_undo', { operationId: result.operation_id, forceIds }), true);
@@ -186,7 +195,7 @@ export async function hydrateWindowLayout() {
     const next = await invoke('window_layout_candidates');
     if (!current.ownsRequest()) return;
     snapshot = next; selection=[]; preview=null;
-    next.windows.forEach(w => names.set(w.window_id,w.application));
+    windowNames = new Map(next.windows.map(w => [w.window_id, {application:w.application, title:w.title}]));
     screen.innerHTML = '<option value="">选择目标屏幕</option>'+next.displays.map((d,i) => `<option value="${esc(d.screen_id)}">${i === 0 ? '主屏幕' : `屏幕 ${i+1}`} · ${Math.round(d.rect.width)} × ${Math.round(d.rect.height)}</option>`).join('');
     screen.value=next.displays[0]?.screen_id ?? '';
     renderHistory();windows(); root.querySelector('[data-layout-canvas]').innerHTML='<p>选择窗口后预览</p>';
@@ -232,6 +241,9 @@ export async function hydrateWindowLayout() {
   root.querySelector('[data-layout-apply]').addEventListener('click', () => run(async current => {
     const restoring=recoveryPreview;recoveryPreview=false;const selected=preview; preview=null; clearTimeout(expiryTimer); expiryTimer=null;
     if (!selected || Date.now() >= selected.expires_ms) { status.textContent='预览已过期，请重新预览'; return; }
+    // Keep only this operation's labels in memory. A later candidate refresh
+    // must neither rename its undo rows nor accumulate expired window IDs.
+    const operationNames = new Map(selected.geometry.placements.map((p, i) => [p.window_id, {...windowNames.get(p.window_id), order:i+1}]));
     status.textContent='正在调整窗口';
     const rule=loadedRule;
     const target=restoring?activeRecoveryRecord:rule?.id;const context=workspaceFlow.layoutContext(target,rules?.revision,restoring);
@@ -240,7 +252,7 @@ export async function hydrateWindowLayout() {
       return invoke('window_layout_apply',{previewId:selected.preview_id,expectedRevision:selected.revision,context});
     },restoring);
     if (!current.ownsRequest()) return;
-    result=next;if(restoring)root.querySelector('[data-layout-preview-caption]').textContent='历史位置参考 · 执行结果见下方'; resultTitle=restoring?'历史恢复结果':'排列结果'; results();focusResult();status.textContent=restoring?'已执行恢复，请查看逐窗结果':'请查看逐窗结果；再次排列前重新读取窗口';if(historyStarted)await readHistory(current);
+    result=next;resultNames=operationNames;if(restoring)root.querySelector('[data-layout-preview-caption]').textContent='历史位置参考 · 执行结果见下方'; resultTitle=restoring?'历史恢复结果':'排列结果'; results();focusResult();status.textContent=restoring?'已执行恢复，请查看逐窗结果':'请查看逐窗结果；再次排列前重新读取窗口';if(historyStarted)await readHistory(current);
   }));
   await run(read);
   root.focusWorkspaceRecovery();

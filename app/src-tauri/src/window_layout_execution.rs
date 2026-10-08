@@ -8,6 +8,7 @@ pub trait Handle: Clone {
     /// May partially succeed. Always attempts to read the resulting rectangle.
     fn write(&self, target: Rect) -> WriteResult;
 }
+
 pub enum InspectError {
     Gone(String),
     Unavailable(String),
@@ -85,16 +86,61 @@ pub fn verify(candidate: &WindowCandidate, before: Rect, target: Rect) -> Result
     Ok(())
 }
 
+fn geometry_phases(p: &crate::window_layout::Placement) -> [Rect; 3] {
+    let shrunk = Rect {
+        width: p.before.width.min(p.target.width),
+        height: p.before.height.min(p.target.height),
+        ..p.before
+    };
+    [
+        shrunk,
+        Rect {
+            x: p.target.x,
+            y: p.target.y,
+            ..shrunk
+        },
+        p.target,
+    ]
+}
+
+/// Selection defines slots, not setter order. Vacate known intermediate
+/// geometry before another same-tool window occupies it. This is a scheduling
+/// hint only: all native identity/readback checks still run at every write.
+fn execution_order<H>(
+    selected: &[(H, crate::window_layout::Placement)],
+    groups: &[String],
+) -> Vec<usize> {
+    let phases: Vec<_> = selected.iter().map(|(_, p)| geometry_phases(p)).collect();
+    let mut pending: Vec<_> = (0..selected.len()).collect();
+    let mut order = Vec::with_capacity(pending.len());
+    while !pending.is_empty() {
+        let ready = pending.iter().position(|&i| {
+            !pending.iter().any(|&j| {
+                i != j
+                    && groups[i] == groups[j]
+                    && (phases[i].iter().any(|&r| matches(r, selected[j].1.before))
+                        || phases[j].iter().any(|&r| matches(r, selected[i].1.target)))
+            })
+        });
+        // Cycles may require staging moves, which this operation does not
+        // invent. Preserve the original order and truthful guarded failures.
+        order.push(pending.remove(ready.unwrap_or(0)));
+    }
+    order
+}
+
 pub fn apply<H: Handle>(
     selected: &[(H, crate::window_layout::Placement)],
 ) -> Result<(ResultDto, Operation<H>), String> {
     // A single preflight failure prevents all writes; never mix stale and current selection.
+    let mut groups = Vec::with_capacity(selected.len());
     for (h, p) in selected {
         let c = h.inspect().map_err(InspectError::reason)?;
         if c.window_id != p.window_id {
             return Err("窗口身份已变化，请重新读取".into());
         }
         verify(&c, p.before, p.target)?;
+        groups.push(c.agent_id);
     }
     let mut op = Operation {
         id: uuid::Uuid::new_v4().to_string(),
@@ -102,7 +148,8 @@ pub fn apply<H: Handle>(
         conflicts: std::collections::HashSet::new(),
     };
     let mut rows = Vec::new();
-    for (h, p) in selected {
+    for index in execution_order(selected, &groups) {
+        let (h, p) = &selected[index];
         let check = h.inspect().map_err(InspectError::reason).and_then(|c| {
             if c.window_id != p.window_id {
                 Err("窗口身份已变化".into())
@@ -111,21 +158,27 @@ pub fn apply<H: Handle>(
             }
         });
         if let Err(reason) = check {
-            rows.push(Row {
-                window_id: p.window_id.clone(),
-                status: Status::Skipped,
-                reason: Some(reason),
-                actual_rect: None,
-            });
+            rows.push((
+                index,
+                Row {
+                    window_id: p.window_id.clone(),
+                    status: Status::Skipped,
+                    reason: Some(reason),
+                    actual_rect: None,
+                },
+            ));
             continue;
         }
         if matches(p.before, p.target) {
-            rows.push(Row {
-                window_id: p.window_id.clone(),
-                status: Status::Skipped,
-                reason: Some("窗口已在目标位置".into()),
-                actual_rect: Some(p.before),
-            });
+            rows.push((
+                index,
+                Row {
+                    window_id: p.window_id.clone(),
+                    status: Status::Skipped,
+                    reason: Some("窗口已在目标位置".into()),
+                    actual_rect: Some(p.before),
+                },
+            ));
             continue;
         }
         let mut result = h.write(p.target);
@@ -155,20 +208,26 @@ pub fn apply<H: Handle>(
                 )
             })
         };
-        rows.push(Row {
-            window_id: p.window_id.clone(),
-            status: if applied {
-                Status::Applied
-            } else {
-                Status::Failed
+        rows.push((
+            index,
+            Row {
+                window_id: p.window_id.clone(),
+                status: if applied {
+                    Status::Applied
+                } else {
+                    Status::Failed
+                },
+                reason,
+                actual_rect: result.actual,
             },
-            reason,
-            actual_rect: result.actual,
-        });
+        ));
     }
+    rows.sort_by_key(|(index, _)| *index);
+    op.changes
+        .sort_by_key(|change| selected.iter().position(|(_, p)| p.window_id == change.id));
     let dto = ResultDto {
         operation_id: op.id.clone(),
-        windows: rows,
+        windows: rows.into_iter().map(|(_, row)| row).collect(),
         undo_available: !op.changes.is_empty(),
         record_id: None,
         record_warning: None,
@@ -1034,5 +1093,254 @@ mod tests {
         assert_eq!(records.items[1].workspace, Some(context));
         assert_eq!(records.items[1].recovery_of, Some(record.id.clone()));
         assert_eq!(a.0 .0.borrow().candidate.rect, a.1.before);
+    }
+}
+
+#[cfg(test)]
+mod sequencing_tests {
+    use super::*;
+    use crate::window_layout_geometry::{self, Driver, Part};
+    use crate::window_layout_readback::Observation;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[derive(Clone)]
+    struct Window {
+        fleet: Rc<RefCell<Vec<WindowCandidate>>>,
+        index: usize,
+        writes: Rc<RefCell<Vec<usize>>>,
+    }
+    impl Handle for Window {
+        fn inspect(&self) -> Result<WindowCandidate, InspectError> {
+            let fleet = self.fleet.borrow();
+            let candidate = fleet[self.index].clone();
+            let same = fleet
+                .iter()
+                .filter(|w| matches(w.rect, candidate.rect))
+                .count();
+            let visible: Vec<_> = fleet
+                .iter()
+                .enumerate()
+                .map(|(i, w)| (42, i as u32 + 1, w.rect))
+                .collect();
+            crate::window_visibility::match_id(42, candidate.rect, true, same, &visible)
+                .map_err(InspectError::Unavailable)?;
+            Ok(candidate)
+        }
+        fn write(&self, target: Rect) -> WriteResult {
+            self.writes.borrow_mut().push(self.index);
+            let error = window_layout_geometry::adjust(self, target).err();
+            let error = error.or_else(|| self.inspect().err().map(InspectError::reason));
+            WriteResult {
+                actual: Some(self.fleet.borrow()[self.index].rect),
+                error,
+            }
+        }
+    }
+    impl Driver for Window {
+        fn read(&self) -> Result<Rect, String> {
+            self.inspect().map(|c| c.rect).map_err(InspectError::reason)
+        }
+        fn resize(&self, target: Rect) -> Result<(), String> {
+            let mut fleet = self.fleet.borrow_mut();
+            let rect = &mut fleet[self.index].rect;
+            rect.width = target.width.min(1024.0 - rect.x);
+            // The actual isolated Code run rounded a 681 pt height to 680 pt.
+            rect.height = (target.height / 2.0).floor() * 2.0;
+            Ok(())
+        }
+        fn move_to(&self, target: Rect) -> Result<(), String> {
+            let mut fleet = self.fleet.borrow_mut();
+            let rect = &mut fleet[self.index].rect;
+            rect.x = target.x.min(1024.0 - rect.width);
+            rect.y = target.y;
+            Ok(())
+        }
+        fn settle(&self, target: Rect, part: Part) -> Observation {
+            let actual = self.fleet.borrow()[self.index].rect;
+            Observation {
+                actual: Some(actual),
+                error: None,
+                timed_out: !part.accepts(actual, target),
+            }
+        }
+    }
+    #[test]
+    fn near_overlapping_windows_arrange_without_blocking_the_second_identity() {
+        let before = [
+            Rect {
+                x: 0.0,
+                y: 30.0,
+                width: 1024.0,
+                height: 678.0,
+            },
+            Rect {
+                x: 0.0,
+                y: 30.0,
+                width: 1024.0,
+                height: 680.0,
+            },
+        ];
+        let fleet = Rc::new(RefCell::new(
+            before
+                .iter()
+                .enumerate()
+                .map(|(i, rect)| WindowCandidate {
+                    window_id: i.to_string(),
+                    agent_id: "vscode".into(),
+                    application: "VS Code".into(),
+                    title: format!("Window-{i}"),
+                    screen_id: None,
+                    rect: *rect,
+                    movable: true,
+                    resizable: true,
+                    restriction: None,
+                    minimum_size: None,
+                })
+                .collect::<Vec<_>>(),
+        ));
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let selected: Vec<_> = before
+            .iter()
+            .enumerate()
+            .map(|(index, before)| {
+                (
+                    Window {
+                        fleet: fleet.clone(),
+                        index,
+                        writes: writes.clone(),
+                    },
+                    crate::window_layout::Placement {
+                        window_id: index.to_string(),
+                        before: *before,
+                        target: Rect {
+                            x: index as f64 * 518.0,
+                            y: 30.0,
+                            width: 506.0,
+                            height: 681.0,
+                        },
+                        restriction: None,
+                    },
+                )
+            })
+            .collect();
+        let (result, mut operation) = apply(&selected).unwrap();
+        assert_eq!(
+            result.windows.iter().map(|r| &r.status).collect::<Vec<_>>(),
+            vec![&Status::Applied, &Status::Applied]
+        );
+        assert_eq!(*writes.borrow(), vec![1, 0]);
+        assert_eq!(
+            result
+                .windows
+                .iter()
+                .map(|r| r.window_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0", "1"]
+        );
+        assert_eq!(
+            operation
+                .changes
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0", "1"]
+        );
+        let undone = undo(&mut operation, &[]).unwrap();
+        assert!(undone.windows.iter().all(|r| r.status == Status::Restored));
+        assert!(!undone.undo_available);
+        assert_eq!(
+            fleet.borrow().iter().map(|w| w.rect).collect::<Vec<_>>(),
+            before
+        );
+    }
+
+    #[test]
+    fn cyclic_swap_keeps_identity_checks_and_reports_partial_write() {
+        let rect = |x| Rect {
+            x,
+            y: 30.0,
+            width: 506.0,
+            height: 680.0,
+        };
+        let fleet = Rc::new(RefCell::new(
+            [0.0, 518.0]
+                .iter()
+                .enumerate()
+                .map(|(i, x)| WindowCandidate {
+                    window_id: i.to_string(),
+                    agent_id: "vscode".into(),
+                    application: "VS Code".into(),
+                    title: String::new(),
+                    screen_id: None,
+                    rect: rect(*x),
+                    movable: true,
+                    resizable: true,
+                    restriction: None,
+                    minimum_size: None,
+                })
+                .collect::<Vec<_>>(),
+        ));
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let selected: Vec<_> = (0..2)
+            .map(|i| {
+                (
+                    Window {
+                        fleet: fleet.clone(),
+                        index: i,
+                        writes: writes.clone(),
+                    },
+                    crate::window_layout::Placement {
+                        window_id: i.to_string(),
+                        before: rect(i as f64 * 518.0),
+                        target: rect((1 - i) as f64 * 518.0),
+                        restriction: None,
+                    },
+                )
+            })
+            .collect();
+        let (result, operation) = apply(&selected).unwrap();
+        assert_eq!(
+            result.windows.iter().map(|r| &r.status).collect::<Vec<_>>(),
+            vec![&Status::Failed, &Status::Skipped]
+        );
+        assert_eq!(*writes.borrow(), vec![0]);
+        assert!(result.undo_available);
+        assert_eq!(operation.changes.len(), 1);
+        assert_eq!(operation.changes[0].actual, rect(518.0));
+        assert!(result.windows.iter().all(|r| r.reason.is_some()));
+    }
+
+    #[test]
+    fn independent_tools_keep_selection_order_despite_equal_geometry() {
+        let rect = |x| Rect {
+            x,
+            y: 30.0,
+            width: 506.0,
+            height: 680.0,
+        };
+        let selected = vec![
+            (
+                (),
+                crate::window_layout::Placement {
+                    window_id: "a".into(),
+                    before: rect(0.0),
+                    target: rect(518.0),
+                    restriction: None,
+                },
+            ),
+            (
+                (),
+                crate::window_layout::Placement {
+                    window_id: "b".into(),
+                    before: rect(518.0),
+                    target: rect(0.0),
+                    restriction: None,
+                },
+            ),
+        ];
+        assert_eq!(
+            execution_order(&selected, &["vscode".into(), "codex".into()]),
+            vec![0, 1]
+        );
     }
 }

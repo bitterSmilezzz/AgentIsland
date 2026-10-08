@@ -49,7 +49,8 @@ if pgrep -f "$APP_PATTERN" >/dev/null; then
     exit 1
 fi
 
-open "$APP"
+# 更新后在后台启动，避免验收与发版抢占用户正在操作的窗口。
+open -g "$APP"
 
 # 起：新实例必须在若干秒内出现，否则这仍是假保证
 NEW=""
