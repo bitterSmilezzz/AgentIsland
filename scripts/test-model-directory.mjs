@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { configuredModels, modelDirectoryHtml, configuredInterfaces, interfaceDirectoryHtml } from '../app/ui/js/models-page.js';
+import { configuredModels, modelDirectoryHtml, configuredInterfaces, interfaceDirectoryHtml, bindModelWorkspace } from '../app/ui/js/models-page.js';
 
 const primary = { id: 'one', name: 'Primary', model: 'Model', provider_id: 'Provider', base_url: 'https://example.invalid/v1', wire_api: 'responses' };
 const profiles = [primary, { ...primary, id: 'two', name: 'Alternate' }, { ...primary, id: 'three', base_url: 'https://other.invalid/v1' }];
@@ -48,3 +48,53 @@ assert.match(modelDirectoryHtml(identityStatus,identityProfiles,true,'interfaces
 assert.match(modelDirectoryHtml(identityStatus,identityProfiles,true,'interfaces','"fixture'),/value="&quot;fixture"/);
 assert.match(modelDirectoryHtml(identityStatus,identityProfiles),/data-catalog-search/);
 console.log('PASS: interface identity includes protocol and auth reference, preserves model choices, rejects false current targets, escapes search and actions');
+
+// Exercise the controller contract separately from markup and service IPC.
+const handlers = new Map(), calls = [];
+let focused, confirmation = false;
+const buttons = ['tools', 'models', 'extensions', 'prompts', 'services'].map(key => ({
+  dataset: {modelView:key}, pressed:key === 'tools' ? 'true' : 'false',
+  getAttribute() { return this.pressed; }, setAttribute(_, value) { this.pressed = value; },
+  addEventListener(_, callback) { this.click = callback; },
+  closest() { return this; }, focus() { focused = key; },
+}));
+const panels = buttons.map(button => ({dataset:{modelPanel:button.dataset.modelView}, hidden:button.pressed !== 'true'}));
+const workspace = {
+  dataset:{}, querySelector:()=>confirmation ? {} : null,
+  querySelectorAll:selector=>selector === '[data-model-view]' ? buttons : panels,
+  addEventListener:(name, callback)=>{ assert.ok(!handlers.has(name), 'binding must not add duplicate listeners'); handlers.set(name,callback); },
+};
+const bind = () => bindModelWorkspace(workspace, () => calls.push('services'), () => calls.push('extensions'), () => calls.push('prompts'));
+bind();bind();
+const key = (target, value, modifiers = {}) => {
+  let prevented = false;
+  handlers.get('keydown')({target, key:value, preventDefault:()=>{prevented=true;}, ...modifiers});
+  return prevented;
+};
+const active = () => buttons.find(button=>button.pressed === 'true')?.dataset.modelView;
+assert.equal(key(buttons[0], 'ArrowRight'),true);
+assert.equal(active(),'models');assert.equal(focused,'models');
+assert.equal(key(buttons[1], 'End'),true);
+assert.equal(active(),'services');assert.equal(focused,'services');
+buttons[4].click();
+assert.deepEqual(calls,['services'],'current category must not reload its editor');
+key(buttons[4],'ArrowRight');assert.equal(active(),'tools');
+key(buttons[0],'ArrowLeft');assert.equal(active(),'services');
+assert.deepEqual(calls,['services','services']);
+key(buttons[4],'Home');assert.equal(active(),'tools');
+for(const modifier of ['altKey','ctrlKey','metaKey','shiftKey','isComposing']) {
+  assert.equal(key(buttons[0],'ArrowRight',{[modifier]:true}),false);
+  assert.equal(active(),'tools');
+}
+assert.equal(key({closest:()=>null},'ArrowRight'),false,'text input arrow keys remain native');
+confirmation=true;
+key(buttons[0],'End');buttons[4].click();
+assert.equal(active(),'tools');assert.equal(focused,'tools');
+assert.deepEqual(calls,['services','services'],'confirmation blocks both keyboard and pointer selection');
+confirmation=false;
+key(buttons[0],'ArrowRight');key(buttons[1],'ArrowRight');
+assert.equal(active(),'extensions');assert.equal(focused,'extensions');
+assert.deepEqual(calls,['services','services','extensions']);
+assert.equal(panels.filter(panel=>!panel.hidden).length,1);
+assert.equal(panels.find(panel=>!panel.hidden).dataset.modelPanel,'extensions');
+console.log('PASS: category keyboard navigation, focus, current-category no-op, input/IME/modifier preservation, confirmation protection and single binding');

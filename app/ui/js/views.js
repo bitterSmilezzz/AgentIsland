@@ -917,7 +917,7 @@ export async function hydrateReportPanel(format) {
 
 export function pageProvider() {
   if (isWorkbench) return `<div class="model-workspace" data-model-workspace>
-    <div class="model-navigation" aria-label="模型与连接视图">
+    <div class="model-navigation" role="group" aria-label="模型与连接视图">
       <button type="button" class="mini-btn" data-model-view="tools" aria-pressed="true" aria-controls="model-tools">工具配置</button>
       <button type="button" class="mini-btn" data-model-view="models" aria-pressed="false" aria-controls="model-directory">模型目录</button>
       <button type="button" class="mini-btn" data-model-view="extensions" aria-pressed="false" aria-controls="model-extensions">扩展配置</button>

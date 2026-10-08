@@ -11,6 +11,8 @@
 
 页面分“工具配置 / 服务连接 / 模型目录”。首版只显示已接入内容；模型目录不是假定所有工具均可使用的模型列表。列表明确“配置目标”，运行模型从历史来源显示。
 
+工作台五个配置分类使用同一组按钮，左右方向键循环、Home/End到首尾，焦点跟随实际选择。重复当前分类不重新加载编辑器；输入框、组合输入和修饰键维持原有操作。配置确认展开时不允许切换分类，取消后继续导航；分类往返保留各自DOM草稿和目录筛选。浅深主题、减少动态和窄窗口按统一品质门禁验收。
+
 ## 2. 连接目标数据
 
 `connections.v1.json`：schema_version、revision、items。Connection字段：id、kind（new_api/magpie/cc_switch）、name、base_url、credential_ref、enabled、created_ms、updated_ms。当前 credential_ref 为 null 或 `{kind: environment, name: 大写环境变量名}`，不接受值；钥匙串来源尚未实现，未知来源拒绝而不占位；手动检测才读取环境变量值。后续后端条目必须绑定连接身份，不能引用任意远程通知条目，不把Bearer token放URL，不读取厂商OAuth凭据复用登录。

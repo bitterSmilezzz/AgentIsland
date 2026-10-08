@@ -3772,6 +3772,21 @@ const UI_SMOKE_JS: &str = r#"(function () {
         await wait(0);
         if (document.querySelector('.page-motion-host, [data-page-outgoing]')) throw new Error('跨页中断动效留下裁切或离场层');
         snap('任务分类草稿、快捷导航Escape与中断清理通过');
+        document.querySelector('.wb-nav [data-wb-nav="provider"]').click(); await wait(240);
+        var categories = Array.from(document.querySelectorAll('[data-model-view]'));
+        if (categories.length !== 5) throw new Error('模型与连接分类不完整');
+        categories[0].click(); categories[0].focus({ preventScroll: true });
+        function categoryKey(key, index) {
+          document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: key, bubbles: true, cancelable: true }));
+          var selected = categories[index];
+          var panel = document.querySelector('[data-model-panel="' + selected.dataset.modelView + '"]');
+          if (document.activeElement !== selected || selected.getAttribute('aria-pressed') !== 'true' || !panel || panel.hidden) {
+            throw new Error('模型分类键盘切换或焦点跟随失败');
+          }
+        }
+        for (var categoryIndex = 1; categoryIndex <= categories.length; categoryIndex++) categoryKey('ArrowRight', categoryIndex % categories.length);
+        categoryKey('End', 4); categoryKey('Home', 0); categoryKey('ArrowLeft', 4);
+        snap('模型分类方向键循环、Home/End与原生WebView焦点跟随通过');
       }
       var overview = document.querySelector('[data-wb-nav="overview"]');
       if (overview) { overview.click(); await wait(300); }

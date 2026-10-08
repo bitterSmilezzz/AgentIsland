@@ -92,13 +92,31 @@ export function bindModelWorkspace(workspace, openServices, openExtensions, open
   if (!workspace || workspace.dataset.modelsBound === 'true') return;
   workspace.dataset.modelsBound = 'true';
   const controls = [...workspace.querySelectorAll('[data-model-view]')];
-  controls.forEach(button => button.addEventListener('click', () => {
-    if (workspace.querySelector('[data-confirm]:not([hidden]),[data-mcp-confirm]:not([hidden]),[data-prompt-confirm]:not([hidden]),[data-claude-confirm]:not([hidden])')) return;
+  const select = button => {
+    if (workspace.querySelector('[data-confirm]:not([hidden]),[data-mcp-confirm]:not([hidden]),[data-prompt-confirm]:not([hidden]),[data-claude-confirm]:not([hidden])')) return false;
+    // Repeated selection must not refresh editors or discard their drafts.
+    if (button.getAttribute('aria-pressed') === 'true') return true;
     const selected = button.dataset.modelView;
     controls.forEach(control => control.setAttribute('aria-pressed', String(control === button)));
     workspace.querySelectorAll('[data-model-panel]').forEach(panel => { panel.hidden = panel.dataset.modelPanel !== selected; });
     if (selected === 'services') openServices?.();
     if (selected === 'extensions') openExtensions?.();
     if (selected === 'prompts') openPrompts?.();
-  }));
+    return true;
+  };
+  controls.forEach(button => button.addEventListener('click', () => select(button)));
+  workspace.addEventListener('keydown', event => {
+    if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const button = event.target.closest('[data-model-view]');
+    const index = controls.indexOf(button);
+    if (index < 0) return;
+    let next;
+    if (event.key === 'ArrowRight') next = (index + 1) % controls.length;
+    else if (event.key === 'ArrowLeft') next = (index + controls.length - 1) % controls.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = controls.length - 1;
+    else return;
+    event.preventDefault();
+    if (select(controls[next])) controls[next].focus({preventScroll: true});
+  });
 }

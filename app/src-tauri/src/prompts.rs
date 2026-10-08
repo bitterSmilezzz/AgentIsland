@@ -590,4 +590,183 @@ mod tests {
         assert!(store.preview_restore(&name).is_err());
         assert_eq!(fs::read_to_string(other).unwrap(), "Keep");
     }
+
+    #[cfg(target_os = "macos")]
+    mod real_clients {
+        use super::*;
+        use serde_json::json;
+        use std::process::Command;
+
+        const ORIGINAL: &str = "AGENTISLAND_FIXTURE_GUIDANCE_ORIGINAL";
+        const FIRST: &str = "AGENTISLAND_FIXTURE_GUIDANCE_FIRST";
+        const SECOND: &str = "AGENTISLAND_FIXTURE_GUIDANCE_SECOND";
+        const OVERRIDE: &str = "AGENTISLAND_FIXTURE_GUIDANCE_OVERRIDE";
+
+        fn exercise(kind: &str) {
+            let prefix = format!("AGENTISLAND_{}_CLIENT", kind.to_uppercase());
+            let client = std::env::var_os(&prefix).expect("set an explicit signed client binary");
+            let version = std::env::var(format!("{prefix}_VERSION"))
+                .expect("pin the actual client version for this acceptance");
+            let sandbox = crate::testutil::Sandbox::new("instructions-client");
+            let home = sandbox.path();
+            fs::write(home.join(".agentisland-client-fixture"), "fixture-only\n").unwrap();
+            let store = Store {
+                library: home.join("prompts.json"),
+                target: home.join(if kind == "codex" {
+                    ".codex/AGENTS.md"
+                } else {
+                    ".claude/CLAUDE.md"
+                }),
+                backups: home.join("backups"),
+            };
+            fs::create_dir_all(store.target.parent().unwrap()).unwrap();
+            fs::write(&store.target, ORIGINAL).unwrap();
+            let verify = |stage: &str, marker: &str, reject: bool| {
+                let expected = home.join("expected.json");
+                let absent: Vec<_> = [ORIGINAL, FIRST, SECOND, OVERRIDE]
+                    .into_iter()
+                    .filter(|candidate| *candidate != marker)
+                    .collect();
+                fs::write(
+                    &expected,
+                    serde_json::to_vec(&json!({"marker":marker,"absent":absent})).unwrap(),
+                )
+                .unwrap();
+                let output = Command::new("/usr/bin/python3")
+                    .arg(
+                        Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("../../scripts/check-client-instructions.py"),
+                    )
+                    .arg("--kind")
+                    .arg(kind)
+                    .arg("--client")
+                    .arg(&client)
+                    .arg("--version")
+                    .arg(&version)
+                    .arg("--fixture")
+                    .arg(home)
+                    .arg("--expected")
+                    .arg(expected)
+                    .output()
+                    .unwrap();
+                if reject {
+                    assert!(
+                        !output.status.success(),
+                        "wrong guidance must fail acceptance"
+                    );
+                    assert_eq!(
+                        String::from_utf8_lossy(&output.stderr).trim(),
+                        "FAIL: client guidance differs from the applied version"
+                    );
+                    println!("{stage}: PASS expected guidance mismatch was detected");
+                } else {
+                    assert!(
+                        output.status.success(),
+                        "{stage}: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                    assert_eq!(result["passed"], true);
+                    assert_eq!(result["kind"], kind);
+                    assert_eq!(result["version"], version);
+                    assert_eq!(result["isolation_verified"], true);
+                    assert_eq!(result["raw_output_saved"], false);
+                    assert_eq!(result["client_sha256"].as_str().unwrap().len(), 64);
+                    println!(
+                        "{stage}: {}",
+                        String::from_utf8_lossy(&output.stdout).trim()
+                    );
+                }
+            };
+            let list = store
+                .save(
+                    None,
+                    Draft {
+                        name: "Fixture guidance".into(),
+                        body: FIRST.into(),
+                    },
+                    0,
+                )
+                .unwrap();
+            let id = list.items[0].id.clone();
+            let plan = store.preview(&id, list.revision).unwrap();
+            verify(
+                "save and preview preserve original guidance",
+                ORIGINAL,
+                false,
+            );
+            verify("incorrect expected guidance is rejected", FIRST, true);
+            let first = store.apply(&id, list.revision, &plan.plan_id).unwrap();
+            assert!(first.verified);
+            verify("first application reaches a new client", FIRST, false);
+            let list = store
+                .save(
+                    Some(id.clone()),
+                    Draft {
+                        name: "Fixture guidance".into(),
+                        body: SECOND.into(),
+                    },
+                    list.revision,
+                )
+                .unwrap();
+            verify(
+                "saved update alone does not change client guidance",
+                FIRST,
+                false,
+            );
+            let plan = store.preview(&id, list.revision).unwrap();
+            let second = store.apply(&id, list.revision, &plan.plan_id).unwrap();
+            assert!(second.verified);
+            verify("second application excludes old guidance", SECOND, false);
+            // Recreate the Store to exercise persisted library and backup state.
+            let store = Store {
+                library: store.library.clone(),
+                target: store.target.clone(),
+                backups: store.backups.clone(),
+            };
+            assert_eq!(store.list().unwrap().revision, list.revision);
+            let plan = store.preview_restore(&second.backup_name).unwrap();
+            assert!(
+                store
+                    .restore(&second.backup_name, &plan.plan_id)
+                    .unwrap()
+                    .verified
+            );
+            verify("persisted backup restores first guidance", FIRST, false);
+            let plan = store.preview_restore(&first.backup_name).unwrap();
+            assert!(
+                store
+                    .restore(&first.backup_name, &plan.plan_id)
+                    .unwrap()
+                    .verified
+            );
+            verify(
+                "original guidance reaches the new client again",
+                ORIGINAL,
+                false,
+            );
+            if kind == "codex" {
+                fs::write(store.target.with_file_name("AGENTS.override.md"), OVERRIDE).unwrap();
+                assert!(store.preview(&id, list.revision).is_err());
+                assert_eq!(fs::read_to_string(&store.target).unwrap(), ORIGINAL);
+                verify(
+                    "global override loads while application is blocked",
+                    OVERRIDE,
+                    false,
+                );
+            }
+        }
+
+        #[test]
+        #[ignore = "explicit Codex binary/version and macOS isolated loopback acceptance"]
+        fn real_codex_client_loads_applied_and_restored_guidance() {
+            exercise("codex");
+        }
+
+        #[test]
+        #[ignore = "explicit Claude binary/version and macOS isolated loopback acceptance"]
+        fn real_claude_client_loads_applied_and_restored_guidance() {
+            exercise("claude");
+        }
+    }
 }
