@@ -13,7 +13,7 @@ import { modelDirectoryHtml, bindModelWorkspace, bindModelDirectory } from './mo
 import { pageConnections, hydrateConnections } from './connections-page.js';
 import { pageMcp, hydrateMcp } from './mcp-page.js';
 import {pageClaudePlan,hydrateClaudePlan} from './claude-plan-page.js';
-import { PageCache, pageRequest } from './page-host.js';
+import { PageCache, pageRequest, revealNavigationItem } from './page-host.js';
 import { healthReason, agentNextStep } from './agent-actions.js';
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
@@ -1117,6 +1117,7 @@ export function renderWorkbench() {
     </main>
   </div>`;
   retainWorkbenchControls(workbenchPagesCache.retainedControls);
+  revealNavigationItem(root.querySelector('.wb-nav-links'));
   pageMotion(root, selected, motionSurface);
   if (!restored || restored.querySelector('[data-provider-root], [data-todo-root], [data-remote-root], [data-tasks-root], [data-sessions-root]')?.dataset.pageReady !== 'true') {
   if (selected === 'tokenAnalytics') { hydrateReport(); bindToolBudgets(root); }

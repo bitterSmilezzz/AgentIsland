@@ -40,7 +40,7 @@ export function createToolBudgetController(read, write, changed = () => {}) {
     async load() {
       if (state.busy) return;
       state.busy = true; state.status = '正在读取预算'; notify();
-      try { accept(await read()); state.readFailed = false; state.status = '已读取当前预算，未保存的输入已保留'; }
+      try { accept(await read()); state.readFailed = false; state.status = controller.state.hasDraft ? '已刷新，草稿已保留' : '预算已更新'; }
       catch { state.readFailed = true; state.status = '预算读取失败，请重试；已有数据和草稿已保留'; }
       finally { state.busy = false; notify(); }
     },

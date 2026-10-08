@@ -17,3 +17,15 @@ export function pageRequest(root) {
   current.ownsRequest = () => requests.get(root) === token;
   return current;
 }
+
+// Reveal only the selected navigation item. Do not scroll the page or reset a
+// user's menu position when the item already fits inside the menu viewport.
+export function revealNavigationItem(menu) {
+  const item = menu?.querySelector('[aria-current="page"]');
+  if (!item || menu.clientHeight <= 0) return;
+  const viewport = menu.getBoundingClientRect(), rect = item.getBoundingClientRect();
+  const inset = 6;
+  const delta = rect.top < viewport.top + inset ? rect.top - viewport.top - inset
+    : rect.bottom > viewport.bottom - inset ? rect.bottom - viewport.bottom + inset : 0;
+  if (delta) menu.scrollTop = Math.max(0, Math.min(menu.scrollHeight - menu.clientHeight, menu.scrollTop + delta));
+}

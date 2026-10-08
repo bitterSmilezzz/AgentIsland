@@ -51,6 +51,16 @@ console.log('PASS: explicit form reset releases the lease and later edits remain
 assert.equal(newer.ownsRequest(),true,"a hidden cached page retains ownership of a mutation receipt");
 assert.equal(older.ownsRequest(),false,"a replaced request cannot apply a mutation receipt");
 
+const { revealNavigationItem } = await import('../app/ui/js/page-host.js');
+let itemRect = {top:180,bottom:214};
+const menu = {clientHeight:100,scrollHeight:400,scrollTop:0,
+  querySelector:()=>({getBoundingClientRect:()=>itemRect}), getBoundingClientRect:()=>({top:100,bottom:200})};
+revealNavigationItem(menu);assert.equal(menu.scrollTop,20,'reveal clipped bottom item with focus clearance');
+itemRect={top:120,bottom:154};revealNavigationItem(menu);assert.equal(menu.scrollTop,20,'visible selection keeps user scroll');
+itemRect={top:90,bottom:124};revealNavigationItem(menu);assert.equal(menu.scrollTop,4,'reveal only the clipped top');
+menu.scrollTop=295;itemRect={top:250,bottom:284};revealNavigationItem(menu);assert.equal(menu.scrollTop,300,'clamp to actual menu range');
+revealNavigationItem(null);
+
 const managedGuard = new DraftGuard();
 const managedInput = {...text, value:'current selection', dataset:{draftIgnore:''}};
 managedGuard.changed(managedInput); assert.equal(managedGuard.dirty,false,'controller-managed values do not create phantom drafts');
