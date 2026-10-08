@@ -64,3 +64,16 @@ const summary=catalogSummary({items:[entry],gaps});
 assert.match(summary,/1 个可核验记录/);assert.match(summary,/2 项无法核验/);assert.match(summary,/3 项压缩记录暂不支持/);
 assert.ok(!sessionListHtml([disk]).includes('执行中'));
 console.log('PASS: verified directory merges, archive semantics, explicit gaps, thread search and per-directory action guards');
+
+const noThread={agent_id:'claude',session_id:'e'.repeat(52)+'123456abcdef',thread_id:null};
+const noThreadSnapshot={revision:1,tasks:[{id:'no-thread-task',title:'已保存方案'}],runs:[{id:'no-thread-run',task_id:'no-thread-task',source:noThread,status:'ready',started_ms:1}]};
+const noThreadHistory=sessionRows([],noThreadSnapshot);
+const noThreadObserved=sessionRows([{source:noThread,name:'Claude Code',target:{exactSession:false},observation:{status:'waiting'}}],{tasks:[],runs:[]});
+assert.match(sessionListHtml(noThreadObserved),/会话 123456abcdef/);
+assert.equal(filterSessionRows(noThreadObserved,{query:'123456abcdef'}).length,1,'the displayed fallback session suffix is searchable');
+assert.equal(filterSessionRows(noThreadObserved,{query:noThread.session_id}).length,1,'complete fallback session IDs are searchable');
+assert.equal(filterSessionRows(noThreadHistory,{query:'claude 123456abcdef 方案',scope:'saved'}).length,1,'fallback IDs compose with tool, task and scope filters');
+assert.equal(filterSessionRows(noThreadHistory,{query:'123456abcdeg'}).length,0,'different source IDs never match');
+assert.equal(filterSessionRows(noThreadObserved,{query:noThread.session_id,tool:'codex'}).length,0,'identifier matching cannot broaden the selected tool');
+assert.equal(sessionOpenAction(noThreadObserved[0]).label,'打开工具','searching an identity does not upgrade navigation capability');
+console.log('PASS: visible fallback suffix and full source ID search with existing tool/scope filters and capability boundaries');

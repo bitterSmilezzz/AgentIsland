@@ -27,7 +27,7 @@ export function sessionRows(choices, snapshot, catalog=[]) {
 }
 export function filterSessionRows(rows, {tool='',scope='',query=''}={}) {
   const words=query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  return rows.filter(row=>(!tool||row.source.agent_id===tool)&&(!scope||(scope==='observed'?!!row.observed:scope==='catalog'?!!row.catalog:!row.observed&&row.records.length>0))&&words.every(word=>[row.name,row.source.agent_id,row.source.thread_id??'',...row.records.map(record=>record.title)].join(' ').toLocaleLowerCase().includes(word)));
+  return rows.filter(row=>(!tool||row.source.agent_id===tool)&&(!scope||(scope==='observed'?!!row.observed:scope==='catalog'?!!row.catalog:!row.observed&&row.records.length>0))&&words.every(word=>[row.name,row.source.agent_id,row.source.session_id,row.source.thread_id??'',...row.records.map(record=>record.title)].join(' ').toLocaleLowerCase().includes(word)));
 }
 export function sessionOpenAction(row) {
   if(row.observed)return row.observed.target ? {kind:'observed',label:row.observed.target.exactSession?'打开会话':'打开工具'} : null;

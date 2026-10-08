@@ -3788,6 +3788,28 @@ const UI_SMOKE_JS: &str = r#"(function () {
         for (var categoryIndex = 1; categoryIndex <= categories.length; categoryIndex++) categoryKey('ArrowRight', categoryIndex % categories.length);
         categoryKey('End', 4); categoryKey('Home', 0); categoryKey('ArrowLeft', 4);
         snap('模型分类方向键循环、Home/End与原生WebView焦点跟随通过');
+        document.querySelector('.wb-nav [data-wb-nav="sessions"]').click(); await wait(240);
+        var sessionQuery = document.querySelector('[data-session-query]');
+        var sessionScope = document.querySelector('[data-session-scope]');
+        var sessionRefresh = document.querySelector('[data-session-refresh]');
+        if (!sessionQuery || !sessionScope || !sessionRefresh) throw new Error('会话来源控件缺失');
+        var sessionDeadline = Date.now() + 3000;
+        while (sessionRefresh.disabled && Date.now() < sessionDeadline) await wait(40);
+        if (sessionRefresh.disabled) throw new Error('会话来源读取未完成');
+        sessionRefresh.focus({ preventScroll: true }); sessionRefresh.click();
+        sessionDeadline = Date.now() + 3000;
+        while (sessionRefresh.disabled && Date.now() < sessionDeadline) await wait(40);
+        if (sessionRefresh.disabled || document.activeElement !== sessionRefresh) throw new Error('会话刷新未完成或丢失发起焦点');
+        sessionQuery.value = '会话验收筛选'; sessionQuery.dispatchEvent(new Event('input', { bubbles: true }));
+        sessionScope.value = 'saved'; sessionScope.dispatchEvent(new Event('change', { bubbles: true }));
+        document.querySelector('.wb-nav [data-wb-nav="settings"]').click(); await wait(240);
+        document.querySelector('.wb-nav [data-wb-nav="sessions"]').click(); await wait(240);
+        sessionQuery = document.querySelector('[data-session-query]');
+        sessionScope = document.querySelector('[data-session-scope]');
+        if (!sessionQuery || sessionQuery.value !== '会话验收筛选' || !sessionScope || sessionScope.value !== 'saved') throw new Error('会话往返丢失筛选');
+        sessionQuery.value = ''; sessionQuery.dispatchEvent(new Event('input', { bubbles: true }));
+        sessionScope.value = ''; sessionScope.dispatchEvent(new Event('change', { bubbles: true }));
+        snap('会话刷新焦点与切页筛选保留通过');
       }
       var overview = document.querySelector('[data-wb-nav="overview"]');
       if (overview) { overview.click(); await wait(300); }
