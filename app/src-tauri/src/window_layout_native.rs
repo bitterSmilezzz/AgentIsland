@@ -670,7 +670,7 @@ mod mac {
         fn settle_geometry(
             &self,
             target: Rect,
-            size_only: bool,
+            part: crate::window_layout_geometry::Part,
         ) -> crate::window_layout_readback::Observation {
             let start = Instant::now();
             crate::window_layout_readback::settle(
@@ -679,17 +679,47 @@ mod mac {
                         .map_err(crate::window_layout_execution::InspectError::reason)?;
                     rect(&self.element).ok_or_else(|| "调整后窗口位置不可读".into())
                 },
-                |actual| {
-                    if size_only {
-                        (actual.width - target.width).abs() <= 1.0
-                            && (actual.height - target.height).abs() <= 1.0
-                    } else {
-                        crate::window_layout_execution::matches(actual, target)
-                    }
-                },
+                |actual| part.accepts(actual, target),
                 || start.elapsed(),
                 std::thread::sleep,
             )
+        }
+    }
+    impl crate::window_layout_geometry::Driver for NativeWindow {
+        fn read(&self) -> Result<Rect, String> {
+            self.launch_valid()
+                .map_err(crate::window_layout_execution::InspectError::reason)?;
+            if self.visible_identity()? != self.cg_id.unwrap_or(0) {
+                return Err("窗口可见性或身份已变化".into());
+            }
+            rect(&self.element).ok_or_else(|| "调整后窗口位置不可读".into())
+        }
+        fn resize(&self, target: Rect) -> Result<(), String> {
+            self.set_pair(
+                "AXSize",
+                2,
+                Pair {
+                    a: target.width,
+                    b: target.height,
+                },
+            )
+        }
+        fn move_to(&self, target: Rect) -> Result<(), String> {
+            self.set_pair(
+                "AXPosition",
+                1,
+                Pair {
+                    a: target.x,
+                    b: target.y,
+                },
+            )
+        }
+        fn settle(
+            &self,
+            target: Rect,
+            part: crate::window_layout_geometry::Part,
+        ) -> crate::window_layout_readback::Observation {
+            self.settle_geometry(target, part)
         }
     }
     impl crate::window_layout_execution::Handle for NativeWindow {
@@ -706,39 +736,7 @@ mod mac {
                         if !target.valid() {
                             return Err("目标窗口尺寸无效".into());
                         }
-                        // Resize before position: app constraints may move the origin during resize.
-                        if c.rect.width != target.width || c.rect.height != target.height {
-                            self.set_pair(
-                                "AXSize",
-                                2,
-                                Pair {
-                                    a: target.width,
-                                    b: target.height,
-                                },
-                            )?;
-                            let observation = self.settle_geometry(target, true);
-                            // A size rejected by app constraints can still be positioned; retain
-                            // the final geometry as a partial result for explicit undo.
-                            if !observation.timed_out && observation.error.is_some() {
-                                return Err(observation.error.unwrap());
-                            }
-                            self.launch_valid()
-                                .map_err(crate::window_layout_execution::InspectError::reason)?;
-                        }
-                        if self.visible_identity()? != self.cg_id.unwrap_or(0) {
-                            return Err("窗口可见性或身份已变化".into());
-                        }
-                        let actual = rect(&self.element).ok_or("调整后窗口位置不可读")?;
-                        if actual.x != target.x || actual.y != target.y {
-                            self.set_pair(
-                                "AXPosition",
-                                1,
-                                Pair {
-                                    a: target.x,
-                                    b: target.y,
-                                },
-                            )?;
-                        }
+                        crate::window_layout_geometry::adjust(self, target)?;
                         Ok(())
                     });
                 if let Err(reason) = result {
@@ -753,7 +751,8 @@ mod mac {
                     };
                 }
                 // Poll only on the worker; never reissue setters while waiting.
-                let observation = self.settle_geometry(target, false);
+                let observation =
+                    self.settle_geometry(target, crate::window_layout_geometry::Part::Complete);
                 let identity = self
                     .inspect_pooled()
                     .map_err(crate::window_layout_execution::InspectError::reason);

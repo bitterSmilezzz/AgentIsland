@@ -75,6 +75,7 @@ mod trees;
 mod webhook;
 mod window_layout;
 mod window_layout_execution;
+mod window_layout_geometry;
 mod window_layout_journal;
 mod window_layout_native;
 mod window_layout_readback;
