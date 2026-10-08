@@ -22,7 +22,7 @@
 
 真实沙箱文件回归覆盖完整资源/执行位/空目录、无副作用预览、来源/目标漂移与预览到期、同名更新与完整恢复、跨 Store 重启、保留包漂移、链接/FIFO/隐藏凭据、独占发布/暂存失败、部分记录不可读、包大小/文件数/深度、显示上限不漏装。生产 JS + 假 IPC 验证操作、取消零写入、失败恢复、焦点、过期、缓存及浅深色组件截图。原生文件选择器没有在普通用户桌面自动打开，编译不代表交互验收。
 
-未完成：Claude Code 客户端发现、真实客户端正文注入/当前 GUI 刷新、隔离原生交互与资源品质。Codex 指定版本的默认用户级发现已取得以下独立证据；能力入口可用不抵扣 E 全部退出条件。
+未完成：当前 GUI 刷新、其他版本/格式组合与工具发现、隔离原生交互与资源品质。Codex 指定版本的默认用户级发现、Claude Code 指定版本的默认用户技能发现与显式正文加载已取得以下独立证据；能力入口可用不抵扣 E 全部退出条件。
 
 解析依据：[固定版本解析器选项](https://docs.rs/serde-saphyr/1.3.0/serde_saphyr/options/struct.Options.html)与[预算](https://docs.rs/serde-saphyr/1.3.0/serde_saphyr/budget/struct.Budget.html)。应用显式关闭诊断片段且不转发解析错误内容；未启用外部 include。真实沙箱新增验证多行/转义/注释/别名/合并与原文件字节一致、BOM/CRLF、嵌套重复键与无效类型、别名/深度/体积超限、正文不计入元数据上限、同名目标身份不符保留原件。
 
@@ -66,7 +66,21 @@
 AGENTISLAND_CODEX_CLIENT=/绝对路径/codex cargo test --locked --manifest-path app/src-tauri/Cargo.toml real_codex_client_discovers_production_install_update_toggle_and_restore -- --ignored --nocapture
 ```
 
-环境值只选择测试二进制，不修改实际用户 HOME/CODEX_HOME 或配置。测试脚本 [check-codex-skill-discovery.py](../../../scripts/check-codex-skill-discovery.py) 仅接受仓外临时测试根与显式标记。发现/元数据解析和启停读入不等于模型已注入/执行正文；当前 GUI 自动刷新与 Claude Code 对应验证仍独立保留。[官方协议](https://learn.chatgpt.com/docs/app-server)、[官方用户级目录](https://learn.chatgpt.com/docs/build-skills)。
+环境值只选择测试二进制，不修改实际用户 HOME/CODEX_HOME 或配置。测试脚本 [check-codex-skill-discovery.py](../../../scripts/check-codex-skill-discovery.py) 仅接受仓外临时测试根与显式标记。发现/元数据解析和启停读入不等于模型已注入/执行正文；当前 GUI 自动刷新仍独立保留，Claude Code 对应验证见下节。[官方协议](https://learn.chatgpt.com/docs/app-server)、[官方用户级目录](https://learn.chatgpt.com/docs/build-skills)。
+
+## 真实 Claude Code 用户技能发现与正文加载
+
+生产 Store 在临时用户目录执行 Claude 目标的安装、同名更新、跨 Store 重启恢复旧包和撤销首次安装；真实官方 Claude Code 2.1.291 分别以新会话读取默认用户目录。验收核对初始化的 slash 命令名称、绑定用户技能目录及发送给模型的当前正文标记；更新/恢复时旧正文标记必须缺席，删除安装后不再发现。包内资源脚本不会执行。此结果只覆盖固定版本与标准 fixture，未推广为所有元数据、插件/项目作用域或 GUI 即时刷新。
+
+模型端点为一次性 loopback 模拟服务，不使用真实账号。子进程只继承临时 HOME 与必要环境，系统策略拒绝真实用户 HOME 内容读取（明确选择的独立客户端二进制除外）、其他网络及临时树外写入；启动前实际验证目录列举与其他端口被拒绝。工具列表为空、MCP 配置严格为空，禁用技能 shell 注入和会话持久化；验证器不保存原始请求/响应，客户端临时文件随 Rust 沙箱清理，子进程和本机服务限时回收。使用 user 设置源才能检查默认用户技能；restricted 模式的 builtin 清单不能抵扣该证据。依据[官方技能作用域](https://code.claude.com/docs/en/skills)与[CLI 参数](https://code.claude.com/docs/en/cli-reference)。
+
+显式 opt-in 运行，普通回归不自动启动第三方客户端：
+
+```sh
+AGENTISLAND_CLAUDE_CLIENT=/绝对路径/claude cargo test --locked --manifest-path app/src-tauri/Cargo.toml real_claude_client_loads_production_install_update_and_restore -- --ignored --nocapture
+```
+
+[check-claude-skill-discovery.py](../../../scripts/check-claude-skill-discovery.py) 只接受仓外系统临时目录与显式标记。首轮模拟端点按完整 URL 匹配而拒绝客户端查询参数，失败记录保留；改为核对规范化路径后通过，并再次核对禁用会话持久化的完整五阶段。不会用静态文件成功或模型回答代替实际发送正文证据；不抵扣真实服务或原生 UI/资源门禁。
 
 ## 编辑与来源状态交互
 

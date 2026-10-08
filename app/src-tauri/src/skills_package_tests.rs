@@ -1327,3 +1327,99 @@ fn real_codex_client_discovers_production_install_update_toggle_and_restore() {
     store.restore(&row.id, &preview.plan_id).unwrap();
     verify("first installation undone", None, true);
 }
+
+/// Real user-directory discovery and slash expansion; the model is loopback-only.
+#[test]
+#[ignore = "requires pinned AGENTISLAND_CLAUDE_CLIENT and macOS verified system isolation"]
+fn real_claude_client_loads_production_install_update_and_restore() {
+    use serde_json::json;
+    use std::process::Command;
+    let client = std::env::var_os("AGENTISLAND_CLAUDE_CLIENT")
+        .expect("set an explicit pinned Claude Code client binary");
+    let sandbox = crate::testutil::Sandbox::new("claude-skill-client");
+    let home = sandbox.path();
+    fs::write(home.join(".agentisland-client-fixture"), "fixture-only\n").unwrap();
+    let source = home.join("source");
+    fs::create_dir(&source).unwrap();
+    let skill = source.join("SKILL.md");
+    let write_skill = |marker: &str| {
+        fs::write(&skill, format!("---\nname: agentisland-client-fixture\ndescription: Synthetic client loading verification.\n---\n{marker}\nReturn without running any tools.\n")).unwrap();
+    };
+    fs::create_dir(source.join("scripts")).unwrap();
+    fs::write(
+        source.join("scripts/not-run.sh"),
+        "#!/bin/sh\ntouch never-execute\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        source.join("scripts/not-run.sh"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let first_body = "AGENTISLAND_FIXTURE_FIRST_BODY";
+    let second_body = "AGENTISLAND_FIXTURE_UPDATED_BODY";
+    let verify = |stage: &str, present: bool, marker: &str, absent_marker: &str| {
+        let expected = home.join("expected.json");
+        fs::write(
+            &expected,
+            serde_json::to_vec(
+                &json!({"present":present,"marker":marker,"absent_marker":absent_marker}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/check-claude-skill-discovery.py");
+        let output = Command::new("/usr/bin/python3")
+            .arg(script)
+            .arg("--client")
+            .arg(&client)
+            .arg("--fixture")
+            .arg(home)
+            .arg("--expected")
+            .arg(expected)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{stage}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!(
+            "{stage}: {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+        for directory in [
+            home.join("project"),
+            home.join(".claude/skills/agentisland-client-fixture"),
+        ] {
+            assert!(!directory.join("never-execute").exists());
+        }
+    };
+    write_skill(first_body);
+    verify("before installation", false, "", first_body);
+    let mut store = Store::new(home.to_path_buf());
+    let preview = store.preview_for(&source, Tool::Claude, 1).unwrap();
+    let first = store.apply(&preview.plan_id, 2).unwrap();
+    verify("installed user skill", true, first_body, second_body);
+    write_skill(second_body);
+    let preview = store.preview_for(&source, Tool::Claude, 3).unwrap();
+    let update = store.apply(&preview.plan_id, 4).unwrap();
+    verify("updated user skill", true, second_body, first_body);
+    let store = Store::new(home.to_path_buf());
+    let rows = store.recoveries().unwrap();
+    let row = rows.iter().find(|row| row.id == update.id).unwrap();
+    let preview = store.restore_preview(&row.id, &row.revision).unwrap();
+    store.restore(&row.id, &preview.plan_id).unwrap();
+    verify(
+        "restored after Store restart",
+        true,
+        first_body,
+        second_body,
+    );
+    let rows = store.recoveries().unwrap();
+    let row = rows.iter().find(|row| row.id == first.id).unwrap();
+    let preview = store.restore_preview(&row.id, &row.revision).unwrap();
+    store.restore(&row.id, &preview.plan_id).unwrap();
+    verify("first installation undone", false, "", first_body);
+}

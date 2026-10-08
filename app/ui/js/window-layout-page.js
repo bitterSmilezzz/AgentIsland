@@ -11,11 +11,11 @@ export function pageWindowLayout() {
   return `<section class="layout-space" data-layout-root>
     <div class="layout-toolbar"><p data-layout-status role="status" aria-live="polite">正在检查窗口能力</p><button type="button" class="mini-btn" data-layout-permission hidden>去授权</button><button type="button" class="mini-btn" data-layout-refresh>读取窗口</button></div>
     <div class="layout-rules"><label class="sr-only" for="layout-rule">已保存布局</label><select id="layout-rule" data-layout-rule><option value="">选择已保存布局</option></select><button type="button" class="mini-btn" data-layout-rule-load disabled>载入</button><button type="button" class="mini-btn" data-layout-rule-remove disabled>删除规则</button><span data-layout-rules-status role="status" aria-live="polite"></span></div>
-    <div class="layout-columns"><section class="layout-selection"><h2>选择窗口</h2><p class="layout-note">按点击顺序排列，首个为主窗。</p><div data-layout-windows></div></section>
+    <div class="layout-columns"><section class="layout-selection"><h2>选择窗口</h2><p class="layout-note">按点击顺序排列，首个为主窗。</p><div data-layout-windows role="region" aria-label="可排列窗口" tabindex="0"></div></section>
     <section class="layout-arrangement"><div class="layout-controls"><label>目标屏幕<select data-layout-screen aria-label="目标屏幕"></select></label><label>排列方式<select data-layout-template aria-label="排列方式"><option value="side_by_side">左右并排</option><option value="main_and_two">主窗与两辅窗</option><option value="grid">均分网格</option></select></label><label>间距<input type="number" min="0" max="64" step="1" value="12" data-layout-gap aria-label="窗口间距"></label></div>
     <p class="layout-note" data-layout-preview-caption>布局预览</p><div class="layout-canvas" data-layout-canvas aria-label="布局预览"><p>选择窗口后预览</p></div>
     <div class="layout-actions"><button type="button" class="mini-btn" data-layout-preview disabled>预览布局</button><button type="button" class="mini-btn primary" data-layout-apply disabled>应用排列</button></div><p class="layout-note">预览不会移动窗口；应用前会再次检查，预览 15 秒后失效。</p></section></div>
-    <section class="layout-results" data-layout-results hidden aria-label="排列结果"></section>
+    <section class="layout-results" data-layout-results hidden aria-label="排列结果" tabindex="-1"></section>
     <details class="layout-rule-save"><summary>保存为常用布局</summary><form data-layout-rule-save><label class="sr-only" for="layout-rule-name">布局名称</label><input id="layout-rule-name" name="name" placeholder="布局名称" maxlength="80" required autocomplete="off"><button type="submit" class="mini-btn" data-layout-rule-submit disabled>保存规则</button></form><p class="layout-note">保存排列方式和工具偏好。下次仍需核对窗口、选择屏幕并预览。</p></details>
     <details class="layout-history" data-layout-history><summary>排列历史</summary><p class="layout-note">记录当时的位置与逐窗结果，当前窗口需重新核对。</p><button type="button" class="mini-btn" data-layout-history-refresh>刷新历史</button><p role="status" aria-live="polite" data-layout-history-status>展开后读取本地记录。</p><div data-layout-history-list></div></details>
   </section>`;
@@ -24,7 +24,7 @@ export function layoutPreviewMarkup(preview, snapshot) {
   const display = snapshot.displays.find(d => d.screen_id === preview.geometry.screen_id);
   if (!display) return '<p>目标屏幕已失效，请重新读取</p>';
   const a = display.rect;
-  return `<div class="layout-screen" style="aspect-ratio:${a.width}/${a.height}">${preview.geometry.placements.map((p,i) => {
+  return `<div class="layout-screen" style="--layout-ratio:${a.width/a.height};aspect-ratio:${a.width}/${a.height}">${preview.geometry.placements.map((p,i) => {
     const w = snapshot.windows.find(w => w.window_id === p.window_id);
     const r = p.target;
     return `<div class="layout-cell${p.restriction ? ' is-restricted' : ''}" style="left:${100*(r.x-a.x)/a.width}%;top:${100*(r.y-a.y)/a.height}%;width:${100*r.width/a.width}%;height:${100*r.height/a.height}%"><span>${i+1}</span><strong>${esc(w?.application ?? '窗口')}</strong>${p.restriction ? `<small>${esc(p.restriction)}</small>` : ''}</div>`;
@@ -93,8 +93,12 @@ export async function hydrateWindowLayout() {
     box.querySelector('[data-layout-undo]')?.addEventListener('click', () => run(async () => {
       const forceIds = [...box.querySelectorAll('[data-layout-force]:checked')].map(e => e.dataset.layoutForce);
       const next = await workspaceFlow.execute('layout', result.operation_id, args=>invoke('workspace_preview',args), () => invoke('window_layout_undo', { operationId: result.operation_id, forceIds }), true);
-      result = next; resultTitle='恢复结果'; results(); status.textContent = next.windows.some(w => w.status === 'conflict') ? '有窗口后来被调整，请逐项确认' : '已检查恢复结果';
+      result = next; resultTitle='恢复结果'; results(); focusResult(); status.textContent = next.windows.some(w => w.status === 'conflict') ? '有窗口后来被调整，请逐项确认' : '已检查恢复结果';
     }));
+  }
+  function focusResult() {
+    const box=root.querySelector('[data-layout-results]');
+    focusAfter=box.querySelector('[data-layout-force]')??box.querySelector('[data-layout-undo]')??box;
   }
   root.focusWorkspaceRecovery=()=>{
     if(!requestedRecovery)return;
@@ -119,7 +123,24 @@ export async function hydrateWindowLayout() {
     busy = true; buttons(); root.setAttribute('aria-busy','true');
     const current = pageRequest(root);
     try { await action(current); } catch (error) { if (current.ownsRequest()) feedback.textContent = error instanceof Error?error.message:String(error); }
-    finally { if (current.ownsRequest()) { busy = false; root.removeAttribute('aria-busy'); buttons();if(root.isConnected&&(document.activeElement===document.body||root.contains(document.activeElement))){const preferred=focusAfter;focusAfter=null;const target=preferred?.isConnected&&!preferred.disabled?preferred:origin?.isConnected&&!origin.disabled?origin:feedback===historyStatus?historyRefresh:root.querySelector('[data-layout-refresh]');if(target?.isConnected&&!target.disabled&&!target.closest('[inert]'))target.focus({preventScroll:true});}if(historyQueued){historyQueued=false;run(readHistory,historyStatus);}if(requestedRecovery)root.focusWorkspaceRecovery(); } }
+    finally {
+      if (current.ownsRequest()) {
+        busy=false; root.removeAttribute('aria-busy'); buttons();
+        const preferred=focusAfter; focusAfter=null;
+        if(root.isConnected&&(document.activeElement===document.body||root.contains(document.activeElement))) {
+          const target=preferred?.isConnected&&!preferred.disabled?preferred:origin?.isConnected&&!origin.disabled?origin:feedback===historyStatus?historyRefresh:root.querySelector('[data-layout-refresh]');
+          if(target?.isConnected&&!target.disabled&&!target.closest('[inert]')) {
+            const resultBox=root.querySelector('[data-layout-results]');
+            if(preferred===target&&resultBox.contains(target)) {
+              (target===resultBox?resultBox.querySelector('.layout-result-head'):target).scrollIntoView({block:'nearest'});
+            }
+            target.focus({preventScroll:true});
+          }
+        }
+        if(historyQueued){historyQueued=false;run(readHistory,historyStatus);}
+        if(requestedRecovery)root.focusWorkspaceRecovery();
+      }
+    }
   }
   function renderHistory(){if(historyData)historyList.innerHTML=layoutHistoryMarkup(historyData.items,snapshot);buttons();}
   historyList.addEventListener('change',event=>{if(event.target.matches('[data-layout-history-window]')){clearPreview();buttons();}});
@@ -219,7 +240,7 @@ export async function hydrateWindowLayout() {
       return invoke('window_layout_apply',{previewId:selected.preview_id,expectedRevision:selected.revision,context});
     },restoring);
     if (!current.ownsRequest()) return;
-    result=next;if(restoring)root.querySelector('[data-layout-preview-caption]').textContent='历史位置参考 · 执行结果见下方'; resultTitle=restoring?'历史恢复结果':'排列结果'; results();focusAfter=root.querySelector('[data-layout-undo]')??root.querySelector('[data-layout-refresh]');status.textContent=restoring?'已执行恢复，请查看逐窗结果':'请查看逐窗结果；再次排列前重新读取窗口';if(historyStarted)await readHistory(current);
+    result=next;if(restoring)root.querySelector('[data-layout-preview-caption]').textContent='历史位置参考 · 执行结果见下方'; resultTitle=restoring?'历史恢复结果':'排列结果'; results();focusResult();status.textContent=restoring?'已执行恢复，请查看逐窗结果':'请查看逐窗结果；再次排列前重新读取窗口';if(historyStarted)await readHistory(current);
   }));
   await run(read);
   root.focusWorkspaceRecovery();
