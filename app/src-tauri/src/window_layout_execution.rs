@@ -3,6 +3,10 @@ use crate::window_layout::{Rect, WindowCandidate};
 use serde::Serialize;
 
 pub trait Handle: Clone {
+    /// Server-private process and launch identity; never persisted or sent to IPC.
+    fn collision_domain(&self) -> Option<crate::window_layout_plan::Domain> {
+        None
+    }
     /// Rechecks process launch identity, object lifetime, permissions and restrictions.
     fn inspect(&self) -> Result<WindowCandidate, InspectError>;
     /// May partially succeed. Always attempts to read the resulting rectangle.
@@ -48,6 +52,7 @@ pub struct ResultDto {
     pub record_id: Option<String>,
     pub record_warning: Option<String>,
 }
+#[derive(Clone)]
 pub struct Change<H> {
     pub id: String,
     pub handle: H,
@@ -58,6 +63,9 @@ pub struct Operation<H> {
     pub id: String,
     pub changes: Vec<Change<H>>,
     pub conflicts: std::collections::HashSet<String>,
+    // Bounded server-private handles also retain unchanged selected windows,
+    // which can occupy an undo path without needing restoration themselves.
+    participants: Vec<H>,
 }
 pub fn matches(a: Rect, b: Rect) -> bool {
     [a.x - b.x, a.y - b.y, a.width - b.width, a.height - b.height]
@@ -86,258 +94,316 @@ pub fn verify(candidate: &WindowCandidate, before: Rect, target: Rect) -> Result
     Ok(())
 }
 
-fn geometry_phases(p: &crate::window_layout::Placement) -> [Rect; 3] {
-    let shrunk = Rect {
-        width: p.before.width.min(p.target.width),
-        height: p.before.height.min(p.target.height),
-        ..p.before
-    };
-    [
-        shrunk,
-        Rect {
-            x: p.target.x,
-            y: p.target.y,
-            ..shrunk
-        },
-        p.target,
-    ]
-}
-
-/// Selection defines slots, not setter order. Vacate known intermediate
-/// geometry before another same-tool window occupies it. This is a scheduling
-/// hint only: all native identity/readback checks still run at every write.
-fn execution_order<H>(
+fn prepare<H: Handle>(
     selected: &[(H, crate::window_layout::Placement)],
-    groups: &[String],
-) -> Vec<usize> {
-    let phases: Vec<_> = selected.iter().map(|(_, p)| geometry_phases(p)).collect();
-    let mut pending: Vec<_> = (0..selected.len()).collect();
-    let mut order = Vec::with_capacity(pending.len());
-    while !pending.is_empty() {
-        let ready = pending.iter().position(|&i| {
-            !pending.iter().any(|&j| {
-                i != j
-                    && groups[i] == groups[j]
-                    && (phases[i].iter().any(|&r| matches(r, selected[j].1.before))
-                        || phases[j].iter().any(|&r| matches(r, selected[i].1.target)))
-            })
-        });
-        // Cycles may require staging moves, which this operation does not
-        // invent. Preserve the original order and truthful guarded failures.
-        order.push(pending.remove(ready.unwrap_or(0)));
-    }
-    order
+) -> Result<Vec<WindowCandidate>, String> {
+    selected
+        .iter()
+        .map(|(h, p)| {
+            let c = h.inspect().map_err(InspectError::reason)?;
+            if c.window_id != p.window_id {
+                return Err("窗口身份已变化，请重新读取".into());
+            }
+            verify(&c, p.before, p.target)?;
+            Ok(c)
+        })
+        .collect()
 }
 
+#[cfg(test)]
 pub fn apply<H: Handle>(
     selected: &[(H, crate::window_layout::Placement)],
 ) -> Result<(ResultDto, Operation<H>), String> {
-    // A single preflight failure prevents all writes; never mix stale and current selection.
-    let mut groups = Vec::with_capacity(selected.len());
-    for (h, p) in selected {
-        let c = h.inspect().map_err(InspectError::reason)?;
-        if c.window_id != p.window_id {
-            return Err("窗口身份已变化，请重新读取".into());
-        }
-        verify(&c, p.before, p.target)?;
-        groups.push(c.agent_id);
-    }
-    let mut op = Operation {
-        id: uuid::Uuid::new_v4().to_string(),
-        changes: Vec::new(),
-        conflicts: std::collections::HashSet::new(),
-    };
-    let mut rows = Vec::new();
-    for index in execution_order(selected, &groups) {
-        let (h, p) = &selected[index];
-        let check = h.inspect().map_err(InspectError::reason).and_then(|c| {
-            if c.window_id != p.window_id {
-                Err("窗口身份已变化".into())
-            } else {
-                verify(&c, p.before, p.target)
-            }
-        });
-        if let Err(reason) = check {
-            rows.push((
-                index,
-                Row {
-                    window_id: p.window_id.clone(),
+    apply_on_displays(selected, &[], &[])
+}
+
+pub fn apply_on_displays<H: Handle>(
+    selected: &[(H, crate::window_layout::Placement)],
+    displays: &[crate::window_layout::DisplayArea],
+    obstacles: &[(crate::window_layout_plan::Domain, Rect)],
+) -> Result<(ResultDto, Operation<H>), String> {
+    // Identity, constraints and the complete bounded plan precede every write.
+    let candidates = prepare(selected)?;
+    let placements: Vec<_> = selected.iter().map(|(_, p)| p.clone()).collect();
+    let domains: Vec<_> = selected.iter().map(|(h, _)| h.collision_domain()).collect();
+    let plan =
+        crate::window_layout_plan::build(&placements, &candidates, &domains, displays, obstacles)?;
+    Ok(perform(selected, &plan))
+}
+
+fn perform<H: Handle>(
+    selected: &[(H, crate::window_layout::Placement)],
+    plan: &[crate::window_layout_plan::Step],
+) -> (ResultDto, Operation<H>) {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut changes: Vec<Option<Change<H>>> = vec![None; selected.len()];
+    let mut rows: Vec<Option<Row>> = vec![None; selected.len()];
+    let has_staging = plan.iter().any(|step| step.temporary);
+    for step in plan {
+        let (handle, placement) = &selected[step.index];
+        let checked = handle
+            .inspect()
+            .map_err(InspectError::reason)
+            .and_then(|c| {
+                if c.window_id != placement.window_id {
+                    return Err("窗口身份已变化".into());
+                }
+                verify(&c, step.before, step.target)?;
+                Ok(c)
+            });
+        let candidate = match checked {
+            Ok(c) => c,
+            Err(reason) => {
+                rows[step.index] = Some(Row {
+                    window_id: placement.window_id.clone(),
                     status: Status::Skipped,
                     reason: Some(reason),
                     actual_rect: None,
-                },
-            ));
-            continue;
-        }
-        if matches(p.before, p.target) {
-            rows.push((
-                index,
-                Row {
-                    window_id: p.window_id.clone(),
+                });
+                if has_staging {
+                    break;
+                } else {
+                    continue;
+                }
+            }
+        };
+        if matches(candidate.rect, step.target) {
+            if !step.temporary {
+                rows[step.index] = Some(Row {
+                    window_id: placement.window_id.clone(),
                     status: Status::Skipped,
                     reason: Some("窗口已在目标位置".into()),
-                    actual_rect: Some(p.before),
-                },
-            ));
-            continue;
-        }
-        let mut result = h.write(p.target);
-        result.actual = result.actual.filter(|r| r.valid());
-        if let Some(actual) = result.actual.filter(|r| r.valid()) {
-            if !matches(actual, p.before) {
-                op.changes.push(Change {
-                    id: p.window_id.clone(),
-                    handle: h.clone(),
-                    before: p.before,
-                    actual,
+                    actual_rect: Some(candidate.rect),
                 });
             }
+            continue;
         }
-        let applied = result.error.is_none() && result.actual.is_some_and(|a| matches(a, p.target));
-        let reason = if applied {
-            None
-        } else {
-            result.error.or_else(|| {
-                Some(
-                    if result.actual.is_none() {
-                        "调整后无法读取位置，请在工具中核对"
-                    } else {
-                        "工具未采用目标尺寸，请在工具中核对"
-                    }
-                    .into(),
-                )
-            })
-        };
-        rows.push((
-            index,
-            Row {
-                window_id: p.window_id.clone(),
+        let mut written = handle.write(step.target);
+        written.actual = written.actual.filter(|r| r.valid());
+        if let Some(actual) = written.actual {
+            changes[step.index] = (!matches(actual, placement.before)).then(|| Change {
+                id: placement.window_id.clone(),
+                handle: handle.clone(),
+                before: placement.before,
+                actual,
+            });
+        }
+        let applied =
+            written.error.is_none() && written.actual.is_some_and(|r| matches(r, step.target));
+        if !applied || !step.temporary {
+            rows[step.index] = Some(Row {
+                window_id: placement.window_id.clone(),
                 status: if applied {
                     Status::Applied
                 } else {
                     Status::Failed
                 },
-                reason,
-                actual_rect: result.actual,
-            },
-        ));
+                reason: if applied {
+                    None
+                } else {
+                    written.error.or_else(|| {
+                        Some(
+                            if written.actual.is_none() {
+                                "调整后无法读取位置，请在工具中核对"
+                            } else {
+                                "工具未采用目标尺寸，请在工具中核对"
+                            }
+                            .into(),
+                        )
+                    })
+                },
+                actual_rect: written.actual,
+            });
+        }
+        if !applied && has_staging {
+            break;
+        }
     }
-    rows.sort_by_key(|(index, _)| *index);
-    op.changes
-        .sort_by_key(|change| selected.iter().position(|(_, p)| p.window_id == change.id));
+    let windows = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            row.unwrap_or_else(|| Row {
+                window_id: selected[i].1.window_id.clone(),
+                status: if changes[i].is_some() {
+                    Status::Failed
+                } else {
+                    Status::Skipped
+                },
+                reason: Some(
+                    if changes[i].is_some() {
+                        "窗口交换未完成，保留本次撤销；请核对实际位置"
+                    } else {
+                        "其他窗口调整未完成，已停止此次交换"
+                    }
+                    .into(),
+                ),
+                actual_rect: changes[i].as_ref().map(|c| c.actual),
+            })
+        })
+        .collect();
+    let changes: Vec<_> = changes.into_iter().flatten().collect();
     let dto = ResultDto {
-        operation_id: op.id.clone(),
-        windows: rows.into_iter().map(|(_, row)| row).collect(),
-        undo_available: !op.changes.is_empty(),
+        operation_id: id.clone(),
+        windows,
+        undo_available: !changes.is_empty(),
         record_id: None,
         record_warning: None,
     };
-    Ok((dto, op))
+    (
+        dto,
+        Operation {
+            id,
+            changes,
+            conflicts: std::collections::HashSet::new(),
+            participants: selected.iter().map(|(h, _)| h.clone()).collect(),
+        },
+    )
 }
 
+#[cfg(test)]
 pub fn undo<H: Handle>(op: &mut Operation<H>, force_ids: &[String]) -> Result<ResultDto, String> {
+    undo_on_displays(op, force_ids, &[])
+}
+
+pub fn undo_on_displays<H: Handle>(
+    op: &mut Operation<H>,
+    force_ids: &[String],
+    displays: &[crate::window_layout::DisplayArea],
+) -> Result<ResultDto, String> {
     if force_ids.iter().any(|id| !op.conflicts.contains(id)) {
         return Err("请先查看撤销冲突，再选择要恢复的窗口".into());
     }
-    let mut rows = Vec::new();
-    let mut remaining = Vec::new();
-    for change in op.changes.drain(..) {
-        let current = match change.handle.inspect() {
-            Ok(c) => c,
-            Err(InspectError::Gone(reason)) => {
-                op.conflicts.remove(&change.id);
-                rows.push(Row {
-                    window_id: change.id,
-                    status: Status::Skipped,
-                    reason: Some(reason),
-                    actual_rect: None,
-                });
-                continue;
-            }
-            Err(InspectError::Unavailable(reason)) => {
-                rows.push(Row {
-                    window_id: change.id.clone(),
-                    status: Status::Failed,
-                    reason: Some(reason),
-                    actual_rect: None,
-                });
-                remaining.push(change);
-                continue;
-            }
-        };
-        if current.window_id != change.id {
-            op.conflicts.remove(&change.id);
-            rows.push(Row {
-                window_id: change.id,
-                status: Status::Skipped,
-                reason: Some("窗口身份已变化".into()),
-                actual_rect: None,
-            });
-            continue;
-        }
-        if matches(current.rect, change.before) {
-            op.conflicts.remove(&change.id);
-            rows.push(Row {
-                window_id: change.id,
-                status: Status::Restored,
-                reason: Some("窗口已恢复".into()),
-                actual_rect: Some(current.rect),
-            });
-            continue;
-        }
-        if !matches(current.rect, change.actual) && !force_ids.contains(&change.id) {
-            op.conflicts.insert(change.id.clone());
-            rows.push(Row {
-                window_id: change.id.clone(),
-                status: Status::Conflict,
-                reason: Some("窗口之后被调整，确认后才能覆盖恢复".into()),
-                actual_rect: Some(current.rect),
-            });
-            remaining.push(change);
-            continue;
-        }
-        if let Err(reason) = verify(&current, current.rect, change.before) {
-            rows.push(Row {
-                window_id: change.id.clone(),
-                status: Status::Failed,
-                reason: Some(reason),
-                actual_rect: Some(current.rect),
-            });
-            remaining.push(change);
-            continue;
-        }
-        let mut result = change.handle.write(change.before);
-        result.actual = result.actual.filter(|r| r.valid());
-        let restored =
-            result.error.is_none() && result.actual.is_some_and(|r| matches(r, change.before));
-        rows.push(Row {
+    let mut rows: Vec<Option<Row>> = vec![None; op.changes.len()];
+    let mut eligible = Vec::new();
+    let mut indices = Vec::new();
+    let mut fixed = Vec::new();
+    let mut removable = std::collections::HashSet::new();
+    for (index, change) in op.changes.iter().enumerate() {
+        let mut row = Row {
             window_id: change.id.clone(),
-            status: if restored {
-                Status::Restored
-            } else {
-                Status::Failed
-            },
-            reason: if restored {
-                None
-            } else {
-                result
-                    .error
-                    .or_else(|| Some("未能恢复原位置，请核对窗口".into()))
-            },
-            actual_rect: result.actual,
-        });
-        if restored {
+            status: Status::Failed,
+            reason: None,
+            actual_rect: None,
+        };
+        match change.handle.inspect() {
+            Err(InspectError::Gone(reason)) => {
+                row.status = Status::Skipped;
+                row.reason = Some(reason);
+                removable.insert(index);
+            }
+            Err(InspectError::Unavailable(reason)) => row.reason = Some(reason),
+            Ok(current) => {
+                row.actual_rect = Some(current.rect);
+                if current.window_id != change.id {
+                    row.status = Status::Skipped;
+                    row.reason = Some("窗口身份已变化".into());
+                    removable.insert(index);
+                } else if matches(current.rect, change.before) {
+                    row.status = Status::Restored;
+                    row.reason = Some("窗口已恢复".into());
+                    removable.insert(index);
+                } else if !matches(current.rect, change.actual) && !force_ids.contains(&change.id) {
+                    op.conflicts.insert(change.id.clone());
+                    row.status = Status::Conflict;
+                    row.reason = Some("窗口之后被调整，确认后才能覆盖恢复".into());
+                } else if let Err(reason) = verify(&current, current.rect, change.before) {
+                    row.reason = Some(reason);
+                } else {
+                    indices.push(index);
+                    eligible.push((
+                        change.handle.clone(),
+                        crate::window_layout::Placement {
+                            window_id: change.id.clone(),
+                            before: current.rect,
+                            target: change.before,
+                            restriction: None,
+                        },
+                    ));
+                    continue;
+                }
+                if let Some(domain) = change.handle.collision_domain() {
+                    fixed.push((domain, current.rect));
+                }
+            }
+        }
+        rows[index] = Some(row);
+    }
+    let mut observed = std::collections::HashMap::new();
+    for handle in &op.participants {
+        if let Ok(current) = handle.inspect() {
+            if !eligible
+                .iter()
+                .any(|(_, p)| p.window_id == current.window_id)
+            {
+                if let Some(domain) = handle.collision_domain() {
+                    fixed.push((domain, current.rect));
+                }
+            }
+        }
+    }
+    if !eligible.is_empty() {
+        match apply_on_displays(&eligible, displays, &fixed) {
+            Err(reason) => {
+                for (local, &index) in indices.iter().enumerate() {
+                    rows[index] = Some(Row {
+                        window_id: op.changes[index].id.clone(),
+                        status: Status::Failed,
+                        reason: Some(reason.clone()),
+                        actual_rect: Some(eligible[local].1.before),
+                    });
+                }
+            }
+            Ok((result, partial)) => {
+                for change in partial.changes {
+                    observed.insert(change.id, change.actual);
+                }
+                for (mut row, &index) in result.windows.into_iter().zip(&indices) {
+                    if row.status == Status::Applied
+                        || (row.status == Status::Skipped
+                            && row
+                                .actual_rect
+                                .is_some_and(|r| matches(r, op.changes[index].before)))
+                    {
+                        row.status = Status::Restored;
+                        removable.insert(index);
+                    } else if row.status == Status::Skipped {
+                        match op.changes[index].handle.inspect() {
+                            Err(InspectError::Gone(_)) => {
+                                removable.insert(index);
+                            }
+                            Ok(current) if current.window_id != op.changes[index].id => {
+                                removable.insert(index);
+                            }
+                            _ => row.status = Status::Failed,
+                        }
+                    }
+                    if let Some(actual) = row.actual_rect {
+                        observed.insert(row.window_id.clone(), actual);
+                    }
+                    rows[index] = Some(row);
+                }
+            }
+        }
+    }
+    let mut remaining = Vec::new();
+    for (index, mut change) in op.changes.drain(..).enumerate() {
+        if removable.contains(&index) {
             op.conflicts.remove(&change.id);
         } else {
-            // Preserve the last observable result of a partial restore, never the original target.
-            let actual = result.actual.unwrap_or(change.actual);
-            remaining.push(Change { actual, ..change });
+            if let Some(actual) = observed.get(&change.id) {
+                change.actual = *actual;
+            }
+            remaining.push(change);
         }
     }
     op.changes = remaining;
+    if op.changes.is_empty() {
+        op.participants.clear();
+    }
     Ok(ResultDto {
         operation_id: op.id.clone(),
-        windows: rows,
+        windows: rows.into_iter().map(Option::unwrap).collect(),
         undo_available: !op.changes.is_empty(),
         record_id: None,
         record_warning: None,
@@ -1108,9 +1174,19 @@ mod sequencing_tests {
         fleet: Rc<RefCell<Vec<WindowCandidate>>>,
         index: usize,
         writes: Rc<RefCell<Vec<usize>>>,
+        fail_write: Option<Rc<std::cell::Cell<bool>>>,
+        block_after_stage: Option<Rc<std::cell::Cell<bool>>>,
     }
     impl Handle for Window {
+        fn collision_domain(&self) -> Option<crate::window_layout_plan::Domain> {
+            Some((42, 1))
+        }
         fn inspect(&self) -> Result<WindowCandidate, InspectError> {
+            if !self.writes.borrow().is_empty()
+                && self.block_after_stage.as_ref().is_some_and(|f| f.get())
+            {
+                return Err(InspectError::Unavailable("窗口权限在交换中失效".into()));
+            }
             let fleet = self.fleet.borrow();
             let candidate = fleet[self.index].clone();
             let same = fleet
@@ -1130,6 +1206,12 @@ mod sequencing_tests {
             self.writes.borrow_mut().push(self.index);
             let error = window_layout_geometry::adjust(self, target).err();
             let error = error.or_else(|| self.inspect().err().map(InspectError::reason));
+            let error = error.or_else(|| {
+                self.fail_write
+                    .as_ref()
+                    .filter(|f| f.get())
+                    .map(|_| "写入后未通过核验".into())
+            });
             WriteResult {
                 actual: Some(self.fleet.borrow()[self.index].rect),
                 error,
@@ -1164,6 +1246,232 @@ mod sequencing_tests {
             }
         }
     }
+    fn swap_fixture() -> (
+        Vec<(Window, crate::window_layout::Placement)>,
+        Vec<crate::window_layout::DisplayArea>,
+    ) {
+        let rect = |x| Rect {
+            x,
+            y: 30.0,
+            width: 506.0,
+            height: 680.0,
+        };
+        let fleet = Rc::new(RefCell::new(
+            (0..2)
+                .map(|i| WindowCandidate {
+                    window_id: i.to_string(),
+                    agent_id: "vscode".into(),
+                    application: "Code".into(),
+                    title: String::new(),
+                    screen_id: None,
+                    rect: rect(i as f64 * 518.0),
+                    movable: true,
+                    resizable: true,
+                    restriction: None,
+                    minimum_size: None,
+                })
+                .collect(),
+        ));
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let selected = (0..2)
+            .map(|i| {
+                (
+                    Window {
+                        fleet: fleet.clone(),
+                        index: i,
+                        writes: writes.clone(),
+                        fail_write: None,
+                        block_after_stage: None,
+                    },
+                    crate::window_layout::Placement {
+                        window_id: i.to_string(),
+                        before: rect(i as f64 * 518.0),
+                        target: rect((1 - i) as f64 * 518.0),
+                        restriction: None,
+                    },
+                )
+            })
+            .collect();
+        (
+            selected,
+            vec![crate::window_layout::DisplayArea {
+                screen_id: "d".into(),
+                scale: 1.0,
+                rect: Rect {
+                    x: 0.0,
+                    y: 30.0,
+                    width: 1024.0,
+                    height: 681.0,
+                },
+            }],
+        )
+    }
+    #[test]
+    fn failed_temporary_write_stops_and_undo_includes_its_actual_position() {
+        let (mut selected, displays) = swap_fixture();
+        let fault = Rc::new(std::cell::Cell::new(true));
+        selected[0].0.fail_write = Some(fault.clone());
+        let (result, mut op) = apply_on_displays(&selected, &displays, &[]).unwrap();
+        assert_eq!(*selected[0].0.writes.borrow(), vec![0]);
+        assert_eq!(result.windows[0].status, Status::Failed);
+        assert_eq!(result.windows[1].status, Status::Skipped);
+        assert_eq!(op.changes.len(), 1);
+        assert_eq!(op.changes[0].before.x, 0.0);
+        assert_eq!(op.changes[0].actual.x, 4.0);
+        fault.set(false);
+        let undone = undo_on_displays(&mut op, &[], &displays).unwrap();
+        assert_eq!(undone.windows[0].status, Status::Restored);
+        assert!(!undone.undo_available);
+        assert_eq!(selected[0].0.fleet.borrow()[0].rect.x, 0.0);
+    }
+    #[test]
+    fn identity_unavailable_after_stage_preserves_temporary_change_for_undo() {
+        let (mut selected, displays) = swap_fixture();
+        let blocked = Rc::new(std::cell::Cell::new(true));
+        selected[1].0.block_after_stage = Some(blocked.clone());
+        let (result, mut op) = apply_on_displays(&selected, &displays, &[]).unwrap();
+        assert_eq!(*selected[0].0.writes.borrow(), vec![0]);
+        assert_eq!(result.windows[0].status, Status::Failed);
+        assert_eq!(result.windows[0].actual_rect.unwrap().x, 4.0);
+        assert_eq!(result.windows[1].status, Status::Skipped);
+        assert_eq!(op.changes.len(), 1);
+        blocked.set(false);
+        assert!(
+            !undo_on_displays(&mut op, &[], &displays)
+                .unwrap()
+                .undo_available
+        );
+    }
+    #[test]
+    fn unplannable_swap_writes_nothing() {
+        let (selected, _) = swap_fixture();
+        assert!(apply_on_displays(&selected, &[], &[]).is_err());
+        assert!(selected[0].0.writes.borrow().is_empty());
+    }
+    #[test]
+    fn swap_undo_keeps_manual_drift_conflicted_until_explicit_confirmation() {
+        let (selected, displays) = swap_fixture();
+        let (_, mut op) = apply_on_displays(&selected, &displays, &[]).unwrap();
+        selected[0].0.fleet.borrow_mut()[0].rect.x = 500.0;
+        let result = undo_on_displays(&mut op, &[], &displays).unwrap();
+        assert_eq!(result.windows[0].status, Status::Conflict);
+        assert_eq!(result.windows[1].status, Status::Restored);
+        assert_eq!(selected[0].0.fleet.borrow()[0].rect.x, 500.0);
+        let again = undo_on_displays(&mut op, &[], &displays).unwrap();
+        assert_eq!(again.windows[0].status, Status::Conflict);
+        let forced = undo_on_displays(&mut op, &["0".into()], &displays).unwrap();
+        assert_eq!(forced.windows[0].status, Status::Restored);
+        assert!(!forced.undo_available);
+    }
+    #[test]
+    fn failed_undo_planning_keeps_all_changes_and_writes_nothing() {
+        let (selected, displays) = swap_fixture();
+        let (_, mut op) = apply_on_displays(&selected, &displays, &[]).unwrap();
+        let writes = selected[0].0.writes.borrow().len();
+        let result = undo_on_displays(&mut op, &[], &[]).unwrap();
+        assert!(result.windows.iter().all(|r| r.status == Status::Failed));
+        assert_eq!(selected[0].0.writes.borrow().len(), writes);
+        assert_eq!(op.changes.len(), 2);
+        assert!(
+            !undo_on_displays(&mut op, &[], &displays)
+                .unwrap()
+                .undo_available
+        );
+    }
+    #[test]
+    fn unchanged_selected_window_still_protects_the_full_size_undo_path() {
+        let (mut selected, displays) = swap_fixture();
+        selected[0].1.before.width = 1024.0;
+        selected[0].0.fleet.borrow_mut()[0].rect = selected[0].1.before;
+        selected[0].1.target.height = 681.0;
+        selected[1].1.target.height = 681.0;
+        selected[1].1.before.x = 0.0;
+        selected[1].0.fleet.borrow_mut()[1].rect = selected[1].1.before;
+        let (_, mut op) = apply_on_displays(&selected, &displays, &[]).unwrap();
+        assert_eq!(op.changes.len(), 1);
+        assert_eq!(op.changes[0].id, "0");
+        let undone = undo_on_displays(&mut op, &[], &displays).unwrap();
+        assert_eq!(undone.windows[0].status, Status::Restored);
+        assert!(!undone.undo_available);
+        assert_eq!(selected[0].0.fleet.borrow()[0].rect, selected[0].1.before);
+        assert_eq!(selected[1].0.fleet.borrow()[1].rect, selected[1].1.before);
+    }
+    #[test]
+    fn failed_stage_is_persisted_as_actual_geometry_and_remains_live_undoable() {
+        let (mut selected, displays) = swap_fixture();
+        let fault = Rc::new(std::cell::Cell::new(true));
+        selected[1].0.fail_write = Some(fault.clone());
+        let sandbox = crate::testutil::Sandbox::new("window-swap-stage-history");
+        let path = sandbox.path().join("window-history.json");
+        let mut store = crate::window_layout_service::Store::with_journal(
+            crate::window_layout_journal::Store::new(path.clone()),
+        );
+        store
+            .replace(
+                displays.clone(),
+                selected
+                    .iter()
+                    .map(|(h, _)| (h.inspect().ok().unwrap(), h.clone()))
+                    .collect(),
+                vec![],
+            )
+            .unwrap();
+        let preview = store
+            .preview(
+                &["1".into(), "0".into()],
+                "d",
+                crate::window_layout::Template::SideBySide,
+                12.0,
+                1,
+                100,
+            )
+            .unwrap();
+        let result = store
+            .apply_preview(&preview.preview_id, 1, &displays, 101)
+            .unwrap();
+        assert!(result.undo_available);
+        assert_eq!(result.windows[0].status, Status::Failed);
+        let history = crate::window_layout_journal::Store::new(path)
+            .list()
+            .unwrap();
+        let record = &history.items[0];
+        assert_eq!(record.slots[0].before.x, 518.0);
+        assert_eq!(record.slots[0].target.x, 0.0);
+        assert_eq!(record.slots[0].actual.unwrap().x, 514.0);
+        assert_eq!(
+            record.slots[0].outcome,
+            Some(crate::window_layout_journal::Outcome::Failed)
+        );
+        assert_eq!(
+            record.slots[1].outcome,
+            Some(crate::window_layout_journal::Outcome::Skipped)
+        );
+        fault.set(false);
+        assert!(
+            !store
+                .undo_on_displays(&result.operation_id, &[], &displays)
+                .unwrap()
+                .undo_available
+        );
+    }
+    #[test]
+    fn failed_undo_that_reaches_raw_target_still_requires_verified_success() {
+        let (selected, displays) = swap_fixture();
+        let (_, mut op) = apply_on_displays(&selected, &displays, &[]).unwrap();
+        let fault = Rc::new(std::cell::Cell::new(true));
+        // Undo stages window 0, then the final write of window 1 fails after
+        // physically reaching its original rectangle.
+        op.changes[1].handle.fail_write = Some(fault.clone());
+        let result = undo_on_displays(&mut op, &[], &displays).unwrap();
+        assert!(result.windows.iter().all(|r| r.status == Status::Failed));
+        assert!(result.undo_available);
+        assert_eq!(result.windows[1].actual_rect.unwrap(), selected[1].1.before);
+        fault.set(false);
+        let retry = undo_on_displays(&mut op, &[], &displays).unwrap();
+        assert!(retry.windows.iter().all(|r| r.status == Status::Restored));
+        assert!(!retry.undo_available);
+    }
+
     #[test]
     fn near_overlapping_windows_arrange_without_blocking_the_second_identity() {
         let before = [
@@ -1208,6 +1516,8 @@ mod sequencing_tests {
                         fleet: fleet.clone(),
                         index,
                         writes: writes.clone(),
+                        fail_write: None,
+                        block_after_stage: None,
                     },
                     crate::window_layout::Placement {
                         window_id: index.to_string(),
@@ -1255,7 +1565,7 @@ mod sequencing_tests {
     }
 
     #[test]
-    fn cyclic_swap_keeps_identity_checks_and_reports_partial_write() {
+    fn cyclic_swap_and_undo_restore_exact_geometry_without_losing_identity() {
         let rect = |x| Rect {
             x,
             y: 30.0,
@@ -1288,6 +1598,8 @@ mod sequencing_tests {
                         fleet: fleet.clone(),
                         index: i,
                         writes: writes.clone(),
+                        fail_write: None,
+                        block_after_stage: None,
                     },
                     crate::window_layout::Placement {
                         window_id: i.to_string(),
@@ -1298,49 +1610,29 @@ mod sequencing_tests {
                 )
             })
             .collect();
-        let (result, operation) = apply(&selected).unwrap();
+        let displays = vec![crate::window_layout::DisplayArea {
+            screen_id: "d".into(),
+            scale: 1.0,
+            rect: Rect {
+                x: 0.0,
+                y: 30.0,
+                width: 1024.0,
+                height: 681.0,
+            },
+        }];
+        let (result, mut operation) = apply_on_displays(&selected, &displays, &[]).unwrap();
         assert_eq!(
             result.windows.iter().map(|r| &r.status).collect::<Vec<_>>(),
-            vec![&Status::Failed, &Status::Skipped]
+            vec![&Status::Applied, &Status::Applied]
         );
-        assert_eq!(*writes.borrow(), vec![0]);
         assert!(result.undo_available);
-        assert_eq!(operation.changes.len(), 1);
-        assert_eq!(operation.changes[0].actual, rect(518.0));
-        assert!(result.windows.iter().all(|r| r.reason.is_some()));
-    }
-
-    #[test]
-    fn independent_tools_keep_selection_order_despite_equal_geometry() {
-        let rect = |x| Rect {
-            x,
-            y: 30.0,
-            width: 506.0,
-            height: 680.0,
-        };
-        let selected = vec![
-            (
-                (),
-                crate::window_layout::Placement {
-                    window_id: "a".into(),
-                    before: rect(0.0),
-                    target: rect(518.0),
-                    restriction: None,
-                },
-            ),
-            (
-                (),
-                crate::window_layout::Placement {
-                    window_id: "b".into(),
-                    before: rect(518.0),
-                    target: rect(0.0),
-                    restriction: None,
-                },
-            ),
-        ];
-        assert_eq!(
-            execution_order(&selected, &["vscode".into(), "codex".into()]),
-            vec![0, 1]
-        );
+        assert_eq!(operation.changes.len(), 2);
+        assert_eq!(fleet.borrow()[0].rect, rect(518.0));
+        assert_eq!(fleet.borrow()[1].rect, rect(0.0));
+        let undone = undo_on_displays(&mut operation, &[], &displays).unwrap();
+        assert!(undone.windows.iter().all(|r| r.status == Status::Restored));
+        assert!(!undone.undo_available);
+        assert_eq!(fleet.borrow()[0].rect, rect(0.0));
+        assert_eq!(fleet.borrow()[1].rect, rect(518.0));
     }
 }

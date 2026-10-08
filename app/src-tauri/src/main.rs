@@ -78,6 +78,7 @@ mod window_layout_execution;
 mod window_layout_geometry;
 mod window_layout_journal;
 mod window_layout_native;
+mod window_layout_plan;
 mod window_layout_readback;
 mod window_layout_rules;
 mod window_layout_service;

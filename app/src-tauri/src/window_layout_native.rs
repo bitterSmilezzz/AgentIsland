@@ -723,6 +723,9 @@ mod mac {
         }
     }
     impl crate::window_layout_execution::Handle for NativeWindow {
+        fn collision_domain(&self) -> Option<crate::window_layout_plan::Domain> {
+            Some((self.pid, self.launched))
+        }
         fn inspect(&self) -> Result<WindowCandidate, crate::window_layout_execution::InspectError> {
             objc2::rc::autoreleasepool(|_| self.inspect_pooled())
         }

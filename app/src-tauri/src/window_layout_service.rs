@@ -188,7 +188,22 @@ impl<H: crate::window_layout_execution::Handle> Store<H> {
                 )
             })
             .transpose()?;
-        let applied = crate::window_layout_execution::apply(&selected);
+        let obstacles: Vec<_> = snapshot
+            .windows
+            .iter()
+            .filter(|w| !selected.iter().any(|(_, p)| p.window_id == w.window_id))
+            .filter_map(|w| {
+                self.handles
+                    .get(&w.window_id)?
+                    .collision_domain()
+                    .map(|domain| (domain, w.rect))
+            })
+            .collect();
+        let applied = crate::window_layout_execution::apply_on_displays(
+            &selected,
+            current_displays,
+            &obstacles,
+        );
         let (mut result, operation) = match applied {
             Ok(value) => value,
             Err(error) => {
@@ -209,6 +224,7 @@ impl<H: crate::window_layout_execution::Handle> Store<H> {
         }
         Ok(result)
     }
+    #[cfg(test)]
     pub fn undo_operation(
         &mut self,
         operation_id: &str,
@@ -250,7 +266,8 @@ impl<H: crate::window_layout_execution::Handle> Store<H> {
             .filter(|id| operation.changes.iter().any(|c| &c.id == *id))
             .cloned()
             .collect();
-        let mut result = crate::window_layout_execution::undo(operation, &filtered)?;
+        let mut result =
+            crate::window_layout_execution::undo_on_displays(operation, &filtered, displays)?;
         for c in blocked {
             result.windows.push(Row {
                 window_id: c.id.clone(),
