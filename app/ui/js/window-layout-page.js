@@ -7,6 +7,11 @@ export function selectLayoutRecovery(id){requestedRecovery=id;document.querySele
 export function selectLayoutRule(id){requestedRule=id;document.querySelector('[data-layout-root]')?.selectWorkspaceRule?.();}
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const labels = { applied: '已排列', failed: '未完成', skipped: '已跳过', restored: '已恢复', conflict: '需确认恢复' };
+export function layoutRuleSelectionMatches(tools, selection, windows) {
+  return Array.isArray(tools) && tools.length > 0 && tools.length === selection.length &&
+    new Set(selection).size === selection.length && tools.every((tool, index) =>
+      windows.some(window => window.window_id === selection[index] && window.agent_id === tool && !window.restriction));
+}
 export function layoutResultRowsMarkup(windows, names, restoring = false) {
   return windows.map(w => {
     const name = names.get(w.window_id);
@@ -92,7 +97,9 @@ export async function hydrateWindowLayout() {
       if (input.checked && selection.length >= 16) { input.checked = false; status.textContent = '一次最多选择 16 个窗口'; return; }
       selection = input.checked ? [...selection, input.dataset.layoutWindow] : selection.filter(id => id !== input.dataset.layoutWindow);
       box.querySelectorAll('[data-layout-order]').forEach(b => { const i=selection.indexOf(b.dataset.layoutOrder); b.textContent=i < 0 ? '' : i+1; });
-      loadedRule=null; clearPreview();
+      // Resolving an ambiguous tool requires explicit window selection. Keep
+      // the loaded rule; its tool order is checked again before preview/apply.
+      clearPreview();
     }));
   }
   function results() {
@@ -101,6 +108,7 @@ export async function hydrateWindowLayout() {
     box.innerHTML = `<div class="layout-result-head"><h2>${resultTitle}</h2>${result.undo_available ? `<button type="button" class="mini-btn" data-layout-undo>${resultTitle==='历史恢复结果'?'撤销恢复':'撤销排列'}</button>` : ''}</div>${result.record_warning?`<p class="layout-note" role="alert">${esc(result.record_warning)}</p>`:''}${layoutResultRowsMarkup(result.windows, resultNames, resultTitle === '历史恢复结果')}`;
     box.querySelector('[data-layout-undo]')?.addEventListener('click', () => run(async () => {
       const forceIds = [...box.querySelectorAll('[data-layout-force]:checked')].map(e => e.dataset.layoutForce);
+      workspaceFlow.prepareLayoutUndo(result.operation_id);
       const next = await workspaceFlow.execute('layout', result.operation_id, args=>invoke('workspace_preview',args), () => invoke('window_layout_undo', { operationId: result.operation_id, forceIds }), true);
       result = next; resultTitle='恢复结果'; results(); focusResult(); status.textContent = next.windows.some(w => w.status === 'conflict') ? '有窗口后来被调整，请逐项确认' : '已检查恢复结果';
     }));
@@ -230,11 +238,13 @@ export async function hydrateWindowLayout() {
     if (!current.ownsRequest()) return;
     template.value=resolved.rule.template; gap.value=resolved.rule.gap;
     screen.value=resolved.rule.screen_preference==='primary' ? snapshot.displays[0]?.screen_id ?? '' : '';
-    selection=resolved.selection; loadedRule={id:resolved.rule.id,revision:rules.revision,chooseScreen:!screen.value}; windows();
+    selection=resolved.selection; loadedRule={id:resolved.rule.id,revision:rules.revision,tools:resolved.rule.tools,chooseScreen:!screen.value}; windows();
     ruleStatus.textContent=''; status.textContent=resolved.reason ?? (screen.value ? '布局已载入，核对窗口后预览' : '布局已载入，请选择目标屏幕后预览');
   },ruleStatus));
   root.querySelector('[data-layout-preview]').addEventListener('click', () => run(async current => {
     clearPreview();
+    if (loadedRule && !layoutRuleSelectionMatches(loadedRule.tools, selection, snapshot.windows))
+      throw new Error('请按已载入布局的工具顺序选齐窗口，或调整排列参数后作为独立布局预览。');
     const next=await invoke('window_layout_preview',{selection:[...selection],screenId:screen.value,template:template.value,gap:Number(gap.value),expectedRevision:snapshot.revision});
     if (!current.ownsRequest()) return;
     showPreview(next);

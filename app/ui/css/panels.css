@@ -130,6 +130,7 @@ html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-setting
 }
 
 html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .sb-toast {
+  scroll-margin-block: 12px;
   margin-top: 10px;
   padding: 7px 9px;
   border-radius: 8px;

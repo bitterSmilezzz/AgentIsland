@@ -15,6 +15,7 @@ import { pageConnections, hydrateConnections } from './connections-page.js';
 import { pageMcp, hydrateMcp } from './mcp-page.js';
 import {pageClaudePlan,hydrateClaudePlan} from './claude-plan-page.js';
 import { PageCache, pageRequest, revealNavigationItem, previewFocusTarget } from './page-host.js';
+import { beginProviderFeedback, showProviderFeedback } from './provider-feedback.js';
 import { healthReason, agentNextStep } from './agent-actions.js';
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
@@ -1941,14 +1942,14 @@ export function pageSettingsHeaderLabel() {
 
 
 /// Each source retains its own error; unreadable data must not become an empty list.
-export async function hydrateProvider() {
+export async function hydrateProvider({ canRender = () => true } = {}) {
   const root = document.querySelector('[data-provider-root]');
   if (!root) return;
   const workspace = root.closest('[data-model-workspace]');
   bindModelWorkspace(workspace, () => hydrateConnections(workspace.querySelector('[data-connections-root]')), () => {hydrateMcp(workspace.querySelector('[data-mcp-root]'));hydrateClaudePlan(workspace.querySelector('[data-claude-plan]'));}, () => hydratePrompts(workspace.querySelector('[data-prompts-root]')));
   const currentRequest = pageRequest(root);
   const status = await invoke('provider_status').catch(() => null);
-  if (!currentRequest()) return;
+  if (!currentRequest() || !canRender()) return false;
   if (!status) {
     root.innerHTML = '<div class="sb-empty" role="alert">配置读取失败。</div><button type="button" class="mini-btn" data-provider-retry>重试</button>';
     root.querySelector('[data-provider-retry]').onclick = hydrateProvider;
@@ -1963,11 +1964,12 @@ export async function hydrateProvider() {
   const backups = await invoke('provider_list_backups').catch(() => {
     errors.push('备份清单读取失败，请重试。'); return null;
   });
-  if (!currentRequest()) return;
+  if (!currentRequest() || !canRender()) return false;
   renderProviderPage(root, status, profiles ?? [], backups ?? [], errors, profiles !== null);
   root.dataset.pageReady = 'true';
   focusWorkspaceTarget();
   scheduleLayoutLog();
+  return true;
 }
 
 function providerField(key, label, value = '') {
@@ -2019,7 +2021,7 @@ export function renderProviderPage(root, status, profiles, backups, errors = [],
   const backupRows = backups.length === 0 ? '<div class="sb-empty">应用前自动备份。</div>'
     : backups.slice(0, 8).map((backup) => `<div class="sb-backup"><span class="name">${escapeHtml(backup.name)}</span>
         <button type="button" class="mini-btn" data-restore="${escapeHtml(backup.name)}"${status.revision ? '' : ' disabled'}>对比并还原</button></div>`).join('');
-  root.innerHTML = `${summary}${drift}${warnings}
+  root.innerHTML = `${summary}<div class="sb-toast" data-toast role="status" aria-live="polite" aria-atomic="true" tabindex="-1" hidden></div>${drift}${warnings}
     <div class="provider-toolbar"><button type="button" class="mini-btn" data-capture${status.current_draft ? '' : ' disabled'}>保存当前配置</button>
     <button type="button" class="mini-btn" data-new-profile>添加档位</button><button type="button" class="mini-btn" data-provider-refresh>刷新</button></div>
     ${status.capture_notice ? `<p class="sb-note">${escapeHtml(status.capture_notice)}</p>` : ''}
@@ -2088,12 +2090,15 @@ function bindProviderEvents(root, status, profiles) {
     confirmBox.scrollIntoView({ block: 'nearest' });
   };
   const apply = async (command, args) => {
-    let failure = '';
-    const context=command==='provider_apply_profile'?workspaceFlow.operationContext('profile',args.id):null;
-    const applied = await workspaceFlow.execute('profile', args.id, verifyWorkspace, () => invoke(context?'workspace_apply_profile':command, { ...args, revision: status.revision, ...(context?{context}:{}) })).catch(error => { failure = String(error); return null; });
-    await hydrateProvider();
-    showProviderToast(root, failure || !applied ? `应用失败：${failure || '命令没有返回结果'}`
-      : `${applied.record_warning || '配置已写入'}。备份：${applied.backup_name}。请开启新会话，必要时重启 Codex。`);
+    const feedback = beginProviderFeedback(root);
+    try {
+      let failure = '';
+      const context=command==='provider_apply_profile'?workspaceFlow.operationContext('profile',args.id):null;
+      const applied = await workspaceFlow.execute('profile', args.id, verifyWorkspace, () => invoke(context?'workspace_apply_profile':command, { ...args, revision: status.revision, ...(context?{context}:{}) })).catch(error => { failure = String(error); return null; });
+      const refreshed = feedback.current() && await hydrateProvider({ canRender: feedback.current });
+      showProviderToast(root, failure || !applied ? `应用失败：${failure || '命令没有返回结果'}`
+        : `${applied.record_warning || '配置已写入'}。备份：${applied.backup_name}。请开启新会话，必要时重启 Codex。${refreshed ? '' : '页面未刷新，请刷新核对。'}`, feedback);
+    } finally { feedback.dispose(); }
   };
   const preview = (choice, callback) => askConfirm(
     `<b>Codex 配置目标</b><br/>模型：${escapeHtml(status.configured_model ?? '未指定')} → ${escapeHtml(choice.model)}<br/>
@@ -2143,10 +2148,14 @@ function bindProviderEvents(root, status, profiles) {
     const table = `<table class="provider-diff"><thead><tr><th>字段</th><th>当前</th><th>备份</th></tr></thead><tbody>${labels.map((label, i) => `<tr${diff.current[i] !== diff.backup[i] ? ' class="changed"' : ''}><th>${label}</th><td>${escapeHtml(diff.current[i])}</td><td>${escapeHtml(diff.backup[i])}</td></tr>`).join('')}</tbody></table>`;
     if (diff.identical) { showProviderToast(root, '备份与当前配置完全相同，无需还原。'); return; }
     askConfirm(`<b>还原 ${escapeHtml(name)}</b>${table}${diff.mcp_changes?.length ? `<p>MCP 变更</p><ul>${diff.mcp_changes.map(change => `<li>${escapeHtml(change)}</li>`).join('')}</ul>` : ''}${diff.skills_changes?.length ? `<p>Skills 变更</p><ul>${diff.skills_changes.map(change => `<li>${escapeHtml(change)}</li>`).join('')}</ul>` : ''}<p>将还原完整 config.toml（含 MCP、Skills 与其他设置），并先备份当前文件。预览不展示密钥或认证信息。</p>`, async () => {
-      let failure = '';
-      const context=workspaceFlow.operationContext('profile',name,true);
-      const restored = await workspaceFlow.execute('profile', name, verifyWorkspace, () => invoke(context?'workspace_restore_profile':'provider_restore_backup', { name, revision: diff.revision, backupRevision: diff.backup_revision, ...(context?{context}:{}) }), true).catch(() => { failure = '配置或备份已变化，或无法写入；请刷新核对'; return null; });
-      await hydrateProvider(); showProviderToast(root, !restored ? `还原未完成：${failure || '未收到结果'}` : `${restored.record_warning || '配置已还原'}。还原前备份：${restored.backup_name}。请开启新会话。`);
+      const feedback = beginProviderFeedback(root);
+      try {
+        let failure = '';
+        const context=workspaceFlow.operationContext('profile',name,true);
+        const restored = await workspaceFlow.execute('profile', name, verifyWorkspace, () => invoke(context?'workspace_restore_profile':'provider_restore_backup', { name, revision: diff.revision, backupRevision: diff.backup_revision, ...(context?{context}:{}) }), true).catch(() => { failure = '配置或备份已变化，或无法写入；请刷新核对'; return null; });
+        const refreshed = feedback.current() && await hydrateProvider({ canRender: feedback.current });
+        showProviderToast(root, !restored ? `还原未完成：${failure || '未收到结果'}` : `${restored.record_warning || '配置已还原'}。还原前备份：${restored.backup_name}。请开启新会话。${refreshed ? '' : '页面未刷新，请刷新核对。'}`, feedback);
+      } finally { feedback.dispose(); }
     });
   }; });
   root.querySelector('[data-profile-export]').onclick = async () => {
@@ -2247,10 +2256,8 @@ function bindProviderEvents(root, status, profiles) {
   };
 }
 
-function showProviderToast(root, text) {
-  const toast = root.querySelector('[data-toast]') ?? document.createElement('div');
-  toast.className = 'sb-toast'; toast.setAttribute('data-toast', ''); toast.setAttribute('role', 'status');
-  toast.textContent = text; root.appendChild(toast);
+function showProviderToast(root, text, operation) {
+  showProviderFeedback(root, text, operation);
   // Config details belong in the UI, not the application log.
 }
 

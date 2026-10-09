@@ -16,6 +16,12 @@ export class WorkspaceFlow {
     if(!s||s.stale||!i||i.kind!=='layout'||i.recovery!==recovery||(recovery?i.receipt?.recovery_id!==target:i.target!==target))return null;
     return {id:s.id,expected_revision:s.revision,layout_id:i.target,expected_rules_revision:rulesRevision};
   }
+  prepareLayoutUndo(operationId) {
+    const s=this.session,i=this.intent,receipt=s?.receipts.get('layout');
+    if(!s||s.stale||i?.kind!=='layout'||i.recovery||receipt?.recovery_id!==operationId||!receipt.recoverable)return;
+    const step=s.steps.find(step=>step.kind==='layout'&&step.target_id===i.target&&step.available);
+    if(step)this.activate(step,true);
+  }
   open(preview, records=[],windowRecords=null) {
     if (this.pending) throw new Error('当前分项仍在执行，请完成后再打开组合。');
     const same = this.session?.id === preview.workspace.id && this.session?.revision === preview.revision;

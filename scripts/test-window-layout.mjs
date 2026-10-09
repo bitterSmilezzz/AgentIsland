@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-const {pageWindowLayout,layoutPreviewMarkup,layoutHistoryMarkup,layoutResultRowsMarkup}=await import('../app/ui/js/window-layout-page.js');
+const {pageWindowLayout,layoutPreviewMarkup,layoutHistoryMarkup,layoutResultRowsMarkup,layoutRuleSelectionMatches}=await import('../app/ui/js/window-layout-page.js');
+const candidates=[{window_id:'code-a',agent_id:'vscode'},{window_id:'code-b',agent_id:'vscode'},{window_id:'codex',agent_id:'codex'},{window_id:'blocked',agent_id:'vscode',restriction:'unverified'}];
+assert.equal(layoutRuleSelectionMatches(['vscode','vscode'],['code-b','code-a'],candidates),true);
+assert.equal(layoutRuleSelectionMatches(['codex','vscode'],['codex','code-b'],candidates),true);
+for(const selection of [['code-a'],['code-a','code-a'],['code-a','codex'],['code-a','blocked'],['code-a','missing']])
+  assert.equal(layoutRuleSelectionMatches(['vscode','vscode'],selection,candidates),false);
+assert.equal(layoutRuleSelectionMatches(['codex','vscode'],['code-b','codex'],candidates),false);
+assert.equal(layoutRuleSelectionMatches([],[],candidates),false);
+console.log('PASS: manual rule resolution preserves exact ordered tool slots and rejects duplicate, missing or restricted windows');
 const html=pageWindowLayout();
 assert.match(html,/data-layout-apply disabled/);
 assert.match(html,/data-layout-permission hidden/);

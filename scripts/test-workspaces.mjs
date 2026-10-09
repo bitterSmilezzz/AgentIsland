@@ -55,3 +55,14 @@ assert.match(workspaceHistoryHtml([],windowHistory),/窗口/);assert.match(works
 console.log('PASS: workspace window history binds exact combo and rule after restart, pending stays uncertain, and historical recovery retains partial-result warnings');
 const refreshFlow=new WorkspaceFlow();refreshFlow.open(combo(),[],windowHistory);refreshFlow.open(combo(),[],null);assert.equal(refreshFlow.receipt('layout').recovery_id,'history-pending');refreshFlow.open(combo(),[],windowHistory.filter(r=>r.id==='history-applied'));assert.equal(refreshFlow.receipt('layout').recovery_id,'history-applied');refreshFlow.open(combo(),[],[]);assert.equal(refreshFlow.receipt('layout'),undefined);
 console.log('PASS: failed history reads retain the current receipt, successful reads reconcile deleted or changed historical records');
+
+await import('./test-provider-feedback.mjs');
+
+const directUndo=new WorkspaceFlow();directUndo.open(combo());directUndo.activate(combo().steps[1]);
+await directUndo.execute('layout','rule-a',verify,async()=>({operation_id:'exact-layout-operation',undo_available:true,windows:[{status:'applied'}]}));
+directUndo.prepareLayoutUndo('unrelated-operation');assert.equal(directUndo.intent.recovery,false);
+directUndo.prepareLayoutUndo('exact-layout-operation');assert.equal(directUndo.intent.recovery,true);
+await directUndo.execute('layout','exact-layout-operation',verify,async()=>({operation_id:'exact-layout-operation',undo_available:false,windows:[{status:'restored'}]}),true);
+assert.equal(directUndo.receipt('layout').state,'restored');
+directUndo.route('settings');directUndo.prepareLayoutUndo('exact-layout-operation');assert.equal(directUndo.intent,null);
+console.log('PASS: direct undo belongs only to the active workspace operation; unrelated or abandoned layout results cannot acquire it');
