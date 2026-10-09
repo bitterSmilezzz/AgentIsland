@@ -8,6 +8,15 @@ export class PageCache {
   }
 }
 
+// A preview container can receive focus from the toolbar. Enter its controls
+// from the matching end instead of treating that container as the first item.
+export function previewFocusTarget(controls, active, backwards = false) {
+  if (!controls.length) return null;
+  const index = controls.indexOf(active);
+  return controls[index < 0 ? (backwards ? controls.length - 1 : 0)
+    : (index + (backwards ? -1 : 1) + controls.length) % controls.length];
+}
+
 // Repeated reads on the same container must not overwrite a newer response.
 const requests = new WeakMap();
 export function pageRequest(root) {

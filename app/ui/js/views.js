@@ -13,7 +13,7 @@ import { modelDirectoryHtml, bindModelWorkspace, bindModelDirectory } from './mo
 import { pageConnections, hydrateConnections } from './connections-page.js';
 import { pageMcp, hydrateMcp } from './mcp-page.js';
 import {pageClaudePlan,hydrateClaudePlan} from './claude-plan-page.js';
-import { PageCache, pageRequest, revealNavigationItem } from './page-host.js';
+import { PageCache, pageRequest, revealNavigationItem, previewFocusTarget } from './page-host.js';
 import { healthReason, agentNextStep } from './agent-actions.js';
 // 灵动岛视图渲染（IslandView / AgentRowView / TokenSummaryBar / SubViews 的 Web 对应物）
 import { invoke } from './tauri.js';
@@ -2074,8 +2074,8 @@ function bindProviderEvents(root, status, profiles) {
       if (event.key === 'Escape') closeConfirm();
       if (event.key === 'Tab') {
         event.preventDefault();
-        const yes = confirmBox.querySelector('[data-yes]'), no = confirmBox.querySelector('[data-no]');
-        (document.activeElement === yes ? no : yes).focus();
+        const controls = [...confirmBox.querySelectorAll('button:not(:disabled)')];
+        previewFocusTarget(controls, document.activeElement, event.shiftKey)?.focus();
       }
     };
     confirmBox.querySelector('[data-no]').focus();

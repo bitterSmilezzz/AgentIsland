@@ -19,8 +19,16 @@ export function bindQuickNavigation({items,current,navigate}){
  function open(){
   if(!document.querySelector('.wb'))return;
   // Keep confirmations authoritative; do not open a second modal over a pending write.
-  const gate=[...document.querySelectorAll('[data-confirm],[data-mcp-confirm],[data-prompt-confirm],[data-layout-confirm],dialog[open]')].find(node=>node!==dialog&&!node.hidden&&node.getClientRects().length);
-  if(gate){gate.querySelector('button:not(:disabled)')?.focus({preventScroll:true});return;}
+  const gate=[...document.querySelectorAll('[data-confirm],[data-mcp-confirm],[data-prompt-confirm],[data-claude-confirm],[data-layout-confirm],dialog[open]')].find(node=>node!==dialog&&!node.hidden&&node.getClientRects().length);
+  if(gate){
+   // Preserve an intentional choice inside the preview. Returning from the toolbar
+   // focuses the preview itself, so the shortcut never selects a write action.
+   if(!gate.contains(document.activeElement)){
+    if(!gate.hasAttribute('tabindex'))gate.tabIndex=-1;
+    gate.focus({preventScroll:true});
+   }
+   return;
+  }
   if(dialog.open){input.focus();return;}
   caller=document.activeElement;input.value='';selected=0;dialog.showModal();render();input.focus({preventScroll:true});
  }

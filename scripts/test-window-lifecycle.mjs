@@ -52,6 +52,22 @@ assert.equal(newer.ownsRequest(),true,"a hidden cached page retains ownership of
 assert.equal(older.ownsRequest(),false,"a replaced request cannot apply a mutation receipt");
 
 const { revealNavigationItem } = await import('../app/ui/js/page-host.js');
+const { previewFocusTarget } = await import('../app/ui/js/page-host.js');
+const apply = {}, cancel = {}, preview = {}, before = {}, after = {};
+for (const controls of [[apply, cancel], [before, after, apply, cancel]]) {
+  assert.equal(previewFocusTarget(controls, preview, true), cancel,
+    'reverse Tab from a focused preview container must enter at cancel, never apply');
+  assert.equal(previewFocusTarget(controls, preview), controls[0]);
+  assert.equal(previewFocusTarget(controls, cancel), controls[0]);
+  assert.equal(previewFocusTarget(controls, controls[0], true), cancel);
+  for (let index = 0; index < controls.length; index++) {
+    assert.equal(previewFocusTarget(controls, controls[index]), controls[(index + 1) % controls.length]);
+    assert.equal(previewFocusTarget(controls, controls[index], true), controls[(index + controls.length - 1) % controls.length]);
+  }
+}
+assert.equal(previewFocusTarget([], preview, true), null);
+assert.equal(previewFocusTarget([cancel], preview, true), cancel);
+console.log('PASS: preview container entry and forward/reverse keyboard focus loops');
 let itemRect = {top:180,bottom:214};
 const menu = {clientHeight:100,scrollHeight:400,scrollTop:0,
   querySelector:()=>({getBoundingClientRect:()=>itemRect}), getBoundingClientRect:()=>({top:100,bottom:200})};
