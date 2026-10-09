@@ -1348,6 +1348,7 @@ fn demo_report() -> TokenReport {
         },
     ];
     TokenReport {
+        context24h: crate::usage_context::Report::unknown(12_080_000),
         usage: TokenUsage {
             tokens24h: 12_080_000,
             tokens_total: 280_000_000,

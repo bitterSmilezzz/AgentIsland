@@ -1,5 +1,6 @@
 import { trendCardHtml, bindTrend, hourRecords } from './usage-trend.js';
 import { toolBudgetsHtml, bindToolBudgets } from './tool-budgets.js';
+import { usageContextHtml, bindUsageContext } from './usage-context.js';
 import { reportPanelHtml, bindReport, visibleReportPanel, openUsageReport } from './report-panel.js';
 import { pageSessions, hydrateSessions, refreshSessions } from './sessions-page.js';
 import { bindQuickNavigation } from './quick-navigation.js';
@@ -586,7 +587,7 @@ export function pageAnalytics(eng) {
     </div>`;
 }
 
-function renderReportBody(report) {
+function renderReportBody(report, showContext = false) {
   const u = report.usage;
   const now = new Date();
   const remaining = Math.max(1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate());
@@ -627,7 +628,7 @@ function renderReportBody(report) {
             <span class="r"><span class="tk">${compact(m.tokens)}</span><span class="cost">${costText(m.cost, m.cost_estimated)}</span></span></div>
           <div class="hbar"><i style="width:${Math.max(2, 100 * m.tokens / maxTool)}%"></i></div>
         </div>`).join('') || '<div class="c-faint" style="font-size:10px;margin-top:6px">暂无模型明细</div>'}
-    </div>`;
+    </div>${showContext ? usageContextHtml(report.context24h, u.tokens24h, compact) : ''}`;
 }
 
 // MARK: Agent 详情页（AgentDetailView）
@@ -873,7 +874,12 @@ export async function hydrateReport() {
     }
     const snap = st.engine?.snapshots.find((entry) => entry.id === agentId);
     const focus=document.activeElement;const rangeFocused=body.contains(focus)&&(focus.hasAttribute('data-usage-range')||focus.hasAttribute('data-usage-retry'));
-    body.innerHTML = analytics ? renderReportBody(report) : renderDetailBody(report, snap);
+    const contextFocused=body.contains(focus)&&focus.matches('[data-usage-context]>summary');
+    const contextDetail=body.querySelector('[data-usage-context]');
+    if(contextDetail)body.dataset.usageContextOpen=String(contextDetail.open);
+    body.innerHTML = analytics ? renderReportBody(report, isWorkbench()&&st.workbenchPage==='tokenAnalytics') : renderDetailBody(report, snap);
+    bindUsageContext(body);
+    if(contextFocused)body.querySelector('[data-usage-context]>summary')?.focus({preventScroll:true});
     if(analytics){bindTrend(body.querySelector('[data-usage-trend]'),report.hourly30d,body.dataset.trendRange??'24',range=>{body.dataset.trendRange=range;});if(rangeFocused)body.querySelector(`[data-usage-range="${body.dataset.trendRange}"]`)?.focus({preventScroll:true});}
   }));
   if (isIsland()) await resizeToContent();

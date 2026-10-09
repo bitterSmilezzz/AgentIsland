@@ -72,6 +72,7 @@ mod todos;
 mod tokens;
 mod transport;
 mod trees;
+mod usage_context;
 mod webhook;
 mod window_layout;
 mod window_layout_execution;
@@ -1469,6 +1470,7 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
         if profiles.is_empty() {
             return None;
         }
+        let mut context24h = crate::usage_context::Report::default();
         let mut agg_tokens24 = 0i64;
         let mut agg_total = 0i64;
         let mut agg_cost24 = 0f64;
@@ -1482,6 +1484,7 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
             std::collections::HashMap::new();
         for p in &profiles {
             if let Some(r) = e.get_report(&p.id) {
+                context24h.merge(r.context24h);
                 agg_tokens24 += r.usage.tokens24h;
                 agg_total += r.usage.tokens_total;
                 agg_cost24 += r.usage.cost24h;
@@ -1531,6 +1534,7 @@ fn get_report(state: State<SharedEngine>, agent_id: String) -> Option<models::To
             .collect();
         models_total.sort_by(|a, b| b.tokens.cmp(&a.tokens));
         return Some(models::TokenReport {
+            context24h,
             usage: models::TokenUsage {
                 tokens24h: agg_tokens24,
                 tokens_total: agg_total,
@@ -3402,6 +3406,7 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/tool-budget-state.js",
     "js/tool-budgets.js",
     "js/usage-trend.js",
+    "js/usage-context.js",
     "js/workspaces-page.js",
     "js/workspace-flow.js",
     "js/prompts-page.js",

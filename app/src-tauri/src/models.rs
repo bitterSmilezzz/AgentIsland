@@ -442,6 +442,7 @@ pub struct ModelUsage {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenReport {
+    pub context24h: crate::usage_context::Report,
     pub usage: TokenUsage,
     pub models24h: Vec<ModelUsage>,
     pub models_total: Vec<ModelUsage>,

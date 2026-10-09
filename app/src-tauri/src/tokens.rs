@@ -2,10 +2,12 @@ use crate::cost;
 use crate::models::{ModelUsage, SessionSchema, TokenReport, TokenUsage};
 use crate::session;
 use crate::sqlite;
+use crate::usage_context::{Counts, Cursor, Fact};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Token 用量监控：只读解析会话 JSONL 的结构化 usage 字段
@@ -55,8 +57,14 @@ fn stamp_of(path: &Path) -> Option<Stamp> {
     })
 }
 
-/// 一条待统计的明细：(unix ms, 模型, tokens, cost)
-type Entry = (i64, String, i64, f64);
+/// 明细沿用净用量与费用，匹配的会话上下文只保留共享引用。
+struct Entry {
+    ts: i64,
+    model: String,
+    tokens: i64,
+    cost: f64,
+    context: Option<Arc<Fact>>,
+}
 
 #[derive(Default)]
 struct FileState {
@@ -75,7 +83,8 @@ struct FileState {
     /// 增量续读用的去重键。resume/fork 会把同一响应在同一份文件里抄第二遍，
     /// 不挡就会计两次。只在 `rolled_count == 0` 期间保留——一旦有折入就每轮整份重读、
     /// 当轮内去重，这个集合随之清空（内存也就有界了）。
-    seen_ids: HashSet<String>,
+    seen_ids: HashMap<String, usize>,
+    context: Cursor,
     /// 上次是否停在整行边界上。false 时不许增量续读（否则半个 JSON 行会被跳过去）。
     ended_with_newline: bool,
     /// Streaming sources revise earlier calls; changed files must rebuild before folding.
@@ -89,9 +98,9 @@ fn fold(events: Vec<Entry>, carry: Vec<Entry>, cutoff_ms: i64) -> (Vec<Entry>, i
     let mut cost = 0.0f64;
     let mut count = 0i64;
     for event in carry.into_iter().chain(events) {
-        if event.0 < cutoff_ms {
-            tokens += event.2;
-            cost += event.3;
+        if event.ts < cutoff_ms {
+            tokens += event.tokens;
+            cost += event.cost;
             count += 1;
         } else {
             kept.push(event);
@@ -101,7 +110,7 @@ fn fold(events: Vec<Entry>, carry: Vec<Entry>, cutoff_ms: i64) -> (Vec<Entry>, i
     // 用下标集合而不是先排序，是为了别打乱存留明细的解析顺序。
     if kept.len() > MAX_DETAIL_PER_FILE {
         let mut order: Vec<usize> = (0..kept.len()).collect();
-        order.sort_by_key(|&i| kept[i].0);
+        order.sort_by_key(|&i| kept[i].ts);
         let doomed: HashSet<usize> = order
             .into_iter()
             .take(kept.len() - MAX_DETAIL_PER_FILE)
@@ -109,8 +118,8 @@ fn fold(events: Vec<Entry>, carry: Vec<Entry>, cutoff_ms: i64) -> (Vec<Entry>, i
         let mut survivors: Vec<Entry> = Vec::with_capacity(MAX_DETAIL_PER_FILE);
         for (index, event) in kept.into_iter().enumerate() {
             if doomed.contains(&index) {
-                tokens += event.2;
-                cost += event.3;
+                tokens += event.tokens;
+                cost += event.cost;
                 count += 1;
             } else {
                 survivors.push(event);
@@ -122,6 +131,7 @@ fn fold(events: Vec<Entry>, carry: Vec<Entry>, cutoff_ms: i64) -> (Vec<Entry>, i
 }
 
 struct UsageLine {
+    context: Option<Arc<Fact>>,
     /// 记录自带的 id（没有则调用方用「文件 + 段起点 + 行号」兜底）
     id: Option<String>,
     tokens: i64,
@@ -256,7 +266,8 @@ impl TokenUsageMonitor {
             if !profile_files.contains(path) {
                 continue;
             }
-            for (ts, _, tokens, _) in &st.entries {
+            for e in &st.entries {
+                let (ts, tokens) = (&e.ts, &e.tokens);
                 if *ts < cutoff30 || *tokens <= 0 {
                     continue;
                 }
@@ -279,7 +290,27 @@ impl TokenUsageMonitor {
             })
             .collect();
         models_total.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+        let mut context_counts = Counts::default();
+        for (path, st) in &self.states {
+            if !profile_files.contains(path) {
+                continue;
+            }
+            for entry in &st.entries {
+                if entry.ts >= cutoff24 {
+                    if let Some(fact) = &entry.context {
+                        context_counts.add(fact, entry.tokens);
+                    }
+                }
+            }
+        }
+        let context24h = crate::usage_context::Report::from_counts(
+            &profile.id,
+            &profile.name,
+            tokens24,
+            context_counts,
+        );
         TokenReport {
+            context24h,
             usage: TokenUsage {
                 tokens24h: tokens24,
                 tokens_total,
@@ -376,6 +407,11 @@ impl TokenUsageMonitor {
             None => (0, false),
         };
 
+        let mut context = if can_append {
+            self.states.get(&key).unwrap().context.clone()
+        } else {
+            Cursor::default()
+        };
         let mut collected: Vec<(u64, UsageLine)> = Vec::new();
         let mut index: u64 = 0;
         let consumed = session::for_each_complete_line(path, start, |line| {
@@ -384,7 +420,8 @@ impl TokenUsageMonitor {
             if line.len() < 8 {
                 return;
             }
-            if let Some(u) = parse_usage_line(line) {
+            context.observe(line);
+            if let Some(u) = parse_usage(line, Some(&context)) {
                 collected.push((line_index, u));
             }
         });
@@ -416,6 +453,9 @@ impl TokenUsageMonitor {
                 st.rolled_count = 0;
                 st.seen_ids.clear();
             }
+            if consumed.is_some() {
+                st.context = context;
+            }
             let mut fresh: Vec<Entry> = Vec::new();
             for (line_index, u) in unique {
                 st.revisable_usage |= u.revisable;
@@ -425,10 +465,25 @@ impl TokenUsageMonitor {
                     Some(id) => id.clone(),
                     None => format!("{key}#{start}-{line_index}"),
                 };
-                if !st.seen_ids.insert(dedup) {
-                    continue; // 同一响应已经计过
+                if let Some(&index) = st.seen_ids.get(&dedup) {
+                    let previous = if index < st.entries.len() {
+                        &mut st.entries[index]
+                    } else {
+                        &mut fresh[index - st.entries.len()]
+                    };
+                    if previous.context != u.context {
+                        previous.context = None;
+                    }
+                    continue;
                 }
-                fresh.push((u.ts_ms, u.model, u.tokens, u.cost));
+                st.seen_ids.insert(dedup, st.entries.len() + fresh.len());
+                fresh.push(Entry {
+                    ts: u.ts_ms,
+                    model: u.model,
+                    tokens: u.tokens,
+                    cost: u.cost,
+                    context: u.context,
+                });
             }
             let carry = if can_append {
                 std::mem::take(&mut st.entries)
@@ -436,20 +491,20 @@ impl TokenUsageMonitor {
                 Vec::new()
             };
             let mut model_totals: HashMap<String, (i64, f64)> = HashMap::new();
-            for (_, model, tokens, cost) in fresh.iter().chain(carry.iter()) {
-                let value = model_totals.entry(model.clone()).or_default();
-                value.0 += tokens;
-                value.1 += cost;
+            for e in fresh.iter().chain(carry.iter()) {
+                let value = model_totals.entry(e.model.clone()).or_default();
+                value.0 += e.tokens;
+                value.1 += e.cost;
             }
             let (kept, folded_tokens, folded_cost, folded_count) =
                 fold(fresh, carry, now - RETENTION_MS);
             if !can_append {
                 st.rolled_models.clear();
             }
-            for (_, model, tokens, cost) in &kept {
-                let value = model_totals.entry(model.clone()).or_default();
-                value.0 -= tokens;
-                value.1 -= cost;
+            for e in &kept {
+                let value = model_totals.entry(e.model.clone()).or_default();
+                value.0 -= e.tokens;
+                value.1 -= e.cost;
             }
             for (model, (tokens, cost)) in model_totals {
                 if tokens > 0 || cost > 0.0 {
@@ -512,15 +567,15 @@ impl TokenUsageMonitor {
         let mut cost24 = 0f64;
         let mut detail_tokens = 0i64;
         let mut detail_cost = 0f64;
-        for (ts, model, tokens, cost) in &st.entries {
-            detail_tokens += tokens;
-            detail_cost += cost;
-            if *ts >= cutoff24 {
-                tokens24 += tokens;
-                cost24 += cost;
-                let e = models.entry(model.clone()).or_insert((0, 0.0));
-                e.0 += tokens;
-                e.1 += cost;
+        for entry in &st.entries {
+            detail_tokens += entry.tokens;
+            detail_cost += entry.cost;
+            if entry.ts >= cutoff24 {
+                tokens24 += entry.tokens;
+                cost24 += entry.cost;
+                let e = models.entry(entry.model.clone()).or_insert((0, 0.0));
+                e.0 += entry.tokens;
+                e.1 += entry.cost;
             }
         }
         (
@@ -546,7 +601,11 @@ pub fn now_ms() -> i64 {
 ///   独立响应族按 response_id 去重，不与 event_msg/token_count 的镜像族叠加；
 ///   两族并非所有版本都完全一致，event-only/replay 支持边界见 Vibe Usage 核查记录。
 /// · ZCode rollout：`{"requestId":…,"model":{"modelId":…},"response":{"usage":{…}}}`
+#[cfg(test)]
 fn parse_usage_line(line: &str) -> Option<UsageLine> {
+    parse_usage(line, None)
+}
+fn parse_usage(line: &str, context: Option<&Cursor>) -> Option<UsageLine> {
     // 日志里 99% 以上的行是对话正文：先在字符串上找标记，命中才解析 JSON
     if !line.contains("\"usage\"") && !line.contains("\"providerData\"") {
         return None;
@@ -657,6 +716,7 @@ fn parse_usage_line(line: &str) -> Option<UsageLine> {
         .unwrap_or_else(now_ms);
 
     Some(UsageLine {
+        context: context.and_then(|c| c.for_usage(&doc)),
         id,
         tokens: net,
         cost,
@@ -780,6 +840,7 @@ fn parse_provider_usage(doc: &Value) -> Option<UsageLine> {
         })
     })?;
     Some(UsageLine {
+        context: None,
         id: doc.get("id").and_then(Value::as_str).map(str::to_owned),
         tokens,
         cost: model
@@ -2300,3 +2361,7 @@ mod iso_parsing_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tokens_context_tests.rs"]
+mod context_tests;

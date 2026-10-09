@@ -50,6 +50,7 @@ python3 scripts/test-native-motion-result.py
 node scripts/test-native-motion.mjs
 node scripts/test-first-snapshot.mjs
 node scripts/test-tool-budgets.mjs
+node scripts/test-usage-context.mjs
 node scripts/test-window-lifecycle.mjs
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml
 
