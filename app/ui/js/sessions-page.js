@@ -1,6 +1,7 @@
 import { invoke, listen } from './tauri.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const labels = {running:'执行中',waiting:'等待处理',ready:'结果就绪',queued:'未开始',failed:'执行失败',cancelled:'已取消',accepted:'来源已验收'};
+const sessionIdentifier = row => row.source.thread_id ?? row.catalog?.identifier ?? row.source.session_id;
 const identity = source => JSON.stringify([source.agent_id,source.session_id,source.thread_id ?? null]);
 
 // Observed semantic sources and saved run sources only; never inherit a task's latest source.
@@ -27,7 +28,7 @@ export function sessionRows(choices, snapshot, catalog=[]) {
 }
 export function filterSessionRows(rows, {tool='',scope='',query=''}={}) {
   const words=query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  return rows.filter(row=>(!tool||row.source.agent_id===tool)&&(!scope||(scope==='observed'?!!row.observed:scope==='catalog'?!!row.catalog:!row.observed&&row.records.length>0))&&words.every(word=>[row.name,row.source.agent_id,row.source.session_id,row.source.thread_id??'',...row.records.map(record=>record.title)].join(' ').toLocaleLowerCase().includes(word)));
+  return rows.filter(row=>(!tool||row.source.agent_id===tool)&&(!scope||(scope==='observed'?!!row.observed:scope==='catalog'?!!row.catalog:!row.observed&&row.records.length>0))&&words.every(word=>[row.name,row.source.agent_id,row.source.session_id,row.source.thread_id??'',row.catalog?.identifier??'',...row.records.map(record=>record.title)].join(' ').toLocaleLowerCase().includes(word)));
 }
 export function sessionOpenAction(row) {
   if(row.observed)return row.observed.target ? {kind:'observed',label:row.observed.target.exactSession?'打开会话':'打开工具'} : null;
@@ -47,16 +48,16 @@ export function sessionListHtml(rows, blocked=false, history=new Map(), catalogB
   return rows.length ? `<ul class="session-list">${rows.map(row=>{
     const action=sessionOpenAction(row), latest=row.records[0],saved=history.get(row.key);
     const status=row.observed ? labels[row.observed.observation.status]??'状态未知' : row.records.length?'历史记录':row.catalog?.archived?'归档会话':'目录记录';
-    return `<li data-session-row="${esc(row.key)}"><div class="session-row-heading"><strong>${esc(row.name)}</strong><span class="session-badge">${esc(status)}</span></div><p title="${esc(latest?.title ?? row.source.thread_id ?? '')}">${row.observed?'当前观测':row.records.length?'已保存来源':'本机目录'}${latest?` · ${esc(latest.title)}`:` · 会话 ${esc((row.source.thread_id??row.source.session_id).slice(-12))}`}</p><div class="session-row-footer"><span>${!row.observed&&latest?esc(new Date(latest.started).toLocaleString()):!row.observed&&row.catalog?.modified_ms?`目录更新时间 · ${esc(new Date(row.catalog.modified_ms).toLocaleString())}`:''}</span><div>${latest?`<button type="button" class="mini-btn" data-session-task="${esc(row.key)}"${blocked?' disabled':''}>查看任务</button>`:''}${action?`<button type="button" class="mini-btn" data-session-open="${esc(row.key)}" aria-label="${esc(action.label)}：${esc(row.name)}${latest?` · ${esc(latest.title)}`:` · ${esc(row.source.thread_id??row.source.session_id)}`}"${blocked||(action.kind==='catalog'&&catalogBlocked)?' disabled':''}>${esc(action.label)}</button>`:'<span>无桌面入口</span>'}</div></div>${row.records.length?`<details class="session-records"${saved?.open?' open':''}><summary data-session-history="${esc(row.key)}">${row.records.length} 条运行记录</summary><div data-session-record-list>${saved?.open?sessionRecordsHtml(row,saved.limit,blocked):''}</div></details>`:''}</li>`;
+    return `<li data-session-row="${esc(row.key)}"><div class="session-row-heading"><strong>${esc(row.name)}</strong><span class="session-badge">${esc(status)}</span></div><p title="${esc(latest?.title ?? sessionIdentifier(row))}">${row.observed?'当前观测':row.records.length?'已保存来源':'本机目录'}${latest?` · ${esc(latest.title)}`:` · 会话 ${esc(sessionIdentifier(row).slice(-12))}`}</p><div class="session-row-footer"><span>${!row.observed&&latest?esc(new Date(latest.started).toLocaleString()):!row.observed&&row.catalog?.modified_ms?`目录更新时间 · ${esc(new Date(row.catalog.modified_ms).toLocaleString())}`:''}</span><div>${latest?`<button type="button" class="mini-btn" data-session-task="${esc(row.key)}"${blocked?' disabled':''}>查看任务</button>`:''}${action?`<button type="button" class="mini-btn" data-session-open="${esc(row.key)}" aria-label="${esc(action.label)}：${esc(row.name)}${latest?` · ${esc(latest.title)}`:` · ${esc(sessionIdentifier(row))}`}"${blocked||(action.kind==='catalog'&&catalogBlocked)?' disabled':''}>${esc(action.label)}</button>`:'<span>无桌面入口</span>'}</div></div>${row.records.length?`<details class="session-records"${saved?.open?' open':''}><summary data-session-history="${esc(row.key)}">${row.records.length} 条运行记录</summary><div data-session-record-list>${saved?.open?sessionRecordsHtml(row,saved.limit,blocked):''}</div></details>`:''}</li>`;
   }).join('')}</ul>` : '<div class="wb-empty">没有匹配的会话来源</div>';
 }
 export function catalogSummary(catalog){
   const gaps=catalog.gaps;
   const details=[gaps.unreadable?`${gaps.unreadable} 项无法读取`:null,gaps.invalid?`${gaps.invalid} 项无法核验`:null,gaps.compressed?`${gaps.compressed} 项压缩记录暂不支持`:null,gaps.deep_directories?`${gaps.deep_directories} 个深层目录未扫描`:null,gaps.missing_roots?`${gaps.missing_roots} 个目录不存在`:null].filter(Boolean);
-  return `Codex 默认目录 · ${catalog.items.length} 个可核验记录${details.length?'；'+details.join('，'):''}。目录记录不表示正在运行。`;
+  return `本机目录 · ${catalog.items.length} 个可核验记录${details.length?'；'+details.join('，'):''}。目录记录不表示正在运行。`;
 }
 export function pageSessions() {
-  return `<section class="session-space" data-sessions-root><div class="session-controls"><input type="search" aria-label="搜索会话来源" data-session-query placeholder="搜索工具、会话编号或任务"><select aria-label="筛选会话工具" data-session-tool><option value="">全部工具</option></select><select aria-label="筛选会话来源" data-session-scope><option value="">全部来源</option><option value="observed">当前观测</option><option value="saved">任务历史</option><option value="catalog">本机目录</option></select><button type="button" class="mini-btn" data-session-refresh>刷新</button><button type="button" class="mini-btn" data-session-catalog-read>读取本机目录</button></div><p class="session-feedback" data-session-feedback role="status" aria-live="polite">正在读取来源</p><p data-session-catalog-feedback class="session-feedback" role="status" aria-live="polite" hidden></p><div data-session-list></div><button type="button" class="mini-btn session-more" data-session-more hidden>显示更多</button><p class="session-note">当前语义来源、任务历史及手动读取的本机目录分开标注。目录目前仅支持 Codex 默认目录中的未压缩记录；“打开工具”无法定位具体会话。</p></section>`;
+  return `<section class="session-space" data-sessions-root><div class="session-controls"><input type="search" aria-label="搜索会话来源" data-session-query placeholder="搜索工具、会话编号或任务"><select aria-label="筛选会话工具" data-session-tool><option value="">全部工具</option></select><select aria-label="筛选会话来源" data-session-scope><option value="">全部来源</option><option value="observed">当前观测</option><option value="saved">任务历史</option><option value="catalog">本机目录</option></select><button type="button" class="mini-btn" data-session-refresh>刷新</button><button type="button" class="mini-btn" data-session-catalog-read>读取本机目录</button></div><p class="session-feedback" data-session-feedback role="status" aria-live="polite">正在读取来源</p><p data-session-catalog-feedback class="session-feedback" role="status" aria-live="polite" hidden></p><div data-session-list></div><button type="button" class="mini-btn session-more" data-session-more hidden>显示更多</button><p class="session-note">仅扫描 Codex / Claude Code 默认目录的未压缩主会话。“打开工具”不定位会话。</p></section>`;
 }
 let subscribed;
 export function refreshSessions(){document.querySelector('[data-sessions-root]')?.refreshSessions?.();}
@@ -91,11 +92,11 @@ export async function hydrateSessions(openTask, isVisible=()=>true) {
       const [observed,data]=await Promise.all([invoke('task_sources'),invoke('tasks_snapshot')]);
       if(!active())return;
       choices=observed;rows=sessionRows(choices,data,catalog?.items??[]);snapshot=data;readError=false;
-      const select=root.querySelector('[data-session-tool]'),value=select.value;
+      const select=root.querySelector('[data-session-tool]'),value=select.value,label=select.selectedOptions[0]?.textContent.replace(/ · 暂无来源$/, '')||value;
       const tools=[...new Map(rows.map(row=>[row.source.agent_id,row.name])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
       select.innerHTML='<option value="">全部工具</option>'+tools.map(([id,name])=>`<option value="${esc(id)}">${esc(name)}</option>`).join('');
       // A disappeared tool remains a filter, rather than silently broadening the results.
-      if(value&&!tools.some(([id])=>id===value))select.insertAdjacentHTML('beforeend',`<option value="${esc(value)}">${esc(value)} · 暂无来源</option>`);
+      if(value&&!tools.some(([id])=>id===value))select.insertAdjacentHTML('beforeend',`<option value="${esc(value)}">${esc(label)} · 暂无来源</option>`);
       select.value=value;
     } catch {if(active()){readError=true;feedback.textContent=snapshot?'读取失败，保留上次内容。请刷新后再打开来源。':'来源读取失败，请重试。';}}
     finally {loading=false;for(const button of list.querySelectorAll('[data-session-open],[data-session-task],[data-session-record-task]')){const row=rows.find(row=>row.key===button.dataset.sessionOpen);button.disabled=busy||readError||(row&&sessionOpenAction(row)?.kind==='catalog'&&(catalogError||catalogReading));}root.querySelector('[data-session-refresh]').disabled=false;if(active()){render();if(document.activeElement===document.body)restoreFocus(token);}if(queued){const manual=queued==='manual';queued=false;refresh(manual);}}

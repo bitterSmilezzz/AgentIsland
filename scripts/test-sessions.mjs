@@ -77,3 +77,15 @@ assert.equal(filterSessionRows(noThreadHistory,{query:'123456abcdeg'}).length,0,
 assert.equal(filterSessionRows(noThreadObserved,{query:noThread.session_id,tool:'codex'}).length,0,'identifier matching cannot broaden the selected tool');
 assert.equal(sessionOpenAction(noThreadObserved[0]).label,'打开工具','searching an identity does not upgrade navigation capability');
 console.log('PASS: visible fallback suffix and full source ID search with existing tool/scope filters and capability boundaries');
+
+const claudeEntry={source:noThread,name:'Claude Code',identifier:'019c6e27-e55b-73d1-87d8-4e01f1f75098',modified_ms:100,archived:false,target:{exactSession:false}};
+const mergedClaude=sessionRows([{source:noThread,name:'Claude',target:{exactSession:false},observation:{status:'waiting'}}],noThreadSnapshot,[claudeEntry]);
+assert.equal(mergedClaude.length,1,'catalog identity merges with existing observed and saved Claude source');
+assert.equal(mergedClaude[0].records.length,1);
+assert.equal(filterSessionRows(mergedClaude,{query:claudeEntry.identifier,tool:'claude',scope:'catalog'}).length,1,'actual transcript UUID is searchable without changing source identity');
+const claudeRows=sessionRows([],{tasks:[],runs:[]},[claudeEntry]);
+assert.match(sessionListHtml(claudeRows),/会话 4e01f1f75098/);
+assert.equal(sessionOpenAction(claudeRows[0]).label,'打开工具');
+assert.equal(sessionOpenAction(mergedClaude[0]).kind,'observed');
+assert.equal(filterSessionRows(claudeRows,{query:claudeEntry.identifier,tool:'codex'}).length,0);
+console.log('PASS: Claude metadata identity, real UUID search, existing source merge and explicit application-only navigation');

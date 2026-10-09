@@ -14,6 +14,7 @@ const MAX_DEPTH: usize = 4;
 #[derive(Clone, Serialize)]
 pub struct Item {
     pub source: tasks::Source,
+    pub identifier: String,
     pub name: String,
     pub modified_ms: Option<u64>,
     pub archived: bool,
@@ -68,6 +69,29 @@ fn file_identity(meta: &Metadata) -> FileIdentity {
         }
     }
 }
+fn directories(root: &Path, file: &Path) -> Result<Vec<(PathBuf, FileIdentity)>, ()> {
+    let mut path = root.to_owned();
+    let mut result = Vec::new();
+    let relative = file
+        .parent()
+        .ok_or(())?
+        .strip_prefix(root)
+        .map_err(|_| ())?;
+    for part in std::iter::once(None).chain(relative.components().map(Some)) {
+        if let Some(part) = part {
+            if !matches!(part, std::path::Component::Normal(_)) {
+                return Err(());
+            }
+            path.push(part);
+        }
+        let meta = std::fs::symlink_metadata(&path).map_err(|_| ())?;
+        if !meta.is_dir() {
+            return Err(());
+        }
+        result.push((path.clone(), file_identity(&meta)));
+    }
+    Ok(result)
+}
 fn open(path: &Path) -> Result<File, ()> {
     if !std::fs::symlink_metadata(path).map_err(|_| ())?.is_file() {
         return Err(());
@@ -105,14 +129,71 @@ fn header(file: &File) -> Result<String, HeaderError> {
         .map(|id| id.to_string())
         .map_err(|_| HeaderError::Invalid)
 }
+#[derive(Deserialize)]
+struct ClaudeRecord {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+    #[serde(rename = "isSidechain")]
+    sidechain: Option<bool>,
+    uuid: Option<String>,
+}
+fn claude_header(file: &File) -> Result<String, HeaderError> {
+    // A transcript may begin with queue or file-history metadata. Only a
+    // positively identified main conversation message establishes identity.
+    let mut reader = BufReader::new(file.take(MAX_HEADER + 1));
+    let mut bytes = Vec::new();
+    let mut consumed = 0;
+    for _ in 0..64 {
+        bytes.clear();
+        let size = reader
+            .read_until(b'\n', &mut bytes)
+            .map_err(|_| HeaderError::Unreadable)?;
+        consumed += size as u64;
+        if size == 0 || consumed > MAX_HEADER {
+            return Err(HeaderError::Invalid);
+        }
+        let Ok(record) = serde_json::from_slice::<ClaudeRecord>(&bytes) else {
+            continue;
+        };
+        if !matches!(record.kind.as_deref(), Some("user" | "assistant"))
+            || record.sidechain != Some(false)
+        {
+            continue;
+        }
+        if record
+            .uuid
+            .as_deref()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .is_none()
+        {
+            return Err(HeaderError::Invalid);
+        }
+        return record
+            .session_id
+            .as_deref()
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+            .map(|id| id.to_string())
+            .ok_or(HeaderError::Invalid);
+    }
+    Err(HeaderError::Invalid)
+}
+fn record_header(file: &File, agent: &str) -> Result<String, HeaderError> {
+    if agent == "claude" {
+        claude_header(file)
+    } else {
+        header(file)
+    }
+}
 struct Entry {
     path: PathBuf,
     item: Item,
     identity: FileIdentity,
+    directories: Vec<(PathBuf, FileIdentity)>,
 }
 pub struct Store {
-    profile: AgentProfile,
-    roots: Vec<(PathBuf, bool)>,
+    roots: Vec<(AgentProfile, PathBuf, bool)>,
     entries: HashMap<String, Entry>,
     generation: String,
 }
@@ -124,12 +205,21 @@ impl Store {
             .expect("builtin codex");
         let root = PathBuf::from(&profile.session_dirs[0]);
         let archive = root.parent().expect("codex home").join("archived_sessions");
-        Self::new(profile, vec![(root, false), (archive, true)])
+        let mut store = Self::new(profile, vec![(root, false), (archive, true)]);
+        let claude = crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "claude")
+            .expect("builtin claude");
+        let projects = PathBuf::from(&claude.session_dirs[0]);
+        store.roots.push((claude, projects, false));
+        store
     }
     fn new(profile: AgentProfile, roots: Vec<(PathBuf, bool)>) -> Self {
         Self {
-            profile,
-            roots,
+            roots: roots
+                .into_iter()
+                .map(|(root, archived)| (profile.clone(), root, archived))
+                .collect(),
             entries: HashMap::new(),
             generation: String::new(),
         }
@@ -137,21 +227,22 @@ impl Store {
     pub fn read(&mut self) -> Catalog {
         let mut entries = HashMap::new();
         let mut gaps = Gaps::default();
-        for (root, archived) in &self.roots {
-            match std::fs::symlink_metadata(root) {
+        for (profile, root, archived) in &self.roots {
+            let root_identity = match std::fs::symlink_metadata(root) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     gaps.missing_roots += 1;
                     continue;
                 }
-                Ok(meta) if meta.is_dir() => {}
+                Ok(meta) if meta.is_dir() => file_identity(&meta),
                 _ => {
                     gaps.unreadable += 1;
                     continue;
                 }
-            }
+            };
+            let depth = if profile.id == "claude" { 2 } else { MAX_DEPTH };
             for found in walkdir::WalkDir::new(root)
                 .follow_links(false)
-                .max_depth(MAX_DEPTH)
+                .max_depth(depth)
             {
                 let found = match found {
                     Ok(found) => found,
@@ -161,12 +252,30 @@ impl Store {
                     }
                 };
                 if found.file_type().is_dir() {
-                    if found.depth() == MAX_DEPTH {
+                    if found.depth() == depth && profile.id != "claude" {
                         gaps.deep_directories += 1;
                     }
                     continue;
                 }
                 let path = found.path();
+                if profile.id == "claude" && found.depth() == 1 && found.file_type().is_symlink() {
+                    gaps.unreadable += 1;
+                    continue;
+                }
+                if profile.id == "claude"
+                    && (found.depth() != 2
+                        || path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .and_then(|s| {
+                                s.strip_suffix(".jsonl")
+                                    .or_else(|| s.strip_suffix(".jsonl.zst"))
+                            })
+                            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                            .is_none())
+                {
+                    continue;
+                }
                 if path.to_string_lossy().ends_with(".jsonl.zst") {
                     gaps.compressed += 1;
                     continue;
@@ -182,11 +291,18 @@ impl Store {
                     gaps.invalid += 1;
                     continue;
                 };
-                let Some(target) = session_navigation::resolve(&self.profile, Some(path_text))
-                    .filter(|target| target.exact_session)
+                let Some(target) = session_navigation::resolve(profile, Some(path_text))
+                    .filter(|target| profile.id != "codex" || target.exact_session)
                 else {
                     gaps.invalid += 1;
                     continue;
+                };
+                let parents = match directories(root, path) {
+                    Ok(parents) if parents.first().is_some_and(|p| p.1 == root_identity) => parents,
+                    _ => {
+                        gaps.unreadable += 1;
+                        continue;
+                    }
                 };
                 let file = match open(path) {
                     Ok(file) => file,
@@ -195,7 +311,7 @@ impl Store {
                         continue;
                     }
                 };
-                let id = match header(&file) {
+                let id = match record_header(&file, &profile.id) {
                     Ok(id) => id,
                     Err(HeaderError::Unreadable) => {
                         gaps.unreadable += 1;
@@ -206,8 +322,20 @@ impl Store {
                         continue;
                     }
                 };
-                if target.url.as_deref() != Some(format!("codex://threads/{id}").as_str()) {
+                let valid_identity = if profile.id == "claude" {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                        .is_some_and(|value| value.to_string() == id)
+                } else {
+                    target.url.as_deref() == Some(format!("codex://threads/{id}").as_str())
+                };
+                if !valid_identity {
                     gaps.invalid += 1;
+                    continue;
+                }
+                if directories(root, path).ok().as_ref() != Some(&parents) {
+                    gaps.unreadable += 1;
                     continue;
                 }
                 let meta = match file.metadata() {
@@ -218,9 +346,9 @@ impl Store {
                     }
                 };
                 let source = tasks::Source {
-                    agent_id: self.profile.id.clone(),
+                    agent_id: profile.id.clone(),
                     session_id: format!("{:x}", Sha256::digest(path_text.as_bytes())),
-                    thread_id: Some(id),
+                    thread_id: (profile.id == "codex").then(|| id.clone()),
                 };
                 let modified_ms = meta
                     .modified()
@@ -229,7 +357,12 @@ impl Store {
                     .and_then(|t| u64::try_from(t.as_millis()).ok());
                 let item = Item {
                     source: source.clone(),
-                    name: "Codex".into(),
+                    identifier: id,
+                    name: if profile.id == "claude" {
+                        "Claude Code".into()
+                    } else {
+                        "Codex".into()
+                    },
                     modified_ms,
                     archived: *archived,
                     target,
@@ -240,6 +373,7 @@ impl Store {
                         path: path.to_owned(),
                         item,
                         identity: file_identity(&meta),
+                        directories: parents,
                     },
                 );
             }
@@ -272,8 +406,10 @@ impl Store {
             .filter(|entry| entry.item.source == *source)
             .ok_or("会话来源不在当前目录")?;
         let file = open(&entry.path).map_err(|_| "会话文件已不可读，请重新读取目录")?;
-        if file_identity(&file.metadata().map_err(|_| "会话文件不可读")?) != entry.identity
-            || header(&file).ok().as_ref() != source.thread_id.as_ref()
+        let root = &entry.directories.first().ok_or("会话目录不可读")?.0;
+        if directories(root, &entry.path).ok().as_ref() != Some(&entry.directories)
+            || file_identity(&file.metadata().map_err(|_| "会话文件不可读")?) != entry.identity
+            || record_header(&file, &source.agent_id).ok().as_ref() != Some(&entry.item.identifier)
         {
             return Err("会话文件已变化，请重新读取目录".into());
         }
@@ -312,6 +448,146 @@ mod tests {
     }
     fn write(path: &Path, id: &str) {
         std::fs::write(path,format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"private-fixture-directory\",\"creator_account_id\":\"private-fixture-account\",\"base_instructions\":\"private-fixture-instruction\"}}}}\n{{\"type\":\"response_item\",\"payload\":{{\"message\":\"private-fixture-body\"}}}}\n")).unwrap();
+    }
+    fn claude_profile() -> AgentProfile {
+        crate::registry::builtin()
+            .into_iter()
+            .find(|p| p.id == "claude")
+            .unwrap()
+    }
+    fn claude_write(path: &Path, id: &str, sidechain: Option<bool>) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let record = serde_json::json!({"type":"user","sessionId":id,"isSidechain":sidechain,"uuid":uuid::Uuid::new_v4(),"message":{"content":"private-fixture-body"},"cwd":"private-fixture-project"});
+        std::fs::write(
+            path,
+            format!("{{\"type\":\"queue-operation\"}}\n{record}\n"),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn claude_directory_verifies_main_messages_without_upgrading_navigation_or_source() {
+        let root = Sandbox::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = root.path().join("project").join(format!("{id}.jsonl"));
+        claude_write(&path, &id, Some(false));
+        let child = root
+            .path()
+            .join("project/subagents")
+            .join(format!("{}.jsonl", uuid::Uuid::new_v4()));
+        claude_write(&child, &id, Some(false));
+        for sidechain in [Some(true), None] {
+            let id = uuid::Uuid::new_v4().to_string();
+            claude_write(
+                &root.path().join("project").join(format!("{id}.jsonl")),
+                &id,
+                sidechain,
+            );
+        }
+        claude_write(
+            &root
+                .path()
+                .join("project")
+                .join(format!("{}.jsonl", uuid::Uuid::new_v4())),
+            &id,
+            Some(false),
+        );
+        std::fs::write(
+            root.path()
+                .join("project")
+                .join(format!("{}.jsonl.zst", uuid::Uuid::new_v4())),
+            b"not-read",
+        )
+        .unwrap();
+        let mut store = Store::new(claude_profile(), vec![(root.path().to_owned(), false)]);
+        let result = store.read();
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.gaps.invalid, 3);
+        assert_eq!(result.gaps.compressed, 1);
+        let item = &result.items[0];
+        assert_eq!(item.identifier, id);
+        assert_eq!(item.source.thread_id, None);
+        assert_eq!(
+            item.source.session_id,
+            format!("{:x}", Sha256::digest(path.to_str().unwrap().as_bytes()))
+        );
+        assert_eq!(item.source.agent_id, "claude");
+        assert!(!item.target.exact_session);
+        assert!(item.target.url.is_none());
+        let encoded = serde_json::to_string(&result).unwrap();
+        assert!(
+            !encoded.contains("private-fixture")
+                && !encoded.contains(root.path().to_str().unwrap())
+        );
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{}\n")
+            .unwrap();
+        assert!(store.target(&result.generation, &item.source).is_ok());
+        let mut changed = item.source.clone();
+        changed.thread_id = Some(id.clone());
+        assert!(store.target(&result.generation, &changed).is_err());
+        claude_write(&path, &uuid::Uuid::new_v4().to_string(), Some(false));
+        assert!(store.target(&result.generation, &item.source).is_err());
+    }
+    #[test]
+    fn mixed_catalog_preserves_codex_archive_and_claude_identity_and_bounds() {
+        let codex = Sandbox::new();
+        let claude = Sandbox::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        write(&rollout(codex.path(), &id), &id);
+        let path = claude.path().join("project").join(format!("{id}.jsonl"));
+        claude_write(&path, &id, Some(false));
+        let mut store = Store::new(profile(), vec![(codex.path().to_owned(), true)]);
+        store
+            .roots
+            .push((claude_profile(), claude.path().to_owned(), false));
+        let result = store.read();
+        assert_eq!(result.items.len(), 2);
+        assert!(result
+            .items
+            .iter()
+            .any(|i| i.source.agent_id == "codex" && i.archived && i.target.exact_session));
+        assert!(result
+            .items
+            .iter()
+            .any(|i| i.source.agent_id == "claude" && !i.archived && !i.target.exact_session));
+        let old = result.generation;
+        store.read();
+        assert!(store.target(&old, &result.items[0].source).is_err());
+        let unknown = "{\"type\":\"queue-operation\"}\n";
+        let main = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, unknown.repeat(64) + &main).unwrap();
+        assert_eq!(store.read().gaps.invalid, 1);
+        std::fs::write(&path, vec![b'x'; MAX_HEADER as usize + 1]).unwrap();
+        assert_eq!(store.read().gaps.invalid, 1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn catalog_click_rejects_directory_replacement_even_with_the_original_file() {
+        use std::os::unix::fs::symlink;
+        let root = Sandbox::new();
+        let id = uuid::Uuid::new_v4().to_string();
+        let project = root.path().join("project");
+        let path = project.join(format!("{id}.jsonl"));
+        claude_write(&path, &id, Some(false));
+        let mut store = Store::new(claude_profile(), vec![(root.path().to_owned(), false)]);
+        let result = store.read();
+        let moved = root.path().join("moved");
+        std::fs::rename(&project, &moved).unwrap();
+        symlink(&moved, &project).unwrap();
+        assert!(
+            store
+                .target(&result.generation, &result.items[0].source)
+                .is_err(),
+            "symlink directory cannot retain a catalog lease even when file inode is unchanged"
+        );
+        assert_eq!(
+            store.read().gaps.unreadable,
+            1,
+            "an unreadable project must not look like a fully scanned empty directory"
+        );
     }
     #[test]
     fn directory_checks_protocol_and_reports_gaps_without_private_fields() {
