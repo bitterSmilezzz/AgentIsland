@@ -17,6 +17,15 @@ export function previewFocusTarget(controls, active, backwards = false) {
     : (index + (backwards ? -1 : 1) + controls.length) % controls.length];
 }
 
+// WebKit mouse activation may leave focus on the page's own content host.
+// Receipts can restore focus there, but must not take it from another page
+// or from shared navigation that the user has deliberately focused.
+export function pageOwnsFocus(root, active = document.activeElement) {
+  if (!root?.isConnected) return false;
+  const host = root.closest('.wb-content');
+  return active === document.body || root.contains(active) || !!host && active === host;
+}
+
 // Repeated reads on the same container must not overwrite a newer response.
 const requests = new WeakMap();
 export function pageRequest(root) {

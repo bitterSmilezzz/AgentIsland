@@ -68,6 +68,26 @@ for (const controls of [[apply, cancel], [before, after, apply, cancel]]) {
 assert.equal(previewFocusTarget([], preview, true), null);
 assert.equal(previewFocusTarget([cancel], preview, true), cancel);
 console.log('PASS: preview container entry and forward/reverse keyboard focus loops');
+
+const { pageOwnsFocus } = await import('../app/ui/js/page-host.js');
+const body = {}, contentHost = {}, foreignHost = {}, toolbar = {}, selectedControl = {};
+globalThis.document = {body};
+const layoutPage = {isConnected:true,closest:()=>contentHost,contains:node=>node===selectedControl};
+assert.equal(pageOwnsFocus(layoutPage, contentHost), true,
+  'native mouse activation with focus on the owned content host must expose the result and Undo');
+assert.equal(pageOwnsFocus(layoutPage, selectedControl), true);
+assert.equal(pageOwnsFocus(layoutPage, body), true);
+assert.equal(pageOwnsFocus(layoutPage, toolbar), false,
+  'late results must preserve intentional toolbar focus');
+assert.equal(pageOwnsFocus(layoutPage, foreignHost), false,
+  'a different page container does not belong to this operation');
+layoutPage.isConnected=false;
+for(const active of [contentHost, selectedControl, body]) {
+  assert.equal(pageOwnsFocus(layoutPage, active), false,
+    'a detached cached page must not restore focus when an operation finishes');
+}
+assert.equal(pageOwnsFocus(null, body), false);
+console.log('PASS: native page-container focus, intentional navigation and detached receipt ownership');
 let itemRect = {top:180,bottom:214};
 const menu = {clientHeight:100,scrollHeight:400,scrollTop:0,
   querySelector:()=>({getBoundingClientRect:()=>itemRect}), getBoundingClientRect:()=>({top:100,bottom:200})};

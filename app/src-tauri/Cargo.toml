@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.304"
+version = "0.0.305"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -16,7 +16,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Persisted geometry must round-trip exactly for strict operation receipts.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 uuid = { version = "=1.26.1", features = ["v4"] }
 # Reuse the URL parser already locked by Tauri; handwritten authority parsing broke IPv6/query URLs.
 url = "2"

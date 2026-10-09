@@ -1,6 +1,6 @@
 import { workspaceFlow } from './workspace-flow.js';
 import { invoke } from './tauri.js';
-import { pageRequest } from './page-host.js';
+import { pageRequest, pageOwnsFocus } from './page-host.js';
 import { agentIdentities } from './agent-icons.js';
 let requestedRule=null,requestedRecovery=null;
 export function selectLayoutRecovery(id){requestedRecovery=id;document.querySelector('[data-layout-root]')?.focusWorkspaceRecovery?.();}
@@ -136,12 +136,14 @@ export async function hydrateWindowLayout() {
       if (current.ownsRequest()) {
         busy=false; root.removeAttribute('aria-busy'); buttons();
         const preferred=focusAfter; focusAfter=null;
-        if(root.isConnected&&(document.activeElement===document.body||root.contains(document.activeElement))) {
+        if(pageOwnsFocus(root)) {
           const target=preferred?.isConnected&&!preferred.disabled?preferred:origin?.isConnected&&!origin.disabled?origin:feedback===historyStatus?historyRefresh:root.querySelector('[data-layout-refresh]');
           if(target?.isConnected&&!target.disabled&&!target.closest('[inert]')) {
             const resultBox=root.querySelector('[data-layout-results]');
             if(preferred===target&&resultBox.contains(target)) {
-              (target===resultBox?resultBox.querySelector('.layout-result-head'):target).scrollIntoView({block:'nearest'});
+              const host=root.closest('.wb-content');
+              const reveal=resultBox.offsetHeight <= (host?.clientHeight??0) ? resultBox : resultBox.querySelector('.layout-result-head');
+              reveal.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
             }
             target.focus({preventScroll:true});
           }

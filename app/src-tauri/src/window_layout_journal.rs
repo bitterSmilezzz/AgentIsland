@@ -436,6 +436,138 @@ mod tests {
         assert_eq!(Store::new(path).list().unwrap().items[0], record);
     }
     #[test]
+    fn fractional_grid_intent_settles_without_a_false_external_change() {
+        let s = crate::testutil::Sandbox::new("window-history-fractional-grid");
+        let store = Store::new(s.path().join("history.json"));
+        let target = Rect {
+            x: -1062.6666666666665,
+            y: 30.,
+            width: 525.3333333333334,
+            height: 970.,
+        };
+        let mut row = input();
+        row.target = target;
+        let ticket = store.begin(&[row], None, 1).unwrap();
+        let mut observed = result();
+        observed.windows[0].actual_rect = Some(Rect {
+            x: -1063.,
+            width: 525.,
+            ..target
+        });
+        let settled = store.finish(&ticket, Some(&observed)).unwrap();
+        assert_eq!(settled.phase, Phase::Finished);
+        assert_eq!(settled.slots[0].target, target);
+        assert_eq!(store.list().unwrap().items[0], settled);
+    }
+    #[test]
+    fn mixed_display_templates_preserve_intents_and_settle_across_store_reopen() {
+        use crate::window_layout::{preview_geometry, DisplayArea, Template, WindowCandidate};
+        let s = crate::testutil::Sandbox::new("window-history-display-templates");
+        for (screen_name, rect, scale) in [
+            (
+                "left",
+                Rect {
+                    x: -1600.,
+                    y: 30.,
+                    width: 1600.,
+                    height: 970.,
+                },
+                1.,
+            ),
+            (
+                "top",
+                Rect {
+                    x: 0.,
+                    y: -870.,
+                    width: 1280.,
+                    height: 870.,
+                },
+                2.,
+            ),
+        ] {
+            for template in [Template::SideBySide, Template::MainAndTwo, Template::Grid] {
+                let count = if template == Template::SideBySide {
+                    2
+                } else {
+                    3
+                };
+                let windows = (0..count)
+                    .map(|i| WindowCandidate {
+                        window_id: format!("ephemeral-{i}"),
+                        agent_id: "codex".into(),
+                        application: "fixture".into(),
+                        title: String::new(),
+                        screen_id: None,
+                        rect: Rect {
+                            width: 500. + i as f64 * 13.,
+                            ..input().before
+                        },
+                        movable: true,
+                        resizable: true,
+                        restriction: None,
+                        minimum_size: None,
+                    })
+                    .collect::<Vec<_>>();
+                let display = DisplayArea {
+                    screen_id: screen_name.into(),
+                    rect,
+                    scale,
+                };
+                let geometry = preview_geometry(&display, &windows, template, 12.).unwrap();
+                assert!(geometry.applicable);
+                let intents = geometry
+                    .placements
+                    .iter()
+                    .map(|p| Input {
+                        window_id: p.window_id.clone(),
+                        agent_id: "codex".into(),
+                        before: p.before,
+                        target: p.target,
+                    })
+                    .collect::<Vec<_>>();
+                let path = s.path().join(format!("{screen_name}-{template:?}.json"));
+                let ticket = Store::new(path.clone()).begin(&intents, None, 1).unwrap();
+                let reopened = Store::new(path);
+                assert_eq!(reopened.list().unwrap().items[0], ticket.record);
+                let observed = crate::window_layout_execution::ResultDto {
+                    windows: geometry
+                        .placements
+                        .iter()
+                        .map(|p| crate::window_layout_execution::Row {
+                            window_id: p.window_id.clone(),
+                            status: crate::window_layout_execution::Status::Applied,
+                            reason: None,
+                            actual_rect: Some(Rect {
+                                x: p.target.x.round(),
+                                y: p.target.y.round(),
+                                width: p.target.width.round(),
+                                height: p.target.height.round(),
+                            }),
+                        })
+                        .collect(),
+                    ..result()
+                };
+                let settled = reopened.finish(&ticket, Some(&observed)).unwrap();
+                assert_eq!(settled.phase, Phase::Finished);
+                assert_eq!(reopened.list().unwrap().items[0], settled);
+            }
+        }
+    }
+    #[test]
+    fn a_valid_subpoint_external_edit_still_refuses_settlement() {
+        let s = crate::testutil::Sandbox::new("window-history-subpoint-conflict");
+        let path = s.path().join("history.json");
+        let store = Store::new(path.clone());
+        let ticket = store.begin(&[input()], None, 1).unwrap();
+        let (mut external, _) = store.read().unwrap();
+        external.items[0].slots[0].target.x += 0.125;
+        let bytes = serde_json::to_vec(&external).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(store.finish(&ticket, Some(&result())).is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        assert_eq!(store.list().unwrap().items[0].phase, Phase::Pending);
+    }
+    #[test]
     fn postwrite_external_changes_do_not_overwrite_or_reclassify_pending() {
         let s = crate::testutil::Sandbox::new("window-history-conflict");
         let path = s.path().join("history.json");
