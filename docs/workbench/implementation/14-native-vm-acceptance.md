@@ -68,6 +68,8 @@ NATIVE_TEST_USER=<guest-user> /usr/bin/python3 scripts/native-gates-vm.py --vm <
 
 资源退化口径：目标或采样器归属未知、与目标同组等仅能读取主进程的场景，保留known_member_footprint_mib，complete=false且total_footprint_mib为空；主进程可读不等于整应用完整。不可回填旧样本；新驱动需重新取证。
 
+进程枚举同时读取state，仅排除明确Z状态的僵尸条目；这类PID仍可存在但没有可读取的运行任务，不能因此将每一拍标为归属未知。未知状态、其他同名观察进程及枚举后消失的条目继续保留正常核验或缺口；枚举格式不完整则整拍结构化失败，不静默省略。修正只影响新驱动观测，旧长测不追改，也不自动推导资源预算通过。状态语义核对[Apple ps手册源](https://github.com/apple-oss-distributions/adv_cmds/blob/main/ps/ps.1)。
+
 长时运行结束后，用 `python3 scripts/analyze-memory-soak.py --stream <memory-soak.jsonl> --receipt <receipt.json>` 核对完整七拍/20次顺序、时间跨度、目标启动身份和独立runner成功回执。时间戳允许100ms采样耗时差异，末条idle_seconds仍须至少1800秒；不把主进程极值当整应用预算，不从协议完成自动推断预算通过。核验器六项失败场景回归纳入release。传输manifest、二进制/驱动哈希与来宾身份仍由独立记录核对，核验器不取代这些证据。
 
 原生UI烟测的工作台动效清理检查必须在可见窗口执行；隐藏WKWebView的固定延时不作为动画完成证明。显式隔离烟测显示工作台，等待实际有限动画finished与下一任务后核对旧裁切宿主/离场层，三秒期限失败仍阻止通过。该流程不等同逐帧品质评价。

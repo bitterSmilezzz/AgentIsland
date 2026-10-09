@@ -34,9 +34,22 @@ class Tests(unittest.TestCase):
     def test_only_the_created_observer_pid_is_excluded(self, popen):
         child=popen.return_value.__enter__.return_value
         child.pid=99;child.returncode=0
-        child.communicate.return_value=('10 private-main\n99 /bin/ps\n100 /bin/ps\n101 other-tool\n','')
+        child.communicate.return_value=('10 S private-main\n99 R /bin/ps\n100 S /bin/ps\n101 S other-tool\n','')
         self.assertEqual(self.enumerator().processes(),[(10,'private-main'),(100,'/bin/ps'),(101,'other-tool')])
-        self.assertEqual(popen.call_args.args[0],['ps','-axo','pid=,comm='])
+        self.assertEqual(popen.call_args.args[0],['ps','-axo','pid=,state=,comm='])
+    @patch.object(measure.subprocess, 'Popen')
+    def test_only_explicit_zombie_states_are_excluded(self, popen):
+        child=popen.return_value.__enter__.return_value
+        child.pid=99;child.returncode=0
+        child.communicate.return_value=('10 S private-main\n99 R /bin/ps\n100 Z /bin/ps\n101 S /bin/ps\n102 ? unknown-state\n103 Z+ zombie-tool\n','')
+        self.assertEqual(self.enumerator().processes(),[(10,'private-main'),(101,'/bin/ps'),(102,'unknown-state')])
+    @patch.object(measure.subprocess, 'Popen')
+    def test_malformed_enumeration_cannot_silently_drop_a_possible_member(self, popen):
+        child=popen.return_value.__enter__.return_value
+        child.pid=99;child.returncode=0
+        for malformed in ('10 S private-main\n20\n','10 S private-main\nnot-a-pid S other\n','10 S private-main\n20 Z\n'):
+            child.communicate.return_value=(malformed,'')
+            with self.subTest(malformed=malformed),self.assertRaises(ValueError):self.enumerator().processes()
     @patch.object(measure.subprocess, 'Popen')
     def test_observer_timeout_is_reaped_and_not_reported_as_an_empty_list(self, popen):
         child=popen.return_value.__enter__.return_value
@@ -55,6 +68,13 @@ class Tests(unittest.TestCase):
             with patch.object(measure.sys,'platform','darwin'),patch.object(measure.sys,'argv',['measure',*extra]),patch.object(measure,'Native',side_effect=AssertionError('must not touch native')),contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as result:measure.main()
                 self.assertEqual(result.exception.code,2)
+    def test_invalid_enumeration_returns_a_structured_failure_without_raw_output(self):
+        output=io.StringIO()
+        with patch.object(measure.sys,'platform','darwin'),patch.object(measure.sys,'argv',['measure','--pid','10','--seconds','1']),patch.object(measure,'Native'),patch.object(measure,'sample',side_effect=ValueError('private-process-text')),contextlib.redirect_stdout(output):
+            self.assertEqual(measure.main(),2)
+        result=json.loads(output.getvalue())
+        self.assertEqual(result['status'],'sampling_failed')
+        self.assertNotIn('private-',output.getvalue())
     def test_unknown_collector_group_keeps_main_only(self):
         native=Native();native.groups.pop(90)
         result=measure.sample(10,native,collector_pid=90)

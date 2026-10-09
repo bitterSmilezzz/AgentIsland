@@ -49,7 +49,7 @@ class Native:
             'idle_wakeups', 'interrupt_wakeups', 'pageins', 'disk_read', 'disk_write')}
 
     def processes(self):
-        command = ['ps', '-axo', 'pid=,comm=']
+        command = ['ps', '-axo', 'pid=,state=,comm=']
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, errors='replace') as observer:
             try:
@@ -63,11 +63,17 @@ class Native:
             observer_pid = observer.pid
         rows = []
         for row in output.splitlines():
-            values = row.strip().split(None, 1)
+            if not row.strip():
+                continue
+            values = row.strip().split(None, 2)
+            if len(values) != 3 or not values[0].isdigit():
+                raise ValueError('invalid process enumeration')
             # The snapshot contains this exact child, which has exited before
             # coalition reads. Exclude our observer, never other processes by name.
-            if len(values) == 2 and values[0].isdigit() and int(values[0]) != observer_pid:
-                rows.append((int(values[0]), values[1]))
+            # An explicit zombie has no live task/resource membership to read.
+            # Unknown states and processes that disappear later remain unresolved.
+            if int(values[0]) != observer_pid and not values[1].startswith('Z'):
+                rows.append((int(values[0]), values[2]))
         return rows
 
 
@@ -159,7 +165,7 @@ def main():
         time.sleep(max(0, target - time.monotonic()))
         try:
             result = sample(args.pid, native, expected_start)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError):
             result = {'schema_version': 2, 'status': 'sampling_failed'}
         print(json.dumps({'elapsed': round(time.monotonic() - started, 3), **result}), flush=True)
         if result['status'] != 'observed':
