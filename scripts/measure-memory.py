@@ -7,6 +7,7 @@ complete does not prove every future process or shared allocation is covered.
 """
 import argparse
 import ctypes
+import errno
 import json
 import math
 import os
@@ -47,6 +48,17 @@ class Native:
         return {name: int(getattr(buf, name)) for name in (
             'start', 'resident_size', 'phys_footprint', 'user_time', 'system_time',
             'idle_wakeups', 'interrupt_wakeups', 'pageins', 'disk_read', 'disk_write')}
+
+    def is_absent(self, pid):
+        # Signal zero only checks existence/permission; no signal is delivered.
+        # EPERM and other failures cannot prove absence or coalition ownership.
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError as error:
+            return error.errno == errno.ESRCH
+        return False
 
     def processes(self):
         command = ['ps', '-axo', 'pid=,state=,comm=']
@@ -107,7 +119,7 @@ def sample(pid, native, expected_start=None, collector_pid=None):
     group = native.coalition(pid)
     collector_group = native.coalition(collector_pid if collector_pid is not None else os.getpid())
     isolated = group is not None and collector_group is not None and group != collector_group
-    unresolved, stable, members = 0, True, []
+    unresolved, exited, stable, members = 0, 0, True, []
     processes = native.processes() if isolated else [(pid, '')]
     seen = set()
     if not any(member == pid for member, _ in processes):
@@ -118,6 +130,11 @@ def sample(pid, native, expected_start=None, collector_pid=None):
         seen.add(member)
         member_group = native.coalition(member) if isolated else None
         if isolated and member_group is None:
+            if native.is_absent(member):
+                if member == pid:
+                    return {'schema_version': 2, 'status': 'target_unavailable'}
+                exited += 1
+                continue
             unresolved += 1
         if member != pid and (not isolated or member_group != group):
             continue
@@ -143,6 +160,7 @@ def sample(pid, native, expected_start=None, collector_pid=None):
         return {'schema_version': 2, 'status': 'target_replaced'}
     stable = stable and native.coalition(pid) == group
     return {'schema_version': 2, 'status': 'observed', 'main_start': before['start'],
+            'exited_during_enumeration': exited,
             **summarize(members, 'observed-resource-coalition' if isolated else 'main-only', unresolved, stable)}
 
 

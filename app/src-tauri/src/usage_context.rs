@@ -47,7 +47,7 @@ impl Cursor {
         if !line.contains("\"session_meta\"") && !line.contains("\"turn_context\"") {
             return;
         }
-        let Ok(doc) = serde_json::from_str::<Value>(line) else {
+        let Ok(doc) = crate::usage_projection::context(line) else {
             *self = Self::default();
             return;
         };

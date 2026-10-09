@@ -610,9 +610,12 @@ fn parse_usage(line: &str, context: Option<&Cursor>) -> Option<UsageLine> {
     if !line.contains("\"usage\"") && !line.contains("\"providerData\"") {
         return None;
     }
-    let doc: Value = serde_json::from_str(line).ok()?;
+    let doc = crate::usage_projection::usage(line).ok()?;
+    parse_usage_doc(&doc, context)
+}
+fn parse_usage_doc(doc: &Value, context: Option<&Cursor>) -> Option<UsageLine> {
     if doc.get("providerData").is_some() {
-        return parse_provider_usage(&doc);
+        return parse_provider_usage(doc);
     }
     let obj = doc.as_object()?;
 
@@ -716,7 +719,7 @@ fn parse_usage(line: &str, context: Option<&Cursor>) -> Option<UsageLine> {
         .unwrap_or_else(now_ms);
 
     Some(UsageLine {
-        context: context.and_then(|c| c.for_usage(&doc)),
+        context: context.and_then(|c| c.for_usage(doc)),
         id,
         tokens: net,
         cost,
@@ -2365,3 +2368,7 @@ mod iso_parsing_tests {
 #[cfg(test)]
 #[path = "tokens_context_tests.rs"]
 mod context_tests;
+
+#[cfg(test)]
+#[path = "tokens_projection_tests.rs"]
+mod projection_tests;

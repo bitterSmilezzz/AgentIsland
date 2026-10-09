@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ctypes
+import errno
 import contextlib
 import io
 import importlib.util
@@ -20,7 +21,9 @@ class Native:
         self.groups={10:7,20:7,30:8,90:9}
         self.values={10:usage(),20:usage(200)}
         self.calls={}
+        self.absent=set()
     def coalition(self,pid):return self.groups.get(pid)
+    def is_absent(self,pid):return pid in self.absent
     def processes(self):return [(10,'private-main-path'),(20,'private-user-folder/com.apple.WebKit.WebContent'),(30,'private-unrelated-command')]
     def usage(self,pid):
         self.calls[pid]=self.calls.get(pid,0)+1
@@ -113,6 +116,41 @@ class Tests(unittest.TestCase):
         native=Native();native.groups.pop(30)
         result=measure.sample(10,native,collector_pid=90)
         self.assertEqual(result['unresolved_membership'],1);self.assertIsNone(result['total_footprint_mib'])
+    def test_only_confirmed_absence_resolves_an_enumerated_unknown(self):
+        native=Native();native.groups.pop(30);native.absent.add(30)
+        result=measure.sample(10,native,collector_pid=90)
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['total_footprint_mib'],20)
+        self.assertEqual(result['unresolved_membership'],0)
+        self.assertEqual(result['exited_during_enumeration'],1)
+        self.assertNotIn('private-',json.dumps(result))
+    def test_absence_does_not_hide_a_known_member_lost_during_read(self):
+        native=Native();native.values[20]=None;native.absent.add(20)
+        result=measure.sample(10,native,collector_pid=90)
+        self.assertFalse(result['complete']);self.assertIsNone(result['total_footprint_mib'])
+        self.assertEqual(result['exited_during_enumeration'],0)
+    def test_target_absence_cannot_be_resolved_into_a_success(self):
+        native=Native();native.absent.add(10);original=native.coalition
+        calls=0
+        def group(pid):
+            nonlocal calls
+            if pid==10:
+                calls+=1
+                if calls>1:return None
+            return original(pid)
+        native.coalition=group
+        self.assertEqual(measure.sample(10,native,collector_pid=90)['status'],'target_unavailable')
+    @patch.object(measure.os,'kill')
+    def test_absence_requires_kernel_esrch_and_sends_only_signal_zero(self, kill):
+        native=self.enumerator()
+        kill.return_value=None;self.assertFalse(native.is_absent(30))
+        for error in (PermissionError(errno.EPERM,'private-error'),OSError(errno.EINVAL,'private-error'),OSError(errno.EIO,'private-error')):
+            kill.side_effect=error;self.assertFalse(native.is_absent(30))
+        kill.side_effect=ProcessLookupError(errno.ESRCH,'private-error');self.assertTrue(native.is_absent(30))
+        self.assertTrue(all(call.args==(30,0) for call in kill.call_args_list))
+        kill.reset_mock()
+        for pid in (0,-1):self.assertFalse(native.is_absent(pid))
+        kill.assert_not_called()
     def test_main_restart_or_reuse_stops_observation(self):
         self.assertEqual(measure.sample(10,Native(),expected_start=99,collector_pid=90)['status'],'target_replaced')
         native=Native();native.values[10]=None
