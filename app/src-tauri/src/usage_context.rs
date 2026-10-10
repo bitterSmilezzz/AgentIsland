@@ -43,6 +43,17 @@ fn label(value: Option<&Value>) -> Option<String> {
         .map(str::to_owned)
 }
 impl Cursor {
+    /// Capacity retained by this cursor. The fact may also be shared by entries;
+    /// charging it here again is conservative, bounded to one fact per file.
+    pub fn cache_heap_charge(&self) -> usize {
+        [&self.thread, &self.session, &self.turn, &self.provider, &self.model]
+            .into_iter()
+            .filter_map(Option::as_ref)
+            .map(String::capacity)
+            .sum::<usize>()
+            + self.fact.as_ref().map_or(0, |fact| fact.cache_charge())
+    }
+
     pub fn observe(&mut self, line: &str) {
         if !line.contains("\"session_meta\"") && !line.contains("\"turn_context\"") {
             return;
@@ -91,6 +102,14 @@ impl Cursor {
             return None;
         }
         self.fact.clone()
+    }
+}
+
+impl Fact {
+    pub fn cache_charge(&self) -> usize {
+        std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()
+            + self.provider.as_ref().map_or(0, String::capacity)
+            + self.requested_model.as_ref().map_or(0, String::capacity)
     }
 }
 

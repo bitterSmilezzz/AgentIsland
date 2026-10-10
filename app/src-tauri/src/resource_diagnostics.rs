@@ -7,6 +7,9 @@ pub struct Cache {
     pub entry_capacity: usize,
     pub dedup_keys: usize,
     pub dedup_capacity: usize,
+    /// Conservative cache capacity charge, not allocator usage or footprint.
+    pub retained_charge_bytes: usize,
+    pub retained_budget_bytes: usize,
 }
 #[derive(Default, Clone, Serialize)]
 pub struct FileCache {

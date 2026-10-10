@@ -14,6 +14,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// （净消耗口径，不含缓存读取），文件指纹增量缓存。
 pub struct TokenUsageMonitor {
     states: HashMap<String, FileState>,
+    charged_payload: usize,
+    cache_budget: usize,
+    access_clock: u64,
+    transient_key: Option<String>,
+}
+
+const CACHE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CACHED_FILES: usize = 8000;
+
+/// A conservative policy charge for the table's capacity, including slack and
+/// control/alignment allowance. This is not an allocator or OS memory metric.
+fn table_charge<K, V>(capacity: usize) -> usize {
+    capacity.saturating_mul(std::mem::size_of::<(K, V)>() + std::mem::size_of::<usize>())
+        .saturating_mul(2)
+}
+
+fn add_model_amounts(models: &mut HashMap<String, (i64, f64)>, model: &str, tokens: i64, cost: f64) {
+    if let Some(value) = models.get_mut(model) {
+        value.0 += tokens;
+        value.1 += cost;
+    } else {
+        models.insert(model.to_owned(), (tokens, cost));
+    }
 }
 
 /// 明细保留窗口。**70 天不是拍的**：分析页最宽 30 天，那一档还要往前读同样长的
@@ -60,7 +83,7 @@ fn stamp_of(path: &Path) -> Option<Stamp> {
 /// 明细沿用净用量与费用，匹配的会话上下文只保留共享引用。
 struct Entry {
     ts: i64,
-    model: String,
+    model: Arc<str>,
     tokens: i64,
     cost: f64,
     context: Option<Arc<Fact>>,
@@ -68,6 +91,8 @@ struct Entry {
 
 #[derive(Default)]
 struct FileState {
+    retained_charge: usize,
+    last_used: u64,
     /// 上一次读完之后文件的标识
     stamp: Option<Stamp>,
     /// 窗口内的明细（≤ RETENTION_MS，且 ≤ MAX_DETAIL_PER_FILE 条）
@@ -84,11 +109,39 @@ struct FileState {
     /// 不挡就会计两次。只在 `rolled_count == 0` 期间保留——一旦有折入就每轮整份重读、
     /// 当轮内去重，这个集合随之清空（内存也就有界了）。
     seen_ids: HashMap<String, usize>,
+    model_names: HashMap<String, Arc<str>>,
     context: Cursor,
     /// 上次是否停在整行边界上。false 时不许增量续读（否则半个 JSON 行会被跳过去）。
     ended_with_newline: bool,
     /// Streaming sources revise earlier calls; changed files must rebuild before folding.
     revisable_usage: bool,
+}
+
+impl FileState {
+    fn payload_charge(&self, path_bytes: usize) -> usize {
+        let mut facts = HashSet::new();
+        let mut models = HashSet::new();
+        let model_bytes: usize = self.entries.iter().map(|entry| &entry.model)
+            .chain(self.model_names.values())
+            .filter(|model| models.insert(Arc::as_ptr(model) as *const ()))
+            .map(|model| model.len() + 2 * std::mem::size_of::<usize>())
+            .sum();
+        path_bytes
+            + self.entries.capacity() * std::mem::size_of::<Entry>()
+            + self.entries.iter().map(|entry| {
+                entry.context.as_ref().map_or(0, |fact| {
+                    if facts.insert(Arc::as_ptr(fact)) { fact.cache_charge() } else { 0 }
+                })
+            }).sum::<usize>()
+            + table_charge::<String, usize>(self.seen_ids.capacity())
+            + self.seen_ids.keys().map(String::capacity).sum::<usize>()
+            + table_charge::<String, (i64, f64)>(self.rolled_models.capacity())
+            + self.rolled_models.keys().map(String::capacity).sum::<usize>()
+            + table_charge::<String, Arc<str>>(self.model_names.capacity())
+            + self.model_names.keys().map(String::capacity).sum::<usize>()
+            + model_bytes
+            + self.context.cache_heap_charge()
+    }
 }
 
 /// 折入：先按窗口分，再按条数上限裁。**保和**——被折掉的每一条都进合计。
@@ -145,6 +198,57 @@ impl TokenUsageMonitor {
     pub fn new() -> Self {
         TokenUsageMonitor {
             states: HashMap::new(),
+            charged_payload: 0,
+            cache_budget: CACHE_BUDGET_BYTES,
+            access_clock: 0,
+            transient_key: None,
+        }
+    }
+
+    fn cache_charge(&self) -> usize {
+        self.charged_payload + table_charge::<String, FileState>(self.states.capacity())
+    }
+
+    /// Current-file data remains available until the caller consumes all report
+    /// fields. Oversized files are transient work, never retained after reporting.
+    fn trim_cache(&mut self, protected: Option<&str>) {
+        if protected.is_none() {
+            if let Some(key) = self.transient_key.take() {
+                if let Some(state) = self.states.remove(&key) {
+                    self.charged_payload -= state.retained_charge;
+                }
+                self.states.shrink_to_fit();
+            }
+        } else if let Some(key) = protected {
+            if self.states.get(key).is_some_and(|state| state.retained_charge > self.cache_budget) {
+                self.transient_key = Some(key.to_owned());
+                return; // Do not flush the warm working set for one transient file.
+            }
+        }
+        if self.states.len() <= MAX_CACHED_FILES && self.cache_charge() <= self.cache_budget {
+            return;
+        }
+        // Batch eviction avoids repeatedly sorting a full cache at its boundary.
+        let target_files = MAX_CACHED_FILES - MAX_CACHED_FILES / 8;
+        let target_bytes = self.cache_budget - self.cache_budget / 8;
+        let mut oldest: Vec<_> = self.states.iter()
+            .filter(|(key, _)| Some(key.as_str()) != protected)
+            .map(|(key, state)| (state.last_used, key.clone()))
+            .collect();
+        oldest.sort_unstable();
+        for (_, key) in oldest {
+            if self.states.len() <= target_files && self.cache_charge() <= target_bytes {
+                break;
+            }
+            let state = self.states.remove(&key).unwrap();
+            self.charged_payload -= state.retained_charge;
+            // Removing values alone does not release the table's buckets.
+            if self.states.len() < self.states.capacity() / 4 {
+                self.states.shrink_to_fit();
+            }
+        }
+        if self.states.is_empty() {
+            self.states = HashMap::new();
         }
     }
 
@@ -155,6 +259,8 @@ impl TokenUsageMonitor {
             entry_capacity: self.states.values().map(|s| s.entries.capacity()).sum(),
             dedup_keys: self.states.values().map(|s| s.seen_ids.len()).sum(),
             dedup_capacity: self.states.values().map(|s| s.seen_ids.capacity()).sum(),
+            retained_charge_bytes: self.cache_charge(),
+            retained_budget_bytes: self.cache_budget,
         }
     }
 
@@ -241,6 +347,7 @@ impl TokenUsageMonitor {
                         }
                     }
                 }
+                self.trim_cache(None);
             }
         }
 
@@ -362,6 +469,7 @@ impl TokenUsageMonitor {
                 let (t, c, _, _, _) = self.parse_file(&entry.path().to_path_buf(), cutoff);
                 tokens += t;
                 cost += c;
+                self.trim_cache(None);
             }
         }
         if let Some(part) = query_declared_database(profile, cutoff) {
@@ -377,6 +485,14 @@ impl TokenUsageMonitor {
         cutoff24: i64,
     ) -> (i64, f64, i64, f64, HashMap<String, (i64, f64)>) {
         let key = path.to_string_lossy().to_string();
+        if self.transient_key.is_some() {
+            self.trim_cache(None);
+        }
+        self.access_clock = self.access_clock.saturating_add(1);
+        if let Some(state) = self.states.get_mut(&key) {
+            state.last_used = self.access_clock;
+        }
+        let previous_charge = self.states.get(&key).map_or(0, |state| state.retained_charge);
         let now = now_ms();
         // stat 失败（文件消失 / 读不到）：保留上一轮的值——「没看到」不等于「没有」
         let Some(stamp) = stamp_of(path) else {
@@ -444,6 +560,7 @@ impl TokenUsageMonitor {
                 st.rolled_cost = 0.0;
                 st.rolled_count = 0;
                 st.seen_ids.clear();
+                st.model_names.clear();
             }
             if consumed.is_some() {
                 st.context = context;
@@ -469,9 +586,11 @@ impl TokenUsageMonitor {
                     continue;
                 }
                 st.seen_ids.insert(dedup, st.entries.len() + fresh.len());
+                let model = st.model_names.entry(u.model)
+                    .or_insert_with_key(|name| Arc::from(name.as_str())).clone();
                 fresh.push(Entry {
                     ts: u.ts_ms,
-                    model: u.model,
+                    model,
                     tokens: u.tokens,
                     cost: u.cost,
                     context: u.context,
@@ -484,9 +603,7 @@ impl TokenUsageMonitor {
             };
             let mut model_totals: HashMap<String, (i64, f64)> = HashMap::new();
             for e in fresh.iter().chain(carry.iter()) {
-                let value = model_totals.entry(e.model.clone()).or_default();
-                value.0 += e.tokens;
-                value.1 += e.cost;
+                add_model_amounts(&mut model_totals, &e.model, e.tokens, e.cost);
             }
             let (kept, folded_tokens, folded_cost, folded_count) =
                 fold(fresh, carry, now - RETENTION_MS);
@@ -494,9 +611,7 @@ impl TokenUsageMonitor {
                 st.rolled_models.clear();
             }
             for e in &kept {
-                let value = model_totals.entry(e.model.clone()).or_default();
-                value.0 -= e.tokens;
-                value.1 -= e.cost;
+                add_model_amounts(&mut model_totals, &e.model, -e.tokens, -e.cost);
             }
             for (model, (tokens, cost)) in model_totals {
                 if tokens > 0 || cost > 0.0 {
@@ -511,7 +626,12 @@ impl TokenUsageMonitor {
             st.rolled_count += folded_count;
             if st.rolled_count > 0 {
                 // 有折入 ⇒ 之后每轮走整份重读、当轮内去重，跨轮去重集不再需要（内存随之有界）
-                st.seen_ids.clear();
+                st.seen_ids = HashMap::new();
+            }
+            if st.rolled_count > 0 || st.revisable_usage {
+                // These sources rebuild on change. Entries own their shared names;
+                // no cross-tick lookup table is needed for incremental append.
+                st.model_names = HashMap::new();
             }
             if let Some((bytes, ended)) = consumed {
                 // size 记**真正承认到的字节数**而不是 stat 到的大小：stat 与读之间文件
@@ -523,20 +643,11 @@ impl TokenUsageMonitor {
                 });
                 st.ended_with_newline = ended;
             }
+            st.last_used = self.access_clock;
+            st.retained_charge = st.payload_charge(key.len());
+            self.charged_payload = self.charged_payload - previous_charge + st.retained_charge;
         }
-        // 状态表有界。当前文件仍要被调用方汇总，不能在返回结果前驱逐它。
-        if self.states.len() > 8000 {
-            let keys: Vec<String> = self
-                .states
-                .iter()
-                .filter(|(candidate, _)| *candidate != &key)
-                .take(1000)
-                .map(|(k, _)| k.clone())
-                .collect();
-            for k in keys {
-                self.states.remove(&k);
-            }
-        }
+        self.trim_cache(Some(&key));
         self.summarize(&key, cutoff24)
     }
 
@@ -566,9 +677,7 @@ impl TokenUsageMonitor {
             if entry.ts >= cutoff24 {
                 tokens24 += entry.tokens;
                 cost24 += entry.cost;
-                let e = models.entry(entry.model.clone()).or_insert((0, 0.0));
-                e.0 += entry.tokens;
-                e.1 += entry.cost;
+                add_model_amounts(&mut models, &entry.model, entry.tokens, entry.cost);
             }
         }
         (
@@ -1314,6 +1423,192 @@ mod compact_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn budget_record(id: &str, timestamp: &str) -> String {
+        format!("{}\n", codex_record_at(140, 30, 40, id, timestamp))
+    }
+
+    #[test]
+    fn byte_budget_preserves_reports_across_eviction_and_append() {
+        let sandbox = crate::testutil::Sandbox::new("token-byte-budget");
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let header = concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-one\",\"session_id\":\"session-one\",\"model_provider\":\"fixture-provider\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-one\",\"model\":\"fixture-model\"}}\n"
+        );
+        for file in 0..12 {
+            let mut body = header.to_owned();
+            for row in 0..50 {
+                let mut record: Value = serde_json::from_str(&budget_record(&format!("response-{file}-{row}"), &timestamp)).unwrap();
+                record["payload"]["thread_id"] = "thread-one".into();
+                record["payload"]["session_id"] = "session-one".into();
+                record["payload"]["turn_id"] = "turn-one".into();
+                body.push_str(&format!("{record}\n"));
+            }
+            fs::write(sandbox.path().join(format!("{file}.jsonl")), body).unwrap();
+        }
+        let profile = one_root_profile("byte-budget", &sandbox.path().to_string_lossy());
+        let mut monitor = TokenUsageMonitor::new();
+        monitor.cache_budget = 64 * 1024;
+        for _ in 0..2 {
+            let report = monitor.monitor(&profile);
+            assert_eq!((report.usage.tokens24h, report.usage.tokens_total), (90_000, 90_000));
+            assert_eq!(sum_hourly(&report), 90_000);
+            assert_eq!(report.models_total.iter().map(|m| m.tokens).sum::<i64>(), 90_000);
+            assert_eq!((report.context24h.matched_tokens, report.context24h.unmatched_tokens), (90_000, 0));
+            assert!(monitor.cache_charge() <= monitor.cache_budget,
+                "retained cache charge {} exceeds budget {}", monitor.cache_charge(), monitor.cache_budget);
+            assert!(monitor.states.len() < 12, "byte budget must apply below the file-count limit");
+        }
+        use std::io::Write;
+        let path = sandbox.path().join("0.jsonl");
+        let mut append = fs::OpenOptions::new().append(true).open(path).unwrap();
+        write!(append, "{}{}", budget_record("response-0-0", &timestamp), budget_record("new-response", &timestamp)).unwrap();
+        let report = monitor.monitor(&profile);
+        assert_eq!((report.usage.tokens24h, report.usage.tokens_total), (90_150, 90_150));
+        assert_eq!(sum_hourly(&report), 90_150);
+        assert!(monitor.cache_charge() <= monitor.cache_budget);
+    }
+
+    #[test]
+    fn byte_budget_does_not_retain_an_oversized_file_after_reporting() {
+        let sandbox = crate::testutil::Sandbox::new("token-oversized-cache");
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let body: String = (0..4).map(|i| budget_record(&format!("{i}-{}", "x".repeat(32_768)), &timestamp)).collect();
+        fs::write(sandbox.path().join("large.jsonl"), body).unwrap();
+        let profile = one_root_profile("oversized", &sandbox.path().to_string_lossy());
+        let mut monitor = TokenUsageMonitor::new();
+        monitor.cache_budget = 64 * 1024;
+        for _ in 0..2 {
+            let report = monitor.monitor(&profile);
+            assert_eq!((report.usage.tokens24h, report.usage.tokens_total), (600, 600));
+            assert_eq!(sum_hourly(&report), 600);
+            assert_eq!(report.models_total.iter().map(|m| m.tokens).sum::<i64>(), 600);
+            assert!(monitor.states.is_empty(), "a large in-flight file must not remain cached");
+            assert_eq!(monitor.cache_charge(), 0);
+            assert_eq!(monitor.range_totals(&profile, 86_400_000, now_ms()).0, 600);
+            assert_eq!(monitor.cache_charge(), 0);
+        }
+    }
+
+    #[test]
+    fn byte_budget_lru_counts_unchanged_file_hits() {
+        let sandbox = crate::testutil::Sandbox::new("token-cache-lru");
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let paths: Vec<PathBuf> = ["a", "b", "c"].into_iter().map(|name| {
+            let path = sandbox.path().join(format!("{name}.jsonl"));
+            fs::write(&path, budget_record(&format!("{name}-{}", "x".repeat(8192)), &timestamp)).unwrap();
+            path
+        }).collect();
+        let mut monitor = TokenUsageMonitor::new();
+        monitor.parse_file(&paths[0], 0);
+        monitor.parse_file(&paths[1], 0);
+        monitor.cache_budget = monitor.cache_charge() + monitor.states[paths[0].to_str().unwrap()].retained_charge / 2;
+        monitor.parse_file(&paths[0], 0); // Warm metadata hit is still a real cache access.
+        monitor.parse_file(&paths[2], 0);
+        assert!(monitor.states.contains_key(paths[0].to_str().unwrap()));
+        assert!(!monitor.states.contains_key(paths[1].to_str().unwrap()));
+        assert!(monitor.states.contains_key(paths[2].to_str().unwrap()));
+        assert!(monitor.cache_charge() <= monitor.cache_budget);
+    }
+
+    #[test]
+    fn folded_files_release_unused_dedup_capacity() {
+        let sandbox = crate::testutil::Sandbox::new("token-folded-capacity");
+        let path = sandbox.path().join("folded.jsonl");
+        let body: String = (0..4).map(|i| budget_record(&format!("old-{i}"), "2020-01-01T00:00:00.000Z")).collect();
+        fs::write(&path, body).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        assert_eq!(monitor.parse_file(&path, 0).2, 600);
+        let cache = monitor.diagnostic_cache();
+        assert_eq!((cache.entries, cache.dedup_keys), (0, 0));
+        assert_eq!(cache.dedup_capacity, 0, "folded files always rebuild; empty buckets have no cross-tick use");
+        use std::io::Write;
+        write!(fs::OpenOptions::new().append(true).open(path).unwrap(), "{}{}",
+            budget_record("old-0", "2020-01-01T00:00:00.000Z"),
+            budget_record("new", &iso_utc_from_ms(now_ms() - 60_000))).unwrap();
+        let profile = one_root_profile("folded-capacity", &sandbox.path().to_string_lossy());
+        let report = monitor.monitor(&profile);
+        assert_eq!((report.usage.tokens24h, report.usage.tokens_total), (150, 750));
+        assert_eq!(monitor.diagnostic_cache().dedup_capacity, 0);
+    }
+
+    #[test]
+    fn byte_budget_accounting_matches_owned_states_after_rewrite_and_eviction() {
+        let sandbox = crate::testutil::Sandbox::new("token-budget-accounting");
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let mut monitor = TokenUsageMonitor::new();
+        monitor.cache_budget = 32 * 1024;
+        for round in 0..3 {
+            for file in 0..8 {
+                let path = sandbox.path().join(format!("{file}.jsonl"));
+                let body: String = (0..(file + round + 1)).map(|row| {
+                    budget_record(&format!("{file}-{row}-{}", "x".repeat(512)), &timestamp)
+                }).collect();
+                fs::write(&path, body).unwrap();
+                monitor.parse_file(&path, 0);
+                monitor.trim_cache(None);
+                assert_eq!(monitor.charged_payload, monitor.states.iter()
+                    .map(|(key, state)| state.payload_charge(key.capacity())).sum::<usize>());
+                assert!(monitor.cache_charge() <= monitor.cache_budget);
+            }
+        }
+    }
+
+    #[test]
+    fn byte_budget_charges_shared_context_once_per_file() {
+        let fact = Arc::new(Fact { provider: Some("fixture-provider".into()), requested_model: Some("fixture-model".into()) });
+        let entries = || (0..100).map(|_| Entry {
+            ts: 0, model: "fixture".into(), tokens: 1, cost: 0.0, context: None,
+        }).collect::<Vec<_>>();
+        let plain = FileState { entries: entries(), ..Default::default() };
+        let mut shared = FileState { entries: entries(), ..Default::default() };
+        for entry in &mut shared.entries { entry.context = Some(fact.clone()); }
+        assert_eq!(shared.payload_charge(0) - plain.payload_charge(0), fact.cache_charge());
+    }
+
+    #[test]
+    fn byte_budget_transient_file_does_not_flush_warm_files() {
+        let sandbox = crate::testutil::Sandbox::new("token-transient-cache");
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let small = sandbox.path().join("small.jsonl");
+        let large = sandbox.path().join("large.jsonl");
+        fs::write(&small, budget_record("small", &timestamp)).unwrap();
+        fs::write(&large, budget_record(&"x".repeat(131_072), &timestamp)).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        monitor.cache_budget = 64 * 1024;
+        assert_eq!(monitor.parse_file(&small, 0).2, 150);
+        assert_eq!(monitor.parse_file(&large, 0).2, 150);
+        monitor.trim_cache(None);
+        assert!(monitor.states.contains_key(small.to_str().unwrap()), "a transient oversized file must not evict the warm working set");
+        assert!(!monitor.states.contains_key(large.to_str().unwrap()));
+        assert!(monitor.cache_charge() <= monitor.cache_budget);
+    }
+
+    #[test]
+    fn repeated_model_names_share_retained_storage_including_append() {
+        let sandbox = crate::testutil::Sandbox::new("token-shared-model");
+        let path = sandbox.path().join("session.jsonl");
+        let timestamp = iso_utc_from_ms(now_ms() - 60_000);
+        let model = format!("fixture-{}", "m".repeat(1024));
+        let claude = |id: &str| serde_json::json!({"timestamp": timestamp, "id": id,
+            "message": {"model": model, "usage": {"input_tokens": 110, "output_tokens": 40}}}).to_string();
+        fs::write(&path, format!("{}\n{}\n", claude("a"), claude("b"))).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        assert_eq!(monitor.parse_file(&path, 0).2, 300);
+        let state = &monitor.states[path.to_str().unwrap()];
+        assert_eq!(state.entries[0].model.as_ptr(), state.entries[1].model.as_ptr(),
+            "the same model label needs one retained allocation per file");
+        let mut monitor = TokenUsageMonitor::new();
+        fs::write(&path, budget_record("a", &timestamp)).unwrap();
+        assert_eq!(monitor.parse_file(&path, 0).2, 150);
+        use std::io::Write;
+        write!(fs::OpenOptions::new().append(true).open(&path).unwrap(), "{}", budget_record("b", &timestamp)).unwrap();
+        assert_eq!(monitor.parse_file(&path, 0).2, 300);
+        let state = &monitor.states[path.to_str().unwrap()];
+        assert_eq!(state.entries[0].model.as_ptr(), state.entries[1].model.as_ptr(),
+            "incremental append must reuse the retained model allocation too");
+    }
 
     #[test]
     fn cache_pressure_keeps_the_file_being_reported() {

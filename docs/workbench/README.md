@@ -37,7 +37,7 @@ Swift 是原生灵动岛实现；Rust 端当前**三种形态都已实现**
 
 ## 后台内存专项
 
-[05-memory-optimization.md](05-memory-optimization.md)：实测基线、非必要工作、窗口与数据预算策略及验收目标，当前处于方案阶段。
+[05-memory-optimization.md](05-memory-optimization.md)：实测基线、按需窗口、读取投影与索引缓存预算策略；部分已实施，长时稳态和整体资源预算仍须验收。
 
 ## 产品目标与调查背景
 
