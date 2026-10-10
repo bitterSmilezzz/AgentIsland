@@ -5,6 +5,7 @@ import { usageContextHtml, bindUsageContext } from './usage-context.js';
 import { reportPanelHtml, bindReport, visibleReportPanel, openUsageReport } from './report-panel.js';
 import { pageSessions, hydrateSessions, refreshSessions } from './sessions-page.js';
 import { bindQuickNavigation } from './quick-navigation.js';
+import { workbenchPages } from './navigation.js';
 import { pagePrompts, hydratePrompts } from './prompts-page.js';
 import { workspaceFlow, workspaceRoute, workspaceReceiptLabel, workspaceWritable } from './workspace-flow.js';
 import { getTaskAttention, taskAttentionHtml, bindTaskAttention, taskCoversEvent, taskCoversSnapshot } from './task-attention.js';
@@ -925,13 +926,6 @@ function workbenchMonitor(eng) {
 }
 
 // 工作台导航独立于智能体详情路由；周期采样只更新实时监控区。
-const workbenchPages = [
-  ['overview', '概览', 'square'], ['sessions', '会话', 'terminal'], ['tokenAnalytics', '用量分析', 'chart'],
-  ['todo', '待办事项', 'check'], ['provider', '模型与连接', 'sliders'],
-  ['tasks', '任务', 'check'], ['workspaces', '工作空间', 'square'], ['windows', '窗口排列', 'square'], ['agents', '智能体管理', 'terminal'],
-  ['remote', '远程通知', 'bell'], ['settings', '设置', 'gear'],
-];
-
 function navigationIcon(kind) {
   const paths = {
     square: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="M9 3v18M9 10h12"/>',

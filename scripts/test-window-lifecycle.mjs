@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict';
 import { DraftGuard } from '../app/ui/js/window-lifecycle.js';
+import { workbenchPages, initialWorkbenchPage } from '../app/ui/js/navigation.js';
+for (const [key] of workbenchPages) {
+  assert.equal(initialWorkbenchPage('', key), key, 'every navigable page survives WebView recreation');
+  assert.equal(initialWorkbenchPage(key, 'settings'), key, 'an explicit launch overrides the saved page');
+}
+assert.equal(initialWorkbenchPage('', 'workspaces'), 'workspaces');
+assert.equal(initialWorkbenchPage('unknown', 'workspaces'), 'overview', 'invalid explicit routes do not inherit an unrelated saved page');
+assert.equal(initialWorkbenchPage('report', 'workspaces'), 'report', 'the report launch alias remains compatible');
+for (const invalid of [null, undefined, '', 'unknown', 'constructor', 'https://example.invalid/', {}]) {
+  assert.equal(initialWorkbenchPage('', invalid), 'overview', 'saved state must be a known page key');
+}
 const guard = new DraftGuard();
 const text = { tagName:'INPUT', type:'text', value:'', defaultValue:'', dataset:{}, isConnected:true };
 guard.focus(text); text.value = 'unsaved credential'; guard.changed(text);

@@ -28,7 +28,7 @@ export function retainWorkbenchControls(controls) {
   draftGuard.retain(controls);
   updateWorkbenchDraftStatus();
 }
-import { agentIdFromIntent, taskIdFromIntent, subscribeNavigation } from './navigation.js';
+import { agentIdFromIntent, taskIdFromIntent, subscribeNavigation, initialWorkbenchPage } from './navigation.js';
 import { isSidebar, isWorkbench, SHELL } from './shell.js';
 
 let windowVisible = true;
@@ -314,17 +314,9 @@ async function boot() {
       updateWorkbenchDraftStatus();
     }), true);
     updateWorkbenchDraftStatus();
-    if (!state.bootRoute) {
-      const savedPage = localStorage.getItem('agentisland.workbench.page');
-      if (['overview', 'tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report', 'tasks', 'sessions', 'windows'].includes(savedPage)) {
-        state.workbenchPage = savedPage;
-        state.route = savedPage === 'overview' ? 'list' : savedPage;
-      }
-    }
-    if (state.bootRoute) {
-      state.route = state.bootRoute;
-      state.workbenchPage = ['tokenAnalytics', 'provider', 'todo', 'settings', 'remote', 'agents', 'report', 'tasks', 'sessions', 'windows','workspaces'].includes(state.bootRoute) ? state.bootRoute : 'overview';
-    }
+    state.workbenchPage = initialWorkbenchPage(state.bootRoute,
+      state.bootRoute ? null : localStorage.getItem('agentisland.workbench.page'));
+    state.route = state.bootRoute || (state.workbenchPage === 'overview' ? 'list' : state.workbenchPage);
     refreshVisibleWindow = () => { applyLayout(); renderWorkbenchMonitorOnly(); if (state.workbenchPage === 'tasks') refreshTasks(); if (state.workbenchPage === 'sessions') refreshSessions(); };
     renderWorkbench();
     await listen('engine://tick', (e) => {

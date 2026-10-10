@@ -1,5 +1,18 @@
 import { invoke, listen } from './tauri.js';
 
+// One directory for navigation and recreated WebViews; saved values are page
+// keys only. Keep the legacy report entry as a launch target, not a second page.
+export const workbenchPages = [
+  ['overview', '概览', 'square'], ['sessions', '会话', 'terminal'], ['tokenAnalytics', '用量分析', 'chart'],
+  ['todo', '待办事项', 'check'], ['provider', '模型与连接', 'sliders'],
+  ['tasks', '任务', 'check'], ['workspaces', '工作空间', 'square'], ['windows', '窗口排列', 'square'], ['agents', '智能体管理', 'terminal'],
+  ['remote', '远程通知', 'bell'], ['settings', '设置', 'gear'],
+];
+export function initialWorkbenchPage(launch, saved) {
+  const page = launch || saved;
+  return page === 'report' || workbenchPages.some(([key]) => key === page) ? page : 'overview';
+}
+
 // Rust 的 Debug 意图中 Agent(String) 使用带引号、转义的字符串。
 // 三种窗口共用解码，避免把引号带进路由中的 agent id。
 export function agentIdFromIntent(intent) {
