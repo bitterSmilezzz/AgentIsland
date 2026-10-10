@@ -133,3 +133,11 @@ session_open_observed 只接受Source DTO，核对当前Choice完整身份再取
 协议依据（2026-10-05核对）：[SessionMetaLine](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs)、[实际JSONL记录测试](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder_tests.rs)、[目录定义](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/lib.rs)。上游后续格式变化须重新校验。
 
 无正文方案的独立采集规格与当前分层状态见 [13 · Claude 方案只读采集](13-claude-plan-capture.md)。协议/内存缓存与可注入正文关联接口已有受控回归，正式入口仍未启用；配置安装、接收服务和真实客户端验证尚未完成。
+
+### 详情草稿与版本归属
+
+名称/项目、进度和来源选择分别提供仅在改动时显示的撤销入口。撤销恢复该表单的已保存基线，保留其他表单草稿；项目选择保留实际已保存值。保存等待、失败和其他表单草稿阻止原因在对应表单下展示，失败不清输入。
+
+后台快照可更新看板，但保留中的详情仍绑定实际渲染时的聚合版本。保存、本地处理、来源导航及正文复核使用该版本，不能借后台刷新自动获得覆盖更新的资格。版本冲突保留草稿；全部草稿显式撤销后才展示已读取的新记录并重新绑定版本。用户已在编辑或选择控件时，自动刷新仍不重建详情。
+
+手工关口和缺少 observed 的旧记录使用本地处理说明，不提示前往不存在的来源；具体摘要保留优先。此规则不改变处理、执行完成及来源验收的状态分离，也不扩大来源绑定能力。

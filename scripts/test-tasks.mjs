@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { taskGroup, runSourceAction, renderTaskHistory, artifactReadAction } from '../app/ui/js/tasks-page.js';
+import { taskGroup, runSourceAction, renderTaskHistory, artifactReadAction, taskGateNotice } from '../app/ui/js/tasks-page.js';
 const data = { runs: [], attentions: [] };
 const task = { current_run_id: null };
 assert.equal(taskGroup(data, task), 'queued');
@@ -37,3 +37,11 @@ assert.match(sourceHtml,/data-task-artifact-read="source"/);assert.match(sourceH
 console.log('PASS: source content actions retain exact artifact and run ownership');
 
 assert.equal(artifactReadAction({...sourceArtifact,kind:"plan_approval"},"old").label,"查看方案");
+
+for (const kind of ['answer', 'plan_approval', 'result_review']) {
+  assert.equal(taskGateNotice({kind, observed:false}), '本地记录，处理后标记即可。');
+  assert.ok(!taskGateNotice({kind}).includes('来源'), 'legacy missing provenance cannot claim a source gate');
+}
+assert.match(taskGateNotice({kind:'plan_approval',observed:true}), /未提供方案正文/);
+assert.match(taskGateNotice({kind:'answer',observed:true}), /来源工具/);
+console.log('PASS: manual and legacy gates do not claim source approval or unavailable tool content');

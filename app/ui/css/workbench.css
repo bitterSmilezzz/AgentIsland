@@ -280,8 +280,10 @@ html:is(.shell-sidebar,.shell-workbench) .sb-empty { padding: 24px 10px; color: 
 .task-detail { border: 1px solid var(--border); border-radius: 12px; padding: 18px; background: var(--surface-raised); }
 .task-detail-heading { justify-content: space-between; margin-bottom: 15px; }
 .task-detail h2 { font-size: 13px; }
-.task-detail form { display: flex; gap: 10px; align-items: flex-end; margin: 14px 0; }
+.task-detail form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 14px 0; }
 .task-detail label { display: flex; flex: 1; gap: 7px; flex-direction: column; color: var(--text-muted); font-size: 11px; }
+.task-form-feedback { flex-basis: 100%; margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-detail [data-task-discard][hidden] { display: none; }
 .task-gate { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 0; border-top: 1px solid var(--border-subtle); }
 .task-gate p, .task-history p { color: var(--text-muted); line-height: 1.6; margin: 5px 0; overflow-wrap: anywhere; }
 .task-gate strong { font-size: 12px; }

@@ -4,6 +4,11 @@ import { pageRequest } from './page-host.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const statuses = { queued: '未开始', running: '执行中', waiting: '等待处理', ready: '结果就绪', failed: '执行失败', cancelled: '已取消', accepted: '来源已验收' };
 const kinds = { answer: '待回答', plan_approval: '确认方案', result_review: '验收结果', confirmation: '需要确认' };
+export function taskGateNotice(attention) {
+  if (!attention.observed) return '本地记录，处理后标记即可。';
+  return attention.kind === 'plan_approval' ? '来源未提供方案正文，请在工具中查看。' : '请在来源工具中处理，再更新本地记录。';
+}
+const draftActions = () => '<button class="mini-btn" type="button" data-task-discard hidden>撤销修改</button><p class="task-form-feedback" data-task-form-feedback role="status" aria-live="polite" hidden></p>';
 export function runSourceAction(run) {
   if (!run.source) return null;
   return { runId: run.id, label: run.source.thread_id && run.source.agent_id === 'codex' ? '打开来源会话' : '打开来源工具' };
@@ -62,14 +67,18 @@ export async function hydrateTasks(isVisible = () => true) {
   if (!root) return;
   const current = pageRequest(root);
   const message = root.querySelector('[data-task-feedback]');
-  let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null;
+  let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null, detailRevision=null;
   subscribeTasks();
   const projectOptions = blank => `<option value="">${blank}</option>${data.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}`;
-  const feedback = text => { message.textContent = text; };
+  const feedback = (text, form) => {
+    const local = form?.querySelector('[data-task-form-feedback]');
+    if (local) { local.textContent = text; local.hidden = !text; message.textContent = ''; }
+    else message.textContent = text;
+  };
   const detailDirty = except => [...root.querySelectorAll('[data-task-detail] input, [data-task-detail] select')].some(control => !except?.contains(control) && control.value !== control.dataset.savedValue);
   const leaveDetail = () => {
     if (!detailDirty()) return true;
-    feedback('详情有未保存内容，请先保存或清空修改。'); return false;
+    feedback('详情有未保存修改，请先保存或撤销。'); return false;
   };
   const redraw = (detail = true) => {
     for (const select of [root.querySelector('[data-task-filter]'), root.querySelector('[data-task-create] select')]) {
@@ -101,16 +110,18 @@ export async function hydrateTasks(isVisible = () => true) {
     const task = data.tasks.find(t => t.id === selected);
     box.hidden = !task;
     if (!task) { box.innerHTML = ''; return; }
+    const revision = data.revision;
+    detailRevision = revision;
     const availableSources = sources.slice();
     const run = data.runs.find(r => r.id === task.current_run_id);
     const open = data.attentions.filter(a => a.run_id === run?.id && a.state === 'open');
     box.innerHTML = `<div class="task-detail-heading"><h2>任务详情</h2><button class="mini-btn" type="button" data-task-close>收起</button></div>
-      <form data-task-edit><label>名称<input name="title" value="${esc(task.title)}" maxlength="500" required></label><label>项目<select name="projectId">${projectOptions('未分组')}</select></label><button class="mini-btn" type="submit">保存</button></form>
+      <form data-task-edit><label>名称<input name="title" value="${esc(task.title)}" maxlength="500" required></label><label>项目<select name="projectId">${projectOptions('未分组')}</select></label><button class="mini-btn" type="submit">保存</button>${draftActions()}</form>
       <div class="task-source"><span>${task.source ? `已关联 ${esc(task.source.agent_id)}` : '尚未关联会话'}</span>${task.source ? `<button type="button" class="mini-btn" data-task-open>${task.source.thread_id && task.source.agent_id === 'codex' ? '打开会话' : '打开工具'}</button>` : ''}</div>
-      ${!task.source && availableSources.length ? `<form data-task-link><label>关联来源<select name="source">${availableSources.map((c, index) => `<option value="${index}">${esc(c.name)} · ${esc(statuses[c.observation.status])}${c.target?.exactSession ? ' · 会话' : c.target ? ' · 仅打开工具' : ' · 无桌面跳转'}</option>`).join('')}</select></label><button class="mini-btn" type="submit">关联</button></form>` : !task.source ? '<p class="task-note">暂未观测到可关联的会话。工具产生明确执行状态后，刷新查看。</p>' : ''}
-      ${open.map(a => `<div class="task-gate"><div><strong>${esc(kinds[a.kind])}</strong><p>${esc(data.artifacts.find(x => x.id === a.artifact_id)?.title ?? (a.kind==='plan_approval'?'方案正文未在来源记录中提供，请在工具中查看。':'请在来源工具中处理，再更新本地记录。'))}</p>${artifactReadButton(data.artifacts.find(x=>x.id===a.artifact_id),run.id)}</div><button class="mini-btn" type="button" data-task-handle="${esc(a.id)}">本地已处理</button></div>`).join('')}
+      ${!task.source && availableSources.length ? `<form data-task-link><label>关联来源<select name="source">${availableSources.map((c, index) => `<option value="${index}">${esc(c.name)} · ${esc(statuses[c.observation.status])}${c.target?.exactSession ? ' · 会话' : c.target ? ' · 仅打开工具' : ' · 无桌面跳转'}</option>`).join('')}</select></label><button class="mini-btn" type="submit">关联</button>${draftActions()}</form>` : !task.source ? '<p class="task-note">暂未观测到可关联的会话。工具产生明确执行状态后，刷新查看。</p>' : ''}
+      ${open.map(a => `<div class="task-gate"><div><strong>${esc(kinds[a.kind])}</strong><p>${esc(data.artifacts.find(x => x.id === a.artifact_id)?.title ?? taskGateNotice(a))}</p>${artifactReadButton(data.artifacts.find(x=>x.id===a.artifact_id),run.id)}</div><button class="mini-btn" type="button" data-task-handle="${esc(a.id)}">本地已处理</button></div>`).join('')}
       <section class="task-artifact-view" data-task-artifact-view hidden aria-label="来源内容"><div class="task-detail-heading"><strong data-artifact-title>来源内容</strong><button class="mini-btn" type="button" data-artifact-close>关闭</button></div><p data-artifact-notice role="status" aria-live="polite"></p><pre data-artifact-text tabindex="0" hidden></pre></section>
-      ${task.archived_ms == null ? `<form class="task-progress" data-task-progress><label>记录进度<select name="progress"><option value="running">执行中</option><option value="answer">待回答</option><option value="plan_approval">确认方案</option><option value="result_review">验收结果</option><option value="ready">结果就绪</option><option value="failed">执行失败</option><option value="cancelled">已取消</option></select></label><label>产出引用<input name="artifactTitle" placeholder="简短说明（可选）" maxlength="500"></label><button class="mini-btn" type="submit">记录</button></form>` : ''}
+      ${task.archived_ms == null ? `<form class="task-progress" data-task-progress><label>记录进度<select name="progress"><option value="running">执行中</option><option value="answer">待回答</option><option value="plan_approval">确认方案</option><option value="result_review">验收结果</option><option value="ready">结果就绪</option><option value="failed">执行失败</option><option value="cancelled">已取消</option></select></label><label>产出引用<input name="artifactTitle" placeholder="简短说明（可选）" maxlength="500"></label><button class="mini-btn" type="submit">记录</button>${draftActions()}</form>` : ''}
       ${renderTaskHistory(data, task.id)}
       <button class="mini-btn" type="button" data-task-archive>${task.archived_ms == null ? '归档任务' : '恢复任务'}</button>`;
     const viewer=box.querySelector('[data-task-artifact-view]');
@@ -126,7 +137,7 @@ export async function hydrateTasks(isVisible = () => true) {
       viewer.hidden=false;viewer.setAttribute('aria-busy','true');body.textContent='';body.hidden=true;notice.textContent='正在读取来源内容';
       viewer.querySelector('[data-artifact-title]').textContent=button.textContent==='查看问题'?'来源问题':button.textContent==='查看方案'?'来源方案':'本轮结果';
       try {
-        const result=await invoke('task_artifact_content',{id:task.id,runId:button.dataset.artifactRun,artifactId:button.dataset.taskArtifactRead,expectedRevision:data.revision});
+        const result=await invoke('task_artifact_content',{id:task.id,runId:button.dataset.artifactRun,artifactId:button.dataset.taskArtifactRead,expectedRevision:revision});
         if(!current()||selected!==task.id||token!==readerToken||!viewer.isConnected)return;
         notice.textContent=result.notice;
         if(result.available){
@@ -134,7 +145,7 @@ export async function hydrateTasks(isVisible = () => true) {
           if(result.transient_valid_for_ms!=null)readerLifetime=watchArtifactLifetime({viewer,body,notice,
             validForMs:Math.max(0,result.transient_valid_for_ms-(performance.now()-requestedAt)),
             current:()=>current()&&selected===task.id&&token===readerToken,
-            validate:()=>invoke('task_artifact_content',{id:task.id,runId:button.dataset.artifactRun,artifactId:button.dataset.taskArtifactRead,expectedRevision:data.revision})});
+            validate:()=>invoke('task_artifact_content',{id:task.id,runId:button.dataset.artifactRun,artifactId:button.dataset.taskArtifactRead,expectedRevision:revision})});
         }
         else viewer.querySelector('[data-artifact-close]').focus({preventScroll:true});
         viewer.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
@@ -143,6 +154,31 @@ export async function hydrateTasks(isVisible = () => true) {
     };});
     box.querySelector('[name="projectId"]').value = task.project_id ?? '';
     box.querySelectorAll('input, select').forEach(control => { control.dataset.savedValue = control.value; });
+    box.querySelectorAll('[data-task-edit], [data-task-progress], [data-task-link]').forEach(form => {
+      const controls = [...form.querySelectorAll('input, select')];
+      const discard = form.querySelector('[data-task-discard]');
+      const update = () => {
+        discard.hidden = !controls.some(control => control.value !== control.dataset.savedValue);
+        const notice = form.querySelector('[data-task-form-feedback]');
+        notice.textContent = ''; notice.hidden = true;
+      };
+      form.addEventListener('input', update);
+      form.addEventListener('change', update);
+      discard.onclick = () => {
+        if (busy) return;
+        controls.forEach(control => { control.value = control.dataset.savedValue; });
+        form.dispatchEvent(new Event('input', { bubbles: true }));
+        if (data.revision !== revision && !detailDirty()) {
+          // A background snapshot may update the board, but cannot rebase an
+          // edited form. Only after all drafts are explicitly discarded do we
+          // reveal the newer saved record and bind its actions to that version.
+          const selector = form.hasAttribute('data-task-edit') ? '[data-task-edit]'
+            : form.hasAttribute('data-task-progress') ? '[data-task-progress]' : '[data-task-link]';
+          renderDetail();
+          box.querySelector(`${selector} input, ${selector} select`)?.focus({ preventScroll: true });
+        } else controls[0]?.focus({ preventScroll: true });
+      };
+    });
     box.querySelector('[data-task-close]').onclick = () => { if (!leaveDetail()) return; selected = null; redraw(); };
     box.querySelector('[data-task-edit]').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; mutate('task_update', { id: task.id, title: form.elements.title.value, projectId: form.elements.projectId.value || null }, form); };
     box.querySelector('[data-task-archive]').onclick = () => mutate('task_archive', { id: task.id, archived: task.archived_ms == null });
@@ -155,7 +191,7 @@ export async function hydrateTasks(isVisible = () => true) {
       const disabled = sourceButtons.map(control => control.disabled);
       sourceButtons.forEach(control => { control.disabled = true; });
       try {
-        const target = await invoke('task_open_source', { id: task.id, runId: button.dataset.taskRunOpen ?? null, artifactId: null, expectedRevision: data.revision });
+        const target = await invoke('task_open_source', { id: task.id, runId: button.dataset.taskRunOpen ?? null, artifactId: null, expectedRevision: revision });
         if (current.ownsRequest()) feedback(target.hint);
       } catch (error) { if (current.ownsRequest()) feedback(error?.message ?? String(error)); }
       finally {
@@ -170,20 +206,24 @@ export async function hydrateTasks(isVisible = () => true) {
   };
   const mutate = async (command, args, form) => {
     if (busy || !data) return;
-    if (args.id === selected && detailDirty(form)) { feedback('详情有其他未保存内容，请先保存或清空修改。'); return; }
+    if (args.id === selected && detailDirty(form)) { feedback('另一处有未保存修改，请先保存或撤销。', form); return; }
     busy = true;
     const controls = [...root.querySelectorAll('input, select, button')];
     const disabled = controls.map(control => control.disabled);
     controls.forEach(control => { control.disabled = true; });
     root.setAttribute('aria-busy', 'true');
-    feedback('正在保存');
+    feedback('正在保存', form);
     try {
-      const next = await invoke(command, { ...args, expectedRevision: data.revision });
+      const next = await invoke(command, { ...args, expectedRevision: args.id === selected ? detailRevision : data.revision });
       if (!current.ownsRequest()) return;
       data = next;
       if (form) { form.reset(); form.dispatchEvent(new Event('input', { bubbles: true })); }
       redraw(args.id === selected); feedback('已保存到本机');
-    } catch (error) { if (current.ownsRequest()) feedback(error?.message ?? String(error)); }
+    } catch (error) {
+      if (current.ownsRequest()) feedback(form && error?.code === 'stale_revision'
+        ? '任务已更新，草稿已保留。撤销修改后核对新记录。'
+        : error?.message ?? String(error), form);
+    }
     finally { busy = false; controls.forEach((control, index) => { control.disabled = disabled[index]; }); root.removeAttribute('aria-busy'); if (refreshQueued) { refreshQueued = false; refresh(); } }
   };
   const refresh = async () => {
@@ -214,7 +254,7 @@ export async function hydrateTasks(isVisible = () => true) {
     finally { busy = false; if (refreshQueued) { refreshQueued = false; refresh(); } }
   };
   root.selectTask = () => {
-    if (detailDirty()) { feedback('详情有未保存内容，请先保存或清空修改。'); return; }
+    if (detailDirty()) { feedback('详情有未保存修改，请先保存或撤销。'); return; }
     refresh();
   };
   root.refreshTasks = refresh;
