@@ -20,6 +20,8 @@
 
 ## 2. 身份与来源
 
+本机进程身份由档案声明，CLI匹配保留argv边界，只读取入口文件名或完整路径后缀；内联脚本、预载文件和业务参数不形成运行证据。Node命令别名、受支持入口及原生名字/路径规则分别验证。PID不是不可变的程序身份，采样需刷新可执行文件与入口，同PID exec后不能保留旧所有者；入口在每拍解析一次并供全部档案复用，匹配层不另存参数全文，库中的原始参数随每拍刷新覆盖。未知启动形式不猜测，识别不等同会话能力或安装状态。
+
 目标 `SourceRefV1`：`source_kind`（local_session / trusted_event / user_link / remote_service）、`agent_id`、可空 `session_id/task_id/run_id/event_id/connection_id`、`observed_at_ms`、`capability`。无证据的字段为 null，不制造 ID。来源路径留在后端，不把个人绝对路径带进远程导出。
 
 外部 ID 不全局唯一：用 `(source_kind, connection_id, external_id)` 去重，分别保存内外部身份。项目路径是本机元数据，不作为跨设备唯一 ID。新实体用抗冲突 ID，选用实现须有并发/重启测试；旧 Todo 数字 ID 原样保留，禁止重编号。

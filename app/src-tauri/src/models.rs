@@ -178,7 +178,7 @@ pub struct AgentProfile {
     #[serde(default)]
     pub bundle_ids: Vec<String>,
     /// 命令行提示：进程名不在名单（如 npm 安装的 CLI 跑在 node.exe 里）时，
-    /// 命令行包含提示词即算命中
+    /// 匹配入口文件名（允许脚本扩展名）或完整入口路径后缀；内联正文、预载及业务参数不参与。
     #[serde(default)]
     pub cmdline_hints: Vec<String>,
     /// 路径必须包含其中之一（不区分大小写），**否则不匹配**。

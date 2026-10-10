@@ -2943,7 +2943,7 @@ fn terminate_agent(state: State<SharedEngine>, pid: Option<u32>, agent_id: Strin
     let Some(hit) = crate::cleaner::find(&table, pid) else {
         return; // pid 已经不在了
     };
-    if !crate::procmon::profile_matches(&profile, &hit.name, &hit.exe_path, "") {
+    if !crate::procmon::profile_matches(&profile, &hit.name, &hit.exe_path, &[]) {
         return;
     }
     if hit.is_zombie {

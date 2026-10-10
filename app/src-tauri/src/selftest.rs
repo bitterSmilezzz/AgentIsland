@@ -277,7 +277,7 @@ pub fn run() -> Report {
                        Versions/A/XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService";
         runner.check(
             "CursorUIViewService 不该被当成 Cursor",
-            !crate::procmon::profile_matches(&cursor, "CursorUIViewService", service, ""),
+            !crate::procmon::profile_matches(&cursor, "CursorUIViewService", service, &[]),
             Some("误报了".into()),
         );
         runner.check(
@@ -286,26 +286,26 @@ pub fn run() -> Report {
                 &dim,
                 "DimAgent",
                 "/Applications/DimAgent.app/Contents/MacOS/DimAgent",
-                "",
+                &[],
             ),
             Some("没命中".into()),
         );
         runner.check(
             "ssh-agent 不该被任何档案命中",
-            !crate::procmon::profile_matches(&dim, "ssh-agent", "/usr/sbin/ssh-agent", ""),
+            !crate::procmon::profile_matches(&dim, "ssh-agent", "/usr/sbin/ssh-agent", &[]),
             Some("误报了".into()),
         );
-        // npm 装的 CLI 跑在 node 里：进程名对不上，但命令行里有提示词
+        // npm CLI跑在node里：仅脚本入口参与提示匹配，业务参数不参与。
         let mut hinted = dim.clone();
         hinted.process_names = vec!["nothing-matches-this".into()];
-        hinted.cmdline_hints = vec!["dimcode".into()];
+        hinted.cmdline_hints = vec!["dimcode/cli.js".into()];
         runner.check(
             "命令行提示词也能命中（npm 装的 CLI 跑在 node 里）",
             crate::procmon::profile_matches(
                 &hinted,
                 "node",
                 "/usr/local/bin/node",
-                "node /usr/local/lib/node_modules/dimcode/cli.js",
+                &["node", "/usr/local/lib/node_modules/dimcode/cli.js"],
             ),
             Some("没命中".into()),
         );
@@ -319,7 +319,7 @@ pub fn run() -> Report {
                 &excluded,
                 "DimAgent",
                 "/System/Library/CoreServices/DimAgent",
-                "",
+                &[],
             ),
             Some("误报了".into()),
         );

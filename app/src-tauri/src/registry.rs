@@ -85,7 +85,7 @@ pub fn builtin() -> Vec<AgentProfile> {
             emoji: "🧠".into(),
             process_names: vec!["claude".into()],
             bundle_ids: vec!["com.anthropic.claudefordesktop".into(), "com.anthropic.claudecode".into()],
-            cmdline_hints: vec!["claude".into()],
+            cmdline_hints: vec!["claude".into(), "@anthropic-ai/claude-code/cli.js".into()],
             path_excludes: vec![],
             path_contains: vec![],
             cpu_floor: Some(DESKTOP_CPU_FLOOR),
@@ -209,7 +209,7 @@ pub fn builtin() -> Vec<AgentProfile> {
         AgentProfile {
             id: "minimaxcode".into(), name: "MiniMax Code".into(), glyph: "\u{E774}".into(), emoji: "🤖".into(),
             process_names: vec!["MiniMax Code".into(), "mcode".into(), "minimax-code".into()], bundle_ids: vec!["com.minimax.agent.cn".into()],
-            cmdline_hints: vec!["@minimax-ai/code".into(), "minimax-code/dist/cli".into()],
+            cmdline_hints: vec!["mcode".into(), "@minimax-ai/code/cli.js".into(), "minimax-code/dist/cli".into()],
             path_excludes: vec!["frameworks".into(), "helper".into()], path_contains: vec![], cpu_floor: Some(DESKTOP_CPU_FLOOR),
             session_dirs: vec![], token_roots: vec![], token_alert_floor: None,
             session_dialect: SessionDialect::GenericTail,
@@ -780,7 +780,7 @@ mod parity {
             ("Electron", "/Applications/Unrelated.app/Contents/MacOS/Electron", vec![]),
             ("Electron", "/tmp/trae-playground/Unrelated.app/Contents/MacOS/Electron", vec![]),
         ] {
-            let owners: Vec<_> = builtin().into_iter().filter(|p| profile_matches(p, name, exe, "")).map(|p| p.id).collect();
+            let owners: Vec<_> = builtin().into_iter().filter(|p| profile_matches(p, name, exe, &[])).map(|p| p.id).collect();
             assert_eq!(owners, expected, "{exe}");
         }
         let work = find("doubaowork");
@@ -794,19 +794,19 @@ mod parity {
         let profile = find("codex");
         assert_eq!(profile.name, "ChatGPT / Codex");
         assert_eq!(profile.bundle_ids, vec!["com.openai.codex"]);
-        for (name, exe, cmd) in [
+        for (name, exe, argv) in [
             (
                 "ChatGPT",
                 "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
-                "",
+                &[][..],
             ),
-            ("Codex", "/Applications/Codex.app/Contents/MacOS/Codex", ""),
-            ("codex.exe", "C:/Tools/codex.exe", ""),
-            ("node", "/usr/bin/node", "node /tools/codex/bin/codex.js"),
+            ("Codex", "/Applications/Codex.app/Contents/MacOS/Codex", &[][..]),
+            ("codex.exe", "C:/Tools/codex.exe", &[][..]),
+            ("node", "/usr/bin/node", &["node", "/tools/codex/bin/codex.js"][..]),
         ] {
             let owners: Vec<_> = builtin()
                 .into_iter()
-                .filter(|p| profile_matches(p, name, exe, cmd))
+                .filter(|p| profile_matches(p, name, exe, argv))
                 .map(|p| p.id)
                 .collect();
             assert_eq!(owners, vec!["codex"], "desktop and CLI each have one owner");
@@ -829,19 +829,19 @@ mod parity {
         let intl_exe = "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron";
 
         assert!(
-            profile_matches(&cn, "electron", cn_exe, ""),
+            profile_matches(&cn, "electron", cn_exe, &[]),
             "国内版应当命中自己的路径"
         );
         assert!(
-            !profile_matches(&intl, "electron", cn_exe, ""),
+            !profile_matches(&intl, "electron", cn_exe, &[]),
             "国内版的进程**不得**被国外版认领"
         );
         assert!(
-            profile_matches(&intl, "electron", intl_exe, ""),
+            profile_matches(&intl, "electron", intl_exe, &[]),
             "国外版应当命中自己的路径"
         );
         assert!(
-            !profile_matches(&cn, "electron", intl_exe, ""),
+            !profile_matches(&cn, "electron", intl_exe, &[]),
             "国外版的进程**不得**被国内版认领"
         );
     }
@@ -855,14 +855,14 @@ mod parity {
             &qoder,
             "qoder",
             "/Applications/Qoder.app/Contents/MacOS/Qoder",
-            ""
+            &[]
         ));
         assert!(
             !profile_matches(
                 &qoder,
                 "qoder",
                 "/Users/me/code/qoder-playground/node_modules/electron/dist/Electron",
-                ""
+                &[]
             ),
             "同名的自建目录不得被认成 Qoder"
         );
@@ -879,7 +879,7 @@ mod parity {
             &cn,
             "electron",
             "/Applications/Other.app/Contents/MacOS/Electron",
-            ""
+            &[]
         ));
 
         // 顺带**如实记录** openviking 的锚点很宽（macOS 侧声明的就是裸子串
@@ -888,7 +888,7 @@ mod parity {
         // 不是靠路径锚定——所以这里不假装它更严。
         let openviking = find("openviking");
         assert!(
-            profile_matches(&openviking, "openviking", "/usr/local/bin/openviking", ""),
+            profile_matches(&openviking, "openviking", "/usr/local/bin/openviking", &[]),
             "openviking 的锚点是宽口径裸子串，路径含名字即匹配（与 macOS 端同声明）"
         );
     }

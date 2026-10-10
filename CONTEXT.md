@@ -21,6 +21,10 @@ Trae CN、TraeCode 与 TraeWork 是不同的产品身份；不得因共同使用
 一个 Agent 的静态识别定义：bundle id、进程名前缀、可执行路径特征、会话目录，以及展示符号、会话方言与只读会话库位置。档案是这些事实的**唯一声明处**，解析器不再按 id 反推。
 _Avoid_: 配置、agent 定义
 
+CLI身份识别保留系统提供的argv边界，解析可执行文件或受支持运行时的真实入口；入口提示匹配文件名（允许脚本扩展名）或带边界的完整路径后缀，不使用业务参数、内联正文、预载参数或项目目录名。未知启动选项不猜测入口；原生进程名与路径锚定/排除独立保留。`cmdline_hints`存储字段保持，裸名字仅匹配入口文件名，通用`cli.js`需要声明包内入口路径，不能用任意目录关键词认领进程。
+
+同PID可以exec为另一个程序，采样刷新可执行路径和argv，入口只在当拍解析一次。不能把PID存活等同最初程序仍在；库缓存的进程名不能覆盖当前可执行文件身份。保留CPU差分窗口，不通过重建整台进程监控器修正身份。
+
 **会话方言（session dialect）**:
 一个 Agent 的会话记录存放格式：`genericTail`（通用 JSONL 尾读）、`antigravityBrain`、`dshProjection`、`clineTasks`、`qoderTranscript`。解析器按**格式**分派而非按 agent id 分派——格式数量远少于 Agent 数量（Cline 与 Roo Code 同源），新增复用既有格式的 Agent 只改注册表。
 
