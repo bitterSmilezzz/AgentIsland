@@ -1,3 +1,4 @@
+import { rememberPage, pageMotion } from './page-motion.js';
 import { trendCardHtml, bindTrend, hourRecords } from './usage-trend.js';
 import { toolBudgetsHtml, bindToolBudgets } from './tool-budgets.js';
 import { usageContextHtml, bindUsageContext } from './usage-context.js';
@@ -27,67 +28,8 @@ import { getState, setState, saveSettings, expand, collapse, armCollapseTimer, s
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// Keep the outgoing page visible while the destination arrives.
-const outgoingPages = new WeakMap();
-const pageTransitions = new WeakMap();
 const workbenchScroll = new Map();
 const workbenchPagesCache = new PageCache();
-function rememberPage(root, key, selector) {
-  const previous = root.dataset.motionRoute;
-  const node = root.querySelector(selector);
-  if (previous == null || previous === key || !node?.cloneNode) return;
-  const opacity = Number(getComputedStyle(node).opacity);
-  pageTransitions.get(root)?.forEach(animation => animation.cancel());
-  root.querySelectorAll('[data-page-outgoing]').forEach(n => n.remove());
-  root.querySelectorAll('.page-motion-host').forEach(host => host.classList.remove('page-motion-host'));
-  pageTransitions.delete(root);
-  outgoingPages.delete(root);
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const rect = node.getBoundingClientRect();
-  const parentRect = node.parentElement.getBoundingClientRect();
-  const copy = node.cloneNode(true);
-  copy.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
-  copy.removeAttribute('id');
-  copy.classList.remove('card-enter');
-  copy.setAttribute('aria-hidden', 'true');
-  copy.inert = true;
-  copy.dataset.pageOutgoing = '';
-  outgoingPages.set(root, { copy, width: rect.width, height: rect.height, top: rect.top - parentRect.top, opacity });
-}
-function pageMotion(root, key, selector) {
-  const previous = root.dataset.motionRoute;
-  root.dataset.motionRoute = key;
-  const changed = previous != null && previous !== key;
-  const node = root.querySelector(selector);
-  const outgoing = outgoingPages.get(root);
-  outgoingPages.delete(root);
-  if (changed && node?.animate && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    const returning = key === 'list' || key === 'overview';
-    const direction = returning ? -1 : 1;
-    const duration = returning ? 260 : 320;
-    const animations = [];
-    pageTransitions.set(root, animations);
-    const stationary = isWorkbench();
-    if (outgoing) {
-      const host = node.parentElement;
-      host.classList.add('page-motion-host');
-      const { copy, width, height, top, opacity } = outgoing;
-      Object.assign(copy.style, { position: 'absolute', top: `${top}px`, left: '0', width: `${width}px`, height: `${height}px`, margin: '0', zIndex: '2', pointerEvents: 'none', overflow: 'hidden' });
-      host.appendChild(copy);
-      const leaving = copy.animate([{ opacity, transform: 'translateX(0)' }, { opacity: 0, transform: stationary ? 'none' : `translateX(${-direction * 10}px)` }], { duration: stationary ? 100 : duration * .7, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
-      animations.push(leaving);
-      leaving.finished.catch(() => {}).finally(() => { copy.remove(); if (pageTransitions.get(root) === animations) host.classList.remove('page-motion-host'); });
-    }
-    animations.push(node.animate([
-      { opacity: stationary ? .55 : 0, transform: stationary ? 'none' : `translateX(${direction * 14}px)` },
-      { opacity: 1, transform: 'translateX(0)' },
-    ], { duration: stationary ? 220 : duration, delay: 0, fill: 'backwards', easing: 'cubic-bezier(.22,1,.36,1)' }));
-    Promise.all(animations.map(a => a.finished.catch(() => {}))).then(() => {
-      if (pageTransitions.get(root) === animations) pageTransitions.delete(root);
-    });
-  }
-  return changed;
-}
 
 // MARK: Token 格式化（与 Rust/Win 端同口径）
 

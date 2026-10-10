@@ -21,6 +21,8 @@
 .wb-status { flex: 1; font-size: 11px; color: var(--text-faint); text-align: right; }
 .wb-head-actions { display: flex; -webkit-app-region: no-drag; }
 .wb-content { overflow: auto; min-height: 0; flex: 1; padding: 28px; }
+/* Keep child margins stable when the temporary navigation host clips a snapshot. */
+.shell-workbench [data-task-view-panel] { display: flow-root; }
 .wb-intro { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 28px; }
 .wb-eyebrow { color: var(--text-faint); font-size: 11px; margin-bottom: 5px; }
 .wb-intro h1, .wb-single h1 { font-size: 26px; letter-spacing: -.7px; font-weight: 650; line-height: 1.2; }

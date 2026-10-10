@@ -3401,6 +3401,7 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/navigation.js",
     "js/window-lifecycle.js",
     "js/page-host.js",
+    "js/page-motion.js",
     "js/provider-feedback.js",
     "js/tasks-page.js",
     "js/sessions-page.js",
