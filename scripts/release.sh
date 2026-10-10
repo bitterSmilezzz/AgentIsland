@@ -53,6 +53,8 @@ node scripts/test-tool-budgets.mjs
 node scripts/test-usage-context.mjs
 node scripts/test-window-lifecycle.mjs
 node scripts/test-page-motion.mjs
+node scripts/test-task-focus.mjs
+node scripts/test-tasks.mjs
 cargo test --locked --manifest-path app/src-tauri/Cargo.toml
 
 step "Rust/Tauri 打包"

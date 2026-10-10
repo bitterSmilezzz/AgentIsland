@@ -185,7 +185,7 @@ fn truncation_overflow_multiple_frames_and_private_payload_never_bind() {
     ] {
         let mut client = connect(&f.root.join("receiver.sock"), Instant::now() + COLLECT).unwrap();
         client.write_all(&frame).unwrap();
-        client.shutdown(std::net::Shutdown::Write).unwrap();
+        half_close_malformed(&client);
         let mut ack = [0];
         assert!(
             read_exact(&mut client, &mut ack, Instant::now() + COLLECT).is_err() || ack[0] != 0
@@ -198,7 +198,7 @@ fn truncation_overflow_multiple_frames_and_private_payload_never_bind() {
         .unwrap();
     client.write_all(&body).unwrap();
     client.write_all(&[1]).unwrap();
-    client.shutdown(std::net::Shutdown::Write).unwrap();
+    half_close_malformed(&client);
     let mut ack = [0];
     assert!(read_exact(&mut client, &mut ack, Instant::now() + COLLECT).is_err() || ack[0] != 0);
     let mut private: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -211,6 +211,33 @@ fn truncation_overflow_multiple_frames_and_private_payload_never_bind() {
         ),
         Err(Error::Rejected)
     );
+    let doc = f.doc("p");
+    assert!(receiver
+        .cache()
+        .lock()
+        .unwrap()
+        .bind_selected(&f.path, &doc, &doc["message"]["content"][0], Instant::now())
+        .is_none());
+    receiver.stop();
+}
+// An invalid header can be rejected before the client sends EOF. macOS may
+// report ENOTCONN for this half-close; receipt and cache assertions still apply.
+fn half_close_malformed(client: &UnixStream) {
+    if let Err(error) = client.shutdown(std::net::Shutdown::Write) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotConnected);
+    }
+}
+#[test]
+fn oversized_header_rejected_before_half_close_cannot_bind() {
+    let f = Fixture::new();
+    let mut receiver = f.receiver();
+    let mut client = connect(&f.root.join("receiver.sock"), Instant::now() + COLLECT).unwrap();
+    client
+        .write_all(&(MAX_FRAME as u32 + 1).to_be_bytes())
+        .unwrap();
+    let mut ack = [0];
+    assert!(read_exact(&mut client, &mut ack, Instant::now() + COLLECT).is_err());
+    half_close_malformed(&client);
     let doc = f.doc("p");
     assert!(receiver
         .cache()

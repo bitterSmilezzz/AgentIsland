@@ -1,6 +1,7 @@
 import { watchArtifactLifetime } from './artifact-lifetime.js';
 import { invoke, listen } from './tauri.js';
 import { pageRequest } from './page-host.js';
+import { retainTaskFocus } from './task-focus.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const statuses = { queued: '未开始', running: '执行中', waiting: '等待处理', ready: '结果就绪', failed: '执行失败', cancelled: '已取消', accepted: '来源已验收' };
 const kinds = { answer: '待回答', plan_approval: '确认方案', result_review: '验收结果', confirmation: '需要确认' };
@@ -8,7 +9,7 @@ export function taskGateNotice(attention) {
   if (!attention.observed) return '本地记录，处理后标记即可。';
   return attention.kind === 'plan_approval' ? '来源未提供方案正文，请在工具中查看。' : '请在来源工具中处理，再更新本地记录。';
 }
-const draftActions = () => '<button class="mini-btn" type="button" data-task-discard hidden>撤销修改</button><p class="task-form-feedback" data-task-form-feedback role="status" aria-live="polite" hidden></p>';
+const draftActions = label => `<div class="task-form-actions"><button class="mini-btn" type="button" data-task-discard hidden>撤销修改</button><button class="mini-btn" type="submit">${label}</button></div><p class="task-form-feedback" data-task-form-feedback role="status" aria-live="polite" hidden></p>`;
 export function runSourceAction(run) {
   if (!run.source) return null;
   return { runId: run.id, label: run.source.thread_id && run.source.agent_id === 'codex' ? '打开来源会话' : '打开来源工具' };
@@ -80,7 +81,7 @@ export async function hydrateTasks(isVisible = () => true) {
     if (!detailDirty()) return true;
     feedback('详情有未保存修改，请先保存或撤销。'); return false;
   };
-  const redraw = (detail = true) => {
+  const redraw = (detail = true) => retainTaskFocus(root, () => {
     for (const select of [root.querySelector('[data-task-filter]'), root.querySelector('[data-task-create] select')]) {
       const value = select.value;
       select.innerHTML = projectOptions(select.hasAttribute('data-task-filter') ? '全部项目' : '未分组');
@@ -103,7 +104,7 @@ export async function hydrateTasks(isVisible = () => true) {
     }).join('') : `<div class="wb-empty">${archived ? '暂无归档任务' : project ? '这个项目还没有任务' : '还没有任务。先记录一件要做的事。'}</div>`;
     root.querySelectorAll('[data-task-select]').forEach(button => { button.onclick = () => { if (busy || !leaveDetail()) return; selected = selected === button.dataset.taskSelect ? null : button.dataset.taskSelect; redraw(); }; });
     if (detail) renderDetail();
-  };
+  });
   const renderDetail = () => {
     readerLifetime?.();readerLifetime=null;
     const box = root.querySelector('[data-task-detail]');
@@ -116,12 +117,12 @@ export async function hydrateTasks(isVisible = () => true) {
     const run = data.runs.find(r => r.id === task.current_run_id);
     const open = data.attentions.filter(a => a.run_id === run?.id && a.state === 'open');
     box.innerHTML = `<div class="task-detail-heading"><h2>任务详情</h2><button class="mini-btn" type="button" data-task-close>收起</button></div>
-      <form data-task-edit><label>名称<input name="title" value="${esc(task.title)}" maxlength="500" required></label><label>项目<select name="projectId">${projectOptions('未分组')}</select></label><button class="mini-btn" type="submit">保存</button>${draftActions()}</form>
+      <form data-task-edit><label>名称<input name="title" value="${esc(task.title)}" maxlength="500" required></label><label>项目<select name="projectId">${projectOptions('未分组')}</select></label>${draftActions('保存')}</form>
       <div class="task-source"><span>${task.source ? `已关联 ${esc(task.source.agent_id)}` : '尚未关联会话'}</span>${task.source ? `<button type="button" class="mini-btn" data-task-open>${task.source.thread_id && task.source.agent_id === 'codex' ? '打开会话' : '打开工具'}</button>` : ''}</div>
-      ${!task.source && availableSources.length ? `<form data-task-link><label>关联来源<select name="source">${availableSources.map((c, index) => `<option value="${index}">${esc(c.name)} · ${esc(statuses[c.observation.status])}${c.target?.exactSession ? ' · 会话' : c.target ? ' · 仅打开工具' : ' · 无桌面跳转'}</option>`).join('')}</select></label><button class="mini-btn" type="submit">关联</button>${draftActions()}</form>` : !task.source ? '<p class="task-note">暂未观测到可关联的会话。工具产生明确执行状态后，刷新查看。</p>' : ''}
+      ${!task.source && availableSources.length ? `<form data-task-link><label>关联来源<select name="source">${availableSources.map((c, index) => `<option value="${index}">${esc(c.name)} · ${esc(statuses[c.observation.status])}${c.target?.exactSession ? ' · 会话' : c.target ? ' · 仅打开工具' : ' · 无桌面跳转'}</option>`).join('')}</select></label>${draftActions('关联')}</form>` : !task.source ? '<p class="task-note">暂未观测到可关联的会话。工具产生明确执行状态后，刷新查看。</p>' : ''}
       ${open.map(a => `<div class="task-gate"><div><strong>${esc(kinds[a.kind])}</strong><p>${esc(data.artifacts.find(x => x.id === a.artifact_id)?.title ?? taskGateNotice(a))}</p>${artifactReadButton(data.artifacts.find(x=>x.id===a.artifact_id),run.id)}</div><button class="mini-btn" type="button" data-task-handle="${esc(a.id)}">本地已处理</button></div>`).join('')}
       <section class="task-artifact-view" data-task-artifact-view hidden aria-label="来源内容"><div class="task-detail-heading"><strong data-artifact-title>来源内容</strong><button class="mini-btn" type="button" data-artifact-close>关闭</button></div><p data-artifact-notice role="status" aria-live="polite"></p><pre data-artifact-text tabindex="0" hidden></pre></section>
-      ${task.archived_ms == null ? `<form class="task-progress" data-task-progress><label>记录进度<select name="progress"><option value="running">执行中</option><option value="answer">待回答</option><option value="plan_approval">确认方案</option><option value="result_review">验收结果</option><option value="ready">结果就绪</option><option value="failed">执行失败</option><option value="cancelled">已取消</option></select></label><label>产出引用<input name="artifactTitle" placeholder="简短说明（可选）" maxlength="500"></label><button class="mini-btn" type="submit">记录</button>${draftActions()}</form>` : ''}
+      ${task.archived_ms == null ? `<form class="task-progress" data-task-progress><label>记录进度<select name="progress"><option value="running">执行中</option><option value="answer">待回答</option><option value="plan_approval">确认方案</option><option value="result_review">验收结果</option><option value="ready">结果就绪</option><option value="failed">执行失败</option><option value="cancelled">已取消</option></select></label><label>产出引用<input name="artifactTitle" placeholder="简短说明（可选）" maxlength="500"></label>${draftActions('记录')}</form>` : ''}
       ${renderTaskHistory(data, task.id)}
       <button class="mini-btn" type="button" data-task-archive>${task.archived_ms == null ? '归档任务' : '恢复任务'}</button>`;
     const viewer=box.querySelector('[data-task-artifact-view]');
@@ -246,8 +247,7 @@ export async function hydrateTasks(isVisible = () => true) {
         if (task) { focusRequested=true; selected=task.id; root.querySelector('[data-task-filter]').value=''; root.querySelector('[data-task-archived]').checked=task.archived_ms!=null; }
         requestedTask=null;
       }
-      const detailHasFocus = root.querySelector('[data-task-detail]').contains(document.activeElement);
-      redraw(focusRequested || (!detailDirty() && !detailHasFocus));
+      redraw(focusRequested || !detailDirty());
       if (focusRequested) { const detail=root.querySelector('[data-task-detail]'); detail.focus({preventScroll:true}); detail.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'}); }
       root.dataset.pageReady = 'true'; feedback('');
     } catch (error) { if (current()) feedback(error?.message ?? String(error)); }
