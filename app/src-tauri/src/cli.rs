@@ -109,7 +109,7 @@ pub fn try_run(args: &[String]) -> Option<i32> {
         "check" => check(&flags),
         "clean" => clean_cmd(&flags, &positional),
         "notify" => notify(&flags),
-        "report" => report_cmd(&flags),
+        "report" => report_cmd(&rest),
         "raycast" => raycast(),
         "open" => open_cmd(&positional),
         "top" => top(&flags),
@@ -188,6 +188,7 @@ fn sample_once_with(
 ) -> (Vec<crate::models::AgentSnapshot>, crate::models::TokenUsage) {
     let (_tx, rx) = mpsc::channel();
     let mut engine = engine::ActivityEngine::new(Settings::load(), rx);
+    engine.disable_outbound();
     engine.refresh_usage = want_usage;
     engine.tick();
     let state = engine.state();
@@ -369,7 +370,7 @@ fn doctor(positional: &[String]) -> i32 {
 
 fn tokens_cmd(flags: &[String]) -> i32 {
     let has = |name: &str| flags.iter().any(|f| f == name);
-    let (_, total) = sample_once();
+    let (_, total) = sample_once_with(true);
     let as_json = has("--json");
     let now = tokens::now_ms();
 
@@ -778,29 +779,62 @@ fn post_local(url: &str, body: &[u8]) -> Result<String, String> {
 
 // MARK: - report
 
-/// 生成运维报告。默认打印到 stdout，`-o <路径>` 写盘。
-///
-/// **写盘失败一律 exit 1**——静默成功会让定时任务以为报告存下来了。
-fn report_cmd(flags: &[String]) -> i32 {
-    let format = flags
-        .iter()
-        .find_map(|f| f.strip_prefix("--format="))
-        .map(str::to_string)
-        .unwrap_or_else(|| "md".to_string());
-    let output = flags
-        .iter()
-        .find_map(|f| f.strip_prefix("-o=").or_else(|| f.strip_prefix("--out=")))
-        .map(str::to_string);
+/// 保留参数顺序，使格式和输出路径同时接受独立值与 `=` 写法。
+fn report_options(args: &[String]) -> Result<(String, Option<String>), String> {
+    let (mut format, mut output) = (None, None);
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        let (name, inline) = argument
+            .split_once('=')
+            .map_or((argument.as_str(), None), |(name, value)| (name, Some(value)));
+        let target = match name {
+            "--format" => &mut format,
+            "-o" | "--out" => &mut output,
+            _ => return Err("报告只接受 --format 和 -o / --out 参数".into()),
+        };
+        if target.is_some() {
+            return Err("报告参数不能重复指定".into());
+        }
+        let value = match inline {
+            Some(value) => value,
+            None => {
+                index += 1;
+                args.get(index)
+                    .filter(|value| !value.starts_with('-'))
+                    .map(String::as_str)
+                    .ok_or("报告参数缺少值")?
+            }
+        };
+        if value.is_empty() {
+            return Err("报告参数缺少值".into());
+        }
+        *target = Some(value.to_owned());
+        index += 1;
+    }
+    let format = format.unwrap_or_else(|| "md".into());
+    if !matches!(format.as_str(), "csv" | "md" | "markdown") {
+        return Err(format!("--format 只认 md 与 csv（收到 {format}）"));
+    }
+    Ok((format, output))
+}
 
-    let (snapshots, total) = sample_once();
-    let now = tokens::now_ms();
-    let export = match format.as_str() {
-        "csv" => audit::csv_export(&snapshots, now),
-        "md" | "markdown" => audit::markdown_export(&snapshots, &[], Some(&total), now),
-        other => {
-            eprintln!("✗ --format 只认 md 与 csv（收到 {other}）");
+/// 生成运维报告。默认打印到 stdout，`-o <路径>` 写盘。
+/// 写盘失败一律 exit 1，防止定时任务误以为报告已保存。
+fn report_cmd(args: &[String]) -> i32 {
+    let (format, output) = match report_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("✗ {error}");
             return EXIT_USAGE;
         }
+    };
+
+    let (snapshots, total) = sample_once_with(true);
+    let now = tokens::now_ms();
+    let export = if format == "csv" {
+        audit::csv_export(&snapshots, now)
+    } else {
+        audit::markdown_export(&snapshots, &[], Some(&total), now)
     };
 
     match output {
@@ -1358,6 +1392,38 @@ mod tests {
     fn an_unknown_report_format_is_a_usage_error() {
         let code = try_run(&["agentisland".into(), "report".into(), "--format=pdf".into()]);
         assert_eq!(code, Some(EXIT_USAGE));
+    }
+
+    #[test]
+    fn report_accepts_documented_options_and_space_containing_paths() {
+        for (arguments, format, output) in [
+            (vec![], "md", None),
+            (vec!["--format", "csv"], "csv", None),
+            (vec!["--format=markdown"], "markdown", None),
+            (vec!["--format=csv", "-o", "report folder/a.csv"], "csv", Some("report folder/a.csv")),
+            (vec!["--out", "a b.md", "--format", "md"], "md", Some("a b.md")),
+            (vec!["-o=a=b.md"], "md", Some("a=b.md")),
+            (vec!["--out=-report.md"], "md", Some("-report.md")),
+        ] {
+            let arguments: Vec<String> = arguments.into_iter().map(str::to_owned).collect();
+            assert_eq!(report_options(&arguments), Ok((format.into(), output.map(str::to_owned))));
+        }
+    }
+
+    #[test]
+    fn report_rejects_ambiguous_or_incomplete_options_before_sampling() {
+        for arguments in [
+            vec!["--format"], vec!["--format="], vec!["-o"], vec!["--out="],
+            vec!["--format", "--out", "report.md"], vec!["--format=pdf"],
+            vec!["--format=csv", "--format", "md"],
+            vec!["-o=a.md", "--out=b.md"], vec!["--unknown"], vec!["report.md"],
+        ] {
+            let arguments: Vec<String> = arguments.into_iter().map(str::to_owned).collect();
+            assert!(report_options(&arguments).is_err(), "{arguments:?}");
+            let mut command = vec!["agentisland".into(), "report".into()];
+            command.extend(arguments);
+            assert_eq!(try_run(&command), Some(EXIT_USAGE));
+        }
     }
 
     /// 深链里的 agent id 必须编码。

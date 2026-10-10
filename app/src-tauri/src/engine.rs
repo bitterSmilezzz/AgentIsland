@@ -45,6 +45,7 @@ pub struct ActivityEngine {
     /// 而不是印 0（0 是「查了确实是零」，那是两件事）。
     pub refresh_usage: bool,
     diagnostics: Option<crate::resource_diagnostics::Tick>,
+    outbound_enabled: bool,
     profiles: Vec<AgentProfile>,
     procmon: ProcessMonitor,
     filemon: FileMonitor,
@@ -122,6 +123,7 @@ impl ActivityEngine {
             // 默认开；CLI 单拍入口按需关掉
             refresh_usage: true,
             diagnostics: None,
+            outbound_enabled: true,
             profiles,
             procmon: ProcessMonitor::new(),
             filemon: FileMonitor::new(),
@@ -157,8 +159,14 @@ impl ActivityEngine {
         }
     }
 
-    /// Explicit observer mode; also prevents all outbound scheduling and secret reads.
+    /// Read-only consumers keep local results without scheduling delivery or reading secrets.
+    pub fn disable_outbound(&mut self) {
+        self.outbound_enabled = false;
+    }
+
+    /// Explicit diagnostics are read-only consumers too.
     pub fn enable_resource_diagnostics(&mut self) {
+        self.disable_outbound();
         self.diagnostics = Some(Default::default());
     }
     pub fn resource_diagnostics(&self) -> Option<&crate::resource_diagnostics::Tick> {
@@ -877,7 +885,7 @@ impl ActivityEngine {
     /// `completed` 的 `seconds` 是「本次任务用时」：此刻 `work_started_at` 还没被清
     /// （`decide_level` 里先 `push_event` 再 `remove`），正好拿得到；其余类型按「刚刚」。
     fn notify_outbound(&mut self, event: &AgentTaskEvent) {
-        if self.diagnostics.is_some() || event.externally_delivered {
+        if !self.outbound_enabled || event.externally_delivered {
             return;
         }
         self.notify_outbound_with_presence(event, crate::power::presence_signals());
@@ -888,7 +896,7 @@ impl ActivityEngine {
         event: &AgentTaskEvent,
         presence: remote::PresenceSignals,
     ) {
-        if self.diagnostics.is_some() {
+        if !self.outbound_enabled {
             return;
         }
         let Some(kind) = remote::EventKind::parse(&event.event_type) else {
@@ -1899,14 +1907,21 @@ mod resource_diagnostic_tests {
         }
     }
     #[test]
-    fn diagnostic_observer_skips_outbound_but_keeps_local_events() {
-        let mut observer = engine();
-        observer.settings.remote_policy.master_enabled = true;
-        observer.enable_resource_diagnostics();
-        observer.push_event(event());
-        observer.notify_outbound_with_presence(&event(), Default::default());
-        assert!(observer.latest_event.is_some());
-        assert!(observer.notifier.recent().is_empty());
+    fn observers_skip_outbound_but_keep_local_events() {
+        for diagnostic in [false, true] {
+            let mut observer = engine();
+            observer.settings.remote_policy.master_enabled = true;
+            if diagnostic {
+                observer.enable_resource_diagnostics();
+            } else {
+                observer.disable_outbound();
+            }
+            assert_eq!(observer.resource_diagnostics().is_some(), diagnostic);
+            observer.push_event(event());
+            observer.notify_outbound_with_presence(&event(), Default::default());
+            assert!(observer.latest_event.is_some());
+            assert!(observer.notifier.recent().is_empty());
+        }
         // Ordinary engine still passes events to policy/ledger: observer mode is not a global mute.
         let mut normal = engine();
         normal.settings.remote_policy.master_enabled = false;
@@ -1920,7 +1935,6 @@ mod resource_diagnostic_tests {
             normal.notifier.recent()[0].outcome,
             notifier::Outcome::Suppressed { .. }
         ));
-        assert!(observer.notifier.recent().is_empty());
     }
     #[test]
     fn diagnostics_describe_fixture_caches_without_identifiers_or_text_and_reset_for_demo() {

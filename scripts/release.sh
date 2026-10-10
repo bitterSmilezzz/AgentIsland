@@ -62,6 +62,7 @@ scripts/build-app.sh "$VERSION"
 
 step "随包 CLI 派发参数验证（受控系统命令，不打开窗口）"
 python3 scripts/test-cli-dispatch.py --binary dist/agentisland
+python3 scripts/test-cli-usage.py --binary dist/agentisland
 
 # VM 路径核实虚拟化、Aqua、系统 build 与产物身份，不以一个旗标冒充隔离。
 if [[ -n "${NATIVE_TEST_VM:-}" ]]; then

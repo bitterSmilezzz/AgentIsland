@@ -159,7 +159,9 @@ impl TokenUsageMonitor {
     }
 
     pub fn monitor(&mut self, profile: &crate::models::AgentProfile) -> TokenReport {
-        let cutoff24 = now_ms() - 24 * 3600 * 1000;
+        let now = now_ms();
+        let cutoff24 = now - 24 * 3600 * 1000;
+        let cutoff30 = now - 30 * 24 * 3600 * 1000;
         let mut tokens24 = 0i64;
         let mut tokens_total = 0i64;
         let mut cost24 = 0f64;
@@ -172,6 +174,8 @@ impl TokenUsageMonitor {
         let mut models: HashMap<String, (i64, f64, bool)> = HashMap::new();
         let mut profile_files = HashSet::new();
         let mut all_models: HashMap<String, (i64, f64, bool)> = HashMap::new();
+        let mut hourly: HashMap<i64, i64> = HashMap::new();
+        let mut context_counts = Counts::default();
 
         let rooted_database = profile
             .token_roots
@@ -221,6 +225,22 @@ impl TokenUsageMonitor {
                 for (model, (tk, co)) in m {
                     merge_model(&mut models, model, tk, co, true);
                 }
+                // Consume report detail while this file is protected. A later
+                // file may evict its cache, but must not erase this scan's chart
+                // or turn verified conversation context into unknown coverage.
+                if let Some(st) = self.states.get(path.to_string_lossy().as_ref()) {
+                    for entry in &st.entries {
+                        if entry.ts >= cutoff30 && entry.tokens > 0 {
+                            let hour = entry.ts - entry.ts % 3_600_000;
+                            *hourly.entry(hour).or_default() += entry.tokens;
+                        }
+                        if entry.ts >= cutoff24 {
+                            if let Some(fact) = &entry.context {
+                                context_counts.add(fact, entry.tokens);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -260,21 +280,6 @@ impl TokenUsageMonitor {
         models24h.sort_by(|a, b| b.tokens.cmp(&a.tokens));
 
         // 30 天逐小时桶
-        let mut hourly: HashMap<i64, i64> = HashMap::new();
-        let cutoff30 = now_ms() - 30 * 24 * 3600 * 1000;
-        for (path, st) in &self.states {
-            if !profile_files.contains(path) {
-                continue;
-            }
-            for e in &st.entries {
-                let (ts, tokens) = (&e.ts, &e.tokens);
-                if *ts < cutoff30 || *tokens <= 0 {
-                    continue;
-                }
-                let hour = ts - ts % 3_600_000;
-                *hourly.entry(hour).or_insert(0) += tokens;
-            }
-        }
         for (hour, tokens) in database_series(profile, cutoff30).1 {
             *hourly.entry(hour).or_default() += tokens;
         }
@@ -290,19 +295,6 @@ impl TokenUsageMonitor {
             })
             .collect();
         models_total.sort_by(|a, b| b.tokens.cmp(&a.tokens));
-        let mut context_counts = Counts::default();
-        for (path, st) in &self.states {
-            if !profile_files.contains(path) {
-                continue;
-            }
-            for entry in &st.entries {
-                if entry.ts >= cutoff24 {
-                    if let Some(fact) = &entry.context {
-                        context_counts.add(fact, entry.tokens);
-                    }
-                }
-            }
-        }
         let context24h = crate::usage_context::Report::from_counts(
             &profile.id,
             &profile.name,
@@ -532,11 +524,12 @@ impl TokenUsageMonitor {
                 st.ended_with_newline = ended;
             }
         }
-        // 状态表有界
+        // 状态表有界。当前文件仍要被调用方汇总，不能在返回结果前驱逐它。
         if self.states.len() > 8000 {
             let keys: Vec<String> = self
                 .states
                 .iter()
+                .filter(|(candidate, _)| *candidate != &key)
                 .take(1000)
                 .map(|(k, _)| k.clone())
                 .collect();
@@ -1321,6 +1314,57 @@ mod compact_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_pressure_keeps_the_file_being_reported() {
+        let sandbox = crate::testutil::Sandbox::new("token-cache-pressure");
+        let mut monitor = TokenUsageMonitor::new();
+        for index in 0..8001 {
+            let key = sandbox.path().join(format!("{index}.jsonl"));
+            monitor.states.insert(key.to_string_lossy().into_owned(), FileState::default());
+        }
+        // Choose the first eviction candidate from this exact map. Updating an
+        // existing state does not change its bucket, making the old failure deterministic.
+        let key = monitor.states.keys().next().unwrap().clone();
+        let path = PathBuf::from(&key);
+        fs::write(&path, format!("{}\n", claude_line("cache-pressure-model"))).unwrap();
+        let first = monitor.parse_file(&path, 0);
+        assert_eq!((first.0, first.2), (4000, 4000), "cache eviction must not turn a parsed file into zero usage");
+        assert_eq!(first.4["cache-pressure-model"].0, 4000);
+        assert!(monitor.states.len() <= 8000);
+        assert_eq!(monitor.parse_file(&path, 0).2, 4000, "the unchanged warm read must retain the same total");
+        use std::io::Write;
+        writeln!(fs::OpenOptions::new().append(true).open(&path).unwrap(), "{}", claude_line("cache-pressure-model")).unwrap();
+        assert_eq!(monitor.parse_file(&path, 0).2, 8000, "append must extend the retained state without losing or duplicating usage");
+    }
+
+    #[test]
+    fn cache_pressure_preserves_complete_report_across_files() {
+        let sandbox = crate::testutil::Sandbox::new("token-report-cache-pressure");
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let header = concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-one\",\"session_id\":\"session-one\",\"model_provider\":\"fixture-provider\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-one\",\"model\":\"fixture-model\"}}\n"
+        );
+        for index in 0..8001 {
+            let mut record: Value = serde_json::from_str(&codex_record_at(150, 0, 0, &format!("response-{index}"), &timestamp)).unwrap();
+            record["payload"]["thread_id"] = "thread-one".into();
+            record["payload"]["session_id"] = "session-one".into();
+            record["payload"]["turn_id"] = "turn-one".into();
+            fs::write(sandbox.path().join(format!("{index}.jsonl")), format!("{header}{record}\n")).unwrap();
+        }
+        let profile = one_root_profile("cache-pressure", &sandbox.path().to_string_lossy());
+        let mut monitor = TokenUsageMonitor::new();
+        for _ in 0..2 {
+            let report = monitor.monitor(&profile);
+            assert_eq!((report.usage.tokens24h, report.usage.tokens_total), (1_200_150, 1_200_150));
+            assert_eq!(report.models24h.iter().map(|m| m.tokens).sum::<i64>(), 1_200_150);
+            assert_eq!(report.models_total.iter().map(|m| m.tokens).sum::<i64>(), 1_200_150);
+            assert_eq!(report.hourly30d.iter().map(|(_, tokens)| tokens).sum::<i64>(), 1_200_150, "charts cannot depend on which files remain cached at the end of the scan");
+            assert_eq!((report.context24h.matched_tokens, report.context24h.unmatched_tokens), (1_200_150, 0));
+            assert!(monitor.states.len() <= 8000);
+        }
+    }
 
     /// Claude 方言的一行：3000 输入 + 1000 输出 = 净 4000 tokens
     fn claude_line(model: &str) -> String {
