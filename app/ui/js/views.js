@@ -1025,6 +1025,8 @@ export function renderWorkbench() {
   const previousContent = root.querySelector('.wb-content');
   if (previousContent) workbenchScroll.set(root.dataset.motionRoute, previousContent.scrollTop);
   const motionSurface = taskViewSwitch ? '[data-task-view-panel]' : '.wb-content';
+  // Clear source content before both the outgoing snapshot and retained DOM.
+  previousContent?.querySelector('[data-tasks-root]')?.leavePage?.();
   rememberPage(root, selected, motionSurface);
   const restored = workbenchPagesCache.take(selected);
   if (root.querySelector('.wb')) {

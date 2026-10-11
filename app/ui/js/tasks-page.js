@@ -106,7 +106,7 @@ export async function hydrateTasks(isVisible = () => true) {
     if (detail) renderDetail();
   });
   const renderDetail = () => {
-    readerLifetime?.();readerLifetime=null;
+    root.leavePage?.();root.leavePage=null;
     const box = root.querySelector('[data-task-detail]');
     const task = data.tasks.find(t => t.id === selected);
     box.hidden = !task;
@@ -128,8 +128,13 @@ export async function hydrateTasks(isVisible = () => true) {
     const viewer=box.querySelector('[data-task-artifact-view]');
     const body=viewer.querySelector('[data-artifact-text]'),notice=viewer.querySelector('[data-artifact-notice]');
     let readerToken=0,readerCaller=null;
-    const closeReader=()=>{readerLifetime?.();readerLifetime=null;readerToken++;body.textContent='';body.hidden=true;notice.textContent='';viewer.hidden=true;if(readerCaller?.isConnected){readerCaller.disabled=false;readerCaller.focus({preventScroll:true});}};
-    viewer.querySelector('[data-artifact-close]').onclick=closeReader;
+    const closeReader=(restoreFocus=true)=>{
+      readerLifetime?.();readerLifetime=null;readerToken++;
+      body.textContent='';body.hidden=true;notice.textContent='';viewer.hidden=true;
+      if(readerCaller?.isConnected){readerCaller.disabled=false;if(restoreFocus)readerCaller.focus({preventScroll:true});}
+    };
+    root.leavePage=()=>closeReader(false);
+    viewer.querySelector('[data-artifact-close]').onclick=()=>closeReader();
     viewer.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();closeReader();}};
     box.querySelectorAll('[data-task-artifact-read]').forEach(button=>{button.onclick=async()=>{
       if(busy)return;
