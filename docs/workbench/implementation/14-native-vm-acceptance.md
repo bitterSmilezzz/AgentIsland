@@ -92,3 +92,13 @@ NATIVE_TEST_USER=<guest-user> /usr/bin/python3 scripts/native-gates-vm.py --vm <
 已严格收集的后续固定两run合成负载协议：`.build/vm/resource-attribution-soak-b89d4456a4b340ab9be9dd717555e6b2/`，正式包二进制SHA256 `a1762a5dcafc928037d6b779657ebe30d3a555251d12ef9cf6f15ed969070872`。独立runner退出0，elapsed3840.084秒，七拍末条满1800秒、20轮顺序正确、47完整观测、0partial、同PID/启动身份；传输原始流/receipt与驱动/正式包/负载哈希分别复核，runner/awake结束与锁释放已核对。1842拍环境检查均明确解锁，最大间隔4.296秒、结束缺口1.103秒，不宣称连续环境证明。原先中断的协议仍独立保留为不完整；收集时因VM重启到登录屏而失败，恢复隔离Aqua后按原检查成功收集，没有放宽门禁。
 
 该协议coalition账本idle82.80–93.69MiB（首尾+0.68）、open114.60–124.11MiB、released83.92–91.54MiB（首尾+7.62）。budget_assessed=false；固定合成两run不等于真实执行负载、三壳/启动/动效/热插拔或稳态预算，也不覆盖后续新二进制。原目标在VM重启后已消失，精确身份清理确认未触及其他目标。
+
+方案采集生命周期专项使用v0.0.316正式非demo包，二进制SHA256 `599987391db57f1521cb2239a15cb5f22fe87e5b787cd7e96e6ee300f084653f`，与正式五门禁 `acceptance-e9f3ce02aadb46508a3bef5c9e51e45d` 产物一致。分项证据在忽略目录 `.build/vm/confirmation-native-12ec69d886a54059b8dc650f9c5a6551/`，截图在 `.scratch/background-vm-control/plan-*.png`，已逐张核对。独立HOME、解锁console UID、PID/启动身份、完整二进制路径与租约均在操作前核实；只通过无窗口来宾输入。VM登录曾恢复旧bundle为新PID并拦截新实例，只核对旧PID不足；中断尝试不计通过，精确停止记录路径的恢复实例后重新建独立实例。
+
+- 默认暂停、启动禁用；安装预览取消后Claude/Codex哈希不变。
+- 确认安装保留恢复记录但不自启；显式启动后两次合成transcript对应的正式CLI投递退出0、stdout/stderr为空，GUI接收2/拒绝0。
+- 外部新增普通字段后socket自动消失，GUI待核对；显式重新核对启动后第三次投递成功，配置哈希保持外部修改版本。不据此证明绝对响应时限或无GUI轮询时的停止。
+- 暂停关闭socket；移除只删自有条目，外部字段保留；还原移除前快照的字节哈希精确相等且接收器保持暂停。
+- 最终Codex哈希未变，应用数据目录9个文件不含本轮合成方案正文；精确停止应用后租约/防休眠进程结束、锁消失，控制器退出0。扫描仅覆盖该目录与本轮标记。
+
+分项通过不覆盖实际Claude客户端连续接收、跨UID、任务临时正文原生全链路、15分钟到期/容量原生流程、备份废纸篓或macOS整体验收。
