@@ -88,3 +88,7 @@ NATIVE_TEST_USER=<guest-user> /usr/bin/python3 scripts/native-gates-vm.py --vm <
 本次发布前的 v0.0.303 正式非 demo 复核：证据 `.build/vm/resource-attribution-soak-7f51babf1d454b759189d2fadaccf7cf/` 绑定二进制 SHA256 `66830aeb47572517cfd19168e840715049e72de9d9b909f7a8cdaab5ad7c1e63`、原生五门禁与固定采样器/协议哈希。独立回执退出0，七拍满30分钟与20轮完成，原始48行、47观测、目标启动身份一致；46拍完整，第12轮open有1个归属未知成员，已知成员126.62MiB但total为空，保留不完整，不能回填成完整。1849次console观测均解锁，最大间隔2.986秒、协议结束缺口1.135秒，仍不宣称连续无间隙证明。原始文件哈希、runner/awake结束与锁释放已独立核对，随后仅按原路径和启动身份停止该正式目标。
 
 本次完整观测的coalition账本：idle81.92–83.21MiB，open121.08–126.73MiB（19拍完整），released84.64–88.88MiB（20拍完整）；回收态首尾增长4.22MiB，末五次88.37/88.16/88.54/88.61/88.88。旧证据保持原样，不以不同运行的增长差异单独推导修复因果；当前仍是空VM合成协议，budget_assessed=false，不代表独占物理内存、真实用户负载预算、稳态、新版原生门禁或macOS整体验收完成。
+
+已严格收集的后续固定两run合成负载协议：`.build/vm/resource-attribution-soak-b89d4456a4b340ab9be9dd717555e6b2/`，正式包二进制SHA256 `a1762a5dcafc928037d6b779657ebe30d3a555251d12ef9cf6f15ed969070872`。独立runner退出0，elapsed3840.084秒，七拍末条满1800秒、20轮顺序正确、47完整观测、0partial、同PID/启动身份；传输原始流/receipt与驱动/正式包/负载哈希分别复核，runner/awake结束与锁释放已核对。1842拍环境检查均明确解锁，最大间隔4.296秒、结束缺口1.103秒，不宣称连续环境证明。原先中断的协议仍独立保留为不完整；收集时因VM重启到登录屏而失败，恢复隔离Aqua后按原检查成功收集，没有放宽门禁。
+
+该协议coalition账本idle82.80–93.69MiB（首尾+0.68）、open114.60–124.11MiB、released83.92–91.54MiB（首尾+7.62）。budget_assessed=false；固定合成两run不等于真实执行负载、三壳/启动/动效/热插拔或稳态预算，也不覆盖后续新二进制。原目标在VM重启后已消失，精确身份清理确认未触及其他目标。

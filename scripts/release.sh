@@ -62,6 +62,8 @@ step "Rust/Tauri 打包"
 export SKIP_TESTS=1
 
 scripts/build-app.sh "$VERSION"
+# 构建成功即替换运行实例，后续验收/发布失败也不遗留旧实例。
+scripts/restart-app.sh
 
 step "随包 CLI 派发参数验证（受控系统命令，不打开窗口）"
 python3 scripts/test-cli-dispatch.py --binary dist/agentisland

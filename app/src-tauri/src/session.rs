@@ -551,7 +551,8 @@ fn probe_claude(lines: &[String], path: &str) -> SessionProbe {
         }
 
         if has_text {
-            let fp = fingerprint(path, &text.chars().take(64).collect::<String>());
+            let fp = crate::task_artifacts::claude_result_signal_key(&doc, path)
+                .unwrap_or_else(|| fingerprint(path, &text.chars().take(64).collect::<String>()));
             return SessionProbe {
                 signal: Some(Signal::Completed(fp)),
                 subagent_count: sidechains,

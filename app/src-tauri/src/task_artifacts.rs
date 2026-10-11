@@ -86,7 +86,9 @@ fn record(line: &str, path: &str, include_body: bool) -> Option<Record> {
 fn record_doc(doc: &Value, path: &str, include_body: bool) -> Option<Record> {
     let record_type = doc.get("type")?.as_str()?;
     if record_type == "assistant" {
-        return claude_tools(doc).find_map(|tool| claude_record(tool, path, include_body));
+        return claude_result_record(doc, path, include_body).or_else(|| {
+            claude_tools(doc).find_map(|tool| claude_record(tool, path, include_body))
+        });
     }
     let payload = doc.get("payload")?;
     let kind = payload.get("type")?.as_str()?;
@@ -331,6 +333,80 @@ pub(crate) fn attach_capture(
     }
     context.artifact = selected_with_capture(&lines, path, signal, capture);
 }
+/// A final text block alone is insufficient: only identified main-session endings
+/// expose result content. Older/partial records keep their existing status fallback.
+pub(crate) fn claude_result_signal_key(doc: &Value, path: &str) -> Option<String> {
+    claude_result_record(doc, path, false).map(|record| record.signal_key)
+}
+fn claude_result_record(doc: &Value, path: &str, include_body: bool) -> Option<Record> {
+    if doc.get("type")?.as_str()? != "assistant" || doc.get("isSidechain")?.as_bool()? {
+        return None;
+    }
+    let uuid = doc.get("uuid")?.as_str()?;
+    let identity = uuid::Uuid::parse_str(uuid).ok()?;
+    if identity.is_nil() || identity.to_string() != uuid {
+        return None;
+    }
+    let message = doc.get("message")?;
+    if message.get("role")?.as_str()? != "assistant"
+        || !matches!(
+            message.get("stop_reason")?.as_str()?,
+            "end_turn" | "stop_sequence"
+        )
+    {
+        return None;
+    }
+    let content = message.get("content")?.as_array()?;
+    let mut has_text = false;
+    for block in content {
+        if block.get("type")?.as_str()? != "text" {
+            return None;
+        }
+        has_text |= !block.get("text")?.as_str()?.trim().is_empty();
+    }
+    if !has_text {
+        return None;
+    }
+    let event_ref = hash(&serde_json::to_vec(&(uuid, message)).ok()?);
+    let body = if include_body {
+        let mut text = String::new();
+        for block in content {
+            let part = block.get("text")?.as_str()?;
+            if part.len() > MAX_BODY.saturating_sub(text.len()) {
+                return Some(Record {
+                    signal_key: crate::session::fingerprint(path, &event_ref),
+                    evidence: Evidence {
+                        event_ref,
+                        kind: AttentionKind::ResultReview,
+                    },
+                    content: unavailable("内容超过显示范围，请在来源工具中查看。"),
+                });
+            }
+            text.push_str(part);
+        }
+        let secret = [doc, message]
+            .into_iter()
+            .chain(content.iter())
+            .any(|value| {
+                ["isSecret", "is_secret"].iter().any(|key| {
+                    value
+                        .get(key)
+                        .is_some_and(|flag| flag.as_bool() != Some(false))
+                })
+            });
+        readable(text, secret)
+    } else {
+        unavailable("按需读取来源内容。")
+    };
+    Some(Record {
+        signal_key: crate::session::fingerprint(path, &event_ref),
+        evidence: Evidence {
+            event_ref,
+            kind: AttentionKind::ResultReview,
+        },
+        content: body,
+    })
+}
 fn claude_tools(doc: &Value) -> impl Iterator<Item = &Value> {
     let main = doc.get("type").and_then(Value::as_str) == Some("assistant")
         && doc.get("isSidechain").and_then(Value::as_bool) != Some(true);
@@ -349,6 +425,7 @@ fn records(line: &str, path: &str, include_body: bool) -> Vec<Record> {
     if doc.get("type").and_then(Value::as_str) == Some("assistant") {
         claude_tools(&doc)
             .filter_map(|tool| claude_record(tool, path, include_body))
+            .chain(claude_result_record(&doc, path, include_body))
             .collect()
     } else {
         record_doc(&doc, path, include_body).into_iter().collect()
@@ -505,6 +582,14 @@ fn read_path_with_capture(
             continue;
         };
         if doc.get("type").and_then(Value::as_str) == Some("assistant") {
+            if kind == AttentionKind::ResultReview
+                && claude_result_record(&doc, path, false)
+                    .is_some_and(|record| record.evidence.event_ref == event_ref)
+            {
+                if let Some(record) = claude_result_record(&doc, path, true) {
+                    return record.content;
+                }
+            }
             for tool in claude_tools(&doc) {
                 if claude_record(tool, path, false).is_some_and(|record| {
                     record.evidence.event_ref == event_ref && record.evidence.kind == kind
@@ -721,6 +806,137 @@ mod tests {
             )
             .unwrap()
         }
+    }
+    fn claude_result(uuid: &str, text: &str) -> String {
+        serde_json::json!({"type":"assistant","isSidechain":false,"uuid":uuid,
+            "message":{"role":"assistant","stop_reason":"end_turn",
+                "content":[{"type":"text","text":text}]}})
+        .to_string()
+    }
+    #[test]
+    fn claude_results_use_exact_event_identity_and_preserve_history_without_storing_text() {
+        let mut f = Fixture::new();
+        f.profile.id = "claude".into();
+        let prefix = "a".repeat(64);
+        let first = claude_result(
+            "00000000-0000-4000-8000-000000000001",
+            &format!("{prefix} first result"),
+        );
+        let second = claude_result(
+            "00000000-0000-4000-8000-000000000002",
+            &format!("{prefix} second result"),
+        );
+        let observation = f.observe(&[first.clone()]);
+        assert!(observation.artifact.is_some());
+        f.bind(observation.source.clone());
+        let d = f.store.sync(&[observation.clone()], 3).unwrap().unwrap();
+        assert_eq!(d.artifacts.len(), 1);
+        assert!(f.store.sync(&[observation], 4).unwrap().is_none());
+        assert!(f.read(&d, 0).text.unwrap().ends_with("first result"));
+        let next = f.observe(&[first.clone(), second.clone()]);
+        let d = f.store.sync(&[next.clone()], 5).unwrap().unwrap();
+        assert_eq!(d.artifacts.len(), 2);
+        assert!(f.store.sync(&[next], 6).unwrap().is_none());
+        assert!(f.read(&d, 0).text.unwrap().ends_with("first result"));
+        assert!(f.read(&d, 1).text.unwrap().ends_with("second result"));
+        assert!(d
+            .runs
+            .iter()
+            .all(|r| r.status != crate::tasks::RunStatus::Accepted));
+        let stored = std::fs::read_to_string(&f.store.path).unwrap();
+        assert!(!stored.contains("first result") && !stored.contains("second result"));
+        let mut changed: Value = serde_json::from_str(&first).unwrap();
+        changed["message"]["content"][0]["text"] = "rewritten result".into();
+        f.observe(&[changed.to_string(), second]);
+        assert!(!f.read(&d, 0).available);
+        assert!(f.read(&d, 1).available);
+        std::fs::remove_file(&f.path).unwrap();
+        assert!(!f.read(&d, 1).available);
+    }
+    #[test]
+    fn claude_result_content_requires_identified_main_ending_and_protects_private_text() {
+        let normal: Value = serde_json::from_str(&claude_result(
+            "00000000-0000-4000-8000-000000000001",
+            "finished result",
+        ))
+        .unwrap();
+        assert!(
+            record_doc(&normal, "fixture", true)
+                .unwrap()
+                .content
+                .available
+        );
+        for (field, value) in [
+            ("isSidechain", Value::Bool(true)),
+            ("isSidechain", Value::Null),
+            ("uuid", Value::String("bad-id".into())),
+            ("uuid", Value::String(uuid::Uuid::nil().to_string())),
+        ] {
+            let mut changed = normal.clone();
+            changed[field] = value;
+            assert!(record_doc(&changed, "fixture", true).is_none());
+        }
+        for stop in [Value::Null, "tool_use".into(), "max_tokens".into()] {
+            let mut changed = normal.clone();
+            changed["message"]["stop_reason"] = stop;
+            assert!(record_doc(&changed, "fixture", true).is_none());
+        }
+        for body in [
+            serde_json::json!([]),
+            serde_json::json!([{"type":"text","text":" "}]),
+            serde_json::json!([{"type":"text","text":"done"},{"type":"tool_use","name":"Bash"}]),
+        ] {
+            let mut changed = normal.clone();
+            changed["message"]["content"] = body;
+            assert!(record_doc(&changed, "fixture", true).is_none());
+        }
+        for text in [
+            "password=fixture-value".to_string(),
+            "x".repeat(MAX_BODY + 1),
+        ] {
+            let mut changed = normal.clone();
+            changed["message"]["content"][0]["text"] = text.into();
+            let record = record_doc(&changed, "fixture", true).unwrap();
+            assert!(!record.content.available && record.content.text.is_none());
+        }
+        for level in 0..3 {
+            for (camel, snake) in [
+                (Value::Bool(false), Value::Bool(true)),
+                (Value::Bool(true), Value::Bool(false)),
+                (Value::Bool(false), Value::Null),
+            ] {
+                let mut secret = normal.clone();
+                let target = match level {
+                    0 => &mut secret,
+                    1 => &mut secret["message"],
+                    _ => &mut secret["message"]["content"][0],
+                };
+                target["isSecret"] = camel;
+                target["is_secret"] = snake;
+                let content = record_doc(&secret, "fixture", true).unwrap().content;
+                assert!(!content.available && content.text.is_none());
+            }
+        }
+        let mut stop_sequence = normal.clone();
+        stop_sequence["message"]["stop_reason"] = "stop_sequence".into();
+        assert!(
+            record_doc(&stop_sequence, "fixture", true)
+                .unwrap()
+                .content
+                .available
+        );
+        let mut revised = normal.clone();
+        revised["message"]["content"][0]["text"] = "revised result".into();
+        assert_ne!(
+            claude_result_signal_key(&normal, "fixture"),
+            claude_result_signal_key(&revised, "fixture")
+        );
+        let mut other = normal.clone();
+        other["uuid"] = "00000000-0000-4000-8000-000000000002".into();
+        assert_ne!(
+            claude_result_signal_key(&normal, "fixture"),
+            claude_result_signal_key(&other, "fixture")
+        );
     }
     #[test]
     fn actual_probe_sync_reference_and_on_demand_read_preserve_question_and_result_history() {

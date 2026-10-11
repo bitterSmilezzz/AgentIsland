@@ -1,5 +1,5 @@
 from pathlib import Path
-import subprocess,threading,json,time,re,os,shlex,sys
+import subprocess,threading,json,time,re,os,shlex,sys,uuid
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 if sys.platform != 'darwin': raise SystemExit('Controlled client acceptance requires macOS.')
 ROOT=Path(__file__).resolve().parent.parent/'.scratch/claude-real-client'
@@ -31,7 +31,10 @@ class API(BaseHTTPRequestHandler):
   self.send_response(200);self.send_header('Content-Type','text/event-stream' if data.get('stream') else 'application/json');self.end_headers()
   if not data.get('stream'):self.wfile.write(json.dumps(msg).encode());return
   start={**msg,'content':[],'stop_reason':None,'usage':{'input_tokens':100,'output_tokens':0}}
-  events=[('message_start',{'type':'message_start','message':start}),('content_block_start',{'type':'content_block_start','index':0,'content_block':block}),('content_block_stop',{'type':'content_block_stop','index':0}),('message_delta',{'type':'message_delta','delta':{'stop_reason':stop,'stop_sequence':None},'usage':{'output_tokens':10}}),('message_stop',{'type':'message_stop'})]
+  initial={**block,'text':''} if block['type']=='text' else block
+  events=[('message_start',{'type':'message_start','message':start}),('content_block_start',{'type':'content_block_start','index':0,'content_block':initial})]
+  if block['type']=='text':events.append(('content_block_delta',{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':block['text']}}))
+  events += [('content_block_stop',{'type':'content_block_stop','index':0}),('message_delta',{'type':'message_delta','delta':{'stop_reason':stop,'stop_sequence':None},'usage':{'output_tokens':10}}),('message_stop',{'type':'message_stop'})]
   for event,payload in events:self.wfile.write(('event: '+event+'\ndata: '+json.dumps(payload)+'\n\n').encode())
 server=ThreadingHTTPServer(('127.0.0.1',0),API);threading.Thread(target=server.serve_forever,daemon=True).start()
 HOME_FIXTURE=ROOT/'fixture-home';HOME_FIXTURE.mkdir(exist_ok=True)
@@ -76,6 +79,22 @@ p.stdin.write(json.dumps({'type':'user','message':{'role':'user','content':'Pres
 try:p.wait(timeout=35)
 except subprocess.TimeoutExpired:p.terminate();p.wait(timeout=5)
 server.shutdown();(ROOT/'client-output.json').write_text(json.dumps(records));(ROOT/'client-stderr.txt').write_text(p.stderr.read())
-print(json.dumps({'version':version,'systemIsolationVerified':True,'exit':p.returncode,'requests':len(requests),'hookObserved':(ROOT/'hook-input.json').exists(),'recordTypes':[r.get('type') for r in records]},ensure_ascii=False))
+sessions={r.get('session_id') for r in records if isinstance(r.get('session_id'),str)}
+finals=[]
+for session in sessions:
+ if str(uuid.UUID(session))!=session:raise SystemExit('Noncanonical client session identity.')
+ for transcript in (CONFIG/'projects').glob('*/'+session+'.jsonl'):
+  for line in transcript.read_text().splitlines():
+   doc=json.loads(line);message=doc.get('message',{})
+   if doc.get('type')!='assistant' or message.get('stop_reason')!='end_turn':continue
+   body=message.get('content',[])
+   if not any(b.get('text')=='Fixture finished after permission handling.' for b in body):continue
+   assert doc.get('isSidechain') is False and doc.get('sessionId')==session
+   assert str(uuid.UUID(doc['uuid']))==doc['uuid'] and uuid.UUID(doc['uuid']).int!=0
+   assert message.get('role')=='assistant' and all(b.get('type')=='text' for b in body)
+   finals.append({'session':session,'message':doc['uuid'],'transcript':str(transcript),'nonemptyFinal':True})
+summary={'version':version,'systemIsolationVerified':True,'exit':p.returncode,'requests':len(requests),'hookObserved':(ROOT/'hook-input.json').exists(),'recordTypes':[r.get('type') for r in records],'verifiedFinals':finals}
+(ROOT/'result-verification.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2))
+print(json.dumps(summary,ensure_ascii=False))
 
-if p.returncode!=0 or not (ROOT/'hook-input.json').exists():raise SystemExit(1)
+if p.returncode!=0 or not (ROOT/'hook-input.json').exists() or not finals:raise SystemExit(1)

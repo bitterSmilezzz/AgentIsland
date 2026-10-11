@@ -107,7 +107,13 @@ Dim sessionId、OpenCode 新旧表的 session_id、MiniMax session_id 和状态�
 
 多调用消息逐项检查：同批未收口人工关口优先于执行，正文/分型从选中调用取得；只有调用之后的主会话 user/tool_result 能收口。子会话调用、结果和停止不覆盖主状态。多个人工关口仍显示一个当前摘要，处理后再显露同批其余未收口关口；不新增批准或回答动作。顶层/问题私密标志及已识别凭据使用通用摘要与只读拒绝提示。
 
-官方 hooks 文档明确 plan/planFilePath 为 hook 输入注入字段，不能推导所有 transcript 都带正文。当前本机有界取样没有 Claude transcript，因此测试为实际探针/存储沙箱集成与纯数据浏览器流程，未取得本机真实方案记录的端到端证据。相关长期边界见 [ADR 0030](../../adr/0030-claude-attention-artifacts.md)。
+官方 hooks 文档明确 plan/planFilePath 为 hook 输入注入字段，不能推导所有 transcript 都带正文。官方指定版本客户端在独立目录及本机模型端点下已核对方案 hook 与落盘记录；这项受控证据不代表真实账号日常会话或完整原生操作。相关长期边界见 [ADR 0030](../../adr/0030-claude-attention-artifacts.md)，采集分层证据见 [13](13-claude-plan-capture.md)。
+
+### Claude 主会话完成结果
+
+显式主会话、规范非零消息 UUID、assistant 角色、`end_turn`/`stop_sequence` 和非空纯文本块共同核实后，可产生结果引用。指纹覆盖 UUID 与完整 message，探针、来源同步及按需读取使用同一身份；同前缀不同消息不合并，重写或删除的历史结果不可读。正文不进入任务文件，完成保持 ready，仍需人工验收。私密标记在文档、消息和每个文本块逐项核对，两种拼写冲突或取值无效时拒绝；沿用凭据检测、尾窗和 64 KiB 上限。
+
+官方 Claude Code 2.1.291 在隔离目录与本机模型端点下实际落盘了符合条件的非空最终回复；夹具要求文本增量 SSE 并断言 transcript 的主会话、sessionId、UUID 与正文。Rust 集成覆盖真实探针到绑定/同步/读取、幂等、历史与隐私；客户端证据只覆盖指定版本受控流程。正式包的隔离原生任务 UI 已核对创建/绑定、自动就绪、纯文本读取、第二轮与旧历史隔离，以及改写/冲突私密标记/移除后的只读拒绝；任务正文未落盘，配置哈希不变。初始/第二轮问题为合成记录，最终回复为该官方客户端受控落盘文档，不代表真实账号日常使用或完整来源跳转验收。
 
 ### 会话来源目录
 
@@ -132,7 +138,7 @@ session_open_observed 只接受Source DTO，核对当前Choice完整身份再取
 
 协议依据（2026-10-05核对）：[SessionMetaLine](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs)、[实际JSONL记录测试](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder_tests.rs)、[目录定义](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/lib.rs)。上游后续格式变化须重新校验。
 
-无正文方案的独立采集规格与当前分层状态见 [13 · Claude 方案只读采集](13-claude-plan-capture.md)。协议/内存缓存与可注入正文关联接口已有受控回归，正式入口仍未启用；配置安装、接收服务和真实客户端验证尚未完成。
+无正文方案的独立采集规格与当前分层状态见 [13 · Claude 方案只读采集](13-claude-plan-capture.md)。协议、短期内存缓存、macOS 接收服务、配置安装及显式启停入口已接入；官方指定版本客户端受控验证已取得，正式接收连续操作、真实账号与跨 UID 等退出条件仍按 13 核实。
 
 ### 详情草稿与版本归属
 
