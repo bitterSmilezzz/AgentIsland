@@ -543,3 +543,116 @@ fn namespace_change_during_frame_rejects_before_capture_and_preserves_replacemen
     );
     assert!(!old.join("receiver.sock").exists());
 }
+
+#[test]
+fn complete_hook_waits_for_initial_transcript_creation_before_acknowledging() {
+    let f = Fixture::new();
+    std::fs::remove_file(&f.path).unwrap();
+    let mut receiver = f.receiver();
+    let mut stream = connect(&f.root.join("receiver.sock"), Instant::now() + COLLECT).unwrap();
+    let payload = f.payload("first-write");
+    write_all(
+        &mut stream,
+        &(payload.len() as u32).to_be_bytes(),
+        Instant::now() + COLLECT,
+    )
+    .unwrap();
+    write_all(&mut stream, &payload, Instant::now() + COLLECT).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    // The official client may create this transcript after it starts PreToolUse.
+    // An immediate negative ACK loses a valid first event. No file exists yet.
+    let mut poll = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    assert_eq!(
+        unsafe { libc::poll(&mut poll, 1, 50) },
+        0,
+        "ACK preceded source creation"
+    );
+    std::fs::write(&f.path, "").unwrap();
+    let mut ack = [255];
+    read_exact(&mut stream, &mut ack, Instant::now() + COLLECT).unwrap();
+    assert_eq!(ack, [0]);
+    let doc = f.doc("first-write");
+    assert!(receiver
+        .cache()
+        .lock()
+        .unwrap()
+        .bind_selected(&f.path, &doc, &doc["message"]["content"][0], Instant::now())
+        .is_some());
+    receiver.stop();
+}
+
+#[test]
+fn missing_transcript_times_out_without_poisoning_the_next_valid_call() {
+    let f = Fixture::new();
+    std::fs::remove_file(&f.path).unwrap();
+    let mut receiver = f.receiver();
+    let started = Instant::now();
+    assert_eq!(
+        send(&f.root, &f.payload("late"), started + COLLECT),
+        Err(Error::Rejected)
+    );
+    assert!(started.elapsed() < EXCHANGE + Duration::from_millis(200));
+    let doc = f.doc("late");
+    assert!(receiver
+        .cache()
+        .lock()
+        .unwrap()
+        .bind_selected(&f.path, &doc, &doc["message"]["content"][0], Instant::now())
+        .is_none());
+    std::fs::write(&f.path, "").unwrap();
+    send(&f.root, &f.payload("late"), Instant::now() + COLLECT).unwrap();
+    assert!(receiver
+        .cache()
+        .lock()
+        .unwrap()
+        .bind_selected(&f.path, &doc, &doc["message"]["content"][0], Instant::now())
+        .is_some());
+    receiver.stop();
+}
+
+#[test]
+fn readiness_wait_rechecks_lifecycle_and_releases_the_cache_lock() {
+    let f = Fixture::new();
+    std::fs::remove_file(&f.path).unwrap();
+    let enabled = Arc::new(AtomicBool::new(true));
+    let checked = enabled.clone();
+    let mut receiver = Receiver::start_guarded(
+        &f.root,
+        vec![f.source.clone()],
+        Arc::new(move || checked.load(Ordering::Acquire)),
+    )
+    .unwrap();
+    let mut stream = connect(&f.root.join("receiver.sock"), Instant::now() + COLLECT).unwrap();
+    let payload = f.payload("cancelled");
+    write_all(
+        &mut stream,
+        &(payload.len() as u32).to_be_bytes(),
+        Instant::now() + COLLECT,
+    )
+    .unwrap();
+    write_all(&mut stream, &payload, Instant::now() + COLLECT).unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut poll = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    assert_eq!(unsafe { libc::poll(&mut poll, 1, 50) }, 0);
+    assert!(receiver.cache().try_lock().is_ok());
+    enabled.store(false, Ordering::Release);
+    std::fs::write(&f.path, "").unwrap();
+    let mut ack = [255];
+    assert!(read_exact(&mut stream, &mut ack, Instant::now() + COLLECT).is_err() || ack[0] != 0);
+    let doc = f.doc("cancelled");
+    assert!(receiver
+        .cache()
+        .lock()
+        .unwrap()
+        .bind_selected(&f.path, &doc, &doc["message"]["content"][0], Instant::now())
+        .is_none());
+    receiver.stop();
+}

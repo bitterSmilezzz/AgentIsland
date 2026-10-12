@@ -169,6 +169,11 @@ struct FileIdentity {
     inode: u64,
     created: SystemTime,
 }
+/// Per-exchange prefix identities only; no body and no persisted pending entries.
+#[derive(Default)]
+pub(crate) struct SourceReadiness {
+    opened: Vec<(PathBuf, FileIdentity)>,
+}
 #[derive(Clone, PartialEq, Eq)]
 struct SourceIdentity {
     path_hash: String,
@@ -199,8 +204,16 @@ fn absolute_plain(path: &Path) -> bool {
             .components()
             .all(|c| matches!(c, Component::RootDir | Component::Normal(_)))
 }
-#[cfg(unix)]
 fn source(path: &Path, roots: &[PathBuf], session: &str) -> Result<SourceIdentity, Error> {
+    source_with_readiness(path, roots, session, None)
+}
+#[cfg(unix)]
+fn source_with_readiness(
+    path: &Path,
+    roots: &[PathBuf],
+    session: &str,
+    mut readiness: Option<&mut SourceReadiness>,
+) -> Result<SourceIdentity, Error> {
     use std::{
         ffi::CString,
         os::{
@@ -214,6 +227,18 @@ fn source(path: &Path, roots: &[PathBuf], session: &str) -> Result<SourceIdentit
             inode: m.ino(),
             created: m.created().map_err(|_| Error::Source)?,
         })
+    }
+    fn verify(opened: &[(PathBuf, FileIdentity)]) -> Result<(), Error> {
+        for (name, id) in opened {
+            let meta = std::fs::symlink_metadata(name).map_err(|_| Error::Source)?;
+            if meta.file_type().is_symlink() || identity(&meta)? != *id {
+                return Err(Error::Source);
+            }
+        }
+        Ok(())
+    }
+    if let Some(prior) = readiness.as_deref() {
+        verify(&prior.opened)?;
     }
     if !absolute_plain(path)
         || path.extension().and_then(|s| s.to_str()) != Some("jsonl")
@@ -247,7 +272,21 @@ fn source(path: &Path, roots: &[PathBuf], session: &str) -> Result<SourceIdentit
         // Each component is opened relative to the checked parent descriptor, never followed by name.
         let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
-            return Err(Error::Source);
+            let error = std::io::Error::last_os_error();
+            if !current.starts_with(root) || error.raw_os_error() != Some(libc::ENOENT) {
+                return Err(Error::Source);
+            }
+            // First use can also create the configured root. Pin every existing
+            // ancestor before waiting, including those above that missing root.
+            verify(&opened)?;
+            if let Some(prior) = readiness.as_deref_mut() {
+                verify(&prior.opened)?;
+                if !opened.starts_with(&prior.opened) {
+                    return Err(Error::Source);
+                }
+                prior.opened = opened;
+            }
+            return Err(Error::SourceMissing);
         }
         let next = unsafe { std::fs::File::from_raw_fd(fd) };
         let meta = next.metadata().map_err(|_| Error::Source)?;
@@ -268,9 +307,10 @@ fn source(path: &Path, roots: &[PathBuf], session: &str) -> Result<SourceIdentit
     }
     // Names must still point to the opened chain; a replaced root containing a hard link to the
     // old file also fails because the cache retains directory identities, not just the leaf inode.
-    for (name, id) in &opened {
-        let meta = std::fs::symlink_metadata(name).map_err(|_| Error::Source)?;
-        if meta.file_type().is_symlink() || identity(&meta)? != *id {
+    verify(&opened)?;
+    if let Some(prior) = readiness {
+        verify(&prior.opened)?;
+        if !opened.starts_with(&prior.opened) {
             return Err(Error::Source);
         }
     }
@@ -282,7 +322,12 @@ fn source(path: &Path, roots: &[PathBuf], session: &str) -> Result<SourceIdentit
     })
 }
 #[cfg(not(unix))]
-fn source(_: &Path, _: &[PathBuf], _: &str) -> Result<SourceIdentity, Error> {
+fn source_with_readiness(
+    _: &Path,
+    _: &[PathBuf],
+    _: &str,
+    _: Option<&mut SourceReadiness>,
+) -> Result<SourceIdentity, Error> {
     Err(Error::Source)
 }
 
@@ -292,6 +337,7 @@ pub(crate) enum Error {
     Invalid,
     Private,
     Source,
+    SourceMissing,
     Conflict,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,12 +394,41 @@ impl Store {
     }
     /// Requires an authenticated local transport; this method only enforces payload/source policy.
     pub(crate) fn ingest(&mut self, bytes: &[u8], now: Instant) -> Result<Receipt, Error> {
+        self.ingest_with_readiness(bytes, now, None)
+    }
+    pub(crate) fn ingest_ready(
+        &mut self,
+        bytes: &[u8],
+        now: Instant,
+        readiness: &mut SourceReadiness,
+    ) -> Result<Receipt, Error> {
+        self.ingest_with_readiness(bytes, now, Some(readiness))
+    }
+    fn ingest_with_readiness(
+        &mut self,
+        bytes: &[u8],
+        now: Instant,
+        readiness: Option<&mut SourceReadiness>,
+    ) -> Result<Receipt, Error> {
         if !self.enabled {
             return Err(Error::Disabled);
         }
         self.purge_expired(now);
         let p = parse(bytes)?;
-        let identity = source(&p.path, &self.roots, &p.session)?;
+        let identity = source_with_readiness(
+            &p.path,
+            &self.roots,
+            &p.session,
+            if p.body.is_some() { readiness } else { None },
+        )
+        .map_err(|error| {
+            // Private input never needs a readiness wait or a retained pending body.
+            if p.body.is_none() && error == Error::SourceMissing {
+                Error::Source
+            } else {
+                error
+            }
+        })?;
         let body_hash = p
             .body
             .as_ref()

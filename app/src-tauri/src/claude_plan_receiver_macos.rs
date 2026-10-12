@@ -22,6 +22,7 @@ const SOCKET: &[u8] = b"receiver.sock\0";
 const EXCHANGE: Duration = Duration::from_millis(750);
 const COLLECT: Duration = Duration::from_secs(2);
 const PURGE: Duration = Duration::from_secs(30);
+const SOURCE_READY: Duration = Duration::from_millis(200);
 #[derive(Clone, PartialEq, Eq)]
 struct Identity {
     device: u64,
@@ -633,14 +634,41 @@ fn receive(
     {
         return Err(Error::Namespace);
     }
-    if cancel.load(Ordering::Acquire) || guard.is_some_and(|check| !check()) {
-        return Err(Error::Unavailable);
-    }
-    let accepted = cache
-        .lock()
-        .map_err(|_| Error::Unavailable)?
-        .ingest(&body, Instant::now())
-        .is_ok();
+    // A complete hook may precede Claude's initial transcript creation. Keep the
+    // original exchange deadline and never hold the cache lock while waiting.
+    let ready_deadline = deadline.min(Instant::now() + SOURCE_READY);
+    let mut readiness = crate::claude_plan_capture::SourceReadiness::default();
+    let accepted = loop {
+        if Instant::now() >= ready_deadline {
+            break false;
+        }
+        if cancel.load(Ordering::Acquire) || guard.is_some_and(|check| !check()) {
+            return Err(Error::Unavailable);
+        }
+        let result = cache.lock().map_err(|_| Error::Unavailable)?.ingest_ready(
+            &body,
+            Instant::now(),
+            &mut readiness,
+        );
+        match result {
+            Ok(_) => break true,
+            Err(crate::claude_plan_capture::Error::SourceMissing) => {
+                let Some(left) = ready_deadline.checked_duration_since(Instant::now()) else {
+                    break false;
+                };
+                std::thread::sleep(left.min(Duration::from_millis(10)));
+                endpoint.current()?;
+                if endpoint
+                    .socket_id
+                    .as_ref()
+                    .is_none_or(|id| endpoint.socket_identity().as_ref() != Ok(id))
+                {
+                    return Err(Error::Namespace);
+                }
+            }
+            Err(_) => break false,
+        }
+    };
     endpoint.current()?;
     write_all(stream, &[if accepted { 0 } else { 1 }], deadline)?;
     if accepted {

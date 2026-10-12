@@ -253,6 +253,92 @@ fn capacity_evicts_oldest_without_extending_replayed_entries() {
     assert_eq!(f.store.entries.len(), MAX_ITEMS);
     assert!(f.read(&first, &r).is_none());
 }
+
+#[cfg(unix)]
+#[test]
+fn only_public_valid_missing_sources_are_retryable_without_cache_entries() {
+    use std::os::unix::fs::symlink;
+    let mut f = Fixture::new();
+    std::fs::remove_file(&f.path).unwrap();
+    assert_eq!(f.ingest("first", "对应方案"), Err(Error::SourceMissing));
+    assert!(f.store.entries.is_empty());
+    assert_eq!(f.ingest("first", ""), Err(Error::Invalid));
+    let mut private = f.payload("private", "对应方案");
+    private["tool_input"]["isSecret"] = true.into();
+    assert_eq!(
+        f.store
+            .ingest(&serde_json::to_vec(&private).unwrap(), f.now),
+        Err(Error::Source)
+    );
+    assert!(f.store.entries.is_empty());
+    let path = f.path.clone();
+    f.path = f.root.join("wrong-name.jsonl");
+    assert_eq!(f.ingest("wrong", "对应方案"), Err(Error::Source));
+    f.path = f.root.parent().unwrap().join(format!("{SESSION}.jsonl"));
+    assert_eq!(f.ingest("outside", "对应方案"), Err(Error::Source));
+    f.path = path;
+    symlink(f.root.join("missing-target"), &f.path).unwrap();
+    assert_eq!(f.ingest("link", "对应方案"), Err(Error::Source));
+    std::fs::remove_file(&f.path).unwrap();
+    std::fs::write(&f.path, "").unwrap();
+    assert_eq!(f.ingest("first", "对应方案"), Ok(Receipt::Captured));
+}
+
+#[test]
+fn readiness_allows_initial_root_creation_but_pins_all_existing_ancestors() {
+    for missing_root in [false, true] {
+        let mut f = Fixture::new();
+        std::fs::remove_file(&f.path).unwrap();
+        if missing_root {
+            std::fs::remove_dir(&f.root).unwrap();
+        }
+        let payload = serde_json::to_vec(&f.payload("first", "对应方案")).unwrap();
+        let mut readiness = SourceReadiness::default();
+        assert_eq!(
+            f.store.ingest_ready(&payload, f.now, &mut readiness),
+            Err(Error::SourceMissing)
+        );
+        assert!(!readiness.opened.is_empty());
+        if missing_root {
+            std::fs::create_dir(&f.root).unwrap();
+        }
+        std::fs::write(&f.path, "").unwrap();
+        assert_eq!(
+            f.store.ingest_ready(&payload, f.now, &mut readiness),
+            Ok(Receipt::Captured)
+        );
+    }
+    for missing_root in [false, true] {
+        let mut f = Fixture::new();
+        std::fs::remove_file(&f.path).unwrap();
+        if missing_root {
+            std::fs::remove_dir(&f.root).unwrap();
+        }
+        let payload = serde_json::to_vec(&f.payload("replaced", "对应方案")).unwrap();
+        let mut readiness = SourceReadiness::default();
+        assert_eq!(
+            f.store.ingest_ready(&payload, f.now, &mut readiness),
+            Err(Error::SourceMissing)
+        );
+        let ancestor = if missing_root {
+            f.root.parent().unwrap().to_path_buf()
+        } else {
+            f.root.clone()
+        };
+        let old = ancestor.with_extension("old");
+        assert!(!old.exists());
+        std::fs::rename(&ancestor, &old).unwrap();
+        std::fs::create_dir_all(&f.root).unwrap();
+        std::fs::write(&f.path, "").unwrap();
+        assert_eq!(
+            f.store.ingest_ready(&payload, f.now, &mut readiness),
+            Err(Error::Source)
+        );
+        assert!(f.store.entries.is_empty());
+        std::fs::remove_dir_all(&ancestor).unwrap();
+        std::fs::rename(&old, &ancestor).unwrap();
+    }
+}
 #[test]
 fn decreasing_clock_is_not_treated_as_infinite_lifetime() {
     let mut f = Fixture::new();
