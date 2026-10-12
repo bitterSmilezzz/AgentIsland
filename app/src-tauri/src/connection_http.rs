@@ -314,6 +314,20 @@ mod tests {
             let (release, hold) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = BufReader::new(stream.try_clone().unwrap());
+                // Consume request headers before modelling a slow response; otherwise
+                // the peer races the client's request write instead of its read timeout.
+                loop {
+                    let mut line = String::new();
+                    match request.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) if line == "\r\n" => break,
+                        Ok(_) => {}
+                    }
+                }
                 if body_started {
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{}");
                 }

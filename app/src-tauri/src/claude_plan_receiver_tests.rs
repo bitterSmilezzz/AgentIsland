@@ -50,6 +50,80 @@ impl Drop for Fixture {
     }
 }
 #[test]
+fn rejected_ack_and_counter_do_not_prove_a_bodyless_or_private_capture() {
+    let f = Fixture::new();
+    let mut receiver = f.receiver();
+    let cache = receiver.cache();
+    let mut bodyless: serde_json::Value = serde_json::from_slice(&f.payload("empty")).unwrap();
+    bodyless["tool_input"] = serde_json::json!({});
+    assert_eq!(
+        send(
+            &f.root,
+            &serde_json::to_vec(&bodyless).unwrap(),
+            Instant::now() + COLLECT
+        ),
+        Err(Error::Rejected)
+    );
+    let doc = f.doc("empty");
+    assert!(cache
+        .lock()
+        .unwrap()
+        .bind_selected(&f.path, &doc, &doc["message"]["content"][0], Instant::now())
+        .is_none());
+    // Invalid input did not insert a tombstone: a later valid capture of this call succeeds.
+    send(&f.root, &f.payload("empty"), Instant::now() + COLLECT).unwrap();
+    let reference = cache
+        .lock()
+        .unwrap()
+        .bind_selected(&f.path, &doc, &doc["message"]["content"][0], Instant::now())
+        .unwrap();
+    assert!(cache
+        .lock()
+        .unwrap()
+        .read_bound(
+            &f.path,
+            &doc,
+            &doc["message"]["content"][0],
+            &reference,
+            Instant::now()
+        )
+        .is_some());
+
+    let mut private: serde_json::Value = serde_json::from_slice(&f.payload("private")).unwrap();
+    private["tool_input"]["isSecret"] = true.into();
+    assert_eq!(
+        send(
+            &f.root,
+            &serde_json::to_vec(&private).unwrap(),
+            Instant::now() + COLLECT
+        ),
+        Err(Error::Rejected)
+    );
+    // The same wire rejection also covers privacy revocation; it is not a successful ACK.
+    assert_eq!(
+        send(&f.root, &f.payload("private"), Instant::now() + COLLECT),
+        Err(Error::Rejected)
+    );
+    let private_doc = f.doc("private");
+    assert!(cache
+        .lock()
+        .unwrap()
+        .bind_selected(
+            &f.path,
+            &private_doc,
+            &private_doc["message"]["content"][0],
+            Instant::now()
+        )
+        .is_none());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while receiver.status().unwrap().rejected < 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let status = receiver.status().unwrap();
+    assert_eq!((status.received, status.rejected), (1, 3));
+    receiver.stop();
+}
+#[test]
 fn kernel_transport_accepts_exact_plan_then_stop_clears_body_and_owned_endpoint() {
     let f = Fixture::new();
     let mut receiver = f.receiver();

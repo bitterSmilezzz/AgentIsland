@@ -97,6 +97,35 @@ fn strict_protocol_rejects_other_events_duplicate_keys_and_unbounded_input() {
     assert!(parse(&serde_json::to_vec(&p).unwrap()).is_err());
 }
 #[test]
+fn bodyless_or_blank_plan_is_invalid_and_cannot_create_or_poison_a_capture() {
+    let mut f = Fixture::new();
+    for input in [
+        serde_json::json!({}),
+        serde_json::json!({"planFilePath":"/never/read/this.md"}),
+        serde_json::json!({"plan":""}),
+        serde_json::json!({"plan":" \n\t"}),
+        serde_json::json!({"plan":null}),
+        serde_json::json!({"plan":42}),
+        serde_json::json!({"plan":"", "isSecret":true}),
+    ] {
+        let mut payload = f.payload("p", "方案");
+        payload["tool_input"] = input;
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        assert_eq!(f.store.ingest(&bytes, f.now), Err(Error::Invalid));
+        assert!(f.store.entries.is_empty());
+        assert!(f.bind(&f.doc("p")).is_none());
+
+        assert_eq!(f.ingest("p", "公开方案"), Ok(Receipt::Captured));
+        let doc = f.doc("p");
+        let reference = f.bind(&doc).unwrap();
+        assert_eq!(f.store.ingest(&bytes, f.now), Err(Error::Invalid));
+        assert_eq!(f.store.entries.len(), 1);
+        assert_eq!(f.read(&doc, &reference).as_deref(), Some("公开方案"));
+        f.store.disable();
+        f.store.enable(vec![f.root.clone()]).unwrap();
+    }
+}
+#[test]
 fn replay_never_extends_ttl_and_conflicting_body_revokes_existing_reference() {
     let mut f = Fixture::new();
     f.ingest("p", "首版").unwrap();

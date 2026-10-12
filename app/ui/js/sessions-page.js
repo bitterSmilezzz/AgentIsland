@@ -67,7 +67,7 @@ export async function hydrateSessions(openTask, isVisible=()=>true) {
   let rows=[], snapshot=null, busy=false, loading=false, queued=false, readError=false, limit=SESSION_BATCH, lastMarkup=null;
   const history=new Map();
   let choices=[],catalog=null,catalogReading=false,catalogError=false;
-  const focusAttributes=['data-session-open','data-session-task','data-session-record-task','data-session-record-more','data-session-history','data-session-more','data-session-catalog-read'];
+  const focusAttributes=['data-session-open','data-session-task','data-session-record-task','data-session-record-more','data-session-history','data-session-more','data-session-catalog-read','data-session-refresh'];
   const captureFocus=()=>{const node=document.activeElement;if(!root.contains(node))return null;const attr=focusAttributes.find(attr=>node.hasAttribute(attr));return attr?{attr,value:node.getAttribute(attr)}:null;};
   const restoreFocus=token=>{if(token)[...root.querySelectorAll(`[${token.attr}]`)].find(node=>node.getAttribute(token.attr)===token.value&&!node.disabled)?.focus({preventScroll:true});};
   const list=root.querySelector('[data-session-list]'),feedback=root.querySelector('[data-session-feedback]');

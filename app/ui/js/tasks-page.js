@@ -81,6 +81,11 @@ export async function hydrateTasks(isVisible = () => true) {
     if (!detailDirty()) return true;
     feedback('详情有未保存修改，请先保存或撤销。'); return false;
   };
+  const reveal = (control, anchor = control, block = 'nearest') => {
+    control?.focus({ preventScroll: true });
+    anchor?.scrollIntoView({ block, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  };
+  const revealDetail = () => reveal(root.querySelector('[data-task-detail]'), root.querySelector('[data-task-detail] > .task-detail-heading'), 'start');
   const redraw = (detail = true) => retainTaskFocus(root, () => {
     for (const select of [root.querySelector('[data-task-filter]'), root.querySelector('[data-task-create] select')]) {
       const value = select.value;
@@ -102,7 +107,12 @@ export async function hydrateTasks(isVisible = () => true) {
         return `<button class="task-row${t.id === selected ? ' is-selected' : ''}" type="button" data-task-select="${esc(t.id)}" aria-expanded="${t.id === selected}"><span><strong>${esc(t.title)}</strong><small>${esc(project?.name ?? '未分组')}${t.source ? ` · ${esc(t.source.agent_id)}${sourceMissing ? ' · 来源暂未观测' : ''}` : ' · 本地任务'}</small></span><span class="task-state state-${key}">${esc(attention ? kinds[attention.kind] : sourceMissing && run?.status === 'running' ? '执行中 · 最后记录' : statuses[run?.status] ?? '未开始')}</span></button>`;
       }).join('')}</div></section>`;
     }).join('') : `<div class="wb-empty">${archived ? '暂无归档任务' : project ? '这个项目还没有任务' : '还没有任务。先记录一件要做的事。'}</div>`;
-    root.querySelectorAll('[data-task-select]').forEach(button => { button.onclick = () => { if (busy || !leaveDetail()) return; selected = selected === button.dataset.taskSelect ? null : button.dataset.taskSelect; redraw(); }; });
+    root.querySelectorAll('[data-task-select]').forEach(button => { button.onclick = () => {
+      if (busy || !leaveDetail()) return;
+      selected = selected === button.dataset.taskSelect ? null : button.dataset.taskSelect;
+      redraw();
+      if (selected) revealDetail();
+    }; });
     if (detail) renderDetail();
   });
   const renderDetail = () => {
@@ -185,7 +195,12 @@ export async function hydrateTasks(isVisible = () => true) {
         } else controls[0]?.focus({ preventScroll: true });
       };
     });
-    box.querySelector('[data-task-close]').onclick = () => { if (!leaveDetail()) return; selected = null; redraw(); };
+    box.querySelector('[data-task-close]').onclick = () => {
+      if (!leaveDetail()) return;
+      const origin = selected;
+      selected = null; redraw();
+      reveal([...root.querySelectorAll('[data-task-select]')].find(button => button.dataset.taskSelect === origin) ?? root.querySelector('[data-task-filter]'));
+    };
     box.querySelector('[data-task-edit]').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; mutate('task_update', { id: task.id, title: form.elements.title.value, projectId: form.elements.projectId.value || null }, form); };
     box.querySelector('[data-task-archive]').onclick = () => mutate('task_archive', { id: task.id, archived: task.archived_ms == null });
     const link = box.querySelector('[data-task-link]');
@@ -253,7 +268,7 @@ export async function hydrateTasks(isVisible = () => true) {
         requestedTask=null;
       }
       redraw(focusRequested || !detailDirty());
-      if (focusRequested) { const detail=root.querySelector('[data-task-detail]'); detail.focus({preventScroll:true}); detail.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'}); }
+      if (focusRequested) revealDetail();
       root.dataset.pageReady = 'true'; feedback('');
     } catch (error) { if (current()) feedback(error?.message ?? String(error)); }
     finally { busy = false; if (refreshQueued) { refreshQueued = false; refresh(); } }

@@ -279,6 +279,7 @@ html:is(.shell-sidebar,.shell-workbench) .sb-empty { padding: 24px 10px; color: 
 .task-state.state-attention { color: var(--accent); }
 .task-detail { border: 1px solid var(--border); border-radius: 12px; padding: 18px; background: var(--surface-raised); }
 .task-detail-heading { justify-content: space-between; margin-bottom: 15px; }
+.task-detail > .task-detail-heading { scroll-margin-top: 18px; }
 .task-detail h2 { font-size: 13px; }
 .task-detail form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 14px 0; }
 .task-detail label { display: flex; flex: 1; gap: 7px; flex-direction: column; color: var(--text-muted); font-size: 11px; }
