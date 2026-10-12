@@ -299,6 +299,53 @@ html:is(.shell-sidebar,.shell-workbench) .sb-empty { padding: 24px 10px; color: 
 @media (max-width: 760px) { .task-compose, .task-detail form { flex-wrap: wrap; } .task-compose > input { flex-basis: 100%; } .task-detail label { flex-basis: 40%; } }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .task-source { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 0; color: var(--text-muted); font-size: 12px; }
+/* A bounded task workspace, rather than a board followed by a long document.
+   The breakpoint follows content width, including the native sidebar/padding. */
+.shell-workbench .wb-content:has([data-workbench-page="tasks"]) { overflow: hidden; }
+.shell-workbench [data-workbench-page="tasks"] { display: flex; flex-direction: column; height: 100%; min-height: 0; max-width: 1160px; }
+.shell-workbench [data-workbench-page="tasks"] .wb-page-heading { flex: none; margin-bottom: 16px; }
+.shell-workbench [data-workbench-page="tasks"] .wb-task-navigation { flex: none; margin-bottom: 16px; }
+.shell-workbench [data-workbench-page="tasks"] [data-task-view-panel] { display: flex; flex: 1; min-height: 0; }
+.shell-workbench .task-space { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; container: tasks / inline-size; }
+.shell-workbench .task-panes { display: grid; grid-template-columns: minmax(0,1fr) minmax(300px,360px); gap: 20px; flex: 1; min-height: 0; }
+.shell-workbench .task-detail-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; border-left: 1px solid var(--border-subtle); padding: 20px; color: var(--text-faint); text-align: center; }
+.shell-workbench .task-detail-empty strong { color: var(--text-muted); font-size: 13px; font-weight: 500; }
+.shell-workbench .task-detail-empty p { margin-top: 8px; font-size: 12px; line-height: 1.6; }
+.shell-workbench .task-panes:has(.task-detail:not([hidden])) .task-detail-empty { display: none; }
+.shell-workbench .task-list-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.shell-workbench .task-controls { flex: none; padding-bottom: 12px; }
+.shell-workbench .task-toolbar { margin-bottom: 12px; gap: 8px; flex-wrap: wrap; }
+.shell-workbench .task-filter { min-width: 0; }
+.shell-workbench .task-filter select { max-width: 180px; }
+.shell-workbench .task-compose { flex-wrap: wrap; gap: 8px; }
+.shell-workbench .task-compose > input { flex: 1 1 180px; }
+.shell-workbench .task-compose select { max-width: 180px; }
+.shell-workbench .task-space input:not([type=checkbox]), .shell-workbench .task-space select { padding: 6px 8px; min-height: 32px; }
+.shell-workbench .task-project-create { margin-top: 8px; font-size: 12px; }
+.shell-workbench .task-project-create form { flex-wrap: wrap; }
+.shell-workbench .task-project-create input { flex: 1; }
+.shell-workbench .task-board { overflow: auto; min-height: 0; padding: 4px 6px 4px 3px; scrollbar-gutter: stable; }
+.shell-workbench .task-row { gap: 10px; padding: 10px; }
+.shell-workbench .task-row > span:first-child { min-width: 0; }
+.shell-workbench .task-row strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.shell-workbench .task-row.is-selected { background: var(--selection); box-shadow: inset 2px 0 var(--accent); }
+.shell-workbench .task-group { margin-bottom: 16px; }
+.shell-workbench .task-detail { min-height: 0; min-width: 0; overflow: auto; padding: 16px; scrollbar-gutter: stable; }
+.shell-workbench .task-detail > .task-detail-heading { position: sticky; top: -16px; z-index: 1; margin: -16px -16px 16px; padding: 12px 16px; background: var(--surface-raised); border-bottom: 1px solid var(--border-subtle); }
+.shell-workbench .task-detail form { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 10px; margin-block: 12px; }
+.shell-workbench .task-detail label { min-width: 0; }
+.shell-workbench .task-detail [data-task-link] > label, .shell-workbench .task-detail :is(.task-form-actions,.task-form-feedback) { grid-column: 1 / -1; }
+.shell-workbench .task-form-actions { justify-self: end; }
+.shell-workbench .task-source > span { min-width: 0; overflow-wrap: anywhere; }
+.shell-workbench .task-source > button { flex: none; }
+.shell-workbench .task-footer { display: grid; flex: none; margin-top: 10px; }
+.shell-workbench .task-footer :is(.task-note,.task-feedback) { grid-area: 1 / 1; margin: 0; min-height: 18px; font-size: 11px; line-height: 1.6; }
+.shell-workbench .task-footer:has(.task-feedback:not(:empty)) .task-note { visibility: hidden; }
+@container tasks (max-width: 689px) {
+  .shell-workbench .task-panes { grid-template-columns: minmax(0,1fr); }
+  .shell-workbench .task-detail-empty { display: none; }
+  .shell-workbench .task-panes:has(.task-detail:not([hidden])) .task-list-pane { display: none; }
+}
 /* Keep the window workflow together even at the native minimum height. */
 .shell-workbench [data-workbench-page="windows"] .wb-page-heading { margin-bottom: 16px; }
 .layout-space { max-width: 1080px; margin: 0 auto; }

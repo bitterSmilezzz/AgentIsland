@@ -37,12 +37,19 @@ export function taskGroup(data, task) {
 }
 export function pageTasks() {
   return `<section class="task-space" data-tasks-root>
+    <div class="task-panes">
+    <div class="task-list-pane">
+    <div class="task-controls">
     <div class="task-toolbar"><label class="task-filter">项目<select data-task-filter aria-label="筛选项目"><option value="">全部项目</option></select></label><label class="task-archive-filter"><input type="checkbox" data-task-archived>已归档</label><button class="mini-btn" type="button" data-task-refresh>刷新</button></div>
     <form class="task-compose" data-task-create><label class="sr-only" for="task-new-title">任务名称</label><input id="task-new-title" name="title" placeholder="记录一个任务…" maxlength="500" required autocomplete="off"><select name="projectId" aria-label="任务所属项目"><option value="">未分组</option></select><button class="mini-btn primary" type="submit">添加任务</button></form>
     <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form></details>
-    <p class="task-feedback" data-task-feedback role="status" aria-live="polite">正在读取任务</p>
-    <div data-task-board></div><section class="task-detail" tabindex="-1" data-task-detail hidden aria-label="任务详情"></section>
-    <p class="task-note">在本机整理任务与运行记录。记录进度不会启动工具；标记已处理不会向工具发送批准。</p>
+    </div>
+    <div class="task-board" data-task-board></div>
+    </div>
+    <section class="task-detail" tabindex="-1" data-task-detail hidden aria-label="任务详情"></section>
+    <aside class="task-detail-empty"><strong>选择任务</strong><p>查看来源、记录进度与运行历史。</p></aside>
+    </div>
+    <div class="task-footer"><p class="task-feedback" data-task-feedback role="status" aria-live="polite">正在读取任务</p><p class="task-note">仅整理本地记录，不会启动任务或批准操作。</p></div>
   </section>`;
 }
 let requestedTask = null;
@@ -85,7 +92,19 @@ export async function hydrateTasks(isVisible = () => true) {
     control?.focus({ preventScroll: true });
     anchor?.scrollIntoView({ block, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   };
-  const revealDetail = () => reveal(root.querySelector('[data-task-detail]'), root.querySelector('[data-task-detail] > .task-detail-heading'), 'start');
+  const revealDetail = () => {
+    const detail = root.querySelector('[data-task-detail]');
+    // Explicit selection starts the inspector at its own header. Background
+    // snapshots must never move the list or the enclosing workbench viewport.
+    detail.scrollTop = 0;
+    reveal(detail, detail.querySelector('.task-detail-heading'), 'nearest');
+  };
+  const closeDetail = () => {
+    if (busy || !leaveDetail()) return;
+    const origin = selected;
+    selected = null; redraw();
+    reveal([...root.querySelectorAll('[data-task-select]')].find(button => button.dataset.taskSelect === origin) ?? root.querySelector('[data-task-filter]'));
+  };
   const redraw = (detail = true) => retainTaskFocus(root, () => {
     for (const select of [root.querySelector('[data-task-filter]'), root.querySelector('[data-task-create] select')]) {
       const value = select.value;
@@ -195,12 +214,7 @@ export async function hydrateTasks(isVisible = () => true) {
         } else controls[0]?.focus({ preventScroll: true });
       };
     });
-    box.querySelector('[data-task-close]').onclick = () => {
-      if (!leaveDetail()) return;
-      const origin = selected;
-      selected = null; redraw();
-      reveal([...root.querySelectorAll('[data-task-select]')].find(button => button.dataset.taskSelect === origin) ?? root.querySelector('[data-task-filter]'));
-    };
+    box.querySelector('[data-task-close]').onclick = closeDetail;
     box.querySelector('[data-task-edit]').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; mutate('task_update', { id: task.id, title: form.elements.title.value, projectId: form.elements.projectId.value || null }, form); };
     box.querySelector('[data-task-archive]').onclick = () => mutate('task_archive', { id: task.id, archived: task.archived_ms == null });
     const link = box.querySelector('[data-task-link]');
@@ -278,6 +292,12 @@ export async function hydrateTasks(isVisible = () => true) {
     refresh();
   };
   root.refreshTasks = refresh;
+  root.onkeydown = event => {
+    if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented || event.target.tagName === 'SELECT') return;
+    if (!selected || !root.querySelector('[data-task-detail]').contains(event.target)) return;
+    event.preventDefault();
+    closeDetail();
+  };
   root.querySelector('[data-task-refresh]').onclick = refresh;
   root.querySelector('[data-task-filter]').onchange = () => { if (data) redraw(false); };
   root.querySelector('[data-task-archived]').onchange = () => { if (data) redraw(false); };
