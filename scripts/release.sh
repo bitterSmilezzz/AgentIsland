@@ -51,6 +51,8 @@ node scripts/test-native-motion.mjs
 node scripts/test-first-snapshot.mjs
 node scripts/test-tool-budgets.mjs
 node scripts/test-usage-context.mjs
+node scripts/test-interface-models.mjs
+node scripts/test-model-directory.mjs
 node scripts/test-window-lifecycle.mjs
 node scripts/test-page-motion.mjs
 node scripts/test-task-focus.mjs

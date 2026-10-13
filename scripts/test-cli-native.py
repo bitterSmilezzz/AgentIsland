@@ -15,6 +15,7 @@ import tempfile
 import time
 
 REGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+GATE_STAGE = 'preflight'
 
 
 def check_process_identity(binary, temporary):
@@ -31,6 +32,8 @@ def check_process_identity(binary, temporary):
         XDG_DATA_HOME=str(home/'data'), XDG_STATE_HOME=str(home/'state'))
 
     def checked_snapshot(stage):
+        global GATE_STAGE
+        GATE_STAGE = 'process-' + stage
         result = subprocess.run([str(binary), 'status', '--all', '--json'], env=env,
             check=True, capture_output=True, text=True, timeout=20)
         rows = {row['id']: row for row in json.loads(result.stdout)}
@@ -68,6 +71,7 @@ def check_process_identity(binary, temporary):
 
 
 def main():
+    global GATE_STAGE
     if sys.platform != 'darwin' or os.getuid() < 500 or os.stat('/dev/console').st_uid != os.getuid():
         raise ValueError('Requires the matching logged-in Aqua user')
     desktop_authorized = '--allow-desktop' in sys.argv and os.environ.get('ALLOW_DESKTOP_UI') == '1'
@@ -94,6 +98,7 @@ def main():
             raise ValueError('Expected the existing formal application')
         return pids[0]
 
+    GATE_STAGE = 'existing-instance'
     pid = app_pid()
     def policy():
         if app_pid() != pid:
@@ -114,16 +119,22 @@ def main():
             source.write_text('import AppKit\nif let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(processIdentifier: pid) { print(app.activationPolicy.rawValue) }\n')
             helper = Path(temporary)/'policy-helper'
             subprocess.run(['swiftc',str(source),'-o',str(helper)],check=True,capture_output=True,timeout=60)
+        GATE_STAGE = 'initial-dock-policy'
         wait_policy('0')
         check_process_identity(binary, temporary)
+        GATE_STAGE = 'decoy-copy-and-signature'
         decoy = Path(temporary)/'AgentIsland.app'
         shutil.copytree(bundle,decoy,symlinks=True)
         subprocess.run(['codesign','--verify','--strict',str(decoy)],check=True,capture_output=True,timeout=15)
         try:
+            GATE_STAGE = 'decoy-registration'
             subprocess.run([REGISTER,'-f',str(decoy)],check=True,capture_output=True,timeout=15)
             for cli in (binary,bundle/'Contents/Helpers/agentisland'):
+                source = 'primary' if cli == binary else 'helper'
+                GATE_STAGE = source + '-hide-delivery'
                 subprocess.run([str(cli),'open','workbench-hide'],check=True,capture_output=True,timeout=15)
                 wait_policy('1')
+                GATE_STAGE = source + '-show-delivery'
                 subprocess.run([str(cli),'open','workbench'],check=True,capture_output=True,timeout=15)
                 wait_policy('0')
         finally:
@@ -137,6 +148,9 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, subprocess.SubprocessError, KeyError):
-        print('Native CLI delivery incomplete; no delivery verdict.',file=sys.stderr)
+    except (OSError, ValueError, subprocess.SubprocessError, KeyError) as error:
+        # A stage and exception type identify the failing boundary without
+        # exposing command arguments, environment, stderr or arbitrary error text.
+        print(json.dumps({'gate': 'cli-native', 'status': 'incomplete',
+                          'stage': GATE_STAGE, 'error_type': type(error).__name__}), file=sys.stderr)
         sys.exit(2)

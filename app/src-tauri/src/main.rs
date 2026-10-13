@@ -27,6 +27,7 @@ mod forecast;
 mod health;
 mod im;
 mod installed;
+mod interface_models;
 mod localclock;
 mod mcp_config;
 mod memory;
@@ -2304,6 +2305,33 @@ fn provider_status() -> crate::provider::ProviderStatus {
     status
 }
 
+#[tauri::command]
+async fn provider_read_models(
+    id: String,
+    expected_profile: crate::provider::CodexProfile,
+) -> Result<interface_models::ModelList, interface_models::ReadError> {
+    let lease = connection_probe::Lease::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = lease;
+        let profile = {
+            let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位读取锁不可用")?;
+            provider::ProviderStore::at_default()
+                .profile_for_apply(&id, &expected_profile)
+                .map_err(interface_models::ReadError::target_invalidated)?
+        };
+        let now = tokens::now_ms().try_into().map_err(|_| "系统时间不可用")?;
+        let result = interface_models::read(&profile, now);
+        // The network wait must not hold the config lock or accept a changed target.
+        let _lock = PROVIDER_WRITE_LOCK.lock().map_err(|_| "档位读取锁不可用")?;
+        provider::ProviderStore::at_default()
+            .profile_for_apply(&id, &profile)
+            .map_err(interface_models::ReadError::target_invalidated)?;
+        result.map_err(interface_models::ReadError::from)
+    })
+    .await
+    .map_err(|_| "模型读取未完成".to_string())?
+}
+
 // Serialize our three config/record mutations across windows. Other tools are
 // protected by the observed revision check, never automatically overwritten.
 static PROVIDER_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3418,6 +3446,7 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/window-layout-page.js",
     "js/models-page.js",
     "js/connections-page.js",
+    "js/interface-models.js",
     "js/mcp-page.js",
     "js/skills-package-page.js",
     "js/claude-plan-page.js",
@@ -4723,6 +4752,7 @@ fn main() {
             provider_save_profile,
             provider_delete_profile,
             provider_status,
+            provider_read_models,
             provider_apply_profile,
             provider_reapply,
             provider_keep_current,

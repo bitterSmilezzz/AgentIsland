@@ -205,8 +205,10 @@ _Avoid_: 锁屏检测（只是三条里的一条，且在远程场景下永远�
 **节流 / 静默时段**:
 同一 Agent 同一事件类型在窗口内只发一次（默认 90s，按 `agentId|kind` 分键；**预登记**、最终失败才回滚，否则并发同类事件会各发一条）；静默时段按本地时区「时:分」区间，跨零点支持。写坏的时段整段作废退化成「不静默」——宁可多发，也不全天吞掉通知。
 
-**凭据口径**（口径与边界见 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md)）:
-密钥（SendKey / token / webhook 里的 key / SMTP 授权码）只进 macOS 钥匙串，条目名由通道唯一决定（`remote.<channel>`，由 `Channel::as_str()` 推导），**不做成可配字段**——「存了但条目名对不上」是界面全绿、每次发送都失败且永远查不出来的失效。UserDefaults 里零密钥；界面与日志只出现掩码。这些凭据**只用于用户自己配的那条通道**，不复用于访问任何 agent 厂商服务；厂商侧一律不调 API、不碰 OAuth 刷新，只读 agent 自己落本机的文件与会话尾。
+**凭据口径**（通知边界见 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md)，手动模型读取的窄例外见 [ADR 0038](docs/adr/0038-manual-interface-model-read.md)）:
+通知密钥（SendKey / token / webhook 里的 key / SMTP 授权码）只进 macOS 钥匙串，条目名由通道唯一决定（`remote.<channel>`，由 `Channel::as_str()` 推导），**不做成可配字段**——「存了但条目名对不上」是界面全绿、每次发送都失败且永远查不出来的失效。UserDefaults 里零密钥；界面与日志只出现掩码。这些凭据**只用于用户自己配的那条通道**，不复用于访问任何 agent 厂商服务。用量、状态与会话继续只读本机来源，不碰 OAuth 刷新或厂商配额/账单 API。
+
+用户可手动对已保存的 Codex Responses 档位读取服务模型，包含厂商官方 HTTPS 地址及字面回环 HTTP。只临时读取该档位声明的环境变量凭据，单次 GET `<base>/models`，不使用通知凭据或登录态；无自动读取、重试、重定向、生成或持久缓存。清单不代表生成权限、运行模型或账单；选择只填入草稿，目标改变即清除旧结果。
 
 ### Codex 配置档位
 
@@ -250,8 +252,8 @@ MenuBarExtra 的 .window 浮窗微卡片，呈现工作状态呼吸灯、活跃 
 
 **AgentIsland 是一款跨 Agent 的本机管理工作台**——不做 Agent，不架网关，不用 ML 路由。
 它知道机器上每个 AI 编码 agent 此刻在干什么、花了多少 token、用的哪个模型/账号，
-并能管这些配置与待办。**不持有非本机既有登录态的密钥，不主动打厂商端点**
-（边界见 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md)：用户自己配的外发通道用自己的凭据出网）。
+并能管这些配置与待办。**不存储接口密钥，不转发智能体请求**。
+用户自己配置的外发通道使用专属凭据；已保存接口可由用户手动读取模型清单，包括厂商官方地址。范围见 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md) 与 [ADR 0038](docs/adr/0038-manual-interface-model-read.md)，不开放 OAuth、自动服务轮询或厂商用量/账单读取。
 完整方案见 [docs/workbench/07-synthesis.md](docs/workbench/07-synthesis.md)。
 
 _Avoid_: 把自己做成 agent、把 agent 的请求接到自己进程里（那会让产品性质从监控变成中转）

@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import {createModelReader, interfaceModelsHtml} from '../app/ui/js/interface-models.js';
+const profile={id:'one',name:'Fixture',base_url:'https://example.invalid/v1',env_key:'FIXTURE_AUTH',model:'before',wire_api:'responses'};
+const report={checked_at_ms:123,models:['a','b'],total:2,truncated:false};
+let resolve, reject, count=0, expected;
+const reader=createModelReader(p=>{count++;expected=p;return new Promise((ok,no)=>{resolve=ok;reject=no;});});
+reader.update([profile]);assert.equal(count,0,'render never initiates a network request');
+const first=reader.load('one');assert.equal(reader.busy,true);assert.equal(await reader.load('one'),false);assert.equal(count,1);assert.deepEqual(expected,profile);
+resolve(report);await first;assert.equal(reader.busy,false);assert.equal(reader.state('one').result,report);
+const retry=reader.load('one');assert.equal(reader.state('one').result,report,'last success stays visible during refresh');reject('服务拒绝凭据');await retry;assert.equal(reader.state('one').result,report);assert.equal(reader.state('one').error,'服务拒绝凭据');
+const invalidated=reader.load('one');reject({code:'target_invalidated',message:'档位已变化，请刷新'});await invalidated;
+assert.equal(reader.state('one').result,null,'native-confirmed target drift clears old selectable models');assert.equal(reader.state('one').error,'档位已变化，请刷新');
+const restored=reader.load('one');resolve(report);await restored;
+const structuredFailure=reader.load('one');reject({code:'read_failed',message:'服务不可用'});await structuredFailure;
+assert.equal(reader.state('one').result,report,'transient typed failures preserve last success');assert.equal(reader.state('one').error,'服务不可用');
+const pending=reader.load('one');const changed={...profile,env_key:'OTHER_AUTH'};reader.update([changed]);resolve({...report,models:['late']});await pending;assert.equal(reader.state('one'),undefined,'late response cannot inherit a changed credential identity');
+const second=reader.load('one');reader.update([]);reader.update([changed]);resolve(report);await second;assert.equal(reader.state('one'),undefined,'removed and recreated target does not inherit an in-flight response');
+for(let i=0;i<9;i++){const profiles=Array.from({length:9},(_,j)=>({...profile,id:String(j)}));reader.update(profiles);const job=reader.load(String(i));resolve(report);await job;}
+assert.equal(reader.state('0'),undefined,'page-local results have bounded capacity');assert(reader.state('8'));
+assert.match(interfaceModelsHtml(profile,true),/手动访问此接口/);assert.match(interfaceModelsHtml(profile,false),/data-read-models="one" disabled/);
+assert.doesNotMatch(interfaceModelsHtml({...profile,name:'<script>',id:'" onclick="bad'},true),/<script>| onclick="bad/);
+assert.match(interfaceModelsHtml(null,false),/保存档位/);
+console.log('PASS: manual model reads, overlap, previous success, exact target drift, removed targets, bounded page cache and escaped controls');

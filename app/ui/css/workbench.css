@@ -609,3 +609,5 @@ html.shell-workbench .connection-row .sb-tag[data-connection-state="offline"]{co
   .wb-nav-footer .nav-machine-values span { white-space: nowrap; }
   .wb-nav-footer p { margin-top: 6px; }
 }
+
+.interface-models{flex-basis:100%;min-width:0;padding-top:6px}.interface-model-heading{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.interface-model-heading>span{font-size:11px;color:var(--text-muted)}.model-directory .interface-model-list{max-height:220px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--border-subtle);border-radius:8px;margin-top:10px;padding:2px 10px}.model-directory .interface-model-list li{padding:6px 0;gap:10px;align-items:center;flex-wrap:nowrap}.interface-model-list li:last-child{border-bottom:0}.interface-model-list li>span{min-width:0;overflow-wrap:anywhere;font-size:12px}.interface-model-list button{flex:none}.interface-models [data-interface-model-status]:empty{display:none}

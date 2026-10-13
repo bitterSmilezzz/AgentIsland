@@ -1,3 +1,4 @@
+import { bindInterfaceModels } from './interface-models.js';
 import { rememberPage, pageMotion } from './page-motion.js';
 import { trendCardHtml, bindTrend, hourRecords } from './usage-trend.js';
 import { toolBudgetsHtml, bindToolBudgets } from './tool-budgets.js';
@@ -867,7 +868,7 @@ export async function hydrateReportPanel(format) {
 }
 
 export function pageProvider() {
-  if (isWorkbench) return `<div class="model-workspace" data-model-workspace>
+  if (isWorkbench()) return `<div class="model-workspace" data-model-workspace>
     <div class="model-navigation" role="group" aria-label="模型与连接视图">
       <button type="button" class="mini-btn" data-model-view="tools" aria-pressed="true" aria-controls="model-tools">工具配置</button>
       <button type="button" class="mini-btn" data-model-view="models" aria-pressed="false" aria-controls="model-directory">模型目录</button>
@@ -1921,6 +1922,7 @@ export function renderProviderPage(root, status, profiles, backups, errors = [],
     const query=directory.querySelector('[data-catalog-query]')?.value;
     directory.innerHTML = modelDirectoryHtml(status, profiles, profilesAvailable, kind, query);
     bindModelDirectory(directory);
+    bindInterfaceModels(directory, profiles);
   }
   const activeName = status.active_profile_id
     ? (profiles.find((profile) => profile.id === status.active_profile_id)?.name ?? status.active_profile_id)
@@ -1982,7 +1984,7 @@ export function renderProviderPage(root, status, profiles, backups, errors = [],
     </details>
     <details class="provider-backups"><summary>备份与还原（${backups.length}）</summary>${backupRows}</details>
     <details class="provider-transfer"><summary>导入与导出</summary><p class="sb-note">仅支持 AgentIsland 档位文件。导出至下载目录，包含配置与环境变量名，不含密钥。</p><div class="actions"><button type="button" class="mini-btn" data-profile-export>导出档位</button><label class="mini-btn provider-file">选择文件并预览<input type="file" accept=".json,application/json" aria-label="选择档位文件并预览" data-profile-import /></label></div></details>
-    ${isWorkbench ? '<div class="actions"><button type="button" class="mini-btn" data-open-extensions>管理 MCP 与 Skills</button></div>' : '<details class="provider-capabilities" data-capabilities><summary>本机 MCP 与 Skills</summary><div data-capability-list></div></details>'}
+    ${isWorkbench() ? '<div class="actions"><button type="button" class="mini-btn" data-open-extensions>管理 MCP 与 Skills</button></div>' : '<details class="provider-capabilities" data-capabilities><summary>本机 MCP 与 Skills</summary><div data-capability-list></div></details>'}
     ${limitations}<div class="sb-confirm" data-confirm role="dialog" aria-modal="true" aria-label="确认配置操作" tabindex="-1" hidden></div>`;
   bindProviderEvents(root, status, profiles);
 }
@@ -2061,7 +2063,15 @@ function bindProviderEvents(root, status, profiles) {
     }
     workspace.querySelector('[data-model-view="tools"]').click();
     root.querySelectorAll(button.dataset.catalogEdit ? '[data-edit]' : '[data-switch]').forEach(control => {
-      if ((control.dataset.switch ?? control.dataset.edit) === choice.id) { control.focus(); control.click(); }
+      if ((control.dataset.switch ?? control.dataset.edit) === choice.id) {
+        control.focus(); control.click();
+        if (button.dataset.discoveredModel) {
+          const input = form.querySelector('[data-field="model"]');
+          input.value = button.dataset.discoveredModel;
+          input.dispatchEvent(new Event('input', {bubbles:true}));
+          input.focus({preventScroll:true});
+        }
+      }
     });
   };
   root.querySelector('[data-reapply]')?.addEventListener('click', () => {

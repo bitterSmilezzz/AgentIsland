@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { configuredModels, modelDirectoryHtml, configuredInterfaces, interfaceDirectoryHtml, bindModelWorkspace } from '../app/ui/js/models-page.js';
+import { configuredModels, modelDirectoryHtml, configuredInterfaces, interfaceDirectoryHtml, bindModelDirectory, bindModelWorkspace } from '../app/ui/js/models-page.js';
 
 const primary = { id: 'one', name: 'Primary', model: 'Model', provider_id: 'Provider', base_url: 'https://example.invalid/v1', wire_api: 'responses' };
 const profiles = [primary, { ...primary, id: 'two', name: 'Alternate' }, { ...primary, id: 'three', base_url: 'https://other.invalid/v1' }];
@@ -47,7 +47,37 @@ assert.match(interfaceDirectoryHtml(identityStatus,[identityProfiles[3]]),/data-
 assert.match(modelDirectoryHtml(identityStatus,identityProfiles,true,'interfaces','"fixture'),/data-catalog-kind="interfaces"/);
 assert.match(modelDirectoryHtml(identityStatus,identityProfiles,true,'interfaces','"fixture'),/value="&quot;fixture"/);
 assert.match(modelDirectoryHtml(identityStatus,identityProfiles),/data-catalog-search/);
+const searchMarkup=interfaceDirectoryHtml(identityStatus,identityProfiles);
+const interfaceSearch=searchMarkup.match(/data-catalog-interface-search="([^"]*)"/)[1];
+assert.match(interfaceSearch,/Provider/);assert.match(interfaceSearch,/Primary/);
+assert.doesNotMatch(interfaceSearch,/\bModel\b|\bSecond\b/,'model names cannot grant an interface-wide match');
 console.log('PASS: interface identity includes protocol and auth reference, preserves model choices, rejects false current targets, escapes search and actions');
+
+// A result can arrive after search has hidden its interface. Exercise the same
+// input binding on arrival, filtering, clearing, and invalidation.
+const searchInput={value:'not-read-yet'},searchCount={textContent:''};
+const serviceRows=[];
+const configuredRow={dataset:{catalogSearch:'Fixture Primary FIXTURE_AUTH remote-target configured-only',catalogInterfaceSearch:'Fixture Primary FIXTURE_AUTH'},hidden:false,querySelectorAll:()=>serviceRows};
+const otherRow={dataset:{catalogSearch:'Other OTHER_AUTH'},hidden:false,querySelectorAll:()=>[]};
+const searchPanel={hidden:false,querySelectorAll:()=>[configuredRow,otherRow]};
+const searchDirectory={catalogBound:true,querySelector:selector=>selector==='[data-catalog-query]'?searchInput:searchCount,querySelectorAll:()=>[searchPanel]};
+bindModelDirectory(searchDirectory);
+assert(configuredRow.hidden,'unread service models cannot match');
+searchInput.value='remote-target';
+serviceRows.push({dataset:{serviceModel:'remote-target'},hidden:false},{dataset:{serviceModel:'remote-other'},hidden:false});
+searchDirectory.oninput();
+assert.equal(configuredRow.hidden,false,'late service result becomes searchable');
+assert.deepEqual(serviceRows.map(row=>row.hidden),[false,true]);assert(otherRow.hidden);
+searchInput.value='configured-only';searchDirectory.oninput();
+assert.equal(configuredRow.hidden,false,'configured models keep their interface reachable');
+assert(serviceRows.every(row=>row.hidden),'configured-only matches hide unrelated service models');
+searchInput.value='fixture_auth';searchDirectory.oninput();
+assert.deepEqual(serviceRows.map(row=>row.hidden),[false,false],'interface reference search retains its models');
+searchInput.value='';searchDirectory.oninput();assert.equal(configuredRow.hidden,false);assert.equal(otherRow.hidden,false);
+assert.deepEqual(serviceRows.map(row=>row.hidden),[false,false]);
+searchInput.value='remote-other';serviceRows.length=0;searchDirectory.oninput();
+assert(configuredRow.hidden,'invalidated results leave no stale search match');assert.match(searchCount.textContent,/没有匹配/);
+console.log('PASS: service model search arrival, narrowing, interface reference, clearing and invalidation');
 
 // Exercise the controller contract separately from markup and service IPC.
 const handlers = new Map(), calls = [];
