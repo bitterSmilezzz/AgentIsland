@@ -56,7 +56,7 @@ AgentIsland 作为本机智能体工作台，统一状态、会话、任务、�
 | 窗口排列 | 内建选择、三种模板预览、应用/撤销及规则偏好；原生隔离验收未完成 | `window_layout_service.rs`、`window-layout-page.js` |
 | 接口与模型治理 | 内建 Codex 档位与本地模型目录选择；外部状态读取只算辅助，网关执行尚未实现 | `provider.rs`、`models-page.js`、`connection_probe.rs` |
 
-Codex 定位协议取证来自本机已安装应用：注册 `codex` URL scheme，应用源码生成 `codex://threads/<threadId>`。这只验证 Codex；Trae CN、Trae Code、TraeWork、豆包工作分别建适配能力，不能把打开应用说成已定位会话。Windows / Linux 会话打开尚未接入。
+Codex 定位协议取证来自本机已安装应用：注册 `codex` URL scheme，应用源码生成 `codex://threads/<threadId>`。这只验证 Codex；Trae CN、TraeWork、豆包工作分别建适配能力（官方已宣布 TraeCode 与 TraeWork 融合为全新 TRAE，但融合不等于既有安装身份消失，TraeCode 与融合后 TRAE 的映射仍待核实，未核实前不单列也不宣称完成），不能把打开应用说成已定位会话。Windows / Linux 会话打开尚未接入。
 
 ## 3. 外部项目借鉴点
 

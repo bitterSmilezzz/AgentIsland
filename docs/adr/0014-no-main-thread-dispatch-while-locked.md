@@ -4,7 +4,9 @@
 - 日期：2026-09-29
 - 相关：[ADR 0010 Swift 冻结与 Rust 前置门](0010-swift-freeze-and-rust-prerequisites.md)、
   [ADR 0012 侧边栏与灵动岛并存](0012-sidebar-alongside-island.md)、
-  取证：[界面空白：启动阶段 AB-BA 死锁](../research/2026-09-29-blank-ui-deadlock.md)
+  取证：界面空白：启动阶段 AB-BA 死锁
+  （[`03-行业调研/ui-research/2026-09-29-blank-ui-deadlock.md`](../../../../03-行业调研/ui-research/2026-09-29-blank-ui-deadlock.md)，
+  本仓之外的一手取证记录；2026-10 工作区重构前位于本仓同级 `../ui-research/`，文中旧路径已失效）
 
 ## 背景
 

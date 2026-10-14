@@ -1,0 +1,10 @@
+{
+  "name": "agentisland-ui-checks",
+  "private": true,
+  "scripts": {
+    "test:browser": "node scripts/test-session-refresh-focus.mjs && node scripts/test-task-detail-navigation.mjs && node scripts/test-task-reader-leave.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.0"
+  }
+}

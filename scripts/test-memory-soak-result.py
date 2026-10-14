@@ -73,6 +73,26 @@ class Tests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 result.analyze(rows, receipt)
 
+    def test_legacy_protocol_does_not_claim_cleanup(self):
+        rows, receipt = fixture()
+        self.assertFalse(result.analyze(rows, receipt)['cleanup_verified'])
+        with self.assertRaises(ValueError): result.analyze(rows, receipt, require_cleanup=True)
+        receipt['cleanup'] = dict.fromkeys(result.CLEANUP_FIELDS, True)
+        self.assertTrue(result.analyze(rows, receipt, require_cleanup=True)['cleanup_verified'])
+        for invalid in ({}, None, [], True):
+            receipt['cleanup'] = invalid
+            with self.assertRaises(ValueError): result.analyze(rows, receipt)
+
+    def test_failed_or_incomplete_cleanup_cannot_pass(self):
+        for field in ('owned_target_stopped', 'awake_stopped', 'lock_absent', 'baseline_unchanged'):
+            for value in (False, None, 1, 'true'):
+                rows, receipt = fixture()
+                receipt['cleanup'] = dict.fromkeys(
+                    ('owned_target_stopped', 'awake_stopped', 'lock_absent', 'baseline_unchanged'), True)
+                receipt['cleanup'][field] = value
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    result.analyze(rows, receipt)
+
     def test_failure_and_nonfinite_timestamps_fail(self):
         rows, receipt = fixture()
         receipt['exit_code'] = 2

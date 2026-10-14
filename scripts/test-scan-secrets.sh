@@ -97,6 +97,17 @@ printf '%s@%s\n' synthetic example.com > "$FIXTURE/fixture.txt"
 run new-hit bash scripts/scan-secrets.sh
 check 'unreviewed hit is rejected' nonzero '新增' "$RC" "$OUT"
 
+# 第三方依赖不许把发布拦下：浏览器 UI 回归需要 Playwright，而它自带的示例
+# 邮箱/密码字面量会被扫描当成新命中（v0.0.323 真实发生过）。`.gitignore` 必须
+# 忽略 node_modules，且 git 必须真的不把这些文件视为待扫文件。
+fixture node-modules-ignored
+mkdir -p "$FIXTURE/node_modules/playwright/types"
+printf '# synthetic third-party sample\n%s@%s\n' fixture playwright.invalid \
+    > "$FIXTURE/node_modules/playwright/types/test.d.ts"
+printf 'node_modules/\n' >> "$FIXTURE/.gitignore"
+run node-modules-ignored bash scripts/scan-secrets.sh
+check 'third-party dependency text is out of scan scope' zero '✓ 密钥/个人信息扫描通过' "$RC" "$OUT"
+
 # 历史扫描必须每轮重新枚举对象。曾经它是拿「/tmp 对象流文件还在不在」当记忆的，
 # 于是同一个工作区里第二次运行会复用第一次的对象流——新提交的 blob 一个都扫不到，
 # 而输出照样打 ✓。这条用「提交后 blob 计数必须变大」来抓，不依赖任何凭据形状。

@@ -56,3 +56,8 @@ windows/.vs/
 
 # Python test-script bytecode
 __pycache__/
+
+# Node 依赖：发布门禁里的浏览器 UI 回归需要 Playwright，但它装在项目根，
+# 而它自带示例邮箱/密码字面量会被脱敏扫描当成新命中（v0.0.323 发布就这么被拦下）。
+# 依赖不进库，也绝不让第三方包的文字进入脱敏口径。
+node_modules/

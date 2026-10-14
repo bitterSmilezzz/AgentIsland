@@ -298,6 +298,10 @@ pub fn builtin() -> Vec<AgentProfile> {
             category: "codeEditor".into(),
         },
         AgentProfile {
+            // 官方已宣布 TraeCode 与 TraeWork 融合为全新 TRAE，但融合不等于既有
+            // 安装身份自动消失（升级会安装 TRAE，可选择卸载 TraeWork）。TraeCode、
+            // 融合后 TRAE 与现有身份的映射仍待核实；不得凭产品名称新增第三个档案，
+            // 也不宣称该项取证完成。
             id: "trae".into(),
             name: "Trae CN".into(),
             glyph: "\u{E7C3}".into(),

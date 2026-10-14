@@ -24,7 +24,7 @@ AgentIsland 是本机 AI 工具的轻量工作台：让用户知道谁在工作�
 | 贴边侧栏 | 监控、用量、档位、待办、设置、通知、智能体管理；左右贴边和宽度配置 | 持续观察，不变成压缩版的所有工作台页面 | `views.js:renderSidebar`；`sidebar.css` |
 | 工作台 | 概览、实时监控、待办、常用入口及分组功能导航；导航/顶栏保持，输入状态保留 | 目前是基础工作台，不是完整项目任务系统 | `views.js:renderWorkbench`；`workbench.css` |
 | 工具识别与状态 | 进程、文件、会话证据共同判定；启停监控档案；ChatGPT/Codex 聚合展示 | 档案存在不等于有用量源或精确会话入口；Vibe Usage 属于用量工具，不列为智能体 | `registry.rs`、`procmon.rs`、`session.rs`、`observability.rs` |
-| 工具身份 | Trae CN、TraeWork、豆包工作分别匹配；MiniMax Code 桌面/CLI 有专用来源 | Trae Code 的独立身份仍需补齐取证与适配，不能因用户要求三个就声称三个已完成 | `registry.rs`、`minimax.rs` |
+| 工具身份 | Trae CN 与 TraeWork（`cn.trae.app` / `cn.trae.solo.app`）、豆包工作分别匹配；MiniMax Code 桌面/CLI 有专用来源 | 官方已宣布 TraeCode 与 TraeWork 融合为全新 TRAE，但融合不等于既有安装身份消失；TraeCode 与融合后版本的映射仍待核实，未核验身份不显示精确跳转 | `registry.rs`、`minimax.rs` |
 | 用量与费用 | 最近 24h、累计、模型分布、小时趋势、本地 JSONL/SQLite 读取、费用估算 | 缓存读取不计入净消耗；缺失与零不同；费用带估算标记；本机与网关账单不直接相加 | `tokens.rs`、`cost.rs`、`report.rs`、`sqlite.rs` |
 | 预算、预测、时长 | 24h Token 预算与告警、预测报告、连续运行记录/时长统计 | 预算不是供应商额度；预测依赖已有样本；执行时长不是人工验收状态 | `budget.rs`、`forecast.rs`、`duration.rs`、`engine.rs` |
 | 异常与诊断 | CPU、内存连续增长、疑似卡死/观测不全、进程树、自检与诊断报告 | 稳定高 RSS 属正常占用；读不到不推断闲置；健康度不是任务质量评分 | `health.rs`、`resilience.rs`、`trees.rs`、`selftest.rs` |

@@ -15,7 +15,7 @@ Rust/Tauri 跨平台桌面工作台：监控本机 AI 编码智能体的运行�
 Vibe Usage 等用量统计工具不属于智能体，不进入内置 Agent 档案；其读取规则可以作为外部调研来源。
 _Avoid_: 助手、机器人、目标进程
 
-Trae CN、TraeCode 与 TraeWork 是不同的产品身份；不得因共同使用 Electron 或同一品牌而合并。TRAE SOLO 升级为 TraeWork，旧应用包名称可作为 TraeWork 的识别别名，具体标识以可核对的应用元数据为准。
+Trae CN 与 TraeWork 是本机可核验的两个应用身份（`cn.trae.app`、`cn.trae.solo.app`）；不得因共同使用 Electron 或同一品牌而合并，也不能凭产品名称新增档案——标识一律以可核对的应用元数据为准。官方已宣布 TraeCode 与 TraeWork 融合为全新的 TRAE（升级会安装 TRAE，并可选择卸载 TraeWork），但**融合不等于既有安装身份自动消失**：TraeCode、融合后 TRAE 与现有身份的映射仍待核实，未核实前既新增猜测档案，也不宣称该项完成。TRAE SOLO 曾升级为 TraeWork，旧应用包名可作为 TraeWork 的识别别名。
 
 **Agent Profile（档案）**:
 一个 Agent 的静态识别定义：bundle id、进程名前缀、可执行路径特征、会话目录，以及展示符号、会话方言与只读会话库位置。档案是这些事实的**唯一声明处**，解析器不再按 id 反推。

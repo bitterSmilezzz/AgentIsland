@@ -2,6 +2,8 @@
 
 跨平台 Rust/Tauri 工作台：监控本机 AI 编码智能体的运行状态与 token 消耗。main 是唯一开发主线；SwiftUI 与旧 WPF 源码保存在 `codex/archive-swiftui`，需要查历史实现时读取该分支。测试用 `cargo test --locked --manifest-path app/src-tauri/Cargo.toml`，打包用 `scripts/build-app.sh`。
 
+发布门禁里的浏览器 UI 回归（`test-session-refresh-focus` / `test-task-detail-navigation` / `test-task-reader-leave`）需要真实浏览器运行时：`npm i playwright`，或用 `TEST_BROWSER_MODULE` 指向 `playwright/index.mjs` 的绝对路径。缺运行时 `release.sh` 会**明确失败**而不是跳过——这三条此前不在任何门禁里，v0.0.321 起 committed 测试对 committed 产品变红也没人发现（窄窗口隐藏列表让旧断言超时）。
+
 ## 交付约定
 
 ### 自动重启应用（无感）
@@ -42,7 +44,7 @@ scripts/release.sh <X.Y.Z> "<CHANGELOG 首条那句话>"
 | `README.md` | 这个工具是什么、有什么功能、怎么装怎么用、哪些限制今天还成立 | 「新增/不再/此前/上一版/实测数字」这类逐版叙事 |
 | `CHANGELOG.md` | 每个版本改了什么、为什么、代价与被否决的方案 | 功能全景（会长成第二份 README） |
 | `CONTEXT.md` / `docs/adr/` | 口径、术语、长期决策 | 版本历史 |
-| `../ui-research/` | 外部一手调研库（与本仓同级）：动效案例四节写全 + 各家 agent 调研 + 故障排查 | 待办清单（那是 issue tracker）、已定案的长期口径（该进 CONTEXT 或 ADR） |
+| [ui-research](../../03-行业调研/ui-research/) | 外部一手调研库（独立仓库）：动效案例四节写全 + 各家 agent 调研 + 故障排查 | 待办清单（那是 issue tracker）、已定案的长期口径（该进 CONTEXT 或 ADR） |
 | `docs/code-review/` | 每轮改动的独立 review：`YYYY-MM-DD-HHMM-v<版本>-<审查者>.md`，随该轮一起入库 | 事后改写已提交的报告（它是时间点证据） |
 | `site/` | 对外主页：功能导览 + 截图（GitHub Pages，Actions 从 `site/` 部署） | 逐版流水（那是 CHANGELOG）、没逐张核对过内容的屏幕截图 |
 | `docs/workbench/` | 一次大改造的现状/目标/方案/计划四件套，随改造推进更新 | 逐版流水（那是 CHANGELOG）、已定案的长期口径（该进 CONTEXT 或 ADR） |
@@ -51,9 +53,9 @@ README 里出现「此前」「不再」「v0.0.x」「本机实测 N 条」即�
 
 `docs/workbench/` 是**进行中的大改造**的作战文档，四件套分工：`01` 现状（全部核实过）、`02` 目标与非目标、`03` 技术方案、`04` 分 Phase 计划。改造定案的结论要往 `CONTEXT.md` / `docs/adr/` 沉淀，不要让 workbench 长成第二份长期口径。
 
-`../ui-research/` 是**外部一手调研库**（独立私有仓，与本仓同级；索引见其 [ui/README.md](../ui-research/ui/README.md)）：每篇固定四节——技术手法与源码级细节、可迁移的决策规则、一手证据/本地验证结果、应用建议清单。它记录"看见了什么、能搬什么"，**不排期**；要做哪条就开 issue，别把案例库读成待办板。那里的待核实清单由 `scripts/check-checklist.sh` + pre-commit 守着。
+[ui-research](../../03-行业调研/ui-research/) 是**外部一手调研库**（独立仓库；索引见 [ui/README.md](../../03-行业调研/ui-research/ui/README.md)）：每篇固定四节——技术手法与源码级细节、可迁移的决策规则、一手证据/本地验证结果、应用建议清单。它记录"看见了什么、能搬什么"，**不排期**；要做哪条就开 issue，别把案例库读成待办板。待核实清单由该仓自己的 [check-checklist.sh](../../03-行业调研/ui-research/scripts/check-checklist.sh) + pre-commit 守着。工作区重构前的 `../ui-research/` 路径已失效；白屏、几何与会话等迁出取证文件须核实新位置后更新当前文档链接，历史审查报告保留原样。
 
-正在进行的改造（跨平台工作台：双形态 + CC Switch + ToDos）见 [docs/workbench/README.md](docs/workbench/README.md)。
+正在进行的改造（跨平台工作台：灵动岛 / 侧栏 / 工作台 + 配置与任务融合）见 [docs/workbench/README.md](docs/workbench/README.md)。
 
 ### 数据脱敏红线（提交与发版前必查）
 
@@ -71,6 +73,36 @@ scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
 - 密钥值永不出现在输出里：扫描器自己就做打码，agent 也不 `cat`/`echo` 凭据文件
 - `.scratch/`、`artifacts/`、`dist/`、`.build/`、根目录 `*.zip` 均不入库、不交付（屏幕截图可能含个人会话内容）
 - 交付第三方收集数据的工具前，先删上述本地目录再跑 `scripts/scan-secrets.sh --release`；细节见 `docs/agent/desensitization.md`
+
+## 工程纪律（从历史事故提炼）
+
+以下是跨轮次必须执行的规则。排查白屏/资源异常、修改解析与缓存、添加门禁或重做原生验收前，按主题读 [改造踩坑史](docs/agent/pitfalls-history.md)；其中 Swift 案例是历史证据，当前领域口径以 `CONTEXT.md` 和相应 ADR 为准。
+
+### 诊断与验证
+
+- **隔离当次运行**：日志、截图、回执绑定运行身份与被测构建；历史日志、截断输出和不同轮次产物不能拼成当前结论。
+- **校准测量方法**：窗口几何交叉核对原生读数、viewport 与截图；资源测量固定目标身份、负载及稳态窗口。排除启动尖峰和生命周期均值造成的误判。
+- **探针只读**：状态驱动走产品入口；观测链受故障影响时改用独立证据。异步操作等具体完成标志，等待有界。
+- **核对当前产物**：前端/编译期配置改动走 `scripts/build-app.sh` 并验证实际加载内容，避免普通 `cargo build` 复用旧嵌入资源。
+- **门禁证明能拒错**：新增或修复门禁要有负例或可编译变异，指出失败断言；结构扫描同时检查扫描范围。变异在隔离副本执行，测试默认用合成/脱敏夹具。
+- **检查执行链**：显式核对构建、测试与扫描退出码；管道使用 `pipefail` 或保留原命令状态。测试进入对应门禁，必需依赖缺失即失败；外部环境测试单列范围与未验项。
+
+### 数据、并发与写入
+
+- **未知单独表达**：源缺失、读失败、未观测与实际零值分开；相关派生字段同进退。CPU/卡死等连续观测资格由引擎维护，单次读数不能冒充持续结论。
+- **事实只声明一次**：Agent 能力放注册表，解析按方言/schema 分派；修改时检查真实生产路由及全部输出，不在测试里复制一套分派冒充覆盖。
+- **守住事件身份**：区分会话、运行、事件版本和通知去重；使用已核实的消息 ID、轮次或事件自身记录的时间戳，成对验证「同事件不重报、新事件不漏报」，不以采样时钟代替事件身份。
+- **锁内只计算**：持锁时不得调用同步派发到主线程的 Tauri API。窗口/托盘写入及事件发送在释放锁后执行，见 [ADR 0014](docs/adr/0014-no-main-thread-dispatch-while-locked.md)。
+- **异步结果绑定身份与代次**：返回前复核目标和 revision；失效结果丢弃，普通读取失败与目标失效分别处理。后台刷新保留草稿、焦点及滚动，正文离页/过期及时清除。
+- **缓存回收保住结果**：优化前后对拍相同输入；当前文件汇总完成后才回收。交代漏一次状态转移的代价，缓存计费、RSS、footprint 与整应用预算分别报告。
+- **持久化保原件**：写入前校验并原子发布；损坏/未来格式保留原字节、明确拒写或按模块契约留档。备份以独占创建防同名覆盖，不能靠 `exists` + `rename` 声称无竞态，见 [ADR 0033](docs/adr/0033-configuration-backup-publication.md)。
+
+### 边界与交付证据
+
+- **按已核实契约接入**：字段、schema、URL 与能力不能猜；配置存在/保存成功不证明客户端加载，配置目标、运行模型与账单分别取证。出网按 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md) / [0038](docs/adr/0038-manual-interface-model-read.md)：模型清单仅手动读取已保存 HTTPS/字面回环目标，临时取其环境变量凭据，禁止重定向、代理与自动重试。
+- **门禁故障明确失败**：空扫描与零命中分开，拒绝必须传播到顶层；钩子在临时仓库验证真能阻止提交。共享工作树的实验与发布使用隔离环境及显式文件清单，保护无关改动。
+- **证据按层报告**：静态审查、单元/浏览器、官方客户端受控端点、签名包原生和平台整体验收分别记录；明示执行者、结果及未验范围，清理与业务结果分别核实。
+- **保留失败和更正**：重跑通过只说明本次通过；保留原失败及不完整样本，不放宽判据凑通过。误诊追加撤回说明，历史 review 不改写；当前入口和长期文档同步修正。
 
 ## Agent skills
 

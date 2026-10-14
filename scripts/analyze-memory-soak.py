@@ -11,7 +11,22 @@ def number(value):
     return type(value) in (int, float) and math.isfinite(value)
 
 
-def analyze(rows, receipt):
+CLEANUP_FIELDS = ('owned_target_stopped', 'awake_stopped', 'lock_absent', 'baseline_unchanged')
+
+
+def cleanup_verified(receipt, required=False):
+    if 'cleanup' not in receipt:
+        if required:
+            raise ValueError('Cleanup evidence is missing')
+        return False
+    cleanup = receipt['cleanup']
+    if not isinstance(cleanup, dict) or any(cleanup.get(key) is not True for key in CLEANUP_FIELDS):
+        raise ValueError('Cleanup evidence is incomplete or failed')
+    return True
+
+
+def analyze(rows, receipt, require_cleanup=False):
+    cleaned = cleanup_verified(receipt, require_cleanup)
     expected = [('idle', 0)] * 7
     expected += [(phase, cycle) for cycle in range(1, 21) for phase in ('open', 'released')]
     expected += [('complete', 0)]
@@ -62,7 +77,7 @@ def analyze(rows, receipt):
             or not number(started) or not number(finished)
             or finished - started < elapsed[-1] - .1):
         raise ValueError('Runner receipt does not prove successful completion')
-    return {'protocol_complete': True, 'idle_samples': 7, 'cycles': 20,
+    return {'protocol_complete': True, 'cleanup_verified': cleaned, 'idle_samples': 7, 'cycles': 20,
             'same_target_identity': True, 'complete_samples': complete_samples,
             'partial_samples': 47 - complete_samples, 'budget_assessed': False,
             'main_footprint_mib': {phase: {'readable_samples': len(values),
@@ -74,11 +89,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stream', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, required=True)
+    parser.add_argument('--require-cleanup', action='store_true')
     args = parser.parse_args()
     if args.stream.stat().st_size > 1024 * 1024 or args.receipt.stat().st_size > 4096:
         raise ValueError('Evidence exceeds the protocol bounds')
     rows = [json.loads(line) for line in args.stream.read_text().splitlines()]
-    print(json.dumps(analyze(rows, json.loads(args.receipt.read_text()))))
+    print(json.dumps(analyze(rows, json.loads(args.receipt.read_text()), args.require_cleanup)))
 
 
 if __name__ == '__main__':

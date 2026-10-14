@@ -445,6 +445,9 @@ impl TokenUsageMonitor {
         {
             return (part.tokens24, part.cost24);
         }
+        // 同一个文件可能被两个声明根同时覆盖（重叠根）：与主报告一样按路径去重，
+        // 否则周期口径会比 24h 那一档把同一份明细多算一遍。
+        let mut range_files = HashSet::new();
         for root in &profile.token_roots {
             if !Path::new(root).is_dir() {
                 continue;
@@ -466,7 +469,11 @@ impl TokenUsageMonitor {
                 {
                     continue;
                 }
-                let (t, c, _, _, _) = self.parse_file(&entry.path().to_path_buf(), cutoff);
+                let path = entry.path().to_path_buf();
+                if !range_files.insert(path.to_string_lossy().into_owned()) {
+                    continue;
+                }
+                let (t, c, _, _, _) = self.parse_file(&path, cutoff);
                 tokens += t;
                 cost += c;
                 self.trim_cache(None);
@@ -1888,10 +1895,42 @@ mod tests {
         profile
             .token_roots
             .push(sandbox.path().join("nested").to_string_lossy().into_owned());
-        let report = TokenUsageMonitor::new().monitor(&profile);
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&profile);
         assert_eq!(
             report.usage.tokens24h, 150,
             "one physical source reached through two roots must not be counted twice"
+        );
+        // 周期口径走的是另一条枚举路径，必须同样去重，否则同一份明细会在
+        // 「24h」与「上一周期」两个出口给出两个数。
+        let (range_tokens, _) = monitor.range_totals(&profile, 86_400_000, now_ms());
+        assert_eq!(
+            range_tokens, 150,
+            "range totals must reuse the same path deduplication as the 24h report"
+        );
+    }
+
+    /// 当前实现的既有行为（不是验收结论）：去重表按文件隔离，同一响应出现在
+    /// 两份文件里各算一份，逐字副本与相同时间戳也不例外。
+    /// 规格要求的跨文件归并仍未完成——先核实各方言调用身份与修订契约，再谈
+    /// 有界归并与折入重放。这条回归钉住现状，防止它被静默改变而无人复核。
+    #[test]
+    fn cross_file_duplicate_responses_are_counted_per_source() {
+        let sandbox = crate::testutil::Sandbox::new("cross-file-duplicate");
+        std::fs::create_dir_all(sandbox.path().join("a")).unwrap();
+        std::fs::create_dir_all(sandbox.path().join("b")).unwrap();
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let body = format!(
+            "{}\n",
+            codex_record_at(150, 0, 0, "shared-response", &timestamp)
+        );
+        std::fs::write(sandbox.path().join("a/one.jsonl"), &body).unwrap();
+        std::fs::write(sandbox.path().join("b/two.jsonl"), &body).unwrap();
+        let profile = one_root_profile("a", &sandbox.path().to_string_lossy());
+        let report = TokenUsageMonitor::new().monitor(&profile);
+        assert_eq!(
+            report.usage.tokens24h, 300,
+            "two files carrying the same response are each counted: current per-file behaviour"
         );
     }
 
