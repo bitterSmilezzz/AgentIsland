@@ -1,6 +1,21 @@
-# AgentIsland — Agent 工作约定
+# AgentIsland — 工作约定（Agent 无关）
+
+> **这份约定对所有 AI 编码 Agent 一视同仁。** 它不假设你(agent)是哪一个产品、跑在哪个 harness 上、
+> 用哪种模型。任何 Agent 克隆本仓后，读这一份就能接手。
+> `CLAUDE.md` 与 `GEMINI.md` 都是指向本文件的软链——**只有这一份源**，不要各写一份。
+>
+> **接手入口（新 Agent 从这里开始）**：
+> 1. 读本文件（工作约定）与 [`CONTEXT.md`](CONTEXT.md)（领域口径与术语）。
+> 2. 读 [`docs/需求.md`](docs/需求.md)（需求基线）与 [`docs/需求测试矩阵.md`](docs/需求测试矩阵.md)（验收场景与层）。
+> 3. 查 [`docs/需求状态.md`](docs/需求状态.md)：**哪些已完成、哪些在做、有哪些未修 bug**。
+> 4. 动手前跑 `bash scripts/verify-framework.sh` 确认基线是绿的；不绿先查状态文档里的已知问题。
+> 5. 改动收尾按「[自动化提交与发版](#自动化提交与发版每轮改造的收尾)」一条命令走完。
 
 跨平台 Rust/Tauri 工作台：监控本机 AI 编码智能体的运行状态与 token 消耗。main 是唯一开发主线；SwiftUI 与旧 WPF 源码保存在 `codex/archive-swiftui`，需要查历史实现时读取该分支。测试用 `cargo test --locked --manifest-path app/src-tauri/Cargo.toml`，打包用 `scripts/build-app.sh`。
+
+**本文件里不写「某个 Agent 专属」的做法**：凡是「用 X 工具」「在 Y 面板里点」这类指令，
+都必须能改写成命令行或文件路径。发现违反的地方，改成 Agent 无关的表述——
+后续接手的人可能是另一个 Agent，甚至是人。
 
 发布门禁里的浏览器 UI 回归（`test-session-refresh-focus` / `test-task-detail-navigation` / `test-task-reader-leave`）需要真实浏览器运行时：`npm i playwright`，或用 `TEST_BROWSER_MODULE` 指向 `playwright/index.mjs` 的绝对路径。缺运行时 `release.sh` 会**明确失败**而不是跳过——这三条此前不在任何门禁里，v0.0.321 起 committed 测试对 committed 产品变红也没人发现（窄窗口隐藏列表让旧断言超时）。
 
@@ -37,7 +52,37 @@ scripts/release.sh <X.Y.Z> "<CHANGELOG 首条那句话>"
 - tag 与 release 是**必须发生的步骤**。历史上出现过 38 个版本只推了 commit、没建 tag 也没发 release（v0.0.81..v0.0.118），所以这条不再靠记忆
 - 版本号取 `git tag --sort=-v:refname | head -1` 的下一号；CHANGELOG 条目按既有风格写「改了什么 + 为什么 + 没做什么」
 
+### 需求状态与 bug 登记（**改了需求就同步**）
+
+`docs/需求状态.md` 是**接手者第一眼要看的文件**：哪些需求已完成、哪些在做、有哪些未修 bug。
+它由 `scripts/automation/registry.json` **生成**，不手写：
+
+```sh
+python3 scripts/automation/render-status.py          # 校验（门禁跑这条）
+python3 scripts/automation/render-status.py --write  # 改完 registry 后重新生成
+```
+
+- **功能完成后**：把 `registry.json` 里该需求的 `status` 改成 `done`，
+  `coverage_note` 改成以 `done — ` 开头（`partial — ` 表示还有缺口）。
+  生成器会把它渲染成「已完成」，并计入状态文档的合计行。
+- **发现 bug 时**：写进 `registry.json` 的 `open_bugs` 数组
+  （`id` / `title` / `status` / `evidence` 必填，`requirement` 可选），
+  生成器渲染成「未修 bug 登记」表。**不要只写在聊天里或某个 review 里**——
+  那些不是接手者会读的地方。
+- 状态机（生成器实现并在门禁里校验，组合不可能成立即失败）：
+  `checks` 空 = 未开始；有 `checks` 且 note 以 `partial — ` 开头 = 部分完成；
+  以 `done — ` 开头 = 已完成。
+- ⚠️ **改了 `requirements[].checks` 必须同时跑两个生成器**：
+  `render-matrix.py --write`（需求→检查项映射）与 `render-status.py --write`（状态与 bug）。
+  漏跑任一个，`automation.matrix` / `automation.status` 会在门禁里报漂移。
+
 ### 文档分工（README 不是更新日志）
+
+文档地图见 [`docs/README.md`](docs/README.md)——**先读它**再找具体文档。
+`docs/` 按用途分三类子目录：`spec/`（要做什么）、`testing/`（怎么验）、`ops/`（怎么发）。
+
+> 根目录 `docs/*.md` 里那些同名软链是**兼容层**（门禁脚本硬编码了旧路径），
+> 新增文档直接放进子目录，不要往根下放。
 
 | 文件 | 只写 | 绝不写 |
 | :--- | :--- | :--- |
@@ -110,27 +155,31 @@ scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
   并注意有界容量的连带淘汰（`pending` 上限 64，注入 N 条会静默挤掉最多 N 条最早的记录）。
   目标状态是「与写入前逐条一致」，不是「看起来干净了」。
 
-## Agent skills
+## Agent skills（**可选**，非接手前置）
 
-### Installed skills
+> **这一节不构成接手前置。** skills 是本机可选的便利设施，与产品代码、测试门禁、
+> 发版流程都无关——换一台机器、换一个 Agent，不做这一节也能完整接手本仓。
+> 之所以留着，是因为踩过的坑值得记（尤其「两条安装路径互斥」）。
 
 本项目用 `npx skills`（skills.sh）管理 agent skills。
 
 **两类来源要分清，因为纪律不同：**
 
-**① 本仓自有的（进 git，克隆即得）**——单份源放 `.agents/skills/<name>/`，`.claude/skills/<name>` 是指向它的相对软链，`skills-lock.json` 记录来源与 hash。
+**① 本仓自有的（进 git，克隆即得）**——单份源放 `.agents/skills/<name>/`；
+`.claude/skills/<name>` 只是指向它的相对软链（为了兼容读 `.claude/` 的 Agent，
+**不是**「Claude 专用目录」），`skills-lock.json` 记录来源与 hash。
 
 - `libraries-dev`（来自 `Jakubantalik/Libraries.dev`）：教你 agent 在**哪里**、**用什么程度**给界面加动效。领域是 React/Web 界面，本项目使用静态 Web UI，不能直接套用 React 组件，价值在于它的**决策规则**（按等待时长定效果、不叠特效、匹配明暗主题）——改界面时可以参考这套思路，但不要尝试 `npm install`。
 - 安装/更新/卸载：`npx skills add Jakubantalik/Libraries.dev --skill '*' --copy -y`。**不要**用它默认的 `--agent '*'`：那是 `--all` 的别名，会往项目里写 17 个 agent 目录（Antigravity、Cursor、Copilot、Goose、Junie…），每个都是同一份内容的副本。
 
-**② 全局装的（只在本机，不进 git）**——来自 [mattpocock/skills](https://github.com/mattpocock/skills)（269,700 star，MIT），装在家目录 `~/.agents/skills/`，当前有 24 个生效。它们**受上游 `.agents/invocation.md` 等元规范约束**，不是本仓定的规矩。装法 `npx skills@latest add mattpocock/skills --skill=<name>`，更新 `npx skills@latest update <name>`。
+**② 全局装的（只在本机，不进 git）**——来自 [mattpocock/skills](https://github.com/mattpocock/skills)（MIT），装在家目录 `~/.agents/skills/`。它们**受上游 `.agents/invocation.md` 等元规范约束**，不是本仓定的规矩。装法 `npx skills@latest add mattpocock/skills --skill=<name>`，更新 `npx skills@latest update <name>`。
 
-上游规范里有两条对我们有约束力，值得记住：
+上游规范里有两条对我们有约束力，值得记住（**它们是「人机交互约定」，不是某个 Agent 的特性**）：
 
-- **user-invoked 的 skill 不能被另一个 skill 调用**（连指名工具也不行）。所以"跟我说一声就跑 X"这种指令，若 X 是 user-invoked，必须写成**对人的指令**（"请运行 `/x`"），不能写成对模型的工具调用。我们本机的 `grill-me` / `grilling` / `grill-with-docs` / `triage` / `to-spec` / `implement` 等都属于 user-invoked。
+- **user-invoked 的 skill 不能被另一个 skill 调用**（连指名工具也不行）。所以"跟我说一声就跑 X"这种指令，若 X 是 user-invoked，必须写成**对人的指令**（"请运行 `/x`"），不能写成对模型的工具调用。本机的 `grill-me` / `grilling` / `grill-with-docs` / `triage` / `to-spec` / `implement` 等都属于 user-invoked。
 - **skill 之间的依赖要写成"调用 Skill 工具并指名"**，不是 `../other-skill/FILE.md` 跨目录相对链接。（文档之间给人看的路径链接仍可用相对路径——那条不受此限。）
 
-⚠️ **两条安装路径互斥**：Claude Code 的 plugin 路（`claude plugins install mattpocock-skills`，官方 marketplace，只读托管、自动更新）与 skills.sh 路（可编辑副本、自己 update）**都装会得两份**。本机走的是 skills.sh 路。
+⚠️ **两条安装路径互斥**：plugin 路（只读托管、自动更新）与 skills.sh 路（可编辑副本、自己 update）**都装会得两份**。本机走的是 skills.sh 路。
 
 三个 grilling skill 的分工与"哪条链用哪个"**目前没有一张表**，已知是缺口；上游用"链上哪一环"说清角色，可照做。
 
