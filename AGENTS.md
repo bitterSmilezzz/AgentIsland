@@ -8,6 +8,8 @@
 > 1. 读本文件（工作约定）与 [`CONTEXT.md`](CONTEXT.md)（领域口径与术语）。
 > 2. 读 [`docs/需求.md`](docs/需求.md)（需求基线）与 [`docs/需求测试矩阵.md`](docs/需求测试矩阵.md)（验收场景与层）。
 > 3. 查 [`docs/需求状态.md`](docs/需求状态.md)：**哪些已完成、哪些在做、有哪些未修 bug**。
+>    若是从上一个 Agent 手里接过来的，先读 [`docs/agent/HANDOFF.md`](docs/agent/HANDOFF.md)：
+>    那里有当前状态、环境前置、本轮踩过的坑与硬边界。
 > 4. 动手前跑 `bash scripts/verify-framework.sh` 确认基线是绿的；不绿先查状态文档里的已知问题。
 > 5. 改动收尾按「[自动化提交与发版](#自动化提交与发版每轮改造的收尾)」一条命令走完。
 

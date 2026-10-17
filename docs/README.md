@@ -57,6 +57,7 @@ docs/
 
 | 文档 | 用途 |
 | :--- | :--- |
+| [HANDOFF.md](agent/HANDOFF.md) | **交接说明**：当前状态、环境前置、本轮踩过的坑、硬边界。换 Agent 时先读 |
 | [pitfalls-history.md](agent/pitfalls-history.md) | **改造踩坑史**：现象 / 根因 / 由此定下的规则 |
 | [session-2026-10-16-problems.md](agent/session-2026-10-16-problems.md) | 该日会话问题与分诊 |
 | [session-2026-10-17-problems.md](agent/session-2026-10-17-problems.md) | 该日会话问题与分诊 |

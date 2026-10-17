@@ -417,7 +417,9 @@ parallel_scans() {
 if { [[ "$SCAN_MODE" == worktree && "$1" == ls-files ]]; } ||
    { [[ "$SCAN_MODE" == history && "$1" == cat-file && "${2:-}" == --batch ]]; }; then
     if [[ "$SCAN_MODE" == worktree ]]; then
-        printf '%s\n' "$OWN"
+        # `scan-secrets.sh` 用 `-z` 取路径（NUL 分隔），所以这个 stub 也必须输出 NUL，
+        # 否则列表解析不出条目、扫描器报「什么都没扫」。换行分隔是旧约定，已随 -z 一并改。
+        printf '%s\0' "$OWN"
     else
         "$REAL_GIT" "$@" || exit $?
     fi
