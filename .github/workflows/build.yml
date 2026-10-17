@@ -63,9 +63,26 @@ jobs:
         run: cargo install tauri-cli --version 2.11.2 --locked
       - name: 构建并验证 ad-hoc 签名包
         # 同轮 ci 已运行 Rust 回归；这里验证真实打包、签名与内容收据。
+        #
+        # 为什么显式指定 SDK（actions/runner-images#14940，2026-10 起）：
+        # macos-latest 当前是 macos-26-arm64 镜像，装了 **CLT 27.0 SDK**，但默认
+        # 工具链仍是 Xcode 26.6——Xcode 的 ld 读不了 SDK 27 的 tbd 存根
+        # （`unknown architecture arm64e.x1-macos`），任何链接都失败。这不是本仓
+        # 代码的问题，也不是 build-app.sh 的选 SDK 逻辑错：它按设计选「本机最新
+        # CLT SDK」，在工具链配套的真机上是对的。CI 里改用默认 Xcode 自带 SDK
+        # （与 ld 同源）构建；CI 产物不分发，不涉及发布构建对最新 SDK 的要求。
         env:
           SKIP_TESTS: '1'
-        run: bash scripts/build-app.sh
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          echo "CI 构建 SDK: $SDKROOT"
+          case "$SDKROOT" in
+            */CommandLineTools/SDKs/MacOSX27*)
+              echo "::error::runner 仍解析到 CLT 27 SDK（actions/runner-images#14940），与默认 ld 不配套" >&2
+              exit 1
+              ;;
+          esac
+          bash scripts/build-app.sh
       - name: 同包 CLI 与构建身份验收
         run: python3 scripts/automation/pipeline.py --profile package
       - name: 汇总执行结果
