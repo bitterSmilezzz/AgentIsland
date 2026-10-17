@@ -2305,10 +2305,10 @@
     },
     {
       "id": "BUG-004",
-      "title": "Windows job 的 cargo test 有 23 个失败（编译已通过）",
+      "title": "Windows job 的 cargo test 有 20 余个失败（编译已通过）",
       "status": "open",
       "requirement": null,
-      "evidence": "Actions run 39050042006（2026-10-17）：952 passed / 23 failed / 8 ignored；失败集中在 dedup、notify_ledger、webhook ingress、posix_port_ratchet 等 POSIX 假设。该 job 仍为 continue-on-error，不挡 macOS 门禁；本机 macOS 1020+ 全绿，复现需真实 Windows runner。"
+      "evidence": "Actions run 39050042006（2026-10-17）23 failed、39056405805（2026-10-18）25 failed，均 952/950 passed / 8 ignored；失败集中在 dedup、notify_ledger、webhook ingress、posix_port_ratchet 等 POSIX 假设。该 job 仍为 continue-on-error，不挡 macOS 门禁；本机 macOS 1101 全绿，复现需真实 Windows runner。"
     }
   ]
 }

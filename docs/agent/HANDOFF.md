@@ -146,7 +146,11 @@ open('.scratch/release-files.txt','w',encoding='utf-8').write('\n'.join(sorted(s
   已改为 `SCAN_USER` 优先、通用名**显式停用**两条身份规则；要恢复 CI 判别力就配仓库变量
   `AGENTISLAND_SCAN_USER`（开发者本机用户名）。细节与证据见
   [`docs/testing/测试自动化交付.md`](../testing/测试自动化交付.md) 第二十四轮。
-- **Windows job 仍红**：编译已过，但 `cargo test` 952 passed / 23 failed / 8 ignored，
-  已登记 `BUG-004`。它仍是 `continue-on-error`，不挡 macOS 门禁。
-- 下一次 push 后要盯 Actions：macOS job 会**第一次**真正跑到「构建并验证 ad-hoc 签名包」
-  与 package profile；若那两步红，失败点在扫描之后，别再按扫描问题排查。
+- **Windows job 仍红**：编译已过，但 `cargo test` 两次分别是 23 / 25 个失败
+  （952 passed / 8 ignored 量级），已登记 `BUG-004`。它仍是 `continue-on-error`，
+  不挡 macOS 门禁；总 run 在 macOS 通过时为 success。
+- **推送后实测**（run `39056405805`，SHA `12f56b6`）：macOS job **15/15 步全绿**
+  （扫描、ci profile、Tauri CLI、构建签名、package），约 29 分钟。途中还发现 runner 的
+  CLT 27 SDK 与默认 Xcode 26.6 的 ld 错配会让任何链接失败（`actions/runner-images#14940`），
+  workflow 已改用默认 Xcode 自带 SDK（`xcrun --sdk macosx --show-sdk-path`），
+  本机 `build-app.sh` 的最新一代 SDK 选择逻辑未动。
