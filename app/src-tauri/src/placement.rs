@@ -81,7 +81,12 @@ fn work_area_of_monitor(
 ///    而 `set_position` 吃逻辑坐标，所以必须除 scale；
 /// ② `monitor_from_point(x, y)` 吃的是**逻辑 f64** 坐标，不是物理 i32。
 ///    传物理值在 2x 屏上会点到另一块屏。
-#[cfg(not(windows))]
+///
+/// ⚠️ **这个函数是跨平台的，不要加 `#[cfg]`。** 它只用 Tauri 的跨平台 API
+/// （`outer_position` / `outer_size` / `monitor_from_point` / `primary_monitor`），
+/// 没有一行平台专有代码。此前它与下面两个帮手一起被 `#[cfg(not(windows))]`
+/// 排除，而**调用方 `work_area_for_mode` 没有门控**，于是 Windows 构建
+/// 必然报 `cannot find function \`work_area_under_window\``（CI 实测）。
 pub fn work_area_under_window(window: &tauri::WebviewWindow) -> (f64, f64, f64, f64, f64) {
     let scale = window.scale_factor().unwrap_or(1.0);
     let s = if scale > 0.0 { scale } else { 1.0 };
@@ -171,7 +176,8 @@ fn named_monitor(window: &tauri::WebviewWindow, want_builtin: bool) -> Option<ta
 
 /// 任意逻辑坐标所在的显示器工作区。多显示器 + 不同 DPI 时按坐标选屏，
 /// 不能一律取主屏——否则副屏上的贴边会算到主屏的坐标空间里。
-#[cfg(not(windows))]
+///
+/// 同样是纯 Tauri 跨平台 API，**不要加 `#[cfg]`**。
 pub fn work_area_at_logical(
     window: &tauri::WebviewWindow,
     x: f64,
@@ -191,7 +197,8 @@ pub fn work_area_at_logical(
 }
 
 /// `PhysicalRect<i32,u32>` → 逻辑坐标五元组：物理像素除 scale。
-#[cfg(not(windows))]
+///
+/// 纯算术 + Tauri 的 DPI 类型，跨平台，**不要加 `#[cfg]`**。
 fn physical_rect_to_logical(
     rect: &tauri::PhysicalRect<i32, u32>,
     scale: f64,
@@ -207,15 +214,14 @@ fn physical_rect_to_logical(
 }
 
 /// 最后的兜底：取不到任何显示器时给 0×0，
-
 /// `Monitor::work_area()` 返回 `Rect { position: Position, size: Size }`，
 /// 其中 `Position`/`Size` 是带 Physical/Logical 两种单位的枚举
 /// （`tauri-runtime/src/dpi.rs:10-15`）。Tauri 的 macOS 实现填的是物理像素，
 /// 所以这里**按枚举分支决定要不要除 scale**，而不是无脑除——除错一次就是整个贴边偏一半屏幕。
-/// 最后的兜底：取不到任何显示器时给 0×0，
 /// 而不是「看起来像真的」的 1440×900——假尺寸会让贴边静默错位，
 /// 而 0×0 至少会在 clamp 里露出来。
-#[cfg(not(windows))]
+///
+/// 常量返回值，跨平台，**不要加 `#[cfg]`**。
 fn fallback_work_area() -> (f64, f64, f64, f64, f64) {
     (0.0, 0.0, 0.0, 0.0, 1.0)
 }

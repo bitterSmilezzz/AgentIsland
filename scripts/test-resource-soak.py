@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Fault-inject the real runner transaction without starting a VM or native UI."""
+import contextlib
+import io
 import importlib.util
 import json
+import signal
+import os
+import subprocess
+import sys
 from pathlib import Path
 import plistlib
 import tempfile
@@ -47,7 +53,8 @@ class Tests(unittest.TestCase):
         for field in cleanup:
             self.assertEqual(runner.finish_code(True, dict(cleanup, **{field: False})), 2)
 
-    def transaction(self, mutate=False, fail_launch=False):
+    def transaction(self, mutate=False, fail_launch=False, *, via_main=False,
+                    ps_timeout=None, cancel=None, cleanup_signal=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             bundle = root / 'source/AgentIsland.app'
@@ -76,7 +83,30 @@ class Tests(unittest.TestCase):
                     if fail_launch: raise OSError('failure after launch')
                 return Mock(returncode=0)
 
+            def check_output(args, **kwargs):
+                if args[0] == 'sysctl':
+                    return '1'
+                if ps_timeout is not None and ps_timeout in args:
+                    timeout = kwargs.get('timeout')
+                    self.assertIsInstance(timeout, (int, float))
+                    self.assertGreater(timeout, 0)
+                    self.assertLessEqual(timeout, 5)
+                    raise subprocess.TimeoutExpired(args, timeout,
+                        output='private-environment-must-not-appear',
+                        stderr='private-environment-must-not-appear')
+                return '--shell=workbench HOME=' + str(output / 'home')
+
+            def stop_target(pid, signum):
+                self.assertEqual((pid, signum), (10, signal.SIGTERM))
+                if cleanup_signal is not None:
+                    # Deliver to this test process; the owned target remains synthetic.
+                    signal.raise_signal(cleanup_signal)
+                state['alive'] = False
+
             def execute():
+                if cancel is not None:
+                    signal.raise_signal(cancel)
+                    self.fail('Cancellation did not interrupt the protocol')
                 emit = protocol.call_args.args[4]
                 for _ in range(47): emit({'phase': 'idle'})
                 emit({'phase': 'complete', 'protocol_complete': True})
@@ -87,22 +117,158 @@ class Tests(unittest.TestCase):
                     patch.object(runner.Path, 'home', return_value=root), \
                     patch.object(runner, 'console_ready', return_value=True), \
                     patch.object(runner.subprocess, 'run', side_effect=command), \
-                    patch.object(runner.subprocess, 'check_output', side_effect=lambda args, **kw:
-                        '1' if args[0]=='sysctl' else '--shell=workbench HOME=' + str(output / 'home')), \
+                    patch.object(runner.subprocess, 'check_output', side_effect=check_output), \
                     patch.object(runner.subprocess, 'Popen', return_value=awake), \
                     patch.object(runner.soak.measure, 'Native', return_value=native), \
-                    patch.object(runner.os, 'kill', side_effect=lambda *args: state.update(alive=False)), \
+                    patch.object(runner.os, 'kill', side_effect=stop_target), \
                     patch.object(runner.soak, 'wait_until'), \
                     patch.object(runner.soak, 'Protocol') as protocol, \
                     patch.object(runner.analyzer, 'analyze', return_value={'protocol_complete': True}):
                 protocol.return_value.execute.side_effect = execute
-                code = runner.run(bundle, output)
-            receipt = json.loads((output / 'receipt.json').read_text())
+                with contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                        contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    if via_main:
+                        signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+                        previous = {sig: signal.getsignal(sig) for sig in signals}
+                        try:
+                            with patch.object(runner.sys, 'argv', ['resource-soak.py',
+                                    '--bundle', str(bundle), '--output', str(output)]):
+                                code = runner.main()
+                            for sig, handler in previous.items():
+                                self.assertEqual(signal.getsignal(sig), handler)
+                        finally:
+                            for sig, handler in previous.items():
+                                signal.signal(sig, handler)
+                    else:
+                        code = runner.run(bundle, output)
+            self.assertNotIn('private-environment', stdout.getvalue() + stderr.getvalue())
+            receipt_text = (output / 'receipt.json').read_text()
+            self.assertNotIn('private-environment', receipt_text)
+            receipt = json.loads(receipt_text)
             self.assertFalse(state['alive'])
             self.assertFalse((root / '.agentisland-native-gates.lock').exists())
             self.assertTrue(receipt['cleanup']['awake_stopped'])
             self.assertEqual(receipt['exit_code'], code)
             return code, receipt
+
+    def test_main_initialization_failure_does_not_leave_an_unowned_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            bundle = root / 'AgentIsland.app'
+            bundle.mkdir()
+            native = Mock()
+            native.processes.return_value = []
+            signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+            previous = {sig: signal.getsignal(sig) for sig in signals}
+            try:
+                with patch.object(runner.sys, 'platform', 'darwin'), \
+                        patch.object(runner.Path, 'home', return_value=root), \
+                        patch.object(runner, 'console_ready', return_value=True), \
+                        patch.object(runner.subprocess, 'check_output', return_value='1'), \
+                        patch.object(runner.subprocess, 'run'), \
+                        patch.object(runner.soak.measure, 'Native', return_value=native), \
+                        patch.object(runner.uuid, 'uuid4', side_effect=OSError('fixture-init-failure')), \
+                        patch.object(runner.sys, 'argv', ['resource-soak.py', '--bundle', str(bundle),
+                                                         '--output', str(root / 'output')]):
+                    with self.assertRaises(OSError):
+                        runner.main()
+                self.assertFalse((root / '.agentisland-native-gates.lock').exists())
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
+
+    def test_main_ps_timeouts_are_bounded_and_cleaned(self):
+        for column in ('args=', 'command='):
+            with self.subTest(column=column):
+                code, receipt = self.transaction(via_main=True, ps_timeout=column)
+                self.assertEqual(code, 2)
+                self.assertEqual(receipt['error_type'], 'TimeoutExpired')
+                self.assertEqual(receipt['stage'], 'launch')
+                self.assertFalse(receipt['protocol_complete'])
+                self.assertTrue(all(receipt['cleanup'].values()))
+
+    def signal_child(self):
+        # Missing SIGHUP handlers or repeated KeyboardInterrupt must not kill unittest.
+        if os.environ.get('RESOURCE_SIGNAL_CHILD') == '1':
+            return False
+        child = subprocess.run([sys.executable, '-B', str(Path(__file__).resolve()),
+                                self.id().split('.', 1)[-1]],
+                               env={'PATH': os.defpath, 'RESOURCE_SIGNAL_CHILD': '1'},
+                               capture_output=True, text=True, timeout=10)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        return True
+
+    def test_main_second_sigterm_during_cleanup_keeps_receipt_and_lock_cleanup(self):
+        if self.signal_child():
+            return
+        code, receipt = self.transaction(via_main=True, cancel=signal.SIGTERM,
+                                         cleanup_signal=signal.SIGTERM)
+        self.assertEqual(code, 2)
+        self.assertEqual(receipt['error_type'], 'KeyboardInterrupt')
+        self.assertFalse(receipt['protocol_complete'])
+        self.assertTrue(all(receipt['cleanup'].values()))
+
+    def test_main_sighup_cancels_with_complete_cleanup(self):
+        if self.signal_child():
+            return
+        code, receipt = self.transaction(via_main=True, cancel=signal.SIGHUP)
+        self.assertEqual(code, 2)
+        self.assertEqual(receipt['error_type'], 'KeyboardInterrupt')
+        self.assertFalse(receipt['protocol_complete'])
+        self.assertTrue(all(receipt['cleanup'].values()))
+
+    def test_main_sighup_during_cleanup_keeps_receipt_and_lock_cleanup(self):
+        if self.signal_child():
+            return
+        code, receipt = self.transaction(via_main=True, cancel=signal.SIGTERM,
+                                         cleanup_signal=signal.SIGHUP)
+        self.assertEqual(code, 2)
+        self.assertEqual(receipt['error_type'], 'KeyboardInterrupt')
+        self.assertTrue(all(receipt['cleanup'].values()))
+
+    def test_main_existing_lease_and_handler_state_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            bundle = root / 'AgentIsland.app'
+            bundle.mkdir()
+            lock = root / '.agentisland-native-gates.lock'
+            lock.mkdir()
+            owner = lock / 'owner.json'
+            owner.write_text('{"pid": 99, "run_id": "other-fixture"}')
+            original = owner.read_bytes()
+            native = Mock()
+            native.processes.return_value = []
+            signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+            previous = {sig: signal.getsignal(sig) for sig in signals}
+            try:
+                with patch.object(runner.sys, 'platform', 'darwin'), \
+                        patch.object(runner.Path, 'home', return_value=root), \
+                        patch.object(runner, 'console_ready', return_value=True), \
+                        patch.object(runner.subprocess, 'check_output', return_value='1'), \
+                        patch.object(runner.subprocess, 'run'), \
+                        patch.object(runner.soak.measure, 'Native', return_value=native), \
+                        patch.object(runner.os, 'kill') as kill, \
+                        patch.object(runner.sys, 'argv', ['resource-soak.py', '--bundle', str(bundle),
+                                                         '--output', str(root / 'output')]):
+                    with self.assertRaises(runner.Preflight) as caught:
+                        runner.main()
+                    self.assertEqual(caught.exception.code, 'LEASE_EXISTS')
+                    kill.assert_not_called()
+                self.assertEqual(owner.read_bytes(), original)
+                for sig, handler in previous.items():
+                    self.assertEqual(signal.getsignal(sig), handler)
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
+
+    def test_main_sigint_during_cleanup_keeps_receipt_and_lock_cleanup(self):
+        if self.signal_child():
+            return
+        code, receipt = self.transaction(via_main=True, cancel=signal.SIGTERM,
+                                         cleanup_signal=signal.SIGINT)
+        self.assertEqual(code, 2)
+        self.assertEqual(receipt['error_type'], 'KeyboardInterrupt')
+        self.assertTrue(all(receipt['cleanup'].values()))
 
     def test_real_runner_baseline_mutation_fails_after_protocol_completes(self):
         code, receipt = self.transaction(mutate=True)

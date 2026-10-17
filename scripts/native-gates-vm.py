@@ -17,6 +17,12 @@ import tarfile
 import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
+SCRATCH = ROOT / '.build'
+# `.build/` is git-ignored, so it does not exist in a fresh checkout. Callers that
+# stage temporary payloads there must not assume it is already present: on a clean
+# tree `tempfile.TemporaryDirectory(dir=SCRATCH)` fails with FileNotFoundError before
+# any test runs, which reads as a broken gate rather than a missing directory.
+SCRATCH.mkdir(parents=True, exist_ok=True)
 SCRIPTS = ['ui-smoke.sh', 'test-dock-presence.py', 'test-app-instance.py',
            'measure-memory.py', 'memory-soak.py', 'test-native-motion.py', 'test-cli-native.py',
            'resource-soak.py', 'analyze-memory-soak.py']

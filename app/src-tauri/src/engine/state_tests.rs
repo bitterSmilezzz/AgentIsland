@@ -12,8 +12,13 @@ struct Replay {
 impl Replay {
     fn new() -> Self {
         let (_, rx) = mpsc::channel();
+        Self::from_engine(ActivityEngine::new(Settings::default(), rx))
+    }
+
+    /// 用一个已配置好的 engine 构造（测试需要注入去重存储时用）。
+    fn from_engine(engine: ActivityEngine) -> Self {
         Self {
-            engine: ActivityEngine::new(Settings::default(), rx),
+            engine,
             profile: AgentProfile {
                 id: "fixture-agent".into(),
                 name: "Fixture Agent".into(),
@@ -437,7 +442,7 @@ fn every_event_records_an_outbound_decision() {
         "{}",
         recent[0].text
     );
-    assert!(!recent[0].delivered);
+    assert!(!recent[0].accepted);
     assert_eq!(
         replay.engine.notifier.throttle_keys(),
         0,
@@ -584,8 +589,9 @@ fn the_pending_queue_is_bounded_and_keeps_the_newest() {
         "待发队列必须有界：{}",
         engine.pending_count()
     );
-    // 队首仍是最早那条（用户先看到它），队尾是最后进来的
-    assert_eq!(engine.latest_event.as_ref().unwrap().id, "ev-0");
+    // 与恢复账本共用总容量 64，队首也是最近窗口的最早一条。
+    assert_eq!(engine.recent_events().len(), 64);
+    assert_eq!(engine.latest_event.as_ref().unwrap().id, "ev-136");
     let mut last = None;
     while let Some(ev) = engine.latest_event.clone() {
         last = Some(ev.id.clone());
@@ -880,4 +886,335 @@ fn reminder_navigation_freezes_its_session_and_rejects_stale_events() {
     }
     assert!(engine.event_navigation.len() <= 65);
     assert!(engine.navigation_target("codex", Some("queued-0")).is_err());
+}
+
+// Sampling gaps and restart deduplication use synthetic signals and real temporary storage.
+
+#[test]
+fn a_sampling_gap_does_not_lose_a_new_attention_event() {
+    // 采样间隙：两次采样之间隔了很久（进程没重启，只是这一轮没采到）。
+    // 新指纹必须仍然推得出来——不能因为"上次推过东西"就把后来的也吞了。
+    let mut replay = Replay::new();
+    replay
+        .sample(100_000, true, None, Some(Signal::Attention("ask-a".into(), "A?".into())));
+    assert_eq!(
+        replay.engine.latest_event.take().unwrap().event_type,
+        "attention",
+        "第一个问题应送达"
+    );
+
+    // 间隙：模拟漏采/停采 10 分钟，然后出现一个**不同**的问题。
+    replay.sample(
+        700_000,
+        true,
+        None,
+        Some(Signal::Attention("ask-b".into(), "B?".into())),
+    );
+    let event = replay
+        .engine
+        .latest_event
+        .take()
+        .expect("采样间隙后的新问题必须仍能送达，不得被上一次告警吞掉");
+    assert_eq!(event.event_type, "attention");
+    assert_eq!(event.id, "ask-b");
+}
+
+#[test]
+fn an_identical_fingerprint_survives_many_sampling_gaps_without_repeating() {
+    // 反方向：同指纹跨多次间隙不得重报。这条与 `:310` 合起来构成"不重报也不漏报"。
+    let mut replay = Replay::new();
+    let ask = Some(Signal::Attention("stuck-question".into(), "Confirm?".into()));
+    replay.sample(100_000, true, None, ask.clone());
+    assert!(replay.engine.latest_event.take().is_some());
+
+    for now in [160_000, 400_000, 900_000, 1_800_000] {
+        replay.sample(now, true, None, ask.clone());
+        assert!(
+            replay.engine.latest_event.is_none(),
+            "同指纹跨间隙不得重报（第 {now} 毫秒）"
+        );
+    }
+}
+
+struct DedupSandbox(std::path::PathBuf);
+
+impl DedupSandbox {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!("engine-dedup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        Self(root)
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.0.join("state.json")
+    }
+
+    fn replay(&self) -> Replay {
+        let mut replay = Replay::new();
+        replay.engine.disable_outbound();
+        replay.engine.enable_dedup_persistence(self.path());
+        replay
+    }
+}
+
+impl Drop for DedupSandbox {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn completion(replay: &mut Replay, start: i64, raw: &str) {
+    replay.sample(start, true, Some(20.0), None);
+    replay.sample_with_write(
+        start + 4_000, true, None, Some(Signal::Completed(raw.into())),
+        Some(SystemTime::UNIX_EPOCH + Duration::from_millis((start + 4_000) as u64)),
+    );
+}
+
+#[test]
+fn real_disk_restart_silences_old_attention_and_completion_but_delivers_new_events() {
+    let sandbox = DedupSandbox::new();
+    let ask = || Some(Signal::Attention("ask-restart".into(), "Confirm?".into()));
+    let mut first = sandbox.replay();
+    first.sample(100_000, true, None, ask());
+    assert_eq!(first.engine.latest_event.take().unwrap().event_type, "attention");
+    completion(&mut first, 110_000, "done-restart");
+    assert_eq!(first.engine.latest_event.take().unwrap().event_type, "completed");
+    drop(first);
+
+    let loaded = crate::dedup::Store::open_at(sandbox.path());
+    assert!(loaded.attention_seen("fixture-agent", "ask-restart"));
+    assert!(loaded.completion_seen("fixture-agent", "done-restart"));
+    let mut second = sandbox.replay();
+    second.sample(120_000, true, None, ask());
+    completion(&mut second, 130_000, "done-restart");
+    assert!(second.engine.latest_event.is_none());
+    assert_eq!(second.engine.durations.stats("fixture-agent", crate::duration::DEFAULT_WINDOW_MS, 134_000).task_count, 0);
+    assert!(!second.engine.work_started_at.contains_key("fixture-agent"));
+
+    second.sample(140_000, true, None, Some(Signal::Attention("ask-new".into(), "New?".into())));
+    assert_eq!(second.engine.latest_event.take().unwrap().id, "ask-new");
+    completion(&mut second, 150_000, "done-new");
+    assert_eq!(second.engine.latest_event.take().unwrap().id, "done-new");
+}
+
+#[test]
+fn short_completion_is_not_persisted_and_can_be_announced_after_real_work() {
+    let sandbox = DedupSandbox::new();
+    let mut first = sandbox.replay();
+    first.sample(100_000, true, Some(20.0), None);
+    first.sample_with_write(101_000, true, None, Some(Signal::Completed("short".into())),
+        Some(SystemTime::UNIX_EPOCH + Duration::from_millis(101_000)));
+    assert!(first.engine.latest_event.is_none());
+    assert!(!sandbox.path().exists());
+    assert!(!first.engine.dedup.completion_seen("fixture-agent", "short"));
+    // Persist a different real event so the restart must read a real file.
+    first.sample(102_000, true, None, Some(Signal::Attention("ask".into(), "Confirm?".into())));
+    first.engine.latest_event.take();
+    let loaded = crate::dedup::Store::open_at(sandbox.path());
+    assert!(!loaded.completion_seen("fixture-agent", "short"));
+    let mut second = sandbox.replay();
+    completion(&mut second, 110_000, "short");
+    assert_eq!(second.engine.latest_event.take().unwrap().id, "short");
+}
+
+#[test]
+fn same_raw_attention_and_completion_from_different_agents_are_independent() {
+    let sandbox = DedupSandbox::new();
+    let mut replay = sandbox.replay();
+    for (index, agent) in ["agent-a", "agent-b"].iter().enumerate() {
+        replay.profile.id = (*agent).into();
+        let start = 100_000 + index as i64 * 20_000;
+        replay.sample(start, true, None, Some(Signal::Attention("same".into(), "Confirm?".into())));
+        assert_eq!(replay.engine.latest_event.take().unwrap().agent_id, *agent);
+        completion(&mut replay, start + 1_000, "same");
+        assert_eq!(replay.engine.latest_event.take().unwrap().agent_id, *agent);
+    }
+    let loaded = crate::dedup::Store::open_at(sandbox.path());
+    for agent in ["agent-a", "agent-b"] {
+        assert!(loaded.attention_seen(agent, "same"));
+        assert!(loaded.completion_seen(agent, "same"));
+    }
+}
+
+#[test]
+fn a_persist_failure_does_not_interrupt_monitoring_or_lose_in_memory_dedup() {
+    let sandbox = DedupSandbox::new();
+    let mut replay = sandbox.replay();
+    // Introduce a non-directory parent after successful open to force real persist failure.
+    std::fs::remove_dir(&sandbox.0).unwrap();
+    std::fs::write(&sandbox.0, b"blocker").unwrap();
+    replay.sample(100_000, true, None, Some(Signal::Attention("ask".into(), "Confirm?".into())));
+    assert_eq!(replay.engine.latest_event.take().unwrap().id, "ask");
+    replay.sample(101_000, true, None, Some(Signal::Attention("ask".into(), "Confirm?".into())));
+    assert!(replay.engine.latest_event.is_none());
+    completion(&mut replay, 110_000, "done");
+    assert_eq!(replay.engine.latest_event.take().unwrap().id, "done");
+    replay.sample(120_000, true, None, Some(Signal::Attention("next".into(), "Next?".into())));
+    assert_eq!(replay.engine.latest_event.take().unwrap().id, "next");
+    assert_eq!(std::fs::read(&sandbox.0).unwrap(), b"blocker");
+    std::fs::remove_file(&sandbox.0).unwrap();
+}
+
+#[test]
+fn a_clock_rewind_does_not_re_report_a_fingerprint_already_announced() {
+    // 时钟回拨（睡眠唤醒、NTP 校正）是 SUP-02 点名的风险：不能把"已经报过的事"
+    // 当成新事再报一遍。指纹本身不含时间戳，所以回拨不该影响去重判定。
+    let mut replay = Replay::new();
+    let ask = Some(Signal::Attention("ask-rewind".into(), "Confirm?".into()));
+    replay.sample(100_000, true, None, ask.clone());
+    assert!(replay.engine.latest_event.take().is_some());
+
+    // 时钟大幅回拨到更早的时刻，同指纹仍在
+    replay.sample(20_000, true, None, ask.clone());
+    assert!(
+        replay.engine.latest_event.is_none(),
+        "时钟回拨不得让已报过的指纹重报"
+    );
+
+    // 回拨之后出现的新指纹仍要能送达
+    replay.sample(21_000, true, None, Some(Signal::Attention("ask-after-rewind".into(), "B?".into())));
+    assert_eq!(
+        replay.engine.latest_event.take().map(|e| e.id),
+        Some("ask-after-rewind".to_string()),
+        "时钟回拨后到来的新事件不得被吞"
+    );
+}
+
+#[test]
+fn a_second_distinct_question_of_the_same_length_is_not_swallowed() {
+    // 与 session.rs:1428 的解析层守护呼应，这里钉 engine 层：
+    // 两条**指纹不同**但消息长度相同的告警，必须都活下来（不得靠内容长度去重）。
+    let mut replay = Replay::new();
+    replay.sample(
+        100_000,
+        true,
+        None,
+        Some(Signal::Attention("fp-1".into(), "确认继续吗？".into())),
+    );
+    let first = replay.engine.latest_event.take().expect("第一条应送达");
+    assert_eq!(first.id, "fp-1");
+
+    // 同样字数、不同指纹 → 必须作为独立事件入队
+    replay.sample(
+        101_000,
+        true,
+        None,
+        Some(Signal::Attention("fp-2".into(), "确认继续吗？".into())),
+    );
+    let second = replay
+        .engine
+        .latest_event
+        .take()
+        .expect("等长但不同指纹的第二个问题必须独立送达");
+    assert_eq!(second.id, "fp-2");
+}
+
+#[test]
+fn concurrent_attention_and_completion_in_one_tick_both_survive_the_queue() {
+    // 一拍 attention、下一拍 completed：两条都得活。这条同时钉住
+    // engine.rs:87 记录过的 bug 形状——`push_event` 曾是**覆盖** `latest_event`，
+    // 同一拍两条告警只活一条。
+    let mut replay = Replay::new();
+    // 先工作够 3.5 秒门槛，否则 completed 按设计不推
+    replay.sample(100_000, true, Some(20.0), None);
+    assert_eq!(replay.engine.snapshots[0].level, ActivityLevel::Working);
+
+    let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(110_000));
+    replay.sample(
+        105_000,
+        true,
+        None,
+        Some(Signal::Attention("fp-attn".into(), "确认？".into())),
+    );
+    let attn = replay.engine.latest_event.take().expect("attention 应入队");
+    assert_eq!(attn.event_type, "attention");
+
+    // completed 单独一拍。注意 attention 那一拍已经清掉了 `work_started_at`
+    // （engine.rs:635），所以这里要重新攒够工作时长，否则 `seconds < 3.5`
+    // 会让 completed 按设计不入队（engine.rs:671-677）。
+    replay.sample(115_000, true, Some(20.0), None);
+    let done_write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(121_000));
+    replay.sample_with_write(
+        121_000,
+        true,
+        None,
+        Some(Signal::Completed("fp-done".into())),
+        done_write,
+    );
+    let done = replay.engine.latest_event.take().expect("completed 应入队");
+    assert_eq!(done.event_type, "completed");
+    // 两条不是同一条：attention 没被 completed 顶掉
+    assert_ne!(attn.id, done.id);
+}
+
+#[test]
+fn an_attention_tick_clears_the_work_start_anchor_so_a_bare_completion_is_not_a_task() {
+    // 钉一个不直观但已核实的实现语义：attention 分支会 `work_started_at.remove(&key)`
+    // （engine.rs:635）。于是紧接着的 completed 即使判定成功，也因 `seconds = 0`
+    // 低于 MIN_TASK_SECONDS 而不推事件——**不得**把"确认一下就完成"算成一次任务。
+    // 若将来要保留 attention 期间的工作时长，请连同此断言一起改。
+    let mut replay = Replay::new();
+    replay.sample(100_000, true, Some(20.0), None);
+    let write = Some(SystemTime::UNIX_EPOCH + Duration::from_millis(105_000));
+    replay.sample(
+        104_000,
+        true,
+        None,
+        Some(Signal::Attention("fp-attn".into(), "确认？".into())),
+    );
+    assert!(replay.engine.latest_event.take().is_some());
+
+    // 紧接 completed：判定层面成立，但时长不足门槛
+    let level = replay.sample_with_write(
+        105_000,
+        true,
+        None,
+        Some(Signal::Completed("fp-done".into())),
+        write,
+    );
+    assert_eq!(level, ActivityLevel::Completed, "状态层仍是完成");
+    assert!(
+        replay.engine.latest_event.is_none(),
+        "但 attention 已清掉工作起点，0 秒不得算一次任务完成（engine.rs:671-677）"
+    );
+}
+
+#[test]
+fn a_repeated_completion_is_silent_even_with_enough_new_work_duration() {
+    // Rebuild a qualifying duration so this assertion actually exercises event deduplication.
+    let mut replay = Replay::new();
+    replay.sample(100_000, true, Some(20.0), None);
+
+    let done = Some(Signal::Completed("done-fp-map".into()));
+    let write = || Some(SystemTime::UNIX_EPOCH + Duration::from_millis(104_000));
+
+    // 第一次：4 秒实质工作，正常推出
+    replay.sample_with_write(104_000, true, None, done.clone(), write());
+    let first = replay.engine.latest_event.take().expect("首次完成应送达");
+    assert_eq!(first.event_type, "completed");
+    assert!((first.duration - 4.0).abs() < 1e-9);
+
+    // The same completed identity remains silent after another qualifying work interval.
+    replay.sample(105_000, true, Some(20.0), None);
+    replay.sample_with_write(112_000, true, None, done.clone(), write());
+    assert!(
+        replay.engine.latest_event.is_none(),
+        "同一完成指纹不得二次推送"
+    );
+
+    // 换一个指纹就该推得出来——证明上面的静默不是因为 completed 分支坏了
+    replay.sample(113_000, true, Some(20.0), None);
+    replay.sample_with_write(
+        121_000,
+        true,
+        None,
+        Some(Signal::Completed("done-fp-map-2".into())),
+        Some(SystemTime::UNIX_EPOCH + Duration::from_millis(121_000)),
+    );
+    assert_eq!(
+        replay.engine.latest_event.take().map(|e| e.event_type),
+        Some("completed".to_string()),
+        "新指纹必须能推出完成，否则上面的断言只是 completed 分支整体失效"
+    );
 }

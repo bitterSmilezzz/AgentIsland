@@ -35,6 +35,10 @@ pub struct ProcHit {
 }
 
 impl ProcessMonitor {
+    pub(crate) fn unobserved() -> Self {
+        Self { sys: System::new(), last_refresh: None, cpu_measured: false, rows: Vec::new() }
+    }
+
     pub fn new() -> Self {
         let mut sys = System::new();
         sys.refresh_processes_specifics(ProcessesToUpdate::All, true, process_refresh_kind());

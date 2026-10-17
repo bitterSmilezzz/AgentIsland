@@ -34,8 +34,38 @@ esac
 
 BASELINE="scripts/secrets-baseline.txt"
 HISTORY_ALLOW="scripts/secrets-history-allow.txt"
-HITS=/tmp/scan-secrets-hits.txt
-BLOBSTREAM=/tmp/scan-secrets-blobs.txt
+# Every invocation owns its workspace, including raw matches and blob content.
+# mktemp creates the directory exclusively; the subshell's umask enforces 0700
+# without changing permissions on the intentional --rebaseline output.
+RUN_TMP="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/scan-secrets.XXXXXXXX")" || {
+    echo "✗ 建不了扫描临时目录，门禁不放行" >&2
+    exit 3
+}
+# Only remove the directory this run created. SIGKILL cannot run shell traps;
+# its private remnants are never reused as another run's input or success proof.
+# 清理只针对本轮自己创建的东西：RUN_TMP 目录本身，加上 put 在目标同目录创建的发布临时文件
+# （仅 --rebaseline 的仓库侧 baseline）。不动别人的临时文件。
+cleanup_run() {
+    local status="$1" f
+    if [[ -f "$RUN_TMP/created.txt" ]]; then
+        while IFS= read -r f; do
+            [[ -n "$f" ]] && rm -f -- "$f"
+        done < "$RUN_TMP/created.txt"
+    fi
+    rm -rf -- "$RUN_TMP"
+    return "$status"
+}
+trap 'status=$?; trap - EXIT INT TERM; cleanup_run "$status"; exit "$status"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+HITS="$RUN_TMP/hits.txt"
+BLOBSTREAM="$RUN_TMP/blobs.txt"
+FILES_RAW="$RUN_TMP/files.raw"
+FILES="$RUN_TMP/files.txt"
+MATCHES="$RUN_TMP/matches.txt"
+BASELINE_COPY="$RUN_TMP/baseline.txt"
+SHAS="$RUN_TMP/shas.txt"
+PATHS="$RUN_TMP/paths.txt"
 # 进程内一次性备忘，只由 blob_stream 置位。刻意**不**用「/tmp 文件是否存在」当记忆：
 # 那等于跨进程复用上一轮的对象流，新提交的 blob 永远扫不到，门禁会假绿。
 BLOBSTREAM_READY=""
@@ -63,11 +93,17 @@ is_hard() { local r; for r in "${HARD[@]}"; do [[ "$r" == "$1" ]] && return 0; d
 redact() { LC_ALL=C sed -E 's/[A-Za-z0-9_./+=~-]{9,}/«masked»/g' | cut -c1-100; }
 
 # 所有中间文件的写入出口：先写临时文件再改名，且每一步失败都必须让脚本失败。
+# 临时文件与目标**同目录**（同设备），mv 才是原子替换而不是复制+删除。
 # 空文件在这里是「扫描没跑完」的信号，不是「零命中」的信号——下游分不清这两者。
 put() {
     local dest="$1"; shift
-    local tmpf="${dest}.new"
-    : > "$tmpf" 2>/dev/null || { echo "✗ 建不了临时文件 $tmpf" >&2; exit 3; }
+    # 目标同目录 + 独占创建：mv 才是原子替换，且两个并发 run 不会撞同一个临时名。
+    # 目标一律落在本轮私有 RUN_TMP 内；--rebaseline 的唯一例外是仓库里的 baseline，
+    # 那里的 `.new.XXXXXX` 是发布路径而非共享中间文件。
+    local tmpf
+    tmpf="$(mktemp "${dest}.new.XXXXXX")" || { echo "✗ 建不了临时文件 ${dest}.new.XXXXXX" >&2; exit 3; }
+    # 登记本轮创建的临时文件，中断时只清理这些（仓库侧的发布临时文件不能留在工作区）
+    printf '%s\n' "$tmpf" >> "$RUN_TMP/created.txt" || exit 3
     "$@" > "$tmpf"   || { echo "✗ 生成 $tmpf 失败（$*）" >&2; rm -f "$tmpf"; exit 3; }
     mv -f "$tmpf" "$dest" || { echo "✗ 替换 $dest 失败" >&2; rm -f "$tmpf"; exit 3; }
 }
@@ -85,7 +121,7 @@ file_list() {
 # 取待扫文件列表。git 自己失败或列表为空都必须失败——「没扫到文件」不是「没有敏感内容」。
 load_file_list() {
     local mode="$1" raw rc
-    raw=/tmp/scan-secrets-files.raw
+    raw="$FILES_RAW"
     file_list "$mode" > "$raw"
     rc=$?
     if [[ $rc -ne 0 ]]; then
@@ -93,8 +129,8 @@ load_file_list() {
         exit 3
     fi
     # 只保留还存在于工作区的条目：git 跟踪但文件已删的（submodule 未初始化等）不是扫描失败
-    put /tmp/scan-secrets-files.txt awk 'NF && (system("test -e \"" $0 "\"") == 0)' "$raw"
-    if [[ ! -s /tmp/scan-secrets-files.txt ]]; then
+    put "$FILES" awk 'NF && (system("test -e \"" $0 "\"") == 0)' "$raw"
+    if [[ ! -s "$FILES" ]]; then
         echo "✗ 待扫文件列表为空：这个仓库里一个存在且被 git 认得的文件都没有。" >&2
         echo "  这不是「没有敏感内容」，而是「什么都没扫」——门禁不放行。" >&2
         exit 3
@@ -107,13 +143,13 @@ scan_worktree() {
     local files=()
     while IFS= read -r f; do
         [[ -f "$f" ]] && files+=("$f")
-    done < /tmp/scan-secrets-files.txt
+    done < "$FILES"
     [[ ${#files[@]} -gt 0 ]] || { echo "✗ 没有可扫描的常规文件" >&2; exit 3; }
     for idx in "${!RULE_IDS[@]}"; do
         rule="${RULE_IDS[$idx]}"; pat="${RULE_PAT[$idx]}"
         # 一条规则只启动一次 grep。macOS 27 的系统 Bash 在逐文件密集 fork 时
         # 会触发 SIGTRAP；批量扫描也让 grep 的失败码不再被 process substitution 吞掉。
-        LC_ALL=C grep -InHE -- "$pat" "${files[@]}" > /tmp/scan-secrets-matches.txt 2>/dev/null
+        LC_ALL=C grep -InHE -- "$pat" "${files[@]}" > "$MATCHES" 2>/dev/null
         grep_rc=$?
         [[ $grep_rc -le 1 ]] || { echo "✗ [$rule] 文件扫描失败（grep 退出码 ${grep_rc}）" >&2; exit 3; }
         while IFS= read -r match; do
@@ -125,7 +161,7 @@ scan_worktree() {
                 "$(printf '%s' "$content" | cksum | cut -d' ' -f1)" \
                 "$(printf '%s' "$content" | redact)" | tr '\n' ' ') || exit 3
             printf '%s\n' "${row% }" >> "$HITS" || { echo "✗ 追加 $f:$ln 命中失败" >&2; exit 3; }
-        done < /tmp/scan-secrets-matches.txt
+        done < "$MATCHES"
         # 去重走临时文件再改名：对同一文件 in-place sort 是曾经静默产出空文件的那一步
         put "$HITS" sort -u "$HITS"
     done
@@ -133,7 +169,7 @@ scan_worktree() {
 
 report_worktree() {
     local new hard_new baseline
-    baseline=/tmp/scan-secrets-baseline.txt
+    baseline="$BASELINE_COPY"
     # A missing baseline is a distinct failure, not an empty approved set.
     if [[ ! -e "$BASELINE" ]]; then
         echo "✗ 找不到基线 ${BASELINE}——没有基线就无法判断「新增」，门禁不放行。" >&2
@@ -174,18 +210,18 @@ blob_stream() {
     # v0.0.163 / v0.0.164 两次提交新增的 27 个 blob 就是这样一次都没进过历史扫描。
     # 顺带一提，工作区扫描用 grep -I 跳过二进制，历史扫描用 grep -a 不跳——
     # 所以「新提交的二进制文件里有没有东西」只有这一遍能回答，假绿的代价不是零。
-    rm -f "$BLOBSTREAM" /tmp/scan-secrets-shas.txt /tmp/scan-secrets-paths.txt
-    put /tmp/scan-secrets-shas.txt bash -c 'git rev-list --objects --all | awk "{print \$1}" | sort -u | git cat-file --batch-check 2>/dev/null | awk "\$2==\"blob\"{print \$1}"'
+    rm -f "$BLOBSTREAM" "$SHAS" "$PATHS"
+    put "$SHAS" bash -c 'git rev-list --objects --all | awk "{print \$1}" | sort -u | git cat-file --batch-check 2>/dev/null | awk "\$2==\"blob\"{print \$1}"'
     # sha → 路径（重命名会让同一 blob 对应多个路径，全部保留）
-    put /tmp/scan-secrets-paths.txt bash -c 'git rev-list --objects --all | awk "NF>=2{print \$1\"\t\"\$2}" | sort -u'
+    put "$PATHS" bash -c 'git rev-list --objects --all | awk "NF>=2{print \$1\"\t\"\$2}" | sort -u'
     # 一次性流式导出全部 blob，命中行前缀所属 blob 的 sha
-    put "$BLOBSTREAM" bash -c 'git cat-file --batch < /tmp/scan-secrets-shas.txt 2>/dev/null | LC_ALL=C awk "/^[0-9a-f]{40} blob [0-9]+\$/{sha=\$1; next} {print sha\"\t\"\$0}"'
+    put "$BLOBSTREAM" bash -c 'git cat-file --batch < "$1" 2>/dev/null | LC_ALL=C awk "/^[0-9a-f]{40} blob [0-9]+\$/{sha=\$1; next} {print sha\"\t\"\$0}"' _ "$SHAS"
     BLOBSTREAM_READY=1
 }
 
 report_history() {
     blob_stream
-    echo "==> git 对象：$(wc -l < /tmp/scan-secrets-shas.txt | tr -d ' ') 个 blob（含已删除的旧版本）"
+    echo "==> git 对象：$(wc -l < "$SHAS" | tr -d ' ') 个 blob（含已删除的旧版本）"
     local idx rule pat fail=0 hits joined unreviewed
     local allow_shas allow_paths
     allow_shas=$(grep -v '^#' "$HISTORY_ALLOW" 2>/dev/null | sed -nE 's/^sha:([0-9a-f]+)\|.*/\1/p' | sort -u)
@@ -200,7 +236,7 @@ report_history() {
         esac
         hits=$(LC_ALL=C grep -a -E "$pat" "$BLOBSTREAM" 2>/dev/null | cut -f1 | sort -u)
         [[ -z "$hits" ]] && { echo "✓ [$rule] 历史零命中"; continue; }
-        joined=$(join -t$'\t' <(printf '%s\n' "$hits" | sort -u) /tmp/scan-secrets-paths.txt)
+        joined=$(join -t$'\t' <(printf '%s\n' "$hits" | sort -u) "$PATHS")
         unreviewed=""
         while IFS=$'\t' read -r s p; do
             [[ -z "$s" ]] && continue

@@ -70,6 +70,7 @@ pub fn rfc822_date(now_ms: i64) -> String {
 }
 
 /// EHLO 用的本机主机名；拿不到就用 `localhost`（Swift `SMTPHello.hostName` 同口径）
+#[cfg(unix)]
 pub fn hostname() -> String {
     let mut buffer = [0u8; 256];
     let ok = unsafe {
@@ -86,6 +87,34 @@ pub fn hostname() -> String {
         .position(|byte| *byte == 0)
         .unwrap_or(buffer.len());
     let name = String::from_utf8_lossy(&buffer[..end]).trim().to_string();
+    if name.is_empty() {
+        "localhost".to_string()
+    } else {
+        name
+    }
+}
+
+/// Windows：`GetComputerNameW` 取本机名，UTF-16 → String。
+///
+/// **不拿 `localhost` 蒙过去**：EHLO 报的主机名会进收件服务器的 Received 头，
+/// 也可能被反查，所以这里要真取。取不到时才回落到与 unix 侧同一个 `localhost`，
+/// 不引入第二套兜底语义。
+#[cfg(windows)]
+pub fn hostname() -> String {
+    use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
+
+    // MAX_COMPUTERNAME_LENGTH = 15，加上结尾 NUL 给 16
+    let mut buffer = [0u16; 16];
+    // SAFETY: `size` 以字符数进出，与 windows-sys 的签名一致；
+    // 调用前后不依赖别的不变式。
+    let mut size = buffer.len() as u32;
+    let ok = unsafe { GetComputerNameW(buffer.as_mut_ptr(), &mut size) } != 0;
+    if !ok || size == 0 {
+        return "localhost".to_string();
+    }
+    let name = String::from_utf16_lossy(&buffer[..size as usize])
+        .trim()
+        .to_string();
     if name.is_empty() {
         "localhost".to_string()
     } else {
@@ -301,7 +330,7 @@ fn session_inner(
         return fail;
     }
     let _ = session.write_line("QUIT");
-    Outcome::Delivered
+    Outcome::Accepted
 }
 
 /// 真实会话：465 隐式 TLS（`native-tls` 包一层 `TcpStream`）。
@@ -472,7 +501,7 @@ mod tests {
             "Qoder · 等待你确认（刚刚）",
             0,
         );
-        assert_eq!(outcome, Outcome::Delivered);
+        assert_eq!(outcome, Outcome::Accepted);
         assert_eq!(session.closed, 1, "跑完也要关连接");
 
         let written = &session.written;
@@ -590,7 +619,7 @@ mod tests {
             Some("250 queued"),
         ]);
         let outcome = run(&mut session, &target(), "s", "b", 0);
-        assert_eq!(outcome, Outcome::Delivered);
+        assert_eq!(outcome, Outcome::Accepted);
         assert_eq!(
             session.written[1], "AUTH LOGIN",
             "问候的续行读完后才能到 AUTH"

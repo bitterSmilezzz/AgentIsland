@@ -20,6 +20,7 @@ mod connection_probe;
 mod connections;
 mod cost;
 mod deeplink;
+mod dedup;
 mod duration;
 mod engine;
 mod filemon;
@@ -35,6 +36,10 @@ mod minimax;
 mod models;
 mod motion_probe;
 mod navigation;
+mod notify_latency;
+mod notify_ledger;
+mod notify_ledger_probe;
+mod remote_delivery_probe;
 mod notifier;
 mod observability;
 mod placement;
@@ -75,6 +80,7 @@ mod transport;
 mod trees;
 mod usage_context;
 mod usage_projection;
+mod hook_event;
 mod webhook;
 mod window_layout;
 mod window_layout_execution;
@@ -1610,6 +1616,14 @@ fn remote_status(state: State<SharedEngine>) -> crate::remote::Status {
 #[tauri::command]
 fn remote_recent(state: State<SharedEngine>) -> Vec<crate::notifier::Recent> {
     state.lock().unwrap().notifier.recent_view()
+}
+
+/// 通道故障升级态的只读出口（NOT-05「故障升级」）。
+/// 升级后自动外发停在「不再重试」，但用户**必须看得见**——
+/// 一个静默停下来的通道比报错更难查。
+#[tauri::command]
+fn remote_escalations(state: State<SharedEngine>) -> Vec<String> {
+    state.lock().unwrap().notifier.escalated_channels()
 }
 
 #[tauri::command]
@@ -3194,6 +3208,11 @@ fn truncate_log_if_oversized(path: &std::path::Path) -> Option<u64> {
 }
 
 pub(crate) fn log_line(msg: &str) {
+    // 任何 headless 探针都不得写用户的真实日志文件：
+    // 探针的契约是「只读用户状态、只在临时/loopback 里动作」，
+    // 往 `agentisland-tauri.log` 追加行会污染用户状态，也让「探针没碰任何东西」不可证。
+    if notify_ledger_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
+    if remote_delivery_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
     let filename = if isolated_instance_requested() {
         format!("agentisland-test-{}.log", std::process::id())
     } else {
@@ -3232,21 +3251,14 @@ pub(crate) fn log_line(msg: &str) {
     }
 }
 
-fn engine_loop(shared: SharedEngine, app: AppHandle) {
+fn engine_loop(shared: SharedEngine, app: AppHandle, wake_rx: mpsc::Receiver<()>) {
+    let scheduler = engine::HookScheduler::new(wake_rx);
     let mut source_signature = Vec::<String>::new();
     loop {
         // 徽标文本在临界区里**算好**，写托盘留到锁外（理由见 `apply_tray_badge`）。
         let (state, interval, badge, observations) = {
             let mut e = shared.lock().unwrap();
-            let mut events = Vec::new();
-            if let Some(rx) = e.event_rx.as_ref() {
-                while let Ok(ev) = rx.try_recv() {
-                    events.push(ev);
-                }
-            }
-            for ev in events {
-                e.push_event(ev);
-            }
+            e.consume_hook_events();
             let badge_mode = e.settings.menu_bar_badge_mode.clone();
             e.tick();
             let s = e.state();
@@ -3297,6 +3309,8 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
                     .collect::<Vec<_>>(),
             )
         };
+        // 发布与 hook 唤醒均不延后下一次全量采样的期限。
+        let sample_at = std::time::Instant::now() + std::time::Duration::from_secs_f64(interval);
         // 锁已释放，才轮到托盘——顺序不能反，见 `apply_tray_badge` 的注释。
         memory::reclaim_idle_pages();
         apply_tray_badge(&app, badge);
@@ -3341,7 +3355,17 @@ fn engine_loop(shared: SharedEngine, app: AppHandle) {
                 }
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs_f64(interval));
+        // hook 只走快速消费与状态发布，采样期限仍是 sample_at。
+        // 同一调度单元供真实 HTTP 验收使用，无需构造 Tauri AppHandle。
+        while let Some(state) = scheduler.wait_and_consume(&shared, sample_at, || {}) {
+            for label in ["island", "sidebar", "workbench"] {
+                if let Some(window) = app.get_webview_window(label) {
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.emit("engine://tick", &state);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -4092,6 +4116,62 @@ fn ui_smoke_requested() -> bool {
     std::env::args().any(|a| a == "--ui-smoke")
 }
 
+#[cfg(test)]
+mod deeplink_event_type_tests {
+    use super::*;
+
+    /// 深链必须与 `EventKind::ALL` 认清同一套类型：每一类都不得被折叠。
+    /// 此前这条路径零覆盖，而它会把 `question` 静默写成 `completed`。
+    #[test]
+    fn every_event_kind_survives_the_deeplink_path() {
+        for kind in crate::remote::EventKind::ALL {
+            let raw = kind.as_str();
+            assert_eq!(
+                deeplink_event_type(raw),
+                raw,
+                "深链把 {raw} 折叠成了别的类型"
+            );
+        }
+    }
+
+    /// 历史别名仍要认（深链老链接不能失效）；真正未知的才回落。
+    #[test]
+    fn deeplink_keeps_legacy_aliases_and_falls_back_only_for_unknown() {
+        for (raw, expected) in [
+            ("costspike", "costSpike"),
+            ("cost", "costSpike"),
+            ("budget", "costSpike"),
+            ("alert", "costSpike"),
+            ("confirm", "attention"),
+            ("wait", "attention"),
+            ("", "completed"),
+            ("nonsense", "completed"),
+        ] {
+            assert_eq!(deeplink_event_type(raw), expected, "深链类型映射：{raw}");
+        }
+    }
+}
+
+/// 深链 `type` 参数 → 事件类型。
+///
+/// 深链是**第二个**接受事件类型的入口（第一个是 `/notify`）。它必须与
+/// `remote::EventKind` 认清同一套类型，否则 `agentisland://notify?type=question`
+/// 会被静默落成 `completed`——与「CLI 发 `kind`、路由读 `event`」是同一族缺陷：
+/// 看着成功，实际不是用户要的那件事。抽成纯函数是为了能测（这条路径此前零覆盖）。
+fn deeplink_event_type(kind: &str) -> &'static str {
+    if let Some(found) = crate::remote::EventKind::parse(kind) {
+        return found.as_str();
+    }
+    match kind {
+        // 深链历史别名（`normalize_event_kind` 也认 cost_spike/alert）
+        "costspike" | "cost" | "budget" | "alert" => "costSpike",
+        "confirm" | "wait" => "attention",
+        // 真正未知的写法仍回落（深链没有「400」可以回给用户），
+        // 但这只覆盖清单外的值，不再吞掉任何已识别的类型。
+        _ => "completed",
+    }
+}
+
 /// 深链投递的事件落进事件队列。
 ///
 /// 标记为**外部投递**（`externally_delivered`）：它来自一条 URL，
@@ -4115,11 +4195,10 @@ fn notify_external(
         log_line(&format!("[deeplink] notify 投递给未知档案：{agent}"));
         return false;
     };
-    let event_type = match kind.as_str() {
-        "attention" | "confirm" | "wait" => "attention",
-        "costspike" | "cost" | "budget" | "alert" => "costSpike",
-        _ => "completed",
-    };
+    // 深链是**第二个**接受事件类型的入口，必须与 `/notify` 认清同一套类型，
+    // 否则 `agentisland://notify?type=question` 会被静默落成 `completed`
+    // ——与「CLI 发 kind、路由读 event」是同一族缺陷：看着成功，实际不是他要的那件事。
+    let event_type = deeplink_event_type(&kind);
     engine.push_event(models::AgentTaskEvent {
         id: format!("deeplink-{}", tokens::now_ms()),
         agent_id: profile.id.clone(),
@@ -4207,6 +4286,12 @@ fn main() {
     // **必须在建引擎、开线程、起窗口之前**：`status` 的全部价值是「快」，
     // 而拉起 Tauri 再退出比它自己采完一拍慢一个量级。
     let argv: Vec<String> = std::env::args().collect();
+    if let Some(code) = notify_ledger_probe::cli(&argv) {
+        std::process::exit(code);
+    }
+    if let Some(code) = remote_delivery_probe::cli(&argv) {
+        std::process::exit(code);
+    }
     if let Some(code) = claude_plan_receiver::cli(&argv) {
         std::process::exit(code);
     }
@@ -4261,7 +4346,7 @@ fn main() {
     if let Some(code) = cli::try_run(&argv) {
         std::process::exit(code);
     }
-    let (tx, rx) = mpsc::channel::<models::AgentTaskEvent>();
+    let (tx, rx) = mpsc::channel::<hook_event::HookEvent>();
     let mut settings = Settings::load();
     if background_test_requested() || motion_probe::requested() {
         settings.remote_policy.master_enabled = false;
@@ -4304,7 +4389,9 @@ fn main() {
             .identifier
             .push_str(&format!(".test.p{}", std::process::id()));
     }
-    tauri::Builder::default()
+    let notify_shutdown = Arc::new(Mutex::new(None::<notify_ledger::FlushHandle>));
+    let setup_notify_shutdown = notify_shutdown.clone();
+    let app = tauri::Builder::default()
         // 必须早于其他插件：第二次打开复用现有应用，不再创建窗口与托盘。
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
             // 普通重复打开只复用常驻实例；工作台由菜单或明确深链唤回。
@@ -4353,6 +4440,14 @@ fn main() {
             }
         })
         .setup(move |app| {
+            // Only the resident GUI owns notification history; CLI and synthetic probes stay read-only.
+            if !demo && !isolated_instance_requested() && !background_test_requested() {
+                let mut engine = shared.lock().unwrap();
+                engine.enable_dedup_persistence(settings::config_dir().join("dedup-state.json"));
+                engine.enable_notify_ledger_persistence(settings::config_dir().join("notify-ledger.json"));
+                *setup_notify_shutdown.lock().unwrap() = engine.notify_ledger.flush_handle();
+                // Startup read failures are visible immediately via EngineState.notifyPersistence.
+            }
             set_dock_presence(app.handle(), false);
             let (saved_mode, edge, width) = {
                 let e = shared.lock().unwrap();
@@ -4485,16 +4580,19 @@ fn main() {
                 });
             }
 
-            // 引擎采样线程
+            // 引擎采样线程。`wake_tx`/`wake_rx` 让本地入口收到 hook 事件后
+            // 立刻叫醒它，而不是等满一拍（2~5 秒）——需求要求入队 p95 ≤1 秒。
+            let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
             let shared2 = shared.clone();
             let handle = app.handle().clone();
-            std::thread::spawn(move || engine_loop(shared2, handle));
+            std::thread::spawn(move || engine_loop(shared2, handle, wake_rx));
 
             // 本地 Webhook（Rust 端 127.0.0.1:42000，与 Swift 的 41999 分开以免静默抢端口）
             if !isolated_instance_requested() {
                 let shared_for_webhook = shared.clone();
                 std::thread::spawn(move || {
-                    let _server = webhook::LocalEventServer::start(tx, shared_for_webhook);
+                    let _server =
+                        webhook::LocalEventServer::start(tx, shared_for_webhook, wake_tx);
                     loop {
                         std::thread::sleep(std::time::Duration::from_secs(3600));
                     }
@@ -4688,6 +4786,7 @@ fn main() {
             patch_settings,
             remote_status,
             remote_recent,
+            remote_escalations,
             remote_send_test,
             remote_preview,
             token_forecast,
@@ -4782,8 +4881,33 @@ fn main() {
             show_workbench,
             collapse_to_tray
         ])
-        .run(context)
-        .expect("error while running tauri application");
+        .build(context)
+        .expect("error while building tauri application");
+    app.run(move |_app, event| {
+        // Independent of the detached engine's lifetime. No engine lock or main
+        // thread dispatch is involved; the disk worker has a strict 2s budget.
+        match event {
+            // ExitRequested can still be prevented by another handler, so it only
+            // flushes: the channel stays open for later enqueues.
+            tauri::RunEvent::ExitRequested { .. } => {
+                if let Some(handle) = notify_shutdown.lock().unwrap().clone() {
+                    if !handle.flush(std::time::Duration::from_secs(2)) {
+                        log_line("notify ledger shutdown flush incomplete; recovery not guaranteed");
+                    }
+                }
+            }
+            // Terminal: close the worker and give the last snapshot its own budget.
+            tauri::RunEvent::Exit => {
+                let handle = notify_shutdown.lock().unwrap().take();
+                if let Some(handle) = handle {
+                    if !handle.shutdown(std::time::Duration::from_secs(2)) {
+                        log_line("notify ledger shutdown flush incomplete; recovery not guaranteed");
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 #[cfg(test)]
@@ -6190,11 +6314,19 @@ mod posix_port_ratchet {
     /// 或者有意识地决定不做、并把 `app/README.md` 的口径一并改掉。
     ///
     /// v0.0.270：四处本地日历调用归入 `localclock` 的平台门控，基线从 8 降至 **4**。
-    /// 对照 v0.0.269 首次 Windows CI 的 17 个**编译错误**：
-    /// 两者不等价、也不必相等——CI 还报了 `placement.rs` 的
-    /// 「`fallback_work_area` 不在作用域内」那类 **cfg 作用域**问题，
-    /// 以及 `filemon.rs` / `procmon.rs` / `engine.rs` / `main.rs` 的文件级 `#[cfg(unix)] use`，
-    /// **那些一条都不在 `POSIX_ONLY` 这张表里**。
+    ///
+    /// v0.0.324 实测（Windows CI `--log-failed` 逐条解析）：
+    /// Windows 上 `cargo check` 报 **12 个错误 / 8 个项目文件**。
+    /// 其中 **6 个**是 `std::os::unix` + POSIX libc（本表覆盖的类），
+    /// 另 **6 个是 cfg 作用域**：item 被 `#[cfg(unix)]` / `#[cfg(not(windows))]`
+    /// 排除，调用方却没有对应门控。
+    ///
+    /// ⚠️ 那 6 个 cfg 作用域问题**不在本守护覆盖范围内，也不在 `POSIX_ONLY` 表里**。
+    /// 它们无法用文本匹配本地检出：带 `#[cfg(not(unix))` 配对实现的正常写法
+    /// （`cleaner.rs::signal`、`webhook.rs::inspect_token`、`skill_files.rs::open_dir`）
+    /// 与没有配对实现的（`placement.rs` 那 4 个函数）在文本层面几乎同形，
+    /// 实测同一个粗糙判据会把前者全部误报成缺口。唯一可靠判据是 Windows 编译器，
+    /// 所以 `.github/workflows/build.yml` 的 windows job 不能因为「有棘轮」就删。
     ///
     /// ⚠️ 所以 **4 不是「Windows 还差多少」的全部**，它只是这一类
     /// （`std::os::unix` + POSIX libc）的数量。别拿它当完成度指标。
@@ -6205,24 +6337,25 @@ mod posix_port_ratchet {
     /// 门控过的在 Windows 上根本不会编译，所以**不算缺口**。漏算的后果是守护误报，
     /// 而误报久了就没人看它了——比漏算更糟。
     ///
-    /// 判据是**向上 4 行内**出现 `#[cfg(unix)]` / `#[cfg(not(unix))]`。这是启发式：
-    /// 实测仓里两种写法都覆盖得到——
-    /// `#[cfg(unix)]\n{ use std::os::unix::…; }`（属性在上两行）与
-    /// `#[cfg(unix)]\npub fn f() { use std::os::unix::…; }`（在上三行）。
-    /// 宁可少算（少算只是让上限偏松），不要误报。
+    /// 判据是**只沿「仍属于同一个 item」的向上路径**找 `#[cfg(unix)]` /
+    /// `#[cfg(not(unix))]`：一旦中途撞见 `}`（当前 item 已经闭合），就不再往上找。
+    ///
+    /// ⚠️ 这一步是必需的，不是洁癖。只看「往上 4 行内有没有 cfg(unix)」会把
+    /// **隔壁 item** 的属性、或**上面那个兄弟块**的门控，当成这个用法的免责——
+    /// 实测 `count_in` 因此把未门控的用法读成 0，上限跟着虚高，
+    /// 恰好废掉这条守护唯一的作用。仓里 23 处命中都是紧邻属性（距离 1-3 行），
+    /// 所以收紧判据不会把真门控误判成缺口。
     fn is_unix_gated(lines: &[&str], at: usize) -> bool {
-        let mut looked = 0;
         for up in (0..at).rev() {
             let t = lines[up].trim();
-            if t.is_empty() {
-                continue;
+            // 当前 item 已经闭合：再往上就是别的 item 了。
+            // `fn neighbour() {}` 这种单行闭合同样要算——只认以 `}` 开头的行
+            // 会放过它，于是隔壁 item 的属性又能给本行免责（实测 COUNT=0）。
+            if t.starts_with('}') || (t.contains('{') && t.ends_with('}')) {
+                return false;
             }
-            looked += 1;
             if t.contains("cfg(unix)") || t.contains("cfg(not(unix))") {
                 return true;
-            }
-            if looked >= 4 {
-                break;
             }
         }
         false
@@ -6361,10 +6494,80 @@ mod posix_port_ratchet {
             "#[cfg(unix)]\npub fn g() {\n    use std::os::unix::fs::PermissionsExt;\n}\n";
         assert_eq!(count_in(gated_item), 0, "函数级门控也不该计入");
 
+        // **不属于这个 item 的门控不能免责。** 只看「往上 4 行内有没有 cfg(unix)」
+        // 会把隔壁 item 的属性当成自己的门禁，于是未门控的 POSIX 用法被少算，
+        // 上限跟着虚高——那正好是这条守护唯一要防的事。
+        let borrowed_gate = concat!(
+            "#[cfg(unix)]\n",
+            "fn neighbour() {}\n",
+            "\n",
+            "fn bare() {\n",
+            "    use std::os::unix::fs::PermissionsExt;\n",
+            "}\n",
+        );
+        assert_eq!(
+            count_in(borrowed_gate),
+            1,
+            "隔壁 item 的 #[cfg(unix)] 不该给未门控的用法免责"
+        );
+
+        // 同一 item 内的**兄弟**块也不行：上面那个块门控了，不代表下面这个也门控了。
+        let sibling_block = concat!(
+            "fn pair() {\n",
+            "    #[cfg(unix)]\n",
+            "    {\n",
+            "        use std::os::unix::fs::PermissionsExt;\n",
+            "    }\n",
+            "    {\n",
+            "        use std::os::unix::fs::OpenOptionsExt;\n",
+            "    }\n",
+            "}\n",
+        );
+        assert_eq!(
+            count_in(sibling_block),
+            1,
+            "兄弟块没有门控，不该被上面那个块连带免责"
+        );
+
         // 整个仓当前确实有命中（不是 0）
         assert!(
             hits().len() > 0,
             "读到 0 处——采集器或边界规则坏了，上面那条会恒绿"
+        );
+    }
+
+    /// **本守护覆盖不到的那一半，必须有名字。**
+    ///
+    /// Windows CI（v0.0.324）报的 12 个错误里只有 6 个属 `POSIX_ONLY` 这一类，
+    /// 另 6 个是 **cfg 作用域**：item 被平台门控排除、调用方却没有对应门控。
+    ///
+    /// 这条测试不试图去检出它们——v0.0.324 实测证明那不可能：
+    /// `cleaner.rs::signal` / `webhook.rs::inspect_token` / `skill_files.rs::open_dir`
+    /// 都有 `#[cfg(not(unix))]` 配对实现（正常写法），而 `placement.rs` 那 4 个
+    /// 没有配对实现的，在文本层面与前者几乎同形，粗糙判据会把它们全部误报。
+    ///
+    /// 它守的是**别把这件事忘掉**：windows job 不能因为「有棘轮了」被删掉，
+    /// 而上限 `PINNED_MAX` 也不该被当成「Windows 还差多少」。
+    #[test]
+    fn the_ratchet_does_not_claim_to_cover_cfg_scope_gaps() {
+        // 表里只有 POSIX 标识符，没有任何「作用域 / 配对实现」类判据
+        for needle in POSIX_ONLY {
+            assert!(
+                needle.starts_with("std::") || needle.starts_with("libc::"),
+                "POSIX_ONLY 混进了非标识符条目 {needle:?}——这条守护只数平台标识符，\n\
+                 cfg 作用域那 6 个错误它一个也看不见（见 PINNED_MAX 的注释）"
+            );
+        }
+        // 命中数**必须** ≤ 上限（这是 `<=` 而不是 `==`：端口做对了它会下降，
+        // 那时上面那条守护自然放行，而这条不该因为「变好了」报警）。
+        // 这里守的是另一件事——**别把上限当成 Windows 缺口的全貌**。
+        assert!(
+            hits().len() <= PINNED_MAX,
+            "命中数 {} 超过钉死的上限 {}。\n\
+             但即使等于上限，那也只是 `std::os::unix` + POSIX libc 这一类；\n\
+             Windows CI 还另有 6 个 cfg 作用域错误（v0.0.324 实测），本守护看不见它们。",
+            hits().len(),
+            PINNED_MAX
         );
     }
 }
@@ -6849,5 +7052,92 @@ mod background_lifecycle_tests {
                 window["label"]
             );
         }
+    }
+}
+mod test_identity_sentinel {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    fn rust_sources() -> Vec<PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out: Vec<PathBuf> = Vec::new();
+        let mut stack = vec![dir];
+        while let Some(current) = stack.pop() {
+            let entries = match std::fs::read_dir(&current) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Matches the `fn name(` that follows `#[test]` / `#[tokio::test(...)]`, allowing
+    /// other attributes in between.
+    fn test_names(text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut names = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            let is_test = trimmed.starts_with("#[test]")
+                || (trimmed.starts_with("#[tokio::test")
+                    && trimmed.contains(']')
+                    && !trimmed.contains("ignore"));
+            if !is_test {
+                continue;
+            }
+            for follow in lines.iter().skip(index).take(4) {
+                let candidate = follow.trim_start();
+                if let Some(rest) = candidate.strip_prefix("fn ") {
+                    if let Some(name) = rest.split(['(', '<', ' ']).next() {
+                        if !name.is_empty() {
+                            names.push(name.to_string());
+                            break;
+                        }
+                    }
+                }
+                if candidate.starts_with("#[") {
+                    continue;
+                }
+                break;
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn every_test_function_name_is_unique_across_the_crate() {
+        let mut owners: HashMap<String, Vec<String>> = HashMap::new();
+        for path in rust_sources() {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+            let file = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            for name in test_names(&text) {
+                owners.entry(name).or_default().push(file.clone());
+            }
+        }
+        let collisions: Vec<String> = owners
+            .iter()
+            .filter(|(_, files)| files.len() > 1)
+            .map(|(name, files)| format!("{name} -> {}", files.join(", ")))
+            .collect();
+        assert!(
+            collisions.is_empty(),
+            "test function names collide, so a registration cannot name one case: {}",
+            collisions.join(" | ")
+        );
     }
 }

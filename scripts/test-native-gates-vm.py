@@ -100,12 +100,35 @@ class ResourceGateTests(unittest.TestCase):
 
     def check(self, data, manifest, exit_code=0):
         import json, tempfile
-        with tempfile.TemporaryDirectory(dir=vm.ROOT / '.build') as directory:
+        with tempfile.TemporaryDirectory(dir=vm.SCRATCH) as directory:
             root = Path(directory)
             with patch.object(vm.subprocess, 'run', return_value=subprocess.CompletedProcess([], exit_code)), \
                     patch.object(vm, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(data))):
                 vm.run_resource(['ssh'], 'python', 'guest', root, manifest)
             return json.loads((root / 'receipt.json').read_text())
+
+    def test_scratch_directory_exists_on_a_clean_checkout(self):
+        # `.build/` is git-ignored, so it is absent from a fresh checkout. The gate
+        # stages temporary payloads there, so it must create the directory rather than
+        # let TemporaryDirectory fail with FileNotFoundError -- which on a clean tree
+        # reported 18 errors before a single assertion ran.
+        import shutil
+        import sys
+        shutil.rmtree(vm.SCRATCH, ignore_errors=True)
+        self.assertFalse(vm.SCRATCH.exists())
+        # Other tests in this module stage their payloads in the same shared
+        # directory, so it must be restored whatever this assertion concludes.
+        self.addCleanup(vm.SCRATCH.mkdir, parents=True, exist_ok=True)
+        # Re-importing must be enough to make the gate usable again.
+        spec = importlib.util.spec_from_file_location('native_gates_vm_reload', vm.__file__)
+        reloaded = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = reloaded
+        try:
+            spec.loader.exec_module(reloaded)
+        finally:
+            sys.modules.pop(spec.name, None)
+        self.assertTrue(reloaded.SCRATCH.is_dir())
+        self.assertEqual(reloaded.SCRATCH, vm.SCRATCH)
 
     def test_preflight_hint_ignores_arbitrary_remote_details(self):
         import json, tempfile
@@ -125,7 +148,7 @@ class ResourceGateTests(unittest.TestCase):
 
     def test_capture_failure_preserves_preflight_diagnostic(self):
         import json, tempfile
-        with tempfile.TemporaryDirectory(dir=vm.ROOT / '.build') as directory:
+        with tempfile.TemporaryDirectory(dir=vm.SCRATCH) as directory:
             root = Path(directory)
             def failed_run(*args, **kwargs):
                 kwargs['stdout'].write(json.dumps(dict(stage='preflight', error_code='LEASE_EXISTS',
@@ -145,7 +168,7 @@ class ResourceGateTests(unittest.TestCase):
                      {'files': {'receipt.json': {'body': [], 'sha256': 'bad'}}, 'postcheck': {}},
                      {'files': {'../escape': {'body': 'x', 'sha256': 'bad'}}, 'postcheck': {}}]
         for payload in malformed:
-            with self.subTest(payload=payload), tempfile.TemporaryDirectory(dir=vm.ROOT / '.build') as directory:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory(dir=vm.SCRATCH) as directory:
                 root = Path(directory)
                 def failed_run(*args, **kwargs):
                     kwargs['stdout'].write(json.dumps(dict(stage='preflight', error_code='LEASE_EXISTS',
@@ -165,7 +188,7 @@ class ResourceGateTests(unittest.TestCase):
     def test_timeout_retains_failure_and_attempts_evidence_capture(self):
         import json, tempfile
         data, manifest = self.evidence()
-        with tempfile.TemporaryDirectory(dir=vm.ROOT / '.build') as directory:
+        with tempfile.TemporaryDirectory(dir=vm.SCRATCH) as directory:
             root = Path(directory)
             with patch.object(vm.subprocess, 'run', side_effect=subprocess.TimeoutExpired('ssh', 6600)), \
                     patch.object(vm, 'run', return_value=subprocess.CompletedProcess([], 0, stdout=json.dumps(data))) as capture:

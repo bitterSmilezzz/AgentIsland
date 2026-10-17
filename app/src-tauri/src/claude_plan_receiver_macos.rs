@@ -449,11 +449,208 @@ pub(crate) struct Status {
     pub rejected: u64,
     pub last_received_ms: Option<i64>,
 }
+// Synchronous callbacks MUST return in bounded time, must not acquire the cache,
+// and must not dispatch synchronously to the UI. A Rust closure cannot be killed.
+// The production configuration probe bounds file sizes/path depth, but filesystem
+// latency is not a hard wall-clock bound. Never reuse a prior successful check.
 type LifecycleGuard = Arc<dyn Fn() -> bool + Send + Sync>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiveFailure {
+    Transport(Error),
+    Deadline,
+    Cancelled,
+    Revoked,
+    GuardPanicked,
+}
+impl From<Error> for ReceiveFailure {
+    fn from(error: Error) -> Self {
+        Self::Transport(error)
+    }
+}
+impl ReceiveFailure {
+    fn wire(self) -> Error {
+        match self {
+            Self::Transport(error) => error,
+            Self::Deadline => Error::Rejected,
+            Self::Cancelled | Self::Revoked | Self::GuardPanicked => Error::Unavailable,
+        }
+    }
+}
+
+trait Timing: Send + Sync {
+    fn now(&self) -> Instant;
+    fn pause(&self, duration: Duration);
+}
+// A shared clock is a clock: tests hold `Arc<TestClock>` so the worker and the test
+// observe the same timeline, and forwarding here keeps call sites free of `&*`.
+impl<T: Timing + ?Sized> Timing for std::sync::Arc<T> {
+    fn now(&self) -> Instant {
+        (**self).now()
+    }
+    fn pause(&self, duration: Duration) {
+        (**self).pause(duration)
+    }
+}
+struct Monotonic;
+impl Timing for Monotonic {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn pause(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+thread_local! {
+    static PRIVATE_GUARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn lifecycle(guard: Option<&LifecycleGuard>) -> Result<(), ReceiveFailure> {
+    let Some(check) = guard else { return Ok(()) };
+    // catch_unwind alone runs the ordinary hook first, potentially printing a
+    // callback's panic payload. Suppress ONLY this thread's private callback;
+    // preserve the pre-existing hook for all other panics/threads.
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !PRIVATE_GUARD.with(|private| private.get()) {
+                previous(info);
+            }
+        }));
+    });
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            PRIVATE_GUARD.with(|private| private.set(self.0));
+        }
+    }
+    let _reset = Reset(PRIVATE_GUARD.with(|private| private.replace(true)));
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check())) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ReceiveFailure::Revoked),
+        Err(_) => Err(ReceiveFailure::GuardPanicked),
+    }
+}
+fn checkpoint(
+    timing: &dyn Timing,
+    deadline: Instant,
+    cancel: &AtomicBool,
+    endpoint: &Endpoint,
+) -> Result<(), ReceiveFailure> {
+    if cancel.load(Ordering::Acquire) {
+        return Err(ReceiveFailure::Cancelled);
+    }
+    if timing.now() >= deadline {
+        return Err(ReceiveFailure::Deadline);
+    }
+    endpoint.current()?;
+    if endpoint
+        .socket_id
+        .as_ref()
+        .is_none_or(|id| endpoint.socket_identity().as_ref() != Ok(id))
+    {
+        return Err(Error::Namespace.into());
+    }
+    // Filesystem checks themselves can consume the remaining budget.
+    if cancel.load(Ordering::Acquire) {
+        return Err(ReceiveFailure::Cancelled);
+    }
+    if timing.now() >= deadline {
+        return Err(ReceiveFailure::Deadline);
+    }
+    Ok(())
+}
+fn live_checkpoint(
+    timing: &dyn Timing,
+    deadline: Instant,
+    cancel: &AtomicBool,
+    endpoint: &Endpoint,
+    guard: Option<&LifecycleGuard>,
+) -> Result<(), ReceiveFailure> {
+    checkpoint(timing, deadline, cancel, endpoint)?;
+    let live = lifecycle(guard);
+    // A slow successful check is not a fresh authorization for an expired exchange.
+    checkpoint(timing, deadline, cancel, endpoint)?;
+    live
+}
+fn cache_until<'a>(
+    cache: &'a Mutex<Store>,
+    timing: &dyn Timing,
+    deadline: Instant,
+    cancel: &AtomicBool,
+    endpoint: &Endpoint,
+) -> Result<std::sync::MutexGuard<'a, Store>, ReceiveFailure> {
+    loop {
+        checkpoint(timing, deadline, cancel, endpoint)?;
+        match cache.try_lock() {
+            Ok(store) => {
+                checkpoint(timing, deadline, cancel, endpoint)?;
+                return Ok(store);
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(Error::Unavailable.into()),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                timing.pause(
+                    deadline
+                        .saturating_duration_since(timing.now())
+                        .min(Duration::from_millis(2)),
+                );
+            }
+        }
+    }
+}
+
+const STOP_BUDGET: Duration = Duration::from_secs(1);
+fn clear_until(cache: &Mutex<Store>, deadline: Instant) -> Result<(), Error> {
+    loop {
+        match cache.try_lock() {
+            Ok(mut cache) => {
+                cache.disable();
+                return Ok(());
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                error.into_inner().disable();
+                return Ok(());
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    return Err(Error::Busy);
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+}
+fn retire(endpoint: &Endpoint) {
+    if let Some(id) = &endpoint.socket_id {
+        let _ = endpoint.unlink_owned(id);
+    }
+    if endpoint.created && endpoint.current().is_ok() {
+        let _ = std::fs::remove_dir(&endpoint.root);
+    }
+}
+struct WorkerExit {
+    cache: Arc<Mutex<Store>>,
+    cancel: Arc<AtomicBool>,
+    status: Arc<Mutex<Status>>,
+    endpoint: Arc<Endpoint>,
+}
+impl Drop for WorkerExit {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+        // Revoke the address before waiting for a cache consumer.
+        retire(&self.endpoint);
+        let _ = clear_until(&self.cache, Instant::now() + STOP_BUDGET);
+        if let Ok(mut status) = self.status.lock() {
+            status.running = false;
+        }
+    }
+}
 pub(crate) struct Receiver {
     cache: Arc<Mutex<Store>>,
     cancel: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
+    endpoint: Arc<Endpoint>,
+    active: Arc<Mutex<Option<UnixStream>>>,
     thread: Option<JoinHandle<()>>,
 }
 impl Receiver {
@@ -480,10 +677,10 @@ impl Receiver {
         purge_interval: Duration,
         guard: Option<LifecycleGuard>,
     ) -> Result<Self, Error> {
-        if guard.as_ref().is_some_and(|check| !check()) {
-            return Err(Error::Unavailable);
-        }
+        lifecycle(guard.as_ref()).map_err(ReceiveFailure::wire)?;
         let (endpoint, listener) = Endpoint::claim(root)?;
+        let endpoint = Arc::new(endpoint);
+        let active = Arc::new(Mutex::new(None::<UnixStream>));
         let cache = Arc::new(Mutex::new(Store::default()));
         cache
             .lock()
@@ -500,14 +697,23 @@ impl Receiver {
         let worker_cache = cache.clone();
         let worker_cancel = cancel.clone();
         let worker_status = status.clone();
+        let worker_endpoint = endpoint.clone();
+        let worker_active = active.clone();
         let handle = std::thread::Builder::new()
             .name("claude-plan-receiver".into())
             .spawn(move || {
+                let endpoint = worker_endpoint;
+                let _exit = WorkerExit {
+                    cache: worker_cache.clone(),
+                    cancel: worker_cancel.clone(),
+                    status: worker_status.clone(),
+                    endpoint: endpoint.clone(),
+                };
                 let mut purged = Instant::now();
                 let mut checked = Instant::now();
                 while !worker_cancel.load(Ordering::Acquire) {
                     if checked.elapsed() >= Duration::from_secs(1) {
-                        if guard.as_ref().is_some_and(|check| !check()) {
+                        if lifecycle(guard.as_ref()).is_err() {
                             break;
                         }
                         checked = Instant::now();
@@ -521,7 +727,7 @@ impl Receiver {
                         break;
                     }
                     if purged.elapsed() >= purge_interval {
-                        if let Ok(mut cache) = worker_cache.lock() {
+                        if let Ok(mut cache) = worker_cache.try_lock() {
                             cache.purge_expired(Instant::now());
                         }
                         purged = Instant::now();
@@ -533,14 +739,27 @@ impl Receiver {
                     }
                     match listener.accept() {
                         Ok((mut stream, _)) => {
+                            if let Ok(mut active) = worker_active.lock() {
+                                *active = stream.try_clone().ok();
+                            }
                             let deadline = Instant::now() + EXCHANGE;
-                            let result = receive(
+                            let result = receive_with_timing(
                                 &mut stream,
                                 &worker_cache,
                                 deadline,
                                 &worker_cancel,
                                 &endpoint,
                                 guard.as_ref(),
+                                &Monotonic,
+                            );
+                            if let Ok(mut active) = worker_active.lock() {
+                                *active = None;
+                            }
+                            let fatal = matches!(
+                                result,
+                                Err(ReceiveFailure::GuardPanicked
+                                    | ReceiveFailure::Revoked
+                                    | ReceiveFailure::Cancelled)
                             );
                             if let Ok(mut status) = worker_status.lock() {
                                 match result {
@@ -548,11 +767,14 @@ impl Receiver {
                                         status.received = status.received.saturating_add(1);
                                         status.last_received_ms = Some(crate::tokens::now_ms());
                                     }
-                                    Err(Error::Input) => {}
+                                    Err(ReceiveFailure::Transport(Error::Input)) => {}
                                     Err(_) => {
                                         status.rejected = status.rejected.saturating_add(1);
                                     }
                                 }
+                            }
+                            if fatal {
+                                break;
                             }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
@@ -560,22 +782,16 @@ impl Receiver {
                         Err(_) => break,
                     }
                 }
-                worker_cancel.store(true, Ordering::Release);
-                match worker_cache.lock() {
-                    Ok(mut cache) => cache.disable(),
-                    Err(error) => error.into_inner().disable(),
-                }
-                if let Ok(mut status) = worker_status.lock() {
-                    status.running = false;
-                }
                 drop(listener);
-                drop(endpoint);
+                // _exit performs cleanup for every return and unwind path.
             })
             .map_err(|_| Error::Unavailable)?;
         Ok(Self {
             cache,
             cancel,
             status,
+            endpoint,
+            active,
             thread: Some(handle),
         })
     }
@@ -588,94 +804,145 @@ impl Receiver {
             .map(|s| s.clone())
             .map_err(|_| Error::Unavailable)
     }
-    pub(crate) fn stop(&mut self) {
+    /// Ok proves both body clearing and worker exit. Busy means a caller violated
+    /// the bounded cache/guard contract: retain this Receiver and retry stop;
+    /// Runtime must not announce that cleanup completed or start another receiver.
+    pub(crate) fn stop(&mut self) -> Result<(), Error> {
         self.cancel.store(true, Ordering::Release);
-        match self.cache.lock() {
-            Ok(mut cache) => cache.disable(),
-            Err(error) => error.into_inner().disable(),
+        retire(&self.endpoint);
+        if let Ok(active) = self.active.lock() {
+            if let Some(stream) = active.as_ref() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
         }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        let deadline = Instant::now() + STOP_BUDGET;
+        let cleared = clear_until(&self.cache, deadline);
+        let mut exited = Ok(());
+        while self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            if Instant::now() >= deadline {
+                // Cancel and endpoint teardown are already done, but a blocked cache
+                // consumer or in-flight callback can still delay exit. Report it.
+                exited = Err(Error::Busy);
+                break;
+            }
+            // Re-attempt while waiting: on the first pass the worker may not have
+            // registered the accepted stream yet (accept/registration race).
+            if let Ok(active) = self.active.lock() {
+                if let Some(stream) = active.as_ref() {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
         }
+        if exited.is_ok() {
+            if let Some(thread) = self.thread.take() {
+                thread.join().map_err(|_| Error::Unavailable)?;
+            }
+        }
+        cleared.and(exited)
     }
 }
 impl Drop for Receiver {
     fn drop(&mut self) {
-        self.stop();
+        // Drop cannot report a boundary failure; a caller that must prove cleanup
+        // uses stop() and checks the result.
+        let _ = self.stop();
     }
 }
-fn receive(
+fn receive_with_timing(
     stream: &mut UnixStream,
     cache: &Arc<Mutex<Store>>,
     deadline: Instant,
     cancel: &AtomicBool,
     endpoint: &Endpoint,
     guard: Option<&LifecycleGuard>,
-) -> Result<(), Error> {
+    timing: &dyn Timing,
+) -> Result<(), ReceiveFailure> {
+    checkpoint(timing, deadline, cancel, endpoint)?;
     peer(stream)?;
     let mut len = [0; 4];
     read_exact(stream, &mut len, deadline)?;
     let size = u32::from_be_bytes(len) as usize;
     if size == 0 || size > MAX_FRAME {
-        return Err(Error::Input);
+        return Err(Error::Input.into());
     }
     let mut body = vec![0; size];
     read_exact(stream, &mut body, deadline)?;
     // Require exactly one complete frame, EOF included. Extra data cannot become a second event.
     let mut extra = [0; 1];
     if read_some(stream, &mut extra, deadline)? != 0 {
-        return Err(Error::Input);
+        return Err(Error::Input.into());
     }
-    endpoint.current()?;
-    if endpoint
-        .socket_id
-        .as_ref()
-        .is_none_or(|id| endpoint.socket_identity().as_ref() != Ok(id))
-    {
-        return Err(Error::Namespace);
-    }
-    // A complete hook may precede Claude's initial transcript creation. Keep the
-    // original exchange deadline and never hold the cache lock while waiting.
-    let ready_deadline = deadline.min(Instant::now() + SOURCE_READY);
+    let ready_deadline = deadline.min(timing.now() + SOURCE_READY);
     let mut readiness = crate::claude_plan_capture::SourceReadiness::default();
-    let accepted = loop {
-        if Instant::now() >= ready_deadline {
-            break false;
-        }
-        if cancel.load(Ordering::Acquire) || guard.is_some_and(|check| !check()) {
-            return Err(Error::Unavailable);
-        }
-        let result = cache.lock().map_err(|_| Error::Unavailable)?.ingest_ready(
-            &body,
-            Instant::now(),
-            &mut readiness,
-        );
-        match result {
-            Ok(_) => break true,
-            Err(crate::claude_plan_capture::Error::SourceMissing) => {
-                let Some(left) = ready_deadline.checked_duration_since(Instant::now()) else {
-                    break false;
-                };
-                std::thread::sleep(left.min(Duration::from_millis(10)));
-                endpoint.current()?;
-                if endpoint
-                    .socket_id
-                    .as_ref()
-                    .is_none_or(|id| endpoint.socket_identity().as_ref() != Ok(id))
-                {
-                    return Err(Error::Namespace);
+    let result = (|| {
+        loop {
+            // Guard runs without the cache lock; the lock is revalidated cheaply
+            // inside cache_until and again before commit.
+            live_checkpoint(timing, ready_deadline, cancel, endpoint, guard)?;
+            let mut store = cache_until(cache, timing, ready_deadline, cancel, endpoint)?;
+            checkpoint(timing, ready_deadline, cancel, endpoint)?;
+            // Required capture API (companion diff in claude_plan_capture.rs, generic
+            // over the error type so capture does not depend on this module):
+            //   fn transaction<T, E>(&mut self, f: impl FnOnce(&mut Store) -> Result<T, E>)
+            //       -> Result<T, E>
+            // Restores the EXACT pre-attempt Store on Err (including eviction,
+            // conflict and TTL effects); other valid entries/refs are untouched.
+            // The mutex stays held through validation and ACK so no reader sees a
+            // rolled-back body; the guard call below is the only callback under the
+            // lock and must be bounded (never acquire this cache or dispatch to UI).
+            let attempt = store.transaction::<Option<bool>, ReceiveFailure>(|candidate| {
+                let ingested = candidate.ingest_ready(&body, timing.now(), &mut readiness);
+                // Absolute exchange deadline (unchanged): a slow parse/validation
+                // that still finished inside SOURCE_READY+EXCHANGE may commit;
+                // anything past the deadline rolls back instead of entering the
+                // cache. SOURCE_READY still governs only the readiness retry.
+                checkpoint(timing, deadline, cancel, endpoint)?;
+                if ingested == Err(crate::claude_plan_capture::Error::SourceMissing) {
+                    return Ok(None);
                 }
+                live_checkpoint(timing, deadline, cancel, endpoint, guard)?;
+                let accepted = ingested.is_ok();
+                // Last recheck BEFORE the ACK: once the client observes success the
+                // transaction must commit, or the client would hold a confirmation
+                // for a body that no longer exists.
+                checkpoint(timing, deadline, cancel, endpoint)?;
+                write_all(stream, &[if accepted { 0 } else { 1 }], deadline)
+                    .map_err(ReceiveFailure::from)?;
+                // commit
+                Ok(Some(accepted))
+            });
+            drop(store);
+            match attempt? {
+                Some(accepted) => {
+                    return if accepted {
+                        Ok(())
+                    } else {
+                        Err(Error::Rejected.into())
+                    };
+                }
+                None => {}
             }
-            Err(_) => break false,
+            checkpoint(timing, ready_deadline, cancel, endpoint)?;
+            timing.pause(
+                ready_deadline
+                    .saturating_duration_since(timing.now())
+                    .min(Duration::from_millis(10)),
+            );
         }
-    };
-    endpoint.current()?;
-    write_all(stream, &[if accepted { 0 } else { 1 }], deadline)?;
-    if accepted {
-        Ok(())
-    } else {
-        Err(Error::Rejected)
+    })();
+    if result == Err(ReceiveFailure::Deadline) {
+        // A readiness timeout has an exact internal reason and a negative ACK
+        // when the original exchange still permits it. No transaction survives.
+        if timing.now() < deadline && !cancel.load(Ordering::Acquire) {
+            let _ = write_all(stream, &[1], deadline);
+        }
     }
+    result
 }
 fn send(root: &Path, bytes: &[u8], deadline: Instant) -> Result<(), Error> {
     if bytes.is_empty() || bytes.len() > MAX_FRAME {

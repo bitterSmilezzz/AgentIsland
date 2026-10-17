@@ -26,7 +26,13 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Outcome {
-    Delivered,
+    /// 对端**受理**了这条请求（HTTP 2xx / SMTP 2xx）。
+    ///
+    /// 名字刻意不叫 `Delivered`：受理 ≠ 收到 ≠ 已读（NOT-05）。
+    /// 本产品绝大多数渠道只能走到「受理」这一段——把受理显示成「已送达」
+    /// 就是替对端做了它没做过的承诺。收到/已读要等回执能力接入
+    /// （见 [`DeliveryState`]）。
+    Accepted,
     /// 被策略挡下（总开关关、该类事件关、节流命中、静默时段）——不算失败，也不该记成功
     Suppressed {
         reason: String,
@@ -34,6 +40,14 @@ pub enum Outcome {
     /// 配置不完整（没填 key / 主机 / 收件人）
     NotConfigured {
         reason: String,
+    },
+    /// 限流：对端明确要求「过一会儿再来」（HTTP 429/503 带 `Retry-After`）。
+    /// 与 [`Failed`] 分开是**行为**上的差别：限流不该计入故障升级，
+    /// 也不该被当成「通道坏了」去排查配置。
+    Throttled {
+        reason: String,
+        /// 对端要求的等待时长（毫秒）。`None` = 头缺失或解析不了，只显示限流本身
+        retry_after_ms: Option<i64>,
     },
     /// 送出但对方没接受，带可给人看的短说明（HTTP 状态码或 SMTP 回复码）。
     /// `permanent` = 对端**明确拒绝**（404 主题不存在、535 授权码错、550 拒绝中继）：
@@ -45,12 +59,42 @@ pub enum Outcome {
     },
 }
 
+/// 交付状态三段：**受理 → 收到 → 已读**（NOT-05 要求「受理/收到/已读分开」）。
+///
+/// 当前所有渠道的自动外发都只能走到第一段；`Received`/`Read` 需要对端回执，
+/// 在回执能力接入前**一律不填**——留空态（`Unknown`）比填一个假的「已读」诚实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeliveryState {
+    /// 平台受理（2xx），送达未知
+    Accepted,
+    /// 对端确认收到（需回执；当前未接入任何回执渠道）
+    Received,
+    /// 对端确认已读（需已读回执；当前未接入）
+    Read,
+    /// 未走到任何一段（被挡下/未配置/失败）
+    Unknown,
+}
+
+impl DeliveryState {
+    /// 给界面的短文案。与 Rust 侧口径一致，界面不自己拼。
+    pub fn label(self) -> &'static str {
+        match self {
+            DeliveryState::Accepted => "已受理，未确认送达",
+            DeliveryState::Received => "已送达",
+            DeliveryState::Read => "已读",
+            DeliveryState::Unknown => "未确认",
+        }
+    }
+}
+
 impl Outcome {
-    pub fn is_delivered(&self) -> bool {
-        matches!(self, Outcome::Delivered)
+    /// 「外发成功」= 对端受理。**不等于**送达或已读——那是 [`DeliveryState`] 的事。
+    pub fn is_accepted(&self) -> bool {
+        matches!(self, Outcome::Accepted)
     }
 
-    /// 只对 `Failed` 有意义；`Suppressed` / `NotConfigured` 不是「对端拒绝」
+    /// 只对 `Failed` 有意义；`Suppressed` / `NotConfigured` / `Throttled` 不是「对端拒绝」
     pub fn is_permanent(&self) -> bool {
         matches!(
             self,
@@ -61,11 +105,27 @@ impl Outcome {
         )
     }
 
+    /// 本次结果落在交付状态的哪一段。
+    pub fn delivery_state(&self) -> DeliveryState {
+        match self {
+            Outcome::Accepted => DeliveryState::Accepted,
+            _ => DeliveryState::Unknown,
+        }
+    }
+
     fn base_text(&self) -> String {
         match self {
-            Outcome::Delivered => "平台已受理".to_string(),
+            // 刻意不说「已送达」：受理与送达之间隔着对端自己那一步
+            Outcome::Accepted => "平台已受理".to_string(),
             Outcome::Suppressed { reason } => format!("未发：{reason}"),
             Outcome::NotConfigured { reason } => format!("未配置：{reason}"),
+            Outcome::Throttled {
+                reason,
+                retry_after_ms,
+            } => match retry_after_ms {
+                Some(ms) => format!("{reason}（约 {} 秒后可重试）", (ms / 1000).max(0)),
+                None => reason.clone(),
+            },
             Outcome::Failed { reason, .. } => format!("失败：{reason}"),
         }
     }
@@ -87,7 +147,7 @@ impl Attempt {
     pub fn short_text(&self) -> String {
         let base = self.outcome.base_text();
         if self.tries > 1 {
-            return if self.outcome.is_delivered() {
+            return if self.outcome.is_accepted() {
                 format!("{base}（重试 {} 次后）", self.tries - 1)
             } else {
                 format!("{base}；重试 {} 次仍未送达", self.tries - 1)
@@ -116,7 +176,15 @@ pub struct Recent {
     pub at_ms: i64,
     pub title: String,
     pub text: String,
-    pub delivered: bool,
+    /// 外发成功（对端**受理**）。名字不叫 `delivered`：受理 ≠ 送达 ≠ 已读（NOT-05），
+    /// 三段见 `delivery`。保留布尔是因为「是否成功」是列表排序与筛选最常用的判断。
+    pub accepted: bool,
+    /// 交付状态三段（NOT-05：受理 ≠ 收到 ≠ 已读）。当前渠道只能到 accepted。
+    pub delivery: DeliveryState,
+    /// 交付状态的**界面文案**，由 Rust 侧拼好（`DeliveryState::label`）。
+    /// 界面不再自己维护一份映射——两份口径必然漂移，而漂移的后果是
+    /// 「受理成功的消息被显示成未确认」这种静默降级（复审 A4 抓到过）。
+    pub delivery_label: &'static str,
 }
 
 /// 最近外发记录的条数上限（与 Swift `record` 的 20 一致）
@@ -125,12 +193,19 @@ pub const HISTORY_LIMIT: usize = 20;
 const THROTTLE_KEYS_LIMIT: usize = 200;
 /// 自动外发失败后的重试间隔（Swift `retryDelay` 默认 5 秒）
 pub const RETRY_DELAY_MS: i64 = 5_000;
+/// **连续**临时失败多少次升级为通道故障（NOT-05「故障升级」）。
+/// 取 3：一次抖动由重试吸收，两次仍抖说明链路不稳，三次就该让用户看见。
+pub const ESCALATE_AFTER_FAILURES: i64 = 3;
 
 #[derive(Default)]
 struct Inner {
     /// key = `agentId|kind` → 上次**真的送出去**的时刻
     throttle: HashMap<String, i64>,
     history: VecDeque<Attempt>,
+    /// key = 通道种类 → 连续临时失败次数（对端拒绝/限流/被挡下都清零或不计）
+    failure_streak: HashMap<String, i64>,
+    /// key = 通道种类 → 是否已升级为「通道故障」
+    escalated: HashMap<String, bool>,
 }
 
 /// 外发调度器。内部状态是共享的（`Arc<Mutex<_>>`），所以它可克隆、
@@ -338,8 +413,14 @@ impl Notifier {
         // 而一次网络抖动就把那条唯一提醒永久丢掉。**「发送测试」不重试**——
         // 用户盯着界面等，立刻拿到如实结果更有用；对端明确拒绝（404/535/550）也不重试，
         // 再要一次只是给已经说过「不」的服务器加负载，而且 ntfy.sh 这类公开中转按条数限流。
+        //
+        // **限流（Throttled）不重试**：对端已经指定了「什么时候再来」（Retry-After），
+        // 立刻重试既不尊重它也大概率再吃一次 429；**已升级为通道故障时不重试**——
+        // 那是「不循环」：连续抖动说明链路本身不稳，再试一次不会变好，只会把
+        // 失败风暴堆在用户屏幕上。
         if !bypass_policy
             && self.retry_attempts > 0
+            && !self.is_escalated(channel)
             && matches!(
                 outcome,
                 Outcome::Failed {
@@ -354,12 +435,13 @@ impl Notifier {
             tries += 1;
             outcome = self.transport.perform(&request);
         }
-        if !outcome.is_delivered() {
+        if !outcome.is_accepted() {
             // 没发出去就撤掉预登记：失败必须能立刻重试。
             // 撤在**重试之后**是 Swift 的既定顺序：占位在整个「初次 + 重试」期间都握着，
             // 同一键的并发事件挤不进第二条
             self.release(&throttle_key, now.ms);
         }
+        self.note_channel_result(channel, &outcome);
         self.record(Attempt {
             at_ms: now.ms,
             title,
@@ -395,6 +477,52 @@ impl Notifier {
                 bypass_policy,
             );
         });
+    }
+
+    /// 该通道当前是否已升级为「通道故障」。
+    fn is_escalated(&self, channel: Channel) -> bool {
+        self.inner
+            .lock()
+            .expect("外发状态锁不应中毒")
+            .escalated
+            .get(channel.as_str())
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// 按本次结果维护通道的失败连击与升级态（NOT-05「故障升级不循环」）。
+    ///
+    /// - 受理成功 → 清零并复位升级（通道恢复了就该恢复自动外发）；
+    /// - **连续**临时失败 → 连击 +1，达到阈值升级；
+    /// - 对端明确拒绝 / 限流 / 被策略挡下 → 清零：它们不是链路故障，
+    ///   不该让「上一次抖动」的连击继续累加到完全无关的原因上。
+    fn note_channel_result(&self, channel: Channel, outcome: &Outcome) {
+        let key = channel.as_str().to_string();
+        let mut inner = self.inner.lock().expect("外发状态锁不应中毒");
+        match outcome {
+            Outcome::Accepted => {
+                inner.failure_streak.remove(&key);
+                inner.escalated.remove(&key);
+            }
+            Outcome::Failed {
+                permanent: false,
+                ..
+            } => {
+                let streak = inner.failure_streak.entry(key.clone()).or_insert(0);
+                *streak += 1;
+                if *streak >= ESCALATE_AFTER_FAILURES {
+                    inner.escalated.insert(key, true);
+                }
+            }
+            // 对端明确拒绝（配置错）、限流：**都不是链路抖动**，把连击归零。
+            // 归零而非「保留不动」：这两类说明这一次的失败原因与先前那串抖动无关，
+            // 继续累加会把「配置错一次 + 抖动两次」误判成通道故障。
+            // 被策略挡下（Suppressed/NotConfigured）走闸门早退，根本到不了这里——
+            // 那才是真正的「保留不动」（一次都没往网络上试）。
+            _ => {
+                inner.failure_streak.remove(&key);
+            }
+        }
     }
 
     /// 原子地「查节流 + 预登记」。返回 false 表示落在窗口内，本次不该发
@@ -449,8 +577,25 @@ impl Notifier {
                 at_ms: attempt.at_ms,
                 title: attempt.title.clone(),
                 text: attempt.short_text(),
-                delivered: attempt.outcome.is_delivered(),
+                accepted: attempt.outcome.is_accepted(),
+                delivery: attempt.outcome.delivery_state(),
+                delivery_label: attempt.outcome.delivery_state().label(),
             })
+            .collect()
+    }
+
+    /// 通道故障升级态：**连续临时失败达到阈值**的通道种类（NOT-05「故障升级」）。
+    ///
+    /// 升级后的行为：该通道的自动外发**不再重试**（不循环），直到一次成功把它复位。
+    /// 限流（`Throttled`）与对端明确拒绝（`permanent`）**不计入**——它们不是链路故障，
+    /// 把「配置就是错的」升级成「通道在抖」会把人引向错误的排查方向。
+    pub fn escalated_channels(&self) -> Vec<String> {
+        let inner = self.inner.lock().expect("外发状态锁不应中毒");
+        inner
+            .escalated
+            .iter()
+            .filter(|(_, on)| **on)
+            .map(|(channel, _)| channel.clone())
             .collect()
     }
 
@@ -549,7 +694,7 @@ mod tests {
     #[test]
     fn the_master_switch_blocks_everything_including_bypass() {
         // 总开关是这个功能的隐私闸门：若按一次测试就能出本机，开关本身就不可信
-        let (mut notifier, seen) = fixture(Outcome::Delivered);
+        let (mut notifier, seen) = fixture(Outcome::Accepted);
         let policy = Policy::default(); // 默认关
         let outcome = run(&mut notifier, EventKind::Attention, &policy, 1_000);
         assert_eq!(
@@ -580,7 +725,7 @@ mod tests {
 
     #[test]
     fn the_event_type_switch_is_outside_the_bypass_range() {
-        let (mut notifier, seen) = fixture(Outcome::Delivered);
+        let (mut notifier, seen) = fixture(Outcome::Accepted);
         let policy = Policy {
             send_attention: false,
             ..enabled()
@@ -605,7 +750,7 @@ mod tests {
 
     #[test]
     fn quiet_hours_and_presence_are_bypassed_but_the_config_check_is_not() {
-        let (mut notifier, seen) = fixture(Outcome::Delivered);
+        let (mut notifier, seen) = fixture(Outcome::Accepted);
         let policy = Policy {
             quiet_start: "22:00".into(),
             quiet_end: "07:00".into(),
@@ -649,11 +794,11 @@ mod tests {
             },
             true,
         );
-        assert_eq!(bypassed, Outcome::Delivered);
+        assert_eq!(bypassed, Outcome::Accepted);
         assert_eq!(seen.lock().unwrap().len(), 1);
 
         // 但配置检查不在绕过范围内：测试按钮也发不出一条没配好的通道
-        let (mut second, _) = fixture(Outcome::Delivered);
+        let (mut second, _) = fixture(Outcome::Accepted);
         let unconfigured = second.attempt(
             &inputs(EventKind::Attention),
             &policy,
@@ -673,7 +818,7 @@ mod tests {
 
     #[test]
     fn presence_blocks_only_when_the_policy_asks_for_it() {
-        let (mut notifier, _) = fixture(Outcome::Delivered);
+        let (mut notifier, _) = fixture(Outcome::Accepted);
         let present = PresenceSignals {
             idle_seconds: Some(3.0), // 刚动过键盘
             ..PresenceSignals::default()
@@ -687,9 +832,9 @@ mod tests {
             &present,
             false,
         );
-        assert_eq!(by_default, Outcome::Delivered, "默认不要求「人不在」");
+        assert_eq!(by_default, Outcome::Accepted, "默认不要求「人不在」");
 
-        let (mut strict, _) = fixture(Outcome::Delivered);
+        let (mut strict, _) = fixture(Outcome::Accepted);
         let policy = Policy {
             only_when_away: true,
             ..enabled()
@@ -720,12 +865,12 @@ mod tests {
     /// 于是他会去等窗口，而不是去补主题名。
     #[test]
     fn a_broken_config_beats_the_throttle_in_the_reported_reason() {
-        let (mut notifier, _) = fixture(Outcome::Delivered);
+        let (mut notifier, _) = fixture(Outcome::Accepted);
         let policy = enabled();
         // 先配好、发成功一次 ⇒ 节流窗口被占住
         assert_eq!(
             run(&mut notifier, EventKind::Attention, &policy, 1_000),
-            Outcome::Delivered
+            Outcome::Accepted
         );
         // 同一时刻把配置改坏再试：必须报配置问题，不许报「节流命中」
         let outcome = notifier.attempt(
@@ -748,11 +893,11 @@ mod tests {
 
     #[test]
     fn the_throttle_window_holds_and_a_failure_releases_it() {
-        let (mut notifier, seen) = fixture(Outcome::Delivered);
+        let (mut notifier, seen) = fixture(Outcome::Accepted);
         let policy = enabled(); // 节流 90 秒
         assert_eq!(
             run(&mut notifier, EventKind::Attention, &policy, 1_000),
-            Outcome::Delivered
+            Outcome::Accepted
         );
         assert_eq!(
             run(&mut notifier, EventKind::Attention, &policy, 1_000 + 89_999),
@@ -764,14 +909,14 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1);
         assert_eq!(
             run(&mut notifier, EventKind::Attention, &policy, 1_000 + 90_000),
-            Outcome::Delivered,
+            Outcome::Accepted,
             "窗口一到就放行"
         );
 
         // 不同事件类型各有各的窗口
         assert_eq!(
             run(&mut notifier, EventKind::CostSpike, &policy, 1_000 + 90_000),
-            Outcome::Delivered
+            Outcome::Accepted
         );
 
         // 失败必须撤回占位，否则一次抖动会吞掉后面一整段
@@ -794,7 +939,7 @@ mod tests {
 
     #[test]
     fn records_keep_the_newest_twenty_and_read_like_a_sentence() {
-        let (mut notifier, _) = fixture(Outcome::Delivered);
+        let (mut notifier, _) = fixture(Outcome::Accepted);
         let policy = enabled();
         for i in 0..25 {
             // 每次换一个 agent，绕开节流，专测记账
@@ -841,7 +986,7 @@ mod tests {
         let retried = Attempt {
             at_ms: 0,
             title: "t".into(),
-            outcome: Outcome::Delivered,
+            outcome: Outcome::Accepted,
             tries: 3,
         };
         assert_eq!(retried.short_text(), "平台已受理（重试 2 次后）");
@@ -887,7 +1032,7 @@ mod tests {
         let recent = notifier.recent_view();
         assert_eq!(recent.len(), 1);
         assert!(recent[0].text.starts_with("失败："), "{}", recent[0].text);
-        assert!(!recent[0].delivered);
+        assert!(!recent[0].accepted);
     }
 
     /// 记录密钥读取次数的假密钥源：用来钉住「总开关关着时不碰钥匙串」。
@@ -926,7 +1071,7 @@ mod tests {
         // 旧行为是「留空照样发」——那等于拿一个空密钥去撞对端，还让用户以为发成功了
         let seen = Arc::new(Mutex::new(Vec::new()));
         let transport = FakeTransport {
-            outcome: Outcome::Delivered,
+            outcome: Outcome::Accepted,
             seen: seen.clone(),
         };
         let mut notifier = Notifier::with_transport(Box::new(transport));
@@ -953,7 +1098,7 @@ mod tests {
     fn a_stored_secret_reaches_the_request_and_nowhere_else() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let transport = FakeTransport {
-            outcome: Outcome::Delivered,
+            outcome: Outcome::Accepted,
             seen: seen.clone(),
         };
         let (store, reads) = counting_secrets(Some("s3cret-value-9"));
@@ -968,7 +1113,7 @@ mod tests {
             &unavailable(),
             false,
         );
-        assert_eq!(outcome, Outcome::Delivered);
+        assert_eq!(outcome, Outcome::Accepted);
         // ① 请求里带的是真密钥（这是它唯一该出现的地方）
         let request = seen.lock().unwrap()[0].clone();
         assert!(request.url.contains("s3cret-value-9"), "{}", request.url);
@@ -1035,7 +1180,7 @@ mod tests {
         // 这条守的是「关掉开关就不会有任何东西离开本机」这句话的字面含义。
         let seen = Arc::new(Mutex::new(Vec::new()));
         let transport = FakeTransport {
-            outcome: Outcome::Delivered,
+            outcome: Outcome::Accepted,
             seen: seen.clone(),
         };
         let (store, reads) = counting_secrets(Some("s3cret-value-9"));
@@ -1063,5 +1208,473 @@ mod tests {
             "总开关关着时不该去读钥匙串：闸门顺序就是这条口径"
         );
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    // ── NOT-05：受理≠收到≠已读 / Retry-After / 故障升级不循环 ────────────
+
+    /// 按脚本返回 outcome 的传输：升级测试需要「失败三次再成功」这类序列，
+    /// 固定 outcome 的 FakeTransport 给不了。
+    struct ScriptedTransport {
+        script: Mutex<VecDeque<Outcome>>,
+        seen: Arc<Mutex<Vec<Request>>>,
+    }
+
+    impl Transport for ScriptedTransport {
+        fn perform(&self, request: &Request) -> Outcome {
+            self.seen.lock().unwrap().push(request.clone());
+            let mut script = self.script.lock().expect("脚本锁不应中毒");
+            script.pop_front().unwrap_or_else(|| Outcome::Accepted)
+        }
+    }
+
+    fn scripted(
+        script: Vec<Outcome>,
+        retry_attempts: i64,
+    ) -> (Notifier, Arc<Mutex<Vec<Request>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let transport = ScriptedTransport {
+            script: Mutex::new(script.into()),
+            seen: seen.clone(),
+        };
+        (
+            Notifier::with_transport(Box::new(transport)).with_retry(retry_attempts, 0),
+            seen,
+        )
+    }
+
+    fn transient() -> Outcome {
+        Outcome::Failed {
+            reason: "连接失败".into(),
+            permanent: false,
+        }
+    }
+
+    /// 三次**连续**临时失败 → 通道升级为故障（NOT-05「故障升级」）。
+    #[test]
+    fn three_consecutive_transient_failures_escalate_the_channel() {
+        let (mut notifier, _seen) = scripted(
+            vec![transient(), transient(), transient(), transient()],
+            0,
+        );
+        let policy = enabled();
+        assert!(
+            notifier.escalated_channels().is_empty(),
+            "起始不该有升级态"
+        );
+        // 事件之间跨过默认节流窗口（90 秒）→ 用 100_000ms 间距。
+        // 注意：失败路径本来就会撤掉节流占位（`if !outcome.is_accepted()` 里的 release），
+        // 所以这个间距在**失败**用例里是冗余的；但升级用例的脚本里混有成功态，
+        // 保持同一间距可以让序列语义不依赖「哪一步是否撤了占位」这个实现细节。
+        for index in 0..3 {
+            run(
+                &mut notifier,
+                EventKind::Attention,
+                &policy,
+                1_000 + index * 100_000,
+            );
+            if index < 2 {
+                assert!(
+                    notifier.escalated_channels().is_empty(),
+                    "第 {} 次失败后不该升级（阈值是 3）",
+                    index + 1
+                );
+            }
+        }
+        assert_eq!(notifier.escalated_channels(), vec!["ntfy".to_string()]);
+        // 升级态不吞结果：第 4 次失败仍如实返回、升级态保持
+        let last = run(&mut notifier, EventKind::Attention, &policy, 301_000);
+        assert!(matches!(last, Outcome::Failed { permanent: false, .. }));
+        assert_eq!(notifier.escalated_channels(), vec!["ntfy".to_string()]);
+    }
+
+    /// 通道恢复（一次受理成功）必须复位升级，否则用户会被永久卡在「故障」里。
+    #[test]
+    fn a_success_resets_the_escalation() {
+        let (mut notifier, _seen) = scripted(
+            vec![
+                transient(),
+                transient(),
+                transient(),
+                Outcome::Accepted,
+            ],
+            0,
+        );
+        let policy = enabled();
+        for index in 0..3 {
+            run(
+                &mut notifier,
+                EventKind::Attention,
+                &policy,
+                1_000 + index * 100_000,
+            );
+        }
+        assert_eq!(notifier.escalated_channels(), vec!["ntfy".to_string()]);
+        let outcome = run(&mut notifier, EventKind::Attention, &policy, 301_000);
+        assert!(outcome.is_accepted());
+        assert!(
+            notifier.escalated_channels().is_empty(),
+            "成功后必须复位升级"
+        );
+    }
+
+    /// 对端明确拒绝（配置错）与限流都不是链路故障，**不计升级**——
+    /// 否则「配置就是错的」会被显示成「通道在抖」，把人引向错误的排查方向。
+    #[test]
+    fn permanent_rejection_and_throttling_never_escalate() {
+        let (mut notifier, _seen) = scripted(
+            vec![
+                Outcome::Failed {
+                    reason: "404 主题不存在".into(),
+                    permanent: true,
+                },
+                Outcome::Failed {
+                    reason: "404 主题不存在".into(),
+                    permanent: true,
+                },
+                Outcome::Failed {
+                    reason: "404 主题不存在".into(),
+                    permanent: true,
+                },
+            ],
+            0,
+        );
+        let policy = enabled();
+        for index in 0..3 {
+            run(
+                &mut notifier,
+                EventKind::Attention,
+                &policy,
+                1_000 + index * 100_000,
+            );
+        }
+        assert!(notifier.escalated_channels().is_empty(), "永久失败不该升级");
+
+        let throttled = || Outcome::Throttled {
+            reason: "服务端返回 429".into(),
+            retry_after_ms: Some(30_000),
+        };
+        let (mut notifier, _seen) = scripted(vec![throttled(), throttled(), throttled()], 0);
+        for index in 0..3 {
+            run(
+                &mut notifier,
+                EventKind::Attention,
+                &policy,
+                1_000 + index * 100_000,
+            );
+        }
+        assert!(notifier.escalated_channels().is_empty(), "限流不该升级");
+    }
+
+    /// **渠道独立**（NOT-05 矩阵明列场景）：升级态与连击按通道分键，
+    /// 一个通道连续失败升级后，另一个通道**不受牵连**。
+    ///
+    /// 此前所有 notifier 测试都只用 ntfy（`run()` 硬编码 `Channel::Ntfy`），
+    /// 于是「渠道独立」在矩阵里是一个**镜面声称**、没有断言兜着。这条补上。
+    #[test]
+    fn escalation_is_tracked_per_channel_not_globally() {
+        // 脚本**显式**给出第 4 个结果（customHTTP 那次为 Accepted）。
+        // 不能靠脚本耗尽后的兜底默认值：`ScriptedTransport` 用光脚本时返回 `Accepted`，
+        // 那样这条断言就变成「兜底值恰好是 Accepted」的巧合，测不出被提前挡下的情况。
+        let (mut notifier, seen) = scripted(
+            vec![transient(), transient(), transient(), Outcome::Accepted],
+            0,
+        );
+        let policy = enabled();
+        let custom = ChannelConfig {
+            url_template: "https://example.com/hook".into(),
+            body_template: "title={title}&desp={body}".into(),
+            ..ChannelConfig::default()
+        };
+        // ntfy 上连打三次临时失败 → 只有 ntfy 升级
+        for index in 0..3 {
+            notifier.attempt(
+                &inputs(EventKind::Attention),
+                &policy,
+                Channel::Ntfy,
+                &ntfy(),
+                now(1_000 + index * 100_000),
+                &unavailable(),
+                false,
+            );
+        }
+        assert_eq!(
+            notifier.escalated_channels(),
+            vec!["ntfy".to_string()],
+            "ntfy 连续三次失败后该升级"
+        );
+        assert!(
+            !notifier.is_escalated(Channel::CustomHttp),
+            "ntfy 的故障不得牵连 customHTTP——每个通道各有各的状态"
+        );
+
+        // **同一个 Notifier 实例**换成另一个通道再发一次——这才是「渠道独立」的核查点。
+        //
+        // ⚠️ 语义要点（别读错）：升级态**只阻止「重试」**（`attempt` 里
+        // `self.retry_attempts > 0 && !self.is_escalated(channel)`），
+        // **不阻止发送本身**。所以这里断言的不是「换通道还能发」（那本来就成立），
+        // 而是两件与通道分键直接相关的事：
+        //   ① customHTTP 这次真的走到了传输层（没被 ntfy 的状态误伤）；
+        //   ② customHTTP 成功**不会复位 ntfy 的升级态**（状态互不干扰）。
+        // 若把状态键做成全局（变异实测过），② 会立刻挂。
+        let outcome = notifier.attempt(
+            &inputs(EventKind::Attention),
+            &policy,
+            Channel::CustomHttp,
+            &custom,
+            now(301_000),
+            &unavailable(),
+            false,
+        );
+        assert!(
+            matches!(outcome, Outcome::Accepted),
+            "customHTTP 该真的发出并成功，实际：{outcome:?}"
+        );
+        assert_eq!(
+            notifier.escalated_channels(),
+            vec!["ntfy".to_string()],
+            "customHTTP 成功不得复位 ntfy 的升级态——两个通道的状态互不干扰"
+        );
+        // 四次尝试都真的走到了传输层：三次 ntfy 失败 + 一次 customHTTP
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            4,
+            "customHTTP 那次必须真的发出（被提前挡下就不会进 seen）"
+        );
+    }
+
+    /// 升级态**只阻止重试、不阻止发送**——这个边界必须有断言兜着，
+    /// 否则「升级后停止重试」这句文档声称就只是自述。
+    #[test]
+    fn escalation_stops_retrying_but_never_blocks_the_send_itself() {
+        // retry_attempts = 1：未升级时一次失败会重试一次。
+        // 脚本要给足——用光后 `ScriptedTransport` 会兜底返回 `Accepted`，
+        // 那样第三次 attempt 会「成功」并把连击清零，测出来的不是升级行为。
+        // 3 次 attempt × 每次 2 发（初次 + 重试）= 6 个；第 7 个给「升级后只发一次」那轮。
+        let (mut notifier, seen) = scripted(
+            vec![
+                transient(), transient(), // #1 初次 + 重试
+                transient(), transient(), // #2 初次 + 重试
+                transient(), transient(), // #3 初次 + 重试 → 升级
+                transient(),              // #4 升级后：只发一次、不重试
+            ],
+            1,
+        );
+        let policy = enabled();
+        for index in 0..3 {
+            notifier.attempt(
+                &inputs(EventKind::Attention),
+                &policy,
+                Channel::Ntfy,
+                &ntfy(),
+                now(1_000 + index * 100_000),
+                &unavailable(),
+                false,
+            );
+        }
+        assert!(notifier.is_escalated(Channel::Ntfy), "三次连续失败该升级");
+        let before = seen.lock().unwrap().len();
+
+        // 升级后再发一次：**发送本身必须照常进行**（进 seen），
+        // 但**不再重试**——所以这次只 +1 而不是 +2。
+        let outcome = notifier.attempt(
+            &inputs(EventKind::Attention),
+            &policy,
+            Channel::Ntfy,
+            &ntfy(),
+            now(401_000),
+            &unavailable(),
+            false,
+        );
+        assert!(
+            matches!(outcome, Outcome::Failed { permanent: false, .. }),
+            "升级不吞结果：仍如实返回失败，实际：{outcome:?}"
+        );
+        assert_eq!(
+            seen.lock().unwrap().len() - before,
+            1,
+            "升级后这次只发一次、不重试（未升级时同样的失败会发两次）"
+        );
+    }
+
+    /// 交错序列的口径：**非链路故障的失败会把连击清零**，所以
+    /// 「抖动、抖动、配置错、抖动、抖动」不该升级——那 5 次里从没有过连续 3 次抖动。
+    /// 被策略挡下（Suppressed）不走这条路径（闸门早退，一次都没试网络），
+    /// 因此它不会打断连击。两种行为都要钉住，否则「不计入」会被读成两种意思。
+    #[test]
+    fn interleaved_other_outcomes_reset_or_hold_the_streak_as_documented() {
+        let permanent = || Outcome::Failed {
+            reason: "404 主题不存在".into(),
+            permanent: true,
+        };
+        let (mut notifier, _seen) = scripted(
+            vec![
+                transient(),
+                transient(),
+                permanent(),
+                transient(),
+                transient(),
+            ],
+            0,
+        );
+        let policy = enabled();
+        for index in 0..5 {
+            run(
+                &mut notifier,
+                EventKind::Attention,
+                &policy,
+                1_000 + index * 100_000,
+            );
+        }
+        assert!(
+            notifier.escalated_channels().is_empty(),
+            "配置错把连击清零后，后面只剩两次抖动，不该升级"
+        );
+
+        // 被策略挡下：闸门早退、不碰传输，连击保留 ⇒ 两次抖动 + 一次被挡 + 一次抖动 = 连续 3 次
+        let (mut notifier, _seen) = scripted(
+            vec![transient(), transient(), transient()],
+            0,
+        );
+        let blocked_policy = Policy {
+            send_attention: false,
+            ..enabled()
+        };
+        run(&mut notifier, EventKind::Attention, &policy, 1_000);
+        run(&mut notifier, EventKind::Attention, &policy, 101_000);
+        // 第三次被策略挡下（不消耗脚本，也不清零）
+        run(&mut notifier, EventKind::Attention, &blocked_policy, 201_000);
+        run(&mut notifier, EventKind::Attention, &policy, 301_000);
+        assert_eq!(
+            notifier.escalated_channels(),
+            vec!["ntfy".to_string()],
+            "被挡下不是链路结果，连击应保留，第三次抖动升级"
+        );
+    }
+
+    /// `NotConfigured`（配置缺失早退）与 `Suppressed`（策略挡下）同属
+    /// 「一次都没试网络」，连击**保留**——第二轮复审用变异证明这条语义
+    /// 此前只有 `Suppressed` 的交错用例兜着（让 `NotConfigured` 清零不会有任何测试响）。
+    /// 这条补上：抖动、抖动、配置缺、抖动 → 应升级（若 `NotConfigured` 清零则不会）。
+    #[test]
+    fn not_configured_keeps_the_streak_unlike_a_real_outcome() {
+        let (mut notifier, seen) = scripted(vec![transient(), transient(), transient()], 0);
+        let policy = enabled();
+        let broken = ChannelConfig {
+            topic_or_url: "   ".into(), // 空白主题 → missing_field 命中，闸门早退
+            ..ChannelConfig::default()
+        };
+        for index in 0..4 {
+            let (channel, config) = if index == 2 {
+                (Channel::Ntfy, &broken) // 第三次：配置缺失，不进传输层
+            } else {
+                (Channel::Ntfy, &ntfy())
+            };
+            notifier.attempt(
+                &inputs(EventKind::Attention),
+                &policy,
+                channel,
+                config,
+                now(1_000 + index * 100_000),
+                &unavailable(),
+                false,
+            );
+        }
+        assert_eq!(
+            notifier.escalated_channels(),
+            vec!["ntfy".to_string()],
+            "配置缺失不是链路结果、不该清零连击；第 4 次抖动（连击第 3 次）应升级"
+        );
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            3,
+            "配置缺失那次不进传输层，只有 3 次真实尝试"
+        );
+    }
+
+    /// 已升级的通道**不再重试**（NOT-05「故障升级不循环」）：
+    /// 再试一次不会让抖动的链路变好，只会把失败风暴堆在用户屏幕上。
+    #[test]
+    fn escalation_stops_the_retry_loop() {
+        // 每次重试会再走一次传输，所以脚本每个未升级的 attempt 要消耗 2 个元素
+        let (mut notifier, seen) = scripted(
+            vec![
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+                transient(),
+            ],
+            1, // 打开重试
+        );
+        let policy = enabled();
+        for index in 0..3 {
+            run(
+                &mut notifier,
+                EventKind::Attention,
+                &policy,
+                1_000 + index * 100_000,
+            );
+        }
+        assert_eq!(notifier.escalated_channels(), vec!["ntfy".to_string()]);
+        let calls_before = seen.lock().unwrap().len();
+        run(&mut notifier, EventKind::Attention, &policy, 301_000);
+        let calls_after = seen.lock().unwrap().len();
+        assert_eq!(
+            calls_after - calls_before,
+            1,
+            "升级后一次尝试就该停，重试循环必须停住"
+        );
+        let recent = notifier.recent();
+        assert_eq!(recent[0].tries, 1, "升级后不该再有重试次数");
+    }
+
+    /// 限流把 Retry-After 带到界面文案，并如实落在「未确认」交付态。
+    #[test]
+    fn throttled_shows_the_wait_time_and_stays_unknown() {
+        let (mut notifier, _seen) = scripted(
+            vec![Outcome::Throttled {
+                reason: "服务端返回 429".into(),
+                retry_after_ms: Some(12_000),
+            }],
+            0,
+        );
+        run(&mut notifier, EventKind::Attention, &enabled(), 1_000);
+        let recent = notifier.recent_view();
+        assert!(
+            recent[0].text.contains("12 秒后可重试"),
+            "界面必须显示对端给的等待时长：{}",
+            recent[0].text
+        );
+        assert_eq!(recent[0].delivery, DeliveryState::Unknown);
+        assert!(!recent[0].accepted);
+        assert_eq!(recent[0].delivery_label, "未确认");
+    }
+
+    /// 受理 ≠ 收到 ≠ 已读（NOT-05）：受理成功显示「已受理，未确认送达」，
+    /// 不显示「已送达」；失败/被挡一律「未确认」，不冒充任何一段。
+    #[test]
+    fn delivery_state_distinguishes_accepted_from_unknown() {
+        let (mut notifier, _seen) = scripted(vec![Outcome::Accepted], 0);
+        run(&mut notifier, EventKind::Attention, &enabled(), 1_000);
+        let recent = notifier.recent_view();
+        assert_eq!(recent[0].delivery, DeliveryState::Accepted);
+        assert!(recent[0].accepted);
+        assert_eq!(recent[0].text, "平台已受理");
+        // 界面文案由 Rust 下发，且**不得说成「已送达」**
+        assert_eq!(recent[0].delivery_label, "已受理，未确认送达");
+        assert_ne!(recent[0].delivery_label, "已送达");
+
+        let (mut notifier, _seen) = scripted(vec![transient()], 0);
+        run(&mut notifier, EventKind::Attention, &enabled(), 1_000);
+        let recent = notifier.recent_view();
+        assert_eq!(
+            recent[0].delivery,
+            DeliveryState::Unknown,
+            "失败不能冒充受理/送达/已读"
+        );
+        assert!(!recent[0].accepted);
+        assert_eq!(recent[0].delivery_label, "未确认");
     }
 }

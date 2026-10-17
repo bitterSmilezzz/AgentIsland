@@ -345,6 +345,7 @@ pub(crate) enum Receipt {
     Captured,
     Duplicate,
 }
+#[derive(Clone)]
 struct Entry {
     source: SourceIdentity,
     session: String,
@@ -403,6 +404,30 @@ impl Store {
         readiness: &mut SourceReadiness,
     ) -> Result<Receipt, Error> {
         self.ingest_with_readiness(bytes, now, Some(readiness))
+    }
+
+    /// Runs `f` against this Store and COMMITS only when it returns Ok. On Err the
+    /// EXACT pre-attempt state is restored: a caller that discovers an expired
+    /// deadline, revocation, cancel or a failed ACK after ingest cannot leave a
+    /// body, a tombstone or an eviction behind, and unrelated valid entries are
+    /// never disturbed. Cost is a snapshot clone bounded by the existing cache
+    /// budget (<=32 entries / 2 MiB of bodies) under the caller's lock.
+    pub(crate) fn transaction<T, E>(
+        &mut self,
+        f: impl FnOnce(&mut Store) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let roots = self.roots.clone();
+        let enabled = self.enabled;
+        let entries = self.entries.clone();
+        match f(self) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.roots = roots;
+                self.enabled = enabled;
+                self.entries = entries;
+                Err(error)
+            }
+        }
     }
     fn ingest_with_readiness(
         &mut self,

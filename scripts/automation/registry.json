@@ -1,0 +1,2260 @@
+{
+  "schema_version": 1,
+  "description": "AgentIsland 自动开发流水线的需求与门禁注册表。新增需求或检查项必须在此登记；runner 会校验一致性。",
+  "gates": {
+    "L0": {
+      "name": "清单与契约",
+      "required": true
+    },
+    "L1": {
+      "name": "纯逻辑",
+      "required": true
+    },
+    "L2": {
+      "name": "格式与协议",
+      "required": true
+    },
+    "L3": {
+      "name": "模块集成",
+      "required": true
+    },
+    "L4": {
+      "name": "UI 浏览器",
+      "required": true
+    },
+    "L5": {
+      "name": "正式包原生",
+      "required": false
+    },
+    "L6": {
+      "name": "真实服务与设备",
+      "required": false
+    },
+    "L7": {
+      "name": "长时与恢复",
+      "required": false
+    },
+    "L8": {
+      "name": "自动开发流水线",
+      "required": true
+    }
+  },
+  "requirements": {
+    "AUTO-01": {
+      "title": "需求收集到候选发布的自动开发",
+      "gates": [
+        "L0",
+        "L3",
+        "L8"
+      ],
+      "checks": [
+        "auto01.staging",
+        "auto01.version",
+        "auto01.buildlock",
+        "auto01.restartapp",
+        "automation.runner",
+        "automation.registry",
+        "automation.evidence",
+        "automation.adapters",
+        "automation.trigger",
+        "automation.driver",
+        "automation.artifact",
+        "automation.development",
+        "automation.verifier",
+        "automation.snapshot",
+        "automation.candidate",
+        "automation.pause",
+        "automation.break",
+        "automation.break-artifact",
+        "automation.break-snapshot"
+      ],
+      "audit_ref": "docs/测试映射盘点.md",
+      "coverage_note": "partial — 需求解析、隔离工作区、门禁 blocked/failed 分流、清理、来源摘要绑定、候选延迟发布与只读消费校验、失败暂停记录与重复输入识别、Red 基线（先于作者调用）、真实 Break 消融执行已有；缺：真实 driver 受控轮次、CI 状态绑定、回滚、暂停通知默认关闭（需显式 --notify-failure）",
+      "status": "partial"
+    },
+    "AUTO-02": {
+      "title": "错题复盘与规范升级",
+      "gates": [
+        "L0",
+        "L1",
+        "L8"
+      ],
+      "checks": [
+        "automation.selfcheck",
+        "automation.lessons"
+      ],
+      "audit_ref": "docs/测试映射盘点.md",
+      "coverage_note": "partial — 复盘账本校验、跨日期晋升、恶意规则拒绝、人工撤销（lessons.py revoke，只改该账本文件）已有；缺：自动触发复盘（需求只授权设计触发契约，本轮不建定时任务）",
+      "status": "partial"
+    },
+    "SEC-01": {
+      "title": "数据与凭据边界",
+      "gates": [
+        "L0",
+        "L1"
+      ],
+      "checks": [
+        "sec01.scansecrets",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — 密钥不进文件/日志/账本（notifier.rs:953 :1000）、原子写 0600（atomicfile.rs）、符号链接拒跟随（webhook.rs:910）、known_private 判据直接单测 12 项（private_text_tests.rs，变异验证 5/5）；缺凭据轮换、TLS、跨团队隔离、提示注入",
+      "status": "partial"
+    },
+    "SUP-01": {
+      "title": "GUI/CLI/宿主/子 Agent 发现与身份",
+      "gates": [
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "L5",
+        "L6"
+      ],
+      "checks": [
+        "sup01.identities",
+        "sup01.clidispatch",
+        "native.vm",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md",
+      "coverage_note": "partial — 身份/资产/注入安全、单实例、CLI 派发、同 PID exec、项目路径反例已有；缺：嵌套去重、PID 复用(无 exec)仍认旧身份、重启恢复",
+      "status": "partial"
+    },
+    "SUP-02": {
+      "title": "会话工作/等待/完成/离线/异常",
+      "gates": [
+        "L1",
+        "L2",
+        "L3",
+        "L6",
+        "L7"
+      ],
+      "checks": [
+        "sup02.actions",
+        "sup02.firstsnap",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — event replay and restart regression; source/probe gaps and failure paths remain. Current run evidence, not static counts, determines verification.",
+      "status": "partial"
+    },
+    "SUP-03": {
+      "title": "多 Agent/多会话概览与待处理聚合",
+      "gates": [
+        "L1",
+        "L3",
+        "L4",
+        "L5"
+      ],
+      "checks": [
+        "sup03.sessions",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — 会话去重、历史不当当前、per-agent hold 隔离、一拍两告警已有；缺：并发多 Agent 事件不错绑、同一 run 多 scope 不双计、打开来源无业务副作用",
+      "status": "partial"
+    },
+    "SUP-04": {
+      "title": "资源健康、诊断与来源解释",
+      "gates": [
+        "L1",
+        "L3",
+        "L7"
+      ],
+      "checks": [
+        "ops01.measuremem",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — CPU/卡死三态、稳态高内存不告警、持续窗口、观测资格作废已有；缺：单次采样不得冒充连续观测的显式断言",
+      "status": "partial"
+    },
+    "SUP-05": {
+      "title": "灵动岛视觉、交互与无障碍",
+      "gates": [
+        "L3",
+        "L4",
+        "L5",
+        "L7"
+      ],
+      "checks": [
+        "sup05.islandclick",
+        "sup05.islandreturn",
+        "sup05.islandmotion",
+        "sup05.contentmotion",
+        "sup05.deeplink",
+        "sup05.quicknav",
+        "sup05.pagemotion",
+        "sup05.winlifecycle",
+        "sup05.winlayout",
+        "sup05.taskfocus",
+        "sup05.nativemotionjs",
+        "sup05.nativemotionres",
+        "sup05.nativemotionpy",
+        "native.vm",
+        "shell.functionalui",
+        "shell.workbench",
+        "sup05.deeplink.workbench",
+        "sup05.deeplink.cold"
+      ],
+      "audit_ref": "docs/测试映射盘点.md",
+      "coverage_note": "partial — 深链/动效/焦点/几何/四边原生/壳变体已有；缺：多屏/DPI/键盘/热区≠视觉/减少动态",
+      "status": "partial"
+    },
+    "TASK-01": {
+      "title": "任务、项目、看板与搜索",
+      "gates": [
+        "L1",
+        "L3",
+        "L4"
+      ],
+      "checks": [
+        "task01.tasks",
+        "task01.detailnav",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — task/run ownership, stale revision, create/update/archive, corrupt/future inputs and write-failure preservation have regression coverage. Missing: board drag, cross-project search and actor-based authorization; those cannot be inferred from ID association checks.",
+      "status": "partial"
+    },
+    "TASK-04": {
+      "title": "对话与输入输出",
+      "gates": [
+        "L2",
+        "L3",
+        "L4",
+        "L5",
+        "L6"
+      ],
+      "checks": [
+        "task04.readerleave",
+        "task04.refreshfocus",
+        "task04.claudeplanclient",
+        "task01.detailnav",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — 附件正文隔离、刷新焦点、Claude plan 受控 loopback 已有；缺：消息顺序、断线续接、问题过期、语音、图片标注、下载限额",
+      "status": "partial"
+    },
+    "NOT-01": {
+      "title": "即时事件与通知中心",
+      "gates": [
+        "L1",
+        "L3",
+        "L7"
+      ],
+      "checks": [
+        "not01.attention",
+        "not01.latencyui",
+        "rust.default",
+        "not01.ledgerrestart"
+      ],
+      "audit_ref": "docs/测试映射盘点.md",
+      "coverage_note": "partial — 任务关口提示、外部已投递不去重、待发队列有界、hook入队延迟统计/合并唤醒/只读界面、入队幂等（显式id分域与到达秒指纹）、未确认提醒重启恢复与确认不复活、32条真实TCP+200条路由直调突发无串行错绑、容量淘汰数与「正文淘汰仍判重」语义可见且经真实进程探针核对；事件类型覆盖到 8 类（完成/确认/成本突增/提问/失败/审查/调度/Chief），逐类外发开关与界面文案独立、未知类型仍 400 拒绝；缺：来源事件→桌面提醒与外发两段p95、来电/邮件/SMS与手机渠道、完整负载与跨平台实测",
+      "status": "partial"
+    },
+    "GW-02": {
+      "title": "模型目录与客户端选择",
+      "gates": [
+        "L1",
+        "L3",
+        "L4",
+        "L6"
+      ],
+      "checks": [
+        "gw02.modeldir",
+        "gw02.ifacemodels",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；缺：自定义 ID 映射、参数与推理配置、保存≠生成权限、目录超限",
+      "status": "partial"
+    },
+    "GW-07": {
+      "title": "客户端接管、Profile 与恢复",
+      "gates": [
+        "L1",
+        "L3",
+        "L4",
+        "L6"
+      ],
+      "checks": [
+        "gw07.workspaces",
+        "gw07.provfeedback",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — revision 竞争/恢复/规则槽位/反馈让位已有；缺：注释保真、外部漂移、断电、同名备份、原客户端加载",
+      "status": "partial"
+    },
+    "GW-08": {
+      "title": "用量、配额、费用与可观测",
+      "gates": [
+        "L1",
+        "L2",
+        "L3",
+        "L6",
+        "L7"
+      ],
+      "checks": [
+        "gw08.budgets",
+        "gw08.usagecontext",
+        "gw08.usagetrend",
+        "gw08.reportpanel",
+        "gw08.cliusage",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；缺：尝试账目对账、未知费用显式呈现、本机与网关不双计、OTLP",
+      "status": "partial"
+    },
+    "GW-10": {
+      "title": "插件、Library、媒体与工具扩展",
+      "gates": [
+        "L1",
+        "L2",
+        "L3",
+        "L6"
+      ],
+      "checks": [
+        "gw10.prompts",
+        "gw10.skillspkg",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — 提示词写入门禁、Skills 预览/恢复/资源限额已有；缺：Instructions/MCP/媒体/中间件矩阵、签名、预热",
+      "status": "partial"
+    },
+    "OPS-01": {
+      "title": "资源、稳定性、升级与灾难恢复",
+      "gates": [
+        "L3",
+        "L5",
+        "L7"
+      ],
+      "checks": [
+        "ops01.memosoak",
+        "ops01.memosoakres",
+        "ops01.measuremem",
+        "ops01.resourcesoak",
+        "ops01.nativegates",
+        "rust.default"
+      ],
+      "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
+      "coverage_note": "partial — 热/稳态 soak、清理失败、崩溃部分、原子写与坏文件保原件已有；缺：冷 soak、扩展 soak(>30min)、网关背压、升级回滚、磁盘满",
+      "status": "partial"
+    },
+    "NOT-02": {
+      "title": "邮箱通知",
+      "gates": [
+        "L1",
+        "L3",
+        "L7"
+      ],
+      "checks": [
+        "rust.default"
+      ],
+      "coverage_note": "partial — Rust 侧 smtp.rs 全命令序/失败仍关连接/5xx·4xx 分类已有；缺到达与退信分开、Retry-After、SMS",
+      "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
+      "status": "partial"
+    },
+    "NOT-05": {
+      "title": "策略、升级与交付状态",
+      "gates": [
+        "L1",
+        "L3",
+        "L7"
+      ],
+      "checks": [
+        "rust.default",
+        "not01.latencyui",
+        "not05.remotedelivery"
+      ],
+      "coverage_note": "partial — Rust 侧 notifier.rs 总开关/bypass/静默/在场/节流/账本 10 项已有；已有失败升级与受理≠收到≠已读交付状态三段（受理≠收到≠已读，DeliveryState accepted/received/read/unknown，受理文案不冒充已送达，失败/被挡为未确认）；HTTP 429/503 → Throttled 并解析 Retry-After 秒数（HTTP-date 与超 1 小时不猜）；连续 3 次临时失败升级为通道故障（一次成功复位，升级后停止重试不循环，限流与对端明确拒绝不计入）；界面证据由 not01.latencyui 提供（交付状态文案与通道故障告警条的真实 DOM 渲染断言，含 fixture 驱动的四态遍历）；真实二进制端到端由 not05.remotedelivery 提供（正式产物 + 生产 HttpTransport 对 loopback 真对端：429+Retry-After 文案与未确认态、三次 500 升级且升级后不重试、200 只算受理）。",
+      "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
+      "status": "partial"
+    },
+    "GW-09": {
+      "title": "多界面、共享与备份同步",
+      "gates": [
+        "L1",
+        "L3",
+        "L6"
+      ],
+      "checks": [
+        "rust.default"
+      ],
+      "coverage_note": "partial — Rust 侧 webhook.rs serve 入口/令牌/端口、cli.rs --usage 按需取数已有；缺 GUI/CLI/TUI/Web 等价矩阵、加密备份",
+      "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
+      "status": "partial"
+    },
+    "GW-01": {
+      "title": "Provider、API key、订阅及认证适配",
+      "gates": [
+        "L1",
+        "L3",
+        "L6"
+      ],
+      "checks": [
+        "rust.default"
+      ],
+      "coverage_note": "partial — provider.rs、connections.rs、connection_probe.rs、transport.rs 的认证隔离/草稿不进凭据/URL 拒认证参数/禁用服务不读凭据已有；缺：凭据轮换、TLS、四类协议网关",
+      "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
+      "status": "partial"
+    },
+    "NOT-03": {
+      "title": "运营商 SMS 短信",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "NOT-04": {
+      "title": "手机推送与移动入口",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "GW-03": {
+      "title": "四类模型协议网关",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "GW-04": {
+      "title": "路由组与候选策略",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "GW-05": {
+      "title": "条件/意图/会话路由",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "GW-06": {
+      "title": "fallback、退避与错误分类",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-02": {
+      "title": "Chief 与团队 Agent",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-03": {
+      "title": "执行生命周期与运行时",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-05": {
+      "title": "方案/diff/产出版本",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-06": {
+      "title": "独立 AI 审查与修改闭环",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-07": {
+      "title": "Git 仓库与并行隔离",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-08": {
+      "title": "定时与触发",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-09": {
+      "title": "多机器与云执行",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-10": {
+      "title": "MCP、Skills、Memory 与上下文",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-11": {
+      "title": "团队、权限、Secrets 与审计",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    },
+    "TASK-12": {
+      "title": "多端完整工作台",
+      "gates": [],
+      "checks": [],
+      "coverage_note": "planned — no executable check mapped; this is not coverage",
+      "status": "planned"
+    }
+  },
+  "checks": {
+    "automation.selfcheck": {
+      "command": [
+        "python3",
+        "scripts/automation/selftest.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "notes": "L8 流水线自身自测（30 项）。不调用真实 Agent/CLI。嵌套执行时子流水线用 AUTOMATION_WORKSPACE 独立工作区根，全部用例照常完整跑。",
+      "test_files": []
+    },
+    "secrets.workspace": {
+      "command": [
+        "bash",
+        "scripts/scan-secrets.sh"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "notes": "只扫工作区（git 认得的文件）。全量 git 对象扫描由 release.sh 的 --release 负责，不放进每次流水线自测：那一步在大仓库上要分钟级。",
+      "test_files": []
+    },
+    "sup01.identities": {
+      "command": [
+        "node",
+        "scripts/test-agent-identities.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-agent-identities.mjs"
+      ]
+    },
+    "sup02.actions": {
+      "command": [
+        "node",
+        "scripts/test-agent-actions.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-agent-actions.mjs"
+      ]
+    },
+    "sup03.sessions": {
+      "command": [
+        "node",
+        "scripts/test-sessions.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-sessions.mjs"
+      ]
+    },
+    "sup02.firstsnap": {
+      "command": [
+        "node",
+        "scripts/test-first-snapshot.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-first-snapshot.mjs"
+      ]
+    },
+    "sup05.islandclick": {
+      "command": [
+        "node",
+        "scripts/test-island-click.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-island-click.mjs"
+      ]
+    },
+    "sup05.islandreturn": {
+      "command": [
+        "node",
+        "scripts/test-island-return.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-island-return.mjs"
+      ]
+    },
+    "sup05.islandmotion": {
+      "command": [
+        "node",
+        "scripts/test-island-motion.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-island-motion.mjs"
+      ]
+    },
+    "sup05.contentmotion": {
+      "command": [
+        "node",
+        "scripts/test-island-content-motion.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-island-content-motion.mjs"
+      ]
+    },
+    "sup05.deeplink": {
+      "command": [
+        "node",
+        "scripts/test-island-deeplink.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-island-deeplink.mjs"
+      ]
+    },
+    "sup05.quicknav": {
+      "command": [
+        "node",
+        "scripts/test-quick-navigation.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-quick-navigation.mjs"
+      ]
+    },
+    "sup05.pagemotion": {
+      "command": [
+        "node",
+        "scripts/test-page-motion.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-page-motion.mjs"
+      ]
+    },
+    "sup05.winlifecycle": {
+      "command": [
+        "node",
+        "scripts/test-window-lifecycle.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-window-lifecycle.mjs"
+      ]
+    },
+    "sup05.winlayout": {
+      "command": [
+        "node",
+        "scripts/test-window-layout.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-window-layout.mjs"
+      ]
+    },
+    "sup05.taskfocus": {
+      "command": [
+        "node",
+        "scripts/test-task-focus.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-task-focus.mjs"
+      ]
+    },
+    "task01.tasks": {
+      "command": [
+        "node",
+        "scripts/test-tasks.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-tasks.mjs"
+      ]
+    },
+    "task01.detailnav": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-detail-navigation.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-task-detail-navigation.mjs"
+      ],
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)"
+    },
+    "not01.attention": {
+      "command": [
+        "node",
+        "scripts/test-task-attention.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-task-attention.mjs"
+      ]
+    },
+    "task04.readerleave": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-reader-leave.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-task-reader-leave.mjs"
+      ],
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)"
+    },
+    "task04.refreshfocus": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-session-refresh-focus.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-session-refresh-focus.mjs"
+      ],
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)"
+    },
+    "gw02.modeldir": {
+      "command": [
+        "node",
+        "scripts/test-model-directory.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-model-directory.mjs"
+      ]
+    },
+    "gw02.ifacemodels": {
+      "command": [
+        "node",
+        "scripts/test-interface-models.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-interface-models.mjs"
+      ]
+    },
+    "gw07.workspaces": {
+      "command": [
+        "node",
+        "scripts/test-workspaces.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-workspaces.mjs"
+      ]
+    },
+    "gw07.provfeedback": {
+      "command": [
+        "node",
+        "scripts/test-provider-feedback.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-provider-feedback.mjs"
+      ]
+    },
+    "gw08.budgets": {
+      "command": [
+        "node",
+        "scripts/test-tool-budgets.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-tool-budgets.mjs"
+      ]
+    },
+    "gw08.usagecontext": {
+      "command": [
+        "node",
+        "scripts/test-usage-context.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-usage-context.mjs"
+      ]
+    },
+    "gw08.usagetrend": {
+      "command": [
+        "node",
+        "scripts/test-usage-trend.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-usage-trend.mjs"
+      ]
+    },
+    "gw08.reportpanel": {
+      "command": [
+        "node",
+        "scripts/test-report-panel.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-report-panel.mjs"
+      ]
+    },
+    "gw10.prompts": {
+      "command": [
+        "node",
+        "scripts/test-prompts.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-prompts.mjs"
+      ]
+    },
+    "gw10.skillspkg": {
+      "command": [
+        "node",
+        "scripts/test-skills-package.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-skills-package.mjs"
+      ]
+    },
+    "ops01.memosoak": {
+      "command": [
+        "python3",
+        "scripts/test-memory-soak.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-memory-soak.py"
+      ]
+    },
+    "ops01.memosoakres": {
+      "command": [
+        "python3",
+        "scripts/test-memory-soak-result.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-memory-soak-result.py"
+      ]
+    },
+    "ops01.measuremem": {
+      "command": [
+        "python3",
+        "scripts/test-measure-memory.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-measure-memory.py"
+      ]
+    },
+    "ops01.resourcesoak": {
+      "command": [
+        "python3",
+        "scripts/test-resource-soak.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-resource-soak.py"
+      ]
+    },
+    "ops01.nativegates": {
+      "command": [
+        "python3",
+        "scripts/test-native-gates-vm.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-native-gates-vm.py"
+      ]
+    },
+    "auto01.staging": {
+      "command": [
+        "bash",
+        "scripts/test-release-staging.sh"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-release-staging.sh"
+      ]
+    },
+    "sec01.scansecrets": {
+      "command": [
+        "bash",
+        "scripts/test-scan-secrets.sh"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-scan-secrets.sh"
+      ]
+    },
+    "auto01.version": {
+      "command": [
+        "python3",
+        "scripts/test-version.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-version.py"
+      ]
+    },
+    "auto01.buildlock": {
+      "command": [
+        "bash",
+        "scripts/test-heavy-build-lock.sh"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "POSIX 内核 flock + exec 继承描述符；稳定锁文件不删除。8 项合成进程测试：竞争拒绝与 inode/0600、非零状态、SIGTERM、SIGKILL、父退出子仍持锁、符号链接、目录/FIFO、调用方 EXIT trap。无真实编译；build-app 沙箱接入及 active 原件保留由 test-automation-artifact.py 验证。锁不限制 CPU，也不覆盖绕过入口的直接 cargo。",
+      "test_files": [
+        "scripts/test-heavy-build-lock.sh"
+      ]
+    },
+    "auto01.restartapp": {
+      "command": [
+        "bash",
+        "scripts/test-restart-app.sh"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "restart-app 优雅退出路径：沙箱假命令驱动真实脚本，不启动应用。断言 12 条——osascript 挂住时被自身超时打断且仍兜底、明说写盘收尾可能未执行、等待循环真的跑过、优雅退出成功时不告警、旧实例杀不掉时非零退出且指出重启未发生、语法通过",
+      "test_files": [
+        "scripts/test-restart-app.sh"
+      ]
+    },
+    "sup05.nativemotionjs": {
+      "command": [
+        "node",
+        "scripts/test-native-motion.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-native-motion.mjs"
+      ]
+    },
+    "sup05.nativemotionres": {
+      "command": [
+        "python3",
+        "scripts/test-native-motion-result.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-native-motion-result.py"
+      ]
+    },
+    "not01.ledgerrestart": {
+      "depends_on": [
+        "package.artifact"
+      ],
+      "command": [
+        "python3",
+        "scripts/test-notify-ledger-restart.py",
+        "--binary",
+        "dist/agentisland"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "三次真实进程（正式二进制 --notify-ledger-probe，隔离临时 fixture）：新ID重复/多agent跨agent同id均到、重启验证 pending 与 duplicates 并 ack、再重启验证 ack 不复活；只读取数字/布尔/安全哈希回执（含 evicted，探针不超过保留容量故必须为 0），校验 0600 账本只有白名单摘要（无正文、无原始 id、agent 仅声明档案或 system/external）",
+      "test_files": [
+        "scripts/test-notify-ledger-restart.py"
+      ]
+    },
+    "not01.latencyui": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-notify-latency-ui.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "通知页真实浏览器：未知、样本不足、阈值边界、慢样本、丢弃、读取失败与只读刷新；后端链路由 rust.default 的真实 HTTP 验收覆盖",
+      "test_files": [
+        "scripts/test-notify-latency-ui.mjs"
+      ]
+    },
+    "shell.functionalui": {
+      "command": [
+        "node",
+        "scripts/test-functional-ui.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-functional-ui.mjs"
+      ]
+    },
+    "sup01.clidispatch": {
+      "depends_on": [
+        "package.artifact"
+      ],
+      "command": [
+        "python3",
+        "scripts/test-cli-dispatch.py",
+        "--binary",
+        "dist/agentisland"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "built binary",
+      "source": "existing asset, audited 2026-10-14",
+      "requires_binary": "dist/agentisland",
+      "test_files": [
+        "scripts/test-cli-dispatch.py"
+      ]
+    },
+    "gw08.cliusage": {
+      "depends_on": [
+        "package.artifact"
+      ],
+      "command": [
+        "python3",
+        "scripts/test-cli-usage.py",
+        "--binary",
+        "dist/agentisland"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "built binary",
+      "source": "existing asset, audited 2026-10-14",
+      "requires_binary": "dist/agentisland",
+      "test_files": [
+        "scripts/test-cli-usage.py"
+      ]
+    },
+    "sup05.nativemotionpy": {
+      "command": [
+        "python3",
+        "scripts/native-gates-vm.py",
+        "--vm",
+        "{env:NATIVE_TEST_VM}",
+        "--user",
+        "{env:NATIVE_TEST_USER}",
+        "--motion-only"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_env": {
+        "ALLOW_NATIVE_TESTS": "1",
+        "NATIVE_MOTION": "1",
+        "NATIVE_TEST_VM": "*",
+        "NATIVE_TEST_USER": "*"
+      },
+      "external_requirement": "真机隔离 VM（darwin + Aqua uid≥500 + /dev/console 属主一致 + kern.hv_vmm_present==1）",
+      "source": "existing asset, audited 2026-10-14",
+      "note": "Verified VM motion-only orchestrator; no host-side raw native script.",
+      "test_files": [
+        "scripts/test-native-motion.py"
+      ],
+      "requires_binary": "dist/AgentIsland.app/Contents/MacOS/agentisland"
+    },
+    "task04.claudeplanclient": {
+      "command": [
+        "python3",
+        "scripts/test-claude-plan-client.py"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "real pinned Claude Code CLI 2.1.291 (Claude Code)",
+      "source": "existing asset, audited 2026-10-14",
+      "requires_env": {
+        "CLAUDE_PLAN_CLIENT": "1"
+      },
+      "notes": "不进自动门禁，需显式环境变量启用：release.sh 中只有 CLAUDE_PLAN_CLIENT=1 才运行它。未启用时 release.sh 登记未验项「官方 Claude 客户端取证未运行（需 CLAUDE_PLAN_CLIENT=1 与真实 pinned CLI）」——不算通过，也不静默跳过。需预先安装 pinned 官方 CLI，且脚本会校验版本恰为 2.1.291，不符即失败，不降级。",
+      "note": "不在任何自动门禁内。release.sh 仅在 CLAUDE_PLAN_CLIENT=1 时运行；未启用则登记未验项并在推 tag 前点名。需预先安装 pinned 官方 CLI（.scratch/claude-real-client/runtime/...），脚本校验版本恰为 2.1.291，不符即失败，不静默降级。",
+      "test_files": [
+        "scripts/test-claude-plan-client.py"
+      ]
+    },
+    "rust.default": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "app/src-tauri 全量 Rust 测试；2026-10-16 本轮实测 1077 passed / 0 failed / 14 ignored（全量，本轮跑过）。通知账本定向实测 23 passed / 0 failed（另含 EngineState 通知键名契约：与 scripts/test-notify-latency-ui.mjs 共读 app/src-tauri/tests/fixtures/contracts/notify-keys.json，单侧改名即变红；含未确认含队首、恢复条数为启动快照的值断言，均已做变异验证可拒错）（含隐私投影、id作用域、flush 状态、独立句柄、淘汰计数与「正文淘汰≠身份遗忘」、ack 只删同身份那条）；CLI 定向 27 passed / 0 failed（含每次投递带新合法 id、CLI 请求体裁被生产路由解析、非 2xx 不印已投递）；含20请求真实HTTP→生产等待/consumer→EngineState及无唤醒负例、真实HTTP跨agent同id两条都入队；三次真实进程重启验收见 not01.ledgerrestart；平台cfg使静态计数不同于执行数，以当前运行回执为准",
+      "note": "Full Rust suite; requirement links identify partial coverage, not completeness. Native platform scope currently validated on macOS.",
+      "test_files": [
+        "app/src-tauri/src/atomicfile.rs",
+        "app/src-tauri/src/audit.rs",
+        "app/src-tauri/src/budget.rs",
+        "app/src-tauri/src/capabilities.rs",
+        "app/src-tauri/src/claude_hook_config_tests.rs",
+        "app/src-tauri/src/claude_plan_capture_tests.rs",
+        "app/src-tauri/src/claude_plan_receiver_tests.rs",
+        "app/src-tauri/src/claude_plan_runtime_tests.rs",
+        "app/src-tauri/src/cleaner.rs",
+        "app/src-tauri/src/cli.rs",
+        "app/src-tauri/src/connection_http.rs",
+        "app/src-tauri/src/connection_probe.rs",
+        "app/src-tauri/src/connections.rs",
+        "app/src-tauri/src/cost.rs",
+        "app/src-tauri/src/dedup_tests.rs",
+        "app/src-tauri/src/deeplink.rs",
+        "app/src-tauri/src/duration.rs",
+        "app/src-tauri/src/engine.rs",
+        "app/src-tauri/src/engine/state_tests.rs",
+        "app/src-tauri/src/engine/tool_budget_tests.rs",
+        "app/src-tauri/src/filemon.rs",
+        "app/src-tauri/src/forecast.rs",
+        "app/src-tauri/src/health.rs",
+        "app/src-tauri/src/im.rs",
+        "app/src-tauri/src/installed.rs",
+        "app/src-tauri/src/interface_models.rs",
+        "app/src-tauri/src/localclock.rs",
+        "app/src-tauri/src/main.rs",
+        "app/src-tauri/src/mcp_config.rs",
+        "app/src-tauri/src/minimax.rs",
+        "app/src-tauri/src/models.rs",
+        "app/src-tauri/src/motion_probe.rs",
+        "app/src-tauri/src/notify_latency.rs",
+        "app/src-tauri/src/navigation.rs",
+        "app/src-tauri/src/notifier.rs",
+        "app/src-tauri/src/notify_ledger_tests.rs",
+        "app/src-tauri/src/notify_ledger_privacy_tests.rs",
+        "app/src-tauri/src/observability.rs",
+        "app/src-tauri/src/placement.rs",
+        "app/src-tauri/src/power.rs",
+        "app/src-tauri/src/private_text_tests.rs",
+        "app/src-tauri/src/procmon.rs",
+        "app/src-tauri/src/prompts.rs",
+        "app/src-tauri/src/provider.rs",
+        "app/src-tauri/src/registry.rs",
+        "app/src-tauri/src/remote.rs",
+        "app/src-tauri/src/render.rs",
+        "app/src-tauri/src/report.rs",
+        "app/src-tauri/src/resilience.rs",
+        "app/src-tauri/src/resource_diagnostics.rs",
+        "app/src-tauri/src/secret.rs",
+        "app/src-tauri/src/selfreport.rs",
+        "app/src-tauri/src/selftest.rs",
+        "app/src-tauri/src/session.rs",
+        "app/src-tauri/src/session/tests.rs",
+        "app/src-tauri/src/session_catalog.rs",
+        "app/src-tauri/src/session_navigation.rs",
+        "app/src-tauri/src/settings.rs",
+        "app/src-tauri/src/skills_config.rs",
+        "app/src-tauri/src/skills_package_tests.rs",
+        "app/src-tauri/src/smtp.rs",
+        "app/src-tauri/src/sqlite.rs",
+        "app/src-tauri/src/task_artifacts.rs",
+        "app/src-tauri/src/task_attention.rs",
+        "app/src-tauri/src/task_sources.rs",
+        "app/src-tauri/src/tasks.rs",
+        "app/src-tauri/src/testutil.rs",
+        "app/src-tauri/src/todos.rs",
+        "app/src-tauri/src/tokens.rs",
+        "app/src-tauri/src/tokens_context_tests.rs",
+        "app/src-tauri/src/tokens_projection_tests.rs",
+        "app/src-tauri/src/transport.rs",
+        "app/src-tauri/src/trees.rs",
+        "app/src-tauri/src/usage_context.rs",
+        "app/src-tauri/src/usage_projection.rs",
+        "app/src-tauri/src/webhook.rs",
+        "app/src-tauri/src/webhook_ingress_tests.rs",
+        "app/src-tauri/src/window_layout.rs",
+        "app/src-tauri/src/window_layout_execution.rs",
+        "app/src-tauri/src/window_layout_geometry.rs",
+        "app/src-tauri/src/window_layout_journal.rs",
+        "app/src-tauri/src/window_layout_plan.rs",
+        "app/src-tauri/src/window_layout_readback.rs",
+        "app/src-tauri/src/window_layout_rules.rs",
+        "app/src-tauri/src/window_layout_service.rs",
+        "app/src-tauri/src/window_lifecycle.rs",
+        "app/src-tauri/src/window_visibility.rs",
+        "app/src-tauri/src/workspace_journal.rs",
+        "app/src-tauri/src/workspaces.rs",
+        "app/src-tauri/tests/fixtures/contracts/notify-keys.json"
+      ]
+    },
+    "rust.manual": {
+      "command": [
+        "python3",
+        "scripts/automation/manual-rust.py"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "读本机真实会话库 / 真实 Codex·Claude CLI；不在任何自动门禁内",
+      "source": "app/src-tauri 14 个 #[ignore]，2026-10-15 统计",
+      "note": "Runs one explicitly selected ignored probe only. Never part of ci/native or batch --ignored.",
+      "test_files": [],
+      "requires_env": {
+        "ALLOW_PRIVATE_TEST_DATA": "1",
+        "MANUAL_RUST_TEST": "*"
+      }
+    },
+    "shell.workbench": {
+      "command": [
+        "node",
+        "scripts/test-functional-ui.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-functional-ui.mjs"
+      ],
+      "command_env": {
+        "TEST_NAVIGATION_SHELL": "workbench"
+      }
+    },
+    "sup05.deeplink.workbench": {
+      "command": [
+        "node",
+        "scripts/test-island-deeplink.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-island-deeplink.mjs"
+      ],
+      "command_env": {
+        "TEST_NAVIGATION_SHELL": "workbench"
+      }
+    },
+    "sup05.deeplink.cold": {
+      "command": [
+        "node",
+        "scripts/test-island-deeplink.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "existing asset, assertions audited 2026-10-14",
+      "test_files": [
+        "scripts/test-island-deeplink.mjs"
+      ],
+      "command_env": {
+        "TEST_COLD_NAVIGATION": "1"
+      }
+    },
+    "native.vm": {
+      "command": [
+        "python3",
+        "scripts/native-gates-vm.py",
+        "--vm",
+        "{env:NATIVE_TEST_VM}",
+        "--user",
+        "{env:NATIVE_TEST_USER}"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_env": {
+        "ALLOW_NATIVE_TESTS": "1",
+        "NATIVE_TEST_VM": "*",
+        "NATIVE_TEST_USER": "*"
+      },
+      "requires_binary": "dist/AgentIsland.app/Contents/MacOS/agentisland",
+      "test_files": [
+        "scripts/test-app-instance.py",
+        "scripts/test-dock-presence.py",
+        "scripts/test-cli-native.py"
+      ],
+      "note": "Verified VM orchestrator includes UI, Dock, single-instance, CLI and window-lifetime; never run these on the host."
+    },
+    "automation.runner": {
+      "command": [
+        "python3",
+        "scripts/test-automation-runner.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-runner.py"
+      ]
+    },
+    "automation.registry": {
+      "command": [
+        "python3",
+        "scripts/test-test-registry.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-test-registry.py"
+      ]
+    },
+    "automation.evidence": {
+      "command": [
+        "python3",
+        "scripts/test-automation-evidence.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-evidence.py"
+      ]
+    },
+    "automation.adapters": {
+      "command": [
+        "python3",
+        "scripts/test-automation-adapters.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-adapters.py"
+      ]
+    },
+    "automation.trigger": {
+      "command": [
+        "python3",
+        "scripts/test-automation-trigger.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-trigger.py"
+      ]
+    },
+    "automation.driver": {
+      "command": [
+        "python3",
+        "scripts/test-automation-driver.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-driver.py"
+      ]
+    },
+    "automation.artifact": {
+      "command": [
+        "python3",
+        "scripts/test-automation-artifact.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-artifact.py"
+      ],
+      "requires_python": "3.11",
+      "discriminating_by": {
+        "command": [
+          "python3",
+          "scripts/test-automation-artifact.py",
+          "--ablation-experiments"
+        ],
+        "reason": "Ablations drop the source/artifact content comparison in an isolated copy; the receipt must then reject, which proves the check can fail rather than always reporting ok."
+      }
+    },
+    "automation.development": {
+      "command": [
+        "python3",
+        "scripts/test-automation-development.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-development.py"
+      ]
+    },
+    "automation.lessons": {
+      "command": [
+        "python3",
+        "scripts/test-automation-lessons.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-lessons.py"
+      ],
+      "requires_python": "3.11"
+    },
+    "package.artifact": {
+      "command": [
+        "python3",
+        "scripts/automation/artifact.py",
+        "verify",
+        "--profile",
+        "release"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "test_files": [
+        "scripts/automation/artifact.py"
+      ],
+      "note": "Read-only receipt verification: the source content manifest and artifact hashes must match. Missing receipt, build in progress, source drift or artifact mismatch all report blocked - a stale bundle must never pass as freshly built."
+    },
+    "automation.verifier": {
+      "command": [
+        "python3",
+        "scripts/test-framework-verifier.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "test_files": [
+        "scripts/test-framework-verifier.py"
+      ]
+    },
+    "automation.snapshot": {
+      "command": [
+        "python3",
+        "scripts/test-automation-snapshot.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "test_files": [
+        "scripts/test-automation-snapshot.py"
+      ],
+      "discriminating_by": {
+        "command": [
+          "python3",
+          "scripts/test-automation-snapshot.py",
+          "--break-experiments"
+        ],
+        "reason": "The suite injects credential-shaped bytes into a temporary repository and proves the real snapshot_commit refuses before any Git object write, so the guard is shown to be able to fail."
+      }
+    },
+    "automation.matrix": {
+      "command": [
+        "python3",
+        "scripts/automation/render-matrix.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "test_files": [
+        "scripts/automation/render-matrix.py",
+        "docs/需求测试矩阵.md"
+      ]
+    },
+    "automation.candidate": {
+      "command": [
+        "python3",
+        "scripts/test-automation-candidate.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-candidate.py",
+        "scripts/automation/candidate.py"
+      ],
+      "note": "Candidate manifests are only produced locally and never consumed automatically: verify candidate.py proves digest/review/baseline binding and patch identity read-only, and never treats a deterministic-mock review as an independent review."
+    },
+    "automation.pause": {
+      "command": [
+        "python3",
+        "scripts/test-automation-pause.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "test_files": [
+        "scripts/test-automation-pause.py",
+        "scripts/automation/pause.py"
+      ],
+      "note": "Failed and duplicate-input runs leave a durable pause record; notification is opt-in and every delivery failure degrades to a log line plus delivered=false. No system notification is sent by the gate itself."
+    },
+    "automation.break": {
+      "command": [
+        "python3",
+        "scripts/test-automation-break.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "test_files": [
+        "scripts/test-automation-break.py",
+        "scripts/automation/break_check.py"
+      ],
+      "note": "Break protocol unit tests: strict structured-evidence validation, containment, and the isolated CLI. The two break-* gates below are covered by the same suite; an empty test_files there is deliberate — listing one file under two check ids without command_env would trip the duplicate-owner guard, and it is that guard, not a per-gate file, that keeps the gates from drifting apart."
+    },
+    "automation.break-artifact": {
+      "command": [
+        "python3",
+        "scripts/automation/break_check.py",
+        "--check-id",
+        "automation.artifact",
+        "--isolated",
+        "--timeout",
+        "60"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "test_files": [],
+      "note": "Execute the declared artifact ablation in a disposable current-source copy. Strict structured evidence must prove baseline rejection and mutant false-green; declaration or arbitrary nonzero exit is not success."
+    },
+    "soak.resource": {
+      "command": [
+        "python3",
+        "scripts/native-gates-vm.py",
+        "--vm",
+        "{env:NATIVE_TEST_VM}",
+        "--user",
+        "{env:NATIVE_TEST_USER}",
+        "--resource-only"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_env": {
+        "ALLOW_NATIVE_TESTS": "1",
+        "NATIVE_TEST_VM": "*",
+        "NATIVE_TEST_USER": "*"
+      },
+      "requires_binary": "dist/AgentIsland.app/Contents/MacOS/agentisland",
+      "test_files": [
+        "scripts/resource-soak.py",
+        "scripts/analyze-memory-soak.py"
+      ],
+      "note": "30-minute/20-cycle synthetic resource protocol through the verified VM. budget_assessed is reported as false because no threshold is agreed yet; a green run is not a budget verdict.",
+      "timeout_seconds": 7200
+    },
+    "automation.break-snapshot": {
+      "command": [
+        "python3",
+        "scripts/automation/break_check.py",
+        "--check-id",
+        "automation.snapshot",
+        "--isolated",
+        "--timeout",
+        "120"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "test_files": [],
+      "note": "Execute the declared snapshot counterexample in a disposable current-source copy: credential-shaped bytes must be refused before any Git object write."
+    },
+    "not05.remotedelivery": {
+      "depends_on": [
+        "package.artifact"
+      ],
+      "command": [
+        "python3",
+        "scripts/test-remote-delivery-probe.py",
+        "--binary",
+        "dist/agentisland"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "真实正式二进制 --remote-delivery-probe（headless、不读用户配置/钥匙串、只连探针自建的 loopback 对端）：真实 HttpTransport 对真对端 429+Retry-After（文案含等待时长、交付态未确认、不立刻重试）/ 三次 500 升级通道且升级后只发一次不重试 / 200 只算受理不算已送达。补上外发链路此前只有 cfg(test) 假传输单测、发布产物无端到端验收的缺口（入站有 not01.ledgerrestart，外发原本没有对应物）。",
+      "test_files": [
+        "scripts/test-remote-delivery-probe.py"
+      ]
+    }
+  },
+  "agents": {
+    "default": "mock",
+    "available": [
+      "mock",
+      "agy",
+      "hermes"
+    ],
+    "drivers": {
+      "mock": {
+        "note": "确定性回放驱动，用于流水线自测；不调用真实模型。"
+      },
+      "agy": {
+        "note": "Antigravity CLI。需先完成 Google OAuth 登录。"
+      },
+      "hermes": {
+        "note": "Hermes Agent CLI。需已配置 provider/模型。"
+      }
+    }
+  },
+  "profiles": {
+    "fast": [
+      "secrets.workspace",
+      "sup01.identities",
+      "sup02.actions",
+      "sup03.sessions",
+      "sup02.firstsnap",
+      "sup05.islandclick",
+      "sup05.islandreturn",
+      "sup05.islandmotion",
+      "sup05.contentmotion",
+      "sup05.deeplink",
+      "sup05.quicknav",
+      "sup05.pagemotion",
+      "sup05.winlifecycle",
+      "sup05.winlayout",
+      "sup05.taskfocus",
+      "task01.tasks",
+      "not01.attention",
+      "gw02.modeldir",
+      "gw02.ifacemodels",
+      "gw07.workspaces",
+      "gw07.provfeedback",
+      "gw08.budgets",
+      "gw08.usagecontext",
+      "gw08.usagetrend",
+      "gw08.reportpanel",
+      "gw10.prompts",
+      "gw10.skillspkg",
+      "ops01.memosoak",
+      "ops01.memosoakres",
+      "ops01.measuremem",
+      "ops01.resourcesoak",
+      "ops01.nativegates",
+      "auto01.staging",
+      "sec01.scansecrets",
+      "auto01.version",
+      "sup05.nativemotionjs",
+      "sup05.nativemotionres",
+      "shell.functionalui",
+      "shell.workbench",
+      "sup05.deeplink.workbench",
+      "sup05.deeplink.cold",
+      "automation.runner",
+      "automation.registry",
+      "automation.evidence",
+      "automation.adapters",
+      "automation.trigger",
+      "automation.driver",
+      "automation.artifact",
+      "automation.development",
+      "automation.verifier",
+      "automation.snapshot",
+      "automation.lessons",
+      "automation.matrix",
+      "automation.candidate",
+      "automation.pause",
+      "automation.break",
+      "automation.break-artifact",
+      "automation.break-snapshot",
+      "auto01.buildlock",
+      "auto01.restartapp"
+    ],
+    "browser": [
+      "not01.latencyui",
+      "task01.detailnav",
+      "task04.readerleave",
+      "task04.refreshfocus"
+    ],
+    "ci": [
+      "secrets.workspace",
+      "sup01.identities",
+      "sup02.actions",
+      "sup03.sessions",
+      "sup02.firstsnap",
+      "sup05.islandclick",
+      "sup05.islandreturn",
+      "sup05.islandmotion",
+      "sup05.contentmotion",
+      "sup05.deeplink",
+      "sup05.quicknav",
+      "sup05.pagemotion",
+      "sup05.winlifecycle",
+      "sup05.winlayout",
+      "sup05.taskfocus",
+      "task01.tasks",
+      "not01.attention",
+      "gw02.modeldir",
+      "gw02.ifacemodels",
+      "gw07.workspaces",
+      "gw07.provfeedback",
+      "gw08.budgets",
+      "gw08.usagecontext",
+      "gw08.usagetrend",
+      "gw08.reportpanel",
+      "gw10.prompts",
+      "gw10.skillspkg",
+      "ops01.memosoak",
+      "ops01.memosoakres",
+      "ops01.measuremem",
+      "ops01.resourcesoak",
+      "ops01.nativegates",
+      "auto01.staging",
+      "sec01.scansecrets",
+      "auto01.version",
+      "sup05.nativemotionjs",
+      "sup05.nativemotionres",
+      "shell.functionalui",
+      "shell.workbench",
+      "sup05.deeplink.workbench",
+      "sup05.deeplink.cold",
+      "automation.runner",
+      "automation.registry",
+      "rust.default",
+      "not01.latencyui",
+      "task01.detailnav",
+      "task04.readerleave",
+      "task04.refreshfocus",
+      "automation.selfcheck",
+      "automation.evidence",
+      "automation.adapters",
+      "automation.trigger",
+      "automation.driver",
+      "automation.artifact",
+      "automation.development",
+      "automation.verifier",
+      "automation.snapshot",
+      "automation.lessons",
+      "automation.matrix",
+      "automation.candidate",
+      "automation.pause",
+      "automation.break",
+      "automation.break-artifact",
+      "automation.break-snapshot",
+      "auto01.buildlock",
+      "auto01.restartapp"
+    ],
+    "package": [
+      "package.artifact",
+      "sup01.clidispatch",
+      "gw08.cliusage",
+      "not01.ledgerrestart",
+      "not05.remotedelivery"
+    ],
+    "native": [
+      "native.vm",
+      "sup05.nativemotionpy"
+    ],
+    "client": [
+      "task04.claudeplanclient"
+    ],
+    "manual": [
+      "rust.manual"
+    ],
+    "automation": [
+      "automation.runner",
+      "automation.registry",
+      "automation.selfcheck",
+      "automation.evidence",
+      "automation.adapters",
+      "automation.trigger",
+      "automation.driver",
+      "automation.artifact",
+      "automation.development",
+      "automation.verifier",
+      "automation.snapshot",
+      "automation.lessons",
+      "automation.matrix",
+      "automation.candidate",
+      "automation.pause",
+      "automation.break",
+      "automation.break-artifact",
+      "automation.break-snapshot"
+    ],
+    "note": "Selected blocked checks never yield success. Package expects a freshly built bundle after ci. Native runs only through verified VM, client opt-in, manual selects one ignored probe. No profile sends real paid requests. protocol = L2 format/protocol subset (also in ci). soak = L7 long-run resource protocol through the verified VM orchestrator; it is never run bare on the host and its green result is not a budget verdict. delivery is intentionally absent: NOT-03/NOT-04 have no implementation yet, and an empty profile would let \"selected but nothing ran\" pass as a real choice. recovery was removed rather than left as an alias of soak: crash/restart recovery has no implementation, and an alias would advertise L7 recovery coverage that does not exist.",
+    "release": [
+      "secrets.workspace",
+      "sup01.identities",
+      "sup02.actions",
+      "sup03.sessions",
+      "sup02.firstsnap",
+      "sup05.islandclick",
+      "sup05.islandreturn",
+      "sup05.islandmotion",
+      "sup05.contentmotion",
+      "sup05.deeplink",
+      "sup05.quicknav",
+      "sup05.pagemotion",
+      "sup05.winlifecycle",
+      "sup05.winlayout",
+      "sup05.taskfocus",
+      "task01.tasks",
+      "not01.attention",
+      "gw02.modeldir",
+      "gw02.ifacemodels",
+      "gw07.workspaces",
+      "gw07.provfeedback",
+      "gw08.budgets",
+      "gw08.usagecontext",
+      "gw08.usagetrend",
+      "gw08.reportpanel",
+      "gw10.prompts",
+      "gw10.skillspkg",
+      "ops01.memosoak",
+      "ops01.memosoakres",
+      "ops01.measuremem",
+      "ops01.resourcesoak",
+      "ops01.nativegates",
+      "auto01.staging",
+      "sec01.scansecrets",
+      "auto01.version",
+      "auto01.buildlock",
+      "sup05.nativemotionjs",
+      "sup05.nativemotionres",
+      "shell.functionalui",
+      "shell.workbench",
+      "sup05.deeplink.workbench",
+      "sup05.deeplink.cold",
+      "automation.runner",
+      "automation.registry",
+      "rust.default",
+      "not01.latencyui",
+      "task01.detailnav",
+      "task04.readerleave",
+      "task04.refreshfocus",
+      "automation.selfcheck",
+      "automation.evidence",
+      "automation.adapters",
+      "automation.trigger",
+      "automation.driver",
+      "automation.artifact",
+      "automation.development",
+      "automation.verifier",
+      "automation.snapshot",
+      "automation.lessons",
+      "automation.matrix",
+      "sup01.clidispatch",
+      "gw08.cliusage",
+      "package.artifact",
+      "automation.candidate",
+      "automation.pause",
+      "automation.break",
+      "automation.break-artifact",
+      "automation.break-snapshot",
+      "not01.ledgerrestart",
+      "auto01.restartapp",
+      "not05.remotedelivery"
+    ],
+    "protocol": [
+      "gw02.ifacemodels",
+      "gw08.usagetrend",
+      "not01.attention",
+      "sec01.scansecrets",
+      "sup02.actions",
+      "sup03.sessions",
+      "task01.tasks",
+      "task04.readerleave"
+    ],
+    "soak": [
+      "soak.resource"
+    ]
+  },
+  "runtime_requirement": "Python >= 3.11 for artifact receipt tooling; CI pins 3.12. Older interpreters report blocked, never failed."
+}

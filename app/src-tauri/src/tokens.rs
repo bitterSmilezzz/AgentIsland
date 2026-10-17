@@ -18,6 +18,12 @@ pub struct TokenUsageMonitor {
     cache_budget: usize,
     access_clock: u64,
     transient_key: Option<String>,
+    /// 当轮跨文件归并工作集，仅 Codex response_id 具有强身份。
+    /// 两个扫描入口均独立重建，并在返回前释放全部键与桶容量。
+    scan_index: HashMap<ResponseId, ScanResponse>,
+    /// 最近完成扫描的键数，诊断只保留标量，不保留扫描工作集。
+    last_cross_file_keys: usize,
+    scan_active: bool,
 }
 
 const CACHE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
@@ -87,6 +93,32 @@ struct Entry {
     tokens: i64,
     cost: f64,
     context: Option<Arc<Fact>>,
+    /// 跨文件归并身份。`None` = 本条不参与跨文件归并（绝大多数方言都是）。
+    /// 文件内的物理兜底键仍只存在 `FileState::seen_ids` 里，不进这里——那条键带
+    /// 完整文件路径，逐条存进明细会把常驻内存推高一截。
+    identity: Option<ResponseId>,
+}
+
+/// 「一次实际请求」的响应身份。**只有拿到生产者契约的字段才配进这里。**
+///
+/// 当前唯一成员是 Codex `payload.response_id`：上游协议（固定提交 b6e8a2e）承诺
+/// "Exact usage and metadata reported by one upstream Responses API completion.
+///  Unlike TokenCountEvent, this is not accumulated, estimated, or replayed."
+/// 本机 5 份文件 7955 条记录 7955 个不同 id 也印证。
+///
+/// 其余方言的 id 字段**刻意不进**：Claude 的 `message.id`/`uuid`（本机无语料、官方
+/// 契约未取证）、ZCode 的 `requestId`（有 `attempt` 字段，无证据）、WorkBuddy 的
+/// `doc.id`（同一 `conversationRequestId` 下挂上百行 usage）都只能证明「这一行」或
+/// 「这一次意图」，不能证明「一次计费调用」。把它们升级成强身份会把两次真实请求合并
+/// 成一次——静默少计比重复多计更坏。要加入新方言，先拿契约取证。
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct ResponseId(String);
+
+struct ScanResponse {
+    ts: i64,
+    tokens: i64,
+    context: Option<Arc<Fact>>,
+    retained: bool,
 }
 
 #[derive(Default)]
@@ -115,6 +147,8 @@ struct FileState {
     ended_with_newline: bool,
     /// Streaming sources revise earlier calls; changed files must rebuild before folding.
     revisable_usage: bool,
+    /// 归并结果依赖本轮文件集合，不能复用上轮已过滤的明细或折入合计。
+    cross_file_usage: bool,
 }
 
 impl FileState {
@@ -141,6 +175,11 @@ impl FileState {
             + self.model_names.keys().map(String::capacity).sum::<usize>()
             + model_bytes
             + self.context.cache_heap_charge()
+            // 明细里的响应身份：随窗口折入而消失，随 LRU 驱逐而释放。
+            // 本机 1.4 万条 × 平均 52B ≈ 0.7 MiB，相对 16 MiB 预算可接受。
+            + self.entries.iter().map(|entry| {
+                entry.identity.as_ref().map_or(0, |id| id.0.capacity() + std::mem::size_of::<usize>())
+            }).sum::<usize>()
     }
 }
 
@@ -187,6 +226,8 @@ struct UsageLine {
     context: Option<Arc<Fact>>,
     /// 记录自带的 id（没有则调用方用「文件 + 段起点 + 行号」兜底）
     id: Option<String>,
+    /// 该 id 是否足以支撑跨文件归并。只有拿到生产者契约的方言才为 true。
+    cross_file: bool,
     tokens: i64,
     cost: f64,
     model: String,
@@ -202,7 +243,22 @@ impl TokenUsageMonitor {
             cache_budget: CACHE_BUDGET_BYTES,
             access_clock: 0,
             transient_key: None,
+            scan_index: HashMap::new(),
+            last_cross_file_keys: 0,
+            scan_active: false,
         }
+    }
+
+    fn begin_scan(&mut self) {
+        self.scan_index = HashMap::new();
+        self.last_cross_file_keys = 0;
+        self.scan_active = true;
+    }
+
+    fn end_scan(&mut self) {
+        self.last_cross_file_keys = self.scan_index.len();
+        self.scan_index = HashMap::new();
+        self.scan_active = false;
     }
 
     fn cache_charge(&self) -> usize {
@@ -259,12 +315,17 @@ impl TokenUsageMonitor {
             entry_capacity: self.states.values().map(|s| s.entries.capacity()).sum(),
             dedup_keys: self.states.values().map(|s| s.seen_ids.len()).sum(),
             dedup_capacity: self.states.values().map(|s| s.seen_ids.capacity()).sum(),
+            cross_file_keys: self.last_cross_file_keys,
             retained_charge_bytes: self.cache_charge(),
             retained_budget_bytes: self.cache_budget,
         }
     }
 
     pub fn monitor(&mut self, profile: &crate::models::AgentProfile) -> TokenReport {
+        // 每个枚举入口都从空索引开始（`range_totals` 同样清）。索引只在一轮完整扫描内
+        // 有意义：跨轮或跨入口保留会让重读的每一条都被判成「已在别处计过」而丢掉，
+        // 也会让「删掉一份来源」之后粘着旧归属——两种都是静默少计。
+        self.begin_scan();
         let now = now_ms();
         let cutoff24 = now - 24 * 3600 * 1000;
         let cutoff30 = now - 30 * 24 * 3600 * 1000;
@@ -340,7 +401,7 @@ impl TokenUsageMonitor {
                             let hour = entry.ts - entry.ts % 3_600_000;
                             *hourly.entry(hour).or_default() += entry.tokens;
                         }
-                        if entry.ts >= cutoff24 {
+                        if entry.ts >= cutoff24 && entry.identity.is_none() {
                             if let Some(fact) = &entry.context {
                                 context_counts.add(fact, entry.tokens);
                             }
@@ -402,6 +463,16 @@ impl TokenUsageMonitor {
             })
             .collect();
         models_total.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+        // 强身份的上下文等所有副本核对完才计入；冲突降为未知，避免枚举顺序
+        // 或 LRU 驱逐决定覆盖率。净消耗、模型与小时桶仍只计第一份精确记录。
+        for response in self.scan_index.values() {
+            if response.retained && response.ts >= cutoff24 {
+                if let Some(fact) = &response.context {
+                    context_counts.add(fact, response.tokens);
+                }
+            }
+        }
+        self.end_scan();
         let context24h = crate::usage_context::Report::from_counts(
             &profile.id,
             &profile.name,
@@ -434,6 +505,10 @@ impl TokenUsageMonitor {
         range_ms: i64,
         now: i64,
     ) -> (i64, f64) {
+        // 每个枚举入口都从空索引开始。`monitor` 与 `range_totals` 是两次独立的完整扫描，
+        // 第二次复用第一次的已见集合会让重读的每一条都被判成「已在别处计过」而丢掉。
+        // 跨轮保留索引还会让「删掉一份来源」之后粘着旧归属，造成少计。
+        self.begin_scan();
         let cutoff = now.saturating_sub(range_ms);
         let mut tokens = 0i64;
         let mut cost = 0f64;
@@ -443,6 +518,7 @@ impl TokenUsageMonitor {
             .filter(|p| Path::new(p).is_file())
             .find_map(|p| query_inclusive_messages(p, cutoff))
         {
+            self.end_scan();
             return (part.tokens24, part.cost24);
         }
         // 同一个文件可能被两个声明根同时覆盖（重叠根）：与主报告一样按路径去重，
@@ -483,6 +559,7 @@ impl TokenUsageMonitor {
             tokens += part.tokens24;
             cost += part.cost24;
         }
+        self.end_scan();
         (tokens, cost)
     }
 
@@ -506,13 +583,16 @@ impl TokenUsageMonitor {
             return self.summarize(&key, cutoff24);
         };
         let (start, can_append) = match self.states.get(&key).and_then(|st| st.stamp) {
-            // 戳逐字相同 ⇒ 事件集合与顺序都不变，摊平与折入整套跳过
-            Some(prev) if prev == stamp => return self.summarize(&key, cutoff24),
+            // 仅按文件隔离的来源可复用原汇总；强身份的归属取决于本轮全部来源。
+            Some(prev) if prev == stamp && !self.states[&key].cross_file_usage => {
+                return self.summarize(&key, cutoff24);
+            }
             Some(prev) => {
                 let st = self.states.get(&key).unwrap();
                 // 增量续读四个条件缺一不可：没折过东西（折入的去重看不见已折掉的键）、
                 // 同一个 inode、上次停在整行边界、文件确实变长了
                 let can_append = !st.revisable_usage
+                    && !st.cross_file_usage
                     && st.rolled_count == 0
                     && st.ended_with_newline
                     && prev.inode == stamp.inode
@@ -568,6 +648,7 @@ impl TokenUsageMonitor {
                 st.rolled_count = 0;
                 st.seen_ids.clear();
                 st.model_names.clear();
+                st.cross_file_usage = false;
             }
             if consumed.is_some() {
                 st.context = context;
@@ -581,6 +662,26 @@ impl TokenUsageMonitor {
                     Some(id) => id.clone(),
                     None => format!("{key}#{start}-{line_index}"),
                 };
+                let identity = if u.cross_file {
+                    u.id.as_deref().map(|id| ResponseId(id.to_owned()))
+                } else {
+                    None
+                };
+                // 即使本文件的所有强身份都被另一份副本挡住，也必须标记重建。
+                st.cross_file_usage |= identity.is_some();
+                if self.scan_active {
+                    if let Some(identity) = &identity {
+                        if let Some(previous) = self.scan_index.get_mut(identity) {
+                            if previous.context != u.context {
+                                previous.context = None;
+                            }
+                            continue;
+                        }
+                        self.scan_index.insert(identity.clone(), ScanResponse {
+                            ts: u.ts_ms, tokens: u.tokens, context: u.context.clone(), retained: false,
+                        });
+                    }
+                }
                 if let Some(&index) = st.seen_ids.get(&dedup) {
                     let previous = if index < st.entries.len() {
                         &mut st.entries[index]
@@ -601,6 +702,7 @@ impl TokenUsageMonitor {
                     tokens: u.tokens,
                     cost: u.cost,
                     context: u.context,
+                    identity,
                 });
             }
             let carry = if can_append {
@@ -625,6 +727,15 @@ impl TokenUsageMonitor {
                     let value = st.rolled_models.entry(model).or_default();
                     value.0 += tokens;
                     value.1 += cost;
+                }
+            }
+            if self.scan_active {
+                for entry in &kept {
+                    if let Some(identity) = &entry.identity {
+                        if let Some(response) = self.scan_index.get_mut(identity) {
+                            response.retained = true;
+                        }
+                    }
                 }
             }
             st.entries = kept;
@@ -728,11 +839,12 @@ fn parse_usage_doc(doc: &Value, context: Option<&Cursor>) -> Option<UsageLine> {
     }
     let obj = doc.as_object()?;
 
-    let (usage, model, cached_key, id, fresh_input, revisable): (
+    let (usage, model, cached_key, id, fresh_input, revisable, cross_file): (
         Value,
         Option<String>,
         &str,
         Option<String>,
+        bool,
         bool,
         bool,
     ) = if let Some(msg) = obj.get("message") {
@@ -747,7 +859,9 @@ fn parse_usage_doc(doc: &Value, context: Option<&Cursor>) -> Option<UsageLine> {
             .or_else(|| obj.get("uuid"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        (usage, model, "cache_read_input_tokens", id, true, true)
+        // Claude：`message.id` / 顶层 `id` / `uuid` 三级 fallback。本机无 `~/.claude/projects`
+        // 语料，官方契约未取证，**不得**当调用级身份（`message.id` 与 `uuid` 还是两种东西）
+        (usage, model, "cache_read_input_tokens", id, true, true, false)
     } else if obj.get("type").and_then(|v| v.as_str()) == Some("token_usage_record") {
         let payload = obj.get("payload")?;
         let usage = payload.get("usage")?.clone();
@@ -757,7 +871,10 @@ fn parse_usage_doc(doc: &Value, context: Option<&Cursor>) -> Option<UsageLine> {
             .map(|s| s.to_string());
         // 这一族记录里**没有模型名**（payload 只有 response_id / turn_id / usage 一族），
         // 所以落 unknown——旧实现写死 "gpt-5"，那是编的
-        (usage, None, "cached_input_tokens", id, false, false)
+        // cross_file=true：上游协议承诺 response_id 是「一次 Responses API completion 的
+        // 精确用量」，且明言 not accumulated / estimated / replayed。本机 7955 条 7955 个
+        // 不同 id 也印证。这是五个来源里唯一有生产者契约的字段。
+        (usage, None, "cached_input_tokens", id, false, false, true)
     } else if let Some(resp) = obj.get("response") {
         // ZCode rollout：response.usage {inputTokens, outputTokens, cacheRead/WriteTokens}
         let usage = resp.get("usage")?.clone();
@@ -771,7 +888,9 @@ fn parse_usage_doc(doc: &Value, context: Option<&Cursor>) -> Option<UsageLine> {
             .or_else(|| resp.get("responseId"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        (usage, model, "cacheReadTokens", id, false, false)
+        // ZCode rollout：`requestId` / `response.responseId`。本机 204 条全异，但存在
+        // `attempt` 字段（同一 requestId 可能多次尝试），无证据证明它是调用级身份
+        (usage, model, "cacheReadTokens", id, false, false, false)
     } else {
         return None;
     };
@@ -830,6 +949,7 @@ fn parse_usage_doc(doc: &Value, context: Option<&Cursor>) -> Option<UsageLine> {
     Some(UsageLine {
         context: context.and_then(|c| c.for_usage(doc)),
         id,
+        cross_file,
         tokens: net,
         cost,
         model: name,
@@ -954,6 +1074,9 @@ fn parse_provider_usage(doc: &Value) -> Option<UsageLine> {
     Some(UsageLine {
         context: None,
         id: doc.get("id").and_then(Value::as_str).map(str::to_owned),
+        // WorkBuddy：`doc.id` 唯一但只是行/消息身份；同一 `conversationRequestId` 下挂
+        // 几十上百条 usage 行（本机最多 131 行）。跨文件归并只会放大误判，不参与。
+        cross_file: false,
         tokens,
         cost: model
             .and_then(|m| cost::estimate_cost(m, tokens))
@@ -1566,7 +1689,7 @@ mod tests {
     fn byte_budget_charges_shared_context_once_per_file() {
         let fact = Arc::new(Fact { provider: Some("fixture-provider".into()), requested_model: Some("fixture-model".into()) });
         let entries = || (0..100).map(|_| Entry {
-            ts: 0, model: "fixture".into(), tokens: 1, cost: 0.0, context: None,
+            ts: 0, model: "fixture".into(), tokens: 1, cost: 0.0, context: None, identity: None,
         }).collect::<Vec<_>>();
         let plain = FileState { entries: entries(), ..Default::default() };
         let mut shared = FileState { entries: entries(), ..Default::default() };
@@ -1910,13 +2033,18 @@ mod tests {
         );
     }
 
-    /// 当前实现的既有行为（不是验收结论）：去重表按文件隔离，同一响应出现在
-    /// 两份文件里各算一份，逐字副本与相同时间戳也不例外。
-    /// 规格要求的跨文件归并仍未完成——先核实各方言调用身份与修订契约，再谈
-    /// 有界归并与折入重放。这条回归钉住现状，防止它被静默改变而无人复核。
+    /// Codex 跨文件归并：同一个 `response_id` 出现在两份文件里只算一份。
+    ///
+    /// 这是五个来源里唯一做了跨文件归并的方言——上游协议（固定提交 b6e8a2e）承诺
+    /// response_id 是「一次 Responses API completion 的精确用量」，且明言
+    /// not accumulated / estimated / replayed；本机 7955 条记录 7955 个不同 id 印证。
+    ///
+    /// 其余方言（Claude / ZCode / WorkBuddy）**刻意不归并**：它们的 id 字段本机取证
+    /// 都不能证明是调用级身份，强行归并会把两次真实请求合并成一次（静默少计），
+    /// 比重复多计更坏。见 `cross_file_duplicate_responses_of_unverified_identities_are_counted_per_source`。
     #[test]
-    fn cross_file_duplicate_responses_are_counted_per_source() {
-        let sandbox = crate::testutil::Sandbox::new("cross-file-duplicate");
+    fn cross_file_duplicate_codex_responses_are_counted_once() {
+        let sandbox = crate::testutil::Sandbox::new("cross-file-merge");
         std::fs::create_dir_all(sandbox.path().join("a")).unwrap();
         std::fs::create_dir_all(sandbox.path().join("b")).unwrap();
         let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
@@ -1927,11 +2055,279 @@ mod tests {
         std::fs::write(sandbox.path().join("a/one.jsonl"), &body).unwrap();
         std::fs::write(sandbox.path().join("b/two.jsonl"), &body).unwrap();
         let profile = one_root_profile("a", &sandbox.path().to_string_lossy());
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&profile);
+        assert_eq!(
+            report.usage.tokens24h, 150,
+            "one response copied into two files is one call, not two"
+        );
+        // 索引只在**一轮完整扫描内**有意义，诊断报的是最近一次枚举的状态
+        assert_eq!(
+            monitor.diagnostic_cache().cross_file_keys, 1,
+            "the merge index holds exactly the one merged response identity"
+        );
+        // 周期口径走另一条枚举路径，从空索引重扫，必须给出同一个数
+        let (range_tokens, _) = monitor.range_totals(&profile, 86_400_000, now_ms());
+        assert_eq!(
+            range_tokens, 150,
+            "range totals must reuse the same cross-file merge as the 24h report"
+        );
+    }
+
+    /// 未取证身份**不得**被顺手归并。三个方言各自的 id 字段都被本机取证否掉了
+    /// 「一次计费调用」这个解释，所以跨文件出现仍各算一份。
+    #[test]
+    fn cross_file_duplicate_responses_of_unverified_identities_are_counted_per_source() {
+        let sandbox = crate::testutil::Sandbox::new("cross-file-unverified");
+        std::fs::create_dir_all(sandbox.path().join("a")).unwrap();
+        std::fs::create_dir_all(sandbox.path().join("b")).unwrap();
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        // WorkBuddy：`doc.id` 唯一，但同一 conversationRequestId 下挂着几十上百行
+        // usage（本机最多 131 行）——它是行身份，不是调用身份。
+        let workbuddy = format!(
+            r#"{{"id":"shared-row","type":"message","role":"assistant","status":"completed","completedAt":"{timestamp}","providerData":{{"requestModelId":"fixture","usage":{{"inputTokens":1000,"outputTokens":50,"inputTokensDetails":[{{"cached_tokens":900}}]}},"rawUsage":{{"prompt_cache_miss_tokens":0}}}}}}"#
+        );
+        std::fs::write(sandbox.path().join("a/one.jsonl"), format!("{workbuddy}\n")).unwrap();
+        std::fs::write(sandbox.path().join("b/two.jsonl"), format!("{workbuddy}\n")).unwrap();
+        let profile = one_root_profile("a", &sandbox.path().to_string_lossy());
         let report = TokenUsageMonitor::new().monitor(&profile);
         assert_eq!(
             report.usage.tokens24h, 300,
-            "two files carrying the same response are each counted: current per-file behaviour"
+            "an unverified identity stays per-file: over-counting is safer than silent under-counting"
         );
+    }
+
+    /// 归并必须只对**同一次实际请求**生效：两个不同 response_id 的独立请求
+    /// 即使在两份文件里也必须各算一份。这是防「把索引写成宽匹配」的回归。
+    #[test]
+    fn independent_codex_requests_across_files_are_not_merged() {
+        let sandbox = crate::testutil::Sandbox::new("cross-file-independent");
+        std::fs::create_dir_all(sandbox.path().join("a")).unwrap();
+        std::fs::create_dir_all(sandbox.path().join("b")).unwrap();
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        std::fs::write(
+            sandbox.path().join("a/one.jsonl"),
+            format!("{}\n", codex_record_at(150, 0, 0, "resp-a", &timestamp)),
+        )
+        .unwrap();
+        std::fs::write(
+            sandbox.path().join("b/two.jsonl"),
+            format!("{}\n", codex_record_at(150, 0, 0, "resp-b", &timestamp)),
+        )
+        .unwrap();
+        let profile = one_root_profile("a", &sandbox.path().to_string_lossy());
+        let report = TokenUsageMonitor::new().monitor(&profile);
+        assert_eq!(
+            report.usage.tokens24h, 300,
+            "two real requests stay two calls even when spread across files"
+        );
+    }
+
+    /// 同一响应在**同一份文件**里抄第二遍（resume/fork 的常见形状）仍只算一份：
+    /// 跨文件归并没有削弱文件内去重。
+    #[test]
+    fn same_file_duplicate_codex_response_is_counted_once() {
+        let sandbox = crate::testutil::Sandbox::new("same-file-duplicate");
+        std::fs::create_dir_all(sandbox.path().join("a")).unwrap();
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let record = codex_record_at(150, 0, 0, "resp-1", &timestamp);
+        std::fs::write(
+            sandbox.path().join("a/one.jsonl"),
+            format!("{record}\n{record}\n"),
+        )
+        .unwrap();
+        let profile = one_root_profile("a", &sandbox.path().to_string_lossy());
+        let report = TokenUsageMonitor::new().monitor(&profile);
+        assert_eq!(report.usage.tokens24h, 150);
+    }
+
+    fn assert_merged_report(report: &TokenReport, recent: i64, total: i64, matched: i64) {
+        assert_eq!((report.usage.tokens24h, report.usage.tokens_total), (recent, total));
+        assert_eq!(sum_hourly(report), recent);
+        assert_eq!(report.models24h.iter().map(|m| m.tokens).sum::<i64>(), recent);
+        assert_eq!(report.models_total.iter().map(|m| m.tokens).sum::<i64>(), total);
+        assert_eq!(report.models24h.iter().map(|m| m.cost).sum::<f64>(), report.usage.cost24h);
+        assert_eq!(report.models_total.iter().map(|m| m.cost).sum::<f64>(), report.usage.cost_total);
+        assert_eq!((report.context24h.matched_tokens, report.context24h.unmatched_tokens),
+            (matched, recent - matched));
+        assert_eq!(report.context24h.rows.iter().map(|row| row.tokens).sum::<i64>()
+            + report.context24h.other_matched_tokens, matched);
+    }
+
+    fn two_copy_profile(sandbox: &crate::testutil::Sandbox) -> crate::models::AgentProfile {
+        for dir in ["a", "b"] { fs::create_dir_all(sandbox.path().join(dir)).unwrap(); }
+        let mut profile = one_root_profile("copies", &sandbox.path().join("a").to_string_lossy());
+        profile.token_roots.push(sandbox.path().join("b").to_string_lossy().into_owned());
+        profile
+    }
+
+    fn contextual_codex_record(id: &str, timestamp: &str, provider: &str) -> String {
+        let mut record: Value = serde_json::from_str(&codex_record_at(140, 30, 40, id, timestamp)).unwrap();
+        record["payload"]["thread_id"] = "thread-one".into();
+        record["payload"]["session_id"] = "session-one".into();
+        record["payload"]["turn_id"] = "turn-one".into();
+        format!(concat!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"thread-one\",\"session_id\":\"session-one\",\"model_provider\":\"{}\"}}}}\n",
+            "{{\"type\":\"turn_context\",\"payload\":{{\"turn_id\":\"turn-one\",\"model\":\"fixture-model\"}}}}\n",
+            "{}\n"), provider, record)
+    }
+
+    #[test]
+    fn cross_file_merge_rebuilds_independently_warmed_profiles_and_entrypoints() {
+        let sandbox = crate::testutil::Sandbox::new("merge-warm-profiles");
+        let mut profile = two_copy_profile(&sandbox);
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        for dir in ["a", "b"] {
+            fs::write(sandbox.path().join(dir).join("copy.jsonl"),
+                contextual_codex_record("shared", &timestamp, "fixture-provider")).unwrap();
+        }
+        let mut monitor = TokenUsageMonitor::new();
+        for root in &profile.token_roots {
+            let single = one_root_profile("single", root);
+            assert_merged_report(&monitor.monitor(&single), 150, 150, 150);
+        }
+        for _ in 0..3 {
+            assert_merged_report(&monitor.monitor(&profile), 150, 150, 150);
+            assert_eq!(monitor.range_totals(&profile, 86_400_000, now_ms()), (150, 0.0));
+            profile.token_roots.reverse();
+        }
+    }
+
+    #[test]
+    fn cross_file_merge_preserves_append_eviction_and_surviving_copy() {
+        use std::io::Write;
+        for budget in [CACHE_BUDGET_BYTES, 0] {
+            let sandbox = crate::testutil::Sandbox::new("merge-append-evict");
+            let mut profile = two_copy_profile(&sandbox);
+            let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+            let body = contextual_codex_record("shared", &timestamp, "fixture-provider");
+            let first = sandbox.path().join("a/copy.jsonl");
+            let second = sandbox.path().join("b/copy.jsonl");
+            fs::write(&first, &body).unwrap();
+            fs::write(&second, &body).unwrap();
+            let mut monitor = TokenUsageMonitor::new();
+            monitor.cache_budget = budget;
+            assert_merged_report(&monitor.monitor(&profile), 150, 150, 150);
+            // 第二份之前可能完全被过滤；追加副本与新调用必须同时正确处理。
+            write!(fs::OpenOptions::new().append(true).open(&second).unwrap(), "{}{}",
+                body, contextual_codex_record("new", &timestamp, "fixture-provider")).unwrap();
+            for _ in 0..2 {
+                assert_merged_report(&monitor.monitor(&profile), 300, 300, 300);
+                assert_eq!(monitor.range_totals(&profile, 86_400_000, now_ms()), (300, 0.0));
+                profile.token_roots.reverse();
+            }
+            fs::remove_file(first).unwrap();
+            assert_merged_report(&monitor.monitor(&profile), 300, 300, 300);
+            assert!(monitor.cache_charge() <= monitor.cache_budget);
+        }
+    }
+
+    #[test]
+    fn cross_file_merge_restores_filtered_copy_when_owner_disappears() {
+        let sandbox = crate::testutil::Sandbox::new("merge-owner-removal");
+        let profile = two_copy_profile(&sandbox);
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        for dir in ["a", "b"] {
+            fs::write(sandbox.path().join(dir).join("copy.jsonl"), budget_record("shared", &timestamp)).unwrap();
+        }
+        let mut monitor = TokenUsageMonitor::new();
+        assert_merged_report(&monitor.monitor(&profile), 150, 150, 0);
+        fs::remove_file(sandbox.path().join("a/copy.jsonl")).unwrap();
+        assert_merged_report(&monitor.monitor(&profile), 150, 150, 0);
+        assert_eq!(monitor.range_totals(&profile, 86_400_000, now_ms()), (150, 0.0));
+    }
+
+    #[test]
+    fn cross_file_merge_replays_folded_identities_before_append_and_range() {
+        use std::io::Write;
+        let sandbox = crate::testutil::Sandbox::new("merge-folded-replay");
+        let mut profile = two_copy_profile(&sandbox);
+        let old = iso_utc_from_ms(now_ms() - RETENTION_MS - 86_400_000);
+        let recent = iso_utc_from_ms(now_ms() - 3_600_000);
+        for dir in ["a", "b"] {
+            fs::write(sandbox.path().join(dir).join("copy.jsonl"), budget_record("old-shared", &old)).unwrap();
+        }
+        let mut monitor = TokenUsageMonitor::new();
+        assert_merged_report(&monitor.monitor(&profile), 0, 150, 0);
+        // 已折入的身份也必须重放；副本的新尾段不能把它再次计入累计。
+        write!(fs::OpenOptions::new().append(true).open(sandbox.path().join("b/copy.jsonl")).unwrap(), "{}{}",
+            budget_record("old-shared", &old), budget_record("new", &recent)).unwrap();
+        for _ in 0..3 {
+            assert_merged_report(&monitor.monitor(&profile), 150, 300, 0);
+            assert_eq!(monitor.range_totals(&profile, 86_400_000, now_ms()), (150, 0.0));
+            profile.token_roots.reverse();
+        }
+    }
+
+    #[test]
+    fn cross_file_merge_context_conflicts_are_unknown_after_eviction() {
+        let sandbox = crate::testutil::Sandbox::new("merge-context-conflict");
+        let mut profile = two_copy_profile(&sandbox);
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        fs::write(sandbox.path().join("a/copy.jsonl"),
+            contextual_codex_record("shared", &timestamp, "provider-a")).unwrap();
+        fs::write(sandbox.path().join("b/copy.jsonl"),
+            contextual_codex_record("shared", &timestamp, "provider-b")).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        monitor.cache_budget = 0;
+        for _ in 0..2 {
+            assert_merged_report(&monitor.monitor(&profile), 150, 150, 0);
+            assert!(monitor.states.is_empty());
+            profile.token_roots.reverse();
+        }
+    }
+
+    #[test]
+    fn cross_file_merge_keeps_unverified_dialects_costs_and_missing_ids_per_file() {
+        let sandbox = crate::testutil::Sandbox::new("merge-unverified-cost");
+        let mut profile = two_copy_profile(&sandbox);
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let claude = serde_json::json!({"timestamp": timestamp, "message": {
+            "id": "claude-row", "model": "claude-3-7-sonnet", "usage": {
+                "input_tokens": 110, "output_tokens": 40, "cache_read_input_tokens": 30
+            }
+        }});
+        let zcode = serde_json::json!({"timestamp": timestamp, "requestId": "zcode-row",
+            "response": {"usage": {"inputTokens": 140, "cacheReadTokens": 30, "outputTokens": 40}}});
+        let mut missing: Value = serde_json::from_str(&codex_record_at(140, 30, 40, "unused", &timestamp)).unwrap();
+        missing["payload"].as_object_mut().unwrap().remove("response_id");
+        let body = format!("{}{claude}\n{zcode}\n{missing}\n",
+            contextual_codex_record("shared", &timestamp, "fixture-provider"));
+        for dir in ["a", "b"] {
+            fs::write(sandbox.path().join(dir).join("copy.jsonl"), &body).unwrap();
+        }
+        let mut monitor = TokenUsageMonitor::new();
+        let expected_cost = 2.0 * cost::estimate_cost("claude-3-7-sonnet", 150).unwrap();
+        assert!(expected_cost > 0.0);
+        for _ in 0..3 {
+            let report = monitor.monitor(&profile);
+            assert_merged_report(&report, 1050, 1050, 150);
+            assert!((report.usage.cost24h - expected_cost).abs() < 1e-12);
+            assert_eq!(report.usage.cost_total, report.usage.cost24h);
+            assert!(report.usage.cost_estimated);
+            let (tokens, cost) = monitor.range_totals(&profile, 86_400_000, now_ms());
+            assert_eq!(tokens, 1050);
+            assert!((cost - expected_cost).abs() < 1e-12);
+            profile.token_roots.reverse();
+        }
+    }
+
+    #[test]
+    fn cross_file_scan_releases_keys_and_buckets_after_each_entrypoint() {
+        let sandbox = crate::testutil::Sandbox::new("merge-scan-lifetime");
+        let profile = two_copy_profile(&sandbox);
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        fs::write(sandbox.path().join("a/copy.jsonl"), budget_record(&"x".repeat(131_072), &timestamp)).unwrap();
+        let mut monitor = TokenUsageMonitor::new();
+        monitor.cache_budget = 0;
+        for _ in 0..2 {
+            assert_merged_report(&monitor.monitor(&profile), 150, 150, 0);
+            assert_eq!(monitor.diagnostic_cache().cross_file_keys, 1);
+            assert_eq!(monitor.scan_index.capacity(), 0, "scan buckets must not survive reporting");
+            assert_eq!(monitor.cache_charge(), 0);
+            assert_eq!(monitor.range_totals(&profile, 86_400_000, now_ms()), (150, 0.0));
+            assert_eq!(monitor.scan_index.capacity(), 0);
+        }
     }
 
     fn codex_record(input: i64, cached: i64, output: i64, response_id: &str) -> String {

@@ -56,13 +56,16 @@ pub struct ActivityEngine {
     /// Last real work evidence, never refreshed by a hysteresis-only sample.
     last_work_signal_at: HashMap<String, i64>,
     work_started_at: HashMap<String, i64>,
-    alerted_fingerprints: HashSet<String>,
-    last_completed_fp: HashMap<String, String>,
     high_cpu_since: HashMap<String, i64>,
     /// 连续观测起点：进程在跑的每一拍续上，进程消失即作废。
     /// 它是「卡死」判定的**资格**——死锁是「CPU 连续超阈值达 5 分钟」的时间性判定，
     /// 而前提是这段窗口确实被观测过。资格写在数据里、不靠调用方自报，见 [`crate::health::is_hung`]。
     observed_running_since: HashMap<String, i64>,
+    /// Bounded event memory; disk IO is enabled explicitly by the resident GUI.
+    dedup: crate::dedup::Store,
+    pub(crate) notify_ledger: crate::notify_ledger::Ledger,
+    /// Notifications restored from the ledger at startup; see `EngineState::notify_restored`.
+    notify_restored: usize,
     /// 异常驻留 / 死锁持续守护（[`crate::resilience::Guard`]）
     resilience: resilience::Guard,
     /// 外发调度与记账（[`crate::notifier::Notifier`]）
@@ -73,7 +76,7 @@ pub struct ActivityEngine {
     /// 没有它，一次性账本补写就会误报成「消耗突增」。
     token_spike_streak: HashMap<String, u32>,
     token_cache: HashMap<String, (i64, TokenReport)>,
-    pub event_rx: Option<Receiver<AgentTaskEvent>>,
+    pub event_rx: Option<Receiver<crate::hook_event::HookEvent>>,
 
     pub task_sources: HashMap<String, crate::task_sources::Choice>,
     #[cfg(target_os = "macos")]
@@ -98,10 +101,17 @@ pub struct ActivityEngine {
     /// 当前预算状态（界面绑定；Swift 侧是 `@Published budgetStatus`）
     pub budget_status: crate::budget::BudgetStatus,
     tool_budgets: tool_budgets::ToolBudgetTrackers,
+    /// 结构化 hook 进入服务 → 通知入队的延迟（`docs/需求.md` 的即时性指标之一）。
+    ///
+    /// 只有 [`ActivityEngine::push_hook_event`] 会写它。判据**不是**
+    /// `externally_delivered`——那是外发控制标记，深链路径
+    /// （`main.rs` 的 `handle_deep_link`）也把它置 true 并直接调 `push_event`；
+    /// 用它会混进一批近零样本，把真实慢样本挤出 p95。
+    pub notify_latency: crate::notify_latency::NotifyLatency,
     pub snapshots: Vec<AgentSnapshot>,
 }
 
-fn has_usage_location(profile: &AgentProfile) -> bool {
+pub(crate) fn has_usage_location(profile: &AgentProfile) -> bool {
     profile.token_roots.iter().any(|root| {
         std::path::Path::new(root).is_dir()
             || (std::path::Path::new(root).is_file() && root.ends_with(".sqlite"))
@@ -113,8 +123,77 @@ fn has_usage_location(profile: &AgentProfile) -> bool {
     })
 }
 
+/// 等待全量采样期限，hook 唤醒只消费事件并生成发布状态，不提前执行全量 tick。
+/// 等待与发布均由调用方在引擎锁外执行；before_wait 标识等待已布置好，
+/// 即使事件在 recv_timeout 前一瞬到达，容量 1 的唤醒槽也不会丢失信号。
+pub(crate) struct HookScheduler {
+    wake_rx: Receiver<()>,
+}
+
+impl HookScheduler {
+    pub(crate) fn new(wake_rx: Receiver<()>) -> Self {
+        Self { wake_rx }
+    }
+
+    pub(crate) fn wait_and_consume(
+        &self,
+        shared: &crate::SharedEngine,
+        sample_at: std::time::Instant,
+        before_wait: impl FnOnce(),
+    ) -> Option<EngineState> {
+        let mut before_wait = Some(before_wait);
+        loop {
+            let remaining = sample_at.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            if let Some(ready) = before_wait.take() {
+                ready();
+            }
+            // 此处没有持有引擎锁。入口不可用时等到原定采样期限，避免空转。
+            if matches!(
+                self.wake_rx.recv_timeout(remaining),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+            ) {
+                std::thread::sleep(sample_at.saturating_duration_since(std::time::Instant::now()));
+            }
+            let mut engine = shared.lock().unwrap();
+            if engine.consume_hook_events() > 0 {
+                return Some(engine.state());
+            }
+            // 合并后可能剩下一枚已消费事件的唤醒信号；它不能触发全量采样。
+        }
+    }
+}
+
 impl ActivityEngine {
-    pub fn new(settings: Settings, event_rx: Receiver<AgentTaskEvent>) -> Self {
+    /// 唯一的 HTTP 事件 consumer，周期采样与等待中的快速路径共用。
+    pub(crate) fn consume_hook_events(&mut self) -> usize {
+        let events: Vec<_> = self
+            .event_rx
+            .as_ref()
+            .map(|rx| rx.try_iter().collect())
+            .unwrap_or_default();
+        let count = events.len();
+        for event in events {
+            self.push_hook_event(event);
+        }
+        count
+    }
+
+    pub fn new(settings: Settings, event_rx: Receiver<crate::hook_event::HookEvent>) -> Self {
+        Self::with_monitor(settings, event_rx, ProcessMonitor::new())
+    }
+
+    /// Isolated ingress diagnostics never enumerate processes or read settings/sessions.
+    pub(crate) fn notification_probe(event_rx: Receiver<crate::hook_event::HookEvent>) -> Self {
+        let mut engine = Self::with_monitor(Settings::default(), event_rx, ProcessMonitor::unobserved());
+        engine.disable_outbound();
+        engine.refresh_usage = false;
+        engine
+    }
+
+    fn with_monitor(settings: Settings, event_rx: Receiver<crate::hook_event::HookEvent>, monitor: ProcessMonitor) -> Self {
         let profiles = crate::registry::builtin();
         let installed = InstalledApps::new(InstalledApps::cli_names_for(&profiles));
         ActivityEngine {
@@ -125,16 +204,17 @@ impl ActivityEngine {
             diagnostics: None,
             outbound_enabled: true,
             profiles,
-            procmon: ProcessMonitor::new(),
+            procmon: monitor,
             filemon: FileMonitor::new(),
             installed,
             tokens: TokenUsageMonitor::new(),
             last_work_signal_at: HashMap::new(),
             work_started_at: HashMap::new(),
-            alerted_fingerprints: HashSet::new(),
-            last_completed_fp: HashMap::new(),
             high_cpu_since: HashMap::new(),
             observed_running_since: HashMap::new(),
+            dedup: crate::dedup::Store::default(),
+            notify_ledger: crate::notify_ledger::Ledger::default(),
+            notify_restored: 0,
             resilience: resilience::Guard::default(),
             notifier: notifier::Notifier::new(),
             last_cost_spike: HashMap::new(),
@@ -155,8 +235,26 @@ impl ActivityEngine {
             budget: crate::budget::BudgetTracker::new(),
             budget_status: crate::budget::BudgetStatus::Disabled,
             tool_budgets: tool_budgets::ToolBudgetTrackers::default(),
+            notify_latency: crate::notify_latency::NotifyLatency::new(),
             snapshots: vec![],
         }
+    }
+
+    /// Enable before the first sample, only after the GUI has claimed single-instance ownership.
+    pub(crate) fn enable_dedup_persistence(&mut self, path: impl AsRef<std::path::Path>) {
+        self.dedup = crate::dedup::Store::open_at(path);
+    }
+
+    /// Startup only. Restore directly: recovered notifications must not be sent again
+    /// or counted as new HTTP latency samples.
+    pub(crate) fn enable_notify_ledger_persistence(&mut self, path: impl AsRef<std::path::Path>) {
+        self.notify_ledger = crate::notify_ledger::Ledger::open_at(path);
+        let mut restored = self.notify_ledger.restored_events();
+        // Record the restored count so the UI can distinguish "nothing survived the
+        // restart" from "this process simply has no history yet".
+        self.notify_restored = restored.len();
+        self.latest_event = restored.pop_front();
+        self.pending_events = restored;
     }
 
     /// Read-only consumers keep local results without scheduling delivery or reading secrets.
@@ -615,7 +713,7 @@ impl ActivityEngine {
         if let Some(Signal::Attention(fp, message)) = &probe.signal {
             let fp = fp.clone();
             let message = message.clone();
-            if self.alerted_fingerprints.insert(fp.clone()) {
+            if !self.dedup.attention_seen(&key, &fp) {
                 self.push_session_event(AgentTaskEvent {
                     id: fp.clone(),
                     agent_id: key.clone(),
@@ -627,8 +725,9 @@ impl ActivityEngine {
                     duration: 0.0,
                     externally_delivered: false,
                 });
-                if self.alerted_fingerprints.len() > 800 {
-                    self.alerted_fingerprints.clear();
+                self.dedup.note_attention(&key, &fp);
+                if let Err(reason) = self.dedup.persist() {
+                    eprintln!("{reason}");
                 }
             }
             self.last_work_signal_at.remove(&key);
@@ -651,23 +750,13 @@ impl ActivityEngine {
         if let Some(Signal::Completed(fp)) = &probe.signal {
             if write_evidence {
                 let fp = fp.clone();
-                let is_new = match self.last_completed_fp.get(&key) {
-                    Some(prev) => *prev != fp,
-                    None => true,
-                };
-                if is_new {
-                    self.last_completed_fp.insert(key.clone(), fp.clone());
-                    // 本次任务用时：此刻 `work_started_at` 还没被清（下面几行才 remove），
-                    // 与 `notify_outbound` 取的是同一个起点——两处若各算一次就会打架
+                if !self.dedup.completion_seen(&key, &fp) {
                     let seconds = self
                         .work_started_at
                         .get(&key)
                         .map(|started| ((now - *started).max(0) as f64) / 1000.0)
                         .unwrap_or(0.0);
-                    // **够格才算一次任务**：Swift `recordTaskCompleted` 的门槛是 3.5 秒
-                    // （「过滤瞬时微抖动」）。Rust 侧此前只有「保持 Working 的窗口」，
-                    // 于是 0.2 秒的抖动也会记一笔并推一条「任务完成 (0秒)」。
-                    // 不够格时**既不记录也不推事件**，但下面照旧清掉起点（这一轮确实结束了）
+                    // Short observations are neither announced nor remembered as delivered.
                     if seconds >= crate::duration::MIN_TASK_SECONDS {
                         self.durations.record(&key, seconds, now);
                     } else {
@@ -676,7 +765,7 @@ impl ActivityEngine {
                         return ActivityLevel::Completed;
                     }
                     self.push_session_event(AgentTaskEvent {
-                        id: fp,
+                        id: fp.clone(),
                         agent_id: key.clone(),
                         agent_name: profile.name.clone(),
                         event_type: "completed".into(),
@@ -686,6 +775,10 @@ impl ActivityEngine {
                         duration: seconds,
                         externally_delivered: false,
                     });
+                    self.dedup.note_completion(&key, &fp);
+                    if let Err(reason) = self.dedup.persist() {
+                        eprintln!("{reason}");
+                    }
                 }
                 self.last_work_signal_at.remove(&key);
                 self.work_started_at.remove(&key);
@@ -863,19 +956,49 @@ impl ActivityEngine {
             .ok_or("此智能体尚未接入桌面工具跳转".into())
     }
 
+    /// 结构化 hook 事件的入队点：入队并记一次「进入服务 → 入队」延迟。
+    ///
+    /// **只由生产 HTTP consumer `consume_hook_events` 调用**——那条 channel
+    /// 的唯一发送者是 `webhook.rs`，所以「来自 hook」是**调用点**决定的事实，
+    /// 不需要靠事件上的标记去猜。
+    ///
+    /// 为什么不用 `externally_delivered` 判断：那是外发控制标记，深链路径
+    /// （`main.rs` 的 `handle_deep_link`）也把它置 true 并直接调 `push_event`。
+    /// 用它会让一批近零延迟的深链样本混进来，把真实慢样本挤出 p95。
+    ///
+    /// 从解析前的单调时钟计时，包含网络读取、tiny_http 内部队列与引擎等待。
+    /// 墙钟 event.timestamp 只用于展示；系统校时不影响延迟样本。
+    pub(crate) fn push_hook_event(&mut self, hook: crate::hook_event::HookEvent) {
+        if self.notify_ledger.accept(&hook.event, hook.client_id.as_deref()) {
+            self.enqueue_event(hook.event);
+            self.notify_latency.record(
+                hook.received_at.elapsed().as_millis().min(i64::MAX as u128) as i64,
+            );
+        }
+    }
+
     pub fn push_event(&mut self, event: AgentTaskEvent) {
+        // Internal/deep-link producers already assign an event id. Preserve that
+        // identity: distinct sessions or rearmed budgets may share content/time.
+        // Only HTTP without a client id uses the arrival-second fallback.
+        if self.notify_ledger.accept_internal(&event) {
+            self.enqueue_event(event);
+        }
+    }
+
+    fn enqueue_event(&mut self, event: AgentTaskEvent) {
         self.notify_outbound(&event);
         if self.latest_event.is_none() {
             self.latest_event = Some(event);
             return;
         }
-        // 有界：用户长时间不确认时丢**最早**的（当前状态比历史告警更值得看）。
-        // 64 条的余量远大于真实告警频率（同类告警有 10 分钟冷却），所以这是纯保险。
-        const MAX_PENDING_EVENTS: usize = 64;
-        if self.pending_events.len() >= MAX_PENDING_EVENTS {
-            if let Some(discarded) = self.pending_events.pop_front() {
+        // Recovery and live presentation share a total bound of 64, including
+        // the visible head. Evict oldest so both retain exactly the latest events.
+        if self.pending_events.len() + 1 >= crate::notify_ledger::PENDING_CAP {
+            if let Some(discarded) = self.latest_event.take() {
                 self.event_navigation.remove(&discarded.id);
             }
+            self.latest_event = self.pending_events.pop_front();
         }
         self.pending_events.push_back(event);
     }
@@ -942,6 +1065,7 @@ impl ActivityEngine {
     pub fn ack_latest_event(&mut self) {
         if let Some(event) = &self.latest_event {
             self.event_navigation.remove(&event.id);
+            self.notify_ledger.ack(event);
         }
         self.latest_event = self.pending_events.pop_front();
     }
@@ -1301,6 +1425,13 @@ impl ActivityEngine {
                 .iter()
                 .any(|s| s.level == ActivityLevel::Attention),
             demo: self.demo_mode,
+            notify_latency: self.notify_latency.summary(),
+            notify_duplicates: self.notify_ledger.duplicates(),
+            notify_conflicts: self.notify_ledger.conflicts(),
+            notify_evicted: self.notify_ledger.evicted(),
+            notify_unacked: self.pending_count() + usize::from(self.latest_event.is_some()),
+            notify_restored: self.notify_restored,
+            notify_persistence: self.notify_ledger.status(),
         }
     }
 }
@@ -1603,6 +1734,30 @@ mod optimization_regressions {
         );
         std::fs::create_dir_all(&profile.token_roots[0]).unwrap();
         assert_eq!(engine.token_usage_cached(&profile).unwrap().tokens24h, 0);
+    }
+
+    #[test]
+    fn declared_but_absent_usage_location_is_not_a_location() {
+        // The CI failure this locks down: a clean runner has profiles that declare
+        // token roots whose directories do not exist. Treating "declared" as
+        // "present" made `--usage` assertions run on a machine with nothing to
+        // read, so the suite was red only where the data was absent.
+        let sandbox = crate::testutil::Sandbox::new("has-usage-location");
+        let mut profile = crate::registry::builtin()
+            .into_iter()
+            .find(|profile| profile.id == "codex")
+            .unwrap();
+        profile.token_roots = vec![sandbox.path().join("missing").to_string_lossy().into_owned()];
+        profile.session_database = None;
+        assert!(
+            !has_usage_location(&profile),
+            "a declared root that does not exist is not a usable location"
+        );
+        std::fs::create_dir_all(&profile.token_roots[0]).unwrap();
+        assert!(
+            has_usage_location(&profile),
+            "once the directory exists the location counts"
+        );
     }
 
     #[test]

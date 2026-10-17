@@ -167,17 +167,42 @@ pub fn evaluate(tokens_24h: i64, cost_24h: f64, daily_budget: i64, now_ms: i64) 
 mod tests {
     use super::*;
 
-    /// 造一个本地时间戳：用 `libc::mktime` 反推，避免写死「某年某月某日对应多少毫秒」
-    /// （那会因为跑测试的机器时区不同而飘）
+    /// 造一个本地时间戳。`libc::mktime` 在 Windows 上不存在，所以用纯算术的
+    /// 民用历→UTC 毫秒转换，再用产品自己的 `localclock` 求出本机偏移并回推；
+    /// 偏移可能跨夏令时边界，迭代到不动点后**断言日历确实落到请求的那一天**，
+    /// 免得静默测成另一个日期。
+    fn utc_ms(year: i32, month: i32, day: i32, hour: i32) -> i64 {
+        let y = i64::from(year) - i64::from(month <= 2);
+        let era = if y >= 0 { y } else { y - 399 } / 400;
+        let yoe = y - era * 400;
+        let mp = (i64::from(month) + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        (era * 146_097 + doe - 719_468) * 86_400_000 + i64::from(hour) * 3_600_000
+    }
+
     fn local_ms(year: i32, month: i32, day: i32, hour: i32) -> i64 {
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        tm.tm_year = year - 1900;
-        tm.tm_mon = month - 1;
-        tm.tm_mday = day;
-        tm.tm_hour = hour;
-        tm.tm_isdst = -1;
-        let seconds = unsafe { libc::mktime(&mut tm) };
-        (seconds as i64) * 1000
+        let mut ms = utc_ms(year, month, day, hour);
+        for _ in 0..4 {
+            let tm = crate::localclock::local_time(ms).expect("本机日历应当可读");
+            let offset = crate::localclock::offset_minutes(ms, &tm).unwrap_or(0);
+            let adjusted = utc_ms(year, month, day, hour) - offset * 60_000;
+            if adjusted == ms {
+                break;
+            }
+            ms = adjusted;
+        }
+        let tm = crate::localclock::local_time(ms).expect("本机日历应当可读");
+        assert_eq!(
+            (tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour),
+            (year, month, day, hour),
+            "夹具时间没落到请求的本地日历日：实际 {}-{}-{} {} 时",
+            tm.tm_year + 1900,
+            tm.tm_mon + 1,
+            tm.tm_mday,
+            tm.tm_hour
+        );
+        ms
     }
 
     #[test]

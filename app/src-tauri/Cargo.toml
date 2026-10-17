@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.323"
+version = "0.0.324"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -80,6 +80,9 @@ security-framework-sys = "2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
 ] }
@@ -93,3 +96,5 @@ codegen-units = 1
 # Keep this narrow, reproducible fix until an upstream release adopts ownership.
 [patch.crates-io]
 tao = { path = "../../vendor/tao" }
+# tiny_http 0.12: parser/queue ingress timing and cancellable socket IO.
+tiny_http = { path = "../../vendor/tiny_http" }

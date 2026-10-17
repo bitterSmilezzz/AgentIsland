@@ -1,10 +1,19 @@
 #!/bin/bash
 # 打包 Rust/Tauri 应用与 Rust CLI，使用系统 SDK 和 ad-hoc 签名。
+#
+# 重型阶段互斥：本脚本从「生成收据」到「签名完成」全程持有 .build/heavy-build.lock，
+# 同一时刻只允许一个构建（理由见 scripts/heavy-build-lock.sh 顶部）。
+#
+# 增量/跳过测试通道（避免为了改一行就满核重跑 1077 个测试）：
+#   SKIP_TESTS=1 bash scripts/build-app.sh     # 跳过全量 cargo test，只构建+打包
+# 注意：跳过测试的构建**没有测试证据**，脚本会明确打印这一点。
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/common.sh"
 cd "$SCRIPT_DIR/.."
 
+# 由内核锁入口在同一进程中 exec 调用；source 本文件只定义函数。
+build_app_main() {
 APP_DIR="dist/$APP_NAME.app"
 
 # SDK 选择：**用机器上最新的那个**，不要钉死某个版本。
@@ -58,14 +67,58 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
+# 收据仅支持当前真实交付的 release profile。摘要只读源码，不依赖 dist 或 git。
+# 调用方可固定源码身份：BUILD_SOURCE_SHA256=<artifact.py sourcehash 的值>。
+BUILD_PROFILE="${BUILD_PROFILE:-release}"
+if [[ "$BUILD_PROFILE" != "release" ]]; then
+    echo '{"ok":false,"code":"profile_mismatch"}' >&2
+    exit 3
+fi
+# 这些覆盖会使实际构建路径/配置偏离收据声明；显式拒绝，不给旧包签新收据。
+for override in CARGO_TARGET_DIR CARGO_BUILD_TARGET TAURI_CONFIG; do
+    if [[ -n "${!override:-}" ]]; then
+        echo '{"ok":false,"code":"unsupported_input"}' >&2
+        exit 3
+    fi
+done
+ARTIFACT_ARGS=(--root "$PWD" --profile "$BUILD_PROFILE")
+if [[ -n "${BUILD_SOURCE_SHA256:-}" ]]; then
+    ARTIFACT_ARGS+=(--sourcehash "$BUILD_SOURCE_SHA256")
+fi
+[[ -n "$PYTHON_MIN" ]] || { echo "✗ 构建收据需要 Python >= 3.11（tomllib）；当前 PATH 上没有可用解释器" >&2; exit 1; }
+# 外层内核锁已覆盖整个执行链；artifact active 状态继续独立保护收据。
+BEGIN_RESULT=$("$PYTHON_MIN" scripts/automation/artifact.py begin "${ARTIFACT_ARGS[@]}") || {
+    printf '%s\n' "$BEGIN_RESULT" >&2
+    exit 3
+}
+BUILD_ID=$(printf '%s' "$BEGIN_RESULT" | "$PYTHON_MIN" -c 'import json,sys; print(json.load(sys.stdin)["build_id"])')
+# 留失败标记，旧收据原件仍保留，但后续 verify 一律拒绝。
+BUILD_COMPLETE=0
+finish_build_attempt() {
+    local rc=$?
+    trap - EXIT
+    # 锁描述符保持到收据失败记录完成、进程及其继承描述符的子进程退出。
+    if [[ "$BUILD_COMPLETE" != "1" ]]; then
+        "$PYTHON_MIN" scripts/automation/artifact.py fail --root "$PWD" --build-id "$BUILD_ID" >/dev/null || true
+        [[ "$rc" != "0" ]] || rc=1
+    fi
+    exit "$rc"
+}
+trap finish_build_attempt EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 python3 scripts/check-version.py "$VERSION"
 if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
+    echo "==> 全量测试（cargo test）"
     cargo test --locked --manifest-path app/src-tauri/Cargo.toml
+else
+    # 跳过测试的构建必须自报「本包没有测试证据」——静默跳过就是
+    # 「构建失败但看起来成功」的同族（见本脚本对 views.js 静默失败的注释）。
+    echo "==> 跳过全量测试（SKIP_TESTS=1）：本次构建**未运行测试**，仅可作打包用途"
 fi
-mkdir -p dist
 
 echo "==> 构建 Rust/Tauri 端（**主交付物**）"
-( cd app/src-tauri && cargo tauri build --bundles app )
+( cd app/src-tauri && cargo tauri build --bundles app -- --locked )
 RUST_SRC="app/src-tauri/target/release/bundle/macos/${APP_NAME}.app"
 if [[ ! -d "$RUST_SRC" ]]; then
     # 静默跳过 = 「构建失败但看起来成功」，那正是 views.js 潜伏 29 个版本的同款坑
@@ -106,8 +159,20 @@ done
 echo "==> 签名（ad-hoc）"
 codesign --force --sign - "dist/agentisland"
 codesign --force --deep --sign - "$APP_DIR"
+codesign --verify --strict "dist/agentisland"
+codesign --verify --deep --strict "$APP_DIR"
+
+# 全部签名成功后复核源码没有漂移，原子发布 0600 收据。
+"$PYTHON_MIN" scripts/automation/artifact.py finish "${ARTIFACT_ARGS[@]}" --build-id "$BUILD_ID"
+BUILD_COMPLETE=1
 
 # ⚠️ 变量后面紧跟中文全角括号会被 bash 当成变量名的一部分
 # （`$APP_DIR（` ⇒ 报 `APP_DIR…: unbound variable`）。这个坑踩了两次，
 # 所以**所有变量与中文之间一律加花括号或空格**。
 echo "==> 完成: $(pwd)/${APP_DIR}  —— Rust/Tauri 端；CLI 同为 Rust"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    exec bash "$SCRIPT_DIR/heavy-build-lock.sh" --root "$PWD" -- \
+        bash -c 'source "$1"; shift; build_app_main "$@"' _ "$SCRIPT_DIR/build-app.sh" "$@"
+fi

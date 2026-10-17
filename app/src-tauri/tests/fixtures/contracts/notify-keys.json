@@ -1,0 +1,70 @@
+{
+  "notify_latency": [
+    "samples",
+    "p95Ms",
+    "discarded",
+    "verdictAvailable",
+    "meetsTarget"
+  ],
+  "notify_persistence": [
+    "enabled",
+    "healthy",
+    "pending",
+    "saved",
+    "blocked",
+    "error",
+    "generation",
+    "attempted_generation",
+    "saved_generation",
+    "failures"
+  ],
+  "engine_state": [
+    "notify_latency",
+    "notify_duplicates",
+    "notify_conflicts",
+    "notify_evicted",
+    "notify_unacked",
+    "notify_restored",
+    "notify_persistence"
+  ],
+  "event_kinds": [
+    "completed",
+    "attention",
+    "costSpike",
+    "question",
+    "failure",
+    "review",
+    "schedule",
+    "chief"
+  ],
+  "event_kind_switches": {
+    "completed": "send_completed",
+    "attention": "send_attention",
+    "costSpike": "send_cost_spike",
+    "question": "send_question",
+    "failure": "send_failure",
+    "review": "send_review",
+    "schedule": "send_schedule",
+    "chief": "send_chief"
+  },
+  "delivery_states": [
+    "accepted",
+    "received",
+    "read",
+    "unknown"
+  ],
+  "recent_fields": [
+    "atMs",
+    "title",
+    "text",
+    "accepted",
+    "delivery",
+    "deliveryLabel"
+  ],
+  "delivery_labels": {
+    "accepted": "已受理，未确认送达",
+    "received": "已送达",
+    "read": "已读",
+    "unknown": "未确认"
+  }
+}

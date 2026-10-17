@@ -39,6 +39,43 @@ CMDLINE="$APP/Contents/MacOS/$EXE"
 
 # 主产物曾叫 AgentIsland-Rust.app；旧名必须一起清理，CLI 不在匹配范围。
 APP_PATTERN='/AgentIsland(-Rust|-Swift)?[.]app/Contents/MacOS/(agentisland|AgentIsland)([[:space:]]|$)'
+# ⚠️ **先优雅退出，不能直接 `pkill`。**
+#
+# `pkill -f` 发的是 SIGTERM，默认动作是立刻终止进程：**不经过 Tauri 事件循环**，
+# 于是 `RunEvent::ExitRequested` / `Exit` 一次都不派发。通知账本的写盘收尾
+# （`notify_ledger::FlushHandle::shutdown`，钉在退出回调上）因此在这条路径上
+# **永远不执行**——而这条路径恰恰是本仓库唯一规定的重启动作。
+#
+# 走 Apple Event（`quit`）才会到 `applicationWillTerminate` → Tauri 退出链 → 收尾。
+# 实测过的坑：按进程名杀打不中（可执行文件叫 `agentisland` 小写），所以这里仍然
+# 只按**完整路径**匹配，避免误杀用户自己跑的 `dist/agentisland` CLI。
+OSASCRIPT="${OSASCRIPT:-/usr/bin/osascript}"
+APP_ABSOLUTE="$(pwd)/$APP"
+if [[ -x "$OSASCRIPT" ]] && pgrep -f "$APP_PATTERN" >/dev/null; then
+    # 用**绝对路径**指定应用：osascript 对相对路径的解析依赖它自己的工作目录，不可靠。
+    #
+    # ⚠️ 必须给 `osascript` **本身**加超时。下面那个 8 秒等待是在它**返回之后**才开始计时的：
+    # 应用无响应时 Apple Event 会一直挂着，脚本就卡在这一行，等待循环一次都轮不到——
+    # 而那正是「优雅退出」这条保障最容易失效的场景。超时后走下面的信号兜底并明说。
+    #
+    # `timeout` 在 macOS 默认不存在，`perl` 是系统自带的（与 common.sh 挑解释器同一思路：
+    # 不依赖机器上恰好装了某个 GNU 工具）。
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$OSASCRIPT" -e "quit app \"$APP_ABSOLUTE\"" >/dev/null 2>&1 || true
+    else
+        /usr/bin/perl -e 'alarm shift; exec @ARGV' 10 \
+            "$OSASCRIPT" -e "quit app \"$APP_ABSOLUTE\"" >/dev/null 2>&1 || true
+    fi
+    # 给退出链（含写盘收尾的 2 秒上限）留出时间，最长等 8 秒。
+    for _ in $(seq 1 40); do
+        pgrep -f "$APP_PATTERN" >/dev/null || break
+        sleep 0.2
+    done
+fi
+# 优雅退出没生效（例如应用卡住）才用信号兜底，并在日志里说明这一步发生过。
+if pgrep -f "$APP_PATTERN" >/dev/null; then
+    echo "… 优雅退出未在 8 秒内完成，改用信号终止（本次写盘收尾可能未执行）" >&2
+fi
 pkill -f "$APP_PATTERN" 2>/dev/null || true
 for _ in 1 2 3 4 5 6 7 8 9 10; do
     pgrep -f "$APP_PATTERN" >/dev/null || break

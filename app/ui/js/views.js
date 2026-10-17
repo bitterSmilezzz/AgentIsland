@@ -54,9 +54,18 @@ export function costText(c, estimated = false) { return c > 0.005 ? `${estimated
 /// 事件摘要文案（Rust 端方法不随 JSON 序列化，与 AgentTaskEvent::summary 同口径）
 function eventSummary(ev) {
   if (ev.message) return ev.message;
-  if (ev.event_type === 'attention') return `${ev.agent_name} 等待确认操作`;
-  if (ev.event_type === 'costSpike') return `⚠️ ${ev.agent_name} 资源/Token 消耗突增`;
-  return `${ev.agent_name} 任务完成`;
+  switch (ev.event_type) {
+    case 'attention': return `${ev.agent_name} 等待确认操作`;
+    case 'costSpike': return `⚠️ ${ev.agent_name} 资源/Token 消耗突增`;
+    // NOT-01 的细分类型：默认兜底会把它们全说成「任务完成」，
+    // 那正是「类型加了但界面看不出来」——每类都要有自己的说法。
+    case 'question': return `${ev.agent_name} 提问待回答`;
+    case 'failure': return `✗ ${ev.agent_name} 任务失败`;
+    case 'review': return `${ev.agent_name} 等待审查`;
+    case 'schedule': return `${ev.agent_name} 调度提醒`;
+    case 'chief': return `${ev.agent_name} Chief 消息`;
+    default: return `${ev.agent_name} 任务完成`;
+  }
 }
 
 /// Attention status already lives in the header; preserve the actual requested action.
@@ -64,7 +73,11 @@ export function bannerTitle(ev) {
   if (ev.event_type === 'attention') {
     return String(ev.message ?? '').trim().replace(/^(?:(?:需要确认|等待确认操作|等待确认|待确认)[：:\s]*)+/u, '').trim() || '等待你的确认';
   }
-  const prefix = ev.event_type === 'completed' ? '已完成' : '告警';
+  const prefix = ev.event_type === 'completed' ? '已完成'
+    : (ev.event_type === 'failure' ? '失败'
+      : (ev.event_type === 'question' ? '待回答'
+        : (ev.event_type === 'review' ? '待审查'
+          : (ev.event_type === 'schedule' ? '调度' : '提醒'))));
   const msg = eventSummary(ev);
   return msg.startsWith(prefix) ? msg : `${prefix}：${msg}`;
 }
@@ -232,7 +245,7 @@ export function renderSliver() {
   const root = document.getElementById('root');
   const eng = st.engine;
   const working = !!eng?.any_working;
-  const alert = !!getTaskAttention()?.total || !!getTaskAttention()?.error || !!eng?.has_attention || eng?.latest_event?.event_type === 'costSpike';
+  const alert = !!getTaskAttention()?.total || !!getTaskAttention()?.error || !!eng?.has_attention || isAlertEvent(eng?.latest_event?.event_type);
 
   const edge = st.settings?.dock_edge ?? 'top';
   const hitClass = edge === 'top' ? 'hit-top' : edge === 'bottom' ? 'hit-bottom'
@@ -271,9 +284,18 @@ export function renderSliver() {
 
 // MARK: 顶栏状态摘要（HeaderPresentation）
 
+// NOT-01 的细分类型中，哪些属于「需要人看一眼」的提醒。
+// 集中一处，避免各呈现面各写一份、新增类型时漏掉其中一个面
+// （本轮首版就是这样：卡片能看到 question，收起态与窄条却完全无感）。
+const ALERT_EVENT_TYPES = ['attention', 'costSpike', 'question', 'failure', 'review', 'schedule', 'chief'];
+
+export function isAlertEvent(eventType) {
+  return ALERT_EVENT_TYPES.includes(eventType);
+}
+
 function headerPresentation(eng) {
   const visible = eng?.snapshots.filter(isVisible) ?? [];
-  if (eng?.latest_event && ['attention', 'costSpike'].includes(eng.latest_event.event_type)) {
+  if (eng?.latest_event && isAlertEvent(eng.latest_event.event_type)) {
     const ev = eng.latest_event;
     const isCost = ev.event_type === 'costSpike';
     // 还有几条在排队：不显示它就等于把队列藏起来——用户会以为「关掉这条就没事了」。
@@ -1485,6 +1507,42 @@ export function pageRemote() {
   </div>`;
 }
 
+async function readEnqueueDiagnostics() {
+  return invoke('get_engine_state').catch(() => null);
+}
+
+function enqueueCountText(count) {
+  return Number.isSafeInteger(count) && count >= 0 ? String(count) : '未知';
+}
+
+function enqueuePersistenceText(persistence) {
+  if (!persistence || typeof persistence !== 'object') return '未知';
+  if (persistence.enabled === false) return '未启用';
+  if (persistence.blocked === true) return '读取失败或账本被外部改动，已停写';
+  if (persistence.error) return '保存失败';
+  if (persistence.pending === true) return '待保存（后台保存中）';
+  if (persistence.saved === true) return '已保存';
+  if (persistence.enabled === true) return '尚无保存记录';
+  return '未知';
+}
+
+function enqueueLedgerText(state) {
+  const persistence = enqueuePersistenceText(state?.notify_persistence);
+  // 计数一律取已核实的 EngineState 字段，缺字段写「未知」——不拿
+  // `pending_events`（不含队首那条）或 0 冒充。
+  return `重复抑制 ${enqueueCountText(state?.notify_duplicates)} · id 复用冲突 ${enqueueCountText(state?.notify_conflicts)} · 未确认 ${enqueueCountText(state?.notify_unacked)} · 淘汰 ${enqueueCountText(state?.notify_evicted)} · 本次启动恢复 ${enqueueCountText(state?.notify_restored)} · 持久化：${persistence}`;
+}
+
+function enqueueLatencyText(summary) {
+  if (!summary || !Number.isInteger(summary.samples) || !Number.isInteger(summary.discarded)) return '读不到入队统计，请重试。';
+  const p95 = Number.isFinite(summary.p95Ms) ? `p95 ${summary.p95Ms}ms` : '尚无样本';
+  const verdict = summary.discarded > 0 ? '测量不完整，未判定'
+    : !summary.verdictAvailable ? '样本不足20条，未判定'
+    : summary.meetsTarget === true ? '达标'
+    : summary.meetsTarget === false ? '未达标' : '未判定';
+  return `${p95} · 有效样本 ${summary.samples} · 丢弃 ${summary.discarded} · ${verdict}`;
+}
+
 export async function hydrateRemote() {
   const root = document.querySelector('[data-remote-root]');
   if (!root) return;
@@ -1497,6 +1555,10 @@ export async function hydrateRemote() {
   }
   const st = getState();
   st.remoteStatus = remote;
+  // 诊断块的当前值：与远程状态同一拍读，在 `pageReady` 之前填好——
+  // 否则首屏会先亮一个空块，而「空」在诊断里读起来像「没有数据」。
+  const diagnostics = await readEnqueueDiagnostics();
+  if (!currentRequest()) return;
   const channel = REMOTE_CHANNELS.find((c) => c.kind === remote.kind) ?? REMOTE_CHANNELS[0];
   const cfg = (st.settings?.remote_channels ?? {})[channel.kind] ?? {};
   const policy = st.settings?.remote_policy ?? remote.policy ?? {};
@@ -1529,12 +1591,33 @@ export async function hydrateRemote() {
       ${policyToggle('send_completed', '任务完成', true)}
       ${policyToggle('send_attention', '需要我确认', true)}
       ${policyToggle('send_cost_spike', '资源 / 消耗告警', true)}
+      ${/* NOT-01 的细分类型各有独立开关。默认全开，但**必须在这里能关**：
+           否则等于凭空多出一条用户关不掉的对外发送通道（只能手改配置文件），
+           而用户会以为自己没开。键名与远程策略字段一致（见 wire_value 的别名表）。*/''}
+      ${policyToggle('send_question', '提问待回答', true)}
+      ${policyToggle('send_failure', '任务失败', true)}
+      ${policyToggle('send_review', '等待审查', true)}
+      ${policyToggle('send_schedule', '调度提醒', true)}
+      ${policyToggle('send_chief', 'Chief 消息', true)}
       <div class="sb-foot">
         ${channel.secretLabel ? '<button type="button" class="mini-btn" data-remote-save-secret>保存连接</button>' : ''}
         <button type="button" class="mini-btn" data-remote-test>发送测试</button>
       </div>
       <div class="sb-hint">开启远程通知后可测试；测试会跳过静默、离开与节流策略。平台受理不代表手机已收到或消息已读。</div>
       <div data-remote-out class="sb-note" role="status" aria-live="polite"></div>
+    </div>
+    <div class="sb-group" data-remote-escalation-slot hidden>
+      <div class="sb-group-title">通道故障</div>
+      <div class="sb-note" data-remote-escalated role="status" aria-live="assertive"></div>
+    </div>
+    <div class="sb-group" data-enqueue-latency>
+      <div class="sb-group-title">本地事件入队延迟</div>
+      <div class="sb-note" data-enqueue-summary role="status" aria-live="polite">${escapeHtml(enqueueLatencyText(diagnostics?.notify_latency))}</div>
+      <div class="sb-hint">最近最多1000条有效样本，初始目标 p95 ≤1000ms。仅统计 hook 进入服务到通知入队，不表示桌面或手机已送达；重启后重新积累。</div>
+      <div class="sb-note" data-enqueue-ledger role="status" aria-live="polite">${escapeHtml(enqueueLedgerText(diagnostics))}</div>
+      <div class="sb-hint">身份去重窗口最多1024条；恢复仅保留最近64条未确认提醒的摘要，不保存私密正文。</div>
+      <div class="sb-hint">HTTP 受理不等于已保存。异常退出前未落盘，最近入队可能丢失，最近已确认提醒可能再次出现。</div>
+      <div class="sb-foot"><button type="button" class="mini-btn" data-enqueue-refresh>刷新入队统计</button></div>
     </div>
     <details class="sb-group remote-advanced" data-remote-advanced>
       <summary class="sb-group-title">高级设置 <span>模板、签名与发送策略</span></summary>
@@ -1562,6 +1645,18 @@ export async function hydrateRemote() {
       <div class="sb-note">${escapeHtml(remote.limitations ?? '')}</div>
       <div data-remote-history class="sb-note"></div><button type="button" class="mini-btn" data-remote-refresh>刷新发送记录</button>
     </details>`;
+  const diagnostic = root.querySelector('[data-enqueue-latency]');
+  const refresh = diagnostic?.querySelector('[data-enqueue-refresh]');
+  refresh?.addEventListener('click', async () => {
+    const current = pageRequest(diagnostic);
+    refresh.disabled = true;
+    const diagnostics = await readEnqueueDiagnostics();
+    if (current() && currentRequest()) {
+      diagnostic.querySelector('[data-enqueue-summary]').textContent = enqueueLatencyText(diagnostics?.notify_latency);
+      diagnostic.querySelector('[data-enqueue-ledger]').textContent = enqueueLedgerText(diagnostics);
+    }
+    if (current.ownsRequest()) refresh.disabled = false;
+  });
   root.dataset.pageReady = 'true';
   bindRemote();
   hydrateRemoteHistory();
@@ -1584,11 +1679,38 @@ export async function hydrateRemoteHistory() {
   const box = document.querySelector('[data-remote-history]');
   if (!box) return;
   try {
-    const recent = await invoke('remote_recent');
+    const [recent, escalated] = await Promise.all([
+      invoke('remote_recent'),
+      // 通道故障升级态必须**看得见**（NOT-05）：一个静默停下来的通道比报错更难查
+      invoke('remote_escalations').catch(() => []),
+    ]);
     if (!box.isConnected) return;
-    box.innerHTML = recent.length ? recent.map(entry => `<div class="sb-hint">${escapeHtml(entry.title)} · ${escapeHtml(entry.text)}</div>`).join('') : '<div class="sb-hint">尚无发送记录</div>';
+    // 交付状态要显示出来，且**不把「已受理」说成「已送达」**（NOT-05）。
+    // 交付状态文案**由 Rust 侧给**（`deliveryLabel`，来自 `DeliveryState::label`）。
+    // 这里不再维护一份 JS 映射：两份口径必然漂移，漂移的后果是
+    // 「受理成功的消息被显示成未确认」这种静默降级（复审 A4 抓到过）。
+    const rows = recent.map(entry =>
+      `<div class="sb-hint">${escapeHtml(entry.title)} · ${escapeHtml(entry.text)} · ${escapeHtml(entry.deliveryLabel)}</div>`);
+    box.innerHTML = rows.length ? rows.join('') : '<div class="sb-hint">尚无发送记录</div>';
+
+    // 通道故障升级态渲染在**高级设置之外**（NOT-05 复审 N1）。
+    // 原先它塞在 `[data-remote-history]` 里，而那个容器在默认收起的
+    // `<details data-remote-advanced>` 内——「现在就不工作」的信号被折叠起来，
+    // 与注释里「比单条历史记录更急」的意图正好相反，用户不展开就看不到。
+    const slot = document.querySelector('[data-remote-escalation-slot]');
+    const bar = slot?.querySelector('[data-remote-escalated]');
+    if (slot && bar) {
+      if (escalated.length) {
+        bar.textContent = `⚠ 通道故障（${escalated.join('、')}）：连续失败已停止自动重试，恢复一次即复位`;
+        slot.hidden = false;
+      } else {
+        bar.textContent = '';
+        slot.hidden = true;
+      }
+    }
   } catch (error) { if (box.isConnected) box.textContent = `读取记录失败：${error}`; }
 }
+
 
 function bindRemote() {
   const st = getState();

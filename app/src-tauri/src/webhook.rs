@@ -1,6 +1,11 @@
 use crate::models::AgentTaskEvent;
+use crate::hook_event::{HookArrival, HookEvent};
+
+const HTTP_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+// 只在测试里直接对 TcpStream 调 Read 方法；生产路径读的是 trait object，不需要它。
+#[cfg(test)]
 use std::io::Read;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Sender, SyncSender};
 use tiny_http::{Header, Method, Response, Server};
 
 /// 本地 Webhook（127.0.0.1，协议与 macOS 端相同）：
@@ -32,6 +37,20 @@ pub fn event_port() -> u16 {
 }
 pub struct LocalEventServer {
     handle: Option<std::thread::JoinHandle<()>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    shutdown: Option<tiny_http::ShutdownHandle>,
+}
+
+impl Drop for LocalEventServer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(shutdown) = self.shutdown.take() {
+            shutdown.shutdown(); // Interrupt header/body reads and response writes before join.
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 pub fn token_file_path() -> std::path::PathBuf {
@@ -148,6 +167,13 @@ pub fn ensure_token() -> Option<String> {
 
 /// 写一份新令牌。**`create_new` 保证不穿过任何已存在的路径**——
 /// 这是与上一版最大的差别：`fs::write` 会跟着符号链接写进它指向的文件。
+///
+/// ⚠️ **Windows 侧是显式失败，不是「跳过权限设置」。** 0600/0700 是 POSIX
+/// 权限位，Windows 的 ACL 语义完全不同（没有 group/other 的等价物），
+/// 拿 `set_permissions` 去凑只会得到一个**看起来设过、实际谁都能读**的文件。
+/// 令牌的全部价值就是「猜不到 + 别人读不到」，所以这里宁可让调用方走
+/// 「拒绝可信自报」那条分支，也不产出一个权限不明的令牌文件。
+#[cfg(unix)]
 fn write_new_token(path: &std::path::Path, token: &str) -> Option<()> {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
@@ -169,6 +195,13 @@ fn write_new_token(path: &std::path::Path, token: &str) -> Option<()> {
     Some(())
 }
 
+/// Windows：**不写**。见上面的说明——产不出权限可信的令牌文件，
+/// 就不该产出一个令牌文件。
+#[cfg(not(unix))]
+fn write_new_token(_path: &std::path::Path, _token: &str) -> Option<()> {
+    None
+}
+
 /// 24 字节真随机 → 48 个十六进制字符。
 ///
 /// **不走时钟**：上一版是 `as_nanos() * 常数 rotate`，那是一个由系统时钟推导的值，
@@ -183,9 +216,20 @@ fn random_token() -> Option<String> {
 }
 
 impl LocalEventServer {
-    pub fn start(tx: Sender<AgentTaskEvent>, engine: crate::SharedEngine) -> Self {
+    /// `wake` 是给引擎循环的唤醒信号：本地入口收到一条**真正入队**的事件后
+    /// 立刻通知它，别等下一拍。
+    ///
+    /// 为什么需要它：引擎循环原本 `try_recv` 收完事件就 `sleep(interval)`，
+    /// 而 interval 是 2 秒（有活动）到 5 秒（全闲置）。于是 hook 事件最坏要等
+    /// 2~5 秒才入队，而需求要求「进入服务 → 入队 p95 ≤1 秒」——那条指标在
+    /// 这个调度下**结构上不可能达标**，不是测量问题。唤醒让入队不再等下一拍。
+    pub fn start(
+        tx: Sender<HookEvent>,
+        engine: crate::SharedEngine,
+        wake: SyncSender<()>,
+    ) -> Self {
         let port = event_port();
-        let server = match Server::http(format!("127.0.0.1:{port}")) {
+        let server = match Self::bind_http(format!("127.0.0.1:{port}")) {
             Ok(s) => s,
             Err(error) => {
                 // 端口被占：岛其余功能不受影响，但**必须说出来**。
@@ -195,22 +239,56 @@ impl LocalEventServer {
                 crate::log_line(&format!(
                     "[webhook] 127.0.0.1:{port} 绑定失败（{error}）：本地 /notify、/event、/session 入口本次不可用"
                 ));
-                return LocalEventServer { handle: None };
+                return LocalEventServer {
+                    handle: None,
+                    stop: Default::default(),
+                    shutdown: None,
+                };
             }
         };
         crate::log_line(&format!(
             "[webhook] 本地入口监听 127.0.0.1:{port}（协议与 macOS 端相同；端口不同见 ADR 0013）"
         ));
+        // 令牌在**接受循环之前**准备好，失败就说出来（拿不到令牌 ⇒ 可信自报通道
+        // 在这台机器上不可用；仍然起服务，让接入方看到 401 noToken 而不是「连接被拒」）。
+        //
+        // 放在这里而不是循环里，是为了让验收测试能拿一个**已绑定的临时端口**跑
+        // `serve_bound`，从而不触碰真实配置目录（`ensure_token` 会写 report.token）。
+        if ensure_token().is_none() {
+            crate::log_line(
+                "[webhook] report.token 写不下去：可信自报通道本次不可用（接入方会拿到 noToken）",
+            );
+        }
+        Self::serve_bound(server, tx, engine, wake)
+    }
+
+    pub(crate) fn bind_http(addr: impl std::net::ToSocketAddrs) -> Result<Server, Box<dyn std::error::Error + Send + Sync>> {
+        Server::from_listener_with_timeout(std::net::TcpListener::bind(addr)?, None, Some(HTTP_IO_TIMEOUT))
+    }
+
+    /// 接受循环本体：已绑定的 `server` + 事件通道 + 唤醒端。
+    ///
+    /// 与 [`Self::start`] 分开，是为了让端到端验收能绑**临时端口**（`:0`）跑真实 HTTP。
+    /// 直接用 `start` 会绑配置端口（可能撞上正在运行的应用）并写真实配置目录。
+    pub(crate) fn serve_bound(
+        server: Server,
+        tx: Sender<HookEvent>,
+        engine: crate::SharedEngine,
+        wake: SyncSender<()>,
+    ) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let shutdown = server.shutdown_handle();
         let handle = std::thread::spawn(move || {
-            if ensure_token().is_none() {
-                // 拿不到令牌 ⇒ 整条可信通道**在这台机器上**不可用。
-                // 仍然起服务：拒绝可信自报的那条（401 noToken）要让接入方看得见，
-                // 静默不监听的话它们只会看到「连接被拒」，猜不到是令牌的问题。
-                crate::log_line(
-                    "[webhook] report.token 写不下去：可信自报通道本次不可用（接入方会拿到 noToken）",
-                );
-            }
-            for mut request in server.incoming_requests() {
+            while !thread_stop.load(std::sync::atomic::Ordering::Acquire) {
+                let mut request = match server.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(Some(request)) => request,
+                    Ok(None) => continue,
+                    Err(_) => break,
+                };
+                // tiny_http 在 accept/解析前保存的时钟，包含小 body 预读和内部排队。
+                let received_at = HookArrival::from(request.arrival());
+                if thread_stop.load(std::sync::atomic::Ordering::Acquire) { break; }
                 let method = request.method().clone();
                 let url = request.url().to_string();
                 let path = url.split('?').next().unwrap_or("/").to_string();
@@ -231,13 +309,25 @@ impl LocalEventServer {
                     .unwrap_or_default();
 
                 let mut body = String::new();
-                if method == Method::Post {
-                    let _ = request.as_reader().read_to_string(&mut body);
+                if method == Method::Post && request.as_reader().read_to_string(&mut body).is_err() {
+                    // Never route a partial/invalid UTF-8 body, even when its prefix is valid JSON.
+                    let _ = request.respond(Response::from_string(r#"{"error":"incomplete request body"}"#).with_status_code(400));
+                    continue;
                 }
+                if thread_stop.load(std::sync::atomic::Ordering::Acquire) { break; }
 
                 // `/session` 要写引擎里的自报登记表；其余路由只用事件通道
-                let (status, text) =
-                    route(&path, &method, &body, &token_header, &engine, &url, &tx);
+                let (status, text) = route(
+                    &path,
+                    &method,
+                    &body,
+                    &token_header,
+                    &engine,
+                    &url,
+                    &tx,
+                    &wake,
+                    received_at,
+                );
                 let header = Header::from_bytes(
                     &b"Content-Type"[..],
                     &b"application/json; charset=utf-8"[..],
@@ -251,6 +341,8 @@ impl LocalEventServer {
         });
         LocalEventServer {
             handle: Some(handle),
+            stop,
+            shutdown: Some(shutdown),
         }
     }
 }
@@ -263,9 +355,10 @@ fn route(
     token: &str,
     engine: &crate::SharedEngine,
     url: &str,
-    tx: &Sender<AgentTaskEvent>,
+    event_tx: &Sender<HookEvent>,
+    wake: &SyncSender<()>,
+    received_at: HookArrival,
 ) -> (u16, String) {
-    use AgentTaskEvent as E;
     if path == "/session" {
         let trusted = {
             // `None`（写不出令牌）与 `Some(别的)` 一样都算不可信：
@@ -281,7 +374,8 @@ fn route(
             // 响应形状也统一成拒绝——`/session` 不能变成「这台机器装了哪些 Agent」的枚举口
             // （Swift 同一条顾虑：macOS 13 的构建路径下端口对局域网可达）。
             if *method == Method::Post {
-                let _ = notify_route(body, true, tx);
+                let (status, text) = notify_route(body, true, event_tx, wake, received_at);
+                if status == 400 { return (status, text.to_string()); }
             }
             return (401, r#"{"bound":false,"reason":"noToken"}"#.to_string());
         }
@@ -303,15 +397,64 @@ fn route(
         return bind_self_report(body, &agent_id, &session_id, engine);
     }
     if (path == "/notify" || path == "/event") && *method == Method::Post {
-        let (status, text) = notify_route(body, false, tx);
+        let (status, text) = notify_route(body, false, event_tx, wake, received_at);
         return (status, text.to_string());
     }
     (404, r#"{"error":"not found"}"#.to_string())
 }
 
-fn notify_route(body: &str, untrusted: bool, tx: &Sender<AgentTaskEvent>) -> (u16, &'static str) {
+/// Normalize a client-supplied event kind. The single source of truth for the
+/// `/notify` contract: `notify_route` rejects anything `None` with 400, and the CLI
+/// uses the same normalization so it can refuse a bad `--kind` locally instead of
+/// sending it and then printing success. `notify_ledger::normalized_kind` keeps a
+/// separate, deliberately lossy projection for persisted identities (it folds unknown
+/// kinds to `completed`); this one must NOT fold, because a caller needs to be told
+/// its kind was rejected.
+pub(crate) fn normalize_event_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "attention" => Some("attention"),
+        "costSpike" | "cost_spike" | "alert" => Some("costSpike"),
+        "completed" => Some("completed"),
+        // NOT-01 要求的事件类型：提问、失败、审查、调度、Chief 消息与分配。
+        // 这里**不能**折叠未知值——调用方要被告知它的类型被拒了（见上面注释）。
+        "question" => Some("question"),
+        "failure" => Some("failure"),
+        "review" => Some("review"),
+        "schedule" => Some("schedule"),
+        "chief" => Some("chief"),
+        _ => None,
+    }
+}
+
+/// `/notify` 拒绝未知类型时返回的响应体，类型清单从 `remote::EventKind::ALL` 派生。
+/// 手写字面量会随新增类型漂移，而这句话正是调用方唯一的自查依据。
+pub(crate) fn invalid_event_kind_body() -> &'static str {
+    static BODY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BODY.get_or_init(|| {
+        let list = crate::remote::EventKind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        format!(r#"{{"error":"event 须为 {list}"}}"#)
+    })
+    .as_str()
+}
+
+pub(crate) fn notify_route(
+    body: &str,
+    untrusted: bool,
+    tx: &Sender<HookEvent>,
+    wake: &SyncSender<()>,
+    received_at: HookArrival,
+) -> (u16, &'static str) {
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(body) else {
         return (400, r#"{"error":"invalid json"}"#);
+    };
+    let client_id = match doc.get("id") {
+        None => None,
+        Some(serde_json::Value::String(id)) if crate::notify_ledger::valid_id(id) => Some(id.clone()),
+        Some(_) => return (400, r#"{"error":"invalid id"}"#),
     };
     let agent = doc.get("agent").and_then(|v| v.as_str()).unwrap_or("");
     let event = doc
@@ -329,33 +472,35 @@ fn notify_route(body: &str, untrusted: bool, tx: &Sender<AgentTaskEvent>) -> (u1
     if agent.is_empty() {
         return (400, r#"{"error":"agent 必填"}"#);
     }
-    let event_type = match event {
-        "attention" => "attention",
-        "costSpike" | "cost_spike" | "alert" => "costSpike",
-        "completed" => "completed",
-        _ => {
-            return (
-                400,
-                r#"{"error":"event 须为 completed|attention|costSpike"}"#,
-            )
-        }
+    let Some(event_type) = normalize_event_kind(event) else {
+        // 文案从 `EventKind::ALL` **派生**，不再手写字面量：手写的那份会随新增类型漂移，
+        // 而调用方靠这句话才知道自己能发什么（本轮就漂移过一次）。
+        return (400, invalid_event_kind_body());
     };
-    let _ = tx.send(AgentTaskEvent {
+    if tx.send(HookEvent {
+        client_id,
+        received_at: received_at.instant,
+        event: AgentTaskEvent {
         id: uuid_lite(),
         agent_id: agent.to_string(),
         agent_name: agent.to_string(),
         event_type: event_type.to_string(),
-        timestamp: crate::tokens::now_ms(),
+        // 到达墙钟用于事件展示，延迟使用 envelope 携带的单调时钟。
+        timestamp: received_at.timestamp_ms,
         message,
         detail,
         // 外部事件没有「本次任务用时」这个概念：0 = 不适用（报告里印 —，而不是 0 秒）
         duration: 0.0,
         externally_delivered: true,
-    });
+    }}).is_err() {
+        return (503, r#"{"error":"event consumer unavailable"}"#);
+    }
+    // 容量 1 的槽合并唤醒；Full 表示已有待处理信号，绝不阻塞 HTTP。
+    let _ = wake.try_send(());
     if untrusted {
-        (200, r#"{"ok":true,"delivered":"untrusted"}"#)
+        (200, r#"{"ok":true,"accepted":"untrusted"}"#)
     } else {
-        (200, r#"{"ok":true,"delivered":"external"}"#)
+        (200, r#"{"ok":true,"accepted":"external"}"#)
     }
 }
 
@@ -559,6 +704,10 @@ fn bind_self_report(
 }
 
 #[cfg(test)]
+#[path = "webhook_ingress_tests.rs"]
+mod ingress_tests;
+
+#[cfg(test)]
 mod session_tests {
     use super::*;
     use crate::models::{ActivityLevel, AgentProfile, AgentSnapshot, TokenUsage};
@@ -755,6 +904,330 @@ mod session_tests {
         );
         assert_eq!(session_query("/session"), (String::new(), String::new()));
     }
+
+    // ── 结构化 hook 进入服务 → 通知入队的延迟（需求「即时通知指标」）────────────
+    //
+    // 这些测试走**真实链路**（`route` → channel → `push_hook_event`），不是直接往
+    // 记录器里塞数字：延迟由「请求到达时刻」与「入队时刻」两个不同调用点决定，
+    // 只测 `NotifyLatency` 本身会漏掉「谁在什么时候调它」。
+    //
+    // 路由单测钉住来源与时间戳契约；下方真实 TCP 验收使用生产 HookScheduler，
+    // 临时端口绕开 start 的真实令牌准备，且显式关闭外发。
+
+    /// 把一次请求送进 `route`，再消费 channel 让引擎按 hook 路径入队。
+    fn deliver(body: &str, path: &str, received_at: HookArrival) -> crate::SharedEngine {
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
+        let engine: crate::SharedEngine = Arc::new(Mutex::new(
+            crate::engine::ActivityEngine::new(Settings::default(), rx),
+        ));
+        let (status, _) = route(
+            path,
+            &Method::Post,
+            body,
+            "",
+            &engine,
+            path,
+            &tx,
+            &wake_tx,
+            received_at,
+        );
+        assert_eq!(status, 200, "该请求应当被接受（路径 {path}）");
+        // 真实入口会在发送事件后唤醒引擎循环；这里必须同样消费唤醒信号，
+        // 否则测试无法发现「忘了唤醒」这种回归。
+        assert!(
+            wake_rx.try_recv().is_ok(),
+            "入队一条事件后必须唤醒引擎循环，否则它要等满一拍"
+        );
+        engine.lock().unwrap().consume_hook_events();
+        engine
+    }
+
+    #[test]
+    fn a_delivered_event_records_the_hook_to_queue_latency() {
+        // 单调起点提前 40ms；真实调度可能增加耗时，因此只约束下界。
+        // 精确统计公式由 `notify_latency` 的纯单测钉住。
+        let received_at = HookArrival::before(40);
+        let engine = deliver(r#"{"agent":"dim","event":"completed"}"#, "/notify", received_at);
+        let guard = engine.lock().unwrap();
+        let samples = guard.notify_latency.samples();
+        assert_eq!(samples, 1, "hook 事件必须留下一个样本");
+        assert_eq!(guard.notify_latency.discarded(), 0, "不该有丢弃");
+        let p95 = guard.notify_latency.p95_ms().expect("有一个样本就有 p95");
+        assert!(p95 >= 40, "延迟至少是 40ms 的起点差（实测 {p95}ms）");
+    }
+
+    #[test]
+    fn the_event_path_also_feeds_the_same_metric() {
+        // `/event` 与 `/notify` 走同一段入队逻辑，两条入口都要被测量。
+        let engine = deliver(
+            r#"{"agent":"dim","event":"attention"}"#,
+            "/event",
+            HookArrival::before(10),
+        );
+        let guard = engine.lock().unwrap();
+        assert_eq!(guard.notify_latency.samples(), 1, "/event 也必须记延迟");
+    }
+
+    #[test]
+    fn a_rejected_request_neither_sends_an_event_nor_records_a_sample() {
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
+        let engine: crate::SharedEngine = Arc::new(Mutex::new(
+            crate::engine::ActivityEngine::new(Settings::default(), rx),
+        ));
+        let (status, _) = route(
+            "/notify",
+            &Method::Post,
+            r#"{"agent":""}"#,
+            "",
+            &engine,
+            "/notify",
+            &tx,
+            &wake_tx,
+            HookArrival::before(0),
+        );
+        assert_eq!(status, 400, "agent 必填");
+        // **必须检查 channel 本身**：只断言 samples()==0 时，即使回归成
+        // 「先错误地发送事件、再返回 400」，引擎没消费事件也照样通过——
+        // 那是个用错误理由通过的测试。
+        assert!(
+            matches!(engine.lock().unwrap().event_rx.as_ref().map(|r| r.try_recv()),
+                     Some(Err(std::sync::mpsc::TryRecvError::Empty))),
+            "被拒请求不得发送任何事件"
+        );
+        assert!(wake_rx.try_recv().is_err(), "没有事件就不该唤醒引擎");
+        assert_eq!(engine.lock().unwrap().notify_latency.samples(), 0);
+    }
+
+    // 即使断言失败也等待 consumer 退出；最大仅一个受控的 5s 采样周期。
+    struct TestConsumer(Option<std::thread::JoinHandle<()>>);
+    impl Drop for TestConsumer {
+        fn drop(&mut self) {
+            if let Some(handle) = self.0.take() {
+                handle.join().expect("生产 consumer 线程正常退出");
+            }
+        }
+    }
+
+    fn http_latency_run(wake_enabled: bool) -> crate::models::EngineState {
+        use std::io::Write;
+        use std::time::{Duration, Instant};
+        const REQUESTS: usize = 20;
+        let server = LocalEventServer::bind_http("127.0.0.1:0").expect("绑定临时端口");
+        let addr = match server.server_addr() {
+            tiny_http::ListenAddr::IP(addr) => addr,
+            other => panic!("临时端口不是 IP: {other:?}"),
+        };
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
+        // 反例只切断 server → consumer 唤醒连线，consumer 与请求代码完全一致。
+        // 保留真实 sender，避免以 Disconnected 分支代替正常的 5s 等待。
+        let (mut server_wake, unused_wake_rx) = mpsc::sync_channel::<()>(1);
+        if wake_enabled {
+            server_wake = wake_tx.clone();
+        }
+        let mut activity = crate::engine::ActivityEngine::new(Settings::default(), rx);
+        activity.disable_outbound();
+        let engine: crate::SharedEngine = Arc::new(Mutex::new(activity));
+        let server = LocalEventServer::serve_bound(server, tx, engine.clone(), server_wake);
+        let (waiting_tx, waiting_rx) = mpsc::sync_channel(0);
+        let (done_tx, done_rx) = mpsc::channel();
+        let shared = engine.clone();
+        let consumer = TestConsumer(Some(std::thread::spawn(move || {
+            let scheduler = crate::engine::HookScheduler::new(wake_rx);
+            let sample_at = Instant::now() + Duration::from_secs(5);
+            let mut first_wait = true;
+            loop {
+                let state = scheduler.wait_and_consume(&shared, sample_at, || {
+                    if first_wait {
+                        // 来自实际等待点的握手；测试拿到信号后才可发送请求。
+                        waiting_tx.send(()).unwrap();
+                    }
+                });
+                first_wait = false;
+                match state {
+                    Some(state) if state.notify_latency.samples >= REQUESTS => {
+                        done_tx.send(state).unwrap();
+                        return;
+                    }
+                    Some(_) => {}
+                    None => {
+                        done_tx.send(shared.lock().unwrap().state()).unwrap();
+                        return;
+                    }
+                }
+            }
+        })));
+        waiting_rx.recv_timeout(Duration::from_secs(2)).expect("consumer 已进入长等待");
+        // 证明等待未占引擎锁；真实请求不需要用锁驱动 consumer。
+        assert!(engine.try_lock().is_ok(), "所有阻塞等待必须在引擎锁外");
+        let started = Instant::now();
+        for index in 0..REQUESTS {
+            let body = format!(r#"{{"agent":"latency-fixture","event":"completed","message":"request-{index}"}}"#);
+            let path = if index % 2 == 0 { "/notify" } else { "/event" };
+            let request = format!(
+                "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).expect("连接本地入口");
+            stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
+            stream.write_all(request.as_bytes()).expect("发送请求");
+            let mut response = String::new();
+            stream.read_to_string(&mut response).expect("读取响应");
+            assert!(response.starts_with("HTTP/1.1 200 "), "事件应被接受：{response}");
+        }
+        // 请求必须在长等待的早期送完，反例才真正在验证等待延迟。
+        assert!(started.elapsed() < Duration::from_secs(1), "20 条本机请求应在 1s 内送完");
+        let state = done_rx.recv_timeout(Duration::from_secs(6)).expect("生产 consumer 自动入队");
+        drop(consumer); // join consumer
+        drop(server); // 停止接受循环并 join server
+        drop((wake_tx, unused_wake_rx));
+        assert_eq!(state.notify_latency.samples, REQUESTS);
+        assert_eq!(state.notify_latency.discarded, 0);
+        assert!(state.notify_latency.verdict_available, "至少 20 个样本才允许判定");
+        assert_eq!(state.pending_events + usize::from(state.latest_event.is_some()), REQUESTS);
+        state
+    }
+
+    /// 真实 TCP → HTTP 解析 → 生产等待/consumer → EngineState，不执行全量 tick。
+    #[test]
+    fn a_real_http_request_reaches_the_queue_within_the_target() {
+        let state = http_latency_run(true);
+        eprintln!("wake enabled: {:?}", state.notify_latency);
+        assert_eq!(state.notify_latency.meets_target, Some(true));
+        assert!(state.notify_latency.p95_ms.unwrap() <= crate::notify_latency::TARGET_P95_MS);
+    }
+
+    #[test]
+    fn real_http_without_wake_fails_the_latency_target() {
+        let state = http_latency_run(false);
+        eprintln!("wake disabled: {:?}", state.notify_latency);
+        assert_eq!(state.notify_latency.meets_target, Some(false));
+        assert!(state.notify_latency.p95_ms.unwrap() > crate::notify_latency::TARGET_P95_MS);
+    }
+
+    #[test]
+    fn hook_wakes_coalesce_without_blocking_or_losing_events() {
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+        let mut engine = crate::engine::ActivityEngine::new(Settings::default(), rx);
+        engine.disable_outbound();
+        for index in 0..20 {
+            let body = format!(r#"{{"agent":"fixture","id":"wake-{index}"}}"#);
+            assert_eq!(notify_route(&body, false, &tx, &wake_tx, HookArrival::before(0)).0, 200);
+        }
+        assert!(wake_rx.try_recv().is_ok());
+        assert!(matches!(wake_rx.try_recv(), Err(mpsc::TryRecvError::Empty)), "20 次投递最多积存 1 枚唤醒");
+        assert_eq!(engine.consume_hook_events(), 20, "合并的是唤醒，不能丢事件");
+        assert_eq!(engine.state().notify_latency.samples, 20);
+    }
+
+    #[test]
+    fn empty_hook_wakes_preserve_the_full_sample_deadline() {
+        use std::time::{Duration, Instant};
+        let (_tx, rx) = mpsc::channel();
+        let engine = Arc::new(Mutex::new(crate::engine::ActivityEngine::new(Settings::default(), rx)));
+        let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+        wake_tx.try_send(()).unwrap();
+        let scheduler = crate::engine::HookScheduler::new(wake_rx);
+        let started = Instant::now();
+        let sample_at = started + Duration::from_millis(80);
+        let result = scheduler.wait_and_consume(&engine, sample_at, || {
+            assert!(engine.try_lock().is_ok(), "等待点必须释放引擎锁");
+        });
+        assert!(result.is_none(), "空唤醒不发布状态或提前触发全量采样");
+        assert!(Instant::now() >= sample_at, "必须保留原采样期限");
+        assert_eq!(engine.lock().unwrap().state().notify_latency.samples, 0);
+    }
+
+    #[test]
+    fn disconnected_hook_wakes_wait_until_the_sample_deadline() {
+        use std::time::{Duration, Instant};
+        let (_tx, rx) = mpsc::channel();
+        let engine = Arc::new(Mutex::new(crate::engine::ActivityEngine::new(Settings::default(), rx)));
+        let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+        drop(wake_tx);
+        let sample_at = Instant::now() + Duration::from_millis(80);
+        assert!(crate::engine::HookScheduler::new(wake_rx)
+            .wait_and_consume(&engine, sample_at, || {})
+            .is_none());
+        assert!(Instant::now() >= sample_at, "入口没启动时不能空转");
+    }
+
+    #[test]
+    fn unavailable_hook_consumer_returns_failure_without_waking() {
+        let (tx, rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::sync_channel(1);
+        drop(rx);
+        assert_eq!(notify_route(r#"{"agent":"fixture"}"#, false, &tx, &wake_tx, HookArrival::before(0)).0, 503);
+        assert!(matches!(wake_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn non_hook_events_do_not_feed_the_hook_metric() {
+        // 这条钉住的是**来源隔离**（独立审查的 P1）：延迟指标只统计「结构化 hook
+        // 进入本地入口」那一段。深链事件（`main.rs` 的 `handle_deep_link`）与引擎
+        // 内部事件（预算告警）都走 `push_event` 且**也**把 `externally_delivered`
+        // 置 true，但它们根本没经过 HTTP。
+        //
+        // 若判据退化成 `if event.externally_delivered`，批量深链会灌进一批近零样本，
+        // 把真实慢样本挤出 p95 —— 指标看起来达标，而那正是它要回答的问题。
+        let (_tx, rx) = mpsc::channel();
+        let engine: crate::SharedEngine = Arc::new(Mutex::new(
+            crate::engine::ActivityEngine::new(Settings::default(), rx),
+        ));
+        {
+            let mut guard = engine.lock().unwrap();
+            // 深链形状：externally_delivered = true，timestamp 是当时的 now。
+            guard.push_event(AgentTaskEvent {
+                id: "deeplink-1".into(),
+                agent_id: "dim".into(),
+                agent_name: "dim".into(),
+                event_type: "completed".into(),
+                timestamp: crate::tokens::now_ms(),
+                message: None,
+                detail: None,
+                duration: 0.0,
+                externally_delivered: true,
+            });
+            // 引擎内部形状：预算告警，timestamp 是判定时刻（早 999ms）。
+            guard.push_event(AgentTaskEvent {
+                id: "internal-1".into(),
+                agent_id: "system".into(),
+                agent_name: "Token 预算".into(),
+                event_type: "costSpike".into(),
+                timestamp: crate::tokens::now_ms() - 999,
+                message: None,
+                detail: None,
+                duration: 0.0,
+                externally_delivered: false,
+            });
+        }
+        let guard = engine.lock().unwrap();
+        assert_eq!(
+            guard.notify_latency.samples(),
+            0,
+            "只有本地入口入队的那条才算「hook 进入服务」；深链与内部事件都不得计入"
+        );
+    }
+
+    #[test]
+    fn wall_clock_changes_do_not_corrupt_monotonic_hook_latency() {
+        for timestamp_ms in [i64::MIN, i64::MAX] {
+            let mut arrival = HookArrival::before(40);
+            arrival.timestamp_ms = timestamp_ms;
+            let engine = deliver(r#"{"agent":"dim","event":"completed"}"#, "/notify", arrival);
+            let guard = engine.lock().unwrap();
+            assert_eq!(guard.notify_latency.samples(), 1);
+            assert_eq!(guard.notify_latency.discarded(), 0);
+            assert!(guard.notify_latency.p95_ms().unwrap() >= 40);
+            assert_eq!(guard.latest_event.as_ref().unwrap().timestamp, timestamp_ms);
+        }
+    }
+
+
 }
 
 #[cfg(test)]
@@ -863,7 +1336,8 @@ mod interop_tests {
     }
 }
 
-#[cfg(test)]
+// POSIX permissions and /dev/urandom are the supported trusted-token path.
+#[cfg(all(test, unix))]
 mod token_tests {
     use super::*;
     use crate::testutil::Sandbox;
@@ -984,6 +1458,24 @@ mod token_tests {
         let token = random_token().unwrap_or_else(|| good_token());
         write_new_token(path, &token).unwrap();
         token
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod unsupported_token_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_token_storage_refuses_without_writing_or_replacing_files() {
+        let sandbox = crate::testutil::Sandbox::new("unsupported-token");
+        let missing = sandbox.path().join("new-directory").join("report.token");
+        assert_eq!(write_new_token(&missing, "synthetic"), None);
+        assert!(!missing.parent().unwrap().exists());
+        let existing = sandbox.path().join("existing.token");
+        std::fs::write(&existing, b"unchanged").unwrap();
+        assert_eq!(write_new_token(&existing, "synthetic"), None);
+        assert_eq!(std::fs::read(&existing).unwrap(), b"unchanged");
+        assert!(inspect_token(&existing).is_err());
     }
 }
 

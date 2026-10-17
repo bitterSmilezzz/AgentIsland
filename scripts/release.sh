@@ -82,6 +82,35 @@ release_stage_files() {
     git --literal-pathspecs add -- "${RELEASE_FILES[@]}"
 }
 
+# ---------------------------------------------------------------------------
+# 本轮未验项登记簿（RELEASE_UNVERIFIED）
+#
+# 发布链里有两类检查：
+#   (a) 无条件跑，失败即中止（脱敏扫描、各测试、打包）；
+#   (b) 需要外部环境的 opt-in 项——真机 VM、真实官方 CLI、独占来宾桌面。
+# (b) 不能无条件跑（四边动效 4×75s 共约 5 分钟且独占桌面；官方客户端要 pinned CLI）。
+#
+# 但 (b) 也**不许静默跳过**。这两个脚本正是长期"不在门禁里"，断言改了没人发现
+# （docs/测试映射盘点.md §3）。所以：未启用就登记一条未验项，并在推 tag 前汇总打印、
+# 在最终成功消息里点名数量——宁可每轮都被提醒"这项没验"，也不许"为了全绿而跳过"。
+#
+# bash 3.2（macOS 自带 /bin/bash）在 `set -u` 下展开空数组会报 unbound variable，
+# 所以所有展开都走 `${RELEASE_UNVERIFIED[@]+"${RELEASE_UNVERIFIED[@]}"}` 保护。
+RELEASE_UNVERIFIED=()
+unverified() {
+    RELEASE_UNVERIFIED+=("$1")
+    printf '⚠ 未验项：%s\n' "$1" >&2
+}
+report_unverified() {
+    [[ "${#RELEASE_UNVERIFIED[@]}" -eq 0 ]] && return 0
+    printf '\n\033[33m==> 本轮未验项 %d 项（本次发布不覆盖，不得据此声称全链路通过）\033[0m\n' \
+        "${#RELEASE_UNVERIFIED[@]}"
+    local item
+    for item in ${RELEASE_UNVERIFIED[@]+"${RELEASE_UNVERIFIED[@]}"}; do
+        printf '    - %s\n' "$item"
+    done
+}
+
 # 测试直接 source 生产函数；不启动发布，也不改变调用者的目录或 shell 选项。
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
     return 0
@@ -121,63 +150,9 @@ else
     scripts/scan-secrets.sh --release
 fi
 
-step "脱敏守护与 Rust 回归测试"
-bash scripts/test-release-staging.sh
-scripts/test-scan-secrets.sh
-python3 scripts/test-version.py
-python3 scripts/test-native-gates-vm.py
-python3 scripts/test-memory-soak.py
-python3 scripts/test-memory-soak-result.py
-python3 scripts/test-resource-soak.py
-python3 scripts/test-measure-memory.py
-python3 scripts/test-native-motion-result.py
-node scripts/test-native-motion.mjs
-node scripts/test-first-snapshot.mjs
-node scripts/test-tool-budgets.mjs
-node scripts/test-usage-context.mjs
-node scripts/test-interface-models.mjs
-node scripts/test-model-directory.mjs
-node scripts/test-window-lifecycle.mjs
-node scripts/test-page-motion.mjs
-node scripts/test-task-focus.mjs
-node scripts/test-tasks.mjs
-
-step "纯数据 UI 回归（无浏览器 / 无 VM / 无外部客户端）"
-# 这 18 条只 import app/ui/js 下的模块并对返回值断言：DOM 与 IPC 都是脚本内的桩，
-# 不连网络、不写用户目录、不需要真实客户端或 VM，任意机器上裸跑 `node` 即可。
-# 它们此前不在任何门禁里（其中 8 条连文档都没提过），也就没人发现断言是否还成立。
-if ! command -v node >/dev/null 2>&1; then
-    die "纯数据 UI 回归需要 node（只用 Node 内置模块，无需额外依赖；仓库实测 Node 24）"
-fi
-for ui_test in test-agent-actions test-agent-identities test-functional-ui test-island-click \
-                test-island-content-motion test-island-deeplink test-island-motion test-island-return \
-                test-prompts test-provider-feedback test-quick-navigation test-report-panel \
-                test-sessions test-skills-package test-task-attention test-usage-trend \
-                test-window-layout test-workspaces; do
-    node "scripts/$ui_test.mjs"
-done
-
-# 同一批桩测试的**壳变体**：workbench 是默认桌面形态，main.js 在那里走另一条启动分支
-# （renderWorkbench + 快捷导航对话框 + 草稿守卫），island 变体整条都碰不到；冷启动变体
-# 则覆盖「启动瞬间深链批次到达」的消费顺序。三条都只多花 0.1~0.2 秒，也不需要浏览器。
-# 此前它们只被手工跑过——`test-functional-ui` 的 workbench 变体因此一直没人发现它的桩
-# 缺了 dialog 结构（`quick-navigation.js` 在壳里崩，产品代码没有错）。
-TEST_NAVIGATION_SHELL=workbench node scripts/test-functional-ui.mjs
-TEST_NAVIGATION_SHELL=workbench node scripts/test-island-deeplink.mjs
-TEST_COLD_NAVIGATION=1 node scripts/test-island-deeplink.mjs
-
-step "浏览器 UI 回归（会话刷新 / 任务详情双栏 / 正文离页）"
-# 这三条要真实浏览器（Playwright），不能裸跑 `node`。缺运行时时明确失败，不许
-# 静默跳过——过去它们不在任何门禁里，v0.0.321 起 committed 测试对 committed
-# 产品变红（窄窗口隐藏列表让旧断言超时）也没人发现。
-if [[ -z "${TEST_BROWSER_MODULE:-}" ]] && ! node -e "require.resolve('playwright')" >/dev/null 2>&1; then
-    die "浏览器 UI 回归需要 Playwright：先 npm i playwright，或设 TEST_BROWSER_MODULE 指向 playwright/index.mjs 的绝对路径"
-fi
-for browser_test in test-session-refresh-focus test-task-detail-navigation test-task-reader-leave; do
-    node "scripts/$browser_test.mjs"
-done
-
-cargo test --locked --manifest-path app/src-tauri/Cargo.toml
+step "源码门禁（逻辑、壳变体、浏览器、Rust 与框架自测）"
+# 与 CI 共用 registry，避免新增测试只进一条执行链。缺运行时和未执行项均非零退出。
+python3 scripts/automation/pipeline.py --profile ci --check-timeout 1800
 
 step "Rust/Tauri 打包"
 # Rust 全量回归已在上一阶段完成。
@@ -187,9 +162,10 @@ scripts/build-app.sh "$VERSION"
 # 构建成功即替换运行实例，后续验收/发布失败也不遗留旧实例。
 scripts/restart-app.sh
 
-step "随包 CLI 派发参数验证（受控系统命令，不打开窗口）"
-python3 scripts/test-cli-dispatch.py --binary dist/agentisland
-python3 scripts/test-cli-usage.py --binary dist/agentisland
+step "构建身份与随包 CLI 验证（受控夹具，不打开窗口）"
+# 先验构建收据（源码内容摘要 ↔ 产物哈希），再跑随包 CLI：旧 dist 不得冒充新构建。
+# 这里不重复跑 ci——源码门禁已在打包前完成，重复跑只会拖长发版。
+python3 scripts/automation/pipeline.py --profile package
 
 # VM 路径核实虚拟化、Aqua、系统 build 与产物身份，不以一个旗标冒充隔离。
 if [[ -n "${NATIVE_TEST_VM:-}" ]]; then
@@ -211,6 +187,46 @@ elif [[ "${ALLOW_DESKTOP_UI:-0}" == "1" ]]; then
     .build/window-lifetime-target/debug/agentisland-window-lifetime-probe --allow-desktop
 else
     die "原生验收需要 NATIVE_TEST_VM 指定真实隔离 VM；未运行原生门禁，不发布"
+fi
+
+# ---- 需外部环境的 opt-in 门禁（未启用即登记未验项，不许静默跳过）-----------
+#
+# 下面两项的共同点：**改了不会被发现**。docs/测试映射盘点.md §3 点名过——它们
+# 一个只被 native-gates-vm.py 的 --motion-only 分支调用（release.sh 不传该旗标），
+# 一个全仓零调用点。把断言改坏，现有门禁照样全绿。
+#
+# 所以接进来的方式不是"能跑就跑"，而是两条都必须满足：
+#   1. 显式 opt-in 才跑（环境变量），因为两者都要真机资源且耗时/独占；
+#   2. 没启用就**登记未验项**并在推 tag 前点名——不拿"跳过"冒充"通过"。
+#
+# 为什么不用"缺环境就自动失败"（像上面的原生验收那样 die）：那会让每一轮发版
+# 在没有 VM 的机器上直接卡死，实操结果只会是所有人开始传旗标绕过，等于没有门禁。
+# 诚实的折中：放行发布，但把缺口写进本轮记录，且**成功消息里带未验项数量**——
+# 每次发版都看见"还有 N 项没验"，而不是安静地全绿。
+
+if [[ "${NATIVE_MOTION:-0}" == "1" ]]; then
+    step "原生动效逐边取证（四边，各约 75s，共约 5 分钟）"
+    # 必须走 VM 来宾路径：native-gates-vm.py --motion-only 会把 test-native-motion.py
+    # 投递到隔离 VM 内执行。**不能在此处宿主侧直调**——test-native-motion.py 自带
+    # 真机前置校验（darwin + Aqua uid≥500 + /dev/console 属主一致 + kern.hv_vmm_present==1），
+    # 在宿主桌面跑会被它自己拒掉并 exit 2，于是"启用了反而永远失败"，
+    # 比不启用更糟（会逼人绕过旗标）。这里只做宿主的投递与前置检查。
+    [[ -n "${NATIVE_TEST_VM:-}" ]] || die "NATIVE_MOTION=1 需要 NATIVE_TEST_VM（真机隔离 VM）"
+    # 参数以 native-gates-vm.py 的 argparse 为准：--vm 必填、--user 可被 NATIVE_TEST_USER
+    # 免填、--motion-only 为互斥模式（与 --check-only/--resource-only 不能同用）。
+    # 该脚本不接受 --binary：二进制由它在来宾内自行定位。
+    python3 scripts/native-gates-vm.py --motion-only --vm "$NATIVE_TEST_VM" --user "${NATIVE_TEST_USER:-}"
+else
+    unverified "原生动效逐边取证未运行（需 NATIVE_MOTION=1 + NATIVE_TEST_VM，经 native-gates-vm.py --motion-only 投递到 VM 来宾）"
+fi
+
+if [[ "${CLAUDE_PLAN_CLIENT:-0}" == "1" ]]; then
+    step "官方 Claude 客户端取证（pinned CLI + sandbox 策略探测）"
+    # 需要预先安装 pinned 官方 CLI（.scratch/claude-real-client/runtime/...），
+    # 且脚本会校验版本恰为 2.1.291，不符即失败——不静默降级。
+    python3 scripts/test-claude-plan-client.py
+else
+    unverified "官方 Claude 客户端取证未运行（需 CLAUDE_PLAN_CLIENT=1 与真实 pinned CLI）"
 fi
 
 step "发布包"
@@ -235,6 +251,8 @@ step "提交后复扫 git 历史（新 blob 也要过这一关）"
 scripts/scan-secrets.sh --history
 
 step "打 tag 并推送"
+# 推出去之前最后看一眼本轮未验项：tag 一推就收不回来了。
+report_unverified
 git tag -a "v$VERSION" -m "v$VERSION — $TITLE"
 git push -q origin main
 git push -q origin "v$VERSION"
@@ -269,6 +287,11 @@ step "重启应用（AGENTS.md：出包后无感替换旧实例）"
 scripts/restart-app.sh
 
 printf '\n\033[32m✓ v%s 已发布：提交已推送、tag 已打、release 已建\033[0m\n' "$VERSION"
+if [[ "${#RELEASE_UNVERIFIED[@]}" -gt 0 ]]; then
+    # 成功消息里也点名：不许"✓ 已发布"单独出现，让人以为全链路都验过了。
+    printf '\033[33m⚠ 本轮有 %d 项未验（需外部环境）——本版本不覆盖它们，见上面的未验项清单\033[0m\n' \
+        "${#RELEASE_UNVERIFIED[@]}"
+fi
 # 附件复核。注意 `releases/tags/…` 这个端点会短暂返回空 assets（实测刚传完读到 0，
 # 按 id 读是 1），所以只重试着读、不做「读不到就重传」——重传会撞 already exists，
 # 反而把一次正常发版报成失败。读不到只打警告，人去看一眼比脚本猜更靠得住

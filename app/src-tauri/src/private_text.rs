@@ -49,3 +49,7 @@ pub(crate) fn known_private(text: &str) -> bool {
                     })
             })
 }
+
+#[cfg(test)]
+#[path = "private_text_tests.rs"]
+mod tests;

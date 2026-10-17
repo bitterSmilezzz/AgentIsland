@@ -339,12 +339,20 @@ fn utf8_clip(text: &str, limit: usize) -> String {
 /// 纯函数：策略已放行 + 通道配置 → 要发的内容。
 /// 拆出来是因为它能被完整测试（不碰网络、不读钥匙串）。
 pub fn render(inputs: &Inputs, config: &ChannelConfig) -> Message {
+    // NOT-01 的细分类型各自给出可分辨的外发标题：外发正文是用户唯一看到的那一句，
+    // 把「提问」印成「等待你确认」会让收件人分不清该不该立刻回。
     let state = match inputs.kind {
         EventKind::Completed => "任务完成",
         EventKind::Attention => "等待你确认",
         EventKind::CostSpike => "消耗告警",
+        EventKind::Question => "Agent 提问待答",
+        EventKind::Failure => "任务失败",
+        EventKind::Review => "等待审查",
+        EventKind::Schedule => "调度提醒",
+        EventKind::Chief => "Chief 消息",
     };
     let title = format!("{} · {}", inputs.agent_name, state);
+    // 「用时」只对完成类事件有意义（`duration` 的口径：非完成事件填 0）。
     let qualifier = if inputs.kind == EventKind::Completed {
         format!("用时 {}", duration_short(inputs.seconds))
     } else {

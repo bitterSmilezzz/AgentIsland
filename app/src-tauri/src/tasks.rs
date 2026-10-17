@@ -1199,49 +1199,6 @@ mod tests {
         );
     }
     #[test]
-    fn stale_write_and_invalid_gate_leave_original_bytes_unchanged() {
-        let f = Fixture::new();
-        let d = f.task();
-        let bytes = fs::read(&f.store.path).unwrap();
-        assert_eq!(
-            f.store
-                .update(&d.tasks[0].id, "新标题", None, 0, 2)
-                .unwrap_err()
-                .code,
-            "stale_revision"
-        );
-        assert!(f
-            .store
-            .record(
-                &d.tasks[0].id,
-                RunStatus::Running,
-                Some(AttentionKind::Answer),
-                None,
-                d.revision,
-                3
-            )
-            .is_err());
-        assert_eq!(fs::read(&f.store.path).unwrap(), bytes);
-    }
-    #[test]
-    fn corrupt_future_and_oversized_files_are_preserved() {
-        let f = Fixture::new();
-        fs::create_dir_all(&f.dir).unwrap();
-        for bytes in [
-            b"broken".to_vec(),
-            serde_json::to_vec(&Data {
-                schema_version: 99,
-                ..Data::default()
-            })
-            .unwrap(),
-            vec![b' '; MAX_BYTES + 1],
-        ] {
-            fs::write(&f.store.path, &bytes).unwrap();
-            assert!(f.store.create("新任务", None, 0, 1).is_err());
-            assert_eq!(fs::read(&f.store.path).unwrap(), bytes);
-        }
-    }
-    #[test]
     fn source_binding_is_unique_and_cannot_replace_run_history() {
         let f = Fixture::new();
         let d = f.task();
@@ -1377,12 +1334,467 @@ mod tests {
             .is_err());
         assert_eq!(fs::read(&f.store.path).unwrap(), bytes);
     }
+    /// 写侧夹具：沙箱目录 + 指向其中 tasks.v1.json 的 Store，只碰合成数据。
+    fn store_in(tag: &str) -> (crate::testutil::Sandbox, Store) {
+        let sandbox = crate::testutil::Sandbox::new(tag);
+        let store = Store {
+            path: sandbox.path().join("tasks.v1.json"),
+        };
+        (sandbox, store)
+    }
+
     #[test]
-    fn io_failure_does_not_create_an_empty_snapshot() {
-        let f = Fixture::new();
-        fs::write(&f.dir, b"parent is a file").unwrap();
-        assert!(f.store.create("新任务", None, 0, 1).is_err());
-        assert!(!f.store.path.exists());
-        fs::remove_file(&f.dir).unwrap();
+    fn crud_roundtrip_survives_a_fresh_store_instance() {
+        let (sandbox, store) = store_in("tasks-crud");
+        let project = store.project_create("看板", 0).unwrap();
+        let pid = project.projects[0].id.clone();
+        let d = store
+            .create("整理方案", None, project.revision, 1_000)
+            .unwrap();
+        assert_eq!(d.revision, 2, "每次写都把 revision 往前推一格");
+        let task = d.tasks[0].id.clone();
+        let d = store
+            .update(&task, "整理方案 v2", Some(pid.clone()), d.revision, 2_000)
+            .unwrap();
+        assert_eq!(d.tasks[0].title, "整理方案 v2");
+        assert_eq!(d.tasks[0].project_id.as_deref(), Some(pid.as_str()));
+        assert_eq!(d.tasks[0].revision, 2);
+        let d = store.archive(&task, true, d.revision, 3_000).unwrap();
+        assert_eq!(d.tasks[0].archived_ms, Some(3_000));
+        let d = store.archive(&task, false, d.revision, 4_000).unwrap();
+        assert_eq!(d.tasks[0].archived_ms, None);
+        // 换一个 Store 实例读回：落盘字节必须与返回值一致
+        let loaded = Store {
+            path: store.path.clone(),
+        }
+        .load()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_vec(&loaded).unwrap(),
+            serde_json::to_vec(&d).unwrap()
+        );
+        assert_eq!(loaded.revision, 5);
+        assert!(sandbox.path().join("tasks.v1.json").exists());
+    }
+
+    #[test]
+    fn create_rejects_bad_titles_unknown_projects_and_credential_shaped_text() {
+        let (_sandbox, store) = store_in("tasks-create-reject");
+        assert!(!store.path.exists(), "夹具起始必须是空目录");
+        let oversized = "x".repeat(501);
+        let credential = "sk-".to_owned() + &"a".repeat(40);
+        let cases: Vec<(String, Option<String>)> = vec![
+            ("".into(), None),
+            ("  \n\t ".into(), None),
+            (oversized, None),
+            ("-----BEGIN TEST-----".into(), None),
+            (credential, None),
+            ("合法标题".into(), Some("ghost-project".to_string())),
+        ];
+        for (title, project) in cases {
+            let err = store.create(&title, project.clone(), 0, 1).unwrap_err();
+            assert_eq!(
+                err.code,
+                if project.is_some() {
+                    "not_found"
+                } else {
+                    "invalid_input"
+                },
+                "「{title}」必须被拒"
+            );
+            assert!(!store.path.exists(), "被拒的写入不得留下任何文件");
+        }
+    }
+
+    #[test]
+    fn update_archive_and_record_reject_unknown_ids_without_writing() {
+        let (_sandbox, store) = store_in("tasks-unknown-id");
+        let d = store.create("第一条", None, 0, 1).unwrap();
+        let bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .update("missing", "新标题", None, d.revision, 2)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(
+            store
+                .archive("missing", true, d.revision, 3)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(
+            store
+                .record("missing", RunStatus::Running, None, None, d.revision, 4)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(
+            store
+                .handled("missing", "run", "gate", d.revision, 5)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes, "未知 ID 必须拒写");
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.revision, d.revision, "被拒的写不得推进 revision");
+        assert_eq!(loaded.tasks.len(), 1);
+    }
+
+    #[test]
+    fn stale_revision_is_refused_and_a_refreshed_retry_loses_nothing() {
+        let (sandbox, store) = store_in("tasks-stale-revision");
+        let other = Store {
+            path: store.path.clone(),
+        };
+        let first = store.create("甲", None, 0, 1).unwrap();
+        // 另一个 writer 先提交：revision 前进，第一个 writer 手上的快照就此过期
+        let after_other = other.create("乙", None, first.revision, 2).unwrap();
+        let bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .update(&first.tasks[0].id, "甲改名", None, first.revision, 3)
+                .unwrap_err()
+                .code,
+            "stale_revision",
+            "过期 revision 必须被 compare-and-save 拒绝"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes, "被拒后原字节不动");
+        // 刷新后重试：两次提交都不能丢
+        let after_retry = store
+            .update(&first.tasks[0].id, "甲改名", None, after_other.revision, 4)
+            .unwrap();
+        assert_eq!(after_retry.revision, after_other.revision + 1);
+        assert_eq!(after_retry.tasks.len(), 2);
+        assert_eq!(after_retry.tasks[0].title, "甲改名");
+        assert_eq!(after_retry.tasks[1].title, "乙");
+        // 再拿更旧的快照写一次：仍然拒绝，且不冲掉已成功的提交
+        let bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .archive(&first.tasks[0].id, true, after_other.revision, 5)
+                .unwrap_err()
+                .code,
+            "stale_revision"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        let loaded = other.load().unwrap();
+        assert_eq!(
+            serde_json::to_vec(&loaded).unwrap(),
+            serde_json::to_vec(&after_retry).unwrap()
+        );
+        assert!(sandbox.path().exists());
+    }
+
+    #[test]
+    fn ownership_isolation_rejects_cross_task_runs_and_unknown_projects() {
+        let (sandbox, store) = store_in("tasks-ownership");
+        let d = store.create("甲", None, 0, 1).unwrap();
+        let a = d.tasks[0].id.clone();
+        let d = store.create("乙", None, d.revision, 2).unwrap();
+        let b = d.tasks[1].id.clone();
+        let d = store
+            .record(
+                &a,
+                RunStatus::Waiting,
+                Some(AttentionKind::Answer),
+                None,
+                d.revision,
+                3,
+            )
+            .unwrap();
+        let run_a = d.runs[0].id.clone();
+        let gate_a = d.attentions[0].id.clone();
+        let bytes = fs::read(&store.path).unwrap();
+        // 拿甲的 run 去处理乙：归属不符
+        assert_eq!(
+            store
+                .handled(&b, &run_a, &gate_a, d.revision, 4)
+                .unwrap_err()
+                .code,
+            "source_expired"
+        );
+        // 拿不属于这条 run 的 gate id：同样拒
+        assert_eq!(
+            store
+                .handled(&a, &run_a, "gate-of-another-run", d.revision, 5)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes, "跨任务访问不改字节");
+        // 项目归属：未知 project id 一律拒绝，已存在的才挂得上
+        let project = store.project_create("看板", d.revision).unwrap();
+        let pid = project.projects[0].id.clone();
+        let d = store
+            .update(&b, "乙", Some(pid), project.revision, 7)
+            .unwrap();
+        assert_eq!(
+            store
+                .update(&b, "乙", Some("ghost".into()), d.revision, 8)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        // 伪造跨任务关联：validate 与 write 都必须拒，且不留暂存文件
+        let mut cross = store.load().unwrap();
+        cross.tasks[1].current_run_id = Some(run_a);
+        assert_eq!(cross.validate().unwrap_err().code, "read_only");
+        let bytes = fs::read(&store.path).unwrap();
+        assert!(store.write(&cross).is_err());
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        let names: Vec<_> = fs::read_dir(sandbox.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["tasks.v1.json".to_string()],
+            "拒写不得留下暂存或留档文件"
+        );
+    }
+
+    #[test]
+    fn archived_task_refuses_local_records_until_it_is_restored() {
+        let (_sandbox, store) = store_in("tasks-archived-gate");
+        let d = store.create("甲", None, 0, 1).unwrap();
+        let tid = d.tasks[0].id.clone();
+        let d = store.archive(&tid, true, d.revision, 2).unwrap();
+        let bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .record(&tid, RunStatus::Running, None, None, d.revision, 3)
+                .unwrap_err()
+                .code,
+            "invalid_input",
+            "归档任务不接受本地记录"
+        );
+        assert_eq!(
+            store
+                .record(&tid, RunStatus::Accepted, None, None, d.revision, 4)
+                .unwrap_err()
+                .code,
+            "invalid_input",
+            "本地记录永不批准来源操作"
+        );
+        assert_eq!(
+            store
+                .record(
+                    &tid,
+                    RunStatus::Running,
+                    None,
+                    Some("   ".into()),
+                    d.revision,
+                    5
+                )
+                .unwrap_err()
+                .code,
+            "invalid_input",
+            "空标题必须拒"
+        );
+        assert_eq!(
+            store
+                .record(
+                    &tid,
+                    RunStatus::Running,
+                    None,
+                    Some("产出".into()),
+                    d.revision,
+                    6
+                )
+                .unwrap_err()
+                .code,
+            "invalid_input",
+            "无归属的产出引用必须拒"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes, "被拒记录不得落盘");
+        let d = store.archive(&tid, false, d.revision, 7).unwrap();
+        let d = store
+            .record(&tid, RunStatus::Running, None, None, d.revision, 8)
+            .unwrap();
+        assert_eq!(d.runs.len(), 1);
+        assert_eq!(d.tasks[0].archived_ms, None);
+    }
+
+    #[test]
+    fn running_with_answer_on_an_active_task_preserves_bytes_and_revision() {
+        let (_sandbox, store) = store_in("tasks-invalid-running-gate");
+        let d = store.create("整理方案", None, 0, 1).unwrap();
+        d.validate().unwrap();
+        assert_eq!(d.tasks[0].archived_ms, None);
+        let bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .record(
+                    &d.tasks[0].id,
+                    RunStatus::Running,
+                    Some(AttentionKind::Answer),
+                    None,
+                    d.revision,
+                    2,
+                )
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.revision, d.revision);
+        assert_eq!(
+            serde_json::to_vec(&loaded).unwrap(),
+            serde_json::to_vec(&d).unwrap()
+        );
+    }
+
+    #[test]
+    fn max_bytes_boundary_loads_and_one_byte_over_refuses_writes_without_changes() {
+        let (sandbox, store) = store_in("tasks-capacity-boundary");
+        let d = store.create("保留原任务", None, 0, 1).unwrap();
+        let mut bytes = serde_json::to_vec(&d).unwrap();
+        assert!(bytes.len() < MAX_BYTES);
+        // 合法 JSON 后仅填充合法空白：容量必须是唯一拒绝原因。
+        bytes.resize(MAX_BYTES, b' ');
+        let boundary: Data = serde_json::from_slice(&bytes).unwrap();
+        boundary.validate().unwrap();
+        fs::write(&store.path, &bytes).unwrap();
+        assert_eq!(fs::metadata(&store.path).unwrap().len(), MAX_BYTES as u64);
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            serde_json::to_vec(&loaded).unwrap(),
+            serde_json::to_vec(&d).unwrap()
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+
+        bytes.push(b'\n');
+        assert_eq!(bytes.len(), MAX_BYTES + 1);
+        let oversized: Data = serde_json::from_slice(&bytes).unwrap();
+        oversized.validate().unwrap();
+        fs::write(&store.path, &bytes).unwrap();
+        let names_before: std::collections::BTreeSet<_> = fs::read_dir(sandbox.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(store.load().unwrap_err().code, "read_only");
+        assert_eq!(
+            store
+                .create("不得覆盖原任务", None, d.revision, 2)
+                .unwrap_err()
+                .code,
+            "read_only"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), bytes);
+        let preserved: Data = serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        assert_eq!(preserved.revision, d.revision);
+        let names_after: std::collections::BTreeSet<_> = fs::read_dir(sandbox.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names_after, names_before, "拒写不得留下任何新文件");
+    }
+
+    #[test]
+    fn corrupt_future_symlink_and_unknown_field_files_are_preserved() {
+        let (sandbox, store) = store_in("tasks-corrupt-symlink");
+        let variants: Vec<(&str, Vec<u8>)> = vec![
+            ("broken", "{ 不是 JSON".as_bytes().to_vec()),
+            ("not-an-object", b"[1,2,3]".to_vec()),
+            (
+                "unknown-fields",
+                br#"{"schema_version":1,"revision":0,"projects":[],"tasks":[],"runs":[],"attentions":[],"artifacts":[],"event_receipts":[],"future":true}"#.to_vec(),
+            ),
+            (
+                "future-schema",
+                br#"{"schema_version":2,"revision":0,"projects":[],"tasks":[],"runs":[],"attentions":[],"artifacts":[],"event_receipts":[]}"#.to_vec(),
+            ),
+        ];
+        for (label, bytes) in variants {
+            fs::write(&store.path, &bytes).unwrap();
+            assert_eq!(
+                store.create("新任务", None, 0, 1).unwrap_err().code,
+                "read_only",
+                "{label} 必须拒写"
+            );
+            assert_eq!(
+                &fs::read(&store.path).unwrap(),
+                &bytes,
+                "{label} 原字节保留"
+            );
+            assert_eq!(
+                fs::read_dir(sandbox.path()).unwrap().count(),
+                1,
+                "{label} 不得留档或留暂存文件"
+            );
+        }
+        fs::remove_file(&store.path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let real = sandbox.path().join("real.json");
+            fs::write(&real, b"keep me exactly").unwrap();
+            symlink(&real, &store.path).unwrap();
+            assert_eq!(
+                store.create("新任务", None, 0, 1).unwrap_err().code,
+                "read_only"
+            );
+            assert_eq!(fs::read(&real).unwrap(), b"keep me exactly");
+            assert!(
+                fs::symlink_metadata(&store.path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "符号链接不得被替换成普通文件"
+            );
+            assert_eq!(fs::read_dir(sandbox.path()).unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn write_failure_leaves_no_staging_file_and_no_empty_snapshot() {
+        let (sandbox, store) = store_in("tasks-write-failure");
+        assert!(!store.path.exists());
+        // 目录链路上挡着一个文件：连目录都建不起来 ⇒ 不得留下任何文件
+        let blocker = sandbox.path().join("blocker");
+        fs::write(&blocker, b"not a directory").unwrap();
+        let nested = Store {
+            path: blocker.join("sub").join("tasks.v1.json"),
+        };
+        let directory_names = || -> std::collections::BTreeSet<_> {
+            fs::read_dir(sandbox.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect()
+        };
+        let names_before = directory_names();
+        assert!(nested.create("新任务", None, 0, 1).is_err());
+        assert!(!nested.path.exists(), "失败的创建不得留下空快照");
+        assert!(!blocker.join("sub").exists());
+        assert_eq!(directory_names(), names_before);
+        assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Root 绕过目录权限，那种环境由上面的路径失败用例覆盖
+            if unsafe { libc::geteuid() } != 0 {
+                let d = store.create("甲", None, 0, 1).unwrap();
+                let bytes = fs::read(&store.path).unwrap();
+                let names_before = directory_names();
+                fs::set_permissions(sandbox.path(), fs::Permissions::from_mode(0o500)).unwrap();
+                let failed = store.create("乙", None, d.revision, 2);
+                fs::set_permissions(sandbox.path(), fs::Permissions::from_mode(0o700)).unwrap();
+                assert!(failed.is_err(), "目录不可写必须明确失败");
+                assert_eq!(fs::read(&store.path).unwrap(), bytes, "写失败不动原字节");
+                assert_eq!(store.load().unwrap().revision, d.revision);
+                assert_eq!(
+                    directory_names(),
+                    names_before,
+                    "写失败前后目录全集必须一致，包括原有 blocker"
+                );
+                assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+            }
+        }
     }
 }

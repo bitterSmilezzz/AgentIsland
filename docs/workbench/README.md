@@ -4,6 +4,16 @@
 > **现状、目标、方案与计划**。它是这一轮改造的入口文档，不是逐版变更日志——
 > 逐版记录一律进 [CHANGELOG.md](../../CHANGELOG.md)。
 
+## 当前文档与历史资料入口
+
+**当前需求入口：[Agent监工台完整需求](../需求.md)、[Magpie/Todos能力对齐](../功能对齐清单.md)、[可扩充测试框架](../测试框架.md)、[需求测试矩阵](../需求测试矩阵.md)。** 用户最新完整能力目标已由 [ADR 0040](../adr/0040-supervisor-full-integration-requirements.md)取代ADR0039的范围收窄，包含网关/智能路由与任务执行目标；上述文档不是实现通过证明。
+
+测试自动化当前执行入口与协作验收见 [统一交付记录](../测试自动化交付.md)；历史 [测试映射盘点](../测试映射盘点.md)含已撤回结论，不作为最新执行证明。
+
+[项目文档与历史梳理报告](../agent/project-document-audit-2026-10-14.md)保留此前复核时点；平台优先级读根目录 [CONTEXT](../../CONTEXT.md)。27号仍为未实现编排建议，新测试范围以当前测试框架/矩阵为准。24/29号四态冲突尚未自动消除，本轮功能基线不新增形态。
+
+下文旧阶段表、“写代码前必读”和“当前工程状态”等措辞属于既往迁移记录；不能拿旧完成标记抵扣当前完整 macOS 验收，也不能将旧缺口重新安排开发。
+
 ## 整体方案入口
 
 [26 · 整体产品与技术方案](26-product-master-plan.md)：已核对的现有功能、融合后的产品版图、三种桌面形态、技术栈、UI 风格、动效、交互、平台路线及验收。它是当前整体规划入口；[25 · 功能融合](25-feature-integration-plan.md)承接外部项目的借鉴细节，[24 · 品质标准](24-interface-quality.md)承接体验验收。早期四件套保留设计演进证据，当前目标以 26 / 25 为准。
@@ -100,6 +110,11 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
 | [16-mattpocock-skills-meta-specs.md](16-mattpocock-skills-meta-specs.md) | mattpocock/skills（269,700 star）一手调研：**本机 24 个 skill 的上游**。三份元规范中两条对我们有约束力（user-invoked 不可被调用；skill 依赖要指名工具而非相对链接） | 新增或改动任何 agent skill 前必读；判定这条指令该写给谁时必读 |
 | [12-monocode-competitor-audit.md](12-monocode-competitor-audit.md) | MonoCode（1303 star / MIT）一手调研：**最近的同形态竞品**（同样 Tauri v2 + Rust）、harness 三层抽象、327 前端测试 + 333 Rust 测试、凭据零落盘 | **Phase 0 建测试基建前必读**；Phase 2 写 `provider.rs` 前必读（两个凭据坑） |
 | [23-swift-rust-parity-matrix.md](23-swift-rust-parity-matrix.md) | **ADR 0010 / M5 交付物**：两端口径对照表——25 vs 14 家档案逐字段比对、能力模块、五态与可观测性证据差异、CLI 12 子命令、settings 逐字段对照 | 排 M3 迁移优先级前必读；改任何两端共有的逻辑（档案 / 引擎 / settings）前必读 |
+| [25-feature-integration-plan.md](25-feature-integration-plan.md) | **当前功能融合主方案**：外部产品借鉴点拆解、功能落位、工作台信息架构、配置与网关接入边界、实施顺序 | 判断「这个能力该做成内建还是外部连接」前必读 |
+| [26-product-master-plan.md](26-product-master-plan.md) | **当前整体产品与技术方案**：定位、保留边界、整体版图、三种形态、技术栈、动效、分平台落地、实施顺序 | 排期与平台决策前必读 |
+| [27-test-framework-design.md](27-test-framework-design.md) | **测试框架修订建议，未实现**：真实发布顺序、跨平台编排清单、profile、失败传播与同包原生依赖 | 建框架或接 CI 前读；不能把示例命令视为已有工具 |
+| [28-feature-replan.md](28-feature-replan.md) | **功能方案重规划**（已定案为 [ADR 0039](../adr/0039-feature-plan-and-monitoring-kernel.md)）：监控内核 M0 优先的理由与事故清单、Magpie 三档取舍与「不做网关」的四条代价、Todo S 缺口对照、灵动岛提示边界与美观判据 | 决定「网关做不做」「任务流补什么」「灵动岛提示怎么弹」前必读；本文保留为规划过程证据，实施以 ADR 0039 为准 |
+| [29-agent-aggregation-competitive-sweep.md](29-agent-aggregation-competitive-sweep.md) | **外部开源扫描与功能聚合方案**（待确认）：竞品全景（含同名项目与 star 数据可靠性警告）、新增 M4 提示词管理 / M5 灵动岛状态机契约 / M6 双通道采集 / M7 本地服务安全边界、28 号两个悬案的可验收答案 | 决定「提示词管理做不做」「灵动岛窄条放什么」「是否接受本地事件服务」前必读 |
 
 ## 一句话
 
@@ -112,7 +127,7 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
 
 ## 平台路线
 
-**macOS → Windows → Linux → Web 与移动端**。三种桌面系统提供同一套产品能力，逐个平台完成与验收；移动 App（Android / iOS）特殊定制，桌面端稳定后再规划，Web 同样后置。Web 和移动端之间尚未确定先后。共享数据与规则，平台行为通过适配层实现；具体范围与验收见 [融合方案 §1.1](25-feature-integration-plan.md#11-平台路线与交付顺序)。
+**macOS / Windows / 移动端（Android 先行）为主要平台，Web 次高，Linux 最低**（用户 2026-10-14 拍板，取代此前的「macOS → Windows → Linux → Web 与移动端」）。当前执行计划：先在 Mac 端确定方案，用跨平台技术完善 Mac 端，随后迁移至 Windows。各平台提供同一套产品能力，逐个平台完成与验收；共享数据与规则，平台行为通过适配层实现；具体范围与验收见 [融合方案 §1.1](25-feature-integration-plan.md#12-平台路线与交付顺序)。
 
 ## 四个已拍板的决策
 
@@ -131,17 +146,9 @@ Emil Kowalski 的「让 AI 搞坏它」）收敛成一个产品方案：
 
 ## 配置层边界
 
-**已定：先只做配置切换，之后评估与 Magpie 共存。**
+当前范围为配置目录与只读协议探测，不内建网关或智能路由，见 [ADR 0039](../adr/0039-feature-plan-and-monitoring-kernel.md)。
 
-用户提出融合 [Magpie](https://usemagpie.ai/)，调研后发现它不只是配置切换器而是**本机 LLM 网关**
-（拦全部请求、翻译三种 API 协议、多账号调度），与原计划的 `provider.rs` 差一个数量级，
-且与「低资源占用」目标直接冲突。三条路径的代价对比见
-[05-magpie-research.md](05-magpie-research.md)。
-
-第一版只做配置切换层（`provider.rs`），不架网关。**必须接受它的局限**：agent 只说自家协议
-（Codex 只讲 OpenAI Responses，Claude Code 只讲 Anthropic Messages），不架网关就没有路径把
-DeepSeek/Kimi 的 key 接到 Claude Code 上——所以「配置切换」实际能切的是**同一厂商的多套
-key/账号**，跨厂商模型这条路走不通。这一点要写进用户可见的界面说明，不能让人以为切了就能用。
+协议兼容性与服务厂商分别判断：第三方服务原生支持客户端协议或使用用户已有网关时，可以配置对应目标；AgentIsland 不提供翻译，不验证生成授权，也不把配置目标当作运行模型。旧“只能同厂商切账号”的结论撤回。[05 号](05-magpie-research.md)仅用于查当时取舍。
 
 ## 进展
 

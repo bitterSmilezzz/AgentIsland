@@ -418,6 +418,13 @@ impl AgentTaskEvent {
         match self.event_type.as_str() {
             "attention" => format!("{} 等待确认操作", self.agent_name),
             "costSpike" => format!("⚠️ {} 资源/Token 消耗突增", self.agent_name),
+            // NOT-01 的细分类型各有说法。**必须与 app/ui/js/views.js 的 eventSummary 同口径**
+            // （那边注释也这么写）；漏一类就会让导出报告把它说成「任务完成」。
+            "question" => format!("{} 提问待回答", self.agent_name),
+            "failure" => format!("✗ {} 任务失败", self.agent_name),
+            "review" => format!("{} 等待审查", self.agent_name),
+            "schedule" => format!("{} 调度提醒", self.agent_name),
+            "chief" => format!("{} Chief 消息", self.agent_name),
             // 完成摘要带时长：Swift `summaryText` 就是这么写的，
             // 少它一段会让报告里同一件事比岛内文案少一半信息
             _ => format!(
@@ -487,6 +494,29 @@ pub struct EngineState {
     pub any_working: bool,
     pub has_attention: bool,
     pub demo: bool,
+    /// 结构化 hook 进入服务 → 入队的延迟摘要（需求「即时通知指标」）。
+    ///
+    /// 放进 `EngineState` 是**必需**的，不是顺手：`NotifyLatency` 会积累样本，
+    /// 但若没有读取出口，「须实测后锁定」就只能靠自检里的合成样本——
+    /// 那不能代表常驻进程的真实表现。
+    pub notify_latency: crate::notify_latency::LatencySummary,
+    /// Lifetime enqueue replays suppressed by the bounded notification ledger.
+    pub notify_duplicates: u64,
+    /// Explicit ids reused with a different payload. The first payload wins and is
+    /// the only one shown; this counter exists so the silent reuse is visible.
+    pub notify_conflicts: u64,
+    /// Lifetime enqueued events dropped from the retained queue by the 64-entry
+    /// bound. Those events are neither shown nor restored, so without this counter
+    /// a burst larger than the queue would lose entries with nothing to read.
+    pub notify_evicted: u64,
+    /// Unacknowledged notifications the user has not dismissed yet (`latest_event`
+    /// plus the queue behind it). The UI must not derive this from `pending_events`:
+    /// that field excludes the visible head, so it under-reports by one.
+    pub notify_unacked: usize,
+    /// Notifications restored from the ledger during this process's startup.
+    /// Zero for a fresh process and for CLI/one-shot readers.
+    pub notify_restored: usize,
+    pub notify_persistence: crate::notify_ledger::PersistenceStatus,
 }
 
 // MARK: - 测试（M1：Rust 测试基建，见 docs/adr/0010-swift-freeze-and-rust-prerequisites.md）
@@ -534,6 +564,168 @@ mod tests {
         assert_eq!(ActivityLevel::Completed.as_str(), "completed");
         assert_eq!(ActivityLevel::Working.as_str(), "working");
         assert_eq!(ActivityLevel::Attention.as_str(), "attention");
+    }
+
+    /// **`EngineState` 的通知字段名是 API 契约，且必须是 snake_case。**
+    ///
+    /// 前端 `app/ui/js/views.js` 按这些键名读取通知页的账本诊断；`EngineState` 一旦被
+    /// 加上 `rename_all = "camelCase"`（相邻的 `Export` 就是那种写法，很容易被顺手照搬），
+    /// 界面会**全部显示「未知」**——而其余所有测试照样通过，因为 Rust 侧读的是结构体字段，
+    /// 与序列化名无关。所以这条断言必须直接对着 JSON 键名，不能对着字段。
+    ///
+    /// 键名清单来自 `tests/fixtures/contracts/notify-keys.json`——**界面回归读的是同一份文件**
+    /// （`scripts/test-notify-latency-ui.mjs`）。两侧各自写一份字面量的话，可以被「一致地」
+    /// 改成一个新名字而 views.js 没跟上：那时 Rust 测试与界面测试都绿，真机上却全部「未知」。
+    #[test]
+    fn engine_state_notify_keys_are_snake_case_contract() {
+        let (_, rx) = std::sync::mpsc::channel();
+        let engine = crate::engine::ActivityEngine::new(crate::settings::Settings::default(), rx);
+        let json = serde_json::to_value(engine.state()).expect("EngineState 必须可序列化");
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/contracts/notify-keys.json"
+        ))
+        .expect("契约夹具必须是合法 JSON");
+
+        let engine_keys = contract["engine_state"].as_array().expect("engine_state 必须是数组");
+        for key in engine_keys {
+            let key = key.as_str().expect("键名必须是字符串");
+            assert!(
+                json.get(key).is_some(),
+                "EngineState 必须以 {key} 暴露；界面按这个键名读取，缺了即静默显示「未知」"
+            );
+        }
+        // 反向断言：出现 camelCase 变体就说明有人加了 rename_all，而那会让界面静默降级。
+        for wrong in ["notifyUnacked", "notifyEvicted", "notifyDuplicates", "notifyPersistence"] {
+            assert!(json.get(wrong).is_none(), "不得改名为 {wrong}");
+        }
+        // 持久化摘要的出口字段同样是契约：界面据此区分未启用/待保存/已保存/失败/停写。
+        let status = json.get("notify_persistence").expect("持久化摘要必须在");
+        for key in contract["notify_persistence"].as_array().expect("notify_persistence 必须是数组") {
+            let key = key.as_str().expect("键名必须是字符串");
+            assert!(status.get(key).is_some(), "持久化摘要缺 {key}，界面会误判写盘状态");
+        }
+        // 延迟摘要同理：漏一个字段，通知页那一行就会退化成「读不到入队统计」。
+        let latency = json.get("notify_latency").expect("延迟摘要必须在");
+        for key in contract["notify_latency"].as_array().expect("notify_latency 必须是数组") {
+            let key = key.as_str().expect("键名必须是字符串");
+            assert!(latency.get(key).is_some(), "延迟摘要缺 {key}，界面会读不到统计");
+        }
+        // 事件类型清单也是契约：Rust 的 `EventKind::ALL`、外发开关键、界面文案
+        // 三者必须对着**同一份**清单。任一侧漏一个新类型，就会出现
+        // 「HTTP 收下了这条事件，界面却按兜底文案显示成任务完成」。
+        let kinds = contract["event_kinds"].as_array().expect("event_kinds 必须是数组");
+        let contract_kinds: Vec<&str> = kinds.iter().map(|k| k.as_str().unwrap()).collect();
+        let rust_kinds: Vec<&str> = crate::remote::EventKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(
+            contract_kinds, rust_kinds,
+            "夹具的事件类型清单与 EventKind::ALL 不一致"
+        );
+        let switches = contract["event_kind_switches"]
+            .as_object()
+            .expect("event_kind_switches 必须是对象");
+        assert_eq!(switches.len(), rust_kinds.len());
+        // 交付状态三段（NOT-05：受理 ≠ 收到 ≠ 已读）也是契约：
+        // 界面那份文案与 Rust 的 serde 名必须对着同一份清单。
+        let delivery = contract["delivery_states"]
+            .as_array()
+            .expect("delivery_states 必须是数组");
+        let mut from_contract: Vec<&str> = delivery.iter().map(|s| s.as_str().unwrap()).collect();
+        let mut from_rust: Vec<String> = [
+            crate::notifier::DeliveryState::Accepted,
+            crate::notifier::DeliveryState::Received,
+            crate::notifier::DeliveryState::Read,
+            crate::notifier::DeliveryState::Unknown,
+        ]
+        .iter()
+        .map(|state| {
+            serde_json::to_value(state)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+        from_contract.sort_unstable();
+        from_rust.sort();
+        assert_eq!(
+            from_contract,
+            from_rust.iter().map(String::as_str).collect::<Vec<_>>(),
+            "夹具的交付状态清单与 DeliveryState 的 serde 名不一致"
+        );
+        // **四态文案也共读夹具**（NOT-05 复审 N2 的正解）。
+        // 此前这里与浏览器测试各自硬编码文案字面量：两边可以「一致地」改成新文案，
+        // 而真机上界面显示的是**测试没验证过的**那份（复审实测：改 Rust 的 label()
+        // 文本后 cargo 全量只挂同步过的这一行，浏览器测试照旧 PASS）。
+        // 现在文案只在夹具里写一次，Rust 的 `label()` 必须与它逐字一致。
+        let labels = contract["delivery_labels"]
+            .as_object()
+            .expect("delivery_labels 必须是对象");
+        for state in [
+            crate::notifier::DeliveryState::Accepted,
+            crate::notifier::DeliveryState::Received,
+            crate::notifier::DeliveryState::Read,
+            crate::notifier::DeliveryState::Unknown,
+        ] {
+            let serde_name = serde_json::to_value(state).unwrap();
+            let serde_name = serde_name.as_str().unwrap();
+            let expected = labels
+                .get(serde_name)
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("夹具缺 {serde_name} 的文案"));
+            assert_eq!(
+                state.label(),
+                expected,
+                "{serde_name} 的界面文案与契约夹具不一致——界面会显示成另一句话"
+            );
+        }
+        // 受理的文案不得说成「已送达」——那是替对端做它没做过的承诺
+        assert_ne!(crate::notifier::DeliveryState::Accepted.label(), "已送达");
+
+        // **`Recent` 的对外字段名同样是契约**（NOT-05 复审 N3）。
+        // 界面按 `deliveryLabel` 读；若只改 Rust 的 serde 名（`delivery_label` →
+        // 别的名字）而 JS 不动，`escapeHtml(undefined)` 会静默变成空串，
+        // 交付文案与故障条整段消失，而 cargo 全量 + 浏览器测试**都绿**（复审实测）。
+        let recent = crate::notifier::Recent {
+            at_ms: 0,
+            title: String::new(),
+            text: String::new(),
+            accepted: true,
+            delivery: crate::notifier::DeliveryState::Accepted,
+            delivery_label: crate::notifier::DeliveryState::Accepted.label(),
+        };
+        let recent_json = serde_json::to_value(&recent).expect("Recent 必须可序列化");
+        for key in contract["recent_fields"].as_array().expect("recent_fields 必须是数组") {
+            let key = key.as_str().expect("字段名必须是字符串");
+            assert!(
+                recent_json.get(key).is_some(),
+                "Recent 必须以 {key} 暴露；界面按这个键名读取，缺了即静默显示空白"
+            );
+        }
+        for kind in &rust_kinds {
+            let key = switches
+                .get(*kind)
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("{kind} 没有对应的外发开关键——界面只能靠猜"));
+            // 夹具里的开关名必须**真的能被 Policy 读回**（否则它是与实现脱节的死数据，
+            // 界面渲染了开关却写不进策略）。关掉它应当只影响这一类。
+            let raw = serde_json::json!({ key: false });
+            let policy: crate::remote::Policy =
+                serde_json::from_value(raw).unwrap_or_else(|e| panic!("{key} 读不回来：{e}"));
+            let parsed = crate::remote::EventKind::parse(kind).expect("清单里的类型必须可解析");
+            assert!(
+                !policy.allows(parsed),
+                "{key} 没有关掉 {kind}——夹具记录的开关名与实现不一致"
+            );
+            for other in crate::remote::EventKind::ALL {
+                if other != parsed {
+                    assert!(
+                        policy.allows(other),
+                        "{key} 误关了 {}",
+                        other.as_str()
+                    );
+                }
+            }
+        }
     }
 
     /// 五态序 = 需要用户插手的急迫度升序：`Attention > Working > Completed > Idle > Offline`。

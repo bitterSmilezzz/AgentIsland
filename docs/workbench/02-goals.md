@@ -1,6 +1,6 @@
 # 02 · 目标与非目标
 
-> 本文保留早期目标记录；当前功能融合与平台路线以 [26 号整体方案](26-product-master-plan.md)与 [25 号融合细节](25-feature-integration-plan.md)为准。平台顺序已确定为 macOS → Windows → Linux → Web 与移动端；Android / iOS 将独立定制。
+> 本文保留早期目标记录；当前功能融合与平台路线以 [26 号整体方案](26-product-master-plan.md)与 [25 号融合细节](25-feature-integration-plan.md)为准。平台优先级已于 2026-10-14 重新拍板：macOS / Windows / 移动端（Android 先行）为主要平台，Web 次高，Linux 最低。
 
 ## 1. 目标
 

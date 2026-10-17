@@ -35,18 +35,95 @@ jobs:
           workspaces: app/src-tauri
       - name: 编译检查
         run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
-      - name: Rust 测试
-        run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安装锁定的浏览器运行时
+        run: |
+          npm ci
+          npx --no-install playwright install chromium
+      - name: 脱敏扫描（工作区）
+        # 红线不只在本机守：推送上去的内容必须同样过闸，否则一次绕过本地扫描的
+        # 提交就能把密钥送进 git 对象。
+        run: bash scripts/scan-secrets.sh
+      - name: 统一源码、浏览器及框架门禁
+        run: python3 scripts/automation/pipeline.py --profile ci --check-timeout 1800
+      - name: 安装固定版本的 Tauri 打包工具
+        run: cargo install tauri-cli --version 2.11.2 --locked
+      - name: 构建并验证 ad-hoc 签名包
+        # 同轮 ci 已运行 Rust 回归；这里验证真实打包、签名与内容收据。
+        env:
+          SKIP_TESTS: '1'
+        run: bash scripts/build-app.sh
+      - name: 同包 CLI 与构建身份验收
+        run: python3 scripts/automation/pipeline.py --profile package
+      - name: 汇总执行结果
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          reports = sorted(Path('.scratch/automation-runs').glob('*/summary.md'))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              for report in reports:
+                  output.write(report.read_text(encoding='utf-8'))
+                  output.write('\n')
+          PY
+      - name: 保存本轮测试证据（包括失败与未验项）
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ci-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+          path: |
+            .scratch/automation-runs/**/run.json
+            .scratch/automation-runs/**/junit.xml
+            .scratch/automation-runs/**/summary.md
 
   windows:
     name: Windows（已知编不过，持续观察）
     runs-on: windows-latest
     # ⚠️ **故意 `continue-on-error`。**
     #
-    # v0.0.269 实测：Windows 上 `cargo check` 报 17 个错误 / 13 个文件——
-    # 一整层从未移植的 POSIX 实现（`std::os::unix` 权限位、
-    # `libc::localtime_r` / `getppid` / `kill` / `gethostname` / `SIGKILL`）。
-    # macOS 侧同一份代码 543 条测试全绿。
+    # v0.0.324 实测（run 38573012399，`--log-failed` 逐条解析）：
+    # **12 个编译错误 / 8 个项目文件**（外加 vendor/tao 的 macOS 专用代码）——
+    #   6 个 `std::os::unix` / POSIX libc（`SIGKILL`/`getppid`/`gethostname`/
+    #      `PermissionsExt::from_mode` / `localtime_r`），
+    #   6 个 **cfg 作用域**：item 被 `#[cfg(unix)]` 或 `#[cfg(not(windows))]`
+    #      排除，调用方却没有对应门控。
+    # macOS 侧同一份代码 1020 条测试全绿。
+    #
+    # v0.0.325 起这 12 个都已处理（placement 的 4 个错门控、cleaner 的
+    # getppid/SIGKILL 平台分支、webhook 的 from_mode 门控、smtp 的
+    # GetComputerNameW 实现）。但**没有一个经过真实 Windows 编译器验证**：
+    # 本机交叉编译被 `rusqlite` 的 bundled C 挡住，只能靠
+    # `scripts/check-windows-fragment.sh` 把片段抠出来单独编——而它有个
+    # **已实测的局限**：把 placement 的门控错误加回去，它照样报通过
+    # （提取出的片段配的是不执行它们的 `fn main() {}`，被 `#[cfg]` 排除的
+    # 函数只是消失，没有调用方就没人报错）。所以它证明的是
+    # 「这段代码本身能编」，**不是「它在 Windows 上还存在」**。
+    # 这个 job 因此仍然是权威判据，不能因为「本地验过了」就删。
+    #
+    # ⚠️ **`cargo test` 在 Windows 上一次都没跑成过。** 它排在 `cargo check`
+    # 后面，而 check 从未通过，所以「Windows 上有多少测试会失败」是**未知数**。
+    # 在拿到第一个真实的 Windows 测试结果之前，删掉 `continue-on-error`
+    # 只会得到一个立刻全红的门禁。
+    #
+    # ⚠️ **那 6 个 cfg 作用域问题无法用文本匹配本地检出**：
+    # `cleaner.rs::signal`、`webhook.rs::inspect_token`、`skill_files.rs::open_dir`
+    # 都有 `#[cfg(not(unix))]` 配对实现（正常写法），与 `placement.rs` 那 4 个
+    # **没有**配对实现的，在文本层面几乎同形。
+    #
+    # 剩下的 36 个 warning 几乎全是 `dead_code`（"is never used"）——
+    # 那是 Windows 上大量平台代码编不进来的**必然结果**，不是缺陷。
+    # 别为了「让输出干净」去清理或 `#[allow]` 它们：那会把
+    # 「这个函数在 Windows 上其实没接」这个信号一起抹掉。
     #
     # 那为什么不让它红着挡人？**一个永远红的徽章会被所有人学会忽略**，
     # 真出事时也没人看它了。这里让它**继续跑、继续报**，但不当门禁——
@@ -54,7 +131,8 @@ jobs:
     #
     # 端口做完那一步，就是把 `continue-on-error` 删掉。
     # 方向由 `posix_port_ratchet` 守着（每台 macOS 机器的每次 `cargo test` 都跑，
-    # 基线 4 处，只减不增），所以「有没有在靠近」不依赖这个 job。
+    # 基线 4 处，只减不增）——但它**只覆盖那 6 个 POSIX-only 类**，
+    # 上面那 6 个 cfg 作用域问题一条都不在它的表里。
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -63,8 +141,13 @@ jobs:
         with:
           workspaces: app/src-tauri
       # 本机（macOS）上 `cargo check --target x86_64-pc-windows-msvc` 会在
-      # `rusqlite` 的 bundled C 那步就断掉（没有 C 交叉工具链），
-      # 所以这条路径只能靠真正的 Windows runner 来走。
+      # `rusqlite` 的 bundled C 那步就断掉（没有 Windows SDK 头文件，
+      # 报 `fatal error: 'stdlib.h' file not found`）。
+      # 整 crate 交叉编译因此走不通；但**片段级**验证可以——见
+      # `scripts/check-windows-fragment.sh`，它把 `#[cfg(windows)]` 代码
+      # 抠到独立 crate 里单独交叉编译。那能抓 unsafe 遗漏与
+      # windows-sys 模块路径写错，但**不能替代这个 job**：
+      # 它覆盖不到片段之间的交互，也跑不了 `cargo test`。
       - name: 编译检查
         run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
       - name: Rust 测试

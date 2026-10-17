@@ -111,10 +111,20 @@ pub fn escape_csv(text: &str) -> String {
     }
 }
 
+/// 事件类型 → 报告里的中文标签。**必须覆盖 `EventKind::ALL` 的全部类型**：
+/// 少一类就会让导出报告把它写成「任务完成」（本轮实测：新增提问/失败/审查/调度/Chief
+/// 五类后，报告的「类型」列全印成「任务完成」，而报告本身看起来一切正常）。
 fn event_type_text(event_type: &str) -> &'static str {
     match event_type {
         "attention" => "待确认",
         "costSpike" => "熔断告警",
+        "question" => "待回答",
+        "failure" => "失败",
+        "review" => "待审查",
+        "schedule" => "调度",
+        "chief" => "Chief 消息",
+        // 完成与未知都走这里。未知类型在账本侧已被折叠成 completed，
+        // 因此落到这个分支的值本就代表「完成类」。
         _ => "任务完成",
     }
 }

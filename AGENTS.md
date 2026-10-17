@@ -55,7 +55,7 @@ README 里出现「此前」「不再」「v0.0.x」「本机实测 N 条」即�
 
 [ui-research](../../03-行业调研/ui-research/) 是**外部一手调研库**（独立仓库；索引见 [ui/README.md](../../03-行业调研/ui-research/ui/README.md)）：每篇固定四节——技术手法与源码级细节、可迁移的决策规则、一手证据/本地验证结果、应用建议清单。它记录"看见了什么、能搬什么"，**不排期**；要做哪条就开 issue，别把案例库读成待办板。待核实清单由该仓自己的 [check-checklist.sh](../../03-行业调研/ui-research/scripts/check-checklist.sh) + pre-commit 守着。工作区重构前的 `../ui-research/` 路径已失效；白屏、几何与会话等迁出取证文件须核实新位置后更新当前文档链接，历史审查报告保留原样。
 
-正在进行的改造（跨平台工作台：灵动岛 / 侧栏 / 工作台 + 配置与任务融合）见 [docs/workbench/README.md](docs/workbench/README.md)。
+新增功能、排开发任务或补测试前先读当前 [需求基线](docs/需求.md)和 [需求测试矩阵](docs/需求测试矩阵.md)，旧“不做网关/任务执行”范围已由 [ADR 0040](docs/adr/0040-supervisor-full-integration-requirements.md)取代；新能力需按子系统契约实施，不能据需求目标绕过现行安全控制。方案与历史入口见 [docs/workbench/README.md](docs/workbench/README.md)。读旧方案、迁移表或冲突决策前先看 [文档梳理与冲突登记](docs/agent/project-document-audit-2026-10-14.md)；定位归档 Swift/WPF 或迁出取证文件时查 [历史路径映射](docs/agent/history-file-map.md)。
 
 ### 数据脱敏红线（提交与发版前必查）
 
@@ -99,10 +99,16 @@ scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
 
 ### 边界与交付证据
 
-- **按已核实契约接入**：字段、schema、URL 与能力不能猜；配置存在/保存成功不证明客户端加载，配置目标、运行模型与账单分别取证。出网按 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md) / [0038](docs/adr/0038-manual-interface-model-read.md)：模型清单仅手动读取已保存 HTTPS/字面回环目标，临时取其环境变量凭据，禁止重定向、代理与自动重试。
+- **按已核实契约接入**：字段、schema、URL 与能力不能猜；配置存在/保存成功不证明客户端加载，配置目标、运行模型与账单分别取证。现有通知和手动模型读取按 [ADR 0009](docs/adr/0009-credential-boundary-borrow-dont-hold.md) / [0038](docs/adr/0038-manual-interface-model-read.md)保持原安全控制；新网关/订阅/执行目标按 [0040](docs/adr/0040-supervisor-full-integration-requirements.md)另定子系统授权与验证，不能直接复用通知凭据或放宽旧路径。
 - **门禁故障明确失败**：空扫描与零命中分开，拒绝必须传播到顶层；钩子在临时仓库验证真能阻止提交。共享工作树的实验与发布使用隔离环境及显式文件清单，保护无关改动。
 - **证据按层报告**：静态审查、单元/浏览器、官方客户端受控端点、签名包原生和平台整体验收分别记录；明示执行者、结果及未验范围，清理与业务结果分别核实。
 - **保留失败和更正**：重跑通过只说明本次通过；保留原失败及不完整样本，不放宽判据凑通过。误诊追加撤回说明，历史 review 不改写；当前入口和长期文档同步修正。
+- **用户真实状态只读**：不要把探测/合成事件投进用户正在运行的应用。验证走隔离实例
+  （`--background-test`/`--ui-smoke` 用独立 bundle id，不启用账本持久化）或临时 fixture 探针。
+  确需写入真实状态时：停应用 → 备份整份文件 → 按**能逐条指向「这条是我造的」的精确 id 集合**删除
+  → 重启 → 逐条 diff 复验。**禁止用时间窗口当判据**（会随后续投递不断变宽，误删真实数据）；
+  并注意有界容量的连带淘汰（`pending` 上限 64，注入 N 条会静默挤掉最多 N 条最早的记录）。
+  目标状态是「与写入前逐条一致」，不是「看起来干净了」。
 
 ## Agent skills
 

@@ -180,14 +180,23 @@ impl Transport for HttpTransport {
             };
         };
         match self.round_trip(&url, request) {
-            Ok((status, body)) => {
+            Ok((status, retry_after_ms, body)) => {
                 if (200..300).contains(&status) {
-                    // 注意语义：这是「对方接受了这条请求」。多数中转服务即使内部失败
-                    // 也回 200 + 一段错误 JSON，本层不去猜——设置页的文案对此写明
+                    // 注意语义：这是「对方**受理**了这条请求」。多数中转服务即使内部失败
+                    // 也回 200 + 一段错误 JSON，本层不去猜——设置页的文案对此写明。
+                    // 受理 ≠ 送达 ≠ 已读（NOT-05），所以这里给的是 `Accepted` 而非 Delivered。
                     if let Some(channel) = request.response_check {
                         crate::im::response(channel, &body)
                     } else {
-                        Outcome::Delivered
+                        Outcome::Accepted
+                    }
+                } else if status == 429 || status == 503 {
+                    // 限流/暂不可用：对端明确说「过一会儿再来」。与失败分开是**行为**差别——
+                    // 不计故障升级，也不该让用户以为通道配置坏了。Retry-After 头给出的
+                    // 等待时长一并带出（缺失或解析不了就只说限流本身，不编一个数）。
+                    Outcome::Throttled {
+                        reason: format!("服务端返回 {status}"),
+                        retry_after_ms,
                     }
                 } else if (300..400).contains(&status) {
                     Outcome::Failed {
@@ -211,8 +220,30 @@ impl Transport for HttpTransport {
     }
 }
 
+/// 解析 `Retry-After` 的秒数形式。HTTP-date 形式**不解析**——
+/// 要么如实返回 None（显示「限流」本身），也不去猜一个时间
+/// （本机墙钟可回拨，拿它算差值会给出负数或几十年后的等待时长）。
+fn parse_retry_after(value: &str) -> Option<i64> {
+    let seconds = value.parse::<i64>().ok()?;
+    if seconds < 0 {
+        return None;
+    }
+    // 上界：对端说「明天再来」不该让界面显示「86400 秒后可重试」这种荒唐数字，
+    // 也不该被当成一个可信的退避计划——超过 1 小时就只说限流本身。
+    if seconds > 3600 {
+        return None;
+    }
+    Some(seconds * 1000)
+}
+
 impl HttpTransport {
-    fn round_trip(&self, url: &Parsed, request: &Request) -> Result<(u16, Vec<u8>), String> {
+    /// 返回 (状态码, Retry-After 毫秒, 响应体)。头在返回前已读完
+    /// （见 round_trip 内的有界头循环）。
+    fn round_trip(
+        &self,
+        url: &Parsed,
+        request: &Request,
+    ) -> Result<(u16, Option<i64>, Vec<u8>), String> {
         let mut stream = self.connect(url)?;
 
         let host = if url.host.contains(':') {
@@ -269,17 +300,24 @@ impl HttpTransport {
             .and_then(|code| code.parse::<u16>().ok())
             .filter(|code| (100..=599).contains(code))
             .ok_or_else(|| "HTTP 响应状态码无效".to_string())?;
-        let body = if request.response_check.is_some() && (200..300).contains(&status) {
-            provider_body(&mut reader)?
-        } else {
-            Vec::new()
-        };
-        Ok((status, body))
+        // 头**只能由一条路径读**：需要 body 时交给 provider_body（它自己读头+body），
+        // 不需要 body 时才用 drain 读头。两者叠着读会错位——实测症状是
+        // 「平台回执头不完整或过长」（本轮加 Retry-First 时踩过）。
+        let (body, retry_after_ms) =
+            if request.response_check.is_some() && (200..300).contains(&status) {
+                provider_body(&mut reader)?
+            } else {
+                (Vec::new(), drain_headers_for_retry_after(&mut reader)?)
+            };
+        Ok((status, retry_after_ms, body))
     }
 }
 
 /// Bounded HTTP framing for preset JSON receipts. Never expose response text.
-fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
+/// 返回 `(响应体, Retry-After 毫秒)`：头由本函数读取（调用方**不得**先读头，
+/// 否则这里会错位），顺路取 `Retry-After`——对端指定了「什么时候再来」时，
+/// 把它丢掉就等于把 429 的语义砍成「失败」（NOT-05 要求尊重 Retry-After）。
+fn provider_body(reader: &mut impl BufRead) -> Result<(Vec<u8>, Option<i64>), String> {
     const LIMIT: usize = 65536;
     fn line(reader: &mut impl BufRead) -> Result<String, String> {
         let mut line = String::new();
@@ -295,6 +333,7 @@ fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
     let mut length = None;
     let mut chunked = false;
     let mut total = 0;
+    let mut retry_after_ms: Option<i64> = None;
     loop {
         let header = line(reader)?;
         total += header.len();
@@ -321,6 +360,9 @@ fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
             }
             chunked = true;
         }
+        if name.eq_ignore_ascii_case("retry-after") {
+            retry_after_ms = parse_retry_after(value.trim());
+        }
     }
     if chunked && length.is_some() {
         return Err("平台回执长度冲突".into());
@@ -333,7 +375,7 @@ fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
             let size = usize::from_str_radix(header.trim().split(';').next().unwrap_or(""), 16)
                 .map_err(|_| "平台回执分块无效")?;
             if size == 0 {
-                return Ok(body);
+                return Ok((body, retry_after_ms));
             }
             if size > LIMIT - body.len() {
                 return Err("平台回执过大".into());
@@ -358,7 +400,37 @@ fn provider_body(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
     if body.len() > LIMIT || length.is_some_and(|size| size != body.len()) {
         return Err("平台回执过大或不完整".into());
     }
-    Ok(body)
+    Ok((body, retry_after_ms))
+}
+
+/// 不需要读 body 的响应（失败/限流/重定向）：把头读掉并取 `Retry-After`。
+/// 与 `provider_body` 的头循环是两条路径——provider_body 只在需要 body 时才被调用，
+/// 而它一调用就要自己读头，两者不能叠着用（叠了就会错位）。
+fn drain_headers_for_retry_after(reader: &mut impl BufRead) -> Result<Option<i64>, String> {
+    const MAX_HEADER_LINES: usize = 64;
+    const MAX_HEADER_LINE: u64 = 8192;
+    let mut retry_after_ms: Option<i64> = None;
+    let mut header_lines = 0;
+    loop {
+        let mut line = String::new();
+        Read::by_ref(reader)
+            .take(MAX_HEADER_LINE + 1)
+            .read_line(&mut line)
+            .map_err(|error| format!("读响应失败：{error}"))?;
+        if line.is_empty() || line == "\r\n" || line == "\n" {
+            break; // 空行 = 头结束
+        }
+        header_lines += 1;
+        if header_lines > MAX_HEADER_LINES {
+            return Err("HTTP 响应头过多".into());
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("retry-after") {
+                retry_after_ms = parse_retry_after(value.trim());
+            }
+        }
+    }
+    Ok(retry_after_ms)
 }
 
 #[cfg(test)]
@@ -375,15 +447,15 @@ mod tests {
             json.len(),
             String::from_utf8_lossy(json)
         );
-        assert_eq!(
-            provider_body(&mut std::io::Cursor::new(wire)).unwrap(),
-            json
-        );
+        let (body, retry_after) =
+            provider_body(&mut std::io::Cursor::new(wire)).unwrap();
+        assert_eq!(body, json);
+        assert_eq!(retry_after, None, "没有 Retry-After 头时不该编一个数");
         let wire = "Transfer-Encoding: chunked\r\n\r\nA\r\n{\"code\":0}\r\n0\r\n\r\n";
-        assert_eq!(
-            provider_body(&mut std::io::Cursor::new(wire)).unwrap(),
-            json
-        );
+        let (body, retry_after) =
+            provider_body(&mut std::io::Cursor::new(wire)).unwrap();
+        assert_eq!(body, json);
+        assert_eq!(retry_after, None);
         for invalid in [
             "Content-Length: 65537\r\n\r\n",
             "Content-Length: 10\r\n\r\nx",
@@ -411,8 +483,8 @@ mod tests {
             ..Request::default()
         };
         let outcome = HttpTransport::new().perform(&request);
-        assert!(!outcome.is_delivered());
-        assert!(outcome.is_permanent());
+        assert!(!outcome.is_accepted(), "outcome={outcome:?}");
+        assert!(outcome.is_permanent(), "outcome={outcome:?}");
         handle.join().unwrap();
     }
 
@@ -493,7 +565,7 @@ mod tests {
         let mut server = LocalServer::start(200);
         let request = post(server.port, "/island", "Qoder · 等待你确认");
         let outcome = HttpTransport::new().perform(&request);
-        assert_eq!(outcome, Outcome::Delivered);
+        assert_eq!(outcome, Outcome::Accepted);
 
         // 端到端核对：方法、路径、头、正文都真的过了 TCP
         let (method, url, headers, body) = server.collect();
@@ -520,27 +592,27 @@ mod tests {
         );
         let _ = not_found.collect();
 
-        // 5xx 是服务端的临时状况 ⇒ 可重试
+        // 503 = 对端说「暂时不可用」⇒ 限流语义（NOT-05）：不计故障升级，
+        // 也不当成配置错误。Retry-Here没有头时只说限流本身，不编一个等待时长。
         let mut broken = LocalServer::start(503);
         let outcome = HttpTransport::new().perform(&post(broken.port, "/x", "b"));
         assert_eq!(
             outcome,
-            Outcome::Failed {
+            Outcome::Throttled {
                 reason: "服务端返回 503".into(),
-                permanent: false
+                retry_after_ms: None,
             }
         );
         let _ = broken.collect();
 
-        // 429 限流：白重试会更快撞上 ntfy 的条数上限 ⇒ 可重试但不永久
+        // 429 限流：白重试会更快撞上 ntfy 的条数上限 ⇒ 限流语义，同 503
         assert!(!is_permanent(429));
         assert!(!is_permanent(408));
         assert!(!is_permanent(425));
         assert!(is_permanent(400));
         assert!(is_permanent(403));
         assert!(is_permanent(404));
-        assert!(is_permanent(302));
-        assert!(!is_permanent(500));
+        assert!(is_permanent(302));        assert!(!is_permanent(500));
         assert!(!is_permanent(200));
     }
 
@@ -781,7 +853,7 @@ mod tests {
             response_check: None,
         };
         let outcome = server.client().perform(&request);
-        assert_eq!(outcome, Outcome::Delivered, "HTTPS 应真能连上并拿到 200");
+        assert_eq!(outcome, Outcome::Accepted, "HTTPS 应真能连上并拿到 200");
 
         let (first_line, title, body) = server.collect();
         assert_eq!(first_line, "POST /island HTTP/1.1");
@@ -917,5 +989,51 @@ mod optimization_regressions {
     fn userinfo_and_line_breaks_are_rejected_before_connecting() {
         assert!(parse_url("https://user@example.invalid/notify").is_none());
         assert!(parse_url("https://example.invalid/notify\r\nInjected: value").is_none());
+    }
+
+    /// `Retry-After` 只认秒数形式；HTTP-date 与超长值一律如实返回 None
+    /// （不猜一个时间：本机墙钟可回拨，拿它算差值会给出负数或几十年后）。
+    #[test]
+    fn retry_after_parses_seconds_and_refuses_everything_else() {
+        assert_eq!(parse_retry_after("12"), Some(12_000));
+        assert_eq!(parse_retry_after("0"), Some(0));
+        assert_eq!(parse_retry_after("3600"), Some(3_600_000));
+        // 超出一小时：不当作可信的退避计划
+        assert_eq!(parse_retry_after("3601"), None);
+        assert_eq!(parse_retry_after("86400"), None);
+        // 负数、HTTP-date、空、垃圾：都不猜
+        assert_eq!(parse_retry_after("-1"), None);
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after("soon"), None);
+    }
+
+    /// 429 带 `Retry-After` 时，等待时长要真的从响应头读出来（端到端过 TCP）。
+    #[test]
+    fn a_throttling_response_carries_retry_after_over_tcp() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let request = server.recv().unwrap();
+            let response = tiny_http::Response::from_string("")
+                .with_status_code(429)
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"Retry-After"[..], &b"7"[..]).unwrap(),
+                );
+            request.respond(response).unwrap();
+        });
+        let outcome = HttpTransport::new().perform(&Request {
+            url: format!("http://127.0.0.1:{port}/send"),
+            method: "POST".into(),
+            ..Request::default()
+        });
+        assert_eq!(
+            outcome,
+            Outcome::Throttled {
+                reason: "服务端返回 429".into(),
+                retry_after_ms: Some(7_000),
+            }
+        );
+        handle.join().unwrap();
     }
 }

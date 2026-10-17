@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentisland"
-version = "0.0.323"
+version = "0.0.324"
 dependencies = [
  "base64 0.21.7",
  "dirs 5.0.1",
@@ -4399,8 +4399,6 @@ dependencies = [
 [[package]]
 name = "tiny_http"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
 dependencies = [
  "ascii",
  "chunked_transfer",

@@ -233,6 +233,12 @@ impl KillPlan {
 }
 
 /// 本进程及其全部祖先。**永远不作为目标**——杀掉自己的祖先就是杀掉终端。
+///
+/// ⚠️ **Windows 分支不能退化成空集。** 这份集合是「不许杀」的白名单，
+/// 空集等于把保护关掉。Windows 没有 `getppid`，但
+/// `NtQueryInformationProcess` / `CreateToolhelp32Snapshot` 都能走进程链，
+/// 这里用后者（toolhelp 在用户态就能完成，不需要 ntdll 的未文档化签名）。
+#[cfg(unix)]
 pub fn self_and_ancestors() -> HashSet<u32> {
     let mut out = HashSet::new();
     // `libc::getpid` 给 i32；负值（理论上不该出现）一律当 0，那必然被 `pid <= 1` 挡掉
@@ -243,6 +249,62 @@ pub fn self_and_ancestors() -> HashSet<u32> {
             break;
         }
         pid = (unsafe { libc::getppid() }).max(0) as u32;
+    }
+    out
+}
+
+/// 走 toolhelp 快照回溯父进程链。
+///
+/// 只读 `th32ParentProcessID`，不做任何写操作；进程在遍历中途退出时
+/// 该 pid 会查不到父进程，链条就此截断——**截断是安全的**
+/// （少保护一个祖先远好过把白名单清空），但会让 `self_and_ancestors`
+/// 的结果小于真实值，所以调用方不能拿它当「这就是全部祖先」用。
+#[cfg(windows)]
+pub fn self_and_ancestors() -> HashSet<u32> {
+    use std::collections::HashMap;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
+    let mut out = HashSet::new();
+    let mut parents: HashMap<u32, u32> = HashMap::new();
+
+    // SAFETY: 快照句柄只在本函数内存活，退出前必定 CloseHandle。
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            // 连快照都拿不到时，至少保住自己——空集会关掉这层保护。
+            out.insert(GetCurrentProcessId());
+            return out;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+
+    // SAFETY: `GetCurrentProcessId` 在 windows-sys 里是 unsafe fn（它只读 TEB，
+    // 不碰调用方内存），这里没有别的 unsafe 前提需要同时成立。
+    let mut pid = unsafe { GetCurrentProcessId() };
+    for _ in 0..64 {
+        if pid <= 1 || !out.insert(pid) {
+            break;
+        }
+        // 查不到父进程（目标已退出 / 快照不全）就到此为止。
+        match parents.get(&pid).copied() {
+            Some(next) => pid = next,
+            None => break,
+        }
     }
     out
 }
@@ -359,11 +421,30 @@ fn signal(_pid: u32, _sig: i32) -> bool {
 ///
 /// 计划层已经把身份、孤儿资格、保护 PID 都判完了，这里不再做决定——
 /// 它只负责「发信号 → 等 → 必要时升级」这一段机械动作。
+/// `terminate` 用的两个信号常量。
+///
+/// Windows 的 libc 有 `SIGTERM`（15）但**没有 `SIGKILL`**，而 `terminate`
+/// 在 Windows 上第一行就因 `signal()` 恒假而返回 `Unavailable`——
+/// 所以这里的 `SIGKILL` 是**编译必需但逻辑不可达**的一行。
+/// 用别名而不是把两行 `signal(...)` 拆成平台分支：逻辑必须保持
+/// 「Windows 上一个信号也发不出去」，而不是悄悄换成别的语义。
+#[cfg(unix)]
+const SIG_TERM: i32 = libc::SIGTERM;
+#[cfg(unix)]
+const SIG_KILL: i32 = libc::SIGKILL;
+
+/// Windows 上取不到这两个常量，用 `signal()` 永远为假来兑现
+/// 「本平台不发信号」；数值本身不会被使用。
+#[cfg(not(unix))]
+const SIG_TERM: i32 = 15;
+#[cfg(not(unix))]
+const SIG_KILL: i32 = 15;
+
 pub fn terminate(pid: u32, grace: Duration) -> TerminationOutcome {
     if pid < MIN_TARGET_PID {
         return TerminationOutcome::Unavailable;
     }
-    if !signal(pid, libc::SIGTERM) {
+    if !signal(pid, SIG_TERM) {
         return TerminationOutcome::Unavailable;
     }
     let deadline = Instant::now() + grace;
@@ -375,7 +456,7 @@ pub fn terminate(pid: u32, grace: Duration) -> TerminationOutcome {
             return TerminationOutcome::Killed;
         }
     }
-    if signal(pid, libc::SIGKILL) {
+    if signal(pid, SIG_KILL) {
         TerminationOutcome::StillRunning
     } else {
         TerminationOutcome::Killed
@@ -477,6 +558,45 @@ mod tests {
 
     fn none_active() -> HashSet<String> {
         HashSet::new()
+    }
+
+    // ── 保护白名单 ──────────────────────────────────────────────
+
+    /// **空集等于关掉保护，所以这条在两个平台上都必须成立。**
+    ///
+    /// `self_and_ancestors` 是「永远不许杀」的白名单。Windows 分支没有
+    /// `getppid`，走 toolhelp 快照回溯；那次实现里最容易犯的错就是
+    /// 快照失败或查不到父进程时 `return HashSet::new()`——编译得过、
+    /// 单测也可能全绿，但保护已经没了。这里把它钉住。
+    #[test]
+    fn the_protected_whitelist_is_never_empty_and_always_contains_self() {
+        let protected = self_and_ancestors();
+        assert!(
+            !protected.is_empty(),
+            "白名单是空的——那等于允许杀掉自己的祖先，也就是杀掉终端"
+        );
+        // 没有任何一项可以是 0 或 1：那两个 pid 在别处已经被挡，
+        // 白名单里出现它们说明回溯越界了
+        assert!(
+            protected.iter().all(|&pid| pid > 1),
+            "白名单里出现了 pid <= 1: {:?}",
+            protected
+        );
+    }
+
+    /// 白名单要**收敛**，不只是「非空」这么弱。
+    ///
+    /// 回溯有 64 层上限 + `insert` 去重兜底。真实进程链不可能接近上限；
+    /// 接近它说明父进程关系里有环而去重没拦住——那会让这条链
+    /// 在极端数据下扫出一大片本不该被保护的 pid。
+    #[test]
+    fn the_whitelist_stays_bounded_under_a_cyclic_parent_graph() {
+        let protected = self_and_ancestors();
+        assert!(
+            protected.len() <= 64,
+            "收到 {} 项，超过 64 层上限——去重或终止条件坏了",
+            protected.len()
+        );
     }
 
     // ── 身份比对 ───────────────────────────────────────────────

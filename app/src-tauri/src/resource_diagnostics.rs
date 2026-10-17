@@ -7,6 +7,9 @@ pub struct Cache {
     pub entry_capacity: usize,
     pub dedup_keys: usize,
     pub dedup_capacity: usize,
+    /// 当轮跨文件归并索引的键数。与 `dedup_keys` 分开：后者逐文件求和、随折入清空，
+    /// 前者是跨文件作用域、每轮重建。二者不是同一件事，不能合并成一个数字。
+    pub cross_file_keys: usize,
     /// Conservative cache capacity charge, not allocator usage or footprint.
     pub retained_charge_bytes: usize,
     pub retained_budget_bytes: usize,

@@ -2,7 +2,9 @@
   "name": "agentisland-ui-checks",
   "private": true,
   "scripts": {
-    "test:browser": "node scripts/test-session-refresh-focus.mjs && node scripts/test-task-detail-navigation.mjs && node scripts/test-task-reader-leave.mjs"
+    "test:fast": "python3 scripts/automation/pipeline.py --profile fast",
+    "test:ci": "python3 scripts/automation/pipeline.py --profile ci --check-timeout 1800",
+    "test:browser": "python3 scripts/automation/pipeline.py --profile browser"
   },
   "devDependencies": {
     "playwright": "1.64.0"

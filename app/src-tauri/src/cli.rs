@@ -59,7 +59,7 @@ pub const COMMANDS: &[(&str, bool, &str)] = &[
     (
         "notify",
         true,
-        "向本机 App 投递一次事件（--kind completed|attention|costspike）",
+        "向本机 App 投递一次事件（--kind=completed|attention|costSpike|question|failure|review|schedule|chief）",
     ),
     (
         "report",
@@ -695,22 +695,74 @@ fn signaled_steps(plan: &crate::cleaner::KillPlan) -> Vec<crate::cleaner::KillSt
 ///
 /// 走 `POST /notify`（Rust 端 42000，ADR 0013）。**App 没在跑就说没在跑**——
 /// 静默返回 0 会让脚本以为投递成功了。
+///
+/// **必须带显式 `id`**：不带 `id` 时服务端只能用「agent + 类型 + 正文 + 到达秒」
+/// 的兜底指纹判重，于是同一秒内连投两条内容相同的消息，第二条会被当重放丢掉，
+/// 而这里已经印了「已投递」——用户看到的是成功，队列里没有第二条。
+/// 每次调用都是一次独立的投递意图（这条路径没有重试语义），所以 id 用
+/// `webhook_uuid()` 每次新取一个：同一条消息连投两次是两条事件，重试同一次
+/// 投递则由调用方自己带稳定 id 走 HTTP 接口。
+///
+/// 类型字段用 `event` 而非 `kind`：`notify_route` 只读 `event`，此前这里发 `kind`，
+/// 于是 CLI 投递的每条事件都落成 `completed`——`--kind attention` 印着成功、队列里
+/// 却是另一类事件（2026-10-16 实测：CLI 体 `{"kind":"attention"}` → 路由解析
+/// `event_type=completed`）。同一个函数里三处错误反馈（丢第二条、类型不生效、
+/// 400 也算成功）是同一件事：**印「已投递」时它必须真的被受理**。
 fn notify(flags: &[String]) -> i32 {
+    // 事件类型清单只有一处来源：`remote::EventKind::ALL`。帮助文本、拒绝提示与
+    // 实际接受集合都从它派生，避免「加了类型但帮助里没有」这类漂移。
+    let kinds: Vec<&str> = crate::remote::EventKind::ALL.iter().map(|k| k.as_str()).collect();
+    let usage = kinds.join(" | ");
+    // ⚠️ **只认 `--name=值`**，而 `flags` 只收集 `--` 开头的 token（见 `run` 的组装），
+    // 所以 `--kind question` 这种空格写法里的值会被当裸位置参数丢掉，
+    // 然后**静默 fallback 成默认值**——用户要 `attention` 却得到 `completed`，
+    // 而 CLI 照样印「已投递」。这与「kind/event 键名不一致」是同一族：
+    // 看起来成功的投递其实不是他要的那件事。
+    //
+    // 三类都要拒（实测都曾静默 fallback）：
+    //   ① 裸标志 `--kind`（不带 `=`）——值取不到；
+    //   ② 单横线 `-kind`/`-kind=x`——不进 `flags`，整个被丢弃；
+    //   ③ 未知标志 `--kindd=x`——含 `=`，但 `value()` 不认识它，同样静默用默认值。
+    // ③ 用白名单兜底：本命令只接受这三个 `--名=值`，其余一律拒绝而不是忽略。
+    const ALLOWED: [&str; 3] = ["kind", "agent", "message"];
+    let bare_or_unknown: Vec<String> = flags
+        .iter()
+        .filter(|flag| {
+            let Some(rest) = flag.strip_prefix("--") else {
+                return true; // ② 单横线（或任何非 `--` 前缀）都不该出现在 flags 里
+            };
+            let Some((name, _)) = rest.split_once('=') else {
+                return true; // ① 没有 `=`
+            };
+            !ALLOWED.contains(&name) // ③ 未知标志
+        })
+        .cloned()
+        .collect();
+    if !bare_or_unknown.is_empty() {
+        eprintln!("✗ 参数必须写成 `--名=值`，且只接受 kind/agent/message");
+        for flag in &bare_or_unknown {
+            eprintln!("  不接受：{flag}");
+        }
+        eprintln!("  例如：--kind=question --agent=opencode");
+        return EXIT_USAGE;
+    }
     let value = |name: &str, fallback: &str| -> String {
         flags
             .iter()
             .find_map(|f| f.strip_prefix(&format!("--{name}=")).map(str::to_string))
             .unwrap_or_else(|| fallback.to_string())
     };
-    let kind = value("kind", "completed");
+    let raw_kind = value("kind", "completed");
+    let Some(kind) = crate::webhook::normalize_event_kind(&raw_kind) else {
+        // 别把非法类型发出去等 400：那会变成「印了已投递、实际被拒」。
+        eprintln!("✗ 未知事件类型：{raw_kind}");
+        eprintln!("  可用：{usage}");
+        return EXIT_USAGE;
+    };
     let agent = value("agent", "opencode");
     let message = value("message", "来自 CLI 的一次投递");
 
-    let payload = serde_json::json!({
-        "kind": kind,
-        "agent": agent,
-        "message": message,
-    });
+    let payload = notify_payload(kind, &agent, &message);
     let body = match serde_json::to_vec(&payload) {
         Ok(b) => b,
         Err(error) => {
@@ -723,12 +775,20 @@ fn notify(flags: &[String]) -> i32 {
         crate::webhook::DEFAULT_EVENT_PORT
     );
     match post_local(&url, &body) {
-        Ok(reply) => {
+        Ok((status, reply)) if (200..300).contains(&status) => {
             println!("已投递（{kind} → {agent}）");
             if !reply.trim().is_empty() {
                 println!("  App 回应: {reply}");
             }
             EXIT_OK
+        }
+        Ok((status, reply)) => {
+            // 连上了但被拒：这时印「已投递」就是撒谎。
+            eprintln!("✗ 投递被拒（HTTP {status}）");
+            if !reply.trim().is_empty() {
+                eprintln!("  App 回应: {reply}");
+            }
+            EXIT_FAIL
         }
         Err(error) => {
             eprintln!("✗ 投递失败: {error}");
@@ -738,7 +798,18 @@ fn notify(flags: &[String]) -> i32 {
     }
 }
 
-fn post_local(url: &str, body: &[u8]) -> Result<String, String> {
+/// `notify` 的请求体。单独拆出来是为了能在测试里断言「每次调用都带一个合法且不重复的 id」，
+/// 以及「类型字段用的是路由真正读的那个键」，而不必去连一个真实端口。
+fn notify_payload(kind: &str, agent: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "event": kind,
+        "agent": agent,
+        "message": message,
+        "id": crate::webhook::webhook_uuid(),
+    })
+}
+
+fn post_local(url: &str, body: &[u8]) -> Result<(u16, String), String> {
     // 刻意用最朴素的一次 TCP 往返：本地回环、不加密、body 短，
     // 为此引一个 HTTP 客户端不划算（`transport.rs` 那套是给外发通道用的，
     // 它带 TLS、重试与背压，而这里三样都用不上）。
@@ -770,11 +841,19 @@ fn post_local(url: &str, body: &[u8]) -> Result<String, String> {
     stream
         .read_to_string(&mut reply)
         .map_err(|error| format!("读回应失败: {error}"))?;
+    // 状态码要带回去：连上了但被拒（400/503）与「连不上」是两回事，
+    // 前者不能印成「已投递」。
+    let status = reply
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| format!("App 回应无法解析: {}", reply.lines().next().unwrap_or("")))?;
     // 只取 body 段：状态行与头是给排错用的，脚本不该拿到
-    Ok(match reply.split_once("\r\n\r\n") {
+    let body = match reply.split_once("\r\n\r\n") {
         Some((_, body)) => body.to_string(),
-        None => reply,
-    })
+        None => String::new(),
+    };
+    Ok((status, body))
 }
 
 // MARK: - report
@@ -1584,12 +1663,16 @@ mod usage_flag_tests {
     }
 
     /// 开关打开才取。这是「本命令默认不取、`--usage` 才付这笔钱」的机器可验证形态。
+    ///
+    /// 守卫必须用**生产口径**判断这台机器有没有用量位置：只检查注册表是否声明了
+    /// token root，会让干净 CI runner（声明存在、目录不存在）必然失败，
+    /// 于是远端 CI 长期红而本机全绿——正是本仓反复要消灭的「只在别人机器上错」。
     #[test]
     fn turning_the_flag_on_actually_fetches_usage() {
         let (snapshots, total) = sample_once_with(true);
         let with_root = crate::registry::builtin()
             .iter()
-            .any(|p| !p.token_roots.is_empty() && !p.session_database.is_none());
+            .any(crate::engine::has_usage_location);
         if with_root {
             assert!(
                 snapshots.iter().any(|s| s.token_usage.is_some()),
@@ -1623,6 +1706,178 @@ mod usage_flag_tests {
         assert!(
             !source.contains("if !self.refresh_usage || profile.token_roots.is_empty() {\n            return None;\n        }\n        if let Some((_, report)) = self.token_cache"),
             "get_report 不该被 refresh_usage 关掉"
+        );
+    }
+
+    /// `notify` 不带 id 时，服务端只能靠「同秒同内容」的兜底指纹判重：同一秒连投两条
+    /// 相同的消息，第二条会被静默丢掉，而 CLI 已经印了「已投递」。这里钉住请求体里
+    /// **必须**有一个合法且每次不同的 id，失败面就是「用户看到成功、队列里没有」。
+    #[test]
+    fn every_notify_request_carries_a_fresh_valid_id() {
+        let first = notify_payload("completed", "opencode", "同一条消息");
+        let second = notify_payload("completed", "opencode", "同一条消息");
+        for payload in [&first, &second] {
+            assert_eq!(payload["event"], "completed");
+            assert_eq!(payload["agent"], "opencode");
+            let id = payload["id"].as_str().expect("请求体必须带字符串 id");
+            assert!(
+                crate::notify_ledger::valid_id(id),
+                "id 必须是服务端认的合法形状：{id}"
+            );
+        }
+        assert_ne!(
+            first["id"], second["id"],
+            "同一条消息连投两次必须是两个身份，否则第二条会被兜底判重丢掉"
+        );
+    }
+
+    /// **CLI 的请求体裁必须真的被 `/notify` 读懂。** 两件事都在这里钉住：
+    ///
+    /// 1. 类型键名。此前 CLI 发 `kind`、路由只读 `event`，于是每条 CLI 投递都被静默
+    ///    落成 `completed`——`--kind attention` 印着成功、队列里却是另一类事件。
+    ///    这里把 CLI 的请求体直接喂给**生产** `notify_route`，断言路由解析出的
+    ///    `event_type` 与 CLI 声明的一致；改回 `kind` 键该断言立刻失败。
+    /// 2. 归一分派只有一处。CLI 与路由必须调用同一个 `normalize_event_kind`，
+    ///    否则两边会各自漂移（一个认 `alert`、另一个不认）。
+    #[test]
+    fn the_cli_notify_body_is_understood_by_the_production_route() {
+        for (declared, expected) in [
+            ("attention", "attention"),
+            ("costSpike", "costSpike"),
+            ("cost_spike", "costSpike"),
+            ("alert", "costSpike"),
+            ("completed", "completed"),
+            // NOT-01 要求的事件类型：CLI 与路由必须同样认它们，
+            // 否则 `agentisland notify --kind question` 会本地报错或静默落成别的类型。
+            ("question", "question"),
+            ("failure", "failure"),
+            ("review", "review"),
+            ("schedule", "schedule"),
+            ("chief", "chief"),
+        ] {
+            let payload = notify_payload(declared, "opencode", "probe");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (wake, _wake_rx) = std::sync::mpsc::sync_channel(1);
+            let (status, _) = crate::webhook::notify_route(
+                &payload.to_string(),
+                false,
+                &tx,
+                &wake,
+                crate::hook_event::HookArrival::before(0),
+            );
+            assert_eq!(status, 200, "CLI 请求体不得被路由拒绝：{payload}");
+            let hook = rx.try_recv().expect("路由必须把 CLI 事件投进队列");
+            assert_eq!(
+                hook.event.event_type, expected,
+                "CLI 声明的类型与路由解析结果必须一致（键名或归一分派漂移）"
+            );
+        }
+        // CLI 声明的类型都必须过同一套归一；不是这里枚举出来的字符串会被本地拒绝，
+        // 根本发不出去（所以下面这条断言的是「CLI 侧不接受未知类型」）。
+        for unknown in ["attention2", "costspike", "Attention", ""] {
+            assert!(
+                crate::webhook::normalize_event_kind(unknown).is_none(),
+                "{unknown} 不该被当成合法类型"
+            );
+        }
+    }
+
+    /// 空格式参数（`--kind question`）必须被**拒绝**，不能静默 fallback 成默认值。
+    ///
+    /// `flags` 只收集 `--` 开头的 token，值会被当裸位置参数丢掉；此前
+    /// `notify --kind question --agent x` 会以 `completed` 发出去并印「已投递」——
+    /// 用户要的是提问提醒，得到的却是「任务完成」。
+    ///
+    /// ⚠️ 本用例**只测拒绝分支**，不测等号形式：等号形式会真的联网投递进常驻应用，
+    /// 污染用户真实提醒（本轮就踩过）。放行那一侧由「参数检查不误伤」的静态断言保证。
+    #[test]
+    fn space_separated_flags_are_rejected_instead_of_silently_defaulting() {
+        for flags in [
+            vec!["--kind".to_string(), "--agent=x".to_string()],
+            vec!["--kind".to_string(), "question".to_string()],
+            vec!["--kind=x".to_string(), "--agent".to_string()],
+            vec!["--message".to_string()],
+            vec!["--kind".to_string()],
+        ] {
+            assert_eq!(
+                notify(&flags),
+                EXIT_USAGE,
+                "空格式 {flags:?} 必须被拒，而不是用默认值投递"
+            );
+        }
+        // 等号形式必须**穿过**这道检查（否则 CLI 彻底不可用）。
+        // 这里只验证「参数检查不拦它」：白名单判据是纯函数式的，
+        // 调用内部构造逻辑而不真的联网（notify_payload 不发起请求）。
+        let payload = notify_payload("question", "probe", "x");
+        assert_eq!(payload["event"], "question");
+    }
+
+    /// 单横线与拼错前缀同样会静默 fallback，必须一起拒绝。
+    ///
+    /// `flags` 只收集 `--` 开头的 token：`-kind question` 里的 `-kind` 落进位置参数被丢弃，
+    /// `value("kind")` 取不到 → 用默认值投递；`--kindd=x` 含 `=`、不触发裸标志判据，
+    /// 同样取不到值。两者都会印「已投递」——与本次修复针对的是同一个失效。
+    #[test]
+    fn misspelled_or_single_dash_kind_is_rejected_instead_of_silently_defaulting() {
+        for flags in [
+            vec!["-kind".to_string(), "question".to_string()],
+            vec!["-kind=question".to_string()],
+            vec!["--kindd=question".to_string()],
+            vec!["--agentx=probe".to_string()],
+        ] {
+            assert_eq!(
+                notify(&flags),
+                EXIT_USAGE,
+                "{flags:?} 会被静默忽略并用默认值投递，必须拒绝"
+            );
+        }
+    }
+
+    /// 帮助文本与「未知类型」拒绝提示必须列出**全部**类型。
+    ///
+    /// 这类漂移此前没有任何门禁：加了类型但忘了改帮助/提示，用户看到的仍是旧清单，
+    /// 只能靠猜某个类型存不存在。这里直接从 `EventKind::ALL` 派生期望值，
+    /// 任何一处漏写都会红。
+    #[test]
+    fn help_and_rejection_text_list_every_event_kind() {
+        let expected: Vec<&str> =
+            crate::remote::EventKind::ALL.iter().map(|k| k.as_str()).collect();
+        let entry = COMMANDS
+            .iter()
+            .find(|(name, _, _)| *name == "notify")
+            .expect("notify 必须在命令表里");
+        for kind in &expected {
+            assert!(
+                entry.2.contains(kind),
+                "notify 帮助文本缺少类型 {kind}：{}",
+                entry.2
+            );
+        }
+        // 帮助文本不得再出现「空格分隔」那种旧写法：`--kind completed` 会被参数
+        // 解析当作裸位置参数丢掉、静默 fallback 成 completed（本轮实测踩过）。
+        assert!(
+            !entry.2.contains("--kind completed"),
+            "帮助文本不能用 `--kind completed` 形式——只有 `--kind=值` 生效"
+        );
+        assert!(entry.2.contains("--kind="), "帮助文本应示范 `--kind=值` 写法");
+    }
+
+    /// `/notify` 的 400 响应体也必须列出全部类型。
+    ///
+    /// 上面那条只查 CLI 帮助文本，**没碰 HTTP 路由的拒绝文案**——复审指出这正是
+    /// 「名字里有 rejection text 却测不到它」的缺口。文案现已从 `EventKind::ALL` 派生，
+    /// 这条确认派生结果真的包含每一类。
+    #[test]
+    fn http_rejection_text_is_derived_and_lists_every_event_kind() {
+        let body = crate::webhook::invalid_event_kind_body();
+        for kind in crate::remote::EventKind::ALL.iter().map(|k| k.as_str()) {
+            assert!(body.contains(kind), "400 文案缺少类型 {kind}：{body}");
+        }
+        // 派生自同一份清单：清单长度决定文案里的分隔符数量
+        assert_eq!(
+            body.matches('|').count(),
+            crate::remote::EventKind::ALL.len() - 1,
+            "文案里的类型个数与 EventKind::ALL 不一致：{body}"
         );
     }
 }

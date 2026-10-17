@@ -886,8 +886,7 @@ fn probe_cline(lines: &[String], path: &str) -> SessionProbe {
             signal: Some(Signal::Attention(
                 // **指纹里必须带这条消息在数组里的下标。**
                 //
-                // 引擎层 `alerted_fingerprints` 是**全局 `HashSet`，从不按 Agent 清理**
-                // （只有累计超过 800 条才整表清空），`insert` 返回 false 就不推事件。
+                // 引擎层去重按 `(agent, kind, raw)` 判重（`dedup::Store`），命中过就不再推。
                 // 而旧指纹只由 `{ask}{消息字节长度}` 决定，于是：
                 // **同一个文件里两条长度相同的提问会撞同一个指纹，第二条被永久静默。**
                 // 「重试」「继续」「好的」这种长度的提问在真实对话里俯拾皆是。
@@ -1419,8 +1418,8 @@ mod health_chain {
 
     /// **两条长度相同的提问，必须是两把不同的指纹。**
     ///
-    /// 引擎层 `alerted_fingerprints` 是全局 `HashSet`、从不按 Agent 清理，
-    /// 撞上就永久静默。旧指纹只由 `{ask}{消息字节长度}` 决定，
+    /// 引擎层去重按 `(agent, kind, raw)` 判重（`dedup::Store`），撞上就静默。
+    /// 旧指纹只由 `{ask}{消息字节长度}` 决定，
     /// 于是「重试」问两遍，第二遍**永远不会提醒**。
     ///
     /// 变异验证：把 `cline-msg{idx}-` 从指纹里去掉，本条精确变红。

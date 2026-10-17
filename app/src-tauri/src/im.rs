@@ -152,7 +152,7 @@ pub fn response(channel: Channel, bytes: &[u8]) -> Outcome {
         _ => false,
     };
     if success {
-        Outcome::Delivered
+        Outcome::Accepted
     } else {
         Outcome::Failed {
             reason: format!(
@@ -175,11 +175,11 @@ mod tests {
             Channel::FeishuBot,
             br#"{"code":19024,"msg":"private text"}"#
         )
-        .is_delivered());
-        assert!(!response(Channel::WechatPushPlus, br#"{"code":401}"#).is_delivered());
-        assert!(!response(Channel::QqOneBot, br#"{"retcode":0,"status":"failed"}"#).is_delivered());
-        assert!(response(Channel::QqOneBot, br#"{"retcode":0,"status":"ok"}"#).is_delivered());
-        assert!(!response(Channel::FeishuBot, b"not JSON").is_delivered());
+        .is_accepted());
+        assert!(!response(Channel::WechatPushPlus, br#"{"code":401}"#).is_accepted());
+        assert!(!response(Channel::QqOneBot, br#"{"retcode":0,"status":"failed"}"#).is_accepted());
+        assert!(response(Channel::QqOneBot, br#"{"retcode":0,"status":"ok"}"#).is_accepted());
+        assert!(!response(Channel::FeishuBot, b"not JSON").is_accepted());
     }
     #[test]
     fn credentials_and_preview_are_private() {

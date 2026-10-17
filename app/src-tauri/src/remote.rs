@@ -242,6 +242,11 @@ fn wire_value<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
         "sendCompleted" => "send_completed",
         "sendAttention" => "send_attention",
         "sendCostSpike" => "send_cost_spike",
+        "sendQuestion" => "send_question",
+        "sendFailure" => "send_failure",
+        "sendReview" => "send_review",
+        "sendSchedule" => "send_schedule",
+        "sendChief" => "send_chief",
         "throttleSeconds" => "throttle_seconds",
         "quietStart" => "quiet_start",
         "quietEnd" => "quiet_end",
@@ -302,6 +307,11 @@ pub struct Policy {
     pub send_completed: bool,
     pub send_attention: bool,
     pub send_cost_spike: bool,
+    pub send_question: bool,
+    pub send_failure: bool,
+    pub send_review: bool,
+    pub send_schedule: bool,
+    pub send_chief: bool,
     pub throttle_seconds: i64,
     pub quiet_start: String,
     pub quiet_end: String,
@@ -316,6 +326,11 @@ impl Default for Policy {
             send_completed: true,
             send_attention: true,
             send_cost_spike: true,
+            send_question: true,
+            send_failure: true,
+            send_review: true,
+            send_schedule: true,
+            send_chief: true,
             throttle_seconds: 90,
             quiet_start: String::new(),
             quiet_end: String::new(),
@@ -336,6 +351,11 @@ impl<'de> Deserialize<'de> for Policy {
             send_completed: flag(map, "sendCompleted", true),
             send_attention: flag(map, "sendAttention", true),
             send_cost_spike: flag(map, "sendCostSpike", true),
+            send_question: flag(map, "sendQuestion", true),
+            send_failure: flag(map, "sendFailure", true),
+            send_review: flag(map, "sendReview", true),
+            send_schedule: flag(map, "sendSchedule", true),
+            send_chief: flag(map, "sendChief", true),
             throttle_seconds: integer(map, "throttleSeconds", 90),
             quiet_start: text(map, "quietStart"),
             quiet_end: text(map, "quietEnd"),
@@ -424,6 +444,11 @@ impl Policy {
             EventKind::Completed => self.send_completed,
             EventKind::Attention => self.send_attention,
             EventKind::CostSpike => self.send_cost_spike,
+            EventKind::Question => self.send_question,
+            EventKind::Failure => self.send_failure,
+            EventKind::Review => self.send_review,
+            EventKind::Schedule => self.send_schedule,
+            EventKind::Chief => self.send_chief,
         }
     }
 }
@@ -436,6 +461,21 @@ pub enum EventKind {
     Attention,
     #[serde(rename = "costSpike")]
     CostSpike,
+    /// NOT-01 要求「提问」：Agent 需要人回答才能继续。
+    #[serde(rename = "question")]
+    Question,
+    /// NOT-01 要求「失败」：任务失败，需人介入。
+    #[serde(rename = "failure")]
+    Failure,
+    /// NOT-01 要求「审查」：有待审阅的方案/代码/产物。
+    #[serde(rename = "review")]
+    Review,
+    /// NOT-01 要求「调度」：定时/触发类事项到点或错过。
+    #[serde(rename = "schedule")]
+    Schedule,
+    /// NOT-01 要求「Chief 消息与分配」：编排层派活或传话。
+    #[serde(rename = "chief")]
+    Chief,
 }
 
 impl EventKind {
@@ -445,6 +485,11 @@ impl EventKind {
             "completed" => Some(EventKind::Completed),
             "attention" => Some(EventKind::Attention),
             "costSpike" => Some(EventKind::CostSpike),
+            "question" => Some(EventKind::Question),
+            "failure" => Some(EventKind::Failure),
+            "review" => Some(EventKind::Review),
+            "schedule" => Some(EventKind::Schedule),
+            "chief" => Some(EventKind::Chief),
             _ => None,
         }
     }
@@ -454,8 +499,26 @@ impl EventKind {
             EventKind::Completed => "completed",
             EventKind::Attention => "attention",
             EventKind::CostSpike => "costSpike",
+            EventKind::Question => "question",
+            EventKind::Failure => "failure",
+            EventKind::Review => "review",
+            EventKind::Schedule => "schedule",
+            EventKind::Chief => "chief",
         }
     }
+
+    /// 全部事件类型，供设置界面与诊断列出 `allows` 表使用。
+    /// 与 `parse` 是同一份清单的两面：漏一个会在这里被断言抓住。
+    pub const ALL: [EventKind; 8] = [
+        EventKind::Completed,
+        EventKind::Attention,
+        EventKind::CostSpike,
+        EventKind::Question,
+        EventKind::Failure,
+        EventKind::Review,
+        EventKind::Schedule,
+        EventKind::Chief,
+    ];
 }
 
 /// 「这台机器前现在有没有人」的原始信号。判定逻辑在 [`Policy::is_away`]（纯函数、可离线测），
@@ -640,20 +703,10 @@ pub fn status(
             .unwrap_or(false),
         away_now: policy.is_away(presence),
         away_reason: policy.present_reason(presence),
-        allows: vec![
-            (
-                EventKind::Completed.as_str(),
-                policy.allows(EventKind::Completed),
-            ),
-            (
-                EventKind::Attention.as_str(),
-                policy.allows(EventKind::Attention),
-            ),
-            (
-                EventKind::CostSpike.as_str(),
-                policy.allows(EventKind::CostSpike),
-            ),
-        ],
+        allows: EventKind::ALL
+            .iter()
+            .map(|kind| (kind.as_str(), policy.allows(*kind)))
+            .collect(),
         throttled: 0,
         policy,
     }
@@ -777,6 +830,149 @@ mod tests {
 
         let unset = Policy::default();
         assert!(!unset.in_quiet_hours(3 * 60), "没配就是不静默");
+    }
+
+    /// NOT-01 要求的事件类型必须**全部**能被解析并各自走通外发开关。
+    /// 这条用 `ALL` 与 `parse`/`as_str` 互查，漏一个类型就红：
+    /// 只加枚举而忘了 `parse`（HTTP 会 400）或忘了开关（永远不发）都是真实失效。
+    #[test]
+    fn every_not01_event_kind_round_trips_and_has_its_own_switch() {
+        let names: Vec<&str> = EventKind::ALL.iter().map(|k| k.as_str()).collect();
+        // 清单本身不重复
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "EventKind::ALL 有重复项");
+        for kind in EventKind::ALL {
+            let raw = kind.as_str();
+            assert_eq!(
+                EventKind::parse(raw),
+                Some(kind),
+                "{raw} 必须能被 parse 回来（否则 HTTP 会 400）"
+            );
+            assert_eq!(serde_json::to_string(&kind).unwrap(), format!("\"{raw}\""));
+            // 每类默认放行
+            assert!(Policy::default().allows(kind), "{raw} 默认应放行");
+        }
+        // NOT-01 原文点名的五类必须在清单里
+        for required in ["question", "failure", "review", "schedule", "chief"] {
+            assert!(
+                names.contains(&required),
+                "NOT-01 要求的事件类型 {required} 不在清单里"
+            );
+        }
+        // 逐类开关：关掉某一类不能影响其它类
+        let cases: [(EventKind, fn(&mut Policy)); 8] = [
+            (EventKind::Completed, |p| p.send_completed = false),
+            (EventKind::Attention, |p| p.send_attention = false),
+            (EventKind::CostSpike, |p| p.send_cost_spike = false),
+            (EventKind::Question, |p| p.send_question = false),
+            (EventKind::Failure, |p| p.send_failure = false),
+            (EventKind::Review, |p| p.send_review = false),
+            (EventKind::Schedule, |p| p.send_schedule = false),
+            (EventKind::Chief, |p| p.send_chief = false),
+        ];
+        for (off, mutate) in cases {
+            let mut policy = Policy::default();
+            mutate(&mut policy);
+            for kind in EventKind::ALL {
+                let expected = kind != off;
+                assert_eq!(
+                    policy.allows(kind),
+                    expected,
+                    "关掉 {} 后 {} 的放行状态不对",
+                    off.as_str(),
+                    kind.as_str()
+                );
+            }
+        }
+    }
+
+    /// 设置界面读写的 camelCase 键必须与结构字段一一对应；
+    /// 新类型只加字段而忘了在 `wire_value` 里登记别名，**snake_case 落盘的旧配置会被静默忽略**
+    /// （camelCase 那一侧直接命中，掩盖了别名缺失）。
+    #[test]
+    fn new_event_switches_accept_camel_case_from_settings_wire() {
+        let raw = serde_json::json!({
+            "sendQuestion": false,
+            "sendFailure": false,
+            "sendReview": false,
+            "sendSchedule": false,
+            "sendChief": false,
+            "sendCompleted": true,
+        });
+        let policy: Policy = serde_json::from_value(raw).unwrap();
+        assert!(!policy.allows(EventKind::Question));
+        assert!(!policy.allows(EventKind::Failure));
+        assert!(!policy.allows(EventKind::Review));
+        assert!(!policy.allows(EventKind::Schedule));
+        assert!(!policy.allows(EventKind::Chief));
+        // 未提到的类型保持默认放行，不被误关
+        assert!(policy.allows(EventKind::Attention));
+        assert!(policy.allows(EventKind::CostSpike));
+    }
+
+    /// 每一个类型都必须能从 **snake_case** 读回：这是 Web 已落盘配置的键形。
+    /// 逐个类型都测，才能让「忘了在 `wire_value` 登记别名」这件事被抓住——
+    /// 只测一个的话，恰好那个登记了别名就漏检（本轮变异实测过这个洞）。
+    #[test]
+    fn every_event_switch_is_readable_from_snake_case_config() {
+        let cases: [(&str, EventKind); 8] = [
+            ("send_completed", EventKind::Completed),
+            ("send_attention", EventKind::Attention),
+            ("send_cost_spike", EventKind::CostSpike),
+            ("send_question", EventKind::Question),
+            ("send_failure", EventKind::Failure),
+            ("send_review", EventKind::Review),
+            ("send_schedule", EventKind::Schedule),
+            ("send_chief", EventKind::Chief),
+        ];
+        for (key, kind) in cases {
+            let raw = serde_json::json!({ key: false });
+            let policy: Policy = serde_json::from_value(raw).unwrap();
+            assert!(
+                !policy.allows(kind),
+                "{key} → {} 没有被读回（别名表缺这一项？）",
+                kind.as_str()
+            );
+            // 只关这一类，其它类不受影响
+            for other in EventKind::ALL {
+                if other != kind {
+                    assert!(policy.allows(other), "{key} 误关了 {}", other.as_str());
+                }
+            }
+        }
+    }
+
+    /// 外发能力报告（设置界面「哪些类型会发」那张表）必须覆盖全部类型，
+    /// 否则界面显示一张少了几行的表，看着像「这些类型不存在」。
+    #[test]
+    fn capability_report_lists_every_kind() {
+        let channels = std::collections::HashMap::new();
+        let policy = Policy {
+            master_enabled: true,
+            ..Policy::default()
+        };
+        let snapshot = status(
+            Some("ntfy"),
+            &channels,
+            &policy,
+            false,
+            Now {
+                ms: 0,
+                minutes_of_day: Some(600),
+            },
+            &PresenceSignals::unavailable(),
+        );
+        let listed: Vec<&str> = snapshot.allows.iter().map(|(k, _)| *k).collect();
+        assert_eq!(listed.len(), EventKind::ALL.len());
+        for kind in EventKind::ALL {
+            assert!(
+                listed.contains(&kind.as_str()),
+                "能力报告缺少 {}",
+                kind.as_str()
+            );
+        }
     }
 
     // ── 在场判定 ─────────────────────────────────────────────────────────────

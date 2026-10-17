@@ -5,6 +5,7 @@ Creates a unique non-demo synthetic HOME and owns only its copied formal bundle.
 No real sessions, credentials, external services, or automatic budget verdicts.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -68,6 +69,22 @@ def baseline_matches(home, baseline):
 def finish_code(protocol_complete, cleanup):
     # Fail closed even when sampling completed before a cleanup failure.
     return 0 if protocol_complete and all(cleanup.get(key) is True for key in analyzer.CLEANUP_FIELDS) else 2
+
+
+CANCEL_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+@contextmanager
+def cleanup_signals():
+    # No cancellation signal may interrupt the lock/receipt transaction.
+    previous = {sig: signal.getsignal(sig) for sig in CANCEL_SIGNALS}
+    try:
+        for sig in CANCEL_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def stop_owned(native, pid, binary, start, sleep=time.sleep):
@@ -172,12 +189,7 @@ def run(bundle, output):
     except OSError:
         raise Preflight('OUTPUT_CREATE_FAILED')
     lock = Path.home() / '.agentisland-native-gates.lock'
-    try:
-        lock.mkdir(mode=0o700)  # Never steal an existing lease.
-    except FileExistsError:
-        raise Preflight('LEASE_EXISTS')
-    except OSError:
-        raise Preflight('LEASE_CREATE_FAILED')
+    # Prepare every value needed by finally before acquiring the lease.
     owner = dict(pid=os.getpid(), run_id=uuid.uuid4().hex)
     home = output / 'home'
     binary = output / 'AgentIsland.app/Contents/MacOS/agentisland'
@@ -186,6 +198,12 @@ def run(bundle, output):
     started = time.monotonic()
     manifest = {}
     cleanup = dict.fromkeys(analyzer.CLEANUP_FIELDS, False)
+    try:
+        lock.mkdir(mode=0o700)  # Never steal an existing lease.
+    except FileExistsError:
+        raise Preflight('LEASE_EXISTS')
+    except OSError:
+        raise Preflight('LEASE_CREATE_FAILED')
     try:
         (lock / 'owner.json').write_text(json.dumps(owner))
         scripts = Path(__file__).resolve().parent
@@ -251,8 +269,8 @@ def run(bundle, output):
                 raise ValueError('Unique resource target did not start')
             pid, start = identity
             (output / 'target.json').write_text(json.dumps(dict(pid=pid, start=start)))
-            args = subprocess.check_output(['ps', '-p', str(pid), '-o', 'args='], text=True)
-            env = subprocess.check_output(['ps', 'eww', '-p', str(pid), '-o', 'command='], text=True)
+            args = subprocess.check_output(['ps', '-p', str(pid), '-o', 'args='], text=True, timeout=5)
+            env = subprocess.check_output(['ps', 'eww', '-p', str(pid), '-o', 'command='], text=True, timeout=5)
             if '--demo' in args or '--shell=workbench' not in args or 'HOME=' + str(home) not in env:
                 raise ValueError('Target does not match isolated workload')
             env = None  # Environment is inspected in memory only, never logged.
@@ -272,48 +290,49 @@ def run(bundle, output):
         complete = False
         error_type = type(error).__name__  # Never emit arbitrary paths, environment, or exception text.
     finally:
-        # Each cleanup runs even if an earlier cleanup fails. No broad name-based kills.
-        try:
-            native = soak.measure.Native()
-            targets = [(pid, native.usage(pid)) for pid, command in native.processes() if Path(command) == binary]
-            for pid, usage in targets:
-                if usage is None or identity is not None and (pid, usage['start']) != identity:
-                    raise ValueError('Cleanup target identity changed')
-                stop_owned(native, pid, binary, usage['start'])
-            cleanup['owned_target_stopped'] = not any(Path(command) == binary for _, command in native.processes())
-        except Exception:
-            pass
-        try:
-            if awake is not None:
-                awake.terminate()
-                awake.wait(timeout=5)
-            cleanup['awake_stopped'] = awake is None or awake.poll() is not None
-        except Exception:
-            pass
-        try:
-            cleanup['baseline_unchanged'] = baseline is not None and baseline_matches(home, baseline)
-        except Exception:
-            pass
-        try:
-            if json.loads((lock / 'owner.json').read_text()) == owner:
-                (lock / 'owner.json').unlink()
-                lock.rmdir()
-            cleanup['lock_absent'] = not lock.exists()
-        except Exception:
-            pass
-        code = finish_code(complete, cleanup)
-        receipt = dict(schema=1, started=started, finished=time.monotonic(), exit_code=code,
-                       protocol_complete=complete, budget_assessed=False, cleanup=cleanup,
-                       error_type=error_type, stage=stage, run_id=owner['run_id'])
-        if code == 0:
+        with cleanup_signals():
+            # Each cleanup runs even if an earlier cleanup fails. No broad name-based kills.
             try:
-                report = analyzer.analyze(rows, receipt, require_cleanup=True)
-                (output / 'analysis.json').write_text(json.dumps(report))
-            except Exception as error:
-                code = receipt['exit_code'] = 2
-                receipt['error_type'] = type(error).__name__
-        (output / 'receipt.json').write_text(json.dumps(receipt))
-        print(json.dumps(receipt), flush=True)
+                native = soak.measure.Native()
+                targets = [(pid, native.usage(pid)) for pid, command in native.processes() if Path(command) == binary]
+                for pid, usage in targets:
+                    if usage is None or identity is not None and (pid, usage['start']) != identity:
+                        raise ValueError('Cleanup target identity changed')
+                    stop_owned(native, pid, binary, usage['start'])
+                cleanup['owned_target_stopped'] = not any(Path(command) == binary for _, command in native.processes())
+            except Exception:
+                pass
+            try:
+                if awake is not None:
+                    awake.terminate()
+                    awake.wait(timeout=5)
+                cleanup['awake_stopped'] = awake is None or awake.poll() is not None
+            except Exception:
+                pass
+            try:
+                cleanup['baseline_unchanged'] = baseline is not None and baseline_matches(home, baseline)
+            except Exception:
+                pass
+            try:
+                if json.loads((lock / 'owner.json').read_text()) == owner:
+                    (lock / 'owner.json').unlink()
+                    lock.rmdir()
+                cleanup['lock_absent'] = not lock.exists()
+            except Exception:
+                pass
+            code = finish_code(complete, cleanup)
+            receipt = dict(schema=1, started=started, finished=time.monotonic(), exit_code=code,
+                           protocol_complete=complete, budget_assessed=False, cleanup=cleanup,
+                           error_type=error_type, stage=stage, run_id=owner['run_id'])
+            if code == 0:
+                try:
+                    report = analyzer.analyze(rows, receipt, require_cleanup=True)
+                    (output / 'analysis.json').write_text(json.dumps(report))
+                except Exception as error:
+                    code = receipt['exit_code'] = 2
+                    receipt['error_type'] = type(error).__name__
+            (output / 'receipt.json').write_text(json.dumps(receipt))
+            print(json.dumps(receipt), flush=True)
     return code
 
 
@@ -322,10 +341,20 @@ def main():
     parser.add_argument('--bundle', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
+    cancelled = False
     def interrupted(signum, frame):
-        raise KeyboardInterrupt()
-    signal.signal(signal.SIGTERM, interrupted)
-    return run(args.bundle, args.output)
+        nonlocal cancelled
+        if not cancelled:
+            cancelled = True
+            raise KeyboardInterrupt()
+    previous = {sig: signal.getsignal(sig) for sig in CANCEL_SIGNALS}
+    try:
+        for sig in CANCEL_SIGNALS:
+            signal.signal(sig, interrupted)
+        return run(args.bundle, args.output)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def cli():

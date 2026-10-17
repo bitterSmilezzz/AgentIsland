@@ -1,5 +1,7 @@
 # 两端口径对照表（ADR 0010 / M5 交付物）
 
+> 历史迁移取证：正文起始于 v158，随后逐轮追加，不代表当前 main 的缺口或完成度。Swift/WPF 已归档，当前只交付 Rust/Tauri。正文的 `Sources/` 链接指向当时工作树，已不在 main；查归档用 `git show codex/archive-swiftui:Sources/...`，具体文件与迁出记录见 [历史资料映射](../agent/history-file-map.md)。保留正文与原行号，避免将时间点证据批量改成当前源码。
+
 当前身份边界：Vibe Usage 是用量统计工具，不在内置 Agent 集合中；下文包含它的清单仅反映历史对拍记录。
 > 本表回答一件事：**AgentIsland 现在有两份并列实现**——Swift 端（灵动岛形态，`Sources/`）
 > 与 Rust 端（跨平台迁移实现，当前只有 island 壳，`app/`）。哪些能力只在一边有、哪些两边都要一致，

@@ -510,6 +510,44 @@ pub fn run() -> Report {
         );
     }
 
+    // 最近一项：结构化 hook 进入服务 → 通知入队的延迟（`docs/需求.md` 的即时性指标）。
+    //
+    // 这条自检做的是**烟测**，不是性能测量：它构造一个真实引擎，走一遍
+    // `push_hook_event`，确认样本被记下、且样本不足时报告**明说不足**。
+    // 「样本不足不说达标」这条断言才有价值——它防的是「用一两个样本宣布达标」。
+    //
+    // 它**不覆盖** HTTP 入口、路由与真实消费循环：那些由 `webhook::session_tests`
+    // 与进程级验收覆盖。这里不谎称端到端。
+    if let Some(mut harness) = Harness::new("dim") {
+        harness.engine.push_hook_event(crate::hook_event::HookEvent {
+            client_id: None,
+            received_at: std::time::Instant::now() - std::time::Duration::from_millis(25),
+            event: crate::models::AgentTaskEvent {
+            id: "selftest-hook".into(),
+            agent_id: "dim".into(),
+            agent_name: "dim".into(),
+            event_type: "completed".into(),
+            timestamp: crate::tokens::now_ms() - 25,
+            message: None,
+            detail: None,
+            duration: 0.0,
+            externally_delivered: true,
+        }});
+        // 样本不足时报告必须**明说不足**，不能只印一个毫秒数让人读成已达标。
+        let summary = harness.engine.notify_latency.summary();
+        let line = harness.engine.notify_latency.report_line();
+        runner.check(
+            "入队延迟：hook 入队被记样；样本不足时不宣布达标",
+            summary.samples == 1 && summary.meets_target.is_none() && line.contains("未判定"),
+            Some(format!(
+                "samples={} meets_target={:?} line={line}",
+                summary.samples, summary.meets_target
+            )),
+        );
+    } else {
+        runner.check("入队延迟：可构造 dim 引擎", false, Some("缺 dim 档案".into()));
+    }
+
     runner.finish()
 }
 

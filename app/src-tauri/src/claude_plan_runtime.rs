@@ -57,7 +57,15 @@ mod native {
         }
         fn stop(&mut self, state: &'static str, notice: &'static str) {
             if let Some(mut receiver) = self.receiver.take() {
-                receiver.stop();
+                // `stop()` only succeeds when the temporary body really was cleared and
+                // the worker exited. Reporting "everything stopped" on a busy budget
+                // would be exactly the kind of unverified claim this module forbids.
+                if receiver.stop().is_err() {
+                    self.binding = None;
+                    self.state = "uncertain";
+                    self.notice = "接收服务未在预算内退出，无法确认临时正文已清空。";
+                    return;
+                }
             }
             self.binding = None;
             self.state = state;
