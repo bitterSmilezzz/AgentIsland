@@ -108,13 +108,19 @@ put() {
     mv -f "$tmpf" "$dest" || { echo "✗ 替换 $dest 失败" >&2; rm -f "$tmpf"; exit 3; }
 }
 
+# 用 `-z`（NUL 分隔）取路径，**不要**用默认输出。
+# 默认输出会给含非 ASCII 的路径加引号并做八进制转义
+# （`"docs/spec/\351\234\200\346\261\202.md"`），下游 `test -e` 拿到的是字面串，
+# 判定「文件不存在」→ 列表被判空 → 门禁报「什么都没扫」并拒绝提交。
+# 实测：只改中文名文档时 pre-commit 恒失败，而交互式全量扫描却是绿的——
+# 差别就在这条路径上。NUL 分隔没有转义，中文路径原样通过。
 file_list() {
     if [[ "$1" == staged ]]; then
-        git diff --cached --name-only --diff-filter=ACM
+        git diff --cached --name-only --diff-filter=ACM -z
     else
         # 只扫 git 认得的文件。.gitignore 排除的 .build/、dist/、artifacts/、.scratch/
         # 本就不入库不交付，扫它们等于把门禁淹死在构建缓存里
-        git ls-files --cached --others --exclude-standard
+        git ls-files --cached --others --exclude-standard -z
     fi
 }
 
@@ -128,8 +134,15 @@ load_file_list() {
         echo "✗ 取文件列表失败（git 退出码 ${rc}）。目录不对还是仓库坏了？门禁不放行。" >&2
         exit 3
     fi
-    # 只保留还存在于工作区的条目：git 跟踪但文件已删的（submodule 未初始化等）不是扫描失败
-    put "$FILES" awk 'NF && (system("test -e \"" $0 "\"") == 0)' "$raw"
+    # 只保留还存在于工作区的条目：git 跟踪但文件已删的（submodule 未初始化等）不是扫描失败。
+    # 输入是 NUL 分隔（见 file_list），按 NUL 读——按行读会把整串当成一个路径。
+    # 这里**不用 awk**：macOS 的 awk 对 `RS = "\0"` 支持不完整（实测 4 条只输出 1 条），
+    # 于是列表被静默截断。Bash 的 `read -d ''` 是可靠的 NUL 读法。
+    local item
+    : > "$FILES"
+    while IFS= read -r -d '' item; do
+        [[ -n "$item" && -e "$item" ]] && printf '%s\0' "$item" >> "$FILES"
+    done < "$raw"
     if [[ ! -s "$FILES" ]]; then
         echo "✗ 待扫文件列表为空：这个仓库里一个存在且被 git 认得的文件都没有。" >&2
         echo "  这不是「没有敏感内容」，而是「什么都没扫」——门禁不放行。" >&2
@@ -141,7 +154,10 @@ scan_worktree() {
     : > "$HITS" 2>/dev/null || { echo "✗ 初始化 $HITS 失败" >&2; exit 3; }
     local idx rule pat f content ln row match rest grep_rc
     local files=()
-    while IFS= read -r f; do
+    # `$FILES` 是 NUL 分隔（见 file_list 的注释），这里必须按 NUL 读：
+    # 按行读会把整串当成一个路径，`-f` 失败后 files 为空，
+    # 于是「扫了但什么都没扫」——正是那条中文路径缺陷的另一半。
+    while IFS= read -r -d '' f; do
         [[ -f "$f" ]] && files+=("$f")
     done < "$FILES"
     [[ ${#files[@]} -gt 0 ]] || { echo "✗ 没有可扫描的常规文件" >&2; exit 3; }
