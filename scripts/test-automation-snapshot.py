@@ -184,6 +184,37 @@ class SnapshotTests(unittest.TestCase):
         (self.root / safety.BASELINE).unlink()
         self.rejected(["source.txt"])
 
+    def test_generic_identity_list_matches_scanner(self):
+        # 扫描器与快照校验各有一份通用账号名清单；两处漂移会让「本机放过、快照拒绝」
+        # 之类的半套行为重新出现。断言两者是同一集合，而不是各抄一份。
+        source = (SCRIPTS / "scan-secrets.sh").read_text()
+        self.assertEqual(set(safety._array(source, "GENERIC_IDENTITIES")),
+                         set(safety._GENERIC_IDENTITIES))
+
+    def test_generic_ci_account_disables_identity_rules(self):
+        # macOS runner 的 $USER=runner 是通用账号名，不是开发者身份。把它当敏感词，
+        # 源码与文档里正常的英文词 "runner" 会让每个真实快照都被拒（CI 因此无法运行）。
+        self.install_scanner()
+        self.write("source.txt", b"the runner runs the suite\n/Users/runner/work\n")
+        with patch.dict(os.environ, {"USER": "runner", "SCAN_USER": ""}):
+            entries = safety.prepare_snapshot(self.root, ["source.txt"])
+        self.assertEqual(len(entries), 1)
+
+    def test_empty_scan_user_never_becomes_match_all(self):
+        # 空的 SCAN_USER 必须回落到 USER，而不是被替换成空正则（那会匹配每一行）。
+        self.install_scanner()
+        with patch.dict(os.environ, {"USER": "runner", "SCAN_USER": ""}):
+            entries = safety.prepare_snapshot(self.root, ["source.txt"])
+        self.assertEqual(len(entries), 1)
+
+    def test_explicit_scan_user_keeps_identity_rules(self):
+        # 通用 $USER 下，CI 仍可用 SCAN_USER 注入开发者身份，恢复这两条规则。
+        self.install_scanner()
+        identity = "fixture_identity"
+        self.write("source.txt", ("/Users/" + identity + "/work\n").encode())
+        with patch.dict(os.environ, {"USER": "runner", "SCAN_USER": identity}):
+            self.rejected(["source.txt"])
+
     def test_required_scanner_missing_fails_closed(self):
         self.rejected(["source.txt"], require_project_scanner=True)
 
@@ -200,7 +231,8 @@ class SnapshotTests(unittest.TestCase):
     def test_regex_error_is_fixed_and_does_not_echo_sensitive_value(self):
         self.install_scanner()
         secret = credential()
-        with patch.dict(os.environ, USER="[" + secret.decode()):
+        with patch.dict(os.environ, {"USER": "[" + secret.decode(),
+                                     "SCAN_USER": "[" + secret.decode()}):
             self.rejected(["source.txt"], secret)
 
     def test_symlink_target_bytes_are_scanned(self):
@@ -244,7 +276,7 @@ class SnapshotTests(unittest.TestCase):
         source = (SCRIPTS / "scan-secrets.sh").read_bytes()
         identity = "fixture_identity"
         raw = safety._array(source.decode(), "RULE_PAT", True)
-        with patch.dict(os.environ, USER=identity):
+        with patch.dict(os.environ, {"USER": identity, "SCAN_USER": identity}):
             rules = safety._project_rules(source)
         corpus = [
             b"ordinary legal text", credential(),

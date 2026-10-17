@@ -13,6 +13,7 @@
 #   scripts/scan-secrets.sh --release    # 工作区 + 全部 git 对象（发版前）
 #   scripts/scan-secrets.sh --history    # 只扫 git 对象
 #   scripts/scan-secrets.sh --rebaseline # 人工核对后重写 baseline
+#   SCAN_USER=<name> scripts/scan-secrets.sh  # 身份规则用名；默认 $USER，CI 里注入开发者用户名
 #
 # ── 铁律：这个脚本只能「真的扫完了」才说通过 ────────────────────────────────
 # 曾经有两处失败是静默的，症状都是「什么都没扫，却打印 ✓」：
@@ -70,9 +71,32 @@ PATHS="$RUN_TMP/paths.txt"
 # 那等于跨进程复用上一轮的对象流，新提交的 blob 永远扫不到，门禁会假绿。
 BLOBSTREAM_READY=""
 
-# 本机用户名走环境变量注入，不写死在脚本里——写死等于把开发者代号放进被扫描的仓库
-WHOAMI="${USER:-$(id -un)}"
+# 身份类规则用的「本机用户名」，不写死在脚本里——写死等于把开发者代号放进被扫描的仓库。
+#
+# 但环境变量里的名字不一定是开发者身份：CI runner 上 `$USER` 就是通用账号名
+# `runner`（Windows 是 `runneradmin`）。拿它当敏感词，源码与文档里正常的英文词
+# "runner" 会全部命中——实测 `USER=runner` 时 287 条未备案命中，macOS job 卡在
+# 扫描这一步，后面的 ci profile、构建与 package 验收**一条都跑不到**，CI 于是
+# 长期全红（见 .github/workflows/build.yml 的 macOS job）。
+# 所以：
+# - `SCAN_USER` 优先；CI 要保留这两条规则就用仓库变量 AGENTISLAND_SCAN_USER 注入
+#   开发者本机用户名；
+# - 没有注入、拿到的又是通用账号名时，**显式停用** username 与 local_user_path
+#   两条规则并在 stderr 说明。不静默当成「零命中」，也不拿通用名制造假红。
+WHOAMI="${SCAN_USER:-${USER:-$(id -un)}}"
 [[ -n "$WHOAMI" ]] || { echo "取不到本机用户名，身份类规则无法生效" >&2; exit 2; }
+GENERIC_IDENTITIES=(runner runneradmin root ubuntu admin user circleci travis jenkins buildkite vsts ec2-user)
+IDENTITY_ACTIVE=1
+for generic in "${GENERIC_IDENTITIES[@]}"; do
+    if [[ "$WHOAMI" == "$generic" ]]; then
+        IDENTITY_ACTIVE=0
+        break
+    fi
+done
+if [[ "$IDENTITY_ACTIVE" -eq 0 ]]; then
+    printf '注意：%s 是通用/CI 账号名，不是开发者身份；username 与 local_user_path 规则本轮停用。\n' "$WHOAMI" >&2
+    printf '      要保留这两条规则，请设置 SCAN_USER=<开发者本机用户名>（CI 用仓库变量 AGENTISLAND_SCAN_USER）。\n' >&2
+fi
 
 RULE_IDS=(cred_prefix private_key secret_assign url_token_param local_user_path username email phone)
 RULE_PAT=(
@@ -88,6 +112,10 @@ RULE_PAT=(
 # 绝对零命中的规则（真凭据的形状，没有「假值」这一说）
 HARD=(cred_prefix private_key)
 is_hard() { local r; for r in "${HARD[@]}"; do [[ "$r" == "$1" ]] && return 0; done; return 1; }
+# 通用/CI 账号名下，两条身份规则不参与扫描（原因见 WHOAMI 处注释）。
+identity_rule_inactive() {
+    [[ "$IDENTITY_ACTIVE" -eq 0 ]] && [[ "$1" == username || "$1" == local_user_path ]]
+}
 
 # 命中内容不回显原文：截断 + 打码，密钥不会因此进到终端或 CI 日志里
 redact() { LC_ALL=C sed -E 's/[A-Za-z0-9_./+=~-]{9,}/«masked»/g' | cut -c1-100; }
@@ -170,6 +198,7 @@ scan_worktree() {
     [[ ${#files[@]} -gt 0 ]] || { echo "✗ 没有可扫描的常规文件" >&2; exit 3; }
     for idx in "${!RULE_IDS[@]}"; do
         rule="${RULE_IDS[$idx]}"; pat="${RULE_PAT[$idx]}"
+        identity_rule_inactive "$rule" && continue
         # 一条规则只启动一次 grep。macOS 27 的系统 Bash 在逐文件密集 fork 时
         # 会触发 SIGTRAP；批量扫描也让 grep 的失败码不再被 process substitution 吞掉。
         LC_ALL=C grep -InHE -- "$pat" "${files[@]}" > "$MATCHES" 2>/dev/null
@@ -257,6 +286,10 @@ report_history() {
             cred_prefix|private_key|url_token_param|local_user_path|username) ;;
             *) continue ;;
         esac
+        if identity_rule_inactive "$rule"; then
+            echo "-- [$rule] 跳过：通用/CI 账号名不是开发者身份"
+            continue
+        fi
         hits=$(LC_ALL=C grep -a -E "$pat" "$BLOBSTREAM" 2>/dev/null | cut -f1 | sort -u)
         [[ -z "$hits" ]] && { echo "✓ [$rule] 历史零命中"; continue; }
         joined=$(join -t$'\t' <(printf '%s\n' "$hits" | sort -u) "$PATHS")

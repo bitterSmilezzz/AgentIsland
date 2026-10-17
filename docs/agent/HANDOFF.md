@@ -135,3 +135,18 @@ open('.scratch/release-files.txt','w',encoding='utf-8').write('\n'.join(sorted(s
   没有统一入口——同类遗漏还会再发生。想根治可以做一个统一的 headless 模式判定。
 - `requirements[].gates` 与矩阵「层」列不一致（`BUG-001`），且该字段**全仓无消费者**、
   语义未明。我(agent)查过后**先改又回退**，没有擅自统一——要动它请先写清语义。
+
+---
+
+## 7. 2026-10-18 追加：CI 身份规则修复（本轮）
+
+- **CI 的 `$USER` 是通用账号名**：macOS runner 上 `USER=runner`。`scan-secrets.sh` 的
+  `username` 规则曾把它当敏感词，命中源码里正常的英文词 **287 条**，macOS job 卡在
+  「脱敏扫描（工作区）」，后面的 ci profile、构建与 package 验收**一条都没跑**。
+  已改为 `SCAN_USER` 优先、通用名**显式停用**两条身份规则；要恢复 CI 判别力就配仓库变量
+  `AGENTISLAND_SCAN_USER`（开发者本机用户名）。细节与证据见
+  [`docs/testing/测试自动化交付.md`](../testing/测试自动化交付.md) 第二十四轮。
+- **Windows job 仍红**：编译已过，但 `cargo test` 952 passed / 23 failed / 8 ignored，
+  已登记 `BUG-004`。它仍是 `continue-on-error`，不挡 macOS 门禁。
+- 下一次 push 后要盯 Actions：macOS job 会**第一次**真正跑到「构建并验证 ad-hoc 签名包」
+  与 package profile；若那两步红，失败点在扫描之后，别再按扫描问题排查。

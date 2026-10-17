@@ -42,6 +42,15 @@ _BUILTIN = (
 )
 _RULE_IDS = tuple(rule for rule, _ in _BUILTIN) + ("local_user_path", "username", "email", "phone")
 _HARD = frozenset(("cred_prefix", "private_key"))
+# CI 的通用账号名不是开发者身份：把它当敏感词会命中源码与文档里正常的英文词
+# （实测 macOS runner 的 USER=runner 时 scripts/scan-secrets.sh 有 287 条未备案
+# 命中），snapshot 校验会把合法快照全部误拒。口径必须与扫描器一致：
+# SCAN_USER 优先，其次是 USER；只有通用名时两条身份规则显式停用。
+_GENERIC_IDENTITIES = frozenset({
+    "runner", "runneradmin", "root", "ubuntu", "admin", "user",
+    "circleci", "travis", "jenkins", "buildkite", "vsts", "ec2-user",
+})
+_IDENTITY_RULES = ("local_user_path", "username")
 
 
 def _read_entry(root: Path, name: str) -> SnapshotEntry | None:
@@ -105,23 +114,40 @@ def _array(source: str, name: str, multiline: bool = False) -> list[str]:
     return shlex.split(matches[0], comments=False, posix=True)
 
 
+def _identity_term() -> str | None:
+    """Return the developer identity used by the two identity rules.
+
+    None means only a generic CI account name is available. The rules are then
+    inactive, matching scripts/scan-secrets.sh (which reports that explicitly).
+    An entirely missing identity stays fail-closed.
+    """
+    name = os.environ.get("SCAN_USER") or os.environ.get("USER")
+    if not name:
+        import getpass
+        name = getpass.getuser()
+    if not name:
+        raise SnapshotSafetyError("snapshot_scanner_identity_unavailable")
+    return None if name in _GENERIC_IDENTITIES else name
+
+
 def _project_rules(data: bytes) -> tuple[tuple[str, re.Pattern[bytes]], ...]:
     source = data.decode("utf-8")
     ids, patterns = _array(source, "RULE_IDS"), _array(source, "RULE_PAT", True)
     hard = _array(source, "HARD")
     if tuple(ids) != _RULE_IDS or set(hard) != _HARD or len(patterns) != len(ids):
         raise SnapshotSafetyError("snapshot_scanner_rules_invalid")
-    username = os.environ.get("USER")
-    if not username:
-        import getpass
-        username = getpass.getuser()
-    if not username:
-        raise SnapshotSafetyError("snapshot_scanner_identity_unavailable")
+    username = _identity_term()
     compiled = []
     for rule, pattern in zip(ids, patterns):
-        # Preserve the scanner's ERE meaning under LC_ALL=C, including USER as a
-        # regex. All current static rules use the common ERE/Python subset.
-        pattern = pattern.replace("$WHOAMI", username).replace("[[:space:]]", r"[\t\r\v\f ]")
+        # Generic CI accounts do not identify the developer; the scanner disables
+        # these two rules for the same reason rather than rejecting normal words.
+        if username is None and rule in _IDENTITY_RULES:
+            continue
+        # Preserve the scanner's ERE meaning under LC_ALL=C, including the
+        # identity term as a regex. All static rules use the common ERE subset.
+        if username is not None:
+            pattern = pattern.replace("$WHOAMI", username)
+        pattern = pattern.replace("[[:space:]]", r"[\t\r\v\f ]")
         if re.search(r"\$[A-Za-z{(]", pattern) or "[[:" in pattern:
             raise SnapshotSafetyError("snapshot_scanner_rules_invalid")
         compiled.append((rule, re.compile(os.fsencode(pattern))))

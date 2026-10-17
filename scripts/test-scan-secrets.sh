@@ -464,6 +464,41 @@ SH
 parallel_scans worktree
 parallel_scans history --history
 
+# CI 的 $USER 是通用账号名（macOS runner / Windows runneradmin），不是开发者身份。
+# 把它当敏感词，源码与文档里正常的英文词 "runner" 会全部命中（实测 287 条），
+# macOS job 卡在扫描这一步，ci profile、构建与 package 验收一条都跑不到。
+# 通用名必须**显式停用**两条身份规则（stderr 说明），而不是制造假红或静默放行。
+fixture generic-ci-account
+printf 'the runner keeps running the suite\n/Users/runner/work/project\n' > "$FIXTURE/ordinary.txt"
+(cd "$FIXTURE" && git add -- ordinary.txt) >/dev/null 2>&1
+run generic-ci-account env USER=runner bash scripts/scan-secrets.sh
+check 'generic CI account does not flag ordinary words' zero \
+    'username 与 local_user_path 规则本轮停用' "$RC" "$OUT"
+
+# 空的 SCAN_USER 必须回落到 USER；若被替换成空正则，每一行都会命中。
+fixture scan-user-empty
+run scan-user-empty env USER=runner SCAN_USER= bash scripts/scan-secrets.sh
+check 'empty SCAN_USER falls back instead of matching everything' zero \
+    '✓ 密钥/个人信息扫描通过' "$RC" "$OUT"
+
+# CI 里配置了 SCAN_USER 时，两条身份规则必须恢复判别力。
+fixture scan-user-override
+printf '/Users/%s/work\n' 'scan_fixture_dev' > "$FIXTURE/identity.txt"
+(cd "$FIXTURE" && git add -- identity.txt) >/dev/null 2>&1
+run scan-user-override env USER=runner SCAN_USER=scan_fixture_dev bash scripts/scan-secrets.sh
+check 'explicit SCAN_USER keeps identity rules active' nonzero \
+    '[local_user_path] identity.txt' "$RC" "$OUT"
+
+# 历史扫描同样不能在通用名下把普通英文词当泄漏。
+fixture generic-ci-history
+printf 'runner ordinary word\n' > "$FIXTURE/history.txt"
+(cd "$FIXTURE" && git add -- history.txt &&
+    git -c user.name=fixture -c user.email=fixture@example.invalid \
+        -c core.hooksPath=/dev/null commit -qm fixture) >/dev/null 2>&1
+run generic-ci-history env USER=runner bash scripts/scan-secrets.sh --history
+check 'generic CI account skips identity rules in history' zero \
+    '跳过：通用/CI 账号名' "$RC" "$OUT"
+
 # Seed legacy fixed names with symlinks only in the disposable namespace. The
 # real scanner must leave both the links and their sentinel targets unchanged.
 fixture legacy-symlinks

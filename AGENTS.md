@@ -114,6 +114,7 @@ scripts/scan-secrets.sh --release  # 工作区 + 全部 git 对象（release.sh 
 scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
 ```
 
+- **CI 的 `$USER` 是通用账号名**（`runner`/`runneradmin`）：身份类规则（`username`、`local_user_path`）在通用名下会**显式停用**并说明原因；要保留 CI 的判别力，在仓库变量 `AGENTISLAND_SCAN_USER` 填开发者本机用户名（扫描器读 `SCAN_USER`）。本机 pre-commit 不受影响
 - 规则是**棘轮**：命中的 (规则, 文件, 行) 要在 `scripts/secrets-baseline.txt` 里备过案，新增即失败。假凭据、假邮箱可以备案；`cred_prefix`/`private_key` 两类**绝对零命中**，不许进 baseline
 - 豁免用行内 `nosec: <理由>`，理由必须写在被豁免的那一行上；全局禁用开关是 `SKIP_SCAN=1`，只用于本地试跑
 - 本项目**不存储任何凭据**（源码零硬编码 secret）；如需要凭据一律环境变量或钥匙串注入，禁止写进任何文件

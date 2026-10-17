@@ -27,6 +27,13 @@ jobs:
   macos:
     name: macOS
     runs-on: macos-latest
+    env:
+      # 可选：仓库变量 AGENTISLAND_SCAN_USER = 开发者本机用户名。
+      # 不配时 scripts/scan-secrets.sh 会显式停用 username/local_user_path 两条身份
+      # 规则并说明原因——runner 的 $USER 是通用账号名 `runner`，拿它当敏感词会命中
+      # 源码里正常的英文词（实测 287 条），整条 macOS job 卡在扫描、后面的门禁与
+      # 打包一条都跑不到。配了才会恢复这两条规则的判别力（脚本支持 SCAN_USER 覆盖）。
+      SCAN_USER: ${{ vars.AGENTISLAND_SCAN_USER }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
