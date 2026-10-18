@@ -215,6 +215,18 @@ TAURI_SIGNING_PRIVATE_KEY_PATH=~/.local/share/agentisland-updater/updater.key \
 正确做法是：先带着本轮要发版的修复做一次提交，让 `release.sh` 把它作为发版提交。
 （这也是为什么上面那步先写「先提交并发布」，而不是「一条命令」。）
 
+**推论：站点改动也别提前提交。** 展示页的下载按钮是 DMG 直链，而直链里的 tag
+（`v0.0.325`）只有发版之后才存在——提交站点**必须**发生在发版之后或同一次发版里。
+提前提交会出现「仓库里已经写着 v0.0.325.dmg，但该链接 404」的窗口期。
+所以顺序是：改站点 → 保持未提交 → 跑 `release.sh`（它会一并提交并打 tag）。
+
+### 站点 DMG 直链的维护约定
+
+`site/index.html` 的 4 个下载按钮指向
+`releases/download/<tag>/AgentIsland-<版本>.dmg`，**没有 `latest` 这种稳定写法**
+（GitHub 不提供 `latest.dmg`）。代价是每次发版都要同步这一行版本号。
+这是有意取舍：换来用户点击后**不经过任何中间页面**直接下载。
+
 ### ⚠️ updater 私钥（不可逆的那部分）
 
 - 位置 `~/.local/share/agentisland-updater/updater.key`，权限 **600**，**仓库外**，内容从未打印或提交。
