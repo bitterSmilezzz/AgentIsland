@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.324"
+version = "0.0.325"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -86,6 +86,16 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
 ] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# **必须关掉 default 特征**：它带 `rustls-tls`，会把 ring 拉进来，而 ring 要编译 C 代码。
+# 本机（macOS）做 Windows 交叉检查时没有 Windows SDK 头文件，ring 直接断在
+# `fatal error: 'assert.h' file not found`——实测让 `windows crate` 门禁从
+# passed 变 failed（那是本轮引入的真实回归，不是既有噪声）。
+#
+# 关掉 default 后 updater 走项目自己的 `reqwest`（上面已用
+# `default-features = false` + `native-tls`），与既有的 macOS 钥匙串口径一致。
+tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "zip"] }
 
 [profile.release]
 strip = true

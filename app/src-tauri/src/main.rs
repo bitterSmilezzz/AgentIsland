@@ -4413,6 +4413,10 @@ fn main() {
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        // 自动更新（NOT-06 方向）。插件本身不做任何事：端点与公钥在
+        // `tauri.conf.json` 的 `plugins.updater`，检查/下载由界面按需触发。
+        // 签名校验不可关闭——它验的是「这个更新包确实是我们发布的」。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(shared.clone())
         .manage(WindowLayoutStore::new(
             window_layout_service::Store::with_journal(window_layout_journal::Store::at_default()),

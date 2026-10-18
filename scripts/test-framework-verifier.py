@@ -64,6 +64,16 @@ class FrameworkVerifierTests(unittest.TestCase):
             shutil.copy2(SCRIPTS / name, scripts / name)
         for name in META:
             (scripts / f"{name}.py").touch()
+        # 生成器类脚本要**真的复制**，不能 touch 成空文件：`verify-framework.sh`
+        # 会执行它们，空文件被 python 解释成语法错误（exit 2），
+        # 于是每个夹具用例都挂在这一条上（实测 20 项里 5 项红）。
+        # 空 touch 只适用于「只要文件存在、不需要被执行」的脚本。
+        for name in ("automation/render-matrix.py", "automation/render-status.py",
+                     "automation/render-update-manifest.py"):
+            target = scripts / name
+            source = SCRIPTS / name
+            if source.is_file():
+                shutil.copy2(source, target)
         for name in ("automation/selftest.py", "automation/pipeline.py",
                      "test-scan-secrets.sh", "scan-secrets.sh",
                      "check-windows-fragment.sh", "check-windows-crate.sh"):

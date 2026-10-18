@@ -4,6 +4,24 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.325] - 2026-10-18 — DMG 安装包与自动更新基础设施
+
+### DMG 安装包
+
+- 发布物新增 **DMG**（拖到「应用程序」），与 zip 并列发到 Release：zip 里有随包 CLI，DMG 里没有，两者互补。
+- 打包必须显式给 `APPLE_SIGNING_IDENTITY="-"`：不设时 tauri 仍会打出 DMG，但**包内 app 签名不完整**（`codesign --verify --strict` 报 `code has no resources but signature indicates they must be present`），而同一份代码经 `build-app.sh` 手动签名的 `dist/AgentIsland.app` 是完整的——两条构建路径不同。
+- 出包时**自校验** DMG 内 app 的签名，不完整即构建失败：签名残缺的包能打包成功、能分发，用户打开才炸。
+- 仍为 ad-hoc 签名、未公证：首次打开需右键 → 打开（要免这一步需 Apple Developer Program，本版不含）。
+- **仅 arm64**（Apple Silicon）；Intel Mac 需 universal binary，本版未做。
+
+### 自动更新基础设施（本版不含 UI 与发布接线）
+
+- 接入 `tauri-plugin-updater`：配置 `createUpdaterArtifacts` 与 `plugins.updater`（公钥 + GitHub Releases 静态 JSON 端点）。
+- updater **必须关掉 `default` 特征**：它带 `rustls-tls`，会把 `ring` 拉进来编译 C 代码，本机做 Windows 交叉检查时没有 Windows SDK 头文件，直接断在 `fatal error: 'assert.h' file not found`——实测让 `windows crate` 门禁从 passed 变 failed（本轮引入的真实回归）。改用 `native-tls`，与项目既有 `reqwest` 口径一致。
+- 新增更新清单生成器（`scripts/automation/render-update-manifest.py`）：从**已签名**的 macOS 更新包生成 `latest.json`，登记为 `automation.update-manifest` 门禁项。
+- 无签名更新包时 `--check` 安静通过（无物可校验）、`--write` 仍失败（不伪造发布信息）。两种状态此前被混为一谈，会让干净克隆恒红。
+- **未完成**：界面（检查/提示/下载/安装）、`release.sh` 里的签名与清单生成步骤、真实签名包的端到端验收。密钥已生成并妥善保管（仓库外），但**尚未用它签过任何发布包**。
+
 ## [0.0.324] - 2026-10-17 — 外发交付状态与故障升级、通知入站账本、结构化入队延迟与自动化测试框架
 
 ### 结构化 hook 入队延迟

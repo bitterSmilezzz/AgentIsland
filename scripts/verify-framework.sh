@@ -79,6 +79,10 @@ for t in test-automation-runner test-test-registry test-automation-artifact \
   run_suite "$t" "$PY" "scripts/$t.py"
 done
 
+note "updater metadata drift check"
+# A missing signed updater bundle is a failed prerequisite, never a fabricated manifest.
+run_suite "updater manifest" "$PY" scripts/automation/render-update-manifest.py --check
+
 note "pipeline selftest"
 run_suite "selftest" "$PY" scripts/automation/selftest.py
 

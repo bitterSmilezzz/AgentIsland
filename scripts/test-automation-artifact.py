@@ -396,6 +396,31 @@ cp target/release/agentisland target/release/bundle/macos/AgentIsland.app/Conten
 if [ "$ARTIFACT_FIXTURE_MODE" = "drift" ]; then
   printf '// drift\\n' >> src/engine.rs
 fi
+# --bundles dmg 时还要产出 DMG 文件：build-app.sh 随后会 `hdiutil attach` 做签名自校验。
+# 桩件不造它，构建会在「DMG 未产出」处失败——那是**真实的失败**（发版确实没包可发）。
+mkdir -p app/src-tauri/target/release/bundle/dmg
+printf 'synthetic dmg payload\\n' > "app/src-tauri/target/release/bundle/dmg/AgentIsland_0.0.324_aarch64.dmg"
+exit 0
+""", 0o755)
+        # `cargo tauri build --bundles dmg` 的桩：造一个**签名完整**的 DMG。
+        # build-app.sh 出包后会挂载它做 `codesign --verify --strict --deep` 自校验，
+        # 桩件不造 DMG 的话那一步会失败（真实构建不受影响，只有夹具受影响）。
+        self.write("shims/hdiutil", """#!/bin/sh
+# 桩：只回答自校验脚本会问的两件事——挂载点与「校验通过」。
+if [ "$1" = "attach" ]; then
+  # 桩件里没有真挂载，但自校验要看到「挂载点 + app 目录」才可能通过；
+  # codesign 本身也是桩（exit 0），所以造出目录形状即可。
+  # 挂载点放在**夹具自己的临时目录**里：不需要 /Volumes 权限，也不会污染宿主机。
+  # build-app.sh 读 hdiutil 输出的第三列（挂载路径），所以这里给什么路径都行。
+  mkdir -p "$ARTIFACT_FIXTURE_ROOT/fixture-mount/AgentIsland.app"
+  printf '/dev/disk9s1\tApple_HFS\t%s\n' "$ARTIFACT_FIXTURE_ROOT/fixture-mount"
+  exit 0
+fi
+if [ "$1" = "detach" ]; then
+  rm -rf "$ARTIFACT_FIXTURE_ROOT/fixture-mount" 2>/dev/null || true
+  exit 0
+fi
+exit 0
 """, 0o755)
         self.write("shims/codesign", "#!/bin/sh\nexit 0\n", 0o755)
         return subprocess.run(["/bin/bash", str(self.root / "scripts/build-app.sh"), "1.2.3"],

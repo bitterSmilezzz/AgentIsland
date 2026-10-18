@@ -67,6 +67,7 @@
         "automation.break",
         "automation.break-artifact",
         "automation.break-snapshot",
+        "automation.update-manifest",
         "automation.status"
       ],
       "audit_ref": "docs/测试映射盘点.md",
@@ -1976,6 +1977,24 @@
         "scripts/test-remote-delivery-probe.py"
       ]
     },
+    "automation.update-manifest": {
+      "command": [
+        "python3",
+        "scripts/test-update-manifest.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "隔离 macOS 更新归档夹具：字段、架构与版本匹配、缺产物/签名拒绝、只读漂移校验；不代表真实发布或客户端安装验收。",
+      "test_files": [
+        "scripts/test-update-manifest.py"
+      ]
+    },
     "automation.status": {
       "command": [
         "python3",
@@ -2076,6 +2095,7 @@
       "automation.break-snapshot",
       "auto01.buildlock",
       "auto01.restartapp",
+      "automation.update-manifest",
       "automation.status"
     ],
     "browser": [
@@ -2151,6 +2171,7 @@
       "automation.break-snapshot",
       "auto01.buildlock",
       "auto01.restartapp",
+      "automation.update-manifest",
       "automation.status"
     ],
     "package": [
@@ -2189,6 +2210,7 @@
       "automation.break",
       "automation.break-artifact",
       "automation.break-snapshot",
+      "automation.update-manifest",
       "automation.status"
     ],
     "note": "Selected blocked checks never yield success. Package expects a freshly built bundle after ci. Native runs only through verified VM, client opt-in, manual selects one ignored probe. No profile sends real paid requests. protocol = L2 format/protocol subset (also in ci). soak = L7 long-run resource protocol through the verified VM orchestrator; it is never run bare on the host and its green result is not a budget verdict. delivery is intentionally absent: NOT-03/NOT-04 have no implementation yet, and an empty profile would let \"selected but nothing ran\" pass as a real choice. recovery was removed rather than left as an alias of soak: crash/restart recovery has no implementation, and an alias would advertise L7 recovery coverage that does not exist.",
@@ -2264,6 +2286,7 @@
       "not01.ledgerrestart",
       "auto01.restartapp",
       "not05.remotedelivery",
+      "automation.update-manifest",
       "automation.status"
     ],
     "protocol": [

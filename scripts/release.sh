@@ -235,6 +235,24 @@ rm -f "$ZIP"
 ( cd dist && zip -qry "AgentIsland-$VERSION.zip" AgentIsland.app agentisland )
 ls -lh "$ZIP" | awk '{print "    " $9 "  " $5}'
 
+# DMG 单独作为 Release 附件：它是「拖到 Applications」的用户形态，zip 给脚本/CI 用。
+# 两个都发——zip 里没有 DMG，DMG 里没有 CLI。
+DMG="dist/AgentIsland-$VERSION.dmg"
+[[ -f "$DMG" ]] || die "DMG 未产出（build-app.sh 应已生成）——用户要的是可安装形态，不能只发 zip"
+ls -lh "$DMG" | awk '{print "    " $9 "  " $5}'
+
+# updater 更新清单：已装的客户端从 GitHub Releases 的 latest.json 读它。
+# 三件附件一起发，缺一客户端就更新不了：
+#   latest.json（清单） + .app.tar.gz（更新包） + .sig（它的签名）
+# 没有签名包时**不**生成清单（生成器会拒绝），此时本版不支持自动更新，如实说明。
+if [[ -f app/src-tauri/target/release/bundle/macos/${APP_NAME:-AgentIsland}.app.tar.gz.sig ]]; then
+    "$PYTHON_MIN" scripts/automation/render-update-manifest.py --write || die "更新清单生成失败"
+    cp dist/latest.json "dist/AgentIsland-$VERSION.latest.json"
+    ls -lh "dist/AgentIsland-$VERSION.latest.json" | awk '{print "    " $9 "  " $5}'
+else
+    echo "    ⚠ 本次没有签名更新包（缺 TAURI_SIGNING_PRIVATE_KEY），不生成 latest.json —— 本版不支持自动更新"
+fi
+
 step "提交"
 # 清单已在任何发布副作用之前预检；此处复核后仅暂存显式文件（含 tracked 删除）。
 release_stage_files || exit 1
@@ -270,13 +288,25 @@ if [[ -z "$NOTES_FILE" ]]; then
         p == 1 { print }
     ' CHANGELOG.md > "$NOTES_FILE"
     [[ -s "$NOTES_FILE" ]] || die "CHANGELOG 里取不出 v$VERSION 那一节的正文"
-    printf '\n下载地址：`AgentIsland-%s.zip`（未公证，首次打开需右键 → 打开）。\n' "$VERSION" >> "$NOTES_FILE"
+    printf '\n## 下载\n\n- `AgentIsland-%s.dmg` — 图形界面（拖到「应用程序」）。**未公证**，首次打开需右键 → 打开。\n- `AgentIsland-%s.zip` — 随包 CLI（`agentisland`）与免解压取用的 app。\n' "$VERSION" "$VERSION" >> "$NOTES_FILE"
 fi
 if gh release view "v$VERSION" >/dev/null 2>&1; then
     gh release edit "v$VERSION" --title "v$VERSION: $TITLE" --notes-file "$NOTES_FILE"
 else
-    gh release create "v$VERSION" "$ZIP" --title "v$VERSION: $TITLE" \
-        --notes-file "$NOTES_FILE" --latest
+    # 有更新清单时把它与更新包一起发；没有就只发 DMG+zip。
+    if [[ -f "dist/AgentIsland-$VERSION.latest.json" \
+          && -f app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz \
+          && -f app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz.sig ]]; then
+        cp app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz \
+           app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz.sig dist/
+        gh release create "v$VERSION" "$DMG" "$ZIP" \
+            "dist/AgentIsland-$VERSION.latest.json" \
+            "dist/AgentIsland.app.tar.gz" "dist/AgentIsland.app.tar.gz.sig" \
+            --title "v$VERSION: $TITLE" --notes-file "$NOTES_FILE" --latest
+    else
+        gh release create "v$VERSION" "$DMG" "$ZIP" --title "v$VERSION: $TITLE" \
+            --notes-file "$NOTES_FILE" --latest
+    fi
 fi
 
 step "重启应用（AGENTS.md：出包后无感替换旧实例）"

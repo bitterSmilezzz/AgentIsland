@@ -117,6 +117,26 @@ else
     echo "==> 跳过全量测试（SKIP_TESTS=1）：本次构建**未运行测试**，仅可作打包用途"
 fi
 
+# updater 更新包的签名密钥：**在任何 cargo tauri build 之前**读入并导出。
+#
+# `createUpdaterArtifacts: true` 对**每一次** tauri build 都生效，不只是打 DMG 那次——
+# 所以主构建（第 121 行）缺私钥也会失败，报
+# `A public key has been found, but no private key`。
+#
+# 只认内容：传 `TAURI_SIGNING_PRIVATE_KEY_PATH` 时 tauri 会去找钥匙串里的密码
+# （实测报 `incorrect updater private key password`）。这把私钥由
+# `signer generate --ci` 生成、**无口令**，所以密码必须显式给空串。
+# 私钥在仓库外（`~/.local/share/agentisland-updater/`），不进 git、不打印。
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" && -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" \
+      && -f "$TAURI_SIGNING_PRIVATE_KEY_PATH" ]]; then
+    TAURI_SIGNING_PRIVATE_KEY="$(cat "$TAURI_SIGNING_PRIVATE_KEY_PATH")"
+    export TAURI_SIGNING_PRIVATE_KEY
+    echo "==> updater 私钥取自 TAURI_SIGNING_PRIVATE_KEY_PATH（内容读入，不打印）"
+fi
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+    export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+fi
+
 echo "==> 构建 Rust/Tauri 端（**主交付物**）"
 ( cd app/src-tauri && cargo tauri build --bundles app -- --locked )
 RUST_SRC="app/src-tauri/target/release/bundle/macos/${APP_NAME}.app"
@@ -161,6 +181,47 @@ codesign --force --sign - "dist/agentisland"
 codesign --force --deep --sign - "$APP_DIR"
 codesign --verify --strict "dist/agentisland"
 codesign --verify --deep --strict "$APP_DIR"
+
+# DMG 安装包（用户要的「拖到 Applications」形态）。
+#
+# 为什么必须显式给 `APPLE_SIGNING_IDENTITY="-"`：不设时 tauri 仍会打包，但 DMG 里的
+# app 签名**不完整**——`codesign --verify --strict` 报
+# `code has no resources but signature indicates they must be present`，
+# 而同一份代码打出来的 dist/AgentIsland.app（上面手动签的）是完整的。
+# 差异来自两条构建路径：dist 版走本文件的 `codesign`，DMG 版走 tauri 自己的打包器。
+#
+# 顺带记一个当时的错误结论：曾以为「挂载 DMG 后重签名」能修，实测 DMG 是**只读**，
+# `codesign` 报 `Read-only file system`；而 `codesign ... && echo ✓` 在 rc=0 时会打印 ✓
+# ——即使校验其实失败。**校验必须看 `codesign --verify` 的判据，不能看前一条命令的退出码。**
+echo "==> 打 DMG 安装包（ad-hoc 签名；密钥已在主构建前注入）"
+APPLE_SIGNING_IDENTITY="-" cargo tauri build --bundles dmg
+DMG_SRC="$(ls -t app/src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)"
+[[ -n "$DMG_SRC" && -f "$DMG_SRC" ]] || { echo "✗ DMG 未产出" >&2; exit 1; }
+DMG_VER="$(basename "$DMG_SRC" | sed -E 's/.*_([0-9]+\.[0-9]+\.[0-9]+)_.*/\1/')"
+cp "$DMG_SRC" "dist/${APP_NAME}-${DMG_VER}.dmg"
+DMG_FINAL="dist/${APP_NAME}-${DMG_VER}.dmg"
+
+# 自校验：DMG 里的 app 签名必须完整。这一条是**门禁级**的——
+# 签名残缺的 DMG 能打包成功、能分发，用户打开才炸，所以必须在出包时就拦住。
+verify_dmg_signature() {
+    local dmg="$1" mount app rc=1
+    # hdiutil attach 的输出是三列：设备、类型、**挂载路径**。
+    # 取**最后一个非空**的第三列，不要 `exit` 在第一行：第一行可能是分区方案行
+    # （实测 `/dev/disk4  GUID_partition_scheme  ` 挂载点为空），取它就得到空串。
+    mount=$(hdiutil attach -nobrowse -readonly "$dmg" 2>/dev/null \
+        | awk -F'\t' 'NF>=3 && $3 != "" { m = $3 } END { print m }') || return 1
+    [[ -n "$mount" ]] || return 1
+    app="$mount/${APP_NAME}.app"
+    if [[ -d "$app" ]] && codesign --verify --strict --deep "$app" 2>/dev/null; then rc=0; fi
+    hdiutil detach "$mount" -quiet 2>/dev/null || true
+    return $rc
+}
+if verify_dmg_signature "$DMG_FINAL"; then
+    echo "    ✓ DMG 内 app 签名完整：$(basename "$DMG_FINAL")"
+else
+    echo "✗ DMG 内 app 签名不完整——签名残缺的包不能分发" >&2
+    exit 1
+fi
 
 # 全部签名成功后复核源码没有漂移，原子发布 0600 收据。
 "$PYTHON_MIN" scripts/automation/artifact.py finish "${ARTIFACT_ARGS[@]}" --build-id "$BUILD_ID"
