@@ -166,22 +166,24 @@ open('.scratch/release-files.txt','w',encoding='utf-8').write('\n'.join(sorted(s
 
 ---
 
-## 8. 2026-10-18 追加：DMG 分发 + 自动更新基础设施（**已提交、未发版**）
+## 8. 2026-10-18：DMG 分发 + 自动更新基础设施（**已随 v0.0.325 发布**）
 
-> ✅ 这 19 项改动**已提交并推送**（`118b84d`），已通过全量门禁（`ALL VERIFIED`，rc=0）。
-> **但没有发版**——`v0.0.325` 未上线，用户仍拿不到 DMG、自动更新也没启用。
+> ✅ 改动随 `118b84d` 提交，并已由 `release.sh` 正式发布：
+> 发版提交 `e79f056`、tag `v0.0.325`、GitHub Release 附件
+> `AgentIsland-0.0.325.dmg`（6,482,244 B）/ `.zip` / `.app.tar.gz` / `.sig` / `latest.json`。
 
-### 已实测可用（已提交，未发版）
+### 已实测可用（线上）
 
 | 项 | 证据 |
 | :--- | :--- |
-| DMG 打出 | `AgentIsland-0.0.325.dmg`（6.2 MB） |
+| DMG 已上线 | `releases/download/v0.0.325/AgentIsland-0.0.325.dmg` HTTP 200，字节数与本地构建一致（sha256 `d4d876ed…b0e5`） |
 | DMG 内 app 签名完整 | 构建日志 `✓ DMG 内 app 签名完整`；残缺即构建失败 |
 | updater 更新包已签名 | `.app.tar.gz` + `.sig`（412 B），真实 minisign 签名 |
-| 更新清单端到端 | `dist/latest.json` 字段正确：version / `darwin-aarch64` / signature / 下载 URL |
+| 更新清单端到端 | `releases/latest/download/latest.json` HTTP 200：version 0.0.325 / `darwin-aarch64` / signature / 下载 URL |
+| 站点直链 | `site/` 四个按钮都是 DMG 直链，点击不经过中间页 |
 | 全量门禁 | `bash scripts/verify-framework.sh` → **ALL VERIFIED**（rc=0） |
 
-### 发版只差一条命令
+### 发版命令（本轮实际用过的那条）
 
 ```sh
 # 1) 生成显式文件清单（不要用 unicode_escape 还原中文路径，会坏）
@@ -200,25 +202,19 @@ open('.scratch/release-files.txt','w',encoding='utf-8').write('\n'.join(sorted(s
 RELEASE_FILES_FILE=.scratch/release-files.txt \
 NATIVE_TEST_VM=agentisland-iso NATIVE_TEST_USER=admin \
 TAURI_SIGNING_PRIVATE_KEY_PATH=~/.local/share/agentisland-updater/updater.key \
-  bash scripts/release.sh 0.0.325 "DMG 安装包与自动更新基础设施"
+  bash scripts/release.sh <X.Y.Z> "<CHANGELOG 首条那句话>"
 ```
 
-### ⚠️ 发版前必读：`release.sh` 要提交本轮改动
+VM 前置：`tart run agentisland-iso --no-graphics`（脚本发现 VM 未运行会直接 `die`「未运行原生门禁，不发布」）。
 
-`release.sh` 的设计是**把本轮改动一起提交**（清单 → 暂存 → commit → tag）。
-所以它对「工作区已经干净」是**不成立**的：
+### ⚠️ `release.sh` 要求「有未提交改动」（BUG-005，未修）
 
-- 清单由 `git status` 生成，工作区干净时清单为空 → 第一步就 `清单为空` 退出；
-- 即使手填已提交的文件，走到「提交」一步也会因为没有 staged 改动而 die。
+`release.sh` 的设计是**把本轮改动一起提交**（清单 → 暂存 → commit → tag），
+所以它对「工作区干净」是**不成立**的：清单由 `git status` 生成，干净时为空的清单第一步就退出；
+手填已提交的文件则走到「提交」一步因无 staged 改动而 die。
 
-本轮（v0.0.325）的改动已经随 `118b84d` 推上去了，所以**现在直接跑上面的命令会失败**。
-正确做法是：先带着本轮要发版的修复做一次提交，让 `release.sh` 把它作为发版提交。
-（这也是为什么上面那步先写「先提交并发布」，而不是「一条命令」。）
-
-**推论：站点改动也别提前提交。** 展示页的下载按钮是 DMG 直链，而直链里的 tag
-（`v0.0.325`）只有发版之后才存在——提交站点**必须**发生在发版之后或同一次发版里。
-提前提交会出现「仓库里已经写着 v0.0.325.dmg，但该链接 404」的窗口期。
-所以顺序是：改站点 → 保持未提交 → 跑 `release.sh`（它会一并提交并打 tag）。
+推论：**发版那一轮必须先有未提交的改动**（版本号 / CHANGELOG / 站点直链就是这批改动）。
+v0.0.325 与 v0.0.326 都是这么发的。已登记为 BUG-005，是否给脚本加「已提交树」模式尚未决定。
 
 ### 站点 DMG 直链的维护约定
 
@@ -263,18 +259,42 @@ TAURI_SIGNING_PRIVATE_KEY_PATH=~/.local/share/agentisland-updater/updater.key \
 
 ### 仍未做（如实）
 
-- **自动更新的界面层**：检查 / 提示 / 下载 / 安装，一行都没写。`views.js` 与新命令都还没动。
-- `release.sh` 里更新包附件那段**尚未真跑过一次**（要真发一次才知道对不对）。
+- **自动更新的界面层已在 v0.0.326 补上**（见下一节）；下面这些仍然没有：
+- `release.sh` 里更新包附件那段，v0.0.325 是它**第一次真跑**——资产名与「缺件即失败」都已按实跑结果修正。
 - **只 arm64**（Apple Silicon）；Intel Mac 需要 universal binary。
-- 未公证，用户首次打开仍需右键 → 打开（要免这步需 Apple Developer Program，本轮不含）。
-- 自动更新的**端到端验收**（客户端真去 GitHub 拉、验签、替换）完全没做。
+- 未公证，用户首次打开仍需右键 → 打开（要免这步需 Apple Developer Program）。
+- 自动更新的**端到端验收**（客户端真去 GitHub 拉、验签、替换）仍未做。
   **签名不匹配的负例（错误公钥必须被拒）也没做**——这是安全判据，不是可选项。
+
+---
+
+## 9. 2026-10-18 追加：自动更新界面层（v0.0.326）
+
+上一节列的「下一步建议 2」已完成：设置页有完整的
+**检查更新 → 看到新版本与说明 → 下载并安装（带进度）→ 立即重启**。
+
+- Rust 侧 `app/src-tauri/src/update.rs`：`update_current_version` / `update_check` /
+  `update_install` / `update_restart` 四条命令，进度走 `update://progress` 事件。
+- 界面侧 `app/ui/js/update-state.js`（纯状态机，node 可直接测）+
+  `update-panel.js`（渲染与绑定），挂进 `views.js` 的 `pageSettings()`。
+- 三条硬规则有门禁兜底：只有点击才出网、只有 available 才可安装、安装完**不**自动重启。
+- 门禁：`not06.update-state`（变异 3/3）、`not06.update-panel`（真 DOM + 全长样式表，变异 2/2），
+  都进 fast/ci/automation/release 四档；`browser-check.mjs` 允许名单已登记 `test-update-panel.mjs`。
+
+### 这一节踩过的坑（下个 agent 别重犯）
+
+1. **`createUpdateController` 解构的是单个对象**：写成 `(依赖, render)` 会把 render 当第二个
+   位置参数丢掉——面板挂载成功、状态也对，只是**永远不重绘 DOM**。非常难查。
+2. **Tauri `listen` 回调是 `{event, id, payload}`**：进度在 `payload` 里。读成 `event.downloaded`
+   不抛错，进度条永远停在「下载中…」。
+3. **`bindUpdatePanel` 会被 `bindSettings` 以元素调用**：元素没有 `querySelector`，
+   直接调用会把整个设置页打不开。这条是既有的 `test-functional-ui` 抓到的。
+4. **新 UI 文件必须进 `EMBEDDED_ASSET_SAMPLE`**：`embedded_assets_sentinel` 要求 `app/ui` 下的
+   文件与资源表**逐一对上**；漏了就等于这个文件没嵌进二进制，而症状是**零报错**。
+5. **浏览器测试要加载真实样式表**：不加载 CSS 时按钮显隐断言全部成立，结论未必能外推。
 
 ### 下一步建议
 
-1. 先提交本轮修复（CI 无密钥构建 + 资产名 + 能力标签 + 文档），**再**走 `release.sh 0.0.325`
-   —— 注意 `release.sh` 要自己提交，所以清单不能是空的（见上面「发版前必读」）。
-2. 再做界面层：`检查更新` 按钮 → 调 updater → 提示 → 下载 → 重启安装。
-   按已定策略：**手动检查 + 确认后安装**，不在用户不知情时重启应用。
-3. 补端到端验收：装一个旧版 → 发新版 → 确认客户端能发现并升级；
-   **负例必须做**——用错误的公钥验证签名不匹配时被拒绝。
+1. **端到端升级验收**（最有价值）：留一个旧版客户端 → 发新版 → 确认它真能发现并升上去。
+2. **负例**：用错误的公钥验证「签名不匹配被拒绝」，且界面给出的是「已拒绝安装」而不是可重试的错误。
+3. Intel / universal 路径。
