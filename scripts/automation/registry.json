@@ -389,9 +389,11 @@
       "checks": [
         "automation.update-manifest",
         "automation.dist-wiring",
-        "rust.default"
+        "rust.default",
+        "not06.update-state",
+        "not06.update-panel"
       ],
-      "coverage_note": "partial — 基础设施已有：tauri-plugin-updater 接入（native-tls，不引入 ring）、pubkey 与 GitHub Releases 静态清单端点、createUpdaterArtifacts 产出 .app.tar.gz+.sig、render-update-manifest.py 从签名包生成 latest.json 并在无产物时安静通过/--write 失败、发版路径强制私钥且缺私钥即 die、CI 无私钥通道关闭 createUpdaterArtifacts、DMG 内签名自校验；release.sh 按资产名 latest.json 上传并逐件断言。缺：界面层（检查/提示/下载/安装，确认后安装，不在用户不知情时重启）、真实客户端端到端（旧版→新版能发现并升级）、**负例：签名不匹配必须被拒绝**、Intel/universal 路径。",
+      "coverage_note": "partial — 界面层已完成（设置页「更新」分区：检查更新 → 下载并安装 → 显式重启，默认不检查不自动重启，进度未知显示已下载字节而非假百分比）；基础设施与发版接线已有；状态机与真 DOM 各有门禁（not06.update-state / not06.update-panel），变异验证 3/3 与 2/2；签名不匹配被拒、无私钥构建通道、发版强制私钥、latest.json 资产名逐件断言均已有门禁。缺：真实客户端端到端（旧版→新版能发现并升级）、Intel/universal 路径。",
       "audit_ref": "docs/testing/测试自动化交付.md",
       "status": "partial"
     },
@@ -1428,7 +1430,7 @@
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "app/src-tauri 全量 Rust 测试；2026-10-16 本轮实测 1077 passed / 0 failed / 14 ignored（全量，本轮跑过）。通知账本定向实测 23 passed / 0 failed（另含 EngineState 通知键名契约：与 scripts/test-notify-latency-ui.mjs 共读 app/src-tauri/tests/fixtures/contracts/notify-keys.json，单侧改名即变红；含未确认含队首、恢复条数为启动快照的值断言，均已做变异验证可拒错）（含隐私投影、id作用域、flush 状态、独立句柄、淘汰计数与「正文淘汰≠身份遗忘」、ack 只删同身份那条）；CLI 定向 27 passed / 0 failed（含每次投递带新合法 id、CLI 请求体裁被生产路由解析、非 2xx 不印已投递）；含20请求真实HTTP→生产等待/consumer→EngineState及无唤醒负例、真实HTTP跨agent同id两条都入队；三次真实进程重启验收见 not01.ledgerrestart；平台cfg使静态计数不同于执行数，以当前运行回执为准",
+      "source": "app/src-tauri 全量 Rust 测试；2026-10-16 本轮实测 1077 passed / 0 failed / 14 ignored（全量，本轮跑过）。通知账本定向实测 23 passed / 0 failed（另含 EngineState 通知键名契约：与 scripts/test-notify-latency-ui.mjs 共读 app/src-tauri/tests/fixtures/contracts/notify-keys.json，单侧改名即变红；含未确认含队首、恢复条数为启动快照的值断言，均已做变异验证可拒错）（含隐私投影、id作用域、flush 状态、独立句柄、淘汰计数与「正文淘汰≠身份遗忘」、ack 只删同身份那条）；CLI 定向 27 passed / 0 failed（含每次投递带新合法 id、CLI 请求体裁被生产路由解析、非 2xx 不印已投递）；含20请求真实HTTP→生产等待/consumer→EngineState及无唤醒负例、真实HTTP跨agent同id两条都入队；三次真实进程重启验收见 not01.ledgerrestart；平台cfg使静态计数不同于执行数，以当前运行回执为准 NOT-06 侧：updater 状态机（update-state.js / update-panel.js）与 Rust 侧四条命令的错误文案收敛（update.rs）已有定向测试。",
       "note": "Full Rust suite; requirement links identify partial coverage, not completeness. Native platform scope currently validated on macOS.",
       "test_files": [
         "app/src-tauri/src/atomicfile.rs",
@@ -1463,11 +1465,11 @@
         "app/src-tauri/src/minimax.rs",
         "app/src-tauri/src/models.rs",
         "app/src-tauri/src/motion_probe.rs",
-        "app/src-tauri/src/notify_latency.rs",
         "app/src-tauri/src/navigation.rs",
         "app/src-tauri/src/notifier.rs",
-        "app/src-tauri/src/notify_ledger_tests.rs",
+        "app/src-tauri/src/notify_latency.rs",
         "app/src-tauri/src/notify_ledger_privacy_tests.rs",
+        "app/src-tauri/src/notify_ledger_tests.rs",
         "app/src-tauri/src/observability.rs",
         "app/src-tauri/src/placement.rs",
         "app/src-tauri/src/power.rs",
@@ -1504,6 +1506,7 @@
         "app/src-tauri/src/tokens_projection_tests.rs",
         "app/src-tauri/src/transport.rs",
         "app/src-tauri/src/trees.rs",
+        "app/src-tauri/src/update.rs",
         "app/src-tauri/src/usage_context.rs",
         "app/src-tauri/src/usage_projection.rs",
         "app/src-tauri/src/webhook.rs",
@@ -1520,7 +1523,9 @@
         "app/src-tauri/src/window_visibility.rs",
         "app/src-tauri/src/workspace_journal.rs",
         "app/src-tauri/src/workspaces.rs",
-        "app/src-tauri/tests/fixtures/contracts/notify-keys.json"
+        "app/src-tauri/tests/fixtures/contracts/notify-keys.json",
+        "app/ui/js/update-panel.js",
+        "app/ui/js/update-state.js"
       ]
     },
     "rust.manual": {
@@ -2011,6 +2016,41 @@
         "scripts/test-update-manifest.py"
       ]
     },
+    "not06.update-state": {
+      "command": [
+        "node",
+        "scripts/test-update-state.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "NOT-06 状态机：只有显式点击才检查/安装/重启，安装完成不自动重启，进度未知不编数字；变异验证 3/3。",
+      "test_files": [
+        "scripts/test-update-state.mjs"
+      ]
+    },
+    "not06.update-panel": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-update-panel.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "NOT-06 真 DOM：按钮显隐随阶段、进度文案、迟到进度不覆盖已完成、签名被拒不给重启入口、命令注册一致性；变异验证 2/2。",
+      "test_files": [
+        "scripts/test-update-panel.mjs"
+      ]
+    },
     "automation.dist-wiring": {
       "command": [
         "python3",
@@ -2130,6 +2170,8 @@
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
+      "not06.update-state",
+      "not06.update-panel",
       "automation.dist-wiring",
       "automation.status"
     ],
@@ -2207,6 +2249,8 @@
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
+      "not06.update-state",
+      "not06.update-panel",
       "automation.dist-wiring",
       "automation.status"
     ],
@@ -2247,6 +2291,8 @@
       "automation.break-artifact",
       "automation.break-snapshot",
       "automation.update-manifest",
+      "not06.update-state",
+      "not06.update-panel",
       "automation.dist-wiring",
       "automation.status"
     ],
@@ -2324,6 +2370,8 @@
       "auto01.restartapp",
       "not05.remotedelivery",
       "automation.update-manifest",
+      "not06.update-state",
+      "not06.update-panel",
       "automation.dist-wiring",
       "automation.status"
     ],

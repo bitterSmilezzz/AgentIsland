@@ -9,6 +9,7 @@ const scripts = new Set([
   'test-task-detail-navigation.mjs',
   'test-task-reader-leave.mjs',
   'test-notify-latency-ui.mjs',
+  'test-update-panel.mjs',
 ]);
 const name = process.argv[2];
 const override = process.env.TEST_BROWSER_MODULE;

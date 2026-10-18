@@ -469,3 +469,12 @@ html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-setting
 html.shell-island [data-task-attention-slot]:not(:empty) { margin: 8px 11px 0; }
 .shell-sidebar [data-task-attention-slot]:not(:empty) { margin-bottom: 14px; }
 .wb-col [data-task-attention-slot]:empty { display: none; }
+
+/* Update panel (NOT-06). Buttons appear only when their action is legal in the
+   current phase — hiding, not disabling, so the affordance never lies about what
+   is possible. `aria-busy` covers the in-flight phases for assistive tech. */
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .update-section .update-note { margin: 0 0 8px; font-size: 10px; line-height: 1.6; color: var(--text-muted); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .update-section .update-current { margin: 0 0 8px; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .update-section .update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .update-section .update-status { margin: 8px 0 0; font-size: 11px; line-height: 1.6; color: var(--text-ink); }
+html:is(.shell-sidebar, .shell-workbench, .shell-island:has([data-island-settings-page])) .update-section .update-notes { margin: 8px 0 0; padding: 8px 10px; max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: var(--surface-inset); border-radius: 8px; font-family: inherit; font-size: 11px; line-height: 1.6; color: var(--text-muted); }

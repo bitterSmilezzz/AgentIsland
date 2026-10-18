@@ -78,6 +78,7 @@ mod todos;
 mod tokens;
 mod transport;
 mod trees;
+mod update;
 mod usage_context;
 mod usage_projection;
 mod hook_event;
@@ -3461,6 +3462,8 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/report-panel.js",
     "js/tool-budget-state.js",
     "js/tool-budgets.js",
+    "js/update-panel.js",
+    "js/update-state.js",
     "js/usage-trend.js",
     "js/usage-context.js",
     "js/workspaces-page.js",
@@ -4883,7 +4886,11 @@ fn main() {
             report_text,
             hide_workbench,
             show_workbench,
-            collapse_to_tray
+            collapse_to_tray,
+            update::update_current_version,
+            update::update_check,
+            update::update_install,
+            update::update_restart
         ])
         .build(context)
         .expect("error while building tauri application");

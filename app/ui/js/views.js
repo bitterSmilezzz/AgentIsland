@@ -2,6 +2,7 @@ import { bindInterfaceModels } from './interface-models.js';
 import { rememberPage, pageMotion } from './page-motion.js';
 import { trendCardHtml, bindTrend, hourRecords } from './usage-trend.js';
 import { toolBudgetsHtml, bindToolBudgets } from './tool-budgets.js';
+import { updatePanelHtml, bindUpdatePanel } from './update-panel.js';
 import { usageContextHtml, bindUsageContext } from './usage-context.js';
 import { reportPanelHtml, bindReport, visibleReportPanel, openUsageReport } from './report-panel.js';
 import { pageSessions, hydrateSessions, refreshSessions } from './sessions-page.js';
@@ -1888,6 +1889,7 @@ export function pageSettings() {
   const advanced = SETTING_FIELDS.map(group => groupHtml(group.group, group.items.filter(field => !commonKeys.has(field.key)))).join('');
   return `<div class="sb-page settings-page" data-settings-root>
     ${common.map(group => groupHtml(group.title, group.keys.map(key => fields.get(key)))).join('')}
+    ${updatePanelHtml()}
     <details class="settings-more" data-settings-more${st.settingsAdvancedOpen ? ' open' : ''}>
       <summary><span>更多设置</span><span class="settings-more-caption">布局、采样与预算</span>${ICONS.chevRight}</summary>
       <p class="settings-footnote">监控阈值下次采样生效，超出范围的数值自动调整。</p>
@@ -1927,6 +1929,7 @@ export function bindSettings() {
   });
   const root = document.querySelector('[data-settings-root]');
   if (!root) return;
+  bindUpdatePanel(root);
   root.querySelectorAll('[data-set]').forEach((el) => {
     const handler = async () => {
       const key = el.dataset.set;
