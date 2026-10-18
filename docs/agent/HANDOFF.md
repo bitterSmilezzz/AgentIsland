@@ -203,6 +203,18 @@ TAURI_SIGNING_PRIVATE_KEY_PATH=~/.local/share/agentisland-updater/updater.key \
   bash scripts/release.sh 0.0.325 "DMG 安装包与自动更新基础设施"
 ```
 
+### ⚠️ 发版前必读：`release.sh` 要提交本轮改动
+
+`release.sh` 的设计是**把本轮改动一起提交**（清单 → 暂存 → commit → tag）。
+所以它对「工作区已经干净」是**不成立**的：
+
+- 清单由 `git status` 生成，工作区干净时清单为空 → 第一步就 `清单为空` 退出；
+- 即使手填已提交的文件，走到「提交」一步也会因为没有 staged 改动而 die。
+
+本轮（v0.0.325）的改动已经随 `118b84d` 推上去了，所以**现在直接跑上面的命令会失败**。
+正确做法是：先带着本轮要发版的修复做一次提交，让 `release.sh` 把它作为发版提交。
+（这也是为什么上面那步先写「先提交并发布」，而不是「一条命令」。）
+
 ### ⚠️ updater 私钥（不可逆的那部分）
 
 - 位置 `~/.local/share/agentisland-updater/updater.key`，权限 **600**，**仓库外**，内容从未打印或提交。
@@ -244,10 +256,12 @@ TAURI_SIGNING_PRIVATE_KEY_PATH=~/.local/share/agentisland-updater/updater.key \
 - **只 arm64**（Apple Silicon）；Intel Mac 需要 universal binary。
 - 未公证，用户首次打开仍需右键 → 打开（要免这步需 Apple Developer Program，本轮不含）。
 - 自动更新的**端到端验收**（客户端真去 GitHub 拉、验签、替换）完全没做。
+  **签名不匹配的负例（错误公钥必须被拒）也没做**——这是安全判据，不是可选项。
 
 ### 下一步建议
 
-1. 先提交并发布 0.0.325（DMG 首次上线，命令见上）。
+1. 先提交本轮修复（CI 无密钥构建 + 资产名 + 能力标签 + 文档），**再**走 `release.sh 0.0.325`
+   —— 注意 `release.sh` 要自己提交，所以清单不能是空的（见上面「发版前必读」）。
 2. 再做界面层：`检查更新` 按钮 → 调 updater → 提示 → 下载 → 重启安装。
    按已定策略：**手动检查 + 确认后安装**，不在用户不知情时重启应用。
 3. 补端到端验收：装一个旧版 → 发新版 → 确认客户端能发现并升级；

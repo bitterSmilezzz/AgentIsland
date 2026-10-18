@@ -14,13 +14,20 @@
 - 仍为 ad-hoc 签名、未公证：首次打开需右键 → 打开（要免这一步需 Apple Developer Program，本版不含）。
 - **仅 arm64**（Apple Silicon）；Intel Mac 需 universal binary，本版未做。
 
-### 自动更新基础设施（本版不含 UI 与发布接线）
+### 自动更新基础设施（本版不含 UI）
 
 - 接入 `tauri-plugin-updater`：配置 `createUpdaterArtifacts` 与 `plugins.updater`（公钥 + GitHub Releases 静态 JSON 端点）。
 - updater **必须关掉 `default` 特征**：它带 `rustls-tls`，会把 `ring` 拉进来编译 C 代码，本机做 Windows 交叉检查时没有 Windows SDK 头文件，直接断在 `fatal error: 'assert.h' file not found`——实测让 `windows crate` 门禁从 passed 变 failed（本轮引入的真实回归）。改用 `native-tls`，与项目既有 `reqwest` 口径一致。
 - 新增更新清单生成器（`scripts/automation/render-update-manifest.py`）：从**已签名**的 macOS 更新包生成 `latest.json`，登记为 `automation.update-manifest` 门禁项。
 - 无签名更新包时 `--check` 安静通过（无物可校验）、`--write` 仍失败（不伪造发布信息）。两种状态此前被混为一谈，会让干净克隆恒红。
-- **未完成**：界面（检查/提示/下载/安装）、`release.sh` 里的签名与清单生成步骤、真实签名包的端到端验收。密钥已生成并妥善保管（仓库外），但**尚未用它签过任何发布包**。
+- 发版接线：`release.sh` 在打包前**强制要求**私钥（缺则 die，不再静默降级成「本版不支持自动更新」）；清单写盘后立刻 `--check` 回读；上传后按资产名逐件断言。
+- **未完成**：界面（检查/提示/下载/安装，按「手动检查 + 确认后安装」的既定策略）、真实客户端端到端（旧版→新版能发现并升级）、**负例：签名不匹配必须被拒绝**、Intel/universal 路径。
+
+### 复核发现并修掉的发布阻断项（同一轮发版前）
+
+- **CI 构建不需要私钥**：`createUpdaterArtifacts` 对每一次 tauri build 生效，CI runner 上没有这把私钥，于是 macOS job 卡在构建一步（run 39098464252 红，后面「同包 CLI 与构建身份验收」一步都没跑）。现在无私钥时本次构建关闭 updater 产物，并**清掉上一次遗留的更新包**——否则「本次没有更新包」在磁盘上看不出来，可能把旧包当本次产物发出去。
+- **`latest.json` 必须以这个名字上传**：GitHub 按**文件名**建资产，而先前把它改名成 `AgentIsland-<版本>.latest.json`，端点 `releases/latest/download/latest.json` 永远 404，自动更新会在第一次发版时静默失效。现在直接上传 `dist/latest.json`，并新增静态门禁 `automation.dist-wiring` 盯住这一点（变异验证：改回版本化名即失败）。
+- **能力文件的窗口标签必须真实存在**：`capabilities/desktop.json` 曾把 `updater:default` 授予一个从未创建的 `main` 窗口，真实窗口是 island/sidebar/workbench。同一条门禁现在逐个核对标签存在性。
 
 ## [0.0.324] - 2026-10-17 — 外发交付状态与故障升级、通知入站账本、结构化入队延迟与自动化测试框架
 

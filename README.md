@@ -36,6 +36,8 @@
 
 从 [Releases](https://github.com/bitterSmilezzz/AgentIsland/releases/latest) 下载发布包。macOS 包含 `AgentIsland.app` 和 Rust CLI `agentisland`；应用未公证，首次运行使用右键 → 打开。
 
+macOS 优先下 `.dmg`：双击后把 AgentIsland 拖进「应用程序」即可。`.zip` 给需要随包 CLI 或免解压取用 app 的场景（DMG 里不含 CLI）。
+
 macOS 默认作为菜单栏常驻应用启动，显示灵动岛贴条与菜单栏图标；手动打开工作台时显示 Dock 图标，关闭或收起工作台后隐藏 Dock 图标。托盘可打开工作台。灵动岛把手可通过悬停、点击或键盘 Enter / 空格展开，四个方向均可贴边；设置中的“收起时隐藏微细条”隐藏视觉元素并保留唤回热区。重复启动复用已有应用实例。
 
 ```sh

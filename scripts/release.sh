@@ -158,6 +158,13 @@ step "Rust/Tauri 打包"
 # Rust 全量回归已在上一阶段完成。
 export SKIP_TESTS=1
 
+# 发布必须有 updater 私钥：`build-app.sh` 在没有私钥时会**关闭** createUpdaterArtifacts
+# （那是 CI 需要的无密钥通道），所以发版路径必须自己先把这条要求摆出来——
+# 否则一个漏配的变量会让发布**静默地**变成「本版不支持自动更新」，
+# 用户以后再也收不到更新，而构建与发版一路全绿。
+[[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" || -n "${TAURI_SIGNING_PRIVATE_KEY_PATH:-}" ]] \
+    || die "发版需要 updater 私钥：设置 TAURI_SIGNING_PRIVATE_KEY_PATH=<路径>（或 TAURI_SIGNING_PRIVATE_KEY=<内容>）"
+
 scripts/build-app.sh "$VERSION"
 # 构建成功即替换运行实例，后续验收/发布失败也不遗留旧实例。
 scripts/restart-app.sh
@@ -241,16 +248,25 @@ DMG="dist/AgentIsland-$VERSION.dmg"
 [[ -f "$DMG" ]] || die "DMG 未产出（build-app.sh 应已生成）——用户要的是可安装形态，不能只发 zip"
 ls -lh "$DMG" | awk '{print "    " $9 "  " $5}'
 
-# updater 更新清单：已装的客户端从 GitHub Releases 的 latest.json 读它。
+# updater 更新清单：已装的客户端从 GitHub Releases 的 **latest.json** 读它。
 # 三件附件一起发，缺一客户端就更新不了：
 #   latest.json（清单） + .app.tar.gz（更新包） + .sig（它的签名）
-# 没有签名包时**不**生成清单（生成器会拒绝），此时本版不支持自动更新，如实说明。
-if [[ -f app/src-tauri/target/release/bundle/macos/${APP_NAME:-AgentIsland}.app.tar.gz.sig ]]; then
+#
+# ⚠️ 资产名必须是 **`latest.json`**：Tauri 的端点写死为
+# `releases/latest/download/latest.json`，而 GitHub 按**文件名**建资产。
+# 早先这里把它改名成 `AgentIsland-<版本>.latest.json` 再上传，于是端点永远 404——
+# 自动更新会在第一次发版时静默失效（2026-10-18 复核发现）。
+# 所以直接上传 `dist/latest.json` 本体，版本化的副本只留在本地 dist 里。
+BUNDLE_DIR="app/src-tauri/target/release/bundle/macos"
+if [[ -f "$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz.sig" ]]; then
     "$PYTHON_MIN" scripts/automation/render-update-manifest.py --write || die "更新清单生成失败"
-    cp dist/latest.json "dist/AgentIsland-$VERSION.latest.json"
-    ls -lh "dist/AgentIsland-$VERSION.latest.json" | awk '{print "    " $9 "  " $5}'
+    # 回读校验：写出来的清单必须与签名更新包逐字一致，否则是伪造的发布信息。
+    "$PYTHON_MIN" scripts/automation/render-update-manifest.py --check || die "更新清单与签名更新包不一致"
+    ls -lh dist/latest.json | awk '{print "    " $9 "  " $5}'
 else
-    echo "    ⚠ 本次没有签名更新包（缺 TAURI_SIGNING_PRIVATE_KEY），不生成 latest.json —— 本版不支持自动更新"
+    # 发版已在打包前要求私钥，所以到不了「顺手也能发」的降级分支。
+    # 少了签名包说明构建没按预期产出更新包——这是失败，不是「本版不支持自动更新」。
+    die "缺少签名更新包（$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz.sig）：发版必须带自动更新产物"
 fi
 
 step "提交"
@@ -293,20 +309,17 @@ fi
 if gh release view "v$VERSION" >/dev/null 2>&1; then
     gh release edit "v$VERSION" --title "v$VERSION: $TITLE" --notes-file "$NOTES_FILE"
 else
-    # 有更新清单时把它与更新包一起发；没有就只发 DMG+zip。
-    if [[ -f "dist/AgentIsland-$VERSION.latest.json" \
-          && -f app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz \
-          && -f app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz.sig ]]; then
-        cp app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz \
-           app/src-tauri/target/release/bundle/macos/AgentIsland.app.tar.gz.sig dist/
-        gh release create "v$VERSION" "$DMG" "$ZIP" \
-            "dist/AgentIsland-$VERSION.latest.json" \
-            "dist/AgentIsland.app.tar.gz" "dist/AgentIsland.app.tar.gz.sig" \
-            --title "v$VERSION: $TITLE" --notes-file "$NOTES_FILE" --latest
-    else
-        gh release create "v$VERSION" "$DMG" "$ZIP" --title "v$VERSION: $TITLE" \
-            --notes-file "$NOTES_FILE" --latest
-    fi
+    # 自动更新三件套随发布一起上传。资产名必须原样：
+    #   latest.json ← dist/latest.json（端点写死这个名字）
+    #   AgentIsland.app.tar.gz + .sig ← 清单里引用的下载名
+    # 这里上传后由下面的「附件复核」按名字点名核对，缺任何一件都当失败。
+    cp "$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz" \
+       "$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz.sig" dist/
+    gh release create "v$VERSION" "$DMG" "$ZIP" \
+        "dist/latest.json" \
+        "dist/${APP_NAME:-AgentIsland}.app.tar.gz" \
+        "dist/${APP_NAME:-AgentIsland}.app.tar.gz.sig" \
+        --title "v$VERSION: $TITLE" --notes-file "$NOTES_FILE" --latest
 fi
 
 step "重启应用（AGENTS.md：出包后无感替换旧实例）"
@@ -324,14 +337,26 @@ if [[ "${#RELEASE_UNVERIFIED[@]}" -gt 0 ]]; then
 fi
 # 附件复核。注意 `releases/tags/…` 这个端点会短暂返回空 assets（实测刚传完读到 0，
 # 按 id 读是 1），所以只重试着读、不做「读不到就重传」——重传会撞 already exists，
-# 反而把一次正常发版报成失败。读不到只打警告，人去看一眼比脚本猜更靠得住
+# 反而把一次正常发版报成失败。读不到只打警告，人去看一眼比脚本猜更靠得住。
+#
+# ⚠️ 复核必须是**断言**而不是打印。自动更新的成败只取决于资产名
+# `latest.json` 是否存在（端点写死 `releases/latest/download/latest.json`）；
+# 早先这里只打印附件名，于是资产名写错时整个发版照样打印「✓ 已发布」，
+# 而已装用户永远收不到更新。所以下面按名字逐个点名，缺件即失败。
+REQUIRED_ASSETS=("$(basename "$DMG")" "$(basename "$ZIP")" "latest.json")
 for _ in 1 2 3 4 5; do
-    ASSETS=$(gh release view "v$VERSION" --json assets -q '[.assets[].name] | join(", ")' 2>/dev/null || true)
-    [[ -n "$ASSETS" ]] && break
+    ASSET_LIST=$(gh release view "v$VERSION" --json assets -q '[.assets[].name] | join(", ")' 2>/dev/null || true)
+    [[ -n "$ASSET_LIST" ]] && break
     sleep 2
 done
-if [[ -n "$ASSETS" ]]; then
-    echo "    v$VERSION  附件: $ASSETS"
+if [[ -n "$ASSET_LIST" ]]; then
+    echo "    v$VERSION  附件: $ASSET_LIST"
+    for required in "${REQUIRED_ASSETS[@]}"; do
+        case ",${ASSET_LIST// /}," in
+            *",$required,"*) : ;;
+            *) die "发布附件缺少 ${required}（已上传：${ASSET_LIST}）" ;;
+        esac
+    done
 else
     echo "⚠ 附件复核没读到（GitHub 的 tag 端点有短暂一致性问题）。手工确认：" >&2
     echo "  gh api repos/\$(gh repo view --json owner -q .owner.login)/AgentIsland/releases/tags/v$VERSION -q '.assets[].name'" >&2

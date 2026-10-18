@@ -137,8 +137,40 @@ if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
     export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 fi
 
+# 没有私钥时**本次构建不产出更新包**，而不是让 tauri 报
+# `A public key has been found, but no private key` 直接失败。
+#
+# 为什么必须这样做：`createUpdaterArtifacts: true` 对每一次 tauri build 都生效，
+# 而 CI runner 上没有这把私钥（也不该有——私钥不外传）。2026-10-18 实测：
+# macOS job 卡在构建一步，run 39098464252 整体红，后面「同包 CLI 与构建身份验收」
+# 一步都没跑到。这条覆盖只影响「本次有没有产出更新包」，不影响 app/DMG 本体。
+#
+# 发版路径**不允许**落到这条分支：release.sh 在构建前就要求私钥，缺了就 die。
+# 所以「CI 能构建」与「发版必须有更新包」是两条互不影响的路径。
+UPDATER_BUILD_ARGS=()
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+    echo "==> 未提供 updater 私钥：本次构建关闭 createUpdaterArtifacts（不产出 .app.tar.gz/.sig）"
+    UPDATER_BUILD_ARGS=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+    # 顺手清掉**上一次**带签名构建留下的更新包。理由不是洁癖：留着它们会让
+    # 「本次没有更新包」这件事从磁盘上看不出来——release.sh 只检查 .sig 是否存在，
+    # 于是可能把**上一次**的旧包当成这次的产物发出去（同版本号时版本检查也抓不到）。
+    # 「没有产物」必须表达成「磁盘上确实没有产物」。
+    # 用 glob + 逐项删除：路径里可能有空格，不能靠 `ls` 的单词拆分。
+    found_stale=0
+    for stale in app/src-tauri/target/release/bundle/macos/*.app.tar.gz*; do
+        [[ -e "$stale" ]] || continue
+        rm -f -- "$stale"
+        found_stale=1
+    done
+    if [[ "$found_stale" -eq 1 ]]; then
+        echo "==> 已清理上一次构建遗留的更新包（本次没有私钥，产物不得沿用旧的）"
+    fi
+    # 同理，本次清单也不该描述一个不存在的更新包。
+    rm -f dist/latest.json
+fi
+
 echo "==> 构建 Rust/Tauri 端（**主交付物**）"
-( cd app/src-tauri && cargo tauri build --bundles app -- --locked )
+( cd app/src-tauri && cargo tauri build --bundles app "${UPDATER_BUILD_ARGS[@]+"${UPDATER_BUILD_ARGS[@]}"}" -- --locked )
 RUST_SRC="app/src-tauri/target/release/bundle/macos/${APP_NAME}.app"
 if [[ ! -d "$RUST_SRC" ]]; then
     # 静默跳过 = 「构建失败但看起来成功」，那正是 views.js 潜伏 29 个版本的同款坑
@@ -194,7 +226,7 @@ codesign --verify --deep --strict "$APP_DIR"
 # `codesign` 报 `Read-only file system`；而 `codesign ... && echo ✓` 在 rc=0 时会打印 ✓
 # ——即使校验其实失败。**校验必须看 `codesign --verify` 的判据，不能看前一条命令的退出码。**
 echo "==> 打 DMG 安装包（ad-hoc 签名；密钥已在主构建前注入）"
-APPLE_SIGNING_IDENTITY="-" cargo tauri build --bundles dmg
+APPLE_SIGNING_IDENTITY="-" cargo tauri build --bundles dmg "${UPDATER_BUILD_ARGS[@]+"${UPDATER_BUILD_ARGS[@]}"}"
 DMG_SRC="$(ls -t app/src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)"
 [[ -n "$DMG_SRC" && -f "$DMG_SRC" ]] || { echo "✗ DMG 未产出" >&2; exit 1; }
 DMG_VER="$(basename "$DMG_SRC" | sed -E 's/.*_([0-9]+\.[0-9]+\.[0-9]+)_.*/\1/')"

@@ -1,12 +1,15 @@
 {
   "identifier": "desktop-capability",
+  "description": "桌面端插件权限：updater 的检查/下载/安装从工作台触发",
   "platforms": [
     "macOS",
     "windows",
     "linux"
   ],
   "windows": [
-    "main"
+    "island",
+    "sidebar",
+    "workbench"
   ],
   "permissions": [
     "updater:default"

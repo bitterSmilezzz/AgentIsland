@@ -379,6 +379,22 @@
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
       "status": "done"
     },
+    "NOT-06": {
+      "title": "应用自身的检查更新与自动更新",
+      "gates": [
+        "L0",
+        "L2",
+        "L5"
+      ],
+      "checks": [
+        "automation.update-manifest",
+        "automation.dist-wiring",
+        "rust.default"
+      ],
+      "coverage_note": "partial — 基础设施已有：tauri-plugin-updater 接入（native-tls，不引入 ring）、pubkey 与 GitHub Releases 静态清单端点、createUpdaterArtifacts 产出 .app.tar.gz+.sig、render-update-manifest.py 从签名包生成 latest.json 并在无产物时安静通过/--write 失败、发版路径强制私钥且缺私钥即 die、CI 无私钥通道关闭 createUpdaterArtifacts、DMG 内签名自校验；release.sh 按资产名 latest.json 上传并逐件断言。缺：界面层（检查/提示/下载/安装，确认后安装，不在用户不知情时重启）、真实客户端端到端（旧版→新版能发现并升级）、**负例：签名不匹配必须被拒绝**、Intel/universal 路径。",
+      "audit_ref": "docs/testing/测试自动化交付.md",
+      "status": "partial"
+    },
     "GW-09": {
       "title": "多界面、共享与备份同步",
       "gates": [
@@ -1995,6 +2011,24 @@
         "scripts/test-update-manifest.py"
       ]
     },
+    "automation.dist-wiring": {
+      "command": [
+        "python3",
+        "scripts/test-dist-wiring.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "静态接线门禁：能力文件的窗口标签必须存在、updater 权限落在真实窗口、release.sh 按端点名上传 latest.json 并逐件断言、私钥缺失即失败；变异验证 2/2。",
+      "test_files": [
+        "scripts/test-dist-wiring.py"
+      ]
+    },
     "automation.status": {
       "command": [
         "python3",
@@ -2096,6 +2130,7 @@
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
+      "automation.dist-wiring",
       "automation.status"
     ],
     "browser": [
@@ -2172,6 +2207,7 @@
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
+      "automation.dist-wiring",
       "automation.status"
     ],
     "package": [
@@ -2211,6 +2247,7 @@
       "automation.break-artifact",
       "automation.break-snapshot",
       "automation.update-manifest",
+      "automation.dist-wiring",
       "automation.status"
     ],
     "note": "Selected blocked checks never yield success. Package expects a freshly built bundle after ci. Native runs only through verified VM, client opt-in, manual selects one ignored probe. No profile sends real paid requests. protocol = L2 format/protocol subset (also in ci). soak = L7 long-run resource protocol through the verified VM orchestrator; it is never run bare on the host and its green result is not a budget verdict. delivery is intentionally absent: NOT-03/NOT-04 have no implementation yet, and an empty profile would let \"selected but nothing ran\" pass as a real choice. recovery was removed rather than left as an alias of soak: crash/restart recovery has no implementation, and an alias would advertise L7 recovery coverage that does not exist.",
@@ -2287,6 +2324,7 @@
       "auto01.restartapp",
       "not05.remotedelivery",
       "automation.update-manifest",
+      "automation.dist-wiring",
       "automation.status"
     ],
     "protocol": [
@@ -2332,6 +2370,13 @@
       "status": "open",
       "requirement": null,
       "evidence": "Actions run 39050042006（2026-10-17）23 failed、39056405805（2026-10-18）25 failed，均 952/950 passed / 8 ignored；失败集中在 dedup、notify_ledger、webhook ingress、posix_port_ratchet 等 POSIX 假设。该 job 仍为 continue-on-error，不挡 macOS 门禁；本机 macOS 1101 全绿，复现需真实 Windows runner。"
+    },
+    {
+      "id": "BUG-005",
+      "title": "release.sh 无法发布「已提交且工作区干净」的状态（要发版必须先有一批未提交改动）",
+      "status": "open",
+      "requirement": "AUTO-01",
+      "evidence": "2026-10-18 复核 v0.0.325 时实测：改动已随 118b84d 推送后，工作区干净 → HANDOFF 里 `git status` 生成的清单为空，release.sh 第一步即 `清单为空` 退出；手填已提交文件则走到「提交」一步因无 staged 改动 die（scripts/release.sh:20 / :267）。脚本本身按设计如此（发版要提交本轮改动），但 HANDOFF 原先写成「发版只差一条命令」，已更正文档；是否给 release.sh 增加「已提交树」模式尚未决定。"
     }
   ]
 }
