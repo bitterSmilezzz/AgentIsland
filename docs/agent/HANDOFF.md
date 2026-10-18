@@ -1,13 +1,21 @@
 # 交接说明（Hand-off）
 
 > **给下一个 Agent**：这份文件回答「我该从哪里开始、当前处于什么状态、有哪些坑别踩」。
-> 与它配套的还有：[`AGENTS.md`](../AGENTS.md)（工作约定，Agent 无关）、
-> [`docs/README.md`](README.md)（文档地图）、[`需求状态.md`](需求状态.md)（做到哪了）。
+> 与它配套的还有：[`AGENTS.md`](../../AGENTS.md)（工作约定，Agent 无关）、
+> [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
-**交接时点**：2026-10-17 晚
-**基线**：`main` = `origin/main`，工作区干净
+**交接时点**：2026-10-18
+**基线**：`main` = `origin/main` = `7325441`
 **最新发布**：`v0.0.324`
 **基线是否绿**：门禁 `verify-framework.sh` 通过（`ALL VERIFIED`，rc=0）；4 个 profile 因外部前置 blocked（见下）
+
+> 🔴 **工作区有 19 项未提交改动**（DMG 分发 + 自动更新基础设施，已过全量门禁但**没提交、没发版**）。
+> **接手第一件事**：读 [第 8 节](#8-2026-10-18-追加dmg-分发--自动更新基础设施未提交未发版)，
+> 决定提交发版还是回退。**别以为工作区是干净的。**
+
+> ⚠️ 本文件由**两个会话接力**：第 1–6 节是 2026-10-17 晚（NOT-05 交付与三轮复审），
+> 第 7 节是 CI 身份规则修复（**不是本次交接者写的**，但记录的是真实修复，保留不删），
+> 第 8 节是 DMG 与自动更新。
 
 ---
 
@@ -33,7 +41,7 @@ bash scripts/verify-framework.sh                    # 确认基线是绿的
 | **NOT-05** 外发交付状态与故障升级 | **已完成** | 8 项需求逐条有测试；真实二进制端到端 `not05.remotedelivery`；三轮独立复审「能定案」 |
 
 **本轮（2026-10-17）交付**：
-- NOT-05 实现 + 三轮独立复审整改（详见 [`code-review/2026-10-17-not05-review-remediation.md`](code-review/2026-10-17-not05-review-remediation.md)，585 行）
+- NOT-05 实现 + 三轮独立复审整改（详见 [`code-review/2026-10-17-not05-review-remediation.md`](../code-review/2026-10-17-not05-review-remediation.md)，585 行）
 - **外发链路的真实二进制端到端验收**（此前只有注入假传输的单测）
 - 文档分门别类（`docs/{spec,testing,ops}/`）+ 需求状态/bug 登记自动化
 - `v0.0.324` 发布（含入队延迟、入站账本、自动化框架、NOT-05）
@@ -88,7 +96,7 @@ open('.scratch/release-files.txt','w',encoding='utf-8').write('\n'.join(sorted(s
 
 ## 4. 本轮踩过的坑（**别重复**）
 
-完整版见 [`agent/session-2026-10-17-problems.md`](agent/session-2026-10-17-problems.md)。最该记住的：
+完整版见 [`agent/session-2026-10-17-problems.md`](session-2026-10-17-problems.md)。最该记住的：
 
 1. **「断言存在」≠「断言有效」。** 本轮三处「已通过」的断言实测抓不住变异
    （阈值测试没断言边界、渠道独立测试用了另一个实例、断言的 `Accepted` 来自脚本耗尽后的兜底默认值）。
@@ -154,3 +162,92 @@ open('.scratch/release-files.txt','w',encoding='utf-8').write('\n'.join(sorted(s
   CLT 27 SDK 与默认 Xcode 26.6 的 ld 错配会让任何链接失败（`actions/runner-images#14940`），
   workflow 已改用默认 Xcode 自带 SDK（`xcrun --sdk macosx --show-sdk-path`），
   本机 `build-app.sh` 的最新一代 SDK 选择逻辑未动。
+
+---
+
+## 8. 2026-10-18 追加：DMG 分发 + 自动更新基础设施（**未提交、未发版**）
+
+> ⚠️ **工作区里有 19 项未提交改动**（`git status` 可见）。它们**已通过全量门禁**（`ALL VERIFIED`，rc=0），
+> 但**没有 commit、没有 push、没有发版**。接手第一件事就是决定：提交发版，还是回退。
+
+### 已实测可用
+
+| 项 | 证据 |
+| :--- | :--- |
+| DMG 打出 | `AgentIsland-0.0.325.dmg`（6.2 MB） |
+| DMG 内 app 签名完整 | 构建日志 `✓ DMG 内 app 签名完整`；残缺即构建失败 |
+| updater 更新包已签名 | `.app.tar.gz` + `.sig`（412 B），真实 minisign 签名 |
+| 更新清单端到端 | `dist/latest.json` 字段正确：version / `darwin-aarch64` / signature / 下载 URL |
+| 全量门禁 | `bash scripts/verify-framework.sh` → **ALL VERIFIED**（rc=0） |
+
+### 发版只差一条命令
+
+```sh
+# 1) 生成显式文件清单（不要用 unicode_escape 还原中文路径，会坏）
+git status --porcelain -z --untracked-files=all | python3 -c "
+import sys
+data=sys.stdin.buffer.read().decode('utf-8','surrogateescape')
+e=[x for x in data.split('\0') if x]; p=[]; i=0
+while i<len(e):
+    it=e[i]; st=it[:2]; path=it[3:]
+    if st[0] in 'RC': i+=1
+    p.append(path); i+=1
+open('.scratch/release-files.txt','w',encoding='utf-8').write('\n'.join(sorted(set(p)))+'\n')
+"
+
+# 2) 发版（私钥路径必须给，否则只出 DMG 不出更新包）
+RELEASE_FILES_FILE=.scratch/release-files.txt \
+NATIVE_TEST_VM=agentisland-iso NATIVE_TEST_USER=admin \
+TAURI_SIGNING_PRIVATE_KEY_PATH=~/.local/share/agentisland-updater/updater.key \
+  bash scripts/release.sh 0.0.325 "DMG 安装包与自动更新基础设施"
+```
+
+### ⚠️ updater 私钥（不可逆的那部分）
+
+- 位置 `~/.local/share/agentisland-updater/updater.key`，权限 **600**，**仓库外**，内容从未打印或提交。
+- **这把钥匙丢了 = 已装用户永远收不到更新**（官方原话：lose the key ⇒ cannot publish new updates）。
+  **建议在别处再备份一份**（离线介质或另一台机器的密码管理器）。
+- 公钥在 `app/src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`，可以公开。
+- 无口令生成（`signer generate --ci`），所以 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 必须是**空串**。
+- **只认内容不认路径**：传 `TAURI_SIGNING_PRIVATE_KEY_PATH` 给 tauri 会去找钥匙串密码
+  （实测报 `incorrect updater private key password`）。`build-app.sh` 已处理：读进内容再 export。
+
+### 本轮修掉的 4 个真实缺陷（下个 agent 别改回去）
+
+1. **updater 的 `default` 特征引入 `ring`** —— 它带 `rustls-tls`，而 `ring` 要编译 C 代码；
+   本机做 Windows 交叉检查没有 Windows SDK 头文件，直接断在 `fatal error: 'assert.h' file not found`，
+   **让 `windows crate` 门禁从 passed 变 failed**。已改为
+   `default-features = false, features = ["native-tls", "zip"]`，`ring` 彻底移出依赖树。
+   **别把它改回 `default`**。
+2. **密钥必须在主构建之前注入** —— `createUpdaterArtifacts: true` 对**每一次** `cargo tauri build` 都生效，
+   不只是打 DMG 那次。原先只在 DMG 段注入，主构建先失败报
+   `A public key has been found, but no private key`。
+3. **`--check` 区分「无产物」与「漂移」** —— 两者曾被混为一谈，导致任何没跑过带签名构建的干净克隆上
+   `verify-framework.sh` 恒红（`test-framework-verifier.py` 20 项里 5 项红）。
+   现在无产物安静通过，`--write` 仍失败（没有产物却写出清单 = 伪造发布信息）。
+4. **测试桩件要复制真实生成器** —— `test-framework-verifier.py` 用 `.touch()` 造空脚本，
+   python 跑空文件返回 exit 2。生成器类脚本必须 `shutil.copy2`。
+
+### 我(agent)这次犯的两个错（写下来免得重犯）
+
+- **为了让测试过而放松生产校验**：我一度把 `[[ -d "$app" ]]` 从 DMG 自校验里去掉。
+  发现后立刻回退——**生产代码不为迁就测试而放松**。正确解法是让桩件造出真实形状。
+- **错误结论被 `&&` 掩盖**：曾输出「✓ DMG 已修好」，实际那次 `codesign` 是**失败**的
+  （DMG 只读、挂载后无法重签名），但前一条命令 rc=0 导致 `&& echo ✓` 执行。
+  **校验必须看 `codesign --verify` 的判据，不能看前一条命令的退出码。**
+
+### 仍未做（如实）
+
+- **自动更新的界面层**：检查 / 提示 / 下载 / 安装，一行都没写。`views.js` 与新命令都还没动。
+- `release.sh` 里更新包附件那段**尚未真跑过一次**（要真发一次才知道对不对）。
+- **只 arm64**（Apple Silicon）；Intel Mac 需要 universal binary。
+- 未公证，用户首次打开仍需右键 → 打开（要免这步需 Apple Developer Program，本轮不含）。
+- 自动更新的**端到端验收**（客户端真去 GitHub 拉、验签、替换）完全没做。
+
+### 下一步建议
+
+1. 先提交并发布 0.0.325（DMG 首次上线，命令见上）。
+2. 再做界面层：`检查更新` 按钮 → 调 updater → 提示 → 下载 → 重启安装。
+   按已定策略：**手动检查 + 确认后安装**，不在用户不知情时重启应用。
+3. 补端到端验收：装一个旧版 → 发新版 → 确认客户端能发现并升级；
+   **负例必须做**——用错误的公钥验证签名不匹配时被拒绝。
