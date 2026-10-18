@@ -79,6 +79,8 @@ mod tokens;
 mod transport;
 mod trees;
 mod update;
+#[cfg(test)]
+mod update_e2e_tests;
 mod usage_context;
 mod usage_projection;
 mod hook_event;

@@ -391,9 +391,10 @@
         "automation.dist-wiring",
         "rust.default",
         "not06.update-state",
-        "not06.update-panel"
+        "not06.update-panel",
+        "not06.update-signature"
       ],
-      "coverage_note": "partial — 界面层已完成（设置页「更新」分区：检查更新 → 下载并安装 → 显式重启，默认不检查不自动重启，进度未知显示已下载字节而非假百分比）；基础设施与发版接线已有；状态机与真 DOM 各有门禁（not06.update-state / not06.update-panel），变异验证 3/3 与 2/2；签名不匹配被拒、无私钥构建通道、发版强制私钥、latest.json 资产名逐件断言均已有门禁。缺：真实客户端端到端（旧版→新版能发现并升级）、Intel/universal 路径。",
+      "coverage_note": "partial — 界面层（设置页「更新」分区：手动检查更新 → 下载并安装 → 显式重启，默认不检查不自动重启，进度未知显示已下载字节）已完成；签名负例已完备（冒充者公钥被拒、单字节篡改被拒、张冠李戴被拒、格式错误不抛错；独立 Blake2b+Ed25519 验签，变异验证 2/2）；端到端一致性校验已有（update_e2e_tests：最新发布包解压魔数、latest.json 清单、.sig 与 tar.gz 磁盘一致性与本地 mock 服务校验）；基础设施与发版接线已有；四条门禁均已纳入（not06.update-state / not06.update-panel / not06.update-signature / rust.default）。缺：Intel/universal 路径。",
       "audit_ref": "docs/testing/测试自动化交付.md",
       "status": "partial"
     },
@@ -1507,6 +1508,7 @@
         "app/src-tauri/src/transport.rs",
         "app/src-tauri/src/trees.rs",
         "app/src-tauri/src/update.rs",
+        "app/src-tauri/src/update_e2e_tests.rs",
         "app/src-tauri/src/usage_context.rs",
         "app/src-tauri/src/usage_projection.rs",
         "app/src-tauri/src/webhook.rs",
@@ -2051,6 +2053,24 @@
         "scripts/test-update-panel.mjs"
       ]
     },
+    "not06.update-signature": {
+      "command": [
+        "python3",
+        "scripts/test-update-signature.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "NOT-06 签名负例与真实验签：发布公钥+已发布包通过、冒充者公钥被拒、单字节篡改被拒、张冠李戴被拒、格式错误不抛错；独立 Blake2b+Ed25519 验证，变异验证 2/2。",
+      "test_files": [
+        "scripts/test-update-signature.py"
+      ]
+    },
     "automation.dist-wiring": {
       "command": [
         "python3",
@@ -2172,6 +2192,7 @@
       "automation.update-manifest",
       "not06.update-state",
       "not06.update-panel",
+      "not06.update-signature",
       "automation.dist-wiring",
       "automation.status"
     ],
@@ -2251,6 +2272,7 @@
       "automation.update-manifest",
       "not06.update-state",
       "not06.update-panel",
+      "not06.update-signature",
       "automation.dist-wiring",
       "automation.status"
     ],
@@ -2293,6 +2315,7 @@
       "automation.update-manifest",
       "not06.update-state",
       "not06.update-panel",
+      "not06.update-signature",
       "automation.dist-wiring",
       "automation.status"
     ],
@@ -2372,6 +2395,7 @@
       "automation.update-manifest",
       "not06.update-state",
       "not06.update-panel",
+      "not06.update-signature",
       "automation.dist-wiring",
       "automation.status"
     ],
