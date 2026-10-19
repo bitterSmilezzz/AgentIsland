@@ -188,6 +188,9 @@ fn slow_headers_are_included_in_latency() {
     slow_parse(true);
 }
 
+/// 依赖 POSIX 套接字可取消语义：在另一线程对服务端套接字调用 shutdown(Both) 能立即唤醒阻塞中的 read()。
+/// Windows Winsock 按系统设计不中断其它句柄/线程的阻塞 recv()，本用例在 Unix 目标上验收。
+#[cfg(unix)]
 #[test]
 fn shutdown_cancels_partial_body_while_client_stays_connected() {
     let (server, addr, engine, _wake) = fixture();
@@ -271,6 +274,8 @@ fn partial_header_and_small_body_connections_are_cancelled_on_shutdown() {
     assert_eq!(engine.lock().unwrap().consume_hook_events(), 0);
 }
 
+/// 依赖 POSIX 套接字超时与关闭语义：服务端单线程超时后关闭 socket 必须向客户端立即反映为 EOF。
+#[cfg(unix)]
 #[test]
 fn partial_header_and_bodies_time_out_without_becoming_events() {
     let (server, addr, engine, _wake) = fixture();
