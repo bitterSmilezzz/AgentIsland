@@ -155,7 +155,9 @@ impl ClientConnection {
         // request line, so idle keep-alive time is not measured as latency.
         let mut arrival = self.first_arrival.take();
         if arrival.is_none() {
-            // Waiting for the next request on a kept-alive connection: unbounded.
+            // A streamed body may still own this reader. Do not clear its timeout
+            // while waiting for the handoff; only the actual idle wait is unbounded.
+            self.next_header_source.wait_for_turn();
             self.arm_read_timeout(false);
         }
         let (method, path, version, headers) = {

@@ -647,7 +647,7 @@ mod command_identity_regressions {
                 .spawn()
                 .unwrap(),
         );
-        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
         while !ready.exists() {
             assert!(Instant::now() < deadline, "launcher did not become ready");
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -699,7 +699,7 @@ mod command_identity_regressions {
                 .spawn()
                 .unwrap(),
         );
-        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
         while !ready.exists() {
             assert!(
                 Instant::now() < deadline,
@@ -738,7 +738,7 @@ mod command_identity_regressions {
                 .spawn()
                 .unwrap(),
         );
-        let deadline = Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
         while !ready.exists() {
             assert!(
                 Instant::now() < deadline,

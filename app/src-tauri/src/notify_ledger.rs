@@ -5,13 +5,15 @@
 //! Graceful shutdown drains the mailbox; persisted state is the recovery boundary.
 
 use crate::models::AgentTaskEvent;
+use crate::persistence_file::{open_regular, Revision};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read};
+use std::fs;
+use std::io;
+#[cfg(test)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::SystemTime;
 
 pub(crate) const CAP: usize = 1024;
 pub(crate) const PENDING_CAP: usize = 64;
@@ -494,31 +496,26 @@ struct Disk {
     revision: Option<Revision>,
     blocked: bool,
 }
-#[derive(PartialEq, Eq)]
-struct Revision {
-    digest: Vec<u8>,
-    modified: Option<SystemTime>,
-    #[cfg(unix)]
-    identity: (u64, u64),
-}
+
 impl Disk {
     fn persist(&mut self, payload: &Payload) -> Result<(), &'static str> {
         if self.blocked {
             return Err(READ_ERROR);
         }
-        if !revision_matches(&self.path, &self.revision) {
-            self.blocked = true;
-            return Err(STALE_ERROR);
-        }
-        #[cfg(unix)]
-        let _writer_lock = if self.revision.is_some() {
-            let file = open_regular(&self.path).map_err(|_| WRITE_ERROR)?;
+        // Acquire before reading bytes: on Windows another handle's mandatory
+        // lock must be a retryable write failure, not a permanent stale revision.
+        // Keep this exact handle through validation and atomic publication.
+        let writer_lock = if self.revision.is_some() {
+            let file = open_regular(&self.path).map_err(|_| {
+                self.blocked = true;
+                STALE_ERROR
+            })?;
             file.try_lock().map_err(|_| WRITE_ERROR)?;
             Some(file)
         } else {
             None
         };
-        if !revision_matches(&self.path, &self.revision) {
+        if !revision_matches(&self.path, &self.revision, writer_lock.as_ref()) {
             self.blocked = true;
             return Err(STALE_ERROR);
         }
@@ -535,7 +532,7 @@ impl Disk {
         let validate = |staged: &Path| {
             let (staged_bytes, _) = read_current(staged)?.ok_or_else(invalid)?;
             decode(&staged_bytes)?;
-            if !revision_matches(&self.path, &self.revision) {
+            if !revision_matches(&self.path, &self.revision, writer_lock.as_ref()) {
                 return Err(invalid());
             }
             Ok(())
@@ -546,7 +543,7 @@ impl Disk {
             crate::atomicfile::atomic_replace_validated(&self.path, &bytes, validate)
         };
         if result.is_err() {
-            if !revision_matches(&self.path, &self.revision) {
+            if !revision_matches(&self.path, &self.revision, writer_lock.as_ref()) {
                 self.blocked = true;
                 return Err(STALE_ERROR);
             }
@@ -606,72 +603,12 @@ fn decode(bytes: &[u8]) -> io::Result<Payload> {
     }
     Ok(payload)
 }
-fn revision(meta: &fs::Metadata, bytes: &[u8]) -> Revision {
-    Revision {
-        digest: Sha256::digest(bytes).to_vec(),
-        modified: meta.modified().ok(),
-        #[cfg(unix)]
-        identity: {
-            use std::os::unix::fs::MetadataExt;
-            (meta.dev(), meta.ino())
-        },
-    }
-}
-fn open_regular(path: &Path) -> io::Result<fs::File> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(invalid());
-    }
-    Ok(file)
-}
 fn read_current(path: &Path) -> io::Result<Option<(Vec<u8>, Revision)>> {
-    let before = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            // 跨平台（Windows 将父路径非目录也映射为 NotFound）：
-            // 若父路径存在且不是目录，必须返回错误，不可将中间路径失效视作目标文件不存在。
-            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                if let Ok(meta) = fs::symlink_metadata(parent) {
-                    if !meta.is_dir() {
-                        return Err(invalid());
-                    }
-                }
-            }
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
-    };
-    if !before.is_file() || before.file_type().is_symlink() || before.len() > MAX_BYTES {
-        return Err(invalid());
-    }
-    let file = open_regular(path)?;
-    let opened = file.metadata()?;
-    if !opened.is_file() || revision(&before, &[]) != revision(&opened, &[]) {
-        return Err(invalid());
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
-    let after = fs::symlink_metadata(path)?;
-    if bytes.len() as u64 > MAX_BYTES
-        || bytes.len() as u64 != after.len()
-        || after.file_type().is_symlink()
-        || revision(&opened, &[]) != revision(&after, &[])
-    {
-        return Err(invalid());
-    }
-    let stamp = revision(&after, &bytes);
-    Ok(Some((bytes, stamp)))
+    crate::persistence_file::read_current(path, MAX_BYTES, None)
 }
-fn revision_matches(path: &Path, expected: &Option<Revision>) -> bool {
-    read_current(path)
-        .is_ok_and(|current| current.map(|(_, revision)| revision).as_ref() == expected.as_ref())
+
+fn revision_matches(path: &Path, expected: &Option<Revision>, locked: Option<&fs::File>) -> bool {
+    crate::persistence_file::revision_matches(path, expected, MAX_BYTES, locked)
 }
 
 #[cfg(test)]

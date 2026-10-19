@@ -49,6 +49,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: 安装签名门禁依赖
+        run: python3 -m pip install -r scripts/requirements-test.txt
       - name: 安装锁定的浏览器运行时
         run: |
           npm ci
@@ -111,53 +113,10 @@ jobs:
             .scratch/automation-runs/**/summary.md
 
   windows:
-    name: Windows（已知编不过，持续观察）
+    name: Windows
     runs-on: windows-latest
-    # ⚠️ **故意 `continue-on-error`。**
-    #
-    # v0.0.324 实测（run 38573012399，`--log-failed` 逐条解析）：
-    # **12 个编译错误 / 8 个项目文件**（外加 vendor/tao 的 macOS 专用代码）——
-    #   6 个 `std::os::unix` / POSIX libc（`SIGKILL`/`getppid`/`gethostname`/
-    #      `PermissionsExt::from_mode` / `localtime_r`），
-    #   6 个 **cfg 作用域**：item 被 `#[cfg(unix)]` 或 `#[cfg(not(windows))]`
-    #      排除，调用方却没有对应门控。
-    # macOS 侧同一份代码 1020 条测试全绿。
-    #
-    # v0.0.325 起这 12 个都已处理（placement 的 4 个错门控、cleaner 的
-    # getppid/SIGKILL 平台分支、webhook 的 from_mode 门控、smtp 的
-    # GetComputerNameW 实现）。但**没有一个经过真实 Windows 编译器验证**：
-    # 本机交叉编译被 `rusqlite` 的 bundled C 挡住，只能靠
-    # `scripts/check-windows-fragment.sh` 把片段抠出来单独编——而它有个
-    # **已实测的局限**：把 placement 的门控错误加回去，它照样报通过
-    # （提取出的片段配的是不执行它们的 `fn main() {}`，被 `#[cfg]` 排除的
-    # 函数只是消失，没有调用方就没人报错）。所以它证明的是
-    # 「这段代码本身能编」，**不是「它在 Windows 上还存在」**。
-    # 这个 job 因此仍然是权威判据，不能因为「本地验过了」就删。
-    #
-    # ⚠️ **`cargo test` 在 Windows 上一次都没跑成过。** 它排在 `cargo check`
-    # 后面，而 check 从未通过，所以「Windows 上有多少测试会失败」是**未知数**。
-    # 在拿到第一个真实的 Windows 测试结果之前，删掉 `continue-on-error`
-    # 只会得到一个立刻全红的门禁。
-    #
-    # ⚠️ **那 6 个 cfg 作用域问题无法用文本匹配本地检出**：
-    # `cleaner.rs::signal`、`webhook.rs::inspect_token`、`skill_files.rs::open_dir`
-    # 都有 `#[cfg(not(unix))]` 配对实现（正常写法），与 `placement.rs` 那 4 个
-    # **没有**配对实现的，在文本层面几乎同形。
-    #
-    # 剩下的 36 个 warning 几乎全是 `dead_code`（"is never used"）——
-    # 那是 Windows 上大量平台代码编不进来的**必然结果**，不是缺陷。
-    # 别为了「让输出干净」去清理或 `#[allow]` 它们：那会把
-    # 「这个函数在 Windows 上其实没接」这个信号一起抹掉。
-    #
-    # 那为什么不让它红着挡人？**一个永远红的徽章会被所有人学会忽略**，
-    # 真出事时也没人看它了。这里让它**继续跑、继续报**，但不当门禁——
-    # 它现在的作用是「Windows 的状态一眼可见」，不是「挡住了什么」。
-    #
-    # 端口做完那一步，就是把 `continue-on-error` 删掉。
-    # 方向由 `posix_port_ratchet` 守着（每台 macOS 机器的每次 `cargo test` 都跑，
-    # 基线 4 处，只减不增）——但它**只覆盖那 6 个 POSIX-only 类**，
-    # 上面那 6 个 cfg 作用域问题一条都不在它的表里。
-    continue-on-error: true
+    # Windows 原生编译与测试作为必过检查；不得排除失败用例来声明通过。
+    # macOS 交叉类型检查不覆盖 Winsock/文件锁运行时行为。
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -174,5 +133,7 @@ jobs:
       # 它覆盖不到片段之间的交互，也跑不了 `cargo test`。
       - name: 编译检查
         run: cargo check --locked --manifest-path app/src-tauri/Cargo.toml
+      - name: HTTP 超时与取消回归
+        run: cargo test --manifest-path vendor/tiny_http/Cargo.toml --test timeout-cancel
       - name: Rust 测试
         run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml

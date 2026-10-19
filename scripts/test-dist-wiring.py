@@ -97,6 +97,11 @@ class ReleaseWiringTests(unittest.TestCase):
         self.assertIn('latest.json")', self.source)
         self.assertRegex(self.source, r"die \"发布附件缺少")
 
+    def test_release_verifies_the_actual_signed_bundle(self):
+        check = self.source.index('scripts/test-update-signature.py --published')
+        stage = self.source.index('step "提交"')
+        self.assertLess(check, stage, "签名验收必须发生在发布提交之前")
+
     def test_build_script_disables_updater_artifacts_without_a_key(self):
         build = (ROOT / "scripts/build-app.sh").read_text(encoding="utf-8")
         self.assertIn('createUpdaterArtifacts\\":false', build.replace('"', '\\"'))

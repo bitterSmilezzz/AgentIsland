@@ -110,17 +110,23 @@ impl<W: Write + Send> Iterator for SequentialWriterBuilder<W> {
     }
 }
 
+impl<R: Read + Send> SequentialReader<R> {
+    /// Wait until the previous request releases the underlying reader, without
+    /// reading any bytes. Socket options may only be changed after this handoff.
+    pub(crate) fn wait_for_turn(&mut self) {
+        if let SequentialReaderInner::Waiting(ref recv) = self.inner {
+            self.inner = SequentialReaderInner::MyTurn(recv.recv().unwrap());
+        }
+    }
+}
+
 impl<R: Read + Send> Read for SequentialReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        let mut reader = match self.inner {
-            SequentialReaderInner::MyTurn(ref mut reader) => return reader.read(buf),
-            SequentialReaderInner::Waiting(ref mut recv) => recv.recv().unwrap(),
-            SequentialReaderInner::Empty => unreachable!(),
-        };
-
-        let result = reader.read(buf);
-        self.inner = SequentialReaderInner::MyTurn(reader);
-        result
+        self.wait_for_turn();
+        match self.inner {
+            SequentialReaderInner::MyTurn(ref mut reader) => reader.read(buf),
+            _ => unreachable!(),
+        }
     }
 }
 

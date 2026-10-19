@@ -42,6 +42,7 @@ mod notify_ledger_probe;
 mod remote_delivery_probe;
 mod notifier;
 mod observability;
+mod persistence_file;
 mod placement;
 mod power;
 mod private_text;

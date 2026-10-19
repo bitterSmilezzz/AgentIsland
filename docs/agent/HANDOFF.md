@@ -298,3 +298,26 @@ v0.0.325 与 v0.0.326 都是这么发的。已登记为 BUG-005，是否给脚�
 1. **端到端升级验收**（最有价值）：留一个旧版客户端 → 发新版 → 确认它真能发现并升上去。
 2. **负例**：用错误的公钥验证「签名不匹配被拒绝」，且界面给出的是「已拒绝安装」而不是可重试的错误。
 3. Intel / universal 路径。
+
+---
+
+## 10. 2026-10-19 追加：Windows 修复复核（v0.0.327，交付中）
+
+更正：run 39186309579 的 979 passed / 0 failed 排除了两个套接字用例及文件锁竞争用例。
+它只能说明剩余集合通过；此前把 BUG-004 关闭以及“Winsock 不支持取消”的解释均撤回。
+不通过增加等待时间或删测试完成验收。
+
+当前修复：持久化恢复所有平台的写锁，并通过同一持锁句柄读回修订，避免 Windows
+强制锁阻止另一个句柄读取。文件身份使用 Unix dev/inode 或 Win32
+GetFileInformationByHandle，不调用尚未稳定的 MetadataExt::file_index。
+
+HTTP 层用 Arc 共享实际系统句柄，读取、超时、关闭不再分散到 Windows 复制句柄；
+解析器必须等前一个 SequentialReader 释放后才能解除空闲读取超时。本地新增的
+keep-alive 大包体回归在修复前失败、修复后通过；Windows 全套结果仍需单独取证。
+
+保持 CRLF 指针偏移、JS 文件 URL、SVG 换行归一与 Path::is_absolute 修复。
+更新门禁不再读取旧 dist 作为普通 Rust 测试输入；发布时另外核对实际签名包版本与签名。
+
+验证入口：cargo test（全套及 webhook/dedup/notify_ledger 定向）、
+vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --published 验签。
+真旧版客户端安装升级、Intel/universal 路径仍未验。

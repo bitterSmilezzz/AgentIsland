@@ -871,3 +871,75 @@ fn concurrent_32_real_tcp_and_200_route_burst_each_enqueue_once_without_cross_bi
     assert_eq!(summary.meets_target, Some(true));
     assert!(Ledger::open_at(&path).pending.is_empty());
 }
+
+#[test]
+fn active_writer_lock_is_nonblocking_and_retryable_for_the_worker() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.path();
+    let mut ledger = Ledger::open_at(&path);
+    assert!(ledger.accept(&event(1), Some("first")));
+    assert!(ledger.flush());
+    let original = fs::read(&path).unwrap();
+    let lock = open_regular(&path).unwrap();
+    lock.try_lock().unwrap();
+    assert!(ledger.accept(&event(2), Some("second")));
+    let start = Instant::now();
+    assert!(!ledger.flush());
+    assert!(start.elapsed() < Duration::from_secs(1));
+    let status = ledger.status();
+    assert_eq!(status.error, Some(WRITE_ERROR));
+    assert!(!status.blocked, "lock contention must not permanently disable the worker");
+    assert_eq!(status.saved_generation, 1);
+    assert_eq!(status.attempted_generation, 2);
+    assert_eq!(
+        crate::persistence_file::read_current(&path, MAX_BYTES, Some(&lock)).unwrap().unwrap().0,
+        original,
+    );
+    drop(lock);
+    ledger.ack(&event(1)); // A new snapshot retries the failed publication.
+    assert!(ledger.flush());
+    assert!(ledger.status().saved);
+    let restored = Ledger::open_at(&path).restored_events();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].id, stored_internal_id(&event(2)));
+}
+
+#[test]
+fn identical_replacement_with_preserved_mtime_blocks_the_ledger_worker() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.path();
+    let mut ledger = Ledger::open_at(&path);
+    assert!(ledger.accept(&event(1), Some("first")));
+    assert!(ledger.flush());
+    let original = fs::read(&path).unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let replacement = sandbox.0.join("replacement.json");
+    fs::write(&replacement, &original).unwrap();
+    fs::OpenOptions::new().write(true).open(&replacement).unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+    fs::rename(&replacement, &path).unwrap();
+    assert!(ledger.accept(&event(2), Some("second")));
+    assert!(!ledger.flush());
+    assert!(ledger.status().blocked);
+    assert_eq!(ledger.status().error, Some(STALE_ERROR));
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn removing_a_loaded_ledger_permanently_blocks_future_publications() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.path();
+    let mut ledger = Ledger::open_at(&path);
+    ledger.accept(&event(1), Some("first"));
+    assert!(ledger.flush());
+    let original = fs::read(&path).unwrap();
+    fs::remove_file(&path).unwrap();
+    ledger.accept(&event(2), Some("second"));
+    assert!(!ledger.flush());
+    assert!(ledger.status().blocked);
+    assert_eq!(ledger.status().error, Some(STALE_ERROR));
+    fs::write(&path, &original).unwrap();
+    ledger.accept(&event(3), Some("third"));
+    assert!(!ledger.flush());
+    assert_eq!(fs::read(&path).unwrap(), original);
+}

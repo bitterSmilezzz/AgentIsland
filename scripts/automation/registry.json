@@ -394,7 +394,7 @@
         "not06.update-panel",
         "not06.update-signature"
       ],
-      "coverage_note": "partial — 界面层（设置页「更新」分区：手动检查更新 → 下载并安装 → 显式重启，默认不检查不自动重启，进度未知显示已下载字节）已完成；签名负例已完备（冒充者公钥被拒、单字节篡改被拒、张冠李戴被拒、格式错误不抛错；独立 Blake2b+Ed25519 验签，变异验证 2/2）；端到端一致性校验已有（update_e2e_tests：最新发布包解压魔数、latest.json 清单、.sig 与 tar.gz 磁盘一致性与本地 mock 服务校验）；基础设施与发版接线已有；四条门禁均已纳入（not06.update-state / not06.update-panel / not06.update-signature / rust.default）。缺：Intel/universal 路径。",
+      "coverage_note": "partial — 已有手动检查、确认安装与显式重启 UI；独立 Blake2b/Ed25519 合成正反例每次执行，缺依赖失败；发布时 --published 验本轮真实包的版本、签名与篡改拒绝。Rust 本地 HTTP 回归逐字节校验清单和二进制传输，不冒充真实升级。缺：旧版客户端实际安装升级、跳过版本与 Intel/universal 路径。",
       "audit_ref": "docs/testing/测试自动化交付.md",
       "status": "partial"
     },
@@ -2066,7 +2066,7 @@
       "requires_live_service": false,
       "requires_spending": false,
       "requires_python": "3.11",
-      "source": "NOT-06 签名负例与真实验签：发布公钥+已发布包通过、冒充者公钥被拒、单字节篡改被拒、张冠李戴被拒、格式错误不抛错；独立 Blake2b+Ed25519 验证，变异验证 2/2。",
+      "source": "NOT-06 独立 Blake2b+Ed25519 验证：合成正例、错误公钥（含复制 key id）、单字节篡改、异包、垃圾输入、可信注释篡改；缺 cryptography 明确失败。发布入口另跑 --published 检查本轮真实产物。",
       "test_files": [
         "scripts/test-update-signature.py"
       ]
@@ -2438,10 +2438,10 @@
     },
     {
       "id": "BUG-004",
-      "title": "Windows job 的 cargo test 有 20 余个失败（编译已通过）",
-      "status": "closed",
+      "title": "Windows 文件锁与 HTTP 超时/取消的完整回归待验收",
+      "status": "in-progress",
       "requirement": null,
-      "evidence": "已彻底修复 Windows 下 cargo test 失败的全部 24 项测试（9 类根因）：1) posix_port_ratchet 指针偏移量切片避开 CRLF 换行字节错位；2) the_view_module_evaluates 标准化 file:/// URL 避开 \\U Unicode 转义语法错误；3) test-agent-identities.mjs 增加 SVG LF 换行归一，抵消 git autocrlf 导致的哈希不符；4) filemon 测试 2026/10/01 规范化为多段 Path::join，消除反斜杠不匹配；5) secret::write 跨平台空名校验先行，不再被 non-macos 平台拒绝拦截；6) session statusIndex 测试路径改为 is_absolute()，支持 Windows 盘符路径；7) models views.js 解析前将 \\r\\n 归一为 \\n，确保 \\n}\\n 正常定位函数收尾；8) dedup 与 notify_ledger 的 POSIX 文件锁 _writer_lock 门控到 cfg(unix)，消除 Win32 强制字节范围锁引发的自我死锁与 ERROR_LOCK_VIOLATION，并在 read_current 补充父路径非目录校验；9) task_artifacts claude_main_interrupt 测试重写时补齐尾随换行，消除因文件长度完全一致导致的 TAIL_MEMO 假命中；10) webhook ingress 2 项依赖 POSIX 套接字关闭立即唤醒阻塞 read 的用例门控至 cfg(unix)。Windows runner 实测 979+ 测试全部通过，零失败。"
+      "evidence": "更正此前 closed：run 39186309579 的 979/0 排除了两个 HTTP 用例和写锁竞争回归，不能证明缺陷已修复。当前恢复用例：持久化复用持锁句柄与稳定文件身份；HTTP 共用实际系统句柄、取得读取顺序后才解除空闲超时。合成 keep-alive 大包体回归已先红后绿；完整 Windows 原生执行结果待记录，禁止以 macOS 或交叉类型检查替代。"
     },
     {
       "id": "BUG-005",

@@ -262,6 +262,9 @@ if [[ -f "$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz.sig" ]]; then
     "$PYTHON_MIN" scripts/automation/render-update-manifest.py --write || die "更新清单生成失败"
     # 回读校验：写出来的清单必须与签名更新包逐字一致，否则是伪造的发布信息。
     "$PYTHON_MIN" scripts/automation/render-update-manifest.py --check || die "更新清单与签名更新包不一致"
+    cp "$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz" \
+       "$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz.sig" dist/
+    "$PYTHON_MIN" scripts/test-update-signature.py --published || die "本轮发布包签名验收失败"
     ls -lh dist/latest.json | awk '{print "    " $9 "  " $5}'
 else
     # 发版已在打包前要求私钥，所以到不了「顺手也能发」的降级分支。

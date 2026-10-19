@@ -188,9 +188,6 @@ fn slow_headers_are_included_in_latency() {
     slow_parse(true);
 }
 
-/// 依赖 POSIX 套接字可取消语义：在另一线程对服务端套接字调用 shutdown(Both) 能立即唤醒阻塞中的 read()。
-/// Windows Winsock 按系统设计不中断其它句柄/线程的阻塞 recv()，本用例在 Unix 目标上验收。
-#[cfg(unix)]
 #[test]
 fn shutdown_cancels_partial_body_while_client_stays_connected() {
     let (server, addr, engine, _wake) = fixture();
@@ -274,22 +271,33 @@ fn partial_header_and_small_body_connections_are_cancelled_on_shutdown() {
     assert_eq!(engine.lock().unwrap().consume_hook_events(), 0);
 }
 
-/// 依赖 POSIX 套接字超时与关闭语义：服务端单线程超时后关闭 socket 必须向客户端立即反映为 EOF。
-#[cfg(unix)]
 #[test]
 fn partial_header_and_bodies_time_out_without_becoming_events() {
     let (server, addr, engine, _wake) = fixture();
-    let mut streams: Vec<_> = [None, Some(100), Some(4096)]
-        .into_iter()
-        .map(|length| {
-            let mut stream = connect(addr);
-            let bytes = length
-                .map(|n| format!("{}{{", header(addr, n)))
-                .unwrap_or_else(|| "POST /notify HTTP/1.1\r\nHost:".into());
-            stream.write_all(bytes.as_bytes()).unwrap();
-            stream
-        })
-        .collect();
+    let mut streams: Vec<_> = [
+        (None, false),
+        (Some(100), false),
+        (Some(4096), false),
+        (Some(4096), true),
+    ]
+    .into_iter()
+    .map(|(length, keep_alive)| {
+        let mut stream = connect(addr);
+        let bytes = length
+            .map(|n| {
+                let header = header(addr, n);
+                let header = if keep_alive {
+                    header.replace("Connection: close", "Connection: keep-alive")
+                } else {
+                    header
+                };
+                format!("{header}{{")
+            })
+            .unwrap_or_else(|| "POST /notify HTTP/1.1\r\nHost:".into());
+        stream.write_all(bytes.as_bytes()).unwrap();
+        stream
+    })
+    .collect();
     let started = Instant::now();
     for stream in &mut streams {
         let mut result = Vec::new();

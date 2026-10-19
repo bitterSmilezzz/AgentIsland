@@ -15,7 +15,7 @@ pub(crate) enum Stream {
 impl Clone for Stream {
     fn clone(&self) -> Self {
         match self {
-            Stream::Http(tcp_stream) => Stream::Http(tcp_stream.try_clone().unwrap()),
+            Stream::Http(tcp_stream) => Stream::Http(tcp_stream.clone()),
             #[cfg(any(feature = "ssl-openssl", feature = "ssl-rustls"))]
             Stream::Https(ssl_stream) => Stream::Https(ssl_stream.clone()),
         }

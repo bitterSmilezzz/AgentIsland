@@ -1,153 +1,76 @@
-//! 端到端自动更新集成验收（NOT-06 验收标准）。
+//! 更新清单与包体的本地 HTTP 分发回归。
 //!
-//! 验证真正的端到端流程：
-//! 1. 启一个本地 HTTP 服务提供 `latest.json` 和真实已签名的 `AgentIsland.app.tar.gz`；
-//! 2. 模拟运行旧版（如 0.0.325）的更新器；
-//! 3. 请求检查更新，断言能发现新版（0.0.326）；
-//! 4. 触发下载并验证签名；
-//! 5. 校验负例：篡改包或使用伪造签名时必须报错并被拒。
+//! 使用合成夹具，普通 cargo test 不依赖 dist 中上一次发布的产物。
+//! 这里只证明传输字节完整；真实发布包的版本、架构和签名由发布门禁校验，
+//! 不把本地 HTTP 服务测试称作旧客户端安装升级验收。
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::io::Write;
-    use std::net::TcpListener;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
+    use std::time::Duration;
 
-    fn find_repo_root() -> PathBuf {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        manifest_dir.join("../..").canonicalize().unwrap()
+    fn fetch(addr: std::net::SocketAddr, path: &str) -> Vec<u8> {
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        let boundary = bytes.windows(4).position(|part| part == b"\r\n\r\n").unwrap();
+        let headers = std::str::from_utf8(&bytes[..boundary]).unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        let body = bytes[boundary + 4..].to_vec();
+        assert!(headers.contains(&format!("Content-Length: {}", body.len())));
+        body
     }
 
     #[test]
-    fn verify_published_artifacts_and_signature_are_online_and_consistent() {
-        let root = find_repo_root();
-        let manifest_path = root.join("dist/latest.json");
-        let archive_path = root.join("dist/AgentIsland.app.tar.gz");
-        let sig_path = root.join("dist/AgentIsland.app.tar.gz.sig");
-
-        if !manifest_path.exists() || !archive_path.exists() || !sig_path.exists() {
-            eprintln!("跳过：缺少 dist 发布产物（需在带签名的发布构建后运行）");
-            return;
-        }
-
-        let manifest_content = fs::read_to_string(&manifest_path).unwrap();
-        let manifest: serde_json::Value = serde_json::from_str(&manifest_content).unwrap();
-
-        // 1. 清单必须声称 0.0.326
-        assert_eq!(
-            manifest["version"], "0.0.326",
-            "latest.json 的 version 必须与当前发版版本一致"
-        );
-
-        // 2. 平台必须包含 darwin-aarch64
-        let platform = &manifest["platforms"]["darwin-aarch64"];
-        assert!(platform.is_object(), "必须有 darwin-aarch64 平台条目");
-
-        // 3. 签名必须非空且有效
-        let sig_in_manifest = platform["signature"].as_str().unwrap();
-        assert!(!sig_in_manifest.is_empty(), "清单内的签名不得为空");
-
-        // 4. 磁盘上的 .sig 内容必须与清单内的签名一致
-        let sig_file_content = fs::read_to_string(&sig_path).unwrap();
-        // 清单内的签名通常是 base64 包裹或原始签名，至少要包含相同核心签名块
-        assert!(
-            sig_in_manifest.len() > 100,
-            "清单内签名长度异常（< 100 字符）"
-        );
-        assert!(
-            sig_file_content.len() > 100,
-            "签名文件内容长度异常（< 100 字符）"
-        );
-
-        // 5. 归档包大小必须大于 1MB 且是合法的 gzip/tar
-        let archive_bytes = fs::read(&archive_path).unwrap();
-        assert!(
-            archive_bytes.len() > 1_000_000,
-            "更新包体过小（< 1MB），可能未打包完整应用"
-        );
-        // gzip 魔数：1F 8B
-        assert_eq!(archive_bytes[0], 0x1F, "更新包不是合法的 gzip 文件");
-        assert_eq!(archive_bytes[1], 0x8B, "更新包不是合法的 gzip 文件");
-    }
-
-    #[test]
-    fn local_mock_server_can_serve_update_manifest_and_tarball() {
-        let root = find_repo_root();
-        let manifest_path = root.join("dist/latest.json");
-        let archive_path = root.join("dist/AgentIsland.app.tar.gz");
-
-        if !manifest_path.exists() || !archive_path.exists() {
-            eprintln!("跳过：缺少本地发布产物");
-            return;
-        }
-
+    fn local_server_distributes_complete_manifest_and_binary_bytes() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let flag_clone = stop_flag.clone();
-
-        let manifest_data = fs::read(&manifest_path).unwrap();
-        let archive_data = fs::read(&archive_path).unwrap();
-
-        let handle = thread::spawn(move || {
-            for stream in listener.incoming() {
-                if flag_clone.load(Ordering::Relaxed) {
-                    break;
-                }
-                if let Ok(mut stream) = stream {
-                    let mut buf = [0u8; 1024];
-                    let _ = std::io::Read::read(&mut stream, &mut buf);
-                    let req = String::from_utf8_lossy(&buf);
-                    if req.contains("GET /latest.json") {
-                        let header = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            manifest_data.len()
-                        );
-                        let _ = stream.write_all(header.as_bytes());
-                        let _ = stream.write_all(&manifest_data);
-                    } else if req.contains("GET /AgentIsland.app.tar.gz") {
-                        let header = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            archive_data.len()
-                        );
-                        let _ = stream.write_all(header.as_bytes());
-                        let _ = stream.write_all(&archive_data);
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let archive: Vec<u8> = (0..131_072).map(|index| (index % 256) as u8).collect();
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "platforms": {"darwin-aarch64": {
+                "url": format!("http://{addr}/AgentIsland.app.tar.gz"),
+                "signature": "synthetic-transport-fixture"
+            }}
+        })).unwrap();
+        let expected_manifest = manifest.clone();
+        let expected_archive = archive.clone();
+        let server = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            for (expected_path, body) in [("/latest.json", manifest), ("/AgentIsland.app.tar.gz", archive)] {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline, "missing fixture request");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("fixture accept failed: {error}"),
                     }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() < 4096);
                 }
+                assert!(request.starts_with(format!("GET {expected_path} HTTP/1.1\r\n").as_bytes()));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
             }
         });
-
-        // 验证 mock server 能够完整响应
-        let resp = reqwest_get_bytes(&format!("http://127.0.0.1:{port}/latest.json"));
-        assert!(!resp.is_empty(), "Mock 服务未能正确返回 latest.json");
-        let parsed: serde_json::Value = serde_json::from_slice(&resp).unwrap();
-        assert_eq!(parsed["version"], "0.0.326");
-
-        stop_flag.store(true, Ordering::Relaxed);
-        let _ = reqwest_get_bytes(&format!("http://127.0.0.1:{port}/latest.json")); // 触发退出
-        let _ = handle.join();
-    }
-
-    fn reqwest_get_bytes(url: &str) -> Vec<u8> {
-        let mut response = Vec::new();
-        let stripped = url.trim_start_matches("http://");
-        let (host, path) = match stripped.find('/') {
-            Some(idx) => (&stripped[..idx], &stripped[idx..]),
-            None => (stripped, "/"),
-        };
-        if let Ok(mut stream) = std::net::TcpStream::connect(host) {
-            let req = format!("GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", path, host);
-            let _ = stream.write_all(req.as_bytes());
-            let mut read_buf = Vec::new();
-            let _ = std::io::Read::read_to_end(&mut stream, &mut read_buf);
-            if let Some(pos) = read_buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                response = read_buf[pos + 4..].to_vec();
-            }
-        }
-        response
+        assert_eq!(fetch(addr, "/latest.json"), expected_manifest);
+        assert_eq!(fetch(addr, "/AgentIsland.app.tar.gz"), expected_archive);
+        server.join().unwrap();
     }
 }

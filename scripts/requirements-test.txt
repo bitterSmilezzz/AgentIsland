@@ -1,0 +1,2 @@
+# Independent Ed25519 updater signature gate (CI and release).
+cryptography==50.0.2

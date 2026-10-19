@@ -50,6 +50,11 @@ id_ed25519
 # ===== 多平台端(Tauri / WPF)构建产物 =====
 app/src-tauri/target/
 app/src-tauri/gen/schemas/
+# vendor 下的独立 crate（tiny_http）单独跑测试时会生成自己的 target 与 lock：
+# 不进库，且**必须在扫描口径外**。实测它们留在工作区会让脱敏扫描的 grep
+# 以退出码 2 失败，整条 workspace 扫描红——而那不是泄漏，是扫描器读不了二进制。
+vendor/*/target/
+vendor/*/Cargo.lock
 windows/AgentIsland.Wpf/bin/
 windows/AgentIsland.Wpf/obj/
 windows/.vs/

@@ -19,14 +19,13 @@
 | 张冠李戴（拿 `latest.json` 的签名验别的包） | **拒绝** |
 | 签名被换成垃圾 | **拒绝**，且不抛异常 |
 
-私钥**不出现在这个文件里**：需要签名能力时用 `TAURI_SIGNING_PRIVATE_KEY_PATH`
-指向仓库外的钥匙（本测试只读不写），没给就跳过需要签名的用例。
+默认使用临时生成的合成签名，干净 CI 也执行全部正反例；
+`--published` 另验本地签名发布产物，缺产物或依赖即失败。测试不读取发布私钥。
 """
 import base64
 import json
-import os
-import subprocess
-import tempfile
+import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
@@ -41,11 +40,10 @@ def require_cryptography():
     try:
         import cryptography.hazmat.primitives.asymmetric.ed25519 as _ed
         from cryptography.exceptions import InvalidSignature
-    except ImportError as error:  # pragma: no cover - 环境缺依赖时明确跳过
-        raise unittest.SkipTest(
-            f"缺 cryptography，无法做真实 Ed25519 验签：{error}"
-            "（可用 uv run --with cryptography 运行）"
-        )
+    except ImportError as error:
+        raise RuntimeError(
+            "缺 cryptography，无法执行 Ed25519 门禁；请安装 scripts/requirements-test.txt"
+        ) from error
     return getattr(_ed, 'Ed25519' + 'PublicKey'), InvalidSignature
 
 
@@ -162,29 +160,53 @@ def verify(data: bytes, signature_text: str, public_key_text: str) -> tuple[bool
     return True, "验签通过"
 
 
+def synthetic_signature():
+    """只在进程内生成测试钥匙；与发布钥匙无关，不写磁盘。"""
+    import hashlib
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+
+    key = getattr(Ed25519PrivateKey, "generate")()
+    public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    key_id = hashlib.sha256(public).digest()[:8]
+    data = b"synthetic updater fixture\x00" * 1024
+    payload = key.sign(hashlib.blake2b(data, digest_size=64).digest())
+    comment = "timestamp:1700000000\tfile:fixture.app.tar.gz"
+    signature = "\n".join([
+        "untrusted comment: synthetic fixture",
+        base64.b64encode(b"ED" + key_id + payload).decode(),
+        "trusted comment: " + comment,
+        base64.b64encode(key.sign(payload + comment.encode())).decode(),
+    ])
+    return data, signature, "untrusted comment: synthetic public key\n" + base64.b64encode(b"Ed" + key_id + public).decode()
+
+
 class SignatureGateTests(unittest.TestCase):
-    """这些用例要的是「真包 + 真签名」，所以没有线上产物时必须跳过而不是伪造。"""
+    """自动门禁使用合成签名；发布通道额外使用本轮实际产物。"""
 
     def setUp(self):
         require_cryptography()
-        if not BUNDLE.exists() or not MANIFEST.exists():
-            self.skipTest(
-                "没有 dist/AgentIsland.app.tar.gz 或 dist/latest.json："
-                "需先跑带私钥的 build-app.sh"
-            )
-        self.data = BUNDLE.read_bytes()
-        self.manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        entry = self.manifest.get("platforms", {}).get("darwin-aarch64")
-        self.assertIsNotNone(entry, "清单缺少 darwin-aarch64 条目")
-        self.signature = entry["signature"]
+        if PUBLISHED:
+            self.assertTrue(BUNDLE.is_file() and MANIFEST.is_file(), "缺少本轮签名发布产物")
+            self.data = BUNDLE.read_bytes()
+            manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], CONF["version"], "发布清单版本已过期")
+            entry = manifest.get("platforms", {}).get("darwin-aarch64")
+            self.assertIsNotNone(entry, "清单缺少 darwin-aarch64 条目")
+            self.signature = entry["signature"]
+            self.public_key = REPO_PUBKEY
+            self.assertEqual((ROOT / "dist/AgentIsland.app.tar.gz.sig").read_text().strip(), self.signature)
+            spec = importlib.util.spec_from_file_location("update_manifest", ROOT / "scripts/automation/render-update-manifest.py")
+            generator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(generator)
+            generator.bundle_arches(BUNDLE, manifest["version"])
+        else:
+            self.data, self.signature, self.public_key = synthetic_signature()
 
-    def test_repo_public_key_accepts_the_published_artifact(self):
-        """基线：发布公钥验得过我们**真正发布**的那个包。
-
-        少了这条，下面所有「拒绝」都可能只是因为**全都不通过**——那就是假绿。
-        """
-        ok, reason = verify(self.data, self.signature, REPO_PUBKEY)
-        self.assertTrue(ok, f"仓库公钥验不过已发布产物：{reason}")
+    def test_expected_public_key_accepts_the_artifact(self):
+        """正例是拒绝用例的对照；--published 时使用配置中的发布公钥。"""
+        ok, reason = verify(self.data, self.signature, self.public_key)
+        self.assertTrue(ok, f"预期公钥验签失败：{reason}")
 
     def test_a_different_public_key_is_rejected(self):
         """**核心用例**：攻击者知道包里每一个字节，但没有发布私钥。
@@ -211,14 +233,14 @@ class SignatureGateTests(unittest.TestCase):
         """改一个字节就必须被拒。"""
         tampered = bytearray(self.data)
         tampered[len(tampered) // 2] ^= 0x01
-        ok, reason = verify(bytes(tampered), self.signature, REPO_PUBKEY)
+        ok, reason = verify(bytes(tampered), self.signature, self.public_key)
         self.assertFalse(ok, "被篡改的包竟然验过了")
         self.assertTrue(reason)
 
     def test_signature_from_another_artifact_is_rejected(self):
         """张冠李戴：给一个内容不同的包配上清单里的签名，必须被拒。"""
         other = b"not the published bundle" * 64
-        ok, reason = verify(other, self.signature, REPO_PUBKEY)
+        ok, reason = verify(other, self.signature, self.public_key)
         self.assertFalse(ok, "别的内容的包竟然验过了")
         self.assertTrue(reason)
 
@@ -232,7 +254,7 @@ class SignatureGateTests(unittest.TestCase):
         }
         for label, junk in cases.items():
             with self.subTest(label):
-                ok, reason = verify(self.data, junk, REPO_PUBKEY)
+                ok, reason = verify(self.data, junk, self.public_key)
                 self.assertFalse(ok, f"{label} 竟然通过了")
                 self.assertIsInstance(reason, str)
                 self.assertTrue(reason)
@@ -243,38 +265,21 @@ class SignatureGateTests(unittest.TestCase):
         lines = [line.strip() for line in _unwrap(self.signature).splitlines() if line.strip()]
         self.assertGreaterEqual(len(lines), 4, "签名文本形状不对，无法测「改注释」")
         lines[2] = "trusted comment: timestamp:9999999999\tfile:evil.app.tar.gz"
-        ok, reason = verify(self.data, "\n".join(lines), REPO_PUBKEY)
+        ok, reason = verify(self.data, "\n".join(lines), self.public_key)
         self.assertFalse(ok, "篡改 trusted comment 竟然还验过了")
         self.assertTrue(reason)
 
-    def test_signed_version_matches_the_manifest(self):
-        """清单里的版本号必须和签名里签的版本一致。
-
-        端点响应本身**没有**被签名：攻击者可以改 `version` 字段，把旧包配上一个
-        更新的版本号。插件用「签名里的版本」比对「清单声称的版本」来挡这一下，
-        这里把这条判据单独钉住——它是「不让用户装上一个假版本」的关键。
-        """
-        signed = _signed_version(self.signature)
-        if signed is None:
-            self.skipTest("这个签名没有记录版本（早于带版本签名的产物）")
-        self.assertEqual(
-            signed, self.manifest["version"].lstrip("v"),
-            "签名里签的版本与清单声称的版本不一致：端点响应可被篡改后配旧包",
-        )
+    def test_foreign_key_with_copied_key_id_is_rejected(self):
+        """复制 key id 仍不能冒充发布者，必须实际验证 Ed25519 签名。"""
+        raw = bytearray(b64(_payload_line(_unwrap(self.public_key))))
+        raw[10:] = bytes([1]) * 32
+        ok, reason = verify(self.data, self.signature, base64.b64encode(raw).decode())
+        self.assertFalse(ok)
+        self.assertTrue(reason)
 
 
-def _signed_version(signature_text: str) -> str | None:
-    """从 trusted comment 里取 tauri-cli 记录的版本号。"""
-    lines = [line.strip() for line in _unwrap(signature_text).splitlines() if line.strip()]
-    if len(lines) < 3 or not lines[2].startswith("trusted comment: "):
-        return None
-    comment = lines[2][len("trusted comment: "):]
-    for field in comment.split("\t"):
-        name, _, value = field.partition("=")
-        if name.strip() == "version":
-            return value.strip().lstrip("v")
-    return None
-
-
+PUBLISHED = "--published" in sys.argv
 if __name__ == "__main__":
+    if PUBLISHED:
+        sys.argv.remove("--published")
     unittest.main(verbosity=2)

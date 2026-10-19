@@ -354,13 +354,7 @@ impl Server {
                         }
                         // Weak registry avoids retaining idle/completed sockets. Keep the
                         // strong guard with the IO wrappers, including streamed bodies.
-                        let guard = match sock.try_clone() {
-                            Ok(socket) => Arc::new(socket),
-                            Err(error) => {
-                                inside_messages.push(error.into());
-                                continue;
-                            }
-                        };
+                        let guard = Arc::new(sock.clone());
                         {
                             let mut connections = inside_shutdown.connections.lock().unwrap();
                             if inside_close_trigger.load(Relaxed) {

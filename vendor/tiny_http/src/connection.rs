@@ -45,18 +45,22 @@ impl From<unix_net::UnixListener> for Listener {
 }
 
 /// Unified connection. Either a [`TcpStream`] or [`std::os::unix::net::UnixStream`].
-#[derive(Debug)]
+// Share the actual OS handle between readers, writers, and the shutdown guard.
+// In particular, Windows does not propagate SO_RCVTIMEO changes between handles
+// created by TcpStream::try_clone (rust-lang/rust#95336). Cancellation must also
+// target the handle that is performing the blocking read.
+#[derive(Clone, Debug)]
 pub(crate) enum Connection {
-    Tcp(TcpStream),
+    Tcp(std::sync::Arc<TcpStream>),
     #[cfg(unix)]
-    Unix(unix_net::UnixStream),
+    Unix(std::sync::Arc<unix_net::UnixStream>),
 }
 impl std::io::Read for Connection {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let result = match self {
-            Self::Tcp(s) => s.read(buf),
+            Self::Tcp(s) => (&**s).read(buf),
             #[cfg(unix)]
-            Self::Unix(s) => s.read(buf),
+            Self::Unix(s) => (&**s).read(buf),
         };
         if result.as_ref().is_err_and(|error| {
             matches!(
@@ -73,17 +77,17 @@ impl std::io::Read for Connection {
 impl std::io::Write for Connection {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
-            Self::Tcp(s) => s.write(buf),
+            Self::Tcp(s) => (&**s).write(buf),
             #[cfg(unix)]
-            Self::Unix(s) => s.write(buf),
+            Self::Unix(s) => (&**s).write(buf),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Self::Tcp(s) => s.flush(),
+            Self::Tcp(s) => (&**s).flush(),
             #[cfg(unix)]
-            Self::Unix(s) => s.flush(),
+            Self::Unix(s) => (&**s).flush(),
         }
     }
 }
@@ -126,24 +130,16 @@ impl Connection {
             Self::Unix(s) => s.set_write_timeout(timeout),
         }
     }
-
-    pub(crate) fn try_clone(&self) -> std::io::Result<Self> {
-        match self {
-            Self::Tcp(s) => s.try_clone().map(Self::from),
-            #[cfg(unix)]
-            Self::Unix(s) => s.try_clone().map(Self::from),
-        }
-    }
 }
 impl From<TcpStream> for Connection {
     fn from(s: TcpStream) -> Self {
-        Self::Tcp(s)
+        Self::Tcp(std::sync::Arc::new(s))
     }
 }
 #[cfg(unix)]
 impl From<unix_net::UnixStream> for Connection {
     fn from(s: unix_net::UnixStream) -> Self {
-        Self::Unix(s)
+        Self::Unix(std::sync::Arc::new(s))
     }
 }
 

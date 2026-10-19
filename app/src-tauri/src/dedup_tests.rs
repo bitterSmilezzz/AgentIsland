@@ -152,7 +152,6 @@ fn a_stale_writer_never_overwrites_another_writer_or_external_edits() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn an_active_writer_lock_refuses_a_second_writer_without_waiting() {
     let sandbox = Sandbox::new();
@@ -163,8 +162,20 @@ fn an_active_writer_lock_refuses_a_second_writer_without_waiting() {
     let lock = open_regular(&path).unwrap();
     lock.try_lock().unwrap();
     store.note_attention("agent", "new");
+    let start = std::time::Instant::now();
     assert_eq!(store.persist(), Err(WRITE_ERROR));
-    assert_eq!(fs::read(&path).unwrap(), original);
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    assert!(
+        !store.disk.as_ref().unwrap().blocked,
+        "contention must remain retryable"
+    );
+    assert_eq!(
+        crate::persistence_file::read_current(&path, MAX_BYTES, Some(&lock))
+            .unwrap()
+            .unwrap()
+            .0,
+        original,
+    );
     drop(lock);
     store.persist().unwrap();
     assert!(Store::open_at(&path).attention_seen("agent", "new"));
@@ -225,4 +236,64 @@ fn a_real_atomic_write_failure_preserves_old_bytes_and_memory() {
     assert!(store.attention_seen("agent", "new"));
     store.persist().unwrap();
     assert!(Store::open_at(&path).attention_seen("agent", "new"));
+}
+
+#[test]
+fn locked_revision_rereads_rewind_and_detect_identical_replacement() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.path();
+    let mut store = Store::open_at(&path);
+    store.note_attention("agent", "original");
+    store.persist().unwrap();
+    let original = fs::read(&path).unwrap();
+    let lock = open_regular(&path).unwrap();
+    lock.try_lock().unwrap();
+    for _ in 0..3 {
+        assert!(revision_matches(
+            &path,
+            &store.disk.as_ref().unwrap().revision,
+            Some(&lock)
+        ));
+    }
+    // Preserve bytes AND mtime: only file identity can distinguish this rename.
+    let replacement = sandbox.0.join("replacement.json");
+    fs::write(&replacement, &original).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(lock.metadata().unwrap().modified().unwrap()))
+        .unwrap();
+    fs::rename(&replacement, &path).unwrap();
+    assert!(!revision_matches(
+        &path,
+        &store.disk.as_ref().unwrap().revision,
+        Some(&lock)
+    ));
+    drop(lock);
+    store.note_attention("agent", "new");
+    assert_eq!(store.persist(), Err(STALE_ERROR));
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn removing_or_replacing_a_loaded_file_with_a_directory_blocks_future_writes() {
+    for directory in [false, true] {
+        let sandbox = Sandbox::new();
+        let path = sandbox.path();
+        let mut store = Store::open_at(&path);
+        store.persist().unwrap();
+        let original = fs::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        if directory {
+            fs::create_dir(&path).unwrap();
+        }
+        assert_eq!(store.persist(), Err(STALE_ERROR));
+        if directory {
+            fs::remove_dir(&path).unwrap();
+        }
+        fs::write(&path, &original).unwrap();
+        assert_eq!(store.persist(), Err(READ_ERROR));
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
 }
