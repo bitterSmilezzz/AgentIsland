@@ -28,9 +28,62 @@ struct Identity {
     #[cfg(unix)]
     inode: u64,
     #[cfg(windows)]
-    created: u64,
+    volume: u32,
     #[cfg(windows)]
-    attributes: u32,
+    index: u64,
+}
+
+fn file_identity(file: &File) -> io::Result<Identity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file.metadata()?;
+        Ok(Identity {
+            device: meta.dev(),
+            inode: meta.ino(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        #[repr(C)]
+        struct BY_HANDLE_FILE_INFORMATION {
+            dwFileAttributes: u32,
+            ftCreationTime: [u32; 2],
+            ftLastAccessTime: [u32; 2],
+            ftLastWriteTime: [u32; 2],
+            dwVolumeSerialNumber: u32,
+            nFileSizeHigh: u32,
+            nFileSizeLow: u32,
+            nNumberOfLinks: u32,
+            nFileIndexHigh: u32,
+            nFileIndexLow: u32,
+        }
+        extern "system" {
+            fn GetFileInformationByHandle(
+                hFile: *mut std::ffi::c_void,
+                lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION,
+            ) -> i32;
+        }
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        let ok = unsafe {
+            GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr())
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let info = unsafe { info.assume_init() };
+        let index = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+        Ok(Identity {
+            volume: info.dwVolumeSerialNumber,
+            index,
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = file;
+        Ok(Identity {})
+    }
 }
 
 fn invalid() -> io::Error {
@@ -53,40 +106,12 @@ fn regular(meta: &Metadata) -> bool {
     true
 }
 
-fn identity(meta: &Metadata) -> Identity {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Identity {
-            device: meta.dev(),
-            inode: meta.ino(),
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        // Creation time changes when a name is republished from a fresh staging file
-        // and cannot be backdated through `FileTimes`, so it survives the
-        // bytes-and-mtime-preserved replacement above.
-        Identity {
-            created: meta.creation_time(),
-            attributes: meta.file_attributes(),
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = meta;
-        Identity {}
-    }
-}
-
 /// The name still refers to one unchanged regular file, judged without reading bytes.
 fn unchanged(before: &Metadata, after: &Metadata) -> bool {
     regular(before)
         && regular(after)
         && before.len() == after.len()
         && before.modified().ok() == after.modified().ok()
-        && identity(before) == identity(after)
 }
 
 pub(crate) fn open_regular(path: &Path) -> io::Result<File> {
@@ -151,20 +176,24 @@ pub(crate) fn read_current(
         }
     };
     let meta = file.metadata()?;
-    if !unchanged(&before, &meta) {
+    let file_id = file_identity(file)?;
+    if !unchanged(&before, &meta) || file_identity(&open_regular(path)?)? != file_id {
         return Err(invalid());
     }
     file.rewind()?;
     let mut bytes = Vec::new();
     file.take(max_bytes + 1).read_to_end(&mut bytes)?;
     let after = fs::symlink_metadata(path)?;
-    if bytes.len() as u64 > max_bytes || !unchanged(&meta, &after) {
+    if bytes.len() as u64 > max_bytes
+        || !unchanged(&meta, &after)
+        || file_identity(&open_regular(path)?)? != file_id
+    {
         return Err(invalid());
     }
     let revision = Revision {
         digest: Sha256::digest(&bytes).to_vec(),
         modified: after.modified().ok(),
-        identity: identity(&after),
+        identity: file_id,
     };
     Ok(Some((bytes, revision)))
 }
