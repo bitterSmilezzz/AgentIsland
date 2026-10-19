@@ -1712,7 +1712,7 @@ mod tests {
         };
         let o = f.observe(&[main.clone(), interrupt(true)]);
         assert_eq!(o.kind, Some(AttentionKind::Answer));
-        std::fs::write(&f.path, [main, interrupt(false)].join("\n")).unwrap();
+        std::fs::write(&f.path, [main, interrupt(false)].join("\n") + "\n").unwrap();
         let (probe, _) = crate::session::probe_dialect(
             "claude",
             SessionDialect::GenericTail,

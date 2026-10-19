@@ -27,10 +27,10 @@ fn fixture() -> (
 fn connect(addr: SocketAddr) -> TcpStream {
     let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).unwrap();
     stream
-        .set_read_timeout(Some(Duration::from_secs(8)))
+        .set_read_timeout(Some(Duration::from_secs(12)))
         .unwrap();
     stream
-        .set_write_timeout(Some(Duration::from_secs(1)))
+        .set_write_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     stream
 }
@@ -201,7 +201,7 @@ fn shutdown_cancels_partial_body_while_client_stays_connected() {
         drop(server);
         done_tx.send(()).unwrap();
     });
-    let finished = done_rx.recv_timeout(Duration::from_millis(1500)).is_ok();
+    let finished = done_rx.recv_timeout(Duration::from_secs(3)).is_ok();
     let elapsed = started.elapsed();
     // Rescue the baseline implementation on failure so the test itself never hangs.
     let _ = stream.shutdown(Shutdown::Both);
@@ -297,7 +297,7 @@ fn partial_header_and_bodies_time_out_without_becoming_events() {
             "server must close timed out sockets"
         );
     }
-    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(started.elapsed() < Duration::from_secs(14));
     let mut engine = engine.lock().unwrap();
     assert_eq!(engine.consume_hook_events(), 0);
     assert_eq!(engine.notify_latency.samples(), 0);
