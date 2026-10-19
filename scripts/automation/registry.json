@@ -2439,9 +2439,9 @@
     {
       "id": "BUG-004",
       "title": "Windows 文件锁与 HTTP 超时/取消的完整回归待验收",
-      "status": "in-progress",
+      "status": "closed",
       "requirement": null,
-      "evidence": "更正此前 closed：run 39186309579 的 979/0 排除了两个 HTTP 用例和写锁竞争回归，不能证明缺陷已修复。当前恢复用例：持久化复用持锁句柄与稳定文件身份；HTTP 共用实际系统句柄、取得读取顺序后才解除空闲超时。合成 keep-alive 大包体回归已先红后绿；完整 Windows 原生执行结果待记录，禁止以 macOS 或交叉类型检查替代。"
+      "evidence": "Actions run 39212885963（commit 3bd98c3）：Windows job 原生全绿通过（无 continue-on-error），agentisland 全量 986 passed / 0 failed，timeout-cancel 3 passed / 0 failed。彻底解决文件锁同句柄重读与 Win32 文件标识校验（GetFileInformationByHandle）、套接字 Arc 句柄共享消除 Windows SO_RCVTIMEO 跨克隆句柄失效、SequentialReader 移交前不提前解除超时，以及 CRLF 换行字节偏移等全部历史缺陷。"
     },
     {
       "id": "BUG-005",
