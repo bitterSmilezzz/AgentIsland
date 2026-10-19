@@ -59,6 +59,8 @@ jobs:
         # 红线不只在本机守：推送上去的内容必须同样过闸，否则一次绕过本地扫描的
         # 提交就能把密钥送进 git 对象。
         run: bash scripts/scan-secrets.sh
+      - name: Rust 测试
+        run: cargo test --locked --manifest-path app/src-tauri/Cargo.toml
       - name: 统一源码、浏览器及框架门禁
         run: python3 scripts/automation/pipeline.py --profile ci --check-timeout 1800
       - name: 安装固定版本的 Tauri 打包工具
