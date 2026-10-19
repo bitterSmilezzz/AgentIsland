@@ -402,7 +402,7 @@ mod tests {
         let p = preview(&t, s.path(), &op, &snap.revision).unwrap();
         fs::write(
             s.path().join(".agents/skills/sample/SKILL.md"),
-            "CHANGED_SKILL_CONTENT",
+            "CHANGED_SKILL_CONTENT_WITH_DISTINCT_PAYLOAD_LENGTH",
         )
         .unwrap();
         assert!(apply(&t, s.path(), &b, &op, &p.revision, &p.plan_id, 1).is_err());
