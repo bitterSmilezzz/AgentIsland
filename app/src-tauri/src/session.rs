@@ -346,12 +346,7 @@ pub(crate) fn read_tail_lines(path: &str) -> Result<Vec<String>, SessionProbeFai
         use std::os::unix::fs::MetadataExt;
         metadata.ino()
     };
-    #[cfg(windows)]
-    let inode = {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_index().unwrap_or(0)
-    };
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(unix))]
     let inode = 0;
     let stamp = TailStamp {
         len,
