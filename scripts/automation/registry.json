@@ -2449,7 +2449,7 @@
       "title": "release.sh 不支持断点续跑：在「提交后复扫」失败后无法重跑（会死在「没有可提交的改动」）",
       "status": "closed",
       "requirement": "AUTO-01",
-      "evidence": "已在 scripts/release.sh 中实现断点续跑机制：自动比对当前 HEAD 与本次发布提交说明（或显式传 --resume / RELEASE_RESUME=1），跳过重复 commit 步骤并复用当前提交，tag 存在且指向当前提交时自动复用继续推送而不再报错 die；并在 scripts/test-release-staging.sh 中补充完整回归与指向外部 commit 拒绝的负例测试（用例 32-34 全部通过）。"
+      "evidence": "已在 scripts/release.sh 中实现断点续跑机制：自动比对当前 HEAD 与本次发布提交说明（或显式传 --resume / RELEASE_RESUME=1），跳过重复 commit 步骤并复用当前提交，tag 存在且指向当前提交时自动复用继续推送而不再报错 die；并在 scripts/test-release-staging.sh 中补充完整回归与指向外部 commit 拒绝的负例测试（用例 32-34 全部通过）。 真实续跑场景验收：v0.0.329 发版即以「已提交树」路径完成，脚本正确复用已提交 HEAD 并跳过重复提交，tag v0.0.329 指向当前发布提交；registry 与 docs/需求状态.md 已同步关闭。"
     },
     {
       "id": "BUG-003",
@@ -2470,7 +2470,7 @@
       "title": "release.sh 无法发布「已提交且工作区干净」的状态（要发版必须先有一批未提交改动）",
       "status": "closed",
       "requirement": "AUTO-01",
-      "evidence": "已在 scripts/release.sh 中增加已提交树发版模式（--committed 选项或 RELEASE_COMMITTED=1 环境变量）：工作区完全干净时跳过显式文件清单暂存与 git commit，直接基于当前已提交 HEAD 执行版本一致性预检、脱敏扫描、源码门禁、构建、签名更新包与 GitHub 发布；并在 scripts/test-release-staging.sh 中补充干净工作区放行及脏工作区明确拒绝的负例测试（用例 30-31 全部通过）。"
+      "evidence": "已在 scripts/release.sh 中增加已提交树发版模式（--committed 选项或 RELEASE_COMMITTED=1 环境变量）：工作区完全干净时跳过显式文件清单暂存与 git commit，直接基于当前已提交 HEAD 执行版本一致性预检、脱敏扫描、源码门禁、构建、签名更新包与 GitHub 发布；并在 scripts/test-release-staging.sh 中补充干净工作区放行及脏工作区明确拒绝的负例测试（用例 30-31 全部通过）。 真实场景端到端验收：v0.0.329 发版在工作区完全干净（git status 零改动）的已提交树上执行 release.sh --committed，脚本打印「已提交树模式」后完整走完脱敏扫描、73 项源码门禁、私钥签名打包、Tart VM 隔离原生验收、tag 推送与 GitHub Release 5 个附件上传，输出「跳过本地提交（复用已提交 HEAD）」——正是 BUG-005 描述的原始阻断场景。"
     }
   ]
 }
