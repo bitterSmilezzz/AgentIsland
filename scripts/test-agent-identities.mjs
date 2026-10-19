@@ -43,7 +43,13 @@ for (const [, mark, , , file] of Object.values(agentIdentities)) {
     if (file) {
       const provenance = Object.values(official).find(source => source.file === file);
       assert.ok(provenance?.source, `official source missing for ${file}`);
-      assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), provenance.sha256);
+      const raw = readFileSync(path);
+      // Windows 检出时 git autocrlf 会把 SVG 换行转成 CRLF，导致 SHA256 变为原始上游哈希；
+      // official-sources 明确声明「CRLF to LF only」，这里在校验哈希前将 SVG 换行归一为 LF。
+      const content = filename.endsWith('.svg')
+        ? Buffer.from(raw.toString('utf8').replace(/\r\n/g, '\n'), 'utf8')
+        : raw;
+      assert.equal(createHash('sha256').update(content).digest('hex'), provenance.sha256);
     }
     if (filename.endsWith('.png')) {
       assert.equal(readFileSync(path).subarray(0, 8).toString('hex'), '89504e470d0a1a0a');

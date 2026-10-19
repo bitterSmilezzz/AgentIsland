@@ -355,7 +355,7 @@ mod active_session_tests {
     #[test]
     fn codex_date_partitioned_rollout_is_detected() {
         let sandbox = crate::testutil::Sandbox::new("codex-partitioned-session");
-        let dated = sandbox.path().join("2026/10/01");
+        let dated = sandbox.path().join("2026").join("10").join("01");
         std::fs::create_dir_all(&dated).unwrap();
         let rollout = dated.join("rollout-fixture.jsonl");
         std::fs::write(&rollout, b"{}\n").unwrap();

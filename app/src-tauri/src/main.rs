@@ -5768,16 +5768,25 @@ mod build_env_sentinel {
         let stub = std::env::temp_dir().join("agentisland-dom-stub.mjs");
         std::fs::write(&stub, DOM_STUB).expect("应当写得出 DOM 桩");
 
-        // 末尾的 `/` 不是装饰：`new URL('views.js', base)` 在没有尾斜杠的 base 下
-        // 会解析到**上一级**目录，于是报「找不到 app/ui/views.js」——
-        // 一个和代码毫无关系的失败。
+        // 跨平台（Windows \\?\ 扩展路径 / 反斜杠在 JS 字符串字面量中会触发 SyntaxError: Invalid Unicode escape sequence）：
+        // 转成标准的 file:/// URL 格式，彻底避开反斜杠转义与平台前缀差异。
+        let to_file_url = |p: &std::path::Path| -> String {
+            let s = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+            let clean = s.to_string_lossy().replace('\\', "/");
+            let trimmed = clean.trim_start_matches("//?/");
+            if trimmed.starts_with('/') {
+                format!("file://{trimmed}")
+            } else {
+                format!("file:///{trimmed}")
+            }
+        };
+        let stub_url = to_file_url(&stub);
+        let ui_url = format!("{}/", to_file_url(&ui).trim_end_matches('/'));
         let script = format!(
-            "await import('{}');\
-             const base = new URL('file://{}/');\
+            "await import('{stub_url}');\
+             const base = new URL('{ui_url}');\
              const m = await import(new URL('views.js', base).href);\
-             console.log('EVALUATED:' + Object.keys(m).length);",
-            stub.canonicalize().expect("桩文件应当存在").display(),
-            ui.canonicalize().expect("app/ui/js 应当存在").display()
+             console.log('EVALUATED:' + Object.keys(m).length);"
         );
         let out = std::process::Command::new("node")
             .arg("--input-type=module")
@@ -6395,11 +6404,10 @@ mod posix_port_ratchet {
             if next.starts_with("mod ") && next.ends_with(';') {
                 continue; // 声明式：内容在别的文件里，不切
             }
-            let mut byte_end = 0;
-            for l in &lines[..i] {
-                byte_end += l.len() + 1;
-            }
-            return &text[..byte_end.min(text.len())];
+            // 跨平台（Windows CRLF / macOS LF）：直接用子切片在原始文本中的指针偏移，
+            // 不能假设每行只有 1 个换行字节（CRLF 是 2 字节，加 1 会把游标切到 UTF-8 字符中间）。
+            let byte_end = line.as_ptr() as usize - text.as_ptr() as usize;
+            return &text[..byte_end];
         }
         text
     }

@@ -3373,7 +3373,7 @@ mod status_index_tests {
                 profile.id
             );
             assert!(
-                database.path.starts_with('/'),
+                std::path::Path::new(&database.path).is_absolute(),
                 "{} 的会话库路径必须是绝对的",
                 profile.id
             );

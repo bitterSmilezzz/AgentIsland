@@ -1179,7 +1179,8 @@ mod tests {
     fn both_shells_render_agent_rows_through_one_shared_model() {
         let source =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/js/views.js"))
-                .expect("读不到 views.js");
+                .expect("读不到 views.js")
+                .replace("\r\n", "\n");
 
         // 定义只有一处
         assert_eq!(

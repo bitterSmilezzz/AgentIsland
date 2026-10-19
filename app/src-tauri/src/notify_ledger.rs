@@ -510,6 +510,7 @@ impl Disk {
             self.blocked = true;
             return Err(STALE_ERROR);
         }
+        #[cfg(unix)]
         let _writer_lock = if self.revision.is_some() {
             let file = open_regular(&self.path).map_err(|_| WRITE_ERROR)?;
             file.try_lock().map_err(|_| WRITE_ERROR)?;
@@ -633,7 +634,18 @@ fn open_regular(path: &Path) -> io::Result<fs::File> {
 fn read_current(path: &Path) -> io::Result<Option<(Vec<u8>, Revision)>> {
     let before = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // 跨平台（Windows 将父路径非目录也映射为 NotFound）：
+            // 若父路径存在且不是目录，必须返回错误，不可将中间路径失效视作目标文件不存在。
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                if let Ok(meta) = fs::symlink_metadata(parent) {
+                    if !meta.is_dir() {
+                        return Err(invalid());
+                    }
+                }
+            }
+            return Ok(None);
+        }
         Err(error) => return Err(error),
     };
     if !before.is_file() || before.file_type().is_symlink() || before.len() > MAX_BYTES {

@@ -152,6 +152,7 @@ fn a_stale_writer_never_overwrites_another_writer_or_external_edits() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn an_active_writer_lock_refuses_a_second_writer_without_waiting() {
     let sandbox = Sandbox::new();

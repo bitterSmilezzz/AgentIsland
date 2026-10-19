@@ -145,7 +145,12 @@ mod platform {
         false
     }
 
-    pub fn write(_name: &str, _value: &str) -> WriteResult {
+    pub fn write(name: &str, _value: &str) -> WriteResult {
+        if name.is_empty() {
+            return WriteResult::Refused {
+                reason: "条目名为空".to_string(),
+            };
+        }
         WriteResult::Refused {
             reason: "本平台未接钥匙串（只支持 macOS）".to_string(),
         }

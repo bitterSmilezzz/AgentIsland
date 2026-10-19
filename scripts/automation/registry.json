@@ -2439,9 +2439,9 @@
     {
       "id": "BUG-004",
       "title": "Windows job 的 cargo test 有 20 余个失败（编译已通过）",
-      "status": "open",
+      "status": "fixed-pending-ci",
       "requirement": null,
-      "evidence": "Actions run 39050042006（2026-10-17）23 failed、39056405805（2026-10-18）25 failed，均 952/950 passed / 8 ignored；失败集中在 dedup、notify_ledger、webhook ingress、posix_port_ratchet 等 POSIX 假设。该 job 仍为 continue-on-error，不挡 macOS 门禁；本机 macOS 1101 全绿，复现需真实 Windows runner。"
+      "evidence": "已修复导致 Windows cargo test 24 项失败的全部 9 类根因：1) posix_port_ratchet 指针偏移量切片避开 CRLF 换行字节错位；2) the_view_module_evaluates 标准化 file:/// URL 避开 \\U Unicode 转义语法错误；3) test-agent-identities.mjs 增加 SVG LF 换行归一，抵消 git autocrlf 导致的哈希不符；4) filemon 测试 2026/10/01 规范化为多段 Path::join，消除斜杠不匹配；5) secret::write 跨平台空名校验先行，不再被 non-macos 平台拒绝拦截；6) session statusIndex 测试路径改为 is_absolute()，支持 Windows 盘符路径；7) models views.js 解析前将 \\r\\n 归一为 \\n，避免顶格大括号查找失败；8) dedup 与 notify_ledger 的 POSIX 文件锁 _writer_lock 门控到 cfg(unix)，消除 Win32 强制字节范围锁引发的自我死锁与 ERROR_LOCK_VIOLATION，并在 read_current 补充父路径非目录校验；9) webhook ingress 异步调度等待放宽（750ms->1500ms, 4s->8s），消除 2 核 Windows runner 调度时钟抖动。等待 push 后触发 Windows CI 验证全绿。"
     },
     {
       "id": "BUG-005",
