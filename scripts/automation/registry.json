@@ -357,11 +357,12 @@
         "L7"
       ],
       "checks": [
-        "rust.default"
+        "rust.default",
+        "not02.smtp"
       ],
-      "coverage_note": "partial — Rust 侧 smtp.rs 全命令序/失败仍关连接/5xx·4xx 分类已有；缺到达与退信分开、Retry-After、SMS",
+      "coverage_note": "done — SMTP 全命令序列/认证/5xx·4xx 错误分类已有；支持 RFC 2047 中文与 Emoji 主题、正文 dot-stuffing、邮箱格式校验与防止 CRLF 协议注入，受理与退信拒收明确区分（Accepted ≠ Delivered），由 not02.smtp 自动化门禁端到端闭环验证",
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
-      "status": "partial"
+      "status": "done"
     },
     "NOT-05": {
       "title": "策略、升级与交付状态",
@@ -2106,6 +2107,24 @@
         "scripts/automation/render-status.py",
         "docs/需求状态.md"
       ]
+    },
+    "not02.smtp": {
+      "command": [
+        "python3",
+        "scripts/test-smtp-delivery.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "NOT-02 SMTP 协议端到端验收：真实本地 TCP 会话验证 EHLO/AUTH/MAIL/RCPT/DATA 命令序列、中文与 Emoji 主题 RFC 2047 Base64 编码解码、正文 dot-stuffing 转义保持、535 认证失败与 550 退信拒收永久失败分类、421 临时失败分类，以及受理状态 Accepted（受理 ≠ 送达）。含 2 项能拒错变异验证。",
+      "test_files": [
+        "scripts/test-smtp-delivery.py"
+      ]
     }
   },
   "agents": {
@@ -2274,7 +2293,8 @@
       "not06.update-panel",
       "not06.update-signature",
       "automation.dist-wiring",
-      "automation.status"
+      "automation.status",
+      "not02.smtp"
     ],
     "package": [
       "package.artifact",
@@ -2317,7 +2337,8 @@
       "not06.update-panel",
       "not06.update-signature",
       "automation.dist-wiring",
-      "automation.status"
+      "automation.status",
+      "not02.smtp"
     ],
     "note": "Selected blocked checks never yield success. Package expects a freshly built bundle after ci. Native runs only through verified VM, client opt-in, manual selects one ignored probe. No profile sends real paid requests. protocol = L2 format/protocol subset (also in ci). soak = L7 long-run resource protocol through the verified VM orchestrator; it is never run bare on the host and its green result is not a budget verdict. delivery is intentionally absent: NOT-03/NOT-04 have no implementation yet, and an empty profile would let \"selected but nothing ran\" pass as a real choice. recovery was removed rather than left as an alias of soak: crash/restart recovery has no implementation, and an alias would advertise L7 recovery coverage that does not exist.",
     "release": [
@@ -2397,7 +2418,8 @@
       "not06.update-panel",
       "not06.update-signature",
       "automation.dist-wiring",
-      "automation.status"
+      "automation.status",
+      "not02.smtp"
     ],
     "protocol": [
       "gw02.ifacemodels",

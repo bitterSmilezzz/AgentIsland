@@ -35,6 +35,31 @@ pub fn smtp_line(text: &str) -> String {
     text.replace("\r\n", " ").replace(['\n', '\r'], " ")
 }
 
+/// 校验邮箱地址基本格式（符合 RFC 5322 基本子集且严格杜绝协议注入）：
+/// 1. 包含且仅包含一个 `@`，且前后均非空；
+/// 2. 不包含控制字符、换行符（CR / LF）以及引号、尖括号注入；
+/// 3. 长度在合法范围内（1..=254 字节）。
+pub fn validate_email(email: &str) -> Result<(), &'static str> {
+    let trimmed = email.trim();
+    if trimmed.is_empty() {
+        return Err("邮箱地址不能为空");
+    }
+    if trimmed.len() > 254 {
+        return Err("邮箱地址过长（上限 254 字符）");
+    }
+    if trimmed.contains(|c: char| c.is_control() || c == '\r' || c == '\n' || c == '<' || c == '>') {
+        return Err("邮箱地址包含非法字符或换行");
+    }
+    let parts: Vec<&str> = trimmed.split('@').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err("邮箱格式不正确（需包含用户名与有效域名）");
+    }
+    if !parts[1].contains('.') || parts[1].starts_with('.') || parts[1].ends_with('.') {
+        return Err("邮箱域名格式不完整");
+    }
+    Ok(())
+}
+
 fn base64_text(text: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(text.as_bytes())
 }
@@ -698,5 +723,49 @@ mod tests {
             Err(reason) => assert!(reason.contains("465"), "{reason}"),
             Ok(_) => panic!("587 不该被接受"),
         }
+    }
+
+    #[test]
+    fn email_address_validation_rejects_injections_and_invalid_shapes() {
+        assert!(validate_email("user@example.com").is_ok()); // nosec: 测试邮箱格式断言用假值
+        assert!(validate_email("test.name+tag@sub.example.co.uk").is_ok()); // nosec: 测试邮箱格式断言用假值
+
+        assert_eq!(validate_email(""), Err("邮箱地址不能为空"));
+        assert_eq!(validate_email("   "), Err("邮箱地址不能为空"));
+        assert_eq!(validate_email("plainaddress"), Err("邮箱格式不正确（需包含用户名与有效域名）"));
+        assert_eq!(validate_email("@missinguser.com"), Err("邮箱格式不正确（需包含用户名与有效域名）")); // nosec: 测试邮箱格式断言用假值
+        assert_eq!(validate_email("user@"), Err("邮箱格式不正确（需包含用户名与有效域名）")); // nosec: 测试邮箱格式断言用假值
+        assert_eq!(validate_email("user@nodot"), Err("邮箱域名格式不完整")); // nosec: 测试邮箱格式断言用假值
+        assert_eq!(validate_email("user@.dotstart.com"), Err("邮箱域名格式不完整")); // nosec: 测试邮箱格式断言用假值
+        assert_eq!(validate_email("user@dotend.com."), Err("邮箱域名格式不完整")); // nosec: 测试邮箱格式断言用假值
+        assert_eq!(validate_email("user@ex\nample.com"), Err("邮箱地址包含非法字符或换行")); // nosec: 测试邮箱格式断言用假值
+        assert_eq!(validate_email("user@ex\rample.com"), Err("邮箱地址包含非法字符或换行")); // nosec: 测试邮箱格式断言用假值
+        assert_eq!(validate_email("user<evil>@example.com"), Err("邮箱地址包含非法字符或换行")); // nosec: 测试邮箱格式断言用假值
+
+        let long_user = "a".repeat(250);
+        assert_eq!(
+            validate_email(&format!("{long_user}@example.com")), // nosec: 测试邮箱格式断言用假值
+            Err("邮箱地址过长（上限 254 字符）")
+        );
+    }
+
+    #[test]
+    fn unicode_and_emoji_subject_roundtrips_cleanly_through_rfc2047() {
+        use base64::Engine;
+        let original_subject = "智能体完成任务 🚀 [AgentIsland·审核通过]";
+        let lines = message_lines(original_subject, "测试正文", &target(), 0);
+        let subject_line = lines.iter().find(|l| l.starts_with("Subject: ")).unwrap();
+        assert!(subject_line.starts_with("Subject: =?UTF-8?B?"));
+        assert!(subject_line.ends_with("?="));
+        let base64_payload = subject_line
+            .strip_prefix("Subject: =?UTF-8?B?")
+            .unwrap()
+            .strip_suffix("?=")
+            .unwrap();
+        let decoded_bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64_payload)
+            .unwrap();
+        let decoded_subject = String::from_utf8(decoded_bytes).unwrap();
+        assert_eq!(decoded_subject, original_subject, "RFC 2047 还原结果必须与原文严格一致");
     }
 }
