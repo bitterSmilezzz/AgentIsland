@@ -121,22 +121,72 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/common.sh"
 cd "$SCRIPT_DIR/.."
 
-VERSION="${1:-}"
-TITLE="${2:-}"
-NOTES_FILE="${3:-}"
+RELEASE_MODE_COMMITTED=0
+RELEASE_MODE_RESUME=0
+
+POSITIONAL=()
+for arg in "$@"; do
+    case "$arg" in
+        --committed)
+            RELEASE_MODE_COMMITTED=1
+            ;;
+        --resume)
+            RELEASE_MODE_RESUME=1
+            ;;
+        *)
+            POSITIONAL+=("$arg")
+            ;;
+    esac
+done
+
+if [[ "${RELEASE_COMMITTED:-0}" == "1" ]]; then
+    RELEASE_MODE_COMMITTED=1
+fi
+if [[ "${RELEASE_RESUME:-0}" == "1" ]]; then
+    RELEASE_MODE_RESUME=1
+fi
+
+VERSION="${POSITIONAL[0]:-}"
+TITLE="${POSITIONAL[1]:-}"
+NOTES_FILE="${POSITIONAL[2]:-}"
 
 die() { echo "✗ $*" >&2; exit 1; }
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "用法: $0 <X.Y.Z> \"<标题>\" —— 版本号形如 0.0.119"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "用法: $0 [--committed|--resume] <X.Y.Z> \"<标题>\" —— 版本号形如 0.0.119"
 [[ -n "$TITLE" ]] || die "缺 release 标题（CHANGELOG 首条的那句话）"
 
-step "显式发布文件清单预检"
-release_files_preflight || exit 1
+CURRENT_HEAD_SUBJECT="$(git log -1 --pretty=%s 2>/dev/null || true)"
+EXPECTED_RELEASE_SUBJECT="release: v$VERSION - $TITLE"
+WORKTREE_DIRTY="$(git status --porcelain=v1 2>/dev/null || true)"
+
+# 自动断点续跑：若当前 HEAD 提交说明完全对齐本次发布目标，自动启用续跑模式
+if [[ "$CURRENT_HEAD_SUBJECT" == "$EXPECTED_RELEASE_SUBJECT" ]]; then
+    RELEASE_MODE_RESUME=1
+fi
+
+if [[ "$RELEASE_MODE_RESUME" == "1" ]]; then
+    step "断点续跑模式：当前 HEAD 已是发布提交（${CURRENT_HEAD_SUBJECT}），接续后续发布步骤"
+elif [[ "$RELEASE_MODE_COMMITTED" == "1" ]]; then
+    [[ -z "$WORKTREE_DIRTY" ]] || die "--committed 模式要求工作区完全干净（无未提交改动）"
+    step "已提交树模式：直接基于当前已提交 HEAD 进行发布"
+else
+    step "显式发布文件清单预检"
+    release_files_preflight || exit 1
+fi
 
 step "版本三处一致性预检 v${VERSION}"
 python3 scripts/check-version.py "$VERSION"
-[[ -z "$(git tag -l "v$VERSION")" ]] || die "tag v$VERSION 已存在，别重复发版"
+EXISTING_TAG_COMMIT="$(git rev-parse -q --verify "refs/tags/v$VERSION^{commit}" 2>/dev/null || true)"
+CURRENT_HEAD_COMMIT="$(git rev-parse -q --verify "HEAD" 2>/dev/null || true)"
+
+if [[ -n "$EXISTING_TAG_COMMIT" ]]; then
+    if [[ "$RELEASE_MODE_RESUME" == "1" && "$EXISTING_TAG_COMMIT" == "$CURRENT_HEAD_COMMIT" ]]; then
+        step "复用当前 HEAD 已有的 tag v$VERSION"
+    else
+        die "tag v$VERSION 已存在，别重复发版"
+    fi
+fi
 git rev-parse --verify --quiet "HEAD" >/dev/null || die "没有提交历史"
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 [[ "$BRANCH" == "main" ]] || die "当前在 ${BRANCH}，发版要求在 main"
@@ -272,13 +322,17 @@ else
     die "缺少签名更新包（$BUNDLE_DIR/${APP_NAME:-AgentIsland}.app.tar.gz.sig）：发版必须带自动更新产物"
 fi
 
-step "提交"
-# 清单已在任何发布副作用之前预检；此处复核后仅暂存显式文件（含 tracked 删除）。
-release_stage_files || exit 1
-STAGED=$(git diff --cached --name-only)
-[[ -n "$STAGED" ]] || die "没有可提交的改动（版本一致性预检都过了，说明文档没同步）"
-echo "$STAGED" | sed 's/^/    /'
-git commit -q -m "release: v$VERSION - $TITLE"
+if [[ "$RELEASE_MODE_RESUME" == "1" || "$RELEASE_MODE_COMMITTED" == "1" ]]; then
+    step "跳过本地提交（复用已提交 HEAD：${CURRENT_HEAD_SUBJECT}）"
+else
+    step "提交"
+    # 清单已在任何发布副作用之前预检；此处复核后仅暂存显式文件（含 tracked 删除）。
+    release_stage_files || exit 1
+    STAGED=$(git diff --cached --name-only)
+    [[ -n "$STAGED" ]] || die "没有可提交的改动（版本一致性预检都过了，说明文档没同步）"
+    echo "$STAGED" | sed 's/^/    /'
+    git commit -q -m "${EXPECTED_RELEASE_SUBJECT}"
+fi
 
 # 提交**之后**再扫一次历史：上面那次 `--release` 跑在提交之前，本次新增的 blob
 # 还没进历史，于是「工作区靠 nosec 放行、历史这一关却要按对象备案」的差异
@@ -290,7 +344,9 @@ scripts/scan-secrets.sh --history
 step "打 tag 并推送"
 # 推出去之前最后看一眼本轮未验项：tag 一推就收不回来了。
 report_unverified
-git tag -a "v$VERSION" -m "v$VERSION — $TITLE"
+if [[ -z "$(git tag -l "v$VERSION")" ]]; then
+    git tag -a "v$VERSION" -m "v$VERSION — $TITLE"
+fi
 git push -q origin main
 git push -q origin "v$VERSION"
 

@@ -179,4 +179,82 @@ if grep -qE 'check-version|版本三处' "$TEST_ROOT/output"; then fail 'release
 assert_staged ''
 pass 'real release entrypoint fails before version checks or mutations'
 
+# BUG-005 回归：在已提交树模式（--committed 或 RELEASE_COMMITTED=1）下，干净工作树无需 RELEASE_FILES_FILE
+fixture
+git reset --hard -q HEAD
+git clean -fdq
+mkdir -p scripts
+cp "$RELEASE_SCRIPT" scripts/release.sh
+printf 'APP_NAME=AgentIsland\n' > scripts/common.sh
+git add scripts
+git commit -qm 'scripts'
+# 干净工作区带 --committed，不应报错「必须设置 RELEASE_FILES_FILE」，而应越过清单检查进入版本检查
+if env -u RELEASE_FILES_FILE bash scripts/release.sh --committed 0.0.999 'fixture' > "$TEST_ROOT/output" 2>&1; then
+    fail 'expected stop at version check'
+fi
+grep -q '已提交树模式' "$TEST_ROOT/output" || fail 'missing committed tree mode prompt'
+grep -q '版本三处一致性预检' "$TEST_ROOT/output" || fail 'did not proceed to version check in committed mode'
+pass 'committed tree mode allows release on clean working tree without RELEASE_FILES_FILE'
+
+# BUG-005 负例：如果工作区有未提交改动，--committed 必须明确拒绝
+fixture
+mkdir -p scripts
+cp "$RELEASE_SCRIPT" scripts/release.sh
+printf 'APP_NAME=AgentIsland\n' > scripts/common.sh
+if env -u RELEASE_FILES_FILE bash scripts/release.sh --committed 0.0.999 'fixture' > "$TEST_ROOT/output" 2>&1; then
+    fail 'dirty worktree unexpectedly accepted in committed mode'
+fi
+grep -q '要求工作区完全干净' "$TEST_ROOT/output" || fail 'missing dirty rejection in committed mode'
+pass 'committed tree mode strictly rejects dirty worktree'
+
+# BUG-002 回归：在断点续跑模式下，HEAD 恰为当前版本的发布提交时，自动断点续跑且复用已有提交
+fixture
+git reset --hard -q HEAD
+git clean -fdq
+mkdir -p scripts
+cp "$RELEASE_SCRIPT" scripts/release.sh
+printf 'APP_NAME=AgentIsland\n' > scripts/common.sh
+git add scripts
+git commit -qm 'release: v0.0.999 - fixture'
+if env -u RELEASE_FILES_FILE bash scripts/release.sh 0.0.999 'fixture' > "$TEST_ROOT/output" 2>&1; then
+    fail 'expected stop at version check'
+fi
+grep -q '断点续跑模式' "$TEST_ROOT/output" || fail 'missing resume mode detection'
+grep -q '版本三处一致性预检' "$TEST_ROOT/output" || fail 'did not proceed to version check in resume mode'
+pass 'resume mode automatically detects matching release commit and resumes without RELEASE_FILES_FILE'
+
+# BUG-002 回归：断点续跑下若 tag 已存在且恰指向当前 HEAD，允许继续复用；若指向外部提交则严格拒绝
+fixture
+git reset --hard -q HEAD
+git clean -fdq
+mkdir -p scripts
+cp "$RELEASE_SCRIPT" scripts/release.sh
+printf 'APP_NAME=AgentIsland\n' > scripts/common.sh
+printf 'import sys; sys.exit(0)\n' > scripts/check-version.py
+git add scripts
+git commit -qm 'release: v0.0.999 - fixture'
+git tag -a 'v0.0.999' -m 'existing tag'
+if env -u RELEASE_FILES_FILE bash scripts/release.sh 0.0.999 'fixture' > "$TEST_ROOT/output" 2>&1; then
+    fail 'expected stop after version/tag check'
+fi
+grep -q '复用当前 HEAD 已有的 tag' "$TEST_ROOT/output" || fail 'missing tag reuse message in resume mode'
+pass 'resume mode reuses existing tag when it points to current release commit'
+
+# 负例：tag 若指向历史旧提交，断点续跑仍必须拒绝
+fixture
+git reset --hard -q HEAD
+git clean -fdq
+git tag -a 'v0.0.999' -m 'old tag on base'
+mkdir -p scripts
+cp "$RELEASE_SCRIPT" scripts/release.sh
+printf 'APP_NAME=AgentIsland\n' > scripts/common.sh
+printf 'import sys; sys.exit(0)\n' > scripts/check-version.py
+git add scripts
+git commit -qm 'release: v0.0.999 - fixture'
+if env -u RELEASE_FILES_FILE bash scripts/release.sh 0.0.999 'fixture' > "$TEST_ROOT/output" 2>&1; then
+    fail 'expected rejection when tag points to different commit'
+fi
+grep -q 'tag v0.0.999 已存在，别重复发版' "$TEST_ROOT/output" || fail 'missing tag collision rejection'
+pass 'resume mode rejects existing tag pointing to a different commit'
+
 printf 'PASS: %s release staging regressions\n' "$COUNT"

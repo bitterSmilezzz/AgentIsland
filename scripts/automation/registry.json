@@ -2447,9 +2447,9 @@
     {
       "id": "BUG-002",
       "title": "release.sh 不支持断点续跑：在「提交后复扫」失败后无法重跑（会死在「没有可提交的改动」）",
-      "status": "open",
+      "status": "closed",
       "requirement": "AUTO-01",
-      "evidence": "v0.0.324 发版实测：复扫拦下 1 个未核准 blob 后，release.sh 无法从失败点续跑，只能手工接续 打包→tag→push→release。scripts/release.sh:242"
+      "evidence": "已在 scripts/release.sh 中实现断点续跑机制：自动比对当前 HEAD 与本次发布提交说明（或显式传 --resume / RELEASE_RESUME=1），跳过重复 commit 步骤并复用当前提交，tag 存在且指向当前提交时自动复用继续推送而不再报错 die；并在 scripts/test-release-staging.sh 中补充完整回归与指向外部 commit 拒绝的负例测试（用例 32-34 全部通过）。"
     },
     {
       "id": "BUG-003",
@@ -2468,9 +2468,9 @@
     {
       "id": "BUG-005",
       "title": "release.sh 无法发布「已提交且工作区干净」的状态（要发版必须先有一批未提交改动）",
-      "status": "open",
+      "status": "closed",
       "requirement": "AUTO-01",
-      "evidence": "2026-10-18 复核 v0.0.325 时实测：改动已随 118b84d 推送后，工作区干净 → HANDOFF 里 `git status` 生成的清单为空，release.sh 第一步即 `清单为空` 退出；手填已提交文件则走到「提交」一步因无 staged 改动 die（scripts/release.sh:20 / :267）。脚本本身按设计如此（发版要提交本轮改动），但 HANDOFF 原先写成「发版只差一条命令」，已更正文档；是否给 release.sh 增加「已提交树」模式尚未决定。"
+      "evidence": "已在 scripts/release.sh 中增加已提交树发版模式（--committed 选项或 RELEASE_COMMITTED=1 环境变量）：工作区完全干净时跳过显式文件清单暂存与 git commit，直接基于当前已提交 HEAD 执行版本一致性预检、脱敏扫描、源码门禁、构建、签名更新包与 GitHub 发布；并在 scripts/test-release-staging.sh 中补充干净工作区放行及脏工作区明确拒绝的负例测试（用例 30-31 全部通过）。"
     }
   ]
 }
