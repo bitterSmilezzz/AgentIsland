@@ -1,6 +1,6 @@
 //! Manual model discovery for a saved target, without generation or configuration writes.
 use crate::{
-    connection_http::{Failure, Http},
+    connection_http::{AuthHeader, Failure, Http},
     provider::CodexProfile,
 };
 use serde::Serialize;
@@ -65,7 +65,7 @@ pub fn read(profile: &CodexProfile, now: u64) -> Result<ModelList, String> {
         profile,
         now,
         |name| std::env::var(name).map_err(|_| Failure::CredentialUnavailable),
-        |url, secret| Http::shared()?.get_json(url, Some(secret)),
+        |url, secret| Http::shared()?.get_json(url, &AuthHeader::Bearer(secret.to_owned())),
     )
 }
 
@@ -279,7 +279,7 @@ mod tests {
             &p,
             123,
             |_| Ok("fixture-value".into()),
-            |url, secret| Http::shared()?.get_json(url, Some(secret)),
+            |url, secret| Http::shared()?.get_json(url, &AuthHeader::Bearer(secret.to_owned())),
         )
         .unwrap();
         worker.join().unwrap();

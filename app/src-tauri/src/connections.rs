@@ -12,6 +12,53 @@ pub enum Kind {
     NewApi,
     Magpie,
     CcSwitch,
+    /// 自定义端点/本地模型网关：地址与认证都由用户声明，不套用任何内置服务语义。
+    CustomEndpoint,
+}
+
+/// 一次读取要带的认证方案。**显式声明**，不从地址、响应或环境推断——
+/// 推断意味着「换个地址就悄悄换了认证语义」，而那正是凭据流向失控的入口。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthScheme {
+    /// 不发送任何认证头（公开状态接口）。
+    #[default]
+    None,
+    /// `Authorization: Bearer <凭据>`。
+    Bearer,
+    /// 自定义请求头，如 `x-api-key`；头名必须是合法 HTTP token。
+    Header { name: String },
+}
+impl AuthScheme {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+    /// 自定义头名的合法性：非空、有界、全为 RFC 7230 token 字符。
+    /// 允许 CR/LF 或空格等于允许请求头注入。
+    fn valid_header_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= 64
+            && name.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(
+                        b,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+            })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,6 +75,9 @@ pub struct Connection {
     pub name: String,
     pub base_url: String,
     pub credential_ref: Option<CredentialRef>,
+    /// 旧配置文件没有这个字段；缺省为「不发送认证头」，保持既有行为不变。
+    #[serde(default)]
+    pub auth: AuthScheme,
     pub enabled: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
@@ -41,6 +91,8 @@ pub struct Draft {
     pub name: String,
     pub base_url: String,
     pub credential_ref: Option<CredentialRef>,
+    #[serde(default)]
+    pub auth: AuthScheme,
     pub enabled: bool,
 }
 
@@ -146,6 +198,7 @@ impl Store {
             name: draft.name.trim().to_owned(),
             base_url: normalize_url(&draft.base_url)?,
             credential_ref: draft.credential_ref,
+            auth: draft.auth,
             enabled: draft.enabled,
             created_ms: previous.map(|i| data.items[i].created_ms).unwrap_or(now_ms),
             updated_ms: previous
@@ -156,6 +209,13 @@ impl Store {
             data.items[index] = item;
         } else {
             data.items.push(item);
+        }
+        for entry in &data.items {
+            if !plaintext_credential_allowed(entry) {
+                return Err(
+                    "会发送凭据的地址必须使用 HTTPS（本机回环地址除外），未保存".into(),
+                );
+            }
         }
         data.revision = data.revision.checked_add(1).ok_or("连接配置版本已耗尽")?;
         self.write(&data)?;
@@ -249,8 +309,33 @@ fn validate(data: &Snapshot) -> Result<(), String> {
                 return Err("凭据引用须为大写环境变量名，不能填写密钥值".into());
             }
         }
+        // 声明要发认证头却没有凭据来源，是一个必然读不通的配置：尽早说清楚，
+        // 而不是等用户点了「读取状态」才收到一句泛泛的失败。
+        if !item.auth.is_none() && item.credential_ref.is_none() {
+            return Err("该认证方案需要先指定凭据来源（环境变量名）".into());
+        }
+        if let AuthScheme::Header { name } = &item.auth {
+            if !AuthScheme::valid_header_name(name) || contains_credential(name) {
+                return Err("自定义认证头名必须是合法的 HTTP 头名，不能填写凭据值".into());
+            }
+        }
     }
     Ok(())
+}
+
+/// 会发送凭据的地址必须是 HTTPS；本机回环地址除外（本地模型网关的常见形态）。
+///
+/// 只在**保存**时执行这条判据，`validate` 不检查它：已经存在于磁盘上的明文配置
+/// 依然要能读出来并显示给用户，由读取路径在建立连接之前拒绝并给出明确原因——
+/// 「保存新错误配置」要拦住，「让用户看不见自己的旧配置」则是另一种伤害。
+fn plaintext_credential_allowed(item: &Connection) -> bool {
+    if item.auth.is_none() {
+        return true;
+    }
+    match url::Url::parse(&item.base_url) {
+        Ok(url) => crate::connection_http::transport_policy(&url).is_ok(),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +356,7 @@ mod tests {
             credential_ref: Some(CredentialRef::Environment {
                 name: "FIXTURE_AUTH".into(),
             }),
+            auth: AuthScheme::None,
             enabled: true,
         }
     }
@@ -428,5 +514,82 @@ mod tests {
             assert!(result.is_err());
             assert_eq!(after, before);
         }
+    }
+
+    #[test]
+    fn invalid_auth_scheme_is_refused_without_changing_the_saved_configuration() {
+        let root = Sandbox::new("connections-auth-scheme");
+        let s = store(&root);
+        let base = s.save(draft(), 0, 100).unwrap();
+        let id = base.items[0].id.clone();
+
+        // 自定义头名必须是合法 HTTP token：CR/LF 与空格等于请求头注入。
+        for bad in ["", "bad name", "evil\r\nX-Injected: 1", &"a".repeat(65)] {
+            let mut next = draft();
+            next.id = Some(id.clone());
+            next.kind = Kind::CustomEndpoint;
+            next.auth = AuthScheme::Header { name: bad.to_string() };
+            assert!(s.save(next, 1, 101).is_err(), "{bad:?}");
+        }
+        // 声明要发认证头却没有凭据来源：这是一个必然读不通的配置。
+        let mut orphan = draft();
+        orphan.id = Some(id.clone());
+        orphan.kind = Kind::CustomEndpoint;
+        orphan.auth = AuthScheme::Bearer;
+        orphan.credential_ref = None;
+        assert!(s.save(orphan, 1, 102).is_err());
+        assert_eq!(s.list().unwrap().items[0].base_url, "http://localhost:8080/proxy/");
+    }
+
+    #[test]
+    fn save_refuses_plaintext_credentials_to_non_loopback_hosts() {
+        let root = Sandbox::new("connections-plaintext");
+        let s = store(&root);
+        let first = s.save(draft(), 0, 100).unwrap();
+        let id = first.items[0].id.clone();
+        let secret_ref = Some(CredentialRef::Environment {
+            name: "FIXTURE_AUTH".into(),
+        });
+
+        // 本机回环地址 + 认证方案：允许（本地模型网关的常见形态）。
+        let local = Draft {
+            id: Some(id.clone()),
+            kind: Kind::CustomEndpoint,
+            name: "本机网关".into(),
+            base_url: "http://127.0.0.1:11434".into(),
+            credential_ref: secret_ref.clone(),
+            auth: AuthScheme::Bearer,
+            enabled: true,
+        };
+        let second = s.save(local, 1, 101).unwrap();
+        assert_eq!(second.items[0].base_url, "http://127.0.0.1:11434/");
+
+        // 远端明文 + 认证方案：拒绝保存，磁盘上的配置保持上一次的可用状态。
+        let remote = Draft {
+            id: Some(id.clone()),
+            kind: Kind::CustomEndpoint,
+            name: "本机网关".into(),
+            base_url: "http://gateway.example".into(),
+            credential_ref: secret_ref,
+            auth: AuthScheme::Bearer,
+            enabled: true,
+        };
+        assert!(s.save(remote, second.revision, 102).is_err());
+        assert_eq!(
+            s.list().unwrap().items[0].base_url,
+            "http://127.0.0.1:11434/"
+        );
+
+        // 远端明文但不发送认证头（公开状态接口）：不受这条规则约束。
+        let public = Draft {
+            id: Some(id),
+            kind: Kind::CustomEndpoint,
+            name: "本机网关".into(),
+            base_url: "http://gateway.example".into(),
+            credential_ref: None,
+            auth: AuthScheme::None,
+            enabled: true,
+        };
+        assert!(s.save(public, second.revision, 103).is_ok());
     }
 }

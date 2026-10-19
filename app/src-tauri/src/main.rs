@@ -39,6 +39,7 @@ mod navigation;
 mod notify_latency;
 mod notify_ledger;
 mod notify_ledger_probe;
+mod gateway_auth_probe;
 mod remote_delivery_probe;
 mod notifier;
 mod observability;
@@ -3217,6 +3218,7 @@ pub(crate) fn log_line(msg: &str) {
     // 往 `agentisland-tauri.log` 追加行会污染用户状态，也让「探针没碰任何东西」不可证。
     if notify_ledger_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
     if remote_delivery_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
+    if gateway_auth_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
     let filename = if isolated_instance_requested() {
         format!("agentisland-test-{}.log", std::process::id())
     } else {
@@ -4293,6 +4295,9 @@ fn main() {
     // 而拉起 Tauri 再退出比它自己采完一拍慢一个量级。
     let argv: Vec<String> = std::env::args().collect();
     if let Some(code) = notify_ledger_probe::cli(&argv) {
+        std::process::exit(code);
+    }
+    if let Some(code) = gateway_auth_probe::cli(&argv) {
         std::process::exit(code);
     }
     if let Some(code) = remote_delivery_probe::cli(&argv) {

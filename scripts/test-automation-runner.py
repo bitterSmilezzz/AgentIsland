@@ -418,7 +418,9 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(record["checks"][0]["stderr_tail"], "")
 
     def assert_pid_gone(self, pid):
-        deadline = time.monotonic() + 3
+        # 断言的是「最终被回收」，不是「3 秒内被回收」：高负载下回收线程可能
+        # 很晚才被调度，把调度延迟判成产品缺陷是测量装置的抖动。
+        deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             try:
                 os.kill(pid, 0)
@@ -437,7 +439,9 @@ class RunnerTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX process group guarantee")
     def test_timeout_reclaims_grandchild_and_continues(self):
-        proc, record, _ = self.run_profile({"timeout": check_entry(self.descendant_code()), "after": check_entry()}, timeout=1)
+        # 预算要够孙子进程真正起来：否则 pidfile 还没写就被 kill，
+        # 「回收失败」与「夹具没来得及建立」无法区分。
+        proc, record, _ = self.run_profile({"timeout": check_entry(self.descendant_code()), "after": check_entry()}, timeout=5)
         self.assertEqual(proc.returncode, 1)
         self.assertEqual(record["checks"][0]["reason"], "timeout")
         self.assertEqual(record["checks"][1]["status"], "passed")
@@ -450,12 +454,12 @@ class RunnerTests(unittest.TestCase):
         proc = subprocess.Popen(self.command("--profile", "test"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: proc.kill() if proc.poll() is None else None)
         pidfile = self.root / ".scratch/grandchild.pid"
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while not pidfile.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(pidfile.exists())
         proc.send_signal(signal.SIGINT)
-        out, err = proc.communicate(timeout=5)
+        out, err = proc.communicate(timeout=60)
         self.assertNotEqual(proc.returncode, 0, err)
         record = json.loads((Path(json.loads(out)["evidence"]) / "run.json").read_text())
         self.assertEqual(record["outcome"], "failed")

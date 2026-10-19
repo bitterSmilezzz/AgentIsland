@@ -1,7 +1,7 @@
 //! Bounded, read-only service transport. Peer bodies and transport diagnostics stay internal.
 use reqwest::{
     blocking::Client,
-    header::{HeaderValue, ACCEPT, ACCEPT_ENCODING, AUTHORIZATION},
+    header::{HeaderValue, ACCEPT, ACCEPT_ENCODING},
 };
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -13,6 +13,8 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, PartialEq)]
 pub enum Failure {
     InvalidAddress,
+    /// 非本机地址只允许 HTTPS：明文 HTTP 会把凭据与响应暴露在链路上。
+    InsecureTransport,
     InvalidCredential,
     CredentialUnavailable,
     Unavailable,
@@ -28,9 +30,30 @@ pub enum Failure {
     UnsupportedEncoding,
 }
 impl Failure {
+    /// 稳定的机器可读分类，供探针回执与门禁断言使用；改这里等于改对外契约。
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidAddress => "invalid_address",
+            Self::InsecureTransport => "insecure_transport",
+            Self::InvalidCredential => "invalid_credential",
+            Self::CredentialUnavailable => "credential_unavailable",
+            Self::Unavailable => "unavailable",
+            Self::Timeout => "timeout",
+            Self::Tls => "tls",
+            Self::Redirect => "redirect",
+            Self::AuthFailed => "auth_failed",
+            Self::Forbidden => "forbidden",
+            Self::RateLimited => "rate_limited",
+            Self::HttpStatus(_) => "http_status",
+            Self::TooLarge => "too_large",
+            Self::InvalidJson => "invalid_json",
+            Self::UnsupportedEncoding => "unsupported_encoding",
+        }
+    }
     pub fn reason(&self) -> &'static str {
         match self {
             Self::InvalidAddress => "服务地址无效",
+            Self::InsecureTransport => "非本机地址必须使用 HTTPS，明文 HTTP 会明文发送凭据",
             Self::InvalidCredential => "凭据格式无效，请检查凭据来源",
             Self::CredentialUnavailable => "凭据环境变量不可用，请检查应用启动环境",
             Self::Unavailable => "服务不可达或读取中断",
@@ -45,6 +68,74 @@ impl Failure {
             Self::InvalidJson => "服务响应不是受支持的 JSON",
             Self::UnsupportedEncoding => "服务返回了不支持的压缩响应",
         }
+    }
+}
+
+/// 本机回环判定：本地模型网关允许明文 HTTP，其余地址一律要求 HTTPS。
+pub fn loopback(host: &str) -> bool {
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.is_loopback(),
+        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+/// 传输层策略：在任何 socket 建立之前决定这次读取是否允许发生。
+///
+/// 为什么必须在建连之前拒绝：一旦发出请求，凭据已经写进了报文——
+/// 「先连上再检查协议」等于已经泄漏。自定义端点与本机模型网关共用这条判据。
+pub fn transport_policy(url: &url::Url) -> Result<(), Failure> {
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            if url.host_str().is_some_and(loopback) {
+                Ok(())
+            } else {
+                Err(Failure::InsecureTransport)
+            }
+        }
+        _ => Err(Failure::InvalidAddress),
+    }
+}
+
+/// 一次读取要带的认证头。方案由连接自身声明，不从响应或环境推断。
+pub enum AuthHeader {
+    None,
+    Bearer(String),
+    Custom { name: String, value: String },
+}
+impl AuthHeader {
+    /// 认证值统一走同一条校验：非空、有界、全为可见 ASCII。
+    fn credential(value: &str) -> Result<&str, Failure> {
+        if value.is_empty()
+            || value.len() > 8192
+            || !value.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(Failure::InvalidCredential);
+        }
+        Ok(value)
+    }
+    pub fn header_name(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::Bearer(_) => Some("authorization"),
+            Self::Custom { name, .. } => Some(name),
+        }
+    }
+    pub fn header_value(&self) -> Result<Option<HeaderValue>, Failure> {
+        let text = match self {
+            Self::None => return Ok(None),
+            Self::Bearer(value) => format!("Bearer {}", Self::credential(value)?),
+            Self::Custom { value, .. } => Self::credential(value)?.to_owned(),
+        };
+        let mut header = HeaderValue::from_str(&text).map_err(|_| Failure::InvalidCredential)?;
+        // 让日志/调试输出不打印凭据本身。
+        header.set_sensitive(true);
+        Ok(Some(header))
     }
 }
 
@@ -75,30 +166,35 @@ impl Http {
             .connect_timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
+            // 永不继承环境代理：`HTTP_PROXY`/`ALL_PROXY` 可以把带凭据的请求整体
+            // 改道到第三方端点，是「不泄漏凭据」这条红线上最容易漏的一个入口。
+            // 需要代理的用户应显式配置到服务地址里，而不是靠进程环境静默接管。
             .no_proxy()
             .pool_max_idle_per_host(0)
             .build()
             .map_err(classify)?;
         Ok(Self { client })
     }
-    pub fn get_json(&self, url: url::Url, credential: Option<&str>) -> Result<Value, Failure> {
+    /// 探针专用：**绕过共享客户端缓存**重新构造，使代理与超时策略是在当前进程
+    /// 环境下重新求值的——否则「进程启动时建的客户端」会让代理隔离用例变成空断言。
+    pub(crate) fn fresh() -> Result<Self, Failure> {
+        Self::new()
+    }
+    /// 唯一的读取入口：认证方案必须由调用方显式给出，不存在隐式默认头。
+    pub fn get_json(&self, url: url::Url, auth: &AuthHeader) -> Result<Value, Failure> {
         crate::connections::normalize_url(url.as_str()).map_err(|_| Failure::InvalidAddress)?;
+        // 先判策略再建连：明文地址一旦发出请求，凭据已经进了报文。
+        transport_policy(&url)?;
         let mut request = self
             .client
             .get(url)
             .header(ACCEPT, "application/json")
             .header(ACCEPT_ENCODING, "identity");
-        if let Some(value) = credential {
-            if value.is_empty()
-                || value.len() > 8192
-                || !value.bytes().all(|b| b.is_ascii_graphic())
-            {
-                return Err(Failure::InvalidCredential);
-            }
-            let mut header = HeaderValue::from_str(&format!("Bearer {value}"))
+        if let Some(name) = auth.header_name() {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| Failure::InvalidCredential)?;
-            header.set_sensitive(true);
-            request = request.header(AUTHORIZATION, header);
+            let value = auth.header_value()?.ok_or(Failure::InvalidCredential)?;
+            request = request.header(name, value);
         }
         let mut response = request.send().map_err(classify)?;
         let status = response.status().as_u16();
@@ -233,7 +329,7 @@ mod tests {
         ));
         let value = Http::new()
             .unwrap()
-            .get_json(url, Some("fixture-auth"))
+            .get_json(url, &AuthHeader::Bearer("fixture-auth".into()))
             .unwrap();
         worker.join().unwrap();
         assert_eq!(value["success"], true);
@@ -254,7 +350,7 @@ mod tests {
         assert_eq!(
             Http::new()
                 .unwrap()
-                .get_json(url, Some("fixture-auth"))
+                .get_json(url, &AuthHeader::Bearer("fixture-auth".into()))
                 .unwrap_err(),
             Failure::Redirect
         );
@@ -273,14 +369,14 @@ mod tests {
             (500, Failure::HttpStatus(500)),
         ] {
             let (url, _, worker) = server(response(status, b"private-fixture-marker"));
-            let failure = Http::new().unwrap().get_json(url, None).unwrap_err();
+            let failure = Http::new().unwrap().get_json(url, &AuthHeader::None).unwrap_err();
             worker.join().unwrap();
             assert_eq!(failure, expected);
             assert!(!failure.reason().contains("private-fixture-marker"));
         }
         let (url, _, worker) = server(response(200, b"private-fixture-marker"));
         assert_eq!(
-            Http::new().unwrap().get_json(url, None).unwrap_err(),
+            Http::new().unwrap().get_json(url, &AuthHeader::None).unwrap_err(),
             Failure::InvalidJson
         );
         worker.join().unwrap();
@@ -294,14 +390,14 @@ mod tests {
         for bytes in [declared, unframed] {
             let (url, _, worker) = server(bytes);
             assert_eq!(
-                Http::new().unwrap().get_json(url, None).unwrap_err(),
+                Http::new().unwrap().get_json(url, &AuthHeader::None).unwrap_err(),
                 Failure::TooLarge
             );
             worker.join().unwrap();
         }
         let (url, _, worker) = server(b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec());
         assert_eq!(
-            Http::new().unwrap().get_json(url, None).unwrap_err(),
+            Http::new().unwrap().get_json(url, &AuthHeader::None).unwrap_err(),
             Failure::UnsupportedEncoding
         );
         worker.join().unwrap();
@@ -343,7 +439,7 @@ mod tests {
             assert_eq!(
                 Http::with_timeout(Duration::from_millis(60))
                     .unwrap()
-                    .get_json(url, None)
+                    .get_json(url, &AuthHeader::None)
                     .unwrap_err(),
                 Failure::Timeout,
                 "body_started={body_started}"
@@ -360,7 +456,7 @@ mod tests {
         let http = Http::new().unwrap();
         for value in ["", "two values", "fixture\r\nInjected: header"] {
             assert_eq!(
-                http.get_json(url.clone(), Some(value)).unwrap_err(),
+                http.get_json(url.clone(), &AuthHeader::Bearer(value.to_owned())).unwrap_err(),
                 Failure::InvalidCredential
             );
         }
@@ -368,5 +464,104 @@ mod tests {
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
         );
+    }
+
+    #[test]
+    fn plaintext_is_refused_for_non_loopback_addresses() {
+        for allowed in [
+            "https://gateway.example/",
+            "http://127.0.0.1:11434/",
+            "http://[::1]:11434/",
+            "http://localhost:11434/",
+        ] {
+            let url = url::Url::parse(allowed).unwrap();
+            assert!(transport_policy(&url).is_ok(), "{allowed}");
+        }
+        assert_eq!(
+            transport_policy(&url::Url::parse("http://gateway.example/").unwrap()).unwrap_err(),
+            Failure::InsecureTransport
+        );
+        assert_eq!(
+            transport_policy(&url::Url::parse("ftp://gateway.example/").unwrap()).unwrap_err(),
+            Failure::InvalidAddress
+        );
+        // 回环判定不接受「看起来像」的写法：子域与相似字符串都不是本机。
+        for not_local in ["http://localhost.example/", "http://127.0.0.1.example/", "http://0.0.0.0/"] {
+            assert_eq!(
+                transport_policy(&url::Url::parse(not_local).unwrap()).unwrap_err(),
+                Failure::InsecureTransport,
+                "{not_local}"
+            );
+        }
+    }
+
+    #[test]
+    fn refused_transport_never_opens_a_socket() {
+        // 远端明文地址在策略层就被拒，连接根本不会建立：拿到的一定是
+        // InsecureTransport 而不是「连不上」——两者在界面上必须能分开。
+        let http = Http::new().unwrap();
+        let url = url::Url::parse("http://no-such-host.invalid/").unwrap();
+        assert_eq!(
+            http.get_json(url, &AuthHeader::None).unwrap_err(),
+            Failure::InsecureTransport
+        );
+    }
+
+    #[test]
+    fn auth_schemes_map_to_exactly_one_header_each() {
+        assert!(AuthHeader::None.header_name().is_none());
+        assert!(AuthHeader::None.header_value().unwrap().is_none());
+
+        let bearer = AuthHeader::Bearer("fixture-value".into());
+        assert_eq!(bearer.header_name(), Some("authorization"));
+        let value = bearer.header_value().unwrap().unwrap();
+        assert_eq!(value.to_str().unwrap(), "Bearer fixture-value");
+        assert!(value.is_sensitive(), "凭据头必须标记为敏感，避免被日志打印");
+
+        let custom = AuthHeader::Custom {
+            name: "x-api-key".into(),
+            value: "fixture-value".into(),
+        };
+        assert_eq!(custom.header_name(), Some("x-api-key"));
+        assert_eq!(
+            custom.header_value().unwrap().unwrap().to_str().unwrap(),
+            "fixture-value"
+        );
+        assert!(custom.header_value().unwrap().unwrap().is_sensitive());
+
+        for bad in ["", "two words", "非 ASCII", "line\r\nInjected: value"] {
+            assert_eq!(
+                AuthHeader::Bearer(bad.to_owned()).header_value().unwrap_err(),
+                Failure::InvalidCredential,
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_codes_are_unique_and_non_empty() {
+        // 这些码是探针回执与门禁断言之间的对外契约：必须互不重复且稳定非空。
+        let all = [
+            Failure::InvalidAddress,
+            Failure::InsecureTransport,
+            Failure::InvalidCredential,
+            Failure::CredentialUnavailable,
+            Failure::Unavailable,
+            Failure::Timeout,
+            Failure::Tls,
+            Failure::Redirect,
+            Failure::AuthFailed,
+            Failure::Forbidden,
+            Failure::RateLimited,
+            Failure::HttpStatus(500),
+            Failure::TooLarge,
+            Failure::InvalidJson,
+            Failure::UnsupportedEncoding,
+        ];
+        let codes: Vec<&str> = all.iter().map(Failure::code).collect();
+        let unique: std::collections::HashSet<&&str> = codes.iter().collect();
+        assert_eq!(unique.len(), codes.len(), "错误码必须唯一：{codes:?}");
+        assert!(codes.iter().all(|code| !code.is_empty()));
+        assert_eq!(Failure::InsecureTransport.code(), "insecure_transport");
     }
 }

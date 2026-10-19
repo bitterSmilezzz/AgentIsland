@@ -95,7 +95,11 @@ class DriverTests(unittest.TestCase):
     def configure(self, **data):
         self.config.write_text(json.dumps(data))
 
-    def run_driver(self, name='agy', timeout=2, **data):
+    # 数据路径用例（1 MiB 输出上限等）不应该和 2 秒墙钟赛跑：把 1 MiB 经管道
+    # 搬到 driver，再叠加夹具解释器启动，在负载高时可能超过 2 秒，于是
+    # 'timeout' 抢在 'output_limit' 前面——那是测量装置的抖动，不是被测行为。
+    # 断言真正关于超时的用例仍显式传 timeout=3，语义不变。
+    def run_driver(self, name='agy', timeout=30, **data):
         self.configure(**data)
         return driver.run_agent(PRIVATE, self.root, driver=name, timeout=timeout)
 
@@ -108,7 +112,7 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(result.error, error)
         self.assertNotIn(PRIVATE, result.to_json())
 
-    def cli_command(self, name='agy', timeout=2):
+    def cli_command(self, name='agy', timeout=30):
         return [PY, str(DRIVER), '--driver', name, '--cwd', str(self.root),
                 '--prompt', PRIVATE, '--timeout', str(timeout)]
 
@@ -290,7 +294,7 @@ class DriverTests(unittest.TestCase):
         for name in ('agy', 'hermes'):
             output = agy_payload(response=PRIVATE) if name == 'agy' else hermes_result(text=PRIVATE)
             self.configure(stdout=output, stderr=PRIVATE)
-            proc = subprocess.run(self.cli_command(name), capture_output=True, text=True, timeout=5)
+            proc = subprocess.run(self.cli_command(name), capture_output=True, text=True, timeout=60)
             self.assertEqual(proc.returncode, 0)
             data = json.loads(proc.stdout)
             self.assertEqual(data['status'], 'OK')

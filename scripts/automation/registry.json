@@ -421,9 +421,10 @@
         "L6"
       ],
       "checks": [
-        "rust.default"
+        "rust.default",
+        "gw01.authgate"
       ],
-      "coverage_note": "partial — provider.rs、connections.rs、connection_probe.rs、transport.rs 的认证隔离/草稿不进凭据/URL 拒认证参数/禁用服务不读凭据已有；缺：凭据轮换、TLS、四类协议网关",
+      "coverage_note": "partial — 认证隔离、草稿不进凭据、URL 拒认证参数、禁用服务不读凭据已有；本轮落地第四类「自定义端点/本地模型网关」与显式认证方案（不发送认证头 / Bearer / 自定义请求头）、会发送凭据的远端明文在建连前拒绝（仅回环允许明文）、凭据轮换每次重读来源、环境代理不接管带凭据请求、401/403/429/凭据来源不可用分类可辨，并由 gw01.authgate 真实二进制端到端门禁（含 77 条内存变异）覆盖；缺：真实第三方网关的 401 刷新令牌流程、订阅与余额查询协议",
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
       "status": "partial"
     },
@@ -1457,6 +1458,7 @@
         "app/src-tauri/src/engine/tool_budget_tests.rs",
         "app/src-tauri/src/filemon.rs",
         "app/src-tauri/src/forecast.rs",
+        "app/src-tauri/src/gateway_auth_probe.rs",
         "app/src-tauri/src/health.rs",
         "app/src-tauri/src/im.rs",
         "app/src-tauri/src/installed.rs",
@@ -2125,6 +2127,28 @@
       "test_files": [
         "scripts/test-smtp-delivery.py"
       ]
+    },
+    "gw01.authgate": {
+      "command": [
+        "python3",
+        "scripts/test-gateway-auth.py",
+        "--binary",
+        "dist/agentisland"
+      ],
+      "depends_on": [
+        "package.artifact"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-01 认证网关端到端验收：真实发布二进制 --gateway-auth-probe（headless、不读用户配置/钥匙串、只对探针自建的回环对端说话）验证传输策略（远端明文在建连前拒绝、本机回环允许）、认证分类（2xx/Bearer 可读、401 拒绝、403 无权限、429 限流、凭据来源不可用、自定义请求头）、凭据轮换（同一连接两次读取之间换值必须生效，不缓存旧值）、代理隔离（环境代理指向第三方对端时带凭据请求仍打到目标对端、代理收到 0 次）与不泄漏（回执与状态文案都不含夹具值）。含 77 条内存变异证明门禁能拒错。",
+      "test_files": [
+        "scripts/test-gateway-auth.py"
+      ]
     }
   },
   "agents": {
@@ -2301,7 +2325,8 @@
       "sup01.clidispatch",
       "gw08.cliusage",
       "not01.ledgerrestart",
-      "not05.remotedelivery"
+      "not05.remotedelivery",
+      "gw01.authgate"
     ],
     "native": [
       "native.vm",
@@ -2419,7 +2444,8 @@
       "not06.update-signature",
       "automation.dist-wiring",
       "automation.status",
-      "not02.smtp"
+      "not02.smtp",
+      "gw01.authgate"
     ],
     "protocol": [
       "gw02.ifacemodels",

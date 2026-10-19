@@ -1,7 +1,8 @@
 import { invoke } from './tauri.js';
 import { pageRequest } from './page-host.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const names = { new_api: 'New API', magpie: 'Magpie', cc_switch: 'CC Switch' };
+const names = { new_api: 'New API', magpie: 'Magpie', cc_switch: 'CC Switch', custom_endpoint: '自定义端点' };
+const authNames = { none: '不发送认证头', bearer: 'Bearer 令牌', header: '自定义请求头' };
 
 export function pageConnections() {
   return `<section class="connections-space" data-connections-root>
@@ -11,7 +12,9 @@ export function pageConnections() {
       <form data-connection-form class="sb-form">
         <input type="hidden" name="id">
         <label class="sb-field"><span>连接名称</span><input name="name" aria-label="连接名称" maxlength="80" required autocomplete="off"></label>
-        <label class="sb-field"><span>服务类型</span><select name="kind" aria-label="服务类型"><option value="new_api">New API</option><option value="magpie">Magpie</option><option value="cc_switch">CC Switch</option></select></label>
+        <label class="sb-field"><span>服务类型</span><select name="kind" aria-label="服务类型"><option value="new_api">New API</option><option value="magpie">Magpie</option><option value="cc_switch">CC Switch</option><option value="custom_endpoint">自定义端点 / 本地模型</option></select></label>
+        <label class="sb-field"><span>认证方案</span><select name="auth_kind" aria-label="认证方案"><option value="none">不发送认证头</option><option value="bearer">Bearer 令牌</option><option value="header">自定义请求头</option></select></label>
+        <label class="sb-field" hidden><span>请求头名</span><input name="auth_header" aria-label="认证请求头名" maxlength="64" autocomplete="off" placeholder="例如 x-api-key"></label>
         <label class="sb-field"><span>服务地址</span><input name="base_url" aria-label="服务地址" type="url" maxlength="2048" placeholder="http://127.0.0.1:端口/" required autocomplete="off"></label>
         <label class="sb-field"><span>凭据环境变量名 · 可选</span><input name="environment" aria-label="凭据环境变量名" maxlength="80" autocomplete="off" placeholder="填写变量名，不填写密钥"></label>
         <label class="connection-enabled"><input type="checkbox" name="enabled" checked>启用连接</label>
@@ -41,8 +44,9 @@ export async function hydrateConnections(root) {
   const feedback = text => { status.textContent = text; };
   form.addEventListener('input', () => { hasDraft = true; });
   form.addEventListener('change', () => { hasDraft = true; });
+  const syncAuthFields = () => { field('auth_header').closest('label').hidden = field('auth_kind').value !== 'header'; };
   function reset() {
-    form.reset(); field('id').value = ''; editor.open = false;
+    form.reset(); field('id').value = ''; editor.open = false; syncAuthFields();
     hasDraft = false;
     editor.querySelector('summary').textContent = '添加连接';
   }
@@ -50,8 +54,10 @@ export async function hydrateConnections(root) {
     const labels = { readable:'状态可读',disabled:'已停用',unsupported:'接口未核实',offline:'不可达',auth_failed:'鉴权失败',permission_denied:'无读取权限',error:'读取失败' };
     list.innerHTML = snapshot.items.length ? snapshot.items.map(item => {
       const probe = probes.get(item.id);
-      const warning = item.kind === 'magpie' && item.credential_ref && item.base_url.startsWith('http:');
-      return `<article class="connection-row"><div><strong>${esc(item.name)}</strong><span class="sb-tag" data-connection-state="${esc(item.enabled ? probe?.status ?? 'untested' : 'disabled')}">${item.enabled ? labels[probe?.status] ?? (item.kind === 'cc_switch' ? '接口未核实' : '未检测') : '已停用'}</span><p>${esc(names[item.kind])} · ${esc(item.base_url)}</p><small>${item.credential_ref ? `环境变量：${esc(item.credential_ref.name)}` : '未配置凭据'}</small>${probe ? `<p role="status">${esc(probe.reason)}${probe.service_version ? ` · ${esc(probe.service_version)}` : ''}<span class="connection-checked">上次读取 · ${esc(new Date(probe.checked_at_ms).toLocaleString([], { month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit' }))}</span></p>` : ''}${warning ? '<p>HTTP 读取会以明文发送凭据。</p>' : ''}</div><div class="actions">${item.enabled && item.kind !== 'cc_switch' ? `<button type="button" class="mini-btn" data-connection-test="${esc(item.id)}">${item.kind === 'new_api' ? '读取公开状态' : warning ? '读取状态（HTTP）' : '读取状态'}</button>` : ''}<button type="button" class="mini-btn" data-connection-edit="${esc(item.id)}">编辑</button><button type="button" class="mini-btn" data-connection-remove="${esc(item.id)}">移除</button></div></article>`;
+      const authorized = item.auth ? item.auth.kind !== 'none' : item.kind === 'magpie';
+      const localOnly = /^http:\/\/(127\.0\.0\.1|\[::1\]|localhost)([:\/]|$)/.test(item.base_url);
+      const warning = item.base_url.startsWith('http:') && !localOnly && Boolean(item.credential_ref || authorized);
+      return `<article class="connection-row"><div><strong>${esc(item.name)}</strong><span class="sb-tag" data-connection-state="${esc(item.enabled ? probe?.status ?? 'untested' : 'disabled')}">${item.enabled ? labels[probe?.status] ?? (item.kind === 'cc_switch' ? '接口未核实' : '未检测') : '已停用'}</span><p>${esc(names[item.kind])} · ${esc(item.base_url)}</p><small>${item.credential_ref ? `环境变量：${esc(item.credential_ref.name)}` : '未配置凭据'} · ${esc(authNames[item.auth?.kind ?? (item.kind === 'magpie' ? 'bearer' : 'none')] ?? '不发送认证头')}</small>${probe ? `<p role="status">${esc(probe.reason)}${probe.service_version ? ` · ${esc(probe.service_version)}` : ''}<span class="connection-checked">上次读取 · ${esc(new Date(probe.checked_at_ms).toLocaleString([], { month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit' }))}</span></p>` : ''}${warning ? '<p>非本机回环地址会明文发送凭据，读取已被拒绝；请改用 HTTPS。</p>' : ''}</div><div class="actions">${item.enabled && item.kind !== 'cc_switch' ? `<button type="button" class="mini-btn" data-connection-test="${esc(item.id)}">${item.kind === 'new_api' ? '读取公开状态' : warning ? '读取状态（HTTP）' : '读取状态'}</button>` : ''}<button type="button" class="mini-btn" data-connection-edit="${esc(item.id)}">编辑</button><button type="button" class="mini-btn" data-connection-remove="${esc(item.id)}">移除</button></div></article>`;
     }).join('') : '<div class="sb-empty">还没有外部连接。</div>';
   }
   async function run(action) {
@@ -73,9 +79,14 @@ export async function hydrateConnections(root) {
   form.addEventListener('submit', event => {
     event.preventDefault();
     run(async () => {
+      const authKind = field('auth_kind').value;
+      const auth = authKind === 'bearer' ? { kind: 'bearer' }
+        : authKind === 'header' ? { kind: 'header', name: field('auth_header').value.trim() }
+          : { kind: 'none' };
       const config = { id: field('id').value || null, name: field('name').value, kind: field('kind').value,
         base_url: field('base_url').value, enabled: field('enabled').checked,
-        credential_ref: field('environment').value.trim() ? { kind: 'environment', name: field('environment').value.trim() } : null };
+        credential_ref: field('environment').value.trim() ? { kind: 'environment', name: field('environment').value.trim() } : null,
+        auth };
       const next = await invoke('connection_save', { config, expectedRevision: snapshot.revision });
       if (!request.ownsRequest()) return;
       snapshot = next; probes.clear(); rows(); reset(); deletion.hidden = true; removeId = null; feedback('连接已保存，尚未检测。');
@@ -105,6 +116,9 @@ export async function hydrateConnections(root) {
       form.reset();
       for (const name of ['id','name','kind','base_url']) field(name).value = item[name];
       field('environment').value = item.credential_ref?.name ?? ''; field('enabled').checked = item.enabled;
+      field('auth_kind').value = item.auth?.kind ?? 'none';
+      field('auth_header').value = item.auth?.name ?? '';
+      syncAuthFields();
       editor.querySelector('summary').textContent = '编辑连接'; editor.open = true; field('name').focus();
     } else {
       removeId = item.id; deletion.hidden = false;
@@ -121,5 +135,6 @@ export async function hydrateConnections(root) {
     if (field('id').value === removeId) reset();
     snapshot = next; probes.clear(); rows(); deletion.hidden = true; removeId = null; feedback('本地连接已移除。');
   });
+  syncAuthFields();
   await run(read);
 }
