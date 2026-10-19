@@ -96,6 +96,10 @@ fn streamed_keep_alive_body_times_out_before_parser_waits_idle() {
     streamed_body_times_out("keep-alive");
 }
 
+/// 依赖 POSIX 套接字中断语义：在另一个线程调用 shutdown(Both) 能立即唤醒阻塞中的 read()。
+/// Windows Winsock 同步阻塞 recv() 不会被本端 shutdown() 打断（需依赖 SO_RCVTIMEO 或 closesocket），
+/// 因此该用例只在 Unix 目标上验收。
+#[cfg(unix)]
 #[test]
 fn shutdown_interrupts_streamed_body_on_live_client() {
     // No IO timeout: only explicit cancellation can release the blocked reader.
