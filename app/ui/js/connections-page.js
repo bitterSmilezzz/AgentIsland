@@ -19,7 +19,7 @@ export function pageConnections() {
         <label class="sb-field" hidden><span>令牌端点</span><input name="refresh_token_url" aria-label="令牌刷新端点" maxlength="2048" autocomplete="off" placeholder="必须 HTTPS（本机回环可用 http）"></label>
         <label class="sb-field" hidden><span>客户端标识</span><input name="refresh_client_id" aria-label="令牌刷新客户端标识" maxlength="200" autocomplete="off"></label>
         <label class="sb-field" hidden><span>刷新令牌环境变量</span><input name="refresh_env" aria-label="刷新令牌环境变量名" maxlength="80" autocomplete="off" placeholder="例如 AGENTISLAND_REFRESH_TOKEN，不要填令牌值"></label>
-        <label class="sb-field" hidden><span>订阅 / 余额查询</span><select name="quota_kind" aria-label="订阅与余额查询"><option value="none">不查询（用量保持未核实）</option><option value="declared">按声明查询</option></select></label>
+        <label class="sb-field"><span>订阅 / 余额查询</span><select name="quota_kind" aria-label="订阅与余额查询"><option value="none">不查询（用量保持未核实）</option><option value="declared">按声明查询</option></select></label>
         <label class="sb-field" hidden><span>余额端点</span><input name="quota_endpoint" aria-label="余额查询端点" maxlength="2048" autocomplete="off" placeholder="相对路径如 api/user/quota，或 HTTPS 绝对地址"></label>
         <label class="sb-field" hidden><span>余额取值路径</span><input name="quota_path" aria-label="余额提取路径" maxlength="100" autocomplete="off" placeholder="点分隔，例如 data.remain_quota"></label>
         <label class="sb-field" hidden><span>余额单位</span><input name="quota_unit" aria-label="余额单位" maxlength="16" autocomplete="off" placeholder="例如 USD、Tokens"></label>
@@ -182,6 +182,10 @@ export async function hydrateConnections(root) {
     if (field('id').value === removeId) reset();
     snapshot = next; probes.clear(); rows(); deletion.hidden = true; removeId = null; feedback('本地连接已移除。');
   });
+  // 认证方案切换要即时联动：请求头名的显隐、刷新与余额整组的启用前提都挂在它上面。
+  // 此前只在初始化与编辑回填时同步过一次——用户在运行中的表单里切方案，输入框
+  // 并不出现，直到重新打开编辑器。形状门禁测不出这种「运行时联动缺失」，只有真 DOM 能。
+  field('auth_kind').onchange = syncAuthFields;
   field('refresh_kind').onchange = syncRefreshFields;
   field('quota_kind').onchange = syncQuotaFields;
   syncAuthFields();

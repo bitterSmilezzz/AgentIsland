@@ -425,9 +425,10 @@
       "checks": [
         "rust.default",
         "gw01.authgate",
-        "gw01.refreshui"
+        "gw01.refreshui",
+        "gw01.connectionsui"
       ],
-      "coverage_note": "partial — 认证隔离、草稿不进凭据、URL 拒认证参数、禁用服务不读凭据已有；第四类「自定义端点/本地模型网关」与显式认证方案、明文远端建连前拒绝（仅回环允许明文）、凭据轮换每次重读来源、环境代理不接管带凭据请求、401/403/429/凭据来源不可用分类可辨；401 刷新令牌流程按 RFC 6749 §6 只换一次并只重试一次，令牌端点受同一传输策略约束；订阅与余额查询采用**声明式协议**：端点/JSON 取值路径/单位由连接声明，提取到数值才把 usage_verified 置真，未声明或提取失败如实保持未核实（不显示占位值），相对路径拒穿越、明文远端保存即拒；连接编辑页已暴露刷新与余额字段（gw01.refreshui 形状门禁）；gw01.authgate 回执契约 v4（变异 115 条）；缺：真实第三方网关未验（无凭据、不猜协议）、订阅套餐（plan/tier）语义、连接页浏览器行为回归",
+      "coverage_note": "partial — 认证隔离、草稿不进凭据、URL 拒认证参数、禁用服务不读凭据已有；第四类「自定义端点/本地模型网关」与显式认证方案、明文远端建连前拒绝（仅回环允许明文）、凭据轮换每次重读来源、环境代理不接管带凭据请求、401/403/429/凭据来源不可用分类可辨；401 刷新令牌流程按 RFC 6749 §6 只换一次并只重试一次，令牌端点受同一传输策略约束；订阅与余额查询采用**声明式协议**：端点/JSON 取值路径/单位由连接声明，提取到数值才把 usage_verified 置真，未声明或提取失败如实保持未核实（不显示占位值），相对路径拒穿越、明文远端保存即拒；连接编辑页已暴露刷新与余额字段（gw01.refreshui 形状门禁）；gw01.authgate 回执契约 v4（变异 115 条）；连接页已有真实浏览器回归（gw01.connectionsui）；缺：真实第三方网关未验（无凭据、不猜协议）、订阅套餐（plan/tier）语义、真实第三方套餐（plan/tier）语义",
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
       "status": "partial"
     },
@@ -2210,6 +2211,24 @@
       "test_files": [
         "scripts/test-connections-refresh-ui.py"
       ]
+    },
+    "gw01.connectionsui": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-connections-page.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-01：连接页真实浏览器回归（真 DOM，非形状断言）。覆盖认证方案切换的即时联动、刷新/余额两组字段的显隐、提交体（不发认证头时刷新整体为 null；三件套齐全且环境变量名转大写）、编辑回填，以及余额只在回执带读数时渲染（无读数不显示占位）。本轮据它抓到两个真缺陷：auth_kind 从未绑定 onchange（运行中切方案输入框不出现）、余额开关被静态 hidden 掉（协议在界面上不可达）。",
+      "test_files": [
+        "scripts/test-connections-page.mjs"
+      ]
     }
   },
   "agents": {
@@ -2300,13 +2319,15 @@
       "automation.dist-wiring",
       "automation.status",
       "auto01.headlesslog",
-      "gw01.refreshui"
+      "gw01.refreshui",
+      "gw01.connectionsui"
     ],
     "browser": [
       "not01.latencyui",
       "task01.detailnav",
       "task04.readerleave",
-      "task04.refreshfocus"
+      "task04.refreshfocus",
+      "gw01.connectionsui"
     ],
     "ci": [
       "secrets.workspace",
@@ -2383,7 +2404,8 @@
       "automation.status",
       "not02.smtp",
       "auto01.headlesslog",
-      "gw01.refreshui"
+      "gw01.refreshui",
+      "gw01.connectionsui"
     ],
     "package": [
       "package.artifact",
@@ -2514,7 +2536,8 @@
       "gw01.authgate",
       "auto01.headlesslog",
       "auto01.headlesslogbin",
-      "gw01.refreshui"
+      "gw01.refreshui",
+      "gw01.connectionsui"
     ],
     "protocol": [
       "gw02.ifacemodels",

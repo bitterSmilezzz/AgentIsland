@@ -55,9 +55,24 @@ class RefreshUiWiringTests(unittest.TestCase):
             self.assertIn(f"'{name}'", self.source)
         self.assertIn("field(name).closest('label').hidden = !on", self.source)
         self.assertIn("field('refresh_kind').onchange = syncRefreshFields", self.source)
+        # 认证方案切换必须即时联动（v0.0.335 前的回归：只在初始化时同步，运行中切换不生效）。
+        self.assertIn("field('auth_kind').onchange = syncAuthFields", self.source)
 
     def test_row_summary_says_the_refresh_endpoint(self):
         self.assertIn("401 刷新", self.source)
+
+    def test_quota_switch_is_visible_without_any_prior_interaction(self):
+        # 「按声明查询」开关与认证无关、必须一开始就可见：它若被静态 hidden 掉，
+        # 三个明细字段的联动就永远没有触发入口，整个余额协议在界面上不可达。
+        self.assertRegex(
+            self.source,
+            r'<label class="sb-field"><span>订阅 / 余额查询</span><select name="quota_kind"',
+        )
+        self.assertNotRegex(
+            self.source,
+            r'<label class="sb-field" hidden><span>订阅 / 余额查询</span>',
+            "开关不得静态隐藏：没有解除它的代码路径",
+        )
 
     def test_quota_declaration_is_wired_end_to_end(self):
         for name in ("quota_kind", "quota_endpoint", "quota_path", "quota_unit"):
