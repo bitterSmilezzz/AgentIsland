@@ -73,6 +73,24 @@ pub struct Refresh {
     pub refresh_token_env: String,
 }
 
+/// 订阅与余额查询协议配置（GW-01）。
+///
+/// 允许用户为服务连接显式声明查询端点与 JSON 取值路径。
+/// 不做协议硬编码（不同服务返回格式各异：有的叫 remain_quota、有的叫 total_available），
+/// 猜协议等于在网关升级时悄悄读错；未声明时诚实保持 `usage_verified = false`。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuotaConfig {
+    /// 相对路径（如 "api/user/self"）或绝对地址（如 "https://api.example.com/quota"）
+    pub endpoint: String,
+    /// 字段提取路径（点分隔，例如 "data.quota"、"total_available"）
+    pub balance_path: String,
+    /// 货币或单位标识（如 "USD"、"CNY"、"Tokens"、"点"），缺省为空
+    #[serde(default)]
+    pub unit: Option<String>,
+}
+
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CredentialRef {
@@ -93,6 +111,9 @@ pub struct Connection {
     /// 旧配置没有这个字段：缺省即「401 不刷新」，与既有行为一致。
     #[serde(default)]
     pub refresh: Option<Refresh>,
+    /// 旧配置没有这个字段：缺省即「不查询余额」，usage_verified 保持 false。
+    #[serde(default)]
+    pub quota: Option<QuotaConfig>,
     pub enabled: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
@@ -110,6 +131,8 @@ pub struct Draft {
     pub auth: AuthScheme,
     #[serde(default)]
     pub refresh: Option<Refresh>,
+    #[serde(default)]
+    pub quota: Option<QuotaConfig>,
     pub enabled: bool,
 }
 
@@ -217,6 +240,7 @@ impl Store {
             credential_ref: draft.credential_ref,
             auth: draft.auth,
             refresh: draft.refresh,
+            quota: draft.quota,
             enabled: draft.enabled,
             created_ms: previous.map(|i| data.items[i].created_ms).unwrap_or(now_ms),
             updated_ms: previous
@@ -355,7 +379,38 @@ fn validate(data: &Snapshot) -> Result<(), String> {
         }
         // 声明要发认证头却没有凭据来源，是一个必然读不通的配置：尽早说清楚，
         // 而不是等用户点了「读取状态」才收到一句泛泛的失败。
-        if !item.auth.is_none() && item.credential_ref.is_none() {
+        if let Some(quota) = &item.quota {
+            if quota.endpoint.is_empty()
+                || quota.endpoint.len() > 2048
+                || quota.endpoint.chars().any(char::is_control)
+                || contains_credential(&quota.endpoint)
+            {
+                return Err("余额查询端点无效，不能含控制字符或凭据值".into());
+            }
+            // 相对路径禁止路径穿越或根目录跳转
+            if !quota.endpoint.starts_with("http://") && !quota.endpoint.starts_with("https://") {
+                if quota.endpoint.starts_with('/')
+                    || quota.endpoint.starts_with('\\')
+                    || quota.endpoint.split('/').any(|part| part == "..")
+                    || !quota.endpoint.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/' | '.' | '?' | '=' | '&'))
+                {
+                    return Err("余额相对路径格式无效，不得包含 .. 或非常规字符".into());
+                }
+            }
+            if quota.balance_path.is_empty()
+                || quota.balance_path.len() > 100
+                || contains_credential(&quota.balance_path)
+                || !quota.balance_path.split('.').all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            {
+                return Err("余额提取路径须为点分隔的属性名（如 data.quota），不能包含凭据值".into());
+            }
+            if let Some(unit) = &quota.unit {
+                if unit.chars().count() > 16 || unit.chars().any(char::is_control) || contains_credential(unit) {
+                    return Err("余额单位不能超过 16 个字符，不能含控制字符或凭据值".into());
+                }
+            }
+        }
+                if !item.auth.is_none() && item.credential_ref.is_none() {
             return Err("该认证方案需要先指定凭据来源（环境变量名）".into());
         }
         if let AuthScheme::Header { name } = &item.auth {
@@ -372,14 +427,34 @@ fn validate(data: &Snapshot) -> Result<(), String> {
 /// 只在**保存**时执行这条判据，`validate` 不检查它：已经存在于磁盘上的明文配置
 /// 依然要能读出来并显示给用户，由读取路径在建立连接之前拒绝并给出明确原因——
 /// 「保存新错误配置」要拦住，「让用户看不见自己的旧配置」则是另一种伤害。
-fn plaintext_credential_allowed(item: &Connection) -> bool {
-    if item.auth.is_none() {
-        return true;
+pub(crate) fn plaintext_credential_allowed(item: &Connection) -> bool {
+    if !item.auth.is_none() {
+        match url::Url::parse(&item.base_url) {
+            Ok(url) => {
+                if crate::connection_http::transport_policy(&url).is_err() {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
     }
-    match url::Url::parse(&item.base_url) {
-        Ok(url) => crate::connection_http::transport_policy(&url).is_ok(),
-        Err(_) => false,
+    if let Some(refresh) = &item.refresh {
+        if let Ok(url) = url::Url::parse(&refresh.token_url) {
+            if crate::connection_http::transport_policy(&url).is_err() {
+                return false;
+            }
+        }
     }
+    if let Some(quota) = &item.quota {
+        if quota.endpoint.starts_with("http://") || quota.endpoint.starts_with("https://") {
+            if let Ok(url) = url::Url::parse(&quota.endpoint) {
+                if crate::connection_http::transport_policy(&url).is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -402,6 +477,7 @@ mod tests {
             }),
             auth: AuthScheme::None,
             refresh: None,
+            quota: None,
             enabled: true,
         }
     }
@@ -605,6 +681,7 @@ mod tests {
             credential_ref: secret_ref.clone(),
             auth: AuthScheme::Bearer,
             refresh: None,
+            quota: None,
             enabled: true,
         };
         let second = s.save(local, 1, 101).unwrap();
@@ -619,6 +696,7 @@ mod tests {
             credential_ref: secret_ref,
             auth: AuthScheme::Bearer,
             refresh: None,
+            quota: None,
             enabled: true,
         };
         assert!(s.save(remote, second.revision, 102).is_err());
@@ -636,6 +714,7 @@ mod tests {
             credential_ref: None,
             auth: AuthScheme::None,
             refresh: None,
+            quota: None,
             enabled: true,
         };
         assert!(s.save(public, second.revision, 103).is_ok());
@@ -657,6 +736,7 @@ mod tests {
             }),
             auth: AuthScheme::Bearer,
             refresh: None,
+            quota: None,
             enabled: true,
         };
         let created = s.save(base, 0, 1).unwrap();
@@ -675,6 +755,7 @@ mod tests {
                 client_id: "fixture-client".into(),
                 refresh_token_env: env.into(),
             }),
+            quota: None,
             enabled: true,
         };
 
@@ -695,5 +776,53 @@ mod tests {
         let mut no_auth = with("https://gateway.example/token", "FIXTURE_REFRESH");
         no_auth.auth = AuthScheme::None;
         assert!(s.save(no_auth, second.revision, 5).is_err());
+    }
+
+    /// 余额声明同样受约束：相对路径不得穿越、提取路径必须是点分属性名、
+    /// 绝对明文远端端点保存即拒绝（与业务地址同一条传输策略）。
+    #[test]
+    fn quota_declaration_rejects_traversal_bad_paths_and_plaintext_remote() {
+        let dir = crate::testutil::Sandbox::new("connections-quota");
+        let s = store(&dir);
+        let base = Draft {
+            id: None,
+            kind: Kind::CustomEndpoint,
+            name: "网关".into(),
+            base_url: "https://gateway.example/".into(),
+            credential_ref: Some(CredentialRef::Environment {
+                name: "FIXTURE_AUTH".into(),
+            }),
+            auth: AuthScheme::Bearer,
+            refresh: None,
+            quota: None,
+            enabled: true,
+        };
+        let created = s.save(base, 0, 1).unwrap();
+        let with = |endpoint: &str, path: &str| Draft {
+            id: Some(created.items[0].id.clone()),
+            kind: Kind::CustomEndpoint,
+            name: "网关".into(),
+            base_url: "https://gateway.example/".into(),
+            credential_ref: Some(CredentialRef::Environment {
+                name: "FIXTURE_AUTH".into(),
+            }),
+            auth: AuthScheme::Bearer,
+            refresh: None,
+            quota: Some(QuotaConfig {
+                endpoint: endpoint.into(),
+                balance_path: path.into(),
+                unit: Some("Tokens".into()),
+            }),
+            enabled: true,
+        };
+
+        assert!(s.save(with("../../etc/passwd", "data.quota"), created.revision, 2).is_err(),
+                "路径穿越必须拒绝");
+        assert!(s.save(with("api/user/quota", "data..quota"), created.revision, 3).is_err(),
+                "空段路径必须拒绝");
+        assert!(s.save(with("http://gateway.example/quota", "data.quota"), created.revision, 4).is_err(),
+                "明文远端余额端点必须拒绝");
+        assert!(s.save(with("api/user/quota", "data.remain_quota"), created.revision, 5).is_ok(),
+                "合法声明必须保存");
     }
 }

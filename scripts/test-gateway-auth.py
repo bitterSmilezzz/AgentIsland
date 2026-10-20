@@ -7,7 +7,10 @@ All mutations stay in memory. This script uses only the standard library, opens 
 network connections, and writes no files. The child probe uses its own loopback peers.
 Proxy evidence covers the allowed loopback target shape, not arbitrary remote hosts.
 Refresh evidence covers RFC 6749 refresh_token exchange against a self-hosted loopback
-peer; no real third-party gateway or real credential is exercised.
+peer; no real third-party gateway or real credential is exercised. Quota evidence covers
+a user-declared endpoint/JSON path against the same kind of loopback peer: extraction is
+verified, a mismatched path must not claim usage, and a plaintext remote endpoint must be
+refused at save time. No upstream gateway schema is assumed.
 Receipt values and untrusted diagnostic text are never echoed as credentials may leak
 precisely when the product regresses. Top-level and nested objects use exact key sets.
 """
@@ -24,7 +27,7 @@ from typing import Any
 PROBE_FLAG = "--gateway-auth-probe"
 PROBE_TIMEOUT = 90
 
-# Frozen receipt contract v3; pid is the sole variable leaf (any positive integer).
+# Frozen receipt contract v4; pid is the sole variable leaf (any positive integer).
 SYNTHETIC_FIXTURE: dict[str, Any] = {
     "schema_version": 1,
     "pid": 12345,
@@ -57,6 +60,13 @@ SYNTHETIC_FIXTURE: dict[str, Any] = {
         "failed_exchange": "refresh_failed",
         "plaintext_token_url": "insecure_transport",
         "missing_refresh_source": "credential_unavailable",
+    },
+    "quota_protocol": {
+        "configured_usage_verified": True,
+        "extracted_amount": 1000000.0,
+        "extracted_unit": "Tokens",
+        "mismatched_path_rejected": True,
+        "plaintext_endpoint_blocked": True,
     },
     "proxy_isolation": {
         "env_proxy_configured": True,

@@ -191,6 +191,7 @@ fn connection(kind: Kind, url: &str, auth: AuthScheme, env_name: &str) -> Connec
         }),
         auth,
         refresh: None,
+        quota: None,
         enabled: true,
         created_ms: 1,
         updated_ms: 1,
@@ -568,6 +569,122 @@ fn refresh_section() -> Result<(Value, Vec<String>), String> {
     Ok((value, reasons))
 }
 
+
+/// 订阅与余额查询的对端：不同请求路径返回不同 JSON 体，以验证声明路径的提取与失败分支。
+struct QuotaPeer {
+    port: u16,
+    stop: Arc<AtomicBool>,
+}
+impl QuotaPeer {
+    fn start() -> std::io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let _ = ready_tx.send(());
+            while !flag.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => serve_quota(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| std::io::Error::other("quota peer did not start"))?;
+        Ok(Self { port, stop })
+    }
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}/", self.port)
+    }
+}
+impl Drop for QuotaPeer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn serve_quota(mut stream: TcpStream) {
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut buffer = [0u8; 8192];
+    let Ok(size) = stream.read(&mut buffer) else {
+        return;
+    };
+    let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+    let path = request.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("/");
+    let (status, body) = if path.ends_with("/api/user/quota") {
+        (200u16, r#"{"data":{"remain_quota":1000000.0}}"#.to_owned())
+    } else {
+        (200u16, r#"{"object":"list"}"#.to_owned())
+    };
+    let response = format!(
+        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    if stream.write_all(response.as_bytes()).is_ok() {
+        let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+    }
+}
+
+/// 订阅与余额查询协议（GW-01）：声明的端点/路径能核实用量；路径不符与端点越界各自可辨。
+fn quota_section() -> Result<(Value, Vec<String>), String> {
+    use crate::connections::QuotaConfig;
+    let peer = QuotaPeer::start().map_err(|e| format!("peer start failed: {e}"))?;
+    let mut item = connection(
+        Kind::CustomEndpoint,
+        &peer.url(),
+        AuthScheme::None,
+        FIXTURE_ENV,
+    );
+    item.quota = Some(QuotaConfig {
+        endpoint: "api/user/quota".into(),
+        balance_path: "data.remain_quota".into(),
+        unit: Some("Tokens".into()),
+    });
+    let verified = connection_probe::inspect(&item, 10);
+    let amount = verified.balance.as_ref().map(|b| b.amount);
+    let unit = verified.balance.as_ref().map(|b| b.unit.clone());
+
+    // 声明路径与实际返回不符：不冒充核实，但基础状态仍可读
+    item.quota = Some(QuotaConfig {
+        endpoint: "api/user/quota".into(),
+        balance_path: "data.unknown_field".into(),
+        unit: None,
+    });
+    let mismatched = connection_probe::inspect(&item, 11);
+
+    // 明文远端余额端点：保存时即被拒绝
+    let plaintext_blocked = {
+        let mut probe = item.clone();
+        probe.quota = Some(QuotaConfig {
+            endpoint: "http://example.com/quota".into(),
+            balance_path: "data.remain_quota".into(),
+            unit: None,
+        });
+        !crate::connections::plaintext_credential_allowed(&probe)
+    };
+
+    let reasons = vec![verified.reason.clone(), mismatched.reason.clone()];
+    let value = json!({
+        "configured_usage_verified": verified.usage_verified,
+        "extracted_amount": amount,
+        "extracted_unit": unit,
+        "mismatched_path_rejected": !mismatched.usage_verified,
+        "plaintext_endpoint_blocked": plaintext_blocked,
+    });
+    Ok((value, reasons))
+}
+
 /// 代理隔离：把进程代理环境变量指向一个「代理对端」，请求必须仍然打到目标对端。
 fn proxy_section() -> Result<(Value, Vec<String>), String> {
     let target = Peer::start(vec![(200, r#"{"object":"list"}"#)])
@@ -615,6 +732,8 @@ fn run() -> Result<String, String> {
     reasons.extend(proxy_reasons);
     let (refresh, refresh_reasons) = refresh_section()?;
     reasons.extend(refresh_reasons);
+    let (quota, quota_reasons) = quota_section()?;
+    reasons.extend(quota_reasons);
 
     let mut receipt = json!({
         "schema_version": 1,
@@ -624,6 +743,7 @@ fn run() -> Result<String, String> {
         "rotation": rotation,
         "proxy_isolation": proxy,
         "refresh": refresh,
+        "quota_protocol": quota,
         "leakage": {
             "receipt_contains_secret": false,
             "status_reason_contains_secret": false,
@@ -691,6 +811,13 @@ mod tests {
         assert_eq!(refresh["plaintext_token_url"], "insecure_transport");
         assert_eq!(refresh["missing_refresh_source"], "credential_unavailable");
 
+        let quota = &receipt["quota_protocol"];
+        assert_eq!(quota["configured_usage_verified"], true);
+        assert_eq!(quota["extracted_amount"], 1000000.0);
+        assert_eq!(quota["extracted_unit"], "Tokens");
+        assert_eq!(quota["mismatched_path_rejected"], true);
+        assert_eq!(quota["plaintext_endpoint_blocked"], true);
+
         let proxy = &receipt["proxy_isolation"];
         assert_eq!(proxy["env_proxy_configured"], true);
         assert_eq!(proxy["target_peer_requests"], 1);
@@ -718,10 +845,21 @@ mod tests {
                 "leakage",
                 "pid",
                 "proxy_isolation",
+                "quota_protocol",
                 "refresh",
                 "rotation",
                 "schema_version",
                 "transport_policy",
+            ]
+        );
+        assert_eq!(
+            keys(&receipt["quota_protocol"]),
+            vec![
+                "configured_usage_verified",
+                "extracted_amount",
+                "extracted_unit",
+                "mismatched_path_rejected",
+                "plaintext_endpoint_blocked"
             ]
         );
         assert_eq!(

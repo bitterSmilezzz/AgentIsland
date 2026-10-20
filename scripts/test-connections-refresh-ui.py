@@ -59,6 +59,27 @@ class RefreshUiWiringTests(unittest.TestCase):
     def test_row_summary_says_the_refresh_endpoint(self):
         self.assertIn("401 刷新", self.source)
 
+    def test_quota_declaration_is_wired_end_to_end(self):
+        for name in ("quota_kind", "quota_endpoint", "quota_path", "quota_unit"):
+            with self.subTest(field=name):
+                self.assertRegex(
+                    self.source,
+                    rf'<(?:input|select) name="{name}"[^>]*aria-label="[^"]+"')
+        submit = self.source[self.source.index("form.addEventListener('submit'"):]
+        submit = submit[:submit.index("invoke('connection_save'")]
+        for name in ("endpoint", "balance_path", "unit"):
+            self.assertIn(name, submit, f"submit must send quota.{name}")
+        edit = self.source[self.source.index("if (edit) {"):]
+        edit = edit[:edit.index("editor.querySelector('summary')")]
+        self.assertIn("item.quota?.endpoint", edit)
+        self.assertIn("item.quota?.balance_path", edit)
+        self.assertIn("field('quota_kind').onchange = syncQuotaFields", self.source)
+
+    def test_row_shows_a_verified_balance_only_when_the_probe_read_one(self):
+        # 余额只有在真正提取到数值时才渲染：未声明或提取失败时不许显示 0/占位值。
+        self.assertIn("probe?.balance ?", self.source)
+        self.assertIn("probe.balance.raw_text", self.source)
+
     def test_negative_control_removing_the_submit_wiring_fails(self):
         stripped = self.source.replace(
             "refresh: field('refresh_kind').value === 'refresh_token'", "/* removed */ x:")

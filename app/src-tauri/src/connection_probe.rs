@@ -47,6 +47,15 @@ pub struct Probe {
     pub reason: String,
     pub models_verified: bool,
     pub usage_verified: bool,
+    /// 提取出的余额/配额信息（GW-01 订阅与余额查询协议）
+    pub balance: Option<BalanceInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BalanceInfo {
+    pub amount: f64,
+    pub unit: String,
+    pub raw_text: String,
 }
 /// 有效认证方案：显式声明的优先，未声明时按服务类型沿用既有语义。
 ///
@@ -107,7 +116,7 @@ pub fn inspect(connection: &Connection, now: u64) -> Probe {
 fn probe(
     connection: &Connection,
     now: u64,
-    fetch: impl FnOnce(url::Url, Option<&CredentialRef>, &AuthScheme) -> Result<Value, Failure>,
+    mut fetch: impl FnMut(url::Url, Option<&CredentialRef>, &AuthScheme) -> Result<Value, Failure>,
 ) -> Probe {
     let mut result = Probe {
         connection_id: connection.id.clone(),
@@ -118,6 +127,7 @@ fn probe(
         reason: "此服务的只读接口尚未核实".into(),
         models_verified: false,
         usage_verified: false,
+        balance: None,
     };
     if !connection.enabled {
         result.status = Status::Disabled;
@@ -161,35 +171,108 @@ fn probe(
             result.reason = failure.reason().into();
         }
         Ok(value) => {
-            if connection.kind == Kind::CustomEndpoint {
-                // 自定义端点没有可核对的版本契约：2xx 且 JSON 对象即视为可读，
-                // 并在文案里说清「可读 ≠ 有模型/用量权限」，不冒充内置服务的身份校验。
-                result.status = Status::Readable;
-                result.reason = "自定义端点可读；模型和用量权限尚未检测".into();
-                return result;
-            }
-            let version = match connection.kind {
-                Kind::NewApi if value.get("success").and_then(Value::as_bool) == Some(true) => {
-                    value.get("data").and_then(|data| data.get("version"))
-                }
-                Kind::Magpie if value.get("name").and_then(Value::as_str) == Some("magpie") => {
-                    value.get("version")
-                }
-                _ => None,
-            }
-            .and_then(Value::as_str)
-            .filter(|version| valid_version(version));
-            if let Some(version) = version {
-                result.status = Status::Readable;
-                result.service_version = Some(version.to_owned());
-                result.reason = "服务状态可读；模型和用量权限尚未检测".into();
+            let is_custom = connection.kind == Kind::CustomEndpoint;
+            let mut readable = false;
+            if is_custom {
+                readable = true;
             } else {
-                result.reason = "服务状态格式或版本标识不受支持".into();
+                let version = match connection.kind {
+                    Kind::NewApi if value.get("success").and_then(Value::as_bool) == Some(true) => {
+                        value.get("data").and_then(|data| data.get("version"))
+                    }
+                    Kind::Magpie if value.get("name").and_then(Value::as_str) == Some("magpie") => {
+                        value.get("version")
+                    }
+                    _ => None,
+                }
+                .and_then(Value::as_str)
+                .filter(|version| valid_version(version));
+                if let Some(v) = version {
+                    result.service_version = Some(v.to_owned());
+                    readable = true;
+                } else {
+                    result.reason = "服务状态格式或版本标识不受支持".into();
+                }
+            }
+
+            if readable {
+                result.status = Status::Readable;
+                // 基础端点可读后，按需查询订阅与余额（GW-01 协议）
+                if let Some(quota) = &connection.quota {
+                    let q_url = quota_url(&connection.base_url, &quota.endpoint);
+                    if let Some(q_url) = q_url {
+                        match fetch(q_url, reference, &scheme) {
+                            Ok(q_val) => {
+                                if let Some(amount) = extract_balance(&q_val, &quota.balance_path) {
+                                    result.usage_verified = true;
+                                    let unit = quota.unit.clone().unwrap_or_default();
+                                    let raw_text = format!("{amount} {unit}").trim().to_owned();
+                                    result.balance = Some(BalanceInfo {
+                                        amount,
+                                        unit,
+                                        raw_text: raw_text.clone(),
+                                    });
+                                    result.reason = format!("服务状态可读；余额/用量已核实（{raw_text}）");
+                                } else {
+                                    result.usage_verified = false;
+                                    result.reason = format!(
+                                        "服务状态可读；但在余额响应路径「{}」中未解析到数值",
+                                        quota.balance_path
+                                    );
+                                }
+                            }
+                            Err(f) => {
+                                result.usage_verified = false;
+                                result.reason = format!("服务状态可读；但余额查询失败（{}）", f.reason());
+                            }
+                        }
+                    } else {
+                        result.usage_verified = false;
+                        result.reason = "服务状态可读；但余额查询端点地址格式无效".into();
+                    }
+                } else {
+                    result.reason = if is_custom {
+                        "自定义端点可读；模型和用量权限尚未检测".into()
+                    } else {
+                        "服务状态可读；模型和用量权限尚未检测".into()
+                    };
+                }
             }
         }
     }
     result
 }
+/// 解析余额查询端点 URL：绝对 URL 直接解析，相对路径挂在 base_url 之后。
+fn quota_url(base_url: &str, endpoint: &str) -> Option<url::Url> {
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        url::Url::parse(endpoint).ok()
+    } else {
+        let base = crate::connections::normalize_url(base_url).ok()?;
+        let mut base = url::Url::parse(&base).ok()?;
+        if !base.path().ends_with('/') {
+            let new_path = format!("{}/", base.path());
+            base.set_path(&new_path);
+        }
+        base.join(endpoint).ok()
+    }
+}
+
+/// 按点分隔路径从 JSON 对象中提取浮点数值（支持数值类型与数字字符串）。
+fn extract_balance(root: &Value, path: &str) -> Option<f64> {
+    let mut current = root;
+    for segment in path.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        current = current.get(segment)?;
+    }
+    match current {
+        Value::Number(num) => num.as_f64(),
+        Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
 fn valid_version(version: &str) -> bool {
     !version.is_empty()
         && version.len() <= 80
@@ -226,6 +309,7 @@ mod tests {
             }),
             auth: AuthScheme::None,
             refresh: None,
+            quota: None,
             enabled: true,
             created_ms: 1,
             updated_ms: 1,
@@ -278,7 +362,7 @@ mod tests {
             serde_json::json!({"name":"magpie","version":null}),
         ] {
             assert!(matches!(
-                probe(&c, 100, |_, _, _| Ok(body)).status,
+                probe(&c, 100, |_, _, _| Ok(body.clone())).status,
                 Status::Unsupported
             ));
         }
@@ -363,5 +447,66 @@ mod tests {
         assert!(matches!(refused.status, Status::AuthFailed));
         let limited = probe(&c, 100, |_, _, _| Err(Failure::RateLimited));
         assert!(matches!(limited.status, Status::Error));
+    }
+
+    #[test]
+    fn quota_protocol_verifies_usage_and_extracts_balance() {
+        use crate::connections::QuotaConfig;
+
+        let mut c = connection(Kind::CustomEndpoint);
+        c.auth = AuthScheme::Bearer;
+        c.quota = Some(QuotaConfig {
+            endpoint: "api/user/quota".into(),
+            balance_path: "data.remain_quota".into(),
+            unit: Some("Tokens".into()),
+        });
+
+        // 成功提取数值
+        let result = probe(&c, 100, |url, _, _| {
+            if url.path() == "/proxy/api/user/quota" {
+                Ok(serde_json::json!({
+                    "data": { "remain_quota": 500000.0 }
+                }))
+            } else {
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+        });
+        assert!(matches!(result.status, Status::Readable));
+        assert!(result.usage_verified);
+        let b = result.balance.expect("balance info must exist");
+        assert_eq!(b.amount, 500000.0);
+        assert_eq!(b.unit, "Tokens");
+        assert!(result.reason.contains("500000 Tokens"));
+
+        // 路径不存在或非数字
+        let mut c_bad = c.clone();
+        c_bad.quota = Some(QuotaConfig {
+            endpoint: "api/user/quota".into(),
+            balance_path: "data.missing_field".into(),
+            unit: Some("USD".into()),
+        });
+        let result_bad = probe(&c_bad, 100, |url, _, _| {
+            if url.path() == "/proxy/api/user/quota" {
+                Ok(serde_json::json!({"data": {"other": "value"}}))
+            } else {
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+        });
+        assert!(matches!(result_bad.status, Status::Readable));
+        assert!(!result_bad.usage_verified);
+        assert!(result_bad.balance.is_none());
+        assert!(result_bad.reason.contains("未解析到数值"));
+
+        // 余额查询遭遇 401 鉴权失败：基础服务依然保留可读，但 usage 未核实并标明原因
+        let result_auth_fail = probe(&c, 100, |url, _, _| {
+            if url.path() == "/proxy/api/user/quota" {
+                Err(Failure::AuthFailed)
+            } else {
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+        });
+        assert!(matches!(result_auth_fail.status, Status::Readable));
+        assert!(!result_auth_fail.usage_verified);
+        assert!(result_auth_fail.reason.contains("服务拒绝凭据"));
     }
 }

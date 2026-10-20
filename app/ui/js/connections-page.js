@@ -19,6 +19,10 @@ export function pageConnections() {
         <label class="sb-field" hidden><span>令牌端点</span><input name="refresh_token_url" aria-label="令牌刷新端点" maxlength="2048" autocomplete="off" placeholder="必须 HTTPS（本机回环可用 http）"></label>
         <label class="sb-field" hidden><span>客户端标识</span><input name="refresh_client_id" aria-label="令牌刷新客户端标识" maxlength="200" autocomplete="off"></label>
         <label class="sb-field" hidden><span>刷新令牌环境变量</span><input name="refresh_env" aria-label="刷新令牌环境变量名" maxlength="80" autocomplete="off" placeholder="例如 AGENTISLAND_REFRESH_TOKEN，不要填令牌值"></label>
+        <label class="sb-field" hidden><span>订阅 / 余额查询</span><select name="quota_kind" aria-label="订阅与余额查询"><option value="none">不查询（用量保持未核实）</option><option value="declared">按声明查询</option></select></label>
+        <label class="sb-field" hidden><span>余额端点</span><input name="quota_endpoint" aria-label="余额查询端点" maxlength="2048" autocomplete="off" placeholder="相对路径如 api/user/quota，或 HTTPS 绝对地址"></label>
+        <label class="sb-field" hidden><span>余额取值路径</span><input name="quota_path" aria-label="余额提取路径" maxlength="100" autocomplete="off" placeholder="点分隔，例如 data.remain_quota"></label>
+        <label class="sb-field" hidden><span>余额单位</span><input name="quota_unit" aria-label="余额单位" maxlength="16" autocomplete="off" placeholder="例如 USD、Tokens"></label>
         <label class="sb-field"><span>服务地址</span><input name="base_url" aria-label="服务地址" type="url" maxlength="2048" placeholder="http://127.0.0.1:端口/" required autocomplete="off"></label>
         <label class="sb-field"><span>凭据环境变量名 · 可选</span><input name="environment" aria-label="凭据环境变量名" maxlength="80" autocomplete="off" placeholder="填写变量名，不填写密钥"></label>
         <label class="connection-enabled"><input type="checkbox" name="enabled" checked>启用连接</label>
@@ -55,10 +59,18 @@ export async function hydrateConnections(root) {
       field(name).closest('label').hidden = !on;
     }
   };
+  const syncQuotaFields = () => {
+    // 余额查询与认证无关：公开状态接口也能查公开额度，所以只由它自己的开关决定。
+    const on = field('quota_kind').value === 'declared';
+    for (const name of ['quota_endpoint', 'quota_path', 'quota_unit']) {
+      field(name).closest('label').hidden = !on;
+    }
+  };
   const syncAuthFields = () => {
     field('auth_header').closest('label').hidden = field('auth_kind').value !== 'header';
     field('refresh_kind').closest('label').hidden = field('auth_kind').value === 'none';
     syncRefreshFields();
+    syncQuotaFields();
   };
   function reset() {
     form.reset(); field('id').value = ''; editor.open = false; syncAuthFields();
@@ -72,7 +84,7 @@ export async function hydrateConnections(root) {
       const authorized = item.auth ? item.auth.kind !== 'none' : item.kind === 'magpie';
       const localOnly = /^http:\/\/(127\.0\.0\.1|\[::1\]|localhost)([:\/]|$)/.test(item.base_url);
       const warning = item.base_url.startsWith('http:') && !localOnly && Boolean(item.credential_ref || authorized);
-      return `<article class="connection-row"><div><strong>${esc(item.name)}</strong><span class="sb-tag" data-connection-state="${esc(item.enabled ? probe?.status ?? 'untested' : 'disabled')}">${item.enabled ? labels[probe?.status] ?? (item.kind === 'cc_switch' ? '接口未核实' : '未检测') : '已停用'}</span><p>${esc(names[item.kind])} · ${esc(item.base_url)}</p><small>${item.credential_ref ? `环境变量：${esc(item.credential_ref.name)}` : '未配置凭据'} · ${esc(authNames[item.auth?.kind ?? (item.kind === 'magpie' ? 'bearer' : 'none')] ?? '不发送认证头')}${item.refresh ? ` · 401 刷新 ⇒ ${esc(item.refresh.token_url)}` : ''}</small>${probe ? `<p role="status">${esc(probe.reason)}${probe.service_version ? ` · ${esc(probe.service_version)}` : ''}<span class="connection-checked">上次读取 · ${esc(new Date(probe.checked_at_ms).toLocaleString([], { month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit' }))}</span></p>` : ''}${warning ? '<p>非本机回环地址会明文发送凭据，读取已被拒绝；请改用 HTTPS。</p>' : ''}</div><div class="actions">${item.enabled && item.kind !== 'cc_switch' ? `<button type="button" class="mini-btn" data-connection-test="${esc(item.id)}">${item.kind === 'new_api' ? '读取公开状态' : warning ? '读取状态（HTTP）' : '读取状态'}</button>` : ''}<button type="button" class="mini-btn" data-connection-edit="${esc(item.id)}">编辑</button><button type="button" class="mini-btn" data-connection-remove="${esc(item.id)}">移除</button></div></article>`;
+      return `<article class="connection-row"><div><strong>${esc(item.name)}</strong><span class="sb-tag" data-connection-state="${esc(item.enabled ? probe?.status ?? 'untested' : 'disabled')}">${item.enabled ? labels[probe?.status] ?? (item.kind === 'cc_switch' ? '接口未核实' : '未检测') : '已停用'}</span><p>${esc(names[item.kind])} · ${esc(item.base_url)}</p><small>${item.credential_ref ? `环境变量：${esc(item.credential_ref.name)}` : '未配置凭据'} · ${esc(authNames[item.auth?.kind ?? (item.kind === 'magpie' ? 'bearer' : 'none')] ?? '不发送认证头')}${item.refresh ? ` · 401 刷新 ⇒ ${esc(item.refresh.token_url)}` : ''}</small>${probe?.balance ? `<p class="connection-balance">余额 / 配额：<strong>${esc(probe.balance.raw_text)}</strong></p>` : ''}${probe ? `<p role="status">${esc(probe.reason)}${probe.service_version ? ` · ${esc(probe.service_version)}` : ''}<span class="connection-checked">上次读取 · ${esc(new Date(probe.checked_at_ms).toLocaleString([], { month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit' }))}</span></p>` : ''}${warning ? '<p>非本机回环地址会明文发送凭据，读取已被拒绝；请改用 HTTPS。</p>' : ''}</div><div class="actions">${item.enabled && item.kind !== 'cc_switch' ? `<button type="button" class="mini-btn" data-connection-test="${esc(item.id)}">${item.kind === 'new_api' ? '读取公开状态' : warning ? '读取状态（HTTP）' : '读取状态'}</button>` : ''}<button type="button" class="mini-btn" data-connection-edit="${esc(item.id)}">编辑</button><button type="button" class="mini-btn" data-connection-remove="${esc(item.id)}">移除</button></div></article>`;
     }).join('') : '<div class="sb-empty">还没有外部连接。</div>';
   }
   async function run(action) {
@@ -107,6 +119,12 @@ export async function hydrateConnections(root) {
           token_url: field('refresh_token_url').value.trim(),
           client_id: field('refresh_client_id').value.trim(),
           refresh_token_env: field('refresh_env').value.trim().toUpperCase(),
+        } : null,
+        // 余额声明同样是「声明即生效、不猜字段」：端点与路径由用户给，未声明则用量保持未核实。
+        quota: field('quota_kind').value === 'declared' ? {
+          endpoint: field('quota_endpoint').value.trim(),
+          balance_path: field('quota_path').value.trim(),
+          unit: field('quota_unit').value.trim() || null,
         } : null };
       const next = await invoke('connection_save', { config, expectedRevision: snapshot.revision });
       if (!request.ownsRequest()) return;
@@ -143,6 +161,10 @@ export async function hydrateConnections(root) {
       field('refresh_token_url').value = item.refresh?.token_url ?? '';
       field('refresh_client_id').value = item.refresh?.client_id ?? '';
       field('refresh_env').value = item.refresh?.refresh_token_env ?? '';
+      field('quota_kind').value = item.quota ? 'declared' : 'none';
+      field('quota_endpoint').value = item.quota?.endpoint ?? '';
+      field('quota_path').value = item.quota?.balance_path ?? '';
+      field('quota_unit').value = item.quota?.unit ?? '';
       syncAuthFields();
       editor.querySelector('summary').textContent = '编辑连接'; editor.open = true; field('name').focus();
     } else {
@@ -161,6 +183,7 @@ export async function hydrateConnections(root) {
     snapshot = next; probes.clear(); rows(); deletion.hidden = true; removeId = null; feedback('本地连接已移除。');
   });
   field('refresh_kind').onchange = syncRefreshFields;
+  field('quota_kind').onchange = syncQuotaFields;
   syncAuthFields();
   await run(read);
 }
