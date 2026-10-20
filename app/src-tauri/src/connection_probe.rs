@@ -65,25 +65,45 @@ pub fn inspect(connection: &Connection, now: u64) -> Probe {
     probe(connection, now, |url, reference, scheme| {
         // 每次读取都从来源重新取值：轮换环境变量后无需重启或清缓存即生效，
         // 也不存在「上一次的凭据被缓存下来继续用」的窗口。
-        let credential = match reference {
-            Some(CredentialRef::Environment { name }) => {
-                Some(std::env::var(name).map_err(|_| Failure::CredentialUnavailable)?)
-            }
-            None => None,
+        let resolve = || match reference {
+            Some(CredentialRef::Environment { name }) => std::env::var(name)
+                .map(Some)
+                .map_err(|_| Failure::CredentialUnavailable),
+            None => Ok(None),
         };
-        let auth = match scheme {
-            AuthScheme::None => AuthHeader::None,
-            AuthScheme::Bearer => {
-                AuthHeader::Bearer(credential.ok_or(Failure::CredentialUnavailable)?)
-            }
-            AuthScheme::Header { name } => AuthHeader::Custom {
-                name: name.clone(),
-                value: credential.ok_or(Failure::CredentialUnavailable)?,
-            },
+        let header = |credential: Option<String>| -> Result<AuthHeader, Failure> {
+            Ok(match scheme {
+                AuthScheme::None => AuthHeader::None,
+                AuthScheme::Bearer => {
+                    AuthHeader::Bearer(credential.ok_or(Failure::CredentialUnavailable)?)
+                }
+                AuthScheme::Header { name } => AuthHeader::Custom {
+                    name: name.clone(),
+                    value: credential.ok_or(Failure::CredentialUnavailable)?,
+                },
+            })
         };
-        Http::shared()?.get_json(url, &auth)
+        let auth = header(resolve()?)?;
+        match Http::shared()?.get_json(url.clone(), &auth) {
+            // 只有 401 才谈刷新：403/429/网络失败刷新也换不来权限，重试只是多花一次请求。
+            Err(Failure::AuthFailed) => {
+                let Some(refresh) = connection.refresh.as_ref() else {
+                    return Err(Failure::AuthFailed);
+                };
+                if scheme.is_none() {
+                    return Err(Failure::AuthFailed);
+                }
+                // 只换一次、只重试一次：刷新本身再失败就如实报 refresh_failed，
+                // 不在「换令牌失败」上面再叠一层重试，否则失败会被无限放大。
+                let token = crate::connection_http::refresh_access_token(refresh)?;
+                let retried = header(Some(token))?;
+                Http::shared()?.get_json(url, &retried)
+            }
+            other => other,
+        }
     })
 }
+
 fn probe(
     connection: &Connection,
     now: u64,
@@ -205,6 +225,7 @@ mod tests {
                 name: "FIXTURE_AUTH".into(),
             }),
             auth: AuthScheme::None,
+            refresh: None,
             enabled: true,
             created_ms: 1,
             updated_ms: 1,

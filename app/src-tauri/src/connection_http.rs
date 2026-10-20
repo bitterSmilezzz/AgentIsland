@@ -22,6 +22,8 @@ pub enum Failure {
     Tls,
     Redirect,
     AuthFailed,
+    /// 401 之后去换令牌这件事本身失败了（端点拒绝、响应无 access_token）。
+    RefreshFailed,
     Forbidden,
     RateLimited,
     HttpStatus(u16),
@@ -42,6 +44,7 @@ impl Failure {
             Self::Tls => "tls",
             Self::Redirect => "redirect",
             Self::AuthFailed => "auth_failed",
+            Self::RefreshFailed => "refresh_failed",
             Self::Forbidden => "forbidden",
             Self::RateLimited => "rate_limited",
             Self::HttpStatus(_) => "http_status",
@@ -61,6 +64,7 @@ impl Failure {
             Self::Tls => "TLS 连接失败，请检查服务证书",
             Self::Redirect => "服务返回重定向，请填写最终地址",
             Self::AuthFailed => "服务拒绝凭据",
+            Self::RefreshFailed => "令牌刷新失败：端点拒绝了刷新令牌或未返回 access token",
             Self::Forbidden => "凭据没有此项读取权限",
             Self::RateLimited => "服务限流，请稍后手动重试",
             Self::HttpStatus(_) => "服务返回错误状态",
@@ -196,67 +200,143 @@ impl Http {
             let value = auth.header_value()?.ok_or(Failure::InvalidCredential)?;
             request = request.header(name, value);
         }
-        let mut response = request.send().map_err(classify)?;
-        let status = response.status().as_u16();
-        match status {
-            200..=299 => {}
-            300..=399 => return Err(Failure::Redirect),
-            401 => return Err(Failure::AuthFailed),
-            403 => return Err(Failure::Forbidden),
-            429 => return Err(Failure::RateLimited),
-            _ => return Err(Failure::HttpStatus(status)),
+        let response = request.send().map_err(classify)?;
+        json_body(response)
+    }
+
+    /// 令牌端点入口（RFC 6749 §6 refresh_token 授权）：表单编码，同样先过传输策略。
+    ///
+    /// 与业务读取分开是有意的：它只在 401 之后被调用一次、不跟随重定向、只接受 JSON——
+    /// 把「换令牌」混进普通读取，会让每一次读取都有机会带上刷新令牌。
+    pub(crate) fn post_form_json(
+        &self,
+        url: url::Url,
+        form: &[(&str, &str)],
+    ) -> Result<Value, Failure> {
+        crate::connections::normalize_url(url.as_str()).map_err(|_| Failure::InvalidAddress)?;
+        transport_policy(&url)?;
+        let mut encoded = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in form {
+            encoded.append_pair(key, value);
         }
-        if response
-            .content_length()
-            .is_some_and(|size| size > MAX_BODY as u64)
-        {
-            return Err(Failure::TooLarge);
-        }
-        if response
-            .headers()
-            .get(reqwest::header::CONTENT_ENCODING)
-            .is_some_and(|value| !value.as_bytes().eq_ignore_ascii_case(b"identity"))
-        {
-            return Err(Failure::UnsupportedEncoding);
-        }
-        if response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .is_some_and(|value| {
-                let Ok(text) = value.to_str() else {
-                    return true;
-                };
-                let media = text
-                    .split(';')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_ascii_lowercase();
-                media != "application/json"
-                    && !(media.starts_with("application/") && media.ends_with("+json"))
-            })
-        {
-            return Err(Failure::InvalidJson);
-        }
-        // Bound decoded allocation even with absent/chunked Content-Length.
-        let mut body = Vec::new();
-        response
-            .by_ref()
-            .take(MAX_BODY as u64 + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| {
-                error
-                    .get_ref()
-                    .and_then(|source| source.downcast_ref::<reqwest::Error>())
-                    .map(|error| classify_ref(error))
-                    .unwrap_or(Failure::Unavailable)
-            })?;
-        if body.len() > MAX_BODY {
-            return Err(Failure::TooLarge);
-        }
-        serde_json::from_slice(&body).map_err(|_| Failure::InvalidJson)
+        let response = self
+            .client
+            .post(url)
+            .header(ACCEPT, "application/json")
+            .header(ACCEPT_ENCODING, "identity")
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(encoded.finish())
+            .send()
+            .map_err(classify)?;
+        json_body(response)
     }
 }
+
+/// 响应收尾：状态分类、压缩/类型/大小边界，最后解析 JSON。**只此一处**。
+fn json_body(mut response: reqwest::blocking::Response) -> Result<Value, Failure> {
+    let status = response.status().as_u16();
+    match status {
+        200..=299 => {}
+        300..=399 => return Err(Failure::Redirect),
+        401 => return Err(Failure::AuthFailed),
+        403 => return Err(Failure::Forbidden),
+        429 => return Err(Failure::RateLimited),
+        _ => return Err(Failure::HttpStatus(status)),
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_BODY as u64)
+    {
+        return Err(Failure::TooLarge);
+    }
+    if response
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .is_some_and(|value| !value.as_bytes().eq_ignore_ascii_case(b"identity"))
+    {
+        return Err(Failure::UnsupportedEncoding);
+    }
+    if response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .is_some_and(|value| {
+            let Ok(text) = value.to_str() else {
+                return true;
+            };
+            let media = text
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            media != "application/json"
+                && !(media.starts_with("application/") && media.ends_with("+json"))
+        })
+    {
+        return Err(Failure::InvalidJson);
+    }
+    // Bound decoded allocation even with absent/chunked Content-Length.
+    let mut body = Vec::new();
+    response
+        .by_ref()
+        .take(MAX_BODY as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|error| {
+            error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<reqwest::Error>())
+                .map(|error| classify_ref(error))
+                .unwrap_or(Failure::Unavailable)
+        })?;
+    if body.len() > MAX_BODY {
+        return Err(Failure::TooLarge);
+    }
+    serde_json::from_slice(&body).map_err(|_| Failure::InvalidJson)
+}
+
+/// 用声明的刷新令牌换一次 access token。**不重试、不缓存、不打印**。
+///
+/// 刷新令牌只在调用点从环境变量读一次：它和 access token 一样是凭据，
+/// 缓存下来就多了一个「进程内长期驻留」的副本。
+pub(crate) fn refresh_access_token(
+    refresh: &crate::connections::Refresh,
+) -> Result<String, Failure> {
+    let url = url::Url::parse(&refresh.token_url).map_err(|_| Failure::InvalidAddress)?;
+    let token =
+        std::env::var(&refresh.refresh_token_env).map_err(|_| Failure::CredentialUnavailable)?;
+    let value = match Http::shared()?.post_form_json(
+        url,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", token.as_str()),
+            ("client_id", refresh.client_id.as_str()),
+        ],
+    ) {
+        Ok(value) => value,
+        // 「端点不安全 / 不可达」照实报，不必折成刷新失败：
+        // 那两类原因与令牌本身无关，折了就把可定位的信息丢了。
+        Err(
+            failure @ (Failure::InsecureTransport
+            | Failure::InvalidAddress
+            | Failure::CredentialUnavailable
+            | Failure::Timeout
+            | Failure::Tls
+            | Failure::Unavailable),
+        ) => return Err(failure),
+        // 其余（4xx/5xx、非 JSON、超限）都归为「这次交换没换到令牌」。
+        Err(_) => return Err(Failure::RefreshFailed),
+    };
+    value
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .filter(|token| !token.is_empty() && token.len() <= 8192)
+        .ok_or(Failure::RefreshFailed)
+}
+
 fn classify(error: reqwest::Error) -> Failure {
     classify_ref(&error)
 }

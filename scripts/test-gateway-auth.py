@@ -6,6 +6,8 @@ Debug only: --self-test uses an inline fixture; --receipt-file reads an existing
 All mutations stay in memory. This script uses only the standard library, opens no
 network connections, and writes no files. The child probe uses its own loopback peers.
 Proxy evidence covers the allowed loopback target shape, not arbitrary remote hosts.
+Refresh evidence covers RFC 6749 refresh_token exchange against a self-hosted loopback
+peer; no real third-party gateway or real credential is exercised.
 Receipt values and untrusted diagnostic text are never echoed as credentials may leak
 precisely when the product regresses. Top-level and nested objects use exact key sets.
 """
@@ -22,7 +24,7 @@ from typing import Any
 PROBE_FLAG = "--gateway-auth-probe"
 PROBE_TIMEOUT = 90
 
-# Frozen receipt contract v2; pid is the sole variable leaf (any positive integer).
+# Frozen receipt contract v3; pid is the sole variable leaf (any positive integer).
 SYNTHETIC_FIXTURE: dict[str, Any] = {
     "schema_version": 1,
     "pid": 12345,
@@ -45,6 +47,16 @@ SYNTHETIC_FIXTURE: dict[str, Any] = {
         "after": "readable",
         "distinct_bearer_values": True,
         "probe_reads_source_each_time": True,
+    },
+    "refresh": {
+        "before": "auth_failed",
+        "after": "readable",
+        "token_exchanges": 1,
+        "read_attempts": 2,
+        "retry_used_fresh_token": True,
+        "failed_exchange": "refresh_failed",
+        "plaintext_token_url": "insecure_transport",
+        "missing_refresh_source": "credential_unavailable",
     },
     "proxy_isolation": {
         "env_proxy_configured": True,

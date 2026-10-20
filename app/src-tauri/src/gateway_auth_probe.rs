@@ -13,7 +13,7 @@
 
 use crate::connection_http::{transport_policy, AuthHeader, Failure, Http};
 use crate::connection_probe::{self, Probe, Status};
-use crate::connections::{AuthScheme, Connection, CredentialRef, Kind};
+use crate::connections::{AuthScheme, Connection, CredentialRef, Kind, Refresh};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -26,6 +26,11 @@ const FIXTURE_ENV: &str = "AGENTISLAND_GW01_FIXTURE";
 /// 刻意**不设置**的环境变量，用来验证「凭据来源不可用」这个分支。
 const MISSING_ENV: &str = "AGENTISLAND_GW01_ABSENT";
 const FIRST_SECRET: &str = "fixture-value-one";
+/// 刷新流程的夹具值：stale 是「服务已不接受」的旧令牌，fresh 是令牌端点的应答。
+/// 三者都不是凭据，只是「能被观察到换没换」的标记串。
+const REFRESH_ENV: &str = "AGENTISLAND_GW01_REFRESH";
+const STALE_SECRET: &str = "fixture-stale-token";
+const FRESH_SECRET: &str = "fixture-fresh-token";
 const SECOND_SECRET: &str = "fixture-value-two";
 
 pub(crate) fn cli(argv: &[String]) -> Option<i32> {
@@ -185,6 +190,7 @@ fn connection(kind: Kind, url: &str, auth: AuthScheme, env_name: &str) -> Connec
             name: env_name.into(),
         }),
         auth,
+        refresh: None,
         enabled: true,
         created_ms: 1,
         updated_ms: 1,
@@ -359,6 +365,209 @@ fn rotation_section() -> Result<(Value, Vec<String>), String> {
     Ok((value, reasons))
 }
 
+
+/// 刷新流程的对端：同一进程里既当**业务端点**（只接受新令牌）又当**令牌端点**。
+///
+/// 刻意不做成一个可脚本化的通用 mock：这条用例要证明的正是「服务拒绝旧令牌 →
+/// 换一次令牌 → 用新令牌重试成功」，把两次请求的计数与令牌取值分开数才说得清。
+struct RefreshPeer {
+    port: u16,
+    reads: Arc<AtomicUsize>,
+    fresh_reads: Arc<AtomicUsize>,
+    exchanges: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+}
+impl RefreshPeer {
+    fn start(token_status: u16) -> std::io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let fresh_reads = Arc::new(AtomicUsize::new(0));
+        let exchanges = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (r, f, e, flag) = (
+            reads.clone(),
+            fresh_reads.clone(),
+            exchanges.clone(),
+            stop.clone(),
+        );
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let _ = ready_tx.send(());
+            while !flag.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => serve_refresh(stream, token_status, &r, &f, &e),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| std::io::Error::other("refresh peer did not start"))?;
+        Ok(Self {
+            port,
+            reads,
+            fresh_reads,
+            exchanges,
+            stop,
+        })
+    }
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}/", self.port)
+    }
+    fn token_url(&self) -> String {
+        format!("{}token", self.url())
+    }
+    fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+    fn fresh_reads(&self) -> usize {
+        self.fresh_reads.load(Ordering::SeqCst)
+    }
+    fn exchanges(&self) -> usize {
+        self.exchanges.load(Ordering::SeqCst)
+    }
+}
+impl Drop for RefreshPeer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 读一次请求并分类：`POST /token` 是令牌交换，其余都当业务读取。
+fn serve_refresh(
+    mut stream: TcpStream,
+    token_status: u16,
+    reads: &AtomicUsize,
+    fresh_reads: &AtomicUsize,
+    exchanges: &AtomicUsize,
+) {
+    // 接受来的 socket 会继承监听器的非阻塞标志：不显式改回来，
+    // 读取就会立刻 WouldBlock 并在没消费请求的情况下回包。
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let mut buffer = [0u8; 8192];
+    let Ok(size) = stream.read(&mut buffer) else {
+        return;
+    };
+    let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+    let mut lines = request.lines();
+    let start = lines.next().unwrap_or("");
+    let is_token = start.starts_with("POST /token");
+    let authorization = lines
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.trim().to_owned())
+        .unwrap_or_default();
+    let (status, body) = if is_token {
+        exchanges.fetch_add(1, Ordering::SeqCst);
+        if token_status == 200 {
+            (200u16, format!(r#"{{"access_token":"{FRESH_SECRET}"}}"#)) // nosec: 夹具应答里的假令牌，用于证明刷新后换成了新值，不是真凭据
+        } else {
+            (token_status, r#"{"error":"invalid_grant"}"#.to_owned())
+        }
+    } else {
+        reads.fetch_add(1, Ordering::SeqCst);
+        if authorization == format!("Bearer {FRESH_SECRET}") {
+            fresh_reads.fetch_add(1, Ordering::SeqCst);
+            (200u16, r#"{"object":"list"}"#.to_owned())
+        } else {
+            (401u16, r#"{"error":"unauthorized"}"#.to_owned())
+        }
+    };
+    let response = format!(
+        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    if stream.write_all(response.as_bytes()).is_ok() {
+        let _ = stream.flush();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+    }
+}
+
+/// 401 刷新：服务拒绝旧令牌 → 换一次令牌 → 用新令牌重试成功；失败分支各自可辨。
+fn refresh_section() -> Result<(Value, Vec<String>), String> {
+    // 对照：没有刷新声明时，401 就是 auth_failed，不会悄悄去换令牌。
+    let stale = RefreshPeer::start(200).map_err(|error| format!("peer start failed: {error}"))?;
+    set_env(FIXTURE_ENV, STALE_SECRET);
+    let plain = connection(
+        Kind::CustomEndpoint,
+        &stale.url(),
+        AuthScheme::Bearer,
+        FIXTURE_ENV,
+    );
+    let before = connection_probe::inspect(&plain, 1);
+
+    // 主用例：换一次令牌，第二次读取才成功。
+    let peer = RefreshPeer::start(200).map_err(|error| format!("peer start failed: {error}"))?;
+    set_env(REFRESH_ENV, "fixture-refresh-token");
+    let mut item = connection(
+        Kind::CustomEndpoint,
+        &peer.url(),
+        AuthScheme::Bearer,
+        FIXTURE_ENV,
+    );
+    item.refresh = Some(Refresh {
+        token_url: peer.token_url(),
+        client_id: "fixture-client".into(),
+        refresh_token_env: REFRESH_ENV.into(),
+    });
+    let after = connection_probe::inspect(&item, 2);
+    let (reads, fresh_reads, exchanges) = (peer.reads(), peer.fresh_reads(), peer.exchanges());
+
+    // 端点拒绝刷新令牌：分类必须是 refresh_failed，而不是笼统的 error。
+    let rejected = RefreshPeer::start(400).map_err(|error| format!("peer start failed: {error}"))?;
+    item.refresh = Some(Refresh {
+        token_url: rejected.token_url(),
+        client_id: "fixture-client".into(),
+        refresh_token_env: REFRESH_ENV.into(),
+    });
+    set_env(FIXTURE_ENV, STALE_SECRET);
+    let failed = connection_probe::inspect(&item, 3);
+
+    // 明文远端令牌端点：与业务地址同一条策略，建连之前就拒绝。
+    item.refresh = Some(Refresh {
+        token_url: "http://example.com/token".into(),
+        client_id: "fixture-client".into(),
+        refresh_token_env: REFRESH_ENV.into(),
+    });
+    let plaintext = connection_probe::inspect(&item, 4);
+
+    // 刷新令牌来源缺失。
+    item.refresh = Some(Refresh {
+        token_url: peer.token_url(),
+        client_id: "fixture-client".into(),
+        refresh_token_env: MISSING_ENV.into(),
+    });
+    let missing = connection_probe::inspect(&item, 5);
+
+    let reasons = vec![
+        before.reason.clone(),
+        after.reason.clone(),
+        failed.reason.clone(),
+        plaintext.reason.clone(),
+        missing.reason.clone(),
+    ];
+    let value = json!({
+        "before": outcome_label(&before),
+        "after": outcome_label(&after),
+        // 只换一次、只重试一次：换来换去会把一次失败放大成一串请求。
+        "token_exchanges": exchanges,
+        "read_attempts": reads,
+        "retry_used_fresh_token": fresh_reads == 1,
+        "failed_exchange": outcome_label(&failed),
+        "plaintext_token_url": outcome_label(&plaintext),
+        "missing_refresh_source": outcome_label(&missing),
+    });
+    Ok((value, reasons))
+}
+
 /// 代理隔离：把进程代理环境变量指向一个「代理对端」，请求必须仍然打到目标对端。
 fn proxy_section() -> Result<(Value, Vec<String>), String> {
     let target = Peer::start(vec![(200, r#"{"object":"list"}"#)])
@@ -404,6 +613,8 @@ fn run() -> Result<String, String> {
     reasons.extend(rotation_reasons);
     let (proxy, proxy_reasons) = proxy_section()?;
     reasons.extend(proxy_reasons);
+    let (refresh, refresh_reasons) = refresh_section()?;
+    reasons.extend(refresh_reasons);
 
     let mut receipt = json!({
         "schema_version": 1,
@@ -412,6 +623,7 @@ fn run() -> Result<String, String> {
         "auth_taxonomy": auth,
         "rotation": rotation,
         "proxy_isolation": proxy,
+        "refresh": refresh,
         "leakage": {
             "receipt_contains_secret": false,
             "status_reason_contains_secret": false,
@@ -420,10 +632,10 @@ fn run() -> Result<String, String> {
 
     // 泄漏自检：把真实回执与状态文案分别过一遍夹具值。两者都必须看不到它。
     let text = serde_json::to_string(&receipt).map_err(|_| "receipt encode failed".to_owned())?;
-    let in_receipt = [FIRST_SECRET, SECOND_SECRET]
+    let in_receipt = [FIRST_SECRET, SECOND_SECRET, STALE_SECRET, FRESH_SECRET]
         .iter()
         .any(|secret| text.contains(secret));
-    let in_reasons = [FIRST_SECRET, SECOND_SECRET]
+    let in_reasons = [FIRST_SECRET, SECOND_SECRET, STALE_SECRET, FRESH_SECRET]
         .iter()
         .any(|secret| reasons.iter().any(|reason| reason.contains(secret)));
     receipt["leakage"] = json!({
@@ -469,6 +681,16 @@ mod tests {
         assert_eq!(rotation["distinct_bearer_values"], true);
         assert_eq!(rotation["probe_reads_source_each_time"], true);
 
+        let refresh = &receipt["refresh"];
+        assert_eq!(refresh["before"], "auth_failed");
+        assert_eq!(refresh["after"], "readable");
+        assert_eq!(refresh["token_exchanges"], 1);
+        assert_eq!(refresh["read_attempts"], 2);
+        assert_eq!(refresh["retry_used_fresh_token"], true);
+        assert_eq!(refresh["failed_exchange"], "refresh_failed");
+        assert_eq!(refresh["plaintext_token_url"], "insecure_transport");
+        assert_eq!(refresh["missing_refresh_source"], "credential_unavailable");
+
         let proxy = &receipt["proxy_isolation"];
         assert_eq!(proxy["env_proxy_configured"], true);
         assert_eq!(proxy["target_peer_requests"], 1);
@@ -496,9 +718,23 @@ mod tests {
                 "leakage",
                 "pid",
                 "proxy_isolation",
+                "refresh",
                 "rotation",
                 "schema_version",
                 "transport_policy",
+            ]
+        );
+        assert_eq!(
+            keys(&receipt["refresh"]),
+            vec![
+                "after",
+                "before",
+                "failed_exchange",
+                "missing_refresh_source",
+                "plaintext_token_url",
+                "read_attempts",
+                "retry_used_fresh_token",
+                "token_exchanges"
             ]
         );
         assert_eq!(

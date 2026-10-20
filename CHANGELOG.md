@@ -4,6 +4,13 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.332] - 2026-10-20 — GW-01 补 401 刷新令牌流程（RFC 6749 refresh_token 授权）
+
+- **401 刷新令牌流程**：连接可声明令牌刷新端点（`token_url` / `client_id` / `refresh_token_env`）。读取遇到 401 时只用 RFC 6749 §6 的 refresh_token 授权换**一次** access token，再用新令牌**重试一次**；不再无限重试，也不在 403/429/网络失败时刷新（那几种刷新换不来权限）。
+- **刷新令牌同样按凭据对待**：只以环境变量名声明，在调用点按需读取一次，不落盘、不进草稿、不进回执；令牌端点与业务地址受**同一条传输策略**约束——明文远端端点在建连之前就被拒绝（仅回环允许明文），保存配置时也拒绝。
+- **失败分类可辨**：端点拒绝刷新令牌或未返回 `access_token` 归为 `refresh_failed`；端点不安全/不可达/凭据来源缺失照实报 `insecure_transport`/`unavailable`/`credential_unavailable`——「换不到令牌」与「令牌不被接受」不再混成一个笼统失败。
+- **门禁**：`gw01.authgate` 回执升到契约 v3，新增 `refresh` 段（`before`/`after`/`token_exchanges`/`read_attempts`/`retry_used_fresh_token`/`failed_exchange`/`plaintext_token_url`/`missing_refresh_source`），真实二进制对着自建回环对端跑完整流程，门禁变异由 77 条增至 **99 条**。
+- **未做（如实登记）**：真实第三方网关未验（无凭据、不猜协议）；订阅与余额查询协议仍未实现；连接编辑界面尚未暴露刷新字段（当前需按配置文件声明）。
 ## [0.0.331] - 2026-10-20 — 根治探针日志短路机制（BUG-003），headless 模式默认零文件写，统一分派入口
 
 - **根治探针日志短路机制（BUG-003）**：消除此前「每个探针自己记得登记 `ACTIVE` 标记并在 `main.rs` 的 `log_line` 逐个检查」的脆弱机制。现在控制流反转：文件日志默认**完全不存在**，任何调用 `log_line` 的逻辑（包括底层组件或独立工作线程）直接返回，不创建文件、不检测元数据、不产生 stderr；只有在程序确认进入常驻 GUI 启动边界后，才通过 `runtime_log::enable_gui` 开启一次、之后不再关闭。

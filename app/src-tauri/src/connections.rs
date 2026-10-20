@@ -61,6 +61,18 @@ impl AuthScheme {
     }
 }
 
+/// 401 之后的刷新声明（RFC 6749 §6 的 refresh_token 授权）。
+///
+/// 只声明**端点与凭据来源名**：令牌本身始终从环境变量按需读取，不落盘、不进草稿。
+/// 端点与业务地址受同一条传输策略约束——令牌端点用明文 HTTP 等于把刷新令牌交出去。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Refresh {
+    pub token_url: String,
+    pub client_id: String,
+    pub refresh_token_env: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CredentialRef {
@@ -78,6 +90,9 @@ pub struct Connection {
     /// 旧配置文件没有这个字段；缺省为「不发送认证头」，保持既有行为不变。
     #[serde(default)]
     pub auth: AuthScheme,
+    /// 旧配置没有这个字段：缺省即「401 不刷新」，与既有行为一致。
+    #[serde(default)]
+    pub refresh: Option<Refresh>,
     pub enabled: bool,
     pub created_ms: u64,
     pub updated_ms: u64,
@@ -93,6 +108,8 @@ pub struct Draft {
     pub credential_ref: Option<CredentialRef>,
     #[serde(default)]
     pub auth: AuthScheme,
+    #[serde(default)]
+    pub refresh: Option<Refresh>,
     pub enabled: bool,
 }
 
@@ -199,6 +216,7 @@ impl Store {
             base_url: normalize_url(&draft.base_url)?,
             credential_ref: draft.credential_ref,
             auth: draft.auth,
+            refresh: draft.refresh,
             enabled: draft.enabled,
             created_ms: previous.map(|i| data.items[i].created_ms).unwrap_or(now_ms),
             updated_ms: previous
@@ -264,6 +282,17 @@ pub fn normalize_url(text: &str) -> Result<String, String> {
     }
     Ok(url.into())
 }
+/// 环境变量名判据：**只有一处**。凭据引用与刷新令牌引用必须同形，
+/// 否则同一个概念在两个字段上会有两种合法性，界面提示也就无法一致。
+fn valid_env_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 80
+        && name.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 fn validate(data: &Snapshot) -> Result<(), String> {
     if data.schema_version != 1 {
         return Err("连接配置版本不受支持，原文件已保留".into());
@@ -298,15 +327,30 @@ fn validate(data: &Snapshot) -> Result<(), String> {
             return Err("连接时间记录无效，原文件已保留".into());
         }
         if let Some(CredentialRef::Environment { name }) = &item.credential_ref {
-            if name.is_empty()
-                || name.len() > 80
-                || !name.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
-                || !name
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-                || contains_credential(name)
-            {
+            if !valid_env_name(name) || contains_credential(name) {
                 return Err("凭据引用须为大写环境变量名，不能填写密钥值".into());
+            }
+        }
+        if let Some(refresh) = &item.refresh {
+            if item.auth.is_none() {
+                return Err("声明了令牌刷新却没有认证方案".into());
+            }
+            let endpoint = normalize_url(&refresh.token_url)?;
+            let parsed = url::Url::parse(&endpoint).map_err(|_| "令牌端点地址格式无效".to_string())?;
+            // 与业务地址同一条策略：明文远端端点会在建连前被拒绝。
+            crate::connection_http::transport_policy(&parsed)
+                .map_err(|_| "令牌端点必须使用 HTTPS（本机回环地址除外）".to_string())?;
+            if refresh.client_id.is_empty()
+                || refresh.client_id.len() > 200
+                || refresh.client_id.chars().any(char::is_control)
+                || contains_credential(&refresh.client_id)
+            {
+                return Err("客户端标识无效，不能含控制字符或凭据值".into());
+            }
+            if !valid_env_name(&refresh.refresh_token_env)
+                || contains_credential(&refresh.refresh_token_env)
+            {
+                return Err("刷新令牌引用须为大写环境变量名，不能填写令牌值".into());
             }
         }
         // 声明要发认证头却没有凭据来源，是一个必然读不通的配置：尽早说清楚，
@@ -357,6 +401,7 @@ mod tests {
                 name: "FIXTURE_AUTH".into(),
             }),
             auth: AuthScheme::None,
+            refresh: None,
             enabled: true,
         }
     }
@@ -559,6 +604,7 @@ mod tests {
             base_url: "http://127.0.0.1:11434".into(),
             credential_ref: secret_ref.clone(),
             auth: AuthScheme::Bearer,
+            refresh: None,
             enabled: true,
         };
         let second = s.save(local, 1, 101).unwrap();
@@ -572,6 +618,7 @@ mod tests {
             base_url: "http://gateway.example".into(),
             credential_ref: secret_ref,
             auth: AuthScheme::Bearer,
+            refresh: None,
             enabled: true,
         };
         assert!(s.save(remote, second.revision, 102).is_err());
@@ -588,8 +635,65 @@ mod tests {
             base_url: "http://gateway.example".into(),
             credential_ref: None,
             auth: AuthScheme::None,
+            refresh: None,
             enabled: true,
         };
         assert!(s.save(public, second.revision, 103).is_ok());
+    }
+
+    /// 令牌端点与业务地址受**同一条**传输策略约束：刷新令牌也是凭据，
+    /// 明文远端端点会在建连前被拒。另含「声明刷新但没有认证方案」的配置。
+    #[test]
+    fn refresh_declaration_requires_secure_endpoint_and_an_auth_scheme() {
+        let dir = crate::testutil::Sandbox::new("connections-refresh");
+        let s = store(&dir);
+        let base = Draft {
+            id: None,
+            kind: Kind::CustomEndpoint,
+            name: "网关".into(),
+            base_url: "https://gateway.example/".into(),
+            credential_ref: Some(CredentialRef::Environment {
+                name: "FIXTURE_AUTH".into(),
+            }),
+            auth: AuthScheme::Bearer,
+            refresh: None,
+            enabled: true,
+        };
+        let created = s.save(base, 0, 1).unwrap();
+
+        let with = |token_url: &str, env: &str| Draft {
+            id: Some(created.items[0].id.clone()),
+            kind: Kind::CustomEndpoint,
+            name: "网关".into(),
+            base_url: "https://gateway.example/".into(),
+            credential_ref: Some(CredentialRef::Environment {
+                name: "FIXTURE_AUTH".into(),
+            }),
+            auth: AuthScheme::Bearer,
+            refresh: Some(Refresh {
+                token_url: token_url.into(),
+                client_id: "fixture-client".into(),
+                refresh_token_env: env.into(),
+            }),
+            enabled: true,
+        };
+
+        // 明文远端令牌端点：拒绝（保存时）。
+        assert!(s
+            .save(with("http://gateway.example/token", "FIXTURE_REFRESH"), created.revision, 2)
+            .is_err());
+        // 本机回环允许明文（本地模型网关的常见形态）。
+        assert!(s
+            .save(with("http://127.0.0.1:9999/token", "FIXTURE_REFRESH"), created.revision, 3)
+            .is_ok());
+        // 刷新令牌引用必须是大写环境变量名，不能直接填令牌值。
+        let second = s.list().unwrap();
+        assert!(s
+            .save(with("https://gateway.example/token", "not-an-env"), second.revision, 4)
+            .is_err());
+        // 声明刷新却没有认证方案：必然读不通，尽早拒绝。
+        let mut no_auth = with("https://gateway.example/token", "FIXTURE_REFRESH");
+        no_auth.auth = AuthScheme::None;
+        assert!(s.save(no_auth, second.revision, 5).is_err());
     }
 }
