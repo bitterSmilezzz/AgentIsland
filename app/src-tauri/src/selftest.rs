@@ -396,15 +396,7 @@ pub fn run() -> Report {
 
     // 12. 待办：增删改查往返 + 坏文件降级（都在临时目录里做，不碰用户的清单）
     {
-        let dir = std::env::temp_dir().join(format!(
-            "agentisland-selftest-todos-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = std::fs::create_dir_all(&dir);
+        let dir = unique_dir("todos");
         let store = crate::todos::TodoStore::new(dir.clone());
         let added = store.add("自检加一条", 1_000).is_ok() && store.add("再加一条", 2_000).is_ok();
         let pending_after_add = store.snapshot(0).pending;
@@ -551,18 +543,27 @@ pub fn run() -> Report {
     runner.finish()
 }
 
-/// 临时目录里写一个 `probe.jsonl`，再用真实的目录扫描读回它的修改时间
-fn temp_probe() -> Result<bool, String> {
-    // 目录名必须**每次调用唯一**：自检会被并行调用（两个用例同时跑 `run()`），
-    // 用进程号命名会让一个调用把另一个正在探测的目录删掉——而失败表现为
-    // 「写入后读不到最新活动时间」，看起来像文件扫描坏了。
+/// 自检用的临时目录：**每次调用唯一**。
+///
+/// 为什么不能只靠进程号 + 时钟：自检会被同一进程**并行**调用（两个用例同时跑 `run()`，
+/// 或测试线程与 CLI 交错），而 Windows 的 `SystemTime` 粒度约 15ms——两次调用完全
+/// 可能取到同一个纳秒。撞上之后彼此会看见对方的清单：本机实测症状是「加两条却读到
+/// 三条」「勾选/删除按 id 全部落空」「读坏留档后加不进去」，且只在 Windows 偶发。
+/// 进程内原子序号是唯一可靠的判据，碰撞面直接为零。
+fn unique_dir(tag: &str) -> std::path::PathBuf {
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "agentisland-selftest-{}-{}",
+        "agentisland-selftest-{tag}-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("建临时目录失败：{e}"))?;
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// 临时目录里写一个 `probe.jsonl`，再用真实的目录扫描读回它的修改时间
+fn temp_probe() -> Result<bool, String> {
+    let dir = unique_dir("probe");
     let file = dir.join("probe.jsonl");
     std::fs::write(&file, b"{\"selftest\":true}\n").map_err(|e| format!("写探针失败：{e}"))?;
 
@@ -586,6 +587,18 @@ mod tests {
     /// 自检必须**在开发机上也全绿**：有一条红就说明包有问题。
     /// 这条用例同时是「所有检查项都还在跑」的守护——检查被删掉会在这里显形。
     #[test]
+/// 并行自检必须拿到**不同**目录。这条用例正是钉住 Windows 上那次偶发红：
+    /// 原先用「进程号 + 纳秒」命名，Windows 时钟粒度约 15ms，两次调用可能同名。
+    #[test]
+    fn unique_dirs_never_collide_within_one_process() {
+        let first = unique_dir("collide");
+        let second = unique_dir("collide");
+        assert_ne!(first, second, "同一标签也要给出不同目录");
+        assert!(first.is_dir() && second.is_dir());
+        let _ = std::fs::remove_dir_all(&first);
+        let _ = std::fs::remove_dir_all(&second);
+    }
+
     fn the_selftest_passes_on_a_healthy_machine() {
         let report = run();
         // 自检存在的意义就是给人看，所以这里把它打出来（`--nocapture` 可见）

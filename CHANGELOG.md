@@ -4,6 +4,12 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.333] - 2026-10-20 — 修 Windows 自检偶发红：自检临时目录改用进程内序号（BUG-006）
+
+- **根因**：自检的临时目录名取 `std::process::id()` + `SystemTime` 纳秒。自检会在**同一进程内并行调用**（两个用例同时跑 `run()`），而 Windows 的时钟粒度约 15ms，两次调用可能取到同一个纳秒——撞名后彼此读写对方的待办清单，症状是「加两条却读到三条」「按 id 勾选/删除全部落空」「读坏留档后加不进去」，且只在 Windows 偶发（macOS 时钟足够细，从未复现）。
+- **修复**：把自检临时目录收成 `selftest::unique_dir` **一处**，用进程内原子序号命名——与 `testutil::Sandbox`、`temp_probe` 同一判据；`temp_probe` 原先自带一份同逻辑实现，一并收编，避免两套命名规则再次分叉。
+- **门禁**：新增 `unique_dirs_never_collide_within_one_process`，钉住「同标签两次调用必须不同目录」这条碰撞面。
+- **发现路径**：v0.0.332 的 Actions（run 39399996601）Windows job「Rust 测试」红，1006 passed / 1 failed；该失败与本轮 GW-01 改动无关，是既有缺陷，已登记 BUG-006 并关闭。
 ## [0.0.332] - 2026-10-20 — GW-01 补 401 刷新令牌流程（RFC 6749 refresh_token 授权）
 
 - **401 刷新令牌流程**：连接可声明令牌刷新端点（`token_url` / `client_id` / `refresh_token_env`）。读取遇到 401 时只用 RFC 6749 §6 的 refresh_token 授权换**一次** access token，再用新令牌**重试一次**；不再无限重试，也不在 403/429/网络失败时刷新（那几种刷新换不来权限）。
