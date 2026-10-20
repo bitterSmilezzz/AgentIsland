@@ -15,6 +15,10 @@ export function pageConnections() {
         <label class="sb-field"><span>服务类型</span><select name="kind" aria-label="服务类型"><option value="new_api">New API</option><option value="magpie">Magpie</option><option value="cc_switch">CC Switch</option><option value="custom_endpoint">自定义端点 / 本地模型</option></select></label>
         <label class="sb-field"><span>认证方案</span><select name="auth_kind" aria-label="认证方案"><option value="none">不发送认证头</option><option value="bearer">Bearer 令牌</option><option value="header">自定义请求头</option></select></label>
         <label class="sb-field" hidden><span>请求头名</span><input name="auth_header" aria-label="认证请求头名" maxlength="64" autocomplete="off" placeholder="例如 x-api-key"></label>
+        <label class="sb-field" hidden><span>401 时刷新令牌</span><select name="refresh_kind" aria-label="401 时刷新令牌"><option value="none">不刷新（收到 401 即报失败）</option><option value="refresh_token">刷新令牌（RFC 6749 refresh_token）</option></select></label>
+        <label class="sb-field" hidden><span>令牌端点</span><input name="refresh_token_url" aria-label="令牌刷新端点" maxlength="2048" autocomplete="off" placeholder="必须 HTTPS（本机回环可用 http）"></label>
+        <label class="sb-field" hidden><span>客户端标识</span><input name="refresh_client_id" aria-label="令牌刷新客户端标识" maxlength="200" autocomplete="off"></label>
+        <label class="sb-field" hidden><span>刷新令牌环境变量</span><input name="refresh_env" aria-label="刷新令牌环境变量名" maxlength="80" autocomplete="off" placeholder="例如 AGENTISLAND_REFRESH_TOKEN，不要填令牌值"></label>
         <label class="sb-field"><span>服务地址</span><input name="base_url" aria-label="服务地址" type="url" maxlength="2048" placeholder="http://127.0.0.1:端口/" required autocomplete="off"></label>
         <label class="sb-field"><span>凭据环境变量名 · 可选</span><input name="environment" aria-label="凭据环境变量名" maxlength="80" autocomplete="off" placeholder="填写变量名，不填写密钥"></label>
         <label class="connection-enabled"><input type="checkbox" name="enabled" checked>启用连接</label>
@@ -44,7 +48,18 @@ export async function hydrateConnections(root) {
   const feedback = text => { status.textContent = text; };
   form.addEventListener('input', () => { hasDraft = true; });
   form.addEventListener('change', () => { hasDraft = true; });
-  const syncAuthFields = () => { field('auth_header').closest('label').hidden = field('auth_kind').value !== 'header'; };
+  const syncRefreshFields = () => {
+    // 不发认证头就没有「401 后重试」的前提：刷新只在显式认证方案下可选。
+    const on = field('refresh_kind').value === 'refresh_token' && field('auth_kind').value !== 'none';
+    for (const name of ['refresh_token_url', 'refresh_client_id', 'refresh_env']) {
+      field(name).closest('label').hidden = !on;
+    }
+  };
+  const syncAuthFields = () => {
+    field('auth_header').closest('label').hidden = field('auth_kind').value !== 'header';
+    field('refresh_kind').closest('label').hidden = field('auth_kind').value === 'none';
+    syncRefreshFields();
+  };
   function reset() {
     form.reset(); field('id').value = ''; editor.open = false; syncAuthFields();
     hasDraft = false;
@@ -57,7 +72,7 @@ export async function hydrateConnections(root) {
       const authorized = item.auth ? item.auth.kind !== 'none' : item.kind === 'magpie';
       const localOnly = /^http:\/\/(127\.0\.0\.1|\[::1\]|localhost)([:\/]|$)/.test(item.base_url);
       const warning = item.base_url.startsWith('http:') && !localOnly && Boolean(item.credential_ref || authorized);
-      return `<article class="connection-row"><div><strong>${esc(item.name)}</strong><span class="sb-tag" data-connection-state="${esc(item.enabled ? probe?.status ?? 'untested' : 'disabled')}">${item.enabled ? labels[probe?.status] ?? (item.kind === 'cc_switch' ? '接口未核实' : '未检测') : '已停用'}</span><p>${esc(names[item.kind])} · ${esc(item.base_url)}</p><small>${item.credential_ref ? `环境变量：${esc(item.credential_ref.name)}` : '未配置凭据'} · ${esc(authNames[item.auth?.kind ?? (item.kind === 'magpie' ? 'bearer' : 'none')] ?? '不发送认证头')}</small>${probe ? `<p role="status">${esc(probe.reason)}${probe.service_version ? ` · ${esc(probe.service_version)}` : ''}<span class="connection-checked">上次读取 · ${esc(new Date(probe.checked_at_ms).toLocaleString([], { month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit' }))}</span></p>` : ''}${warning ? '<p>非本机回环地址会明文发送凭据，读取已被拒绝；请改用 HTTPS。</p>' : ''}</div><div class="actions">${item.enabled && item.kind !== 'cc_switch' ? `<button type="button" class="mini-btn" data-connection-test="${esc(item.id)}">${item.kind === 'new_api' ? '读取公开状态' : warning ? '读取状态（HTTP）' : '读取状态'}</button>` : ''}<button type="button" class="mini-btn" data-connection-edit="${esc(item.id)}">编辑</button><button type="button" class="mini-btn" data-connection-remove="${esc(item.id)}">移除</button></div></article>`;
+      return `<article class="connection-row"><div><strong>${esc(item.name)}</strong><span class="sb-tag" data-connection-state="${esc(item.enabled ? probe?.status ?? 'untested' : 'disabled')}">${item.enabled ? labels[probe?.status] ?? (item.kind === 'cc_switch' ? '接口未核实' : '未检测') : '已停用'}</span><p>${esc(names[item.kind])} · ${esc(item.base_url)}</p><small>${item.credential_ref ? `环境变量：${esc(item.credential_ref.name)}` : '未配置凭据'} · ${esc(authNames[item.auth?.kind ?? (item.kind === 'magpie' ? 'bearer' : 'none')] ?? '不发送认证头')}${item.refresh ? ` · 401 刷新 ⇒ ${esc(item.refresh.token_url)}` : ''}</small>${probe ? `<p role="status">${esc(probe.reason)}${probe.service_version ? ` · ${esc(probe.service_version)}` : ''}<span class="connection-checked">上次读取 · ${esc(new Date(probe.checked_at_ms).toLocaleString([], { month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit' }))}</span></p>` : ''}${warning ? '<p>非本机回环地址会明文发送凭据，读取已被拒绝；请改用 HTTPS。</p>' : ''}</div><div class="actions">${item.enabled && item.kind !== 'cc_switch' ? `<button type="button" class="mini-btn" data-connection-test="${esc(item.id)}">${item.kind === 'new_api' ? '读取公开状态' : warning ? '读取状态（HTTP）' : '读取状态'}</button>` : ''}<button type="button" class="mini-btn" data-connection-edit="${esc(item.id)}">编辑</button><button type="button" class="mini-btn" data-connection-remove="${esc(item.id)}">移除</button></div></article>`;
     }).join('') : '<div class="sb-empty">还没有外部连接。</div>';
   }
   async function run(action) {
@@ -86,7 +101,13 @@ export async function hydrateConnections(root) {
       const config = { id: field('id').value || null, name: field('name').value, kind: field('kind').value,
         base_url: field('base_url').value, enabled: field('enabled').checked,
         credential_ref: field('environment').value.trim() ? { kind: 'environment', name: field('environment').value.trim() } : null,
-        auth };
+        auth,
+        // 刷新三件套要么齐全要么不声明；端点与环境变量名由后端在保存时逐项校验。
+        refresh: field('refresh_kind').value === 'refresh_token' && field('auth_kind').value !== 'none' ? {
+          token_url: field('refresh_token_url').value.trim(),
+          client_id: field('refresh_client_id').value.trim(),
+          refresh_token_env: field('refresh_env').value.trim().toUpperCase(),
+        } : null };
       const next = await invoke('connection_save', { config, expectedRevision: snapshot.revision });
       if (!request.ownsRequest()) return;
       snapshot = next; probes.clear(); rows(); reset(); deletion.hidden = true; removeId = null; feedback('连接已保存，尚未检测。');
@@ -118,6 +139,10 @@ export async function hydrateConnections(root) {
       field('environment').value = item.credential_ref?.name ?? ''; field('enabled').checked = item.enabled;
       field('auth_kind').value = item.auth?.kind ?? 'none';
       field('auth_header').value = item.auth?.name ?? '';
+      field('refresh_kind').value = item.refresh ? 'refresh_token' : 'none';
+      field('refresh_token_url').value = item.refresh?.token_url ?? '';
+      field('refresh_client_id').value = item.refresh?.client_id ?? '';
+      field('refresh_env').value = item.refresh?.refresh_token_env ?? '';
       syncAuthFields();
       editor.querySelector('summary').textContent = '编辑连接'; editor.open = true; field('name').focus();
     } else {
@@ -135,6 +160,7 @@ export async function hydrateConnections(root) {
     if (field('id').value === removeId) reset();
     snapshot = next; probes.clear(); rows(); deletion.hidden = true; removeId = null; feedback('本地连接已移除。');
   });
+  field('refresh_kind').onchange = syncRefreshFields;
   syncAuthFields();
   await run(read);
 }

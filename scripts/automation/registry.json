@@ -424,9 +424,10 @@
       ],
       "checks": [
         "rust.default",
-        "gw01.authgate"
+        "gw01.authgate",
+        "gw01.refreshui"
       ],
-      "coverage_note": "partial — 认证隔离、草稿不进凭据、URL 拒认证参数、禁用服务不读凭据已有；第四类「自定义端点/本地模型网关」与显式认证方案（不发送认证头 / Bearer / 自定义请求头）、会发送凭据的远端明文在建连前拒绝（仅回环允许明文）、凭据轮换每次重读来源、环境代理不接管带凭据请求、401/403/429/凭据来源不可用分类可辨；本轮补 401 刷新令牌流程：按 RFC 6749 §6 只换一次令牌并只重试一次，刷新令牌同样只以环境变量名声明并按需读取，令牌端点受同一传输策略约束（明文远端保存即拒绝），换不到令牌归 refresh_failed 与「令牌不被接受」分开；gw01.authgate 回执升契约 v3 覆盖该流程（变异 99 条）；缺：真实第三方网关未验（无凭据、不猜协议）、订阅与余额查询协议、连接界面尚未暴露刷新字段",
+      "coverage_note": "partial — 认证隔离、草稿不进凭据、URL 拒认证参数、禁用服务不读凭据已有；第四类「自定义端点/本地模型网关」与显式认证方案、会发送凭据的远端明文在建连前拒绝（仅回环允许明文）、凭据轮换每次重读来源、环境代理不接管带凭据请求、401/403/429/凭据来源不可用分类可辨；401 刷新令牌流程已落地：按 RFC 6749 §6 只换一次令牌并只重试一次，刷新令牌只以环境变量名声明并按需读取，令牌端点受同一传输策略约束（明文远端保存即拒绝），换不到令牌归 refresh_failed 与「令牌不被接受」分开；连接编辑页已暴露刷新字段（gw01.refreshui 形状门禁，含负例），gw01.authgate 回执升契约 v3 覆盖该流程（变异 99 条）；连接编辑页已暴露刷新字段（gw01.refreshui 形状门禁，含负例）；缺：真实第三方网关未验（无凭据、不猜协议）、订阅与余额查询协议、连接页无浏览器行为回归（形状门禁为界）",
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
       "status": "partial"
     },
@@ -2191,6 +2192,24 @@
       "test_files": [
         "scripts/test-headless-logging-binary.py"
       ]
+    },
+    "gw01.refreshui": {
+      "command": [
+        "python3",
+        "scripts/test-connections-refresh-ui.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-01：连接编辑页把 401 刷新声明接进表单（形状断言，非浏览器行为端到端）：四个输入都带 aria-label；提交把三件套整体映射为一个 refresh 对象（不发认证头时禁用、环境变量名转大写）；编辑回填全部字段；未选认证方案时字段保持隐藏；行摘要显示刷新端点；含负例（删掉提交接线必须变红）。",
+      "test_files": [
+        "scripts/test-connections-refresh-ui.py"
+      ]
     }
   },
   "agents": {
@@ -2280,7 +2299,8 @@
       "not06.update-signature",
       "automation.dist-wiring",
       "automation.status",
-      "auto01.headlesslog"
+      "auto01.headlesslog",
+      "gw01.refreshui"
     ],
     "browser": [
       "not01.latencyui",
@@ -2362,7 +2382,8 @@
       "automation.dist-wiring",
       "automation.status",
       "not02.smtp",
-      "auto01.headlesslog"
+      "auto01.headlesslog",
+      "gw01.refreshui"
     ],
     "package": [
       "package.artifact",
@@ -2492,7 +2513,8 @@
       "not02.smtp",
       "gw01.authgate",
       "auto01.headlesslog",
-      "auto01.headlesslogbin"
+      "auto01.headlesslogbin",
+      "gw01.refreshui"
     ],
     "protocol": [
       "gw02.ifacemodels",
