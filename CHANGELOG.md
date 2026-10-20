@@ -4,6 +4,16 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.331] - 2026-10-20 — 根治探针日志短路机制（BUG-003），headless 模式默认零文件写，统一分派入口
+
+- **根治探针日志短路机制（BUG-003）**：消除此前「每个探针自己记得登记 `ACTIVE` 标记并在 `main.rs` 的 `log_line` 逐个检查」的脆弱机制。现在控制流反转：文件日志默认**完全不存在**，任何调用 `log_line` 的逻辑（包括底层组件或独立工作线程）直接返回，不创建文件、不检测元数据、不产生 stderr；只有在程序确认进入常驻 GUI 启动边界后，才通过 `runtime_log::enable_gui` 开启一次、之后不再关闭。
+- **集中式无头分派表**：所有探针、无头诊断与 CLI 子命令收敛至 `headless::dispatch` 单一分派表（包含原先内联在 `main.rs` 的 `--memory-core-probe` 核心内存与进程采样逻辑，重构为 `resource_diagnostics::cli` 并统一返回退出码）。非法参数（如 `--notify-ledger-probe invalid`）由分派器直接阻断退出，绝不回退穿透至 GUI 启动。
+- **删除冗余标记**：从 `notify_ledger_probe.rs`、`remote_delivery_probe.rs`、`gateway_auth_probe.rs` 中完整删除 `ACTIVE` 静态原子变量及其相关逻辑。
+- **新增真实端到端门禁（`auto01.headlesslog` 与 `auto01.headlesslogbin`）**：
+  - `scripts/test-headless-logging.py`：构建真实 `rustc` 夹具，往分派表首尾各注入一个**从未在任何地方登记过日志标记**的新探针及其派生线程，断言日志文件在各种初态（不存在、已存在、超 2MiB 封顶）下零字节变动；普通 GUI 与隔离冒烟 GUI 均有正向追加/轮转对照；含分派前提前开启日志的可编译变异（证明能拒错）。
+  - `scripts/test-headless-logging-binary.py`：对打包后的 `dist/agentisland` 发布二进制做隔离复验，断言所有探针与 CLI 子命令均不污染用户状态。
+- **缺陷闭环**：`registry.json` 与 `docs/需求状态.md` 中将 `BUG-003` 标记为 `closed`。
+
 ## [0.0.330] - 2026-10-19 — 认证网关支持自定义端点与显式认证方案，明文凭据在建立连接前拒绝
 
 ### 改了什么

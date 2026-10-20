@@ -21,14 +21,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub(crate) static ACTIVE: AtomicBool = AtomicBool::new(false);
-
 pub(crate) fn cli(argv: &[String]) -> Option<i32> {
     if argv.get(1).map(String::as_str) != Some("--remote-delivery-probe") {
         return None;
     }
     let result = if argv.len() == 2 {
-        ACTIVE.store(true, Ordering::Relaxed);
         run()
     } else {
         Err("usage: --remote-delivery-probe".to_string())

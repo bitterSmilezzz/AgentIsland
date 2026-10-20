@@ -37,6 +37,61 @@ pub struct Tick {
     pub file_cache: FileCache,
     pub token_cache: Cache,
 }
+/// 显式诊断入口：不建 WebView、不订阅 hook、不主动保存设置（仅损坏留档时可能重命名）、不外发。
+/// 与其它无头入口共用 `headless` 分派，因此它的日志同样默认静默。
+pub(crate) fn cli(args: &[String]) -> Option<i32> {
+    if !args.iter().any(|a| a == "--memory-core-probe") {
+        return None;
+    }
+    // 返回码而不是自己 exit：进程退出由统一分派器负责，否则这里会成为
+    // 又一个「绕过 headless 入口」的旁门。
+    let options = match Options::parse(args) {
+        Ok(value) => value,
+        Err(reason) => {
+            eprintln!("{reason}");
+            return Some(2);
+        }
+    };
+    if args.iter().any(|a| a == "--process-only") {
+        let mut monitor = crate::procmon::ProcessMonitor::new();
+        for sample in 0..options.samples {
+            let start = std::time::Instant::now();
+            monitor.refresh();
+            println!(
+                "{}",
+                serde_json::json!({"schema_version":1,"sample":sample+1,"recorded_ms":crate::tokens::now_ms(),"mode":"process_only","process_us":elapsed(Some(start))})
+            );
+            if sample + 1 < options.samples {
+                std::thread::sleep(std::time::Duration::from_millis(options.interval_ms));
+            }
+        }
+        return Some(0);
+    }
+    let (_tx, rx) = std::sync::mpsc::channel();
+    let mut settings = crate::settings::Settings::load();
+    settings.remote_policy.master_enabled = false;
+    let mut engine = crate::engine::ActivityEngine::new(settings, rx);
+    engine.refresh_usage = !args.iter().any(|a| a == "--without-usage");
+    engine.enable_resource_diagnostics();
+    for sample in 0..options.samples {
+        engine.tick();
+        let reclaim = !args.iter().any(|a| a == "--retain-allocator-pages");
+        let start = std::time::Instant::now();
+        if reclaim {
+            crate::memory::reclaim_idle_pages();
+        }
+        let reclaim_us = elapsed(Some(start));
+        println!(
+            "{}",
+            serde_json::json!({"schema_version":1,"sample":sample+1,"recorded_ms":crate::tokens::now_ms(),"mode":"core","usage_enabled":engine.refresh_usage,"reclaim_enabled":reclaim,"reclaim_us":reclaim_us,"tick":engine.resource_diagnostics()})
+        );
+        if sample + 1 < options.samples {
+            std::thread::sleep(std::time::Duration::from_millis(options.interval_ms));
+        }
+    }
+    Some(0)
+}
+
 pub fn elapsed(start: Option<std::time::Instant>) -> u64 {
     start
         .map(|s| s.elapsed().as_micros().min(u64::MAX as u128) as u64)

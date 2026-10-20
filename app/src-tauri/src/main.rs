@@ -25,6 +25,7 @@ mod duration;
 mod engine;
 mod filemon;
 mod forecast;
+mod headless;
 mod health;
 mod im;
 mod installed;
@@ -56,6 +57,7 @@ mod render;
 mod report;
 mod resilience;
 mod resource_diagnostics;
+mod runtime_log;
 mod secret;
 mod selfreport;
 mod selftest;
@@ -3183,78 +3185,14 @@ struct TokenReportPub {
     inner: models::TokenReport,
 }
 
-/// 写一行诊断日志。**打开失败要自报，不能吞掉**。
+/// 写一行诊断日志。**只在 GUI 启动边界开启**，其余入口默认静默。
 ///
-/// 此前是 `if let Ok(mut f) = …open(&path)`，失败时什么都不发生——于是
-/// 「打包后的 App 日志一行都没有」这件事本身查不出来：没有日志就没有线索，
-/// 没有线索就只能猜是不是代码没跑到。v0.0.222 我为「工作台为什么没动静」
-/// 卡了很久，根因就在这里：**通道坏了，而它坏得毫无声响**。
-///
-/// 写不出去时退回 stderr：GUI 应用的 stdout 通常没人看，但**总比静默好**——
-/// 从终端 `open` 出来的那一次就能看见。
-/// 日志封顶：超过 [`LOG_CAP_BYTES`] 就**整个重来**，并在首行写明截断前有多大。
-///
-/// 为什么需要：日志是**纯 append、无轮转**的，而这个应用是常驻的日历应用
-/// ——天天开着，文件只会一直长。v0.0.243 起每次启动还要多写 6-9KB
-/// （三个窗口 × 三轮 `[eval]` 自省 + 冒烟结果），于是涨得更快。
-///
-/// 整份重来而不是只留尾部：排障时要的是「**这一次运行**从头到尾」，
-/// 而 `[run]` 标记本来就在每次启动时写，所以截断后不会把两次运行混在一起。
-const LOG_CAP_BYTES: u64 = 2 * 1024 * 1024;
-
-/// 超过封顶就把文件清空，返回截断前的字节数（没截断则 `None`）。
-fn truncate_log_if_oversized(path: &std::path::Path) -> Option<u64> {
-    let size = std::fs::metadata(path).ok()?.len();
-    if size <= LOG_CAP_BYTES {
-        return None;
-    }
-    std::fs::write(path, b"").ok()?;
-    Some(size)
-}
-
+/// 为什么不再由每个探针各自登记 `ACTIVE`：那条约定靠人记，新增一个探针忘了登记
+/// 就会往用户的 `agentisland-tauri.log` 追加行——探针「没碰用户状态」从可证变成不可证。
+/// 现在策略反过来：文件日志默认不存在，只有本进程确认要进 GUI 才开启，之后不再关闭。
+/// 于是**新增任何无头入口都自动静默**，不需要第二处登记。
 pub(crate) fn log_line(msg: &str) {
-    // 任何 headless 探针都不得写用户的真实日志文件：
-    // 探针的契约是「只读用户状态、只在临时/loopback 里动作」，
-    // 往 `agentisland-tauri.log` 追加行会污染用户状态，也让「探针没碰任何东西」不可证。
-    if notify_ledger_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
-    if remote_delivery_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
-    if gateway_auth_probe::ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { return; }
-    let filename = if isolated_instance_requested() {
-        format!("agentisland-test-{}.log", std::process::id())
-    } else {
-        "agentisland-tauri.log".to_string()
-    };
-    let path = std::env::temp_dir().join(filename);
-    if let Some(before) = truncate_log_if_oversized(&path) {
-        let line = format!("[run] 上一份日志 {before} 字节，已按 {LOG_CAP_BYTES} 字节封顶清空");
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
-            let _ = writeln!(f, "{line}");
-        }
-    }
-    // 说明：日志文件是**累积**的（同一路径、按运行叠加），所以每次启动
-    // 都先写一行 `[run]` 标记。没有它就没法把「这一次跑出来的行」与
-    // 「历史遗留的行」分开——我为此误判过好几轮：把累积日志里的
-    // `[page] / [webview]` 当成当次运行的证据。
-
-    use std::io::Write;
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        Ok(mut f) => {
-            let _ = writeln!(f, "{}", msg);
-        }
-        Err(error) => {
-            eprintln!("[log] 写不进 {}：{error}", path.display());
-            eprintln!("[log] {msg}");
-        }
-    }
+    runtime_log::write(msg);
 }
 
 fn engine_loop(shared: SharedEngine, app: AppHandle, wake_rx: mpsc::Receiver<()>) {
@@ -4294,69 +4232,15 @@ fn main() {
     // **必须在建引擎、开线程、起窗口之前**：`status` 的全部价值是「快」，
     // 而拉起 Tauri 再退出比它自己采完一拍慢一个量级。
     let argv: Vec<String> = std::env::args().collect();
-    if let Some(code) = notify_ledger_probe::cli(&argv) {
+    // 所有无头入口共用一张分派表。它们的输出走 stdout/stderr，
+    // **不得写用户日志**：日志此刻还没开启（见下面 enable_gui）。
+    if let Some(code) = headless::dispatch(&argv) {
         std::process::exit(code);
     }
-    if let Some(code) = gateway_auth_probe::cli(&argv) {
-        std::process::exit(code);
-    }
-    if let Some(code) = remote_delivery_probe::cli(&argv) {
-        std::process::exit(code);
-    }
-    if let Some(code) = claude_plan_receiver::cli(&argv) {
-        std::process::exit(code);
-    }
-    // Explicit diagnostic mode: no WebViews, hooks, settings writes or remote delivery.
-    if argv.iter().any(|a| a == "--memory-core-probe") {
-        let options = match resource_diagnostics::Options::parse(&argv) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(2);
-            }
-        };
-        if argv.iter().any(|a| a == "--process-only") {
-            let mut monitor = procmon::ProcessMonitor::new();
-            for sample in 0..options.samples {
-                let start = std::time::Instant::now();
-                monitor.refresh();
-                println!(
-                    "{}",
-                    serde_json::json!({"schema_version":1,"sample":sample+1,"recorded_ms":tokens::now_ms(),"mode":"process_only","process_us":resource_diagnostics::elapsed(Some(start))})
-                );
-                if sample + 1 < options.samples {
-                    std::thread::sleep(std::time::Duration::from_millis(options.interval_ms));
-                }
-            }
-            return;
-        }
-        let (_tx, rx) = mpsc::channel();
-        let mut settings = Settings::load();
-        settings.remote_policy.master_enabled = false;
-        let mut engine = ActivityEngine::new(settings, rx);
-        engine.refresh_usage = !argv.iter().any(|a| a == "--without-usage");
-        engine.enable_resource_diagnostics();
-        for sample in 0..options.samples {
-            engine.tick();
-            let reclaim = !argv.iter().any(|a| a == "--retain-allocator-pages");
-            let start = std::time::Instant::now();
-            if reclaim {
-                memory::reclaim_idle_pages();
-            }
-            let reclaim_us = resource_diagnostics::elapsed(Some(start));
-            println!(
-                "{}",
-                serde_json::json!({"schema_version":1,"sample":sample+1,"recorded_ms":tokens::now_ms(),"mode":"core","usage_enabled":engine.refresh_usage,"reclaim_enabled":reclaim,"reclaim_us":reclaim_us,"tick":engine.resource_diagnostics()})
-            );
-            if sample + 1 < options.samples {
-                std::thread::sleep(std::time::Duration::from_millis(options.interval_ms));
-            }
-        }
-        return;
-    }
-    if let Some(code) = cli::try_run(&argv) {
-        std::process::exit(code);
-    }
+    // 走到这里说明不是任何无头入口：本进程是常驻 GUI，从这里起才允许写日志文件。
+    // 只开一次、之后不再关闭：探针返回或后台线程晚到都不会把日志重新打开。
+    runtime_log::enable_gui(isolated_instance_requested());
+
     let (tx, rx) = mpsc::channel::<hook_event::HookEvent>();
     let mut settings = Settings::load();
     if background_test_requested() || motion_probe::requested() {
@@ -6136,7 +6020,7 @@ mod sampling_clock_sentinel {
 }
 #[cfg(test)]
 mod log_cap_tests {
-    use super::{truncate_log_if_oversized, LOG_CAP_BYTES};
+    use crate::runtime_log::{truncate_log_if_oversized, LOG_CAP_BYTES};
 
     /// 没超封顶就**一个字都不许动**。
     ///

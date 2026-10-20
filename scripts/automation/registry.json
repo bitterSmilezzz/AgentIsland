@@ -68,7 +68,9 @@
         "automation.break-artifact",
         "automation.break-snapshot",
         "automation.update-manifest",
-        "automation.status"
+        "automation.status",
+        "auto01.headlesslog",
+        "auto01.headlesslogbin"
       ],
       "audit_ref": "docs/测试映射盘点.md",
       "coverage_note": "partial — 需求解析、隔离工作区、门禁 blocked/failed 分流、清理、来源摘要绑定、候选延迟发布与只读消费校验、失败暂停记录与重复输入识别、Red 基线（先于作者调用）、真实 Break 消融执行已有；缺：真实 driver 受控轮次、CI 状态绑定、回滚、暂停通知默认关闭（需显式 --notify-failure）",
@@ -1459,6 +1461,7 @@
         "app/src-tauri/src/filemon.rs",
         "app/src-tauri/src/forecast.rs",
         "app/src-tauri/src/gateway_auth_probe.rs",
+        "app/src-tauri/src/headless.rs",
         "app/src-tauri/src/health.rs",
         "app/src-tauri/src/im.rs",
         "app/src-tauri/src/installed.rs",
@@ -1487,6 +1490,7 @@
         "app/src-tauri/src/report.rs",
         "app/src-tauri/src/resilience.rs",
         "app/src-tauri/src/resource_diagnostics.rs",
+        "app/src-tauri/src/runtime_log.rs",
         "app/src-tauri/src/secret.rs",
         "app/src-tauri/src/selfreport.rs",
         "app/src-tauri/src/selftest.rs",
@@ -2149,6 +2153,44 @@
       "test_files": [
         "scripts/test-gateway-auth.py"
       ]
+    },
+    "auto01.headlesslog": {
+      "command": [
+        "python3",
+        "scripts/test-headless-logging.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "BUG-003：用真实 log_line 与真实 main 的 pre-GUI 启动片段编译一个夹具，往统一分派表里注入一个**从未登记过日志标记**的新探针，验证它和它派生的线程都不会创建、追加或截断用户的 agentisland-tauri.log（覆盖日志存在/不存在/超大三种初态）。同时保留正向对照：普通 GUI 仍然追加并在真实 2MiB 封顶处轮转，隔离冒烟 GUI 仍写自己的 pid 日志——证明「静默」不是把日志功能关掉。另含可编译变异（在分派前就先 enable_gui），该变异必须让同一条不变式变红。若 dist/agentisland 存在，脚本自动以隔离 HOME/TMPDIR 对全部无头入口与 CLI 跑端到端复验，断言产物中用户日志不被触碰。",
+      "test_files": [
+        "scripts/test-headless-logging.py"
+      ]
+    },
+    "auto01.headlesslogbin": {
+      "command": [
+        "python3",
+        "scripts/test-headless-logging-binary.py",
+        "dist/agentisland"
+      ],
+      "depends_on": [
+        "package.artifact"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "BUG-003 发布产物复验：用隔离 HOME/TMPDIR 对已构建的 dist/agentisland 跑全部无头入口与 CLI 子命令，断言用户日志不被创建或修改；不触碰运行中的应用与真实设置。",
+      "test_files": [
+        "scripts/test-headless-logging-binary.py"
+      ]
     }
   },
   "agents": {
@@ -2237,7 +2279,8 @@
       "not06.update-panel",
       "not06.update-signature",
       "automation.dist-wiring",
-      "automation.status"
+      "automation.status",
+      "auto01.headlesslog"
     ],
     "browser": [
       "not01.latencyui",
@@ -2318,7 +2361,8 @@
       "not06.update-signature",
       "automation.dist-wiring",
       "automation.status",
-      "not02.smtp"
+      "not02.smtp",
+      "auto01.headlesslog"
     ],
     "package": [
       "package.artifact",
@@ -2326,7 +2370,8 @@
       "gw08.cliusage",
       "not01.ledgerrestart",
       "not05.remotedelivery",
-      "gw01.authgate"
+      "gw01.authgate",
+      "auto01.headlesslogbin"
     ],
     "native": [
       "native.vm",
@@ -2445,7 +2490,9 @@
       "automation.dist-wiring",
       "automation.status",
       "not02.smtp",
-      "gw01.authgate"
+      "gw01.authgate",
+      "auto01.headlesslog",
+      "auto01.headlesslogbin"
     ],
     "protocol": [
       "gw02.ifacemodels",
@@ -2480,9 +2527,9 @@
     {
       "id": "BUG-003",
       "title": "探针类 headless 模式的日志短路靠逐个 ACTIVE 标记登记，新增探针易漏",
-      "status": "fixed-partial",
+      "status": "closed",
       "requirement": "AUTO-01",
-      "evidence": "本轮 remote_delivery_probe 初版漏了短路、污染了用户日志（$TMPDIR/agentisland-tauri.log 实测 1.3MB）。已修 main.rs:3215，但机制仍是「每个探针自己记得登记」，没有统一入口——同类遗漏还会再发生。"
+      "evidence": "已根治机制缺口，不再是「每个探针自己记得登记」：文件日志默认**不存在**，只有程序确认进入 GUI 才在启动边界开启一次、之后不再关闭；所有无头入口改为共用 headless::dispatch 一张分派表（含从 main 抽出的 --memory-core-probe 处理器与 CLI 子命令）。于是新增任何无头入口都自动静默，无需第二处登记；三个探针的 ACTIVE 日志标记已删除。证据：runtime_log/headless 定向单测 10/10；auto01.headlesslog（真实 log_line + 真实 pre-GUI 启动片段，注入一个从未登记的新探针及其派生线程，覆盖日志存在/不存在/超大三种初态，并含「分派前就开日志」的可编译变异必须变红）通过；auto01.headlesslogbin 对发布二进制做隔离复验。"
     },
     {
       "id": "BUG-004",

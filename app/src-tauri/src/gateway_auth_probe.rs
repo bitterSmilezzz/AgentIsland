@@ -21,8 +21,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub(crate) static ACTIVE: AtomicBool = AtomicBool::new(false);
-
 /// 探针自己的夹具凭据来源。值不是凭据，只是「能被观察到变了没有」的标记串。
 const FIXTURE_ENV: &str = "AGENTISLAND_GW01_FIXTURE";
 /// 刻意**不设置**的环境变量，用来验证「凭据来源不可用」这个分支。
@@ -35,7 +33,6 @@ pub(crate) fn cli(argv: &[String]) -> Option<i32> {
         return None;
     }
     let result = if argv.len() == 2 {
-        ACTIVE.store(true, Ordering::Relaxed);
         run()
     } else {
         Err("usage: --gateway-auth-probe".to_string())

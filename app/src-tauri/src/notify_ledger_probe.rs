@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub(crate) static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const MARKER: &str = ".agentisland-notify-ledger-probe";
 const MARKER_BYTES: &[u8] = b"agentisland synthetic notification ledger probe v1\n";
 
@@ -18,11 +17,7 @@ pub(crate) fn cli(argv: &[String]) -> Option<i32> {
             .ok_or("invalid probe phase").map(|phase| (argv[2].clone(), phase))
     } else { Err("usage: --notify-ledger-probe <empty-temp-fixture-dir> <1|2|3>") };
     let result = match parsed {
-        Ok((dir, phase)) => {
-            // Only a fully parsed probe suppresses the log file; malformed argv stays silent.
-            ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
-            run(Path::new(&dir), phase)
-        }
+        Ok((dir, phase)) => run(Path::new(&dir), phase),
         Err(reason) => Err(reason),
     };
     match result {
