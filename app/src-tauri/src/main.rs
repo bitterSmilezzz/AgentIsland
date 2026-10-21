@@ -3632,7 +3632,16 @@ const UI_SMOKE_JS: &str = r#"(function () {
           var remoteRoot = document.querySelector('[data-remote-root]');
           if (remoteRoot) {
             var status = await window.__TAURI__.core.invoke('remote_status');
-            if (remoteRoot.textContent.indexOf(status.secretName) < 0) throw new Error('远程通知密钥条目名未显示');
+            // 页面自己那次 remote_status 是异步的：刚点开就比对文本会**领先于**渲染，
+            // 表现为「密钥条目名未显示」这种看起来像产品缺陷的偶发红（实测在慢来宾上出现过）。
+            // 改成有界等待：最多 3 秒、每 100ms 复看一次，超时才判失败——
+            // 判据没有放宽，只是不再和渲染赛跑。
+            var rendered = false;
+            for (var attempt = 0; attempt < 30; attempt++) {
+              if (remoteRoot.textContent.indexOf(status.secretName) >= 0) { rendered = true; break; }
+              await new Promise(function (resolve) { setTimeout(resolve, 100); });
+            }
+            if (!rendered) throw new Error('远程通知密钥条目名未显示');
             if (!remoteRoot.querySelector('[data-remote-test]') || !remoteRoot.querySelector('[data-remote-history]')) throw new Error('远程测试或发送记录入口缺失');
             var advanced = remoteRoot.querySelector('[data-remote-advanced]');
             if (!advanced || advanced.open) throw new Error('远程高级设置应默认折叠');

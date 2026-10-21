@@ -32,6 +32,11 @@ fn kind_info(kind: AttentionKind) -> (u8, &'static str) {
 }
 pub fn summarize(data: &Data) -> Summary {
     let mut items = Vec::new();
+    // 聚合的单位是 **run**，不是「任务行」或「关注点」：
+    // 一个 run 可能同时挂着多个 open attention（不同 kind 的 scope），
+    // 也可能（数据异常时）被多个 task 指为 current_run——两者都只能算一条。
+    // 所以既要按 run 去重，也要校验 run 的归属，否则同一次执行会被数成两次。
+    let mut counted_runs = std::collections::HashSet::new();
     for task in data.tasks.iter().filter(|t| t.archived_ms.is_none()) {
         let Some(run) = data
             .runs
@@ -40,6 +45,9 @@ pub fn summarize(data: &Data) -> Summary {
         else {
             continue;
         };
+        if run.task_id != task.id || !counted_runs.insert(run.id.clone()) {
+            continue;
+        }
         let gate = data
             .attentions
             .iter()
@@ -211,5 +219,58 @@ mod tests {
         let s = summarize(&d);
         assert_eq!(s.total, 1);
         assert_eq!(s.first.unwrap().label, "待回答");
+    }
+
+    /// 同一个 run 挂着多个 open attention（多 scope）时，聚合只算一条。
+    ///
+    /// 诚实标注：这条**不会**被「去掉去重」的变异杀死——当前的循环形状是「按任务取
+    /// 当前 run 再挑一条代表」，多 attention 天然只出一条。它的作用是**钉住这个契约**：
+    /// 谁把聚合改成「遍历 attention」，这条立刻变红。真正能抓「同一 run 被算两次」的是
+    /// 下面那条归属/去重用例（变异实测 left:2 right:1）。
+    #[test]
+    fn several_open_scopes_on_one_run_count_once() {
+        let mut d = Data::default();
+        push(&mut d, "multi", RunStatus::Ready, Some(AttentionKind::PlanApproval), 50);
+        d.attentions.push(Attention {
+            observed: false,
+            id: "a-multi-second".into(),
+            run_id: "r-multi".into(),
+            kind: AttentionKind::Answer,
+            state: AttentionState::Open,
+            artifact_id: None,
+            manual_resolution: false,
+        });
+        let summary = summarize(&d);
+        assert_eq!(summary.total, 1, "同一 run 的两个 scope 被数成了两条");
+        assert_eq!(summary.human_count, 1);
+        assert_eq!(summary.failed_count, 0);
+        // 同一 run 内仍选优先级更高的那条作为代表（Answer=0 高于 PlanApproval=1）
+        let first = summary.first.unwrap();
+        assert_eq!(first.attention_id.as_deref(), Some("a-multi-second"));
+        assert_eq!(first.label, "待回答");
+    }
+
+    /// 数据异常时两个 task 可能指向同一个 run：只按**归属者**算一次。
+    #[test]
+    fn a_run_claimed_by_two_tasks_counts_once_and_only_for_its_owner() {
+        let mut d = Data::default();
+        push(&mut d, "owner", RunStatus::Ready, Some(AttentionKind::Answer), 50);
+        // 另一个任务把别人家的 run 当成自己的 current_run
+        d.tasks.push(Task {
+            id: "intruder".into(),
+            title: "越权指向".into(),
+            project_id: None,
+            source: None,
+            current_run_id: Some("r-owner".into()),
+            created_ms: 60,
+            updated_ms: 60,
+            archived_ms: None,
+            revision: 1,
+        });
+        let summary = summarize(&d);
+        assert_eq!(summary.total, 1, "被两个任务指向的同一个 run 被数了两次");
+        let item = summary.first.expect("归属者的那条仍应出现");
+        assert_eq!(item.task_id, "owner", "这条只能算在 run 的真正归属任务上");
+        assert_eq!(item.run_id, "r-owner");
     }
 }
