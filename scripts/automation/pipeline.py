@@ -165,9 +165,11 @@ def validate_registry(data: Any) -> None:
             raise PipelineError("empty requirement checks require explicit planned status")
         if any(cid not in data["checks"] for cid in entry["checks"]):
             raise PipelineError("unknown requirement check reference")
-        if "gates" in entry and (not isinstance(entry["gates"], list)
-                or any(g not in data["gates"] for g in entry["gates"])):
-            raise PipelineError("unknown requirement gate reference")
+        # 逐需求的 `gates` 已删除（BUG-001）：它是矩阵「层」列的重复副本，实测 36 项里 26 项漂移。
+        # 这里**明确拒绝**而不是忽略——静默接受等于给「再长回来一份副本」留了门。
+        if "gates" in entry:
+            raise PipelineError(
+                "per-requirement gates were removed; the matrix 层 column is the single statement")
     count = 0
     for name, ids in data["profiles"].items():
         if name == "note":

@@ -55,7 +55,7 @@ def check_entry(code="pass", **extra):
 def registry(checks=None):
     checks = checks or {"ok": check_entry()}
     return {"schema_version": 1, "gates": {"L0": {"required": True}},
-            "requirements": {"AUTO-01": {"checks": list(checks), "gates": ["L0"]}},
+            "requirements": {"AUTO-01": {"checks": list(checks)}},
             "checks": checks, "profiles": {"test": list(checks), "note": "explanation"},
             "agents": {"default": "mock", "available": ["mock", "agy"]}}
 

@@ -109,6 +109,38 @@ def audit_ci_prerequisites(registry, workflow):
     return errors
 
 
+def audit_matrix_layers(registry, root):
+    """The matrix 层 column is the single statement of which layers cover a requirement.
+
+    Validate it instead of keeping a second copy in the registry: tokens must be known
+    layers, and every requirement must appear exactly once.
+    """
+    matrix = root / 'docs/spec/需求测试矩阵.md'
+    if not matrix.is_file():
+        return []
+    errors = []
+    body = matrix.read_text(encoding='utf-8').split(BEGIN_MARK)[0]
+    known = set(registry['gates'])
+    seen = {}
+    for line in body.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip('|').split('|')]
+        if len(cells) != 4 or not re.fullmatch(r'(?:SUP|GW|TASK|NOT|AUTO|SEC|OPS)-\d+', cells[0]):
+            continue
+        rid, layers = cells[0], cells[3]
+        seen[rid] = seen.get(rid, 0) + 1
+        for token in layers.split('/'):
+            token = token if token.startswith('L') else f'L{token}'
+            if token not in known:
+                errors.append(f'{rid} 层列出现未知测试层: {token}')
+    for rid in registry['requirements']:
+        if seen.get(rid, 0) != 1:
+            errors.append(f'{rid} must appear exactly once in the matrix scenario table '
+                          f'(found {seen.get(rid, 0)})')
+    for rid in sorted(set(seen) - set(registry['requirements'])):
+        errors.append(f'matrix scenario table lists unknown requirement: {rid}')
+    return errors
+
+
 def audit(registry, discovered, root=ROOT):
     errors = []
     declared = {p for entry in registry['checks'].values() for p in entry.get('test_files', [])}
@@ -142,6 +174,16 @@ def audit(registry, discovered, root=ROOT):
         for name in re.findall(r'[\w./-]+\.rs', note):
             if not (root / 'app/src-tauri/src' / name).is_file() and not (root / name).is_file():
                 errors.append(f'{rid} coverage note references missing source: {name}')
+    # `requirements[].gates` 曾是「该需求由哪些测试层验收」的第二份手写副本：
+    # 矩阵的场景表里已经有「层」列，两份独立维护，实测 36 项里 26 项不一致。
+    # 该字段全仓无消费者（只被 pipeline 做形状校验），删掉比同步更诚实——
+    # 与先前的 `maps_to_requirement` 同一处置。这里防止它再长回来。
+    for rid, entry in registry['requirements'].items():
+        if 'gates' in entry:
+            errors.append(
+                f'{rid} still carries gates: the matrix 层 column is the single statement '
+                'of which layers cover a requirement, and a copy here only drifts')
+    errors.extend(audit_matrix_layers(registry, root))
     # `maps_to_requirement` was a second copy of the check->requirement mapping that
     # nothing ever read: `evidence.py` builds coverage from `requirements[].checks`
     # alone. One check can serve several requirements, so the copy silently kept only
@@ -353,6 +395,33 @@ class RegistryTests(unittest.TestCase):
             mutate(counter)
             with self.assertRaises(pipeline.PipelineError):
                 pipeline.validate_registry(registry)
+
+    def test_matrix_layer_column_is_validated_not_duplicated(self):
+        """BUG-001：层列是唯一声明处，因此它自己要能被校验。"""
+        import tempfile
+        registry = {'gates': {'L0': {}, 'L1': {}, 'L4': {}},
+                    'requirements': {'GW-01': {}, 'NOT-06': {}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'docs/spec').mkdir(parents=True)
+            matrix = root / 'docs/spec/需求测试矩阵.md'
+            matrix.write_text(
+                '| 需求ID | 主要资产 | 场景 | 层 |\n| --- | --- | --- | --- |\n'
+                '| GW-01 | x | y | L1/4 |\n| NOT-06 | x | y | L0/1 |\n', encoding='utf-8')
+            self.assertEqual(audit_matrix_layers(registry, root), [])
+            # 未知层 token
+            matrix.write_text(matrix.read_text(encoding='utf-8').replace('L1/4', 'L1/9'),
+                              encoding='utf-8')
+            self.assertTrue(any('未知测试层' in e for e in audit_matrix_layers(registry, root)))
+            # 需求缺失
+            matrix.write_text('| 需求ID | 主要资产 | 场景 | 层 |\n| --- | --- | --- | --- |\n'
+                              '| GW-01 | x | y | L1 |\n', encoding='utf-8')
+            self.assertTrue(any('NOT-06' in e for e in audit_matrix_layers(registry, root)))
+            # 未知需求
+            matrix.write_text('| 需求ID | 主要资产 | 场景 | 层 |\n| --- | --- | --- | --- |\n'
+                              '| GW-01 | x | y | L1 |\n| NOT-06 | x | y | L1 |\n'
+                              '| TASK-99 | x | y | L1 |\n', encoding='utf-8')
+            self.assertTrue(any('TASK-99' in e for e in audit_matrix_layers(registry, root)))
 
     def test_all_assets_requirements_and_profiles_are_connected(self):
         self.assertEqual(audit(self.registry, self.discovered), [])

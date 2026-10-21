@@ -42,11 +42,6 @@
   "requirements": {
     "AUTO-01": {
       "title": "需求收集到候选发布的自动开发",
-      "gates": [
-        "L0",
-        "L3",
-        "L8"
-      ],
       "checks": [
         "auto01.staging",
         "auto01.version",
@@ -78,11 +73,6 @@
     },
     "AUTO-02": {
       "title": "错题复盘与规范升级",
-      "gates": [
-        "L0",
-        "L1",
-        "L8"
-      ],
       "checks": [
         "automation.selfcheck",
         "automation.lessons",
@@ -94,10 +84,6 @@
     },
     "SEC-01": {
       "title": "数据与凭据边界",
-      "gates": [
-        "L0",
-        "L1"
-      ],
       "checks": [
         "sec01.scansecrets",
         "rust.default"
@@ -108,14 +94,6 @@
     },
     "SUP-01": {
       "title": "GUI/CLI/宿主/子 Agent 发现与身份",
-      "gates": [
-        "L0",
-        "L1",
-        "L2",
-        "L3",
-        "L5",
-        "L6"
-      ],
       "checks": [
         "sup01.identities",
         "sup01.clidispatch",
@@ -128,13 +106,6 @@
     },
     "SUP-02": {
       "title": "会话工作/等待/完成/离线/异常",
-      "gates": [
-        "L1",
-        "L2",
-        "L3",
-        "L6",
-        "L7"
-      ],
       "checks": [
         "sup02.actions",
         "sup02.firstsnap",
@@ -146,12 +117,6 @@
     },
     "SUP-03": {
       "title": "多 Agent/多会话概览与待处理聚合",
-      "gates": [
-        "L1",
-        "L3",
-        "L4",
-        "L5"
-      ],
       "checks": [
         "sup03.sessions",
         "rust.default"
@@ -162,11 +127,6 @@
     },
     "SUP-04": {
       "title": "资源健康、诊断与来源解释",
-      "gates": [
-        "L1",
-        "L3",
-        "L7"
-      ],
       "checks": [
         "ops01.measuremem",
         "rust.default"
@@ -177,12 +137,6 @@
     },
     "SUP-05": {
       "title": "灵动岛视觉、交互与无障碍",
-      "gates": [
-        "L3",
-        "L4",
-        "L5",
-        "L7"
-      ],
       "checks": [
         "sup05.islandclick",
         "sup05.islandreturn",
@@ -209,11 +163,6 @@
     },
     "TASK-01": {
       "title": "任务、项目、看板与搜索",
-      "gates": [
-        "L1",
-        "L3",
-        "L4"
-      ],
       "checks": [
         "task01.tasks",
         "task01.detailnav",
@@ -225,13 +174,6 @@
     },
     "TASK-04": {
       "title": "对话与输入输出",
-      "gates": [
-        "L2",
-        "L3",
-        "L4",
-        "L5",
-        "L6"
-      ],
       "checks": [
         "task04.readerleave",
         "task04.refreshfocus",
@@ -245,11 +187,6 @@
     },
     "NOT-01": {
       "title": "即时事件与通知中心",
-      "gates": [
-        "L1",
-        "L3",
-        "L7"
-      ],
       "checks": [
         "not01.attention",
         "not01.latencyui",
@@ -262,12 +199,6 @@
     },
     "GW-02": {
       "title": "模型目录与客户端选择",
-      "gates": [
-        "L1",
-        "L3",
-        "L4",
-        "L6"
-      ],
       "checks": [
         "gw02.modeldir",
         "gw02.ifacemodels",
@@ -279,12 +210,6 @@
     },
     "GW-07": {
       "title": "客户端接管、Profile 与恢复",
-      "gates": [
-        "L1",
-        "L3",
-        "L4",
-        "L6"
-      ],
       "checks": [
         "gw07.workspaces",
         "gw07.provfeedback",
@@ -296,13 +221,6 @@
     },
     "GW-08": {
       "title": "用量、配额、费用与可观测",
-      "gates": [
-        "L1",
-        "L2",
-        "L3",
-        "L6",
-        "L7"
-      ],
       "checks": [
         "gw08.budgets",
         "gw08.usagecontext",
@@ -317,12 +235,6 @@
     },
     "GW-10": {
       "title": "插件、Library、媒体与工具扩展",
-      "gates": [
-        "L1",
-        "L2",
-        "L3",
-        "L6"
-      ],
       "checks": [
         "gw10.prompts",
         "gw10.skillspkg",
@@ -334,11 +246,6 @@
     },
     "OPS-01": {
       "title": "资源、稳定性、升级与灾难恢复",
-      "gates": [
-        "L3",
-        "L5",
-        "L7"
-      ],
       "checks": [
         "ops01.memosoak",
         "ops01.memosoakres",
@@ -353,11 +260,6 @@
     },
     "NOT-02": {
       "title": "邮箱通知",
-      "gates": [
-        "L1",
-        "L3",
-        "L7"
-      ],
       "checks": [
         "rust.default",
         "not02.smtp"
@@ -368,11 +270,6 @@
     },
     "NOT-05": {
       "title": "策略、升级与交付状态",
-      "gates": [
-        "L1",
-        "L3",
-        "L7"
-      ],
       "checks": [
         "rust.default",
         "not01.latencyui",
@@ -384,11 +281,6 @@
     },
     "NOT-06": {
       "title": "应用自身的检查更新与自动更新",
-      "gates": [
-        "L0",
-        "L2",
-        "L5"
-      ],
       "checks": [
         "automation.update-manifest",
         "automation.dist-wiring",
@@ -403,11 +295,6 @@
     },
     "GW-09": {
       "title": "多界面、共享与备份同步",
-      "gates": [
-        "L1",
-        "L3",
-        "L6"
-      ],
       "checks": [
         "rust.default"
       ],
@@ -417,11 +304,6 @@
     },
     "GW-01": {
       "title": "Provider、API key、订阅及认证适配",
-      "gates": [
-        "L1",
-        "L3",
-        "L6"
-      ],
       "checks": [
         "rust.default",
         "gw01.authgate",
@@ -434,112 +316,96 @@
     },
     "NOT-03": {
       "title": "运营商 SMS 短信",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "NOT-04": {
       "title": "手机推送与移动入口",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "GW-03": {
       "title": "四类模型协议网关",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "GW-04": {
       "title": "路由组与候选策略",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "GW-05": {
       "title": "条件/意图/会话路由",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "GW-06": {
       "title": "fallback、退避与错误分类",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-02": {
       "title": "Chief 与团队 Agent",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-03": {
       "title": "执行生命周期与运行时",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-05": {
       "title": "方案/diff/产出版本",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-06": {
       "title": "独立 AI 审查与修改闭环",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-07": {
       "title": "Git 仓库与并行隔离",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-08": {
       "title": "定时与触发",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-09": {
       "title": "多机器与云执行",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-10": {
       "title": "MCP、Skills、Memory 与上下文",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-11": {
       "title": "团队、权限、Secrets 与审计",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
     },
     "TASK-12": {
       "title": "多端完整工作台",
-      "gates": [],
       "checks": [],
       "coverage_note": "planned — no executable check mapped; this is not coverage",
       "status": "planned"
@@ -2558,9 +2424,9 @@
     {
       "id": "BUG-001",
       "title": "registry 的 requirements[].gates 与 docs/需求测试矩阵.md 的「层」列不一致（36 项里 26 项不同）",
-      "status": "open",
+      "status": "closed",
       "requirement": null,
-      "evidence": "scripts/automation/render-status.py 无关；核实命令见 docs/agent/session-2026-10-17-problems.md 的 B-13。两处对同一需求的层声明不同，且 registry 该字段全仓无消费者，语义未明——先记录，未擅自统一。"
+      "evidence": "语义先查清再动手：`requirements[].gates` 是「该需求由哪些测试层验收」的**第二份手写副本**，矩阵场景表的「层」列是同一声明的另一份，两份独立维护，实测 36 项里 26 项不一致；该字段全仓无消费者（只有 pipeline 做形状校验），且 render-matrix.py 明确只生成映射段、场景表由人维护。按「事实只声明一次」的既有处置（同 maps_to_requirement），本轮删掉 registry 里的副本（37 个需求条目），并让矩阵「层」列本身变成**被校验的声明**：新增 audit_matrix_layers 校验「层 token 必须是已知层」「每个需求恰好出现一次」「不得出现未知需求」，覆盖三处负例（未知层 L9 / 需求缺失 / 未知需求 TASK-99）。顺带补上 NOT-06 缺失的场景行（此前它有检查项却没有场景声明）。"
     },
     {
       "id": "BUG-002",

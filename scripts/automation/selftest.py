@@ -97,7 +97,7 @@ def synthetic_registry() -> dict:
         "schema_version": 1,
         "gates": {"L0": {"required": True}},
         "requirements": {
-            "AUTO-01": {"checks": ["selftest.marker"], "gates": ["L0"]},
+            "AUTO-01": {"checks": ["selftest.marker"]},
             "PLAN-00": {"checks": [], "status": "planned"},
         },
         "checks": {
