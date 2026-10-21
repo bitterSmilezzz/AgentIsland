@@ -132,8 +132,8 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — CPU/卡死三态、稳态高内存不告警、持续窗口、观测资格作废已有；缺：单次采样不得冒充连续观测的显式断言",
-      "status": "partial"
+      "coverage_note": "done — CPU/卡死三态（含「判不出」）、稳态高内存不告警、持续窗口、观测资格作废、单次采样不得冒充连续观测均已落地并有断言：沿用「未知单独表达」——`is_hung` 返回 `Option<bool>`，窗口不足时为 `None` 而不是 `false`；本轮把窗口起点规则收成 `health::observation_window_start`（首次观测记在当下），引擎改用该规则，新增 `a_single_sample_can_never_masquerade_as_a_sustained_observation` 钉住「单拍即使 CPU 已高也只能说没测」「续窗不重置」，并用反例断言（起点取 0 时一拍即判卡死）证明该判据确实在挡东西（变异验证：起点改 0 即变红）。CPU 激增、RSS/增长、采样缺失与权限拒绝分别由 health/evaluate 与 ops01.measuremem 覆盖。未在此需求内覆盖：跨平台（Windows）资源读数与 30 分钟以上 soak，属 OPS-01 与原生门禁。",
+      "status": "done"
     },
     "SUP-05": {
       "title": "灵动岛视觉、交互与无障碍",

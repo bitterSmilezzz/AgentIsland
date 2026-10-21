@@ -109,6 +109,15 @@ impl Report {
 /// 这不是洁癖：把持续时长做成可配之后，如果这里仍读模块常量，
 /// 用户把时长调成 60 秒就会看到「告警响了、健康度却还说不卡死」——
 /// 同一个事实由两处各自判定，且**都不会报错**。该常量已从本函数移除。
+/// 连续观测窗口的起点：**首次观测就记在当下**。
+///
+/// 这一句是「单次采样不得冒充连续观测」的落点。窗口若从进程启动时间、或从 0 起算，
+/// 第一拍就已经「观测了很久」，那么一次高 CPU 读数足以直接得出「卡死」结论——
+/// 而那一拍我们其实**只看到一个瞬间**。起点必须由本引擎自己给出，不能借外部时间。
+pub fn observation_window_start(current: Option<i64>, now_ms: i64) -> i64 {
+    current.unwrap_or(now_ms)
+}
+
 pub fn is_hung(
     observed_running_since: Option<i64>,
     high_cpu_since: Option<i64>,
@@ -425,6 +434,35 @@ mod tests {
         let ninety = now - 90_000;
         assert_eq!(is_hung(Some(ninety), Some(ninety), now, 300_000), None);
         assert_eq!(is_hung(Some(ninety), Some(ninety), now, 60_000), Some(true));
+    }
+
+/// 单次采样不得冒充连续观测。
+    ///
+    /// 反例写在最后一条断言里：起点若被写成 0（或进程启动时间），第一拍就满足
+    /// 「已连续观测够久」，一次 90% CPU 的瞬时读数会直接输出「卡死」——
+    /// 那正是本仓反复强调的「单次读数不能冒充持续结论」。
+    #[test]
+    fn a_single_sample_can_never_masquerade_as_a_sustained_observation() {
+        let now = 9_000_000i64;
+        let start = observation_window_start(None, now);
+        assert_eq!(start, now, "首次观测的起点必须是当下，而不是进程启动时间或 0");
+        // 就这一拍：哪怕 CPU 已经很高，也只能说「没测」
+        assert_eq!(
+            is_hung(Some(start), Some(now), now, RUNAWAY_DURATION_MS),
+            None
+        );
+        // 紧接着的下一拍仍然不够窗口
+        assert_eq!(
+            is_hung(Some(start), Some(start), now + 1_000, RUNAWAY_DURATION_MS),
+            None
+        );
+        // 已被观测过的连接要沿用原起点（续窗，不重置）
+        assert_eq!(observation_window_start(Some(start), now + 5_000), start);
+        // 反例：起点取 0 时，一拍就「观测够久」——这条断言证明上面几条确实在挡东西
+        assert_eq!(
+            is_hung(Some(0), Some(0), now, RUNAWAY_DURATION_MS),
+            Some(true)
+        );
     }
 
     #[test]

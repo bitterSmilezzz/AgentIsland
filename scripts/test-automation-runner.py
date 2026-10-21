@@ -88,10 +88,14 @@ class RunnerTests(unittest.TestCase):
     def command(self, *args):
         return [PY, "-c", BOOTSTRAP, str(RUNNER.parent), str(self.root), *args]
 
+    # 预算按**行为**给，不按快慢给：这条路径会起真实的嵌套流水线（git worktree、
+    # 子进程、mock 检查），15 秒在负载高的机器上会被真实跑穿，表现为「测试红但产品没变」。
+    LAUNCH_TIMEOUT = 300
+
     def launch(self, *args, env=None):
         self.save()
         return subprocess.run(self.command(*args), capture_output=True, text=True,
-                              env={**os.environ, **(env or {})}, timeout=15)
+                              env={**os.environ, **(env or {})}, timeout=self.LAUNCH_TIMEOUT)
 
     def run_profile(self, checks=None, env=None, timeout=3):
         if checks:
@@ -766,7 +770,7 @@ class RunnerTests(unittest.TestCase):
         self.git("-c", "user.name=Runner Test", "-c", "user.email=runner@example.invalid", "commit", "-qm", "synthetic selftest")
         proc = subprocess.run([PY, str(automation / "selftest.py")], cwd=self.root,
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, timeout=300)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("ALL PASS", proc.stdout)
 

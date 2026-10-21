@@ -679,10 +679,12 @@ impl ActivityEngine {
             self.token_rate.remove(&key);
             return ActivityLevel::Offline;
         }
-        // 进程在跑 ⇒ 续上连续观测窗口（首次插入即起点）
+        // 进程在跑 ⇒ 续上连续观测窗口。起点规则只由 health 那一处给出：
+        // 若借外部时间（进程启动时刻、0）当起点，第一拍就会「已观测很久」，
+        // 一次高 CPU 读数足以被判成卡死——那是把单次读数冒充持续结论。
+        let observed = self.observed_running_since.get(&key).copied();
         self.observed_running_since
-            .entry(key.clone())
-            .or_insert(now);
+            .insert(key.clone(), health::observation_window_start(observed, now));
 
         // 资源证据独立于活动等级；确认/完成的提前返回也不能跳过它。
         // 熔断：CPU 连续 70% 以上达 5 分钟。阈值只从 health 那一个来源取——

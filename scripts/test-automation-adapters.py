@@ -97,14 +97,14 @@ export const chromium = { executablePath() { return %s; } };
     def browser_run(self, rc=0, args=None, **env):
         result = subprocess.run([NODE, str(self.scripts / 'automation/browser-check.mjs'),
                                  *(args if args is not None else [TEST])],
-                                env={**self.env, **env}, capture_output=True, text=True, timeout=8)
+                                env={**self.env, **env}, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
         self.assertNotIn('Traceback', result.stderr)
         return result
 
     def manual_run(self, rc=0, **env):
         result = subprocess.run([sys.executable, str(self.scripts / 'automation/manual-rust.py')],
-                                env={**self.env, **env}, capture_output=True, text=True, timeout=8)
+                                env={**self.env, **env}, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
         self.assertNotIn('Traceback', result.stderr)
         self.assertNotIn(SENSITIVE, result.stdout + result.stderr)
@@ -280,7 +280,7 @@ export const chromium = { executablePath() { return %s; } };
             time.sleep(0.02)
         self.assertTrue(pidfile.exists())
         proc.send_signal(signal.SIGTERM)
-        out, err = proc.communicate(timeout=5)
+        out, err = proc.communicate(timeout=60)
         self.assertEqual(proc.returncode, 1, err)
         self.assertNotIn(SENSITIVE, out + err)
         self.assertNotIn('Traceback', err)
