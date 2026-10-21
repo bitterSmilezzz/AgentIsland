@@ -4,6 +4,12 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.344] - 2026-10-21 — PID 复用不再继承上一段生命（SUP-01 进展）
+
+- **缺口**：`ProcHit` 只有 `pid` 与 `exe`。PID 会被复用——旧进程退出后号码可能分给一个**同名**进程（没有 exec），此时 pid+exe 看起来一模一样，引擎会继续沿用「已经连续观测它多久」「它已经高 CPU 多久」，于是新进程继承旧进程的卡死嫌疑与完成标记。
+- **修复**：`ProcHit` 增加 `start_time`（sysinfo 的进程启动时刻）并作为身份的一部分；引擎新增 `observed_process_start`，在「同一 PID、同一名字、启动时刻变了」时把 `last_work_signal_at` / `work_started_at` / `high_cpu_since` / `observed_running_since` 四个跨拍锚点一并归零，并记录新的启动时刻。
+- **断言**：`a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime` 覆盖两个方向——身份变了必须归零、身份没变必须延续（后者防「每拍都当成新进程」）。变异验证：把归零条件关掉，用例立刻变红（`left: Some(0), right: Some(10000)`）。
+- **未做（如实登记）**：SUP-01 仍 `partial`，剩「嵌套去重（子进程/子 Agent 不重复计入）」与「重启恢复」。
 ## [0.0.343] - 2026-10-21 — SUP-03 收口：打开来源是只读的
 
 - **缺口的最后一条**：「打开来源无业务副作用」。入口是 `open_agent_session`——先取导航目标、再校验 `expected_url`、最后才调系统中 `launch`；业务状态在取目标那一步之前就该定住，但此前没有任何断言。

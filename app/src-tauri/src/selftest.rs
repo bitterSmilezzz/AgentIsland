@@ -128,6 +128,7 @@ impl Harness {
             &self.profile,
             now,
             running,
+            None, // 夹具不模拟 PID 复用：身份参数留空 = 只有一段生命
             cpu,
             self.engine.settings.cpu_threshold,
             60.0,

@@ -61,6 +61,9 @@ pub struct ActivityEngine {
     /// 它是「卡死」判定的**资格**——死锁是「CPU 连续超阈值达 5 分钟」的时间性判定，
     /// 而前提是这段窗口确实被观测过。资格写在数据里、不靠调用方自报，见 [`crate::health::is_hung`]。
     observed_running_since: HashMap<String, i64>,
+    /// 上次认定的进程启动时刻。PID 会被复用：旧进程退出后号码可能被重新分配给一个
+    /// **同名**进程（没有 exec），此时 pid+exe 看起来一模一样，只有启动时刻能区分。
+    observed_process_start: HashMap<String, u64>,
     /// Bounded event memory; disk IO is enabled explicitly by the resident GUI.
     dedup: crate::dedup::Store,
     pub(crate) notify_ledger: crate::notify_ledger::Ledger,
@@ -234,6 +237,7 @@ impl ActivityEngine {
             work_started_at: HashMap::new(),
             high_cpu_since: HashMap::new(),
             observed_running_since: HashMap::new(),
+            observed_process_start: HashMap::new(),
             dedup: crate::dedup::Store::default(),
             notify_ledger: crate::notify_ledger::Ledger::default(),
             notify_restored: 0,
@@ -421,10 +425,16 @@ impl ActivityEngine {
                     self.task_sources.insert(profile.id.clone(), choice);
                 }
             }
+            let pid_start = hits
+                .iter()
+                .max_by_key(|h| h.memory)
+                .map(|h| h.start_time)
+                .filter(|start| *start > 0);
             let level = self.decide_level(
                 &profile,
                 now,
                 process_running,
+                pid_start,
                 cpu,
                 cpu_threshold,
                 working_window,
@@ -671,6 +681,7 @@ impl ActivityEngine {
         profile: &AgentProfile,
         now: i64,
         process_running: bool,
+        pid_start: Option<u64>,
         cpu: Option<f64>,
         cpu_threshold: f64,
         working_window: f64,
@@ -680,6 +691,26 @@ impl ActivityEngine {
         pid: Option<u32>,
     ) -> ActivityLevel {
         let key = profile.id.clone();
+        // PID 复用：号码没变、名字也没变，但**不是同一段生命**。此时进程在跑这件事
+        // 依旧成立，可「已经连续观测它多久」「它已经高 CPU 多久」这些跨拍状态必须归零——
+        // 否则新进程会继承旧进程的嫌疑与完成标记，用户看到的是上一段生命的结论。
+        if let Some(start) = pid_start.filter(|start| *start > 0) {
+            let changed = self
+                .observed_process_start
+                .get(&key)
+                .is_some_and(|known| *known != start);
+            if changed {
+                for anchors in [
+                    &mut self.last_work_signal_at,
+                    &mut self.work_started_at,
+                    &mut self.high_cpu_since,
+                    &mut self.observed_running_since,
+                ] {
+                    anchors.remove(&key);
+                }
+            }
+            self.observed_process_start.insert(key.clone(), start);
+        }
         // Match Swift's clock-rewind protection: future anchors must not extend a hold forever.
         for anchors in [
             &mut self.last_work_signal_at,

@@ -20,6 +20,10 @@ struct ObservedProcess {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcHit {
     pub pid: u32,
+    /// 进程启动时刻（秒）。**身份的一部分**：PID 会被复用，同一个 PID 上换了一个
+    /// 同名的进程（没有 exec，只是旧的退出后号码被重新分配）时，pid+exe 看起来一样，
+    /// 只有启动时刻能证明「这不是同一段生命」。SUP-01 的「PID 复用仍认旧身份」靠它挡。
+    pub start_time: u64,
     /// 父进程 PID（进程树要用它；`0` = 没有父，即系统级）
     pub ppid: u32,
     pub name: String,
@@ -95,6 +99,7 @@ impl ProcessMonitor {
                     .to_string_lossy()
                     .to_lowercase();
                 let name = raw.strip_suffix(".exe").unwrap_or(&raw).to_string();
+                let start_time = process.start_time();
                 let exe_path = process
                     .exe()
                     .map(|path| path.to_string_lossy().into_owned())
@@ -108,6 +113,7 @@ impl ProcessMonitor {
                     launch_entry: command_entry(&name, &exe_path, &argv),
                     hit: ProcHit {
                         pid: pid.as_u32(),
+                        start_time,
                         ppid: process.parent().map(|parent| parent.as_u32()).unwrap_or(0),
                         name,
                         exe_path,

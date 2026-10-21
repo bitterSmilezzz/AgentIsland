@@ -7,6 +7,8 @@ use std::time::Duration;
 struct Replay {
     engine: ActivityEngine,
     profile: AgentProfile,
+    /// 本夹具模拟的进程启动时刻（`None` = 不模拟 PID 复用，等价于只有一段生命）。
+    process_start: Option<u64>,
 }
 
 impl Replay {
@@ -19,6 +21,7 @@ impl Replay {
     fn from_engine(engine: ActivityEngine) -> Self {
         Self {
             engine,
+            process_start: None,
             profile: AgentProfile {
                 id: "fixture-agent".into(),
                 name: "Fixture Agent".into(),
@@ -62,6 +65,7 @@ impl Replay {
             &self.profile,
             now,
             running,
+            self.process_start,
             cpu,
             self.engine.settings.cpu_threshold,
             60.0,
@@ -1368,4 +1372,39 @@ fn opening_a_source_reads_navigation_without_touching_business_state() {
     // 只读也不等于「假装成功」：过期的提醒仍要拒绝，且拒绝同样不改状态
     assert!(engine.navigation_target("codex", Some("gone")).is_err());
     assert_eq!(snapshot(&engine), before, "拒绝过期提醒时也不许动业务状态");
+}
+
+
+/// PID 被复用（旧进程退出、号码分给一个**同名**进程，没有 exec）时，
+/// 新进程不得继承旧进程的跨拍状态：连续观测起点与高 CPU 起点都必须归零。
+///
+/// pid+exe 在这两种情形下完全相同，只有启动时刻能区分——这条用例就是钉住它。
+#[test]
+fn a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime() {
+    let mut replay = Replay::new();
+    replay.process_start = Some(1_000);
+    replay.sample(0, true, Some(99.0), None);
+    let key = replay.profile.id.clone();
+    assert_eq!(replay.engine.observed_running_since.get(&key), Some(&0));
+    assert_eq!(replay.engine.high_cpu_since.get(&key), Some(&0));
+
+    // 同一 PID、同一名字，但启动时刻变了 ⇒ 这是一段新的生命
+    replay.process_start = Some(2_000);
+    replay.sample(10_000, true, Some(99.0), None);
+    assert_eq!(
+        replay.engine.observed_running_since.get(&key),
+        Some(&10_000),
+        "PID 复用后仍沿用旧进程的连续观测起点：卡死判定会继承上一段生命的结论"
+    );
+    assert_eq!(
+        replay.engine.high_cpu_since.get(&key),
+        Some(&10_000),
+        "PID 复用后高 CPU 起点没有归零"
+    );
+
+    // 对照：启动时刻不变时锚点必须延续（不能每拍都当成新进程）
+    replay.process_start = Some(2_000);
+    replay.sample(20_000, true, Some(99.0), None);
+    assert_eq!(replay.engine.observed_running_since.get(&key), Some(&10_000));
+    assert_eq!(replay.engine.high_cpu_since.get(&key), Some(&10_000));
 }

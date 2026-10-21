@@ -101,7 +101,7 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md",
-      "coverage_note": "partial — 身份/资产/注入安全、单实例、CLI 派发、同 PID exec、项目路径反例已有；缺：嵌套去重、PID 复用(无 exec)仍认旧身份、重启恢复",
+      "coverage_note": "partial — 身份/资产/注入安全、单实例、CLI 派发、同 PID exec、项目路径反例已有；本轮补 **PID 复用（无 exec）**：`ProcHit` 增加进程启动时刻并作为身份的一部分，引擎在「同一 PID、同一名字但启动时刻变了」时把连续观测起点与高 CPU 起点归零（否则新进程继承旧进程的卡死嫌疑与完成标记）；`a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime` 覆盖「身份变了要归零」与「身份没变要延续」两个方向，变异（关掉归零）可拒错；缺：嵌套去重（子进程/子 Agent 不重复计入）、重启恢复",
       "status": "partial"
     },
     "SUP-02": {

@@ -1894,6 +1894,7 @@ mod memory_anomaly_tests {
             .unwrap();
         let entry = crate::procmon::ProcHit {
             pid: 42,
+            start_time: 0,
             ppid: 40,
             name: "codex".into(),
             exe_path: "/test/codex".into(),

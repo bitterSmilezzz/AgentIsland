@@ -523,6 +523,7 @@ mod tests {
     fn hit(pid: u32, ppid: u32, name: &str) -> ProcHit {
         ProcHit {
             pid,
+            start_time: 0,
             ppid,
             name: name.to_string(),
             exe_path: format!("/opt/homebrew/bin/{name}"),

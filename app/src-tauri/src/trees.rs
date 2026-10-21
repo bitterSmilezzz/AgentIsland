@@ -180,6 +180,7 @@ mod tests {
     fn hit(pid: u32, ppid: u32, name: &str, cpu: Option<f64>, memory: u64) -> ProcHit {
         ProcHit {
             pid,
+            start_time: 0,
             ppid,
             name: name.to_string(),
             exe_path: format!("/usr/local/bin/{name}"),

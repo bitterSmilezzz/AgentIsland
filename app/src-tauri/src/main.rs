@@ -5827,6 +5827,7 @@ mod level_contract_sentinel {
             &profile,
             1_000_000,
             false, // process_running
+            None,  // 身份参数：本夹具不模拟 PID 复用
             Some(99.0),
             0.0,
             30.0,
@@ -5864,7 +5865,8 @@ mod level_contract_sentinel {
             &profile,
             1_000_000,
             true,
-            None,
+            None, // 身份参数：本夹具不模拟 PID 复用
+            None, // cpu：没有差分窗口
             0.0,
             30.0,
             1.0,
