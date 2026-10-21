@@ -100,7 +100,7 @@ class FrameworkVerifierTests(unittest.TestCase):
         env = {"PATH": str(self.bin), "HOME": str(self.root), "PYTHONDONTWRITEBYTECODE": "1"}
         result = subprocess.run(
             ["/bin/bash", str(self.root / "scripts/verify-framework.sh")],
-            cwd=self.root.parent, env=env, text=True, capture_output=True, timeout=30,
+            cwd=self.root.parent, env=env, text=True, capture_output=True, timeout=180,
         )
         self.output = result.stdout + result.stderr
         self.calls = []
@@ -288,7 +288,7 @@ sys.exit(int(os.environ["CARGO_RC"]))
                 "PATH": str(self.bin), "HOME": str(self.root), "TMPDIR": str(self.root / "tmp"),
                 "PYTHONDONTWRITEBYTECODE": "1", "EXPECT_CFG": "1" if expect_cfg else "0",
                 "CARGO_RC": str(cargo_rc), "EXPECTED_SYMBOL": symbol,
-            }, capture_output=True, text=True, timeout=30,
+            }, capture_output=True, text=True, timeout=180,
         )
         self.output = result.stdout + result.stderr
         self.calls = log.read_text().splitlines() if log.exists() else []
@@ -376,7 +376,7 @@ class WindowsCrateTests(unittest.TestCase):
                 ["/bin/bash", str(scripts / "check-windows-crate.sh")],
                 cwd=root, env={"PATH": str(bin_dir), "HOME": str(root),
                                "TMPDIR": str(root)},
-                capture_output=True, text=True, timeout=60)
+                capture_output=True, text=True, timeout=300)
             output = result.stdout + result.stderr
             self.assertNotEqual(result.returncode, 0, output)
             self.assertIn("tauri-build-9.9.9", output)

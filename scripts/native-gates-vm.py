@@ -243,7 +243,76 @@ finally:
         raise ValueError('Prior acceptance cleanup proof is invalid')
 
 
+def reset_guest_acceptance(ssh, python, home, evidence):
+    """终止**只属于本工具**的残留验收实例，否则 open 会投递给旧 app。
+
+    BUG-007：门禁只 launch 新 bundle，但 `open` 按 bundle id 投递；上一轮中断留下的
+    实例仍在运行时，请求全部进了旧 app，新实例根本不接——同一产物重跑**稳定失败**于
+    helper-hide-delivery，看起来像产品缺陷。
+
+    判据只认本工具自己的路径前缀（`<home>/agentisland-native-acceptance-*`）：
+    不按进程名杀、不碰用户自己跑的 AgentIsland，也不碰其他任何 app。杀完必须复核消失，
+    否则拒绝继续——「以为清理了」比不清理更危险。
+    """
+    code = '''import json,os,signal,subprocess,time
+from pathlib import Path
+home=Path(HOME).resolve()
+prefix=str(home)+'/agentisland-native-acceptance-'
+def instances():
+    # 必须用 args（完整命令行）：command/comm 会被截断成路径前缀，截断后既匹配不到验收实例，也可能误判。
+    out=subprocess.run(['ps','-axo','pid=,args='],capture_output=True,text=True,timeout=5).stdout
+    found=[]
+    for line in out.splitlines():
+        pid,_,command=line.strip().partition(' ')
+        command=command.strip()
+        # 判据是**路径前缀**：本工具把验收产物解到 <home>/agentisland-native-acceptance-<hex>/，
+        # 只要命令行里出现这个前缀就归本工具所有；用户自己的 app 不在这个前缀下。
+        if prefix not in command:continue
+        if 'AgentIsland.app' not in command:continue
+        if not pid.isdigit():continue
+        found.append((int(pid),command))
+    return found
+stopped=[]
+for pid,command in instances():
+    os.kill(pid,signal.SIGTERM)
+    stopped.append(pid)
+deadline=time.time()+10
+while time.time()<deadline and instances():
+    time.sleep(.1)
+remaining=[pid for pid,_ in instances()]
+# 只杀进程不够：历轮解包目录会被 LaunchServices 记住，`open` 按 bundle id 解析时
+# 可能落到一个**已不存在或未运行**的副本上，URL 投递于是落空——症状与 BUG-007 相同。
+# 因此把这些只属于本工具的旧目录先注销再删除（判据仍是同一路径前缀）。
+register='/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+stale=sorted(p for p in home.iterdir() if p.is_dir() and p.name.startswith('agentisland-native-acceptance-'))
+unregistered=0
+for path in stale:
+    bundle=path/'dist/AgentIsland.app'
+    if bundle.is_dir():
+        subprocess.run([register,'-u',str(bundle)],capture_output=True,timeout=30)
+        unregistered+=1
+    subprocess.run(['rm','-rf','--',str(path)],capture_output=True,timeout=60)
+removed=[p for p in stale if p.exists()]
+print(json.dumps({'stopped':len(stopped),'remaining':len(remaining),
+                  'unregistered':unregistered,'removed':len(stale)-len(removed),'not_removed':len(removed)}))
+'''.replace('HOME', repr(home))
+    with (evidence / 'guest-reset.log').open('w') as log:
+        result = subprocess.run(ssh + [f'{python} -c {shlex.quote(code)}'],
+                                stdout=log, stderr=subprocess.STDOUT, timeout=60)
+    if result.returncode != 0:
+        raise ValueError('Guest acceptance reset failed; refusing to run native gates')
+    record = json.loads((evidence / 'guest-reset.log').read_text())
+    if (type(record.get('stopped')) is not int or record.get('remaining') != 0
+            or record.get('not_removed') != 0):
+        raise ValueError('Guest acceptance reset did not prove every stale instance is gone')
+    if record['stopped'] or record['removed']:
+        print(f'Guest reset: stopped {record["stopped"]} stale instance(s), '
+              f'unregistered {record["unregistered"]} and removed {record["removed"]} stale acceptance '
+              f'director{"y" if record["removed"] == 1 else "ies"}.', flush=True)
+
+
 def main():
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--vm', required=True)
     parser.add_argument('--user', required=not bool(os.environ.get('NATIVE_TEST_USER')),
@@ -312,6 +381,8 @@ print(json.dumps({'platform':subprocess.check_output(['uname','-s'],text=True).s
     run(['codesign', '--verify', '--strict', str(app)], capture_output=True)
     evidence = base / ('acceptance-' + uuid.uuid4().hex)
     evidence.mkdir()
+    # 先复位来宾：残留实例会让 open 把请求投给旧 app（BUG-007）。
+    reset_guest_acceptance(ssh, python, meta['home'], evidence)
     source = evidence / 'policy.swift'; helper = evidence / 'policy-helper'
     source.write_text('''import AppKit
 if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(processIdentifier: pid) {

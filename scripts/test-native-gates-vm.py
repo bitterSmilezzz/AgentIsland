@@ -107,6 +107,75 @@ class ResourceGateTests(unittest.TestCase):
                 vm.run_resource(['ssh'], 'python', 'guest', root, manifest)
             return json.loads((root / 'receipt.json').read_text())
 
+    def test_guest_reset_only_touches_this_tool_acceptance_instances(self):
+        """BUG-007：复位只能杀本工具自己的验收实例，且必须复核消失。
+
+        这里不启动任何 VM：把 ssh 换成记录器，直接在**本机**跑同一段脚本，
+        用两个合成进程（一个带 acceptance 前缀、一个不带）证明判据是路径前缀而不是进程名。
+        """
+        import os
+        import sys
+        import tempfile
+        import time
+        with tempfile.TemporaryDirectory(prefix='guest-reset-') as temporary:
+            home = Path(temporary).resolve()
+            acceptance = home / 'agentisland-native-acceptance-deadbeef'
+            (acceptance / 'dist/AgentIsland.app/Contents/MacOS').mkdir(parents=True)
+            target = acceptance / 'dist/AgentIsland.app/Contents/MacOS/agentisland'
+            # 不用 exec：exec 会把 shell 替换掉，ps 里只剩 sleep，夹具就不像真实 app 了。
+            target.write_text('#!/bin/sh\nsleep 5\n')
+            target.chmod(0o755)
+            unrelated_dir = home / 'unrelated'
+            unrelated_dir.mkdir()
+            unrelated = unrelated_dir / 'agentisland'
+            unrelated.write_text('#!/bin/sh\nsleep 5\n')
+            unrelated.chmod(0o755)
+            stale = subprocess.Popen([str(target)])
+            keep = subprocess.Popen([str(unrelated)])
+            self.addCleanup(lambda: [p.kill() for p in (stale, keep) if p.poll() is None])
+            time.sleep(0.3)
+            evidence = home / 'evidence'
+            evidence.mkdir()
+            calls = []
+
+            real_run = subprocess.run
+
+            def fake_ssh(argv, **options):
+                calls.append(argv)
+                # ssh 前缀换成 shell 执行：这段脚本本来就是给 `sh -c` 用的命令串。
+                return real_run(['/bin/sh', '-c', argv[-1]], **options)
+
+            with patch.object(vm.subprocess, 'run', side_effect=fake_ssh):
+                vm.reset_guest_acceptance(['ssh'], sys.executable, str(home), evidence)
+            record = __import__('json').loads((evidence / 'guest-reset.log').read_text())
+            self.assertEqual(record['stopped'], 1)
+            self.assertEqual(record['remaining'], 0)
+            self.assertEqual(record['not_removed'], 0)
+            # 迟滞的 LaunchServices 注册同样是故障源：旧解包目录必须被注销并删除。
+            self.assertEqual(record['removed'], 1)
+            self.assertFalse(acceptance.exists(), '旧验收目录必须被清掉')
+            self.assertIsNotNone(stale.poll(), '验收实例必须被终止')
+            self.assertIsNone(keep.poll(), '非验收实例（用户自己的 app）不得被终止')
+
+    def test_guest_reset_refuses_when_an_instance_survives(self):
+        """复核失败必须拒绝继续，而不是「以为清理了」。"""
+        import sys
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='guest-reset-fail-') as temporary:
+            home = Path(temporary).resolve()
+            evidence = home / 'evidence'
+            evidence.mkdir()
+
+            def fake_ssh(argv, **options):
+                class Result:
+                    returncode = 0
+                (evidence / 'guest-reset.log').write_text('{"stopped": 1, "remaining": 1}')
+                return Result()
+
+            with patch.object(vm.subprocess, 'run', side_effect=fake_ssh), \
+                    self.assertRaises(ValueError):
+                vm.reset_guest_acceptance(['ssh'], sys.executable, str(home), evidence)
+
     def test_scratch_directory_exists_on_a_clean_checkout(self):
         # `.build/` is git-ignored, so it is absent from a fresh checkout. The gate
         # stages temporary payloads there, so it must create the directory rather than

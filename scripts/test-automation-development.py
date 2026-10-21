@@ -152,11 +152,17 @@ class DevelopmentTests(unittest.TestCase):
     def save(self):
         self.write("scripts/automation/registry.json", json.dumps(self.data))
 
+    # 预算必须够；这里断言的是**流水线行为**，不是它跑多快。固定 120 秒在负载 80+
+    # 的机器上会被真实跑穿（实测一次 1329 秒的整轮里多个 launch 撞到上限），
+    # 表现为「测试红但没有任何产品差异」——把调度延迟记成缺陷比没有门禁更糟。
+    LAUNCH_TIMEOUT = 900
+
     def launch(self, *args, env=None):
         self.save()
         command = [PY, "-c", BOOTSTRAP, str(AUTOMATION), str(self.root), *args]
         return subprocess.run(command, capture_output=True, text=True,
-                              cwd=self.root, env={**os.environ, **(env or {})}, timeout=120)
+                              cwd=self.root, env={**os.environ, **(env or {})},
+                              timeout=self.LAUNCH_TIMEOUT)
 
     def develop(self, *args, env=None):
         proc = self.launch(*args, env=env)
