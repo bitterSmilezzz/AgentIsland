@@ -1310,3 +1310,62 @@ fn a_repeated_completion_is_silent_even_with_enough_new_work_duration() {
             Some("claude://threads/at-push")
         );
     }
+
+
+/// 打开来源只**读**导航目标：不许顺手确认、入队、标记或改任务状态。
+///
+/// 这条钉的是 SUP-03 的最后一条缺口。入口是 `open_agent_session`——它先取目标、
+/// 再校验 `expected_url`、最后才调系统的 launch；业务状态在取目标那一步之前就该定住。
+/// 用例把「两次打开」前后的可观察状态逐项比对：队列长度、队首、流水长度、
+/// 账本的重复/冲突/淘汰计数，以及对外契约里的角标。
+#[test]
+fn opening_a_source_reads_navigation_without_touching_business_state() {
+    let (_, rx) = mpsc::channel();
+    let mut engine = ActivityEngine::new(Settings::default(), rx);
+    engine.session_navigation.insert(
+        "codex".into(),
+        crate::session_navigation::Target {
+            agent_id: "codex".into(),
+            exact_session: true,
+            label: "codex".into(),
+            hint: String::new(),
+            bundle_id: None,
+            url: Some("codex://threads/own-session".into()),
+        },
+    );
+    let event = |id: &str| AgentTaskEvent {
+        id: id.into(),
+        agent_id: "codex".into(),
+        agent_name: "Codex".into(),
+        event_type: "attention".into(),
+        timestamp: 0,
+        message: Some("确认测试".into()),
+        detail: None,
+        duration: 0.0,
+        externally_delivered: false,
+    };
+    engine.push_session_event(event("first"));
+    engine.push_session_event(event("second"));
+    let snapshot = |engine: &ActivityEngine| {
+        (
+            engine.pending_count(),
+            engine.latest_event.as_ref().map(|e| e.id.clone()),
+            engine.recent_events().len(),
+            engine.notify_ledger.duplicates(),
+            engine.notify_ledger.conflicts(),
+            engine.notify_ledger.evicted(),
+            engine.state().pending_events,
+            engine.state().latest_event.map(|e| e.id),
+        )
+    };
+    let before = snapshot(&engine);
+    let opened = engine.navigation_target("codex", Some("second")).unwrap();
+    assert_eq!(opened.url.as_deref(), Some("codex://threads/own-session"));
+    // 重复打开同一来源（用户连点）同样不得改状态
+    let again = engine.navigation_target("codex", Some("second")).unwrap();
+    assert_eq!(again.url, opened.url);
+    assert_eq!(snapshot(&engine), before, "打开来源改动了业务状态：导航必须只读");
+    // 只读也不等于「假装成功」：过期的提醒仍要拒绝，且拒绝同样不改状态
+    assert!(engine.navigation_target("codex", Some("gone")).is_err());
+    assert_eq!(snapshot(&engine), before, "拒绝过期提醒时也不许动业务状态");
+}
