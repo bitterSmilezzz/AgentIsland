@@ -100,7 +100,7 @@ const event = {id:'navigation-fixture',agent_id:'aider',agent_name:'Aider',event
 setState({route:'list',expanded:true,settings:{dock_edge:'top',disabled_agents:[]},engine:{snapshots:[],grand_total:{},latest_event:event}});
 views.renderCard();
 assert.ok(!root.innerHTML.includes('data-agent-jump'), 'CLI-only reminders must not advertise an application jump');
-setState({engine:{snapshots:[],grand_total:{},latest_event:{...event,agent_id:'codex'},event_navigation:{'navigation-fixture':{exactSession:true,url:'codex://threads/fixture'}}}});
+setState({engine:{snapshots:[],grand_total:{},latest_event:{...event,agent_id:'codex'},event_navigation:{codex:{'navigation-fixture':{exactSession:true,url:'codex://threads/fixture'}}}}});
 views.renderCard();
 assert.ok(root.innerHTML.includes('data-agent-jump="codex"'), 'a captured GUI session must retain its reminder action');
 console.log('PASS: every built-in has a graphic, safe custom fallback and all five UI identity locations');

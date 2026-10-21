@@ -475,7 +475,10 @@ pub struct Export {
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineState {
     pub session_navigation: std::collections::HashMap<String, crate::session_navigation::Target>,
-    pub event_navigation: std::collections::HashMap<String, crate::session_navigation::Target>,
+    /// 按 agent 分域的事件导航目标：`[agent_id][event_id]`。
+    /// 不分域时两个 agent 的同名事件会互相覆盖（BUG-008）。
+    pub event_navigation:
+        std::collections::HashMap<String, std::collections::HashMap<String, crate::session_navigation::Target>>,
     pub snapshots: Vec<AgentSnapshot>,
     pub latest_event: Option<AgentTaskEvent>,
     /// 已发出但还没确认的事件条数（不含 `latest_event` 那条）。

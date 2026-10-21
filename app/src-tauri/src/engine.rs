@@ -83,7 +83,11 @@ pub struct ActivityEngine {
     pub claude_plan_runtime:
         Option<std::sync::Arc<std::sync::Mutex<crate::claude_plan_runtime::Runtime>>>,
     session_navigation: HashMap<String, crate::session_navigation::Target>,
-    event_navigation: HashMap<String, crate::session_navigation::Target>,
+    // 键必须**按 agent 分域**：账本 notify_ledger::accept_internal 的内部分身份是
+    // (agent, kind, raw id)，并写明「会话信号可以跨作用域复用同一原始 id」。
+    // 只用事件 id 单键时，两个 agent 产出的同一原始 id 会互相覆盖，
+    // `navigation_target(agent, event)` 就可能返回**另一个 agent 的会话**（BUG-008）。
+    event_navigation: HashMap<String, HashMap<String, crate::session_navigation::Target>>,
     pub latest_event: Option<AgentTaskEvent>,
     /// 已发出但用户还没确认的事件队列，`latest_event` 是它的队首。
     ///
@@ -163,6 +167,24 @@ impl HookScheduler {
             }
             // 合并后可能剩下一枚已消费事件的唤醒信号；它不能触发全量采样。
         }
+    }
+}
+
+/// 按 (agent, event id) 摘掉一条导航绑定。**只此一处**：单键删除正是 BUG-008 的形状。
+fn remove_event_navigation(
+    map: &mut HashMap<String, HashMap<String, crate::session_navigation::Target>>,
+    agent: &str,
+    id: &str,
+) {
+    let empty = map
+        .get_mut(agent)
+        .map(|targets| {
+            targets.remove(id);
+            targets.is_empty()
+        })
+        .unwrap_or(false);
+    if empty {
+        map.remove(agent);
     }
 }
 
@@ -921,14 +943,25 @@ impl ActivityEngine {
     /// 顺带把这条事件过一遍外发闸门并记账：**发不出去也要留痕**，
     /// 否则界面只能显示「最近没发过」，看不出是被静默时段挡下还是通道没配好。
     fn push_session_event(&mut self, event: AgentTaskEvent) {
-        let target = self.session_navigation.get(&event.agent_id).cloned();
+        let agent = event.agent_id.clone();
+        let target = self.session_navigation.get(&agent).cloned();
         let id = event.id.clone();
         self.push_event(event);
         if let Some(target) = target {
-            self.event_navigation.insert(id, target);
+            self.event_navigation
+                .entry(agent)
+                .or_default()
+                .insert(id, target);
         }
-        let live: HashSet<String> = self.recent_events().iter().map(|e| e.id.clone()).collect();
-        self.event_navigation.retain(|id, _| live.contains(id));
+        let live: HashSet<(String, String)> = self
+            .recent_events()
+            .iter()
+            .map(|e| (e.agent_id.clone(), e.id.clone()))
+            .collect();
+        self.event_navigation.retain(|agent, targets| {
+            targets.retain(|id, _| live.contains(&(agent.clone(), id.clone())));
+            !targets.is_empty()
+        });
     }
 
     pub fn navigation_target(
@@ -949,7 +982,10 @@ impl ActivityEngine {
             {
                 return Err("这条提醒已更新，请重试".into());
             }
-            self.event_navigation.get(event).cloned()
+            self.event_navigation
+                .get(agent)
+                .and_then(|targets| targets.get(event))
+                .cloned()
         } else {
             self.session_navigation.get(agent).cloned()
         };
@@ -998,7 +1034,7 @@ impl ActivityEngine {
         // the visible head. Evict oldest so both retain exactly the latest events.
         if self.pending_events.len() + 1 >= crate::notify_ledger::PENDING_CAP {
             if let Some(discarded) = self.latest_event.take() {
-                self.event_navigation.remove(&discarded.id);
+                remove_event_navigation(&mut self.event_navigation, &discarded.agent_id, &discarded.id);
             }
             self.latest_event = self.pending_events.pop_front();
         }
@@ -1066,7 +1102,7 @@ impl ActivityEngine {
     /// 确认当前这条，推下一条（前端关掉横幅时调用）
     pub fn ack_latest_event(&mut self) {
         if let Some(event) = &self.latest_event {
-            self.event_navigation.remove(&event.id);
+            remove_event_navigation(&mut self.event_navigation, &event.agent_id, &event.id);
             self.notify_ledger.ack(event);
         }
         self.latest_event = self.pending_events.pop_front();

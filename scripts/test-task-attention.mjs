@@ -19,7 +19,7 @@ assert.match(taskAttentionHtml({error:'损坏 <文件>'},engine),/损坏 &lt;文
 console.log('PASS: compact counts, precise conversation detail, escaped text and navigation identities');
 
 const summary={first:item};
-const eventEngine={latest_event:{id:'event',agent_id:'codex',event_type:'attention',externally_delivered:false},event_navigation:{event:{url:item.target.url}}};
+const eventEngine={latest_event:{id:'event',agent_id:'codex',event_type:'attention',externally_delivered:false},event_navigation:{codex:{event:{url:item.target.url}}}};
 assert.equal(taskCoversEvent(summary,eventEngine),true,'the same verified question needs one banner');
 eventEngine.latest_event.detail='kind=memory elapsed_ms=1';assert.equal(taskCoversEvent(summary,eventEngine),false,'resource alerts remain separate');
 eventEngine.latest_event.detail=null;eventEngine.latest_event.externally_delivered=true;assert.equal(taskCoversEvent(summary,eventEngine),false,'external notices are not silently deduplicated');

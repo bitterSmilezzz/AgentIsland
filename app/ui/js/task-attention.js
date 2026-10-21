@@ -40,7 +40,9 @@ export function taskCoversSnapshot(value, snapshot, target) {
 export function taskCoversEvent(value, engine) {
   const item=value?.first, event=engine?.latest_event;
   if (!item?.observed || !item?.target?.exactSession || !event || event.externally_delivered || event.event_type !== 'attention' || /(?:^|\s)kind=/.test(event.detail ?? '')) return false;
-  return item.agent_id === event.agent_id && engine.event_navigation?.[event.id]?.url === item.target.url;
+  // 导航目标按 agent 分域：两个 agent 的同名事件不能互相顶掉（BUG-008）。
+    return item.agent_id === event.agent_id
+    && engine.event_navigation?.[event.agent_id]?.[event.id]?.url === item.target.url;
 }
 export function taskAttentionHtml(value, engine) {
   if (!value) return '';

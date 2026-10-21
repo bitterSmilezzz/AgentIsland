@@ -473,7 +473,7 @@ function listCard(eng, st, visible, dark, edge) {
   const hp = headerPresentation(eng);
   const gt = eng.grand_total ?? {};
   const ev = eng.latest_event;
-  const canOpenEvent = !!(eng.event_navigation?.[ev?.id] ?? eng.session_navigation?.[ev?.agent_id]);
+  const canOpenEvent = !!(eng.event_navigation?.[ev?.agent_id]?.[ev?.id] ?? eng.session_navigation?.[ev?.agent_id]);
 
   const chev = islandToolbarIcon(edge);
 
@@ -724,7 +724,7 @@ function bindCardEvents(eng, st) {
 
   const jump = root.querySelector('[data-agent-jump]');
   if (jump) {
-    const target = eng.event_navigation?.[eng.latest_event?.id];
+    const target = eng.event_navigation?.[eng.latest_event?.agent_id]?.[eng.latest_event?.id];
     jump.title = target?.hint ?? '打开工具；此提醒暂不支持定位会话';
     jump.setAttribute('aria-label', target?.exactSession ? `打开 ${eng.latest_event.agent_name} 对应会话` : `打开 ${eng.latest_event?.agent_name ?? '智能体'} 工具`);
     jump.addEventListener('click', e => { e.stopPropagation(); openAgentSession(jump, jump.dataset.agentJump, eng.latest_event?.id, target?.url); });

@@ -880,11 +880,21 @@ fn reminder_navigation_freezes_its_session_and_rejects_stale_events() {
     );
     engine.ack_latest_event();
     assert!(engine.navigation_target("codex", Some("observed")).is_err());
-    assert!(!engine.event_navigation.contains_key("observed"));
+    assert!(engine
+        .event_navigation
+        .values()
+        .all(|targets| !targets.contains_key("observed")));
     for i in 0..100 {
         engine.push_session_event(event(&format!("queued-{i}")));
     }
-    assert!(engine.event_navigation.len() <= 65);
+    assert!(
+        engine
+            .event_navigation
+            .values()
+            .map(std::collections::HashMap::len)
+            .sum::<usize>()
+            <= 65
+    );
     assert!(engine.navigation_target("codex", Some("queued-0")).is_err());
 }
 
@@ -1217,4 +1227,86 @@ fn a_repeated_completion_is_silent_even_with_enough_new_work_duration() {
         Some("completed".to_string()),
         "新指纹必须能推出完成，否则上面的断言只是 completed 分支整体失效"
     );
+
+
 }
+
+    /// BUG-008：两个 agent 产出**同一原始 id** 时，导航绑定必须各自独立。
+    ///
+    /// 账本侧的内部分身份一直是 (agent, kind, raw id) 分域的，并写明「会话信号可以跨
+    /// 这些作用域复用同一原始 id」；导航侧原先只用事件 id 单键，后写入的会覆盖前一个，
+    /// 于是 `navigation_target(agent, event)` 可能返回**另一个 agent 的会话地址**。
+    ///
+    /// 断言用**冻结语义**而不是「等于当前 session 目标」：推送后再把两个 agent 的
+    /// session 目标都改掉。若事件绑定真的按 agent 分域存住了，读回来应是推送那一刻的值；
+    /// 若绑定被另一条覆盖/丢失，读取会退回到**已改动**的 session 目标——两者可区分。
+    #[test]
+    fn the_same_raw_event_id_from_two_agents_never_shares_one_navigation_target() {
+        let (_, rx) = mpsc::channel();
+        let mut engine = ActivityEngine::new(Settings::default(), rx);
+        let target = |agent: &str, session: &str| crate::session_navigation::Target {
+            agent_id: agent.into(),
+            exact_session: true,
+            label: agent.into(),
+            hint: String::new(),
+            bundle_id: None,
+            url: Some(format!("{agent}://threads/{session}")),
+        };
+        for agent in ["codex", "claude"] {
+            assert!(
+                engine.profiles.iter().any(|p| p.id == agent),
+                "夹具假设：{agent} 必须是内置档案"
+            );
+            engine
+                .session_navigation
+                .insert(agent.into(), target(agent, "at-push"));
+        }
+        let event = |agent: &str, id: &str| AgentTaskEvent {
+            id: id.into(),
+            agent_id: agent.into(),
+            agent_name: agent.into(),
+            event_type: "attention".into(),
+            timestamp: 0,
+            message: Some("确认测试".into()),
+            detail: None,
+            duration: 0.0,
+            externally_delivered: false,
+        };
+        engine.push_session_event(event("codex", "same-id"));
+        engine.push_session_event(event("claude", "same-id"));
+        // 推送之后把 session 目标改掉：冻结的事件绑定必须仍指向 at-push
+        for agent in ["codex", "claude"] {
+            engine
+                .session_navigation
+                .insert(agent.into(), target(agent, "moved-after"));
+        }
+        assert_eq!(
+            engine
+                .navigation_target("codex", Some("same-id"))
+                .unwrap()
+                .url
+                .as_deref(),
+            Some("codex://threads/at-push"),
+            "codex 的事件绑定被顶掉了（或根本没存住）"
+        );
+        assert_eq!(
+            engine
+                .navigation_target("claude", Some("same-id"))
+                .unwrap()
+                .url
+                .as_deref(),
+            Some("claude://threads/at-push"),
+            "claude 的同一原始 id 事件读到了别的目标：这正是 BUG-008 的串号"
+        );
+        // 队首确认只摘掉自己那条：另一条绑定的导航必须还在
+        engine.ack_latest_event();
+        assert!(engine.navigation_target("codex", Some("same-id")).is_err());
+        assert_eq!(
+            engine
+                .navigation_target("claude", Some("same-id"))
+                .unwrap()
+                .url
+                .as_deref(),
+            Some("claude://threads/at-push")
+        );
+    }
