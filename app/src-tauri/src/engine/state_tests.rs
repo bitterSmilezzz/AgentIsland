@@ -1439,3 +1439,38 @@ fn nested_child_processes_add_up_once_and_never_become_a_second_instance() {
     assert_eq!(crate::engine::agent_representative(&[]), None);
     assert_eq!(crate::engine::agent_memory_bytes(&[]), 0);
 }
+
+
+/// 重启恢复（口径 A）：进程侧的身份与嫌疑**都不得跨重启继承**。
+///
+/// 理由：连续观测起点、高 CPU 起点、进程启动时刻描述的是「本进程这一次看到的那段生命」。
+/// 一旦被持久化并在重启后种回去，新进程第一次就被当成「已经观测很久 / 一直高 CPU」，
+/// 于是重启后第一拍就能得出卡死结论——那不是观测，是上一段生命的断言。
+#[test]
+fn a_restart_starts_with_no_inherited_process_identity_or_suspicion() {
+    // 上一段「生命」：跑出完整的锚点，并且带一个高 CPU 嫌疑
+    let mut previous = Replay::new();
+    previous.process_start = Some(1_000);
+    previous.sample(0, true, Some(99.0), None);
+    let key = previous.profile.id.clone();
+    assert!(previous.engine.observed_running_since.contains_key(&key));
+    assert!(previous.engine.high_cpu_since.contains_key(&key));
+    assert!(previous.engine.observed_process_start.contains_key(&key));
+
+    // 重启：新引擎必须**什么都不记得**
+    let mut restarted = Replay::new();
+    assert!(restarted.engine.observed_running_since.is_empty());
+    assert!(restarted.engine.high_cpu_since.is_empty());
+    assert!(restarted.engine.observed_process_start.is_empty());
+    assert!(restarted.engine.last_work_signal_at.is_empty());
+    assert!(restarted.engine.work_started_at.is_empty());
+    // 第一拍从「现在」重新起算：起点就是本拍的 now，不是上一段的 0
+    restarted.process_start = Some(1_000);
+    restarted.sample(50_000, true, Some(99.0), None);
+    assert_eq!(
+        restarted.engine.observed_running_since.get(&key),
+        Some(&50_000),
+        "重启后仍沿用了上一段生命的观测起点"
+    );
+    assert_eq!(restarted.engine.high_cpu_since.get(&key), Some(&50_000));
+}

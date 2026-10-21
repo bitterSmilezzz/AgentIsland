@@ -101,8 +101,8 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md",
-      "coverage_note": "partial — 身份/资产/注入安全、单实例、CLI 派发、同 PID exec、项目路径反例已有；PID 复用（无 exec）：`ProcHit` 带进程启动时刻并参与身份，引擎在「同 PID 同名字但启动时刻变了」时把四个跨拍锚点归零（`a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime`，变异可拒错）；嵌套去重（口径 A）：内存合计明确为「同档案所有命中进程 RSS 之和（含子进程，共享页偏高）」，代表进程只用于入口 PID、不作为实例数，判定与告警序列按档案一条；`nested_child_processes_add_up_once_and_never_become_a_second_instance` 钉住该口径，变异（只算代表进程）可拒错；进程树侧同一 PID 只统计一次（`trees.rs` 全局已访问集合）。缺：重启恢复",
-      "status": "partial"
+      "coverage_note": "done — 身份/资产/注入安全、单实例、CLI 派发、同 PID exec、项目路径反例已有；PID 复用（无 exec）：`ProcHit` 带进程启动时刻并参与身份，引擎在「同 PID 同名字但启动时刻变了」时把四个跨拍锚点归零（`a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime`，变异可拒错）；嵌套去重（口径 A）：内存合计明确为「同档案所有命中进程 RSS 之和（含子进程，共享页偏高）」，代表进程只用于入口 PID、不作为实例数，判定与告警序列按档案一条；`nested_child_processes_add_up_once_and_never_become_a_second_instance` 钉住口径，变异可拒错；进程树侧同一 PID 只统计一次。重启恢复（口径 A：不继承）：进程侧五个跨拍状态在新引擎必须为空，第一拍从当下重新起算；`a_restart_starts_with_no_inherited_process_identity_or_suspicion` 覆盖，变异（在 new() 里种回锚点）可拒错；持久化侧本来就不含进程身份——去重只存 SHA-256 身份、入站账本每条固定六个字段（由跨进程验收钉住）。**未在本需求内覆盖（如实标注）**：口径 B「重启后仍认出重启前就在跑的 Agent」未单独建注入式进程表用例，属另一读法，未在此冒充完成。",
+      "status": "done"
     },
     "SUP-02": {
       "title": "会话工作/等待/完成/离线/异常",
