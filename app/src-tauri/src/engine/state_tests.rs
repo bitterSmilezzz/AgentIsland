@@ -1408,3 +1408,34 @@ fn a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime() {
     assert_eq!(replay.engine.observed_running_since.get(&key), Some(&10_000));
     assert_eq!(replay.engine.high_cpu_since.get(&key), Some(&10_000));
 }
+
+
+/// 嵌套去重（口径 A）：同一档案下父子进程的**合计**包含子进程，且不会被当成多份实例。
+///
+/// 这条钉住的是「口径」而不是某个 bug：合计是「这一档大概吃多少」（共享页偏高），
+/// 代表进程只用于打开详情，判定/告警序列按档案一条。谁把它改成「按进程分别报一份」，
+/// 或者把代表进程当成实例数，都会在这里变红。
+#[test]
+fn nested_child_processes_add_up_once_and_never_become_a_second_instance() {
+    let hit = |pid: u32, ppid: u32, memory: u64| crate::procmon::ProcHit {
+        pid,
+        start_time: 1_000,
+        ppid,
+        name: "fixture".into(),
+        exe_path: "/fixture/fixture".into(),
+        memory,
+        cpu: None,
+        is_zombie: false,
+    };
+    let hits = vec![hit(100, 0, 120 * 1024 * 1024), hit(101, 100, 80 * 1024 * 1024)];
+    // 合计 = 父 + 子（子进程是独立进程，必须计入）
+    assert_eq!(crate::engine::agent_memory_bytes(&hits), 200 * 1024 * 1024);
+    // 代表进程 = RSS 最大的那条，只用于入口 PID
+    assert_eq!(
+        crate::engine::agent_representative(&hits).map(|h| h.pid),
+        Some(100)
+    );
+    // 空集合：没有任何进程时不编造一个 0 号代表
+    assert_eq!(crate::engine::agent_representative(&[]), None);
+    assert_eq!(crate::engine::agent_memory_bytes(&[]), 0);
+}

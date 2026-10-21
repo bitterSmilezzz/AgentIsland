@@ -101,7 +101,7 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md",
-      "coverage_note": "partial — 身份/资产/注入安全、单实例、CLI 派发、同 PID exec、项目路径反例已有；本轮补 **PID 复用（无 exec）**：`ProcHit` 增加进程启动时刻并作为身份的一部分，引擎在「同一 PID、同一名字但启动时刻变了」时把连续观测起点与高 CPU 起点归零（否则新进程继承旧进程的卡死嫌疑与完成标记）；`a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime` 覆盖「身份变了要归零」与「身份没变要延续」两个方向，变异（关掉归零）可拒错；缺：嵌套去重（子进程/子 Agent 不重复计入）、重启恢复",
+      "coverage_note": "partial — 身份/资产/注入安全、单实例、CLI 派发、同 PID exec、项目路径反例已有；PID 复用（无 exec）：`ProcHit` 带进程启动时刻并参与身份，引擎在「同 PID 同名字但启动时刻变了」时把四个跨拍锚点归零（`a_reused_pid_without_exec_does_not_inherit_the_previous_lifetime`，变异可拒错）；嵌套去重（口径 A）：内存合计明确为「同档案所有命中进程 RSS 之和（含子进程，共享页偏高）」，代表进程只用于入口 PID、不作为实例数，判定与告警序列按档案一条；`nested_child_processes_add_up_once_and_never_become_a_second_instance` 钉住该口径，变异（只算代表进程）可拒错；进程树侧同一 PID 只统计一次（`trees.rs` 全局已访问集合）。缺：重启恢复",
       "status": "partial"
     },
     "SUP-02": {

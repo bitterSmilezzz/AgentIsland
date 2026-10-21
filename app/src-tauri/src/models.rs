@@ -356,6 +356,10 @@ pub struct AgentSnapshot {
     pub provenance: Option<crate::selfreport::Provenance>,
     /// 副标题那一小截（` · 自报` / ` · 自报冲突` / 空串），**由 Rust 拼好**
     pub provenance_suffix: String,
+    /// 同一档案下**所有**命中进程的 RSS 合计（含嵌套子进程）。
+    /// 口径：父子共享页会被累加两次，所以这个数**偏高**——它回答「这一档大概吃多少」，
+    /// 不是精确占用；要精确值得用 phys_footprint 或共享页去重（另一件事）。
+    /// 它**不是**「进程数」：嵌套子进程不构成第二个实例，快照与告警序列都按档案一条。
     pub memory_bytes: u64,
     pub memory_text: String,
     pub last_activity_text: String,

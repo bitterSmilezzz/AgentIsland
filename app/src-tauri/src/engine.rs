@@ -191,6 +191,24 @@ fn remove_event_navigation(
     }
 }
 
+/// 同一档案的「内存合计」：所有命中进程 RSS 累加。
+///
+/// 嵌套子进程各自是独立进程，必须计入——否则一个「瘦父进程 + 胖渲染进程」的
+/// Electron 应用会被报成几十 MB。代价是父子共享页会被加两次，所以这个数**偏高**；
+/// 它是「这一档大概吃多少」的一致性口径，不是精确占用。要精确值得用 phys_footprint
+/// 或共享页去重，那是另一件事（见 CONTEXT 的「缓存计费、RSS、footprint 分别报告」）。
+pub(crate) fn agent_memory_bytes(hits: &[crate::procmon::ProcHit]) -> u64 {
+    hits.iter().map(|hit| hit.memory).sum()
+}
+
+/// 代表进程：RSS 最大的那条。只用于「打开详情/看进程」的入口 PID，
+/// **不是**「这个 Agent 的进程数」——嵌套子进程依然在合计里。
+pub(crate) fn agent_representative(
+    hits: &[crate::procmon::ProcHit],
+) -> Option<&crate::procmon::ProcHit> {
+    hits.iter().max_by_key(|hit| hit.memory)
+}
+
 impl ActivityEngine {
     /// 唯一的 HTTP 事件 consumer，周期采样与等待中的快速路径共用。
     pub(crate) fn consume_hook_events(&mut self) -> usize {
@@ -356,8 +374,15 @@ impl ActivityEngine {
             measured.profiles += 1;
             let hits = self.procmon.match_profile(&profile);
             let process_running = !hits.is_empty();
-            let pid = hits.iter().max_by_key(|h| h.memory).map(|h| h.pid);
-            let memory: u64 = hits.iter().map(|h| h.memory).sum();
+            // 「合计」与「代表进程」是两个数，用途不同，别混：
+            // · 合计 = 同一档案下**所有**命中进程的 RSS 累加。嵌套子进程（父 Agent 派生的
+            //   工具/子 Agent 进程）也算在内，它们是各自独立的进程；但父子共享页会被加两次，
+            //   所以这个数**偏高**，是一致性的「这一档大概吃多少」，不是精确足迹。
+            // · 代表进程 = RSS 最大的那条，只用于「打开详情/看进程」时的入口 PID。
+            // 判定上不存在「子进程被当成第二个实例」的分支：快照是按档案一条，
+            // 内存/告警序列也按档案一条（`resilience` 以 agent id 为键）。
+            let pid = agent_representative(&hits).map(|hit| hit.pid);
+            let memory = agent_memory_bytes(&hits);
             // 多进程档案（Electron）取最大 CPU 分量作代表
             let cpu: Option<f64> =
                 hits.iter()
