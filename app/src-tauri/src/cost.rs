@@ -130,6 +130,12 @@ pub fn format_estimate(cost: f64) -> String {
 
 /// 与 Swift `TokenCostEstimator.resolveCost` 同语义：
 /// 有记录成本就用记录值（无标记）；否则能估就估（带 `~`）；再否则 `(0, "", false)`。
+/// 有用量、但算不出钱时对外显示的东西。
+///
+/// **不能显示成 `$0.00`**：那是「确实是零」的说法。把「估不出来」写成一个确定的零，
+/// 等于替用户编了一个数——报表的合计会因此看上去比实际便宜，而没人能从界面上看出来。
+pub const UNCOSTED_TEXT: &str = "未计价";
+
 pub fn resolve_cost(
     actual: f64,
     model_id: Option<&str>,
@@ -144,6 +150,15 @@ pub fn resolve_cost(
         }
     }
     (0.0, String::new(), false)
+}
+
+/// 有用量、却算不出钱：这是「未知」，**不是「零」**。
+///
+/// 报表的行内仍按既有契约写钱数（`$0.00`），但汇总那边必须用这个谓词把
+/// 「未计价来源」显式点出来——否则读者会把「没费率」读成「不花钱」，
+/// 合计看起来比实际便宜，而界面上没有任何线索。
+pub fn is_uncosted(actual: f64, model_id: Option<&str>, tokens: i64) -> bool {
+    actual <= 0.0 && tokens > 0 && model_id.and_then(|model| estimate_cost(model, tokens)).is_none()
 }
 
 #[cfg(test)]
@@ -267,10 +282,16 @@ mod tests {
         assert_eq!((cost, estimated), (6.0, true));
         assert_eq!(text, "~$6.00");
 
-        // 估不出来就什么都不报，不许回落成一个编的数
+        // 估不出来就什么都不报，不许回落成一个编的数（行内由报表补 $0.00，
+        // 但「未知」必须靠 is_uncosted 单独点出来，见报表的「未计价来源」）
         let (cost, text, estimated) =
             resolve_cost(0.0, Some("some-local-finetune"), Some(1_000_000));
         assert_eq!((cost, text, estimated), (0.0, String::new(), false));
+        assert!(is_uncosted(0.0, Some("some-local-finetune"), 1_000_000));
+        // 对照：有记录成本、费率已知、用量为零，都不算「未计价」
+        assert!(!is_uncosted(2.5, Some("some-local-finetune"), 1_000_000));
+        assert!(!is_uncosted(0.0, Some("claude-3-7-sonnet"), 1_000_000));
+        assert!(!is_uncosted(0.0, Some("some-local-finetune"), 0));
 
         let (cost, text, estimated) = resolve_cost(0.0, None, None);
         assert_eq!((cost, text, estimated), (0.0, String::new(), false));

@@ -182,6 +182,23 @@ pub fn generate_markdown(timeline: &Timeline, grand_total: &TokenUsage, now_ms: 
         crate::tokens::compact(grand_total.tokens_total),
         crate::cost::format_cost(grand_total.cost_total)
     ));
+    // 有用量却没费率的来源：行内按契约仍写 $0.00，但**必须**在这里点出来。
+    // 少了这一行，「没费率」会被读成「不花钱」，合计看起来比实际便宜且无从察觉。
+    let uncosted: Vec<&SourceUsage> = timeline
+        .sources
+        .iter()
+        .filter(|source| {
+            crate::cost::is_uncosted(source.cost, Some(&source.agent_id), source.tokens)
+        })
+        .collect();
+    if !uncosted.is_empty() {
+        let names: Vec<&str> = uncosted.iter().map(|source| source.agent_id.as_str()).collect();
+        md.push_str(&format!(
+            "- 未计价来源：{} 个（{}）——有用量但费率表里没有对应模型，上面那几行的 `$0.00` **不代表免费**\n",
+            uncosted.len(),
+            names.join("、")
+        ));
+    }
     md.push_str("\n\n---\n\n");
     md.push_str("### 数据源与智能体分布\n\n");
     md.push_str("| 智能体 (Agent) | Token 用量 | 预估/实际费用 | 状态 |\n");
@@ -374,6 +391,30 @@ mod tests {
     /// 而 `isEstimated` 只在「没有记录值 + 有 modelId + 估得出」时才为真。
     /// 也就是说 `actual > 0` 时它恒为 false、`actual == 0` 时又没有 modelId。
     /// Rust 照搬这个结构（对齐优先），并用这条用例把「实际行为」钉住。
+    /// 未知费用必须被**明说**：行内按契约写 `$0.00`，但汇总里要看得出
+    /// 「这几行不是免费，是没费率」。少了这行，合计会被读成真实开销。
+    #[test]
+    fn an_unpriced_source_is_called_out_instead_of_looking_free() {
+        let unpriced = timeline(
+            TokenTimeRange::Day,
+            vec![source("gemini", 1_000, 0.0, true), source("claude", 1_000, 0.5, true)],
+        );
+        let md = generate_markdown(&unpriced, &grand(2_000, 0.5), 1_700_000_000_000);
+        assert!(
+            md.contains("未计价来源：1 个（gemini）"),
+            "未定价来源必须被点名：{md}"
+        );
+        assert!(md.contains("不代表免费"), "要点明 $0.00 不等于免费：{md}");
+
+        // 全部可计价（有记录成本）时不该出现这行
+        let priced = timeline(
+            TokenTimeRange::Day,
+            vec![source("claude", 1_000, 0.5, true)],
+        );
+        let md = generate_markdown(&priced, &grand(1_000, 0.5), 1_700_000_000_000);
+        assert!(!md.contains("未计价来源"), "不该无中生有：{md}");
+    }
+
     #[test]
     fn the_estimate_marker_is_the_tilde_in_the_row_not_the_dead_marker_in_the_header() {
         let estimated = timeline(

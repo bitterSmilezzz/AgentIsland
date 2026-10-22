@@ -232,7 +232,7 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；缺：尝试账目对账、未知费用显式呈现、本机与网关不双计、OTLP",
+      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；本轮补**未知费用显式呈现**：`cost::is_uncosted` 把「有用量但无费率」与「真的是零」分开，报表在明细前新增「未计价来源：N 个（名字）——`$0.00` 不代表免费」一行；行内仍按既有契约写钱数（`$0.00`），不破坏报表文档的零写法口径；`an_unpriced_source_is_called_out_instead_of_looking_free` 覆盖「有点名」与「不无中生有」两个方向，变异（关掉这一行）可拒错。缺：尝试账目对账、本机与网关不双计、OTLP 度量",
       "status": "partial"
     },
     "GW-10": {
@@ -2521,6 +2521,14 @@
       "status": "closed",
       "requirement": "SUP-03",
       "evidence": "已修：`event_navigation` 由 `HashMap<event id, Target>` 改为按 agent 分域的`HashMap<agent, HashMap<event id, Target>>`，与账本 `accept_internal` 的 `(agent, kind, raw id)` 口径对齐；插入、保留、读取、两处移除全部走同一分域，移除逻辑收成 `remove_event_navigation` 一处（单键删除正是本缺陷的形状）。对外契约同步：`models::EngineState.event_navigation` 改为嵌套结构，前端三处读取（task-attention.js、views.js×2）与两个 UI 夹具一并更新。断言：新增 `the_same_raw_event_id_from_two_agents_never_shares_one_navigation_target`，用**冻结语义**（推送后再改 session 目标）区分「按 agent 存住了」与「退回到当前 session」，并验证队首确认只摘掉自己那条。变异验证：把插入改成固定单作用域后该用例立刻变红（codex 绑定丢失 → left None）。全量 Rust 1138 passed；受影响 UI 用例 test-task-attention / test-agent-identities / test-sessions 全通过。"
+    },
+    {
+      "id": "BUG-009",
+      "title": "release.sh --resume 不校验 HEAD 是否为本次发布提交：tag 打在上一版本的提交上，产物与源码对不上",
+      "status": "closed",
+      "requirement": "OPS-01",
+      "evidence": "已修（v0.0.352 之后）：事故现场——`scripts/release.sh --resume 0.0.353` 在 HEAD 仍是 `release: v0.0.352 …`、且工作树有未提交改动时被接受，脚本跳过提交并把 `v0.0.353` 打在 v0.0.352 的提交上，同时上传了从脏树编出的附件（发布记录可以很漂亮，但证明不了附件来自哪个源码）。修法：新增 `resume_precondition_error`，`--resume` 必须同时满足「HEAD 标题恰为 `release: v<版本> - <标题>`」与「工作区干净」，否则带理由退出；自动续跑（标题匹配时自动启用）同样要求干净树。`scripts/test-release-staging.sh` 新增三条断言（放行 / 标题不符 / 树不净），实跑 `--resume` 现场已复现拒绝文案。善后：删除打在错提交上的 `v0.0.353` release 与 tag，按普通模式重新提交并发布同一版本。",
+      "fixed_in": "0.0.353"
     }
   ]
 }

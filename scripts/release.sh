@@ -112,6 +112,23 @@ report_unverified() {
 }
 
 # 测试直接 source 生产函数；不启动发布，也不改变调用者的目录或 shell 选项。
+# 断点续跑的**前提**：当前 HEAD 必须就是本次发布的提交，且工作树干净。
+# 少了这条，`--resume` 会跳过提交、把 tag 打在「上一个版本的发布提交」上
+# （v0.0.353 真发生过：tag 指向 v0.0.352 的提交，而 0.0.353 的改动还没提交，
+# 产物与 tag 对不上——发布记录再好也证明不了那堆附件是从哪个源码编出来的）。
+# 返回非空字符串即为拒绝理由；空串表示前提成立。
+resume_precondition_error() {
+    local subject="$1" expected="$2" dirty="$3"
+    if [[ "$subject" != "$expected" ]]; then
+        printf '%s' "--resume 要求当前 HEAD 就是本次发布的提交：期望「${expected}」，实际「${subject}」。改动尚未提交时请用普通模式（脚本会自己提交）"
+        return 0
+    fi
+    if [[ -n "$dirty" ]]; then
+        printf '%s' "--resume 要求工作区干净：产物必须来自已提交的树（当前有未提交改动）"
+        return 0
+    fi
+}
+
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
     return 0
 fi
@@ -166,6 +183,8 @@ if [[ "$CURRENT_HEAD_SUBJECT" == "$EXPECTED_RELEASE_SUBJECT" ]]; then
 fi
 
 if [[ "$RELEASE_MODE_RESUME" == "1" ]]; then
+    RESUME_ERROR="$(resume_precondition_error "$CURRENT_HEAD_SUBJECT" "$EXPECTED_RELEASE_SUBJECT" "$WORKTREE_DIRTY")"
+    [[ -z "$RESUME_ERROR" ]] || die "$RESUME_ERROR"
     step "断点续跑模式：当前 HEAD 已是发布提交（${CURRENT_HEAD_SUBJECT}），接续后续发布步骤"
 elif [[ "$RELEASE_MODE_COMMITTED" == "1" ]]; then
     [[ -z "$WORKTREE_DIRTY" ]] || die "--committed 模式要求工作区完全干净（无未提交改动）"

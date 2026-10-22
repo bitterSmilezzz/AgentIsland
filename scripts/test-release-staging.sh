@@ -14,6 +14,23 @@ export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EM
 COUNT=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 pass() { COUNT=$((COUNT + 1)); printf 'ok %s - %s\n' "$COUNT" "$*"; }
+# --- 断点续跑前提（BUG-009：--resume 把 tag 打到上一个版本的提交上） -------------
+assert_resume_guard() {
+    local subject="$1" expected="$2" dirty="$3" expect="$4" label="$5"
+    local actual
+    actual="$(resume_precondition_error "$subject" "$expected" "$dirty")"
+    if [[ "$expect" == "empty" ]]; then
+        [[ -z "$actual" ]] || fail "${label}：应放行，实际拒绝：${actual}"
+    else
+        [[ "$actual" == *"$expect"* ]] || fail "${label}：拒绝理由应含「${expect}」，实际：${actual}"
+    fi
+    pass "$label"
+}
+
+assert_resume_guard "release: v0.0.9 - x" "release: v0.0.9 - x" "" empty "断点续跑放行：HEAD 就是本次发布提交且树干净"
+assert_resume_guard "release: v0.0.8 - y" "release: v0.0.9 - x" "" "要求当前 HEAD 就是本次发布的提交" "断点续跑拒绝：HEAD 不是本次发布的提交"
+assert_resume_guard "release: v0.0.9 - x" "release: v0.0.9 - x" "M a.txt" "要求工作区干净" "断点续跑拒绝：工作树有未提交改动"
+
 fixture() {
     cd "$TEST_ROOT"
     mkdir "case-$COUNT"
