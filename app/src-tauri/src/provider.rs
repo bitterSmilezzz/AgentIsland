@@ -1316,6 +1316,62 @@ mod tests {
     ///
     /// 这条钉的是最容易招来的误解：用户切了档，界面如果只说「已应用」，
     /// 他会以为别家模型现在能用了。真正能证明的只有「配置写成功了」。
+    /// 注释与排版的保真：写入只改那两个值，别的东西（注释、空行、顺序、别人的键）
+    /// 一个都不许动。用户手写的 config 是他自己的文件，不是我们的草稿纸。
+    #[test]
+    fn applying_a_profile_preserves_comments_order_and_foreign_keys() {
+        let original = "\n# 我的主力模型\nmodel = \"gpt-4o\"   # 行尾注释\nmodel_provider = \"old\"\n\n# 接口\n[model_providers.acme]\nname = \"Acme\"\nbase_url = \"https://api.example.invalid/v1\"\nenv_key = \"ACME_API_KEY\"\nwire_api = \"responses\"\nrequest_max_retries = 3\n";
+        let planned = plan_codex_apply(original, &profile()).unwrap();
+        for kept in ["# 我的主力模型", "# 行尾注释", "# 接口", "request_max_retries = 3"] {
+            assert!(planned.contains(kept), "写入丢掉了用户内容：{kept}\n{planned}");
+        }
+        assert!(planned.contains("model = \"gpt-5\""), "模型没被写入：{planned}");
+        assert!(planned.contains("model_provider = \"acme\""));
+        // 顺序：model 仍在 model_provider 之前（不在文件里重排用户的键）
+        let model_at = planned.find("model = ").unwrap();
+        let provider_at = planned.find("model_provider = ").unwrap();
+        assert!(model_at < provider_at, "写入重排了用户的键：{planned}");
+    }
+
+    /// 外部漂移：拿着过期的 revision 写入必须被拒，且**文件一个字节都不动**。
+    /// 这里钉的是「别人的修改不能被我们悄悄覆盖」。
+    #[test]
+    fn a_stale_revision_is_rejected_and_the_file_is_left_untouched() {
+        let dir = crate::selftest::unique_dir("provider-drift");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(".codex").join("config.toml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let original = "model = \"gpt-4o\"\nmodel_provider = \"acme\"\n";
+        std::fs::write(&target, original).unwrap();
+        let stale = config_revision(original);
+        // 别人改了文件
+        let external = "model = \"gpt-4o\"\nmodel_provider = \"acme\"\n# 别人加的\n";
+        std::fs::write(&target, external).unwrap();
+        let error = apply_codex_profile_checked(&target, &dir.join("backups"), &profile(), 1, Some(&stale))
+            .expect_err("过期 revision 必须被拒");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), external, "被拒的写入不许改文件");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 同名备份：同一毫秒的第二次应用不许覆盖上一份备份。
+    /// 备份是用户的退路——被覆盖等于退路消失。
+    #[test]
+    fn a_second_backup_in_the_same_millisecond_never_overwrites_the_first() {
+        let dir = crate::selftest::unique_dir("provider-backup-same-ms");
+        let backups = dir.join("backups");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(".codex").join("config.toml");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "model = \"gpt-4o\"\nmodel_provider = \"acme\"\n").unwrap();
+        let first = apply_codex_profile(&target, &backups, &profile(), 1_700_000_000_000).unwrap();
+        let first_bytes = std::fs::read(&first).unwrap();
+        let second = apply_codex_profile(&target, &backups, &profile(), 1_700_000_000_000);
+        assert!(second.is_err(), "同一毫秒的备份必须独占创建，不许覆盖");
+        assert_eq!(std::fs::read(&first).unwrap(), first_bytes, "第一份备份被改动了");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn applying_a_profile_never_claims_the_model_can_generate() {
         assert!(

@@ -287,4 +287,31 @@ mod tests {
             assert_eq!(fs::read_to_string(destination).unwrap(), "keep");
         }
     }
+
+    /// 断电残留：上一次崩溃留下的暂存文件既不能被当作新内容顶上去，
+    /// 也不能让正常写入失败。写入路径要能「无视别人的残骸继续干活」。
+    #[test]
+    fn a_leftover_staging_file_from_a_crash_never_reaches_the_target() {
+        let sandbox = Sandbox::new();
+        let target = sandbox.0.join("fixture.config.toml");
+        fs::write(&target, "model = 'before'\n").unwrap();
+        // 模拟崩溃残留：名字符合本模块的暂存规则，内容是「半截垃圾」
+        let residue = sandbox
+            .0
+            .join(format!(".fixture.config.toml.agentisland-{}-0.tmp", std::process::id()));
+        fs::write(&residue, "model = 'half-written-by-a-dead-process'\n").unwrap();
+
+        atomic_replace_validated(&target, b"model = 'after'\n", |stage| {
+            Ok(fs::read_to_string(stage).map(|_| ())?)
+        })
+        .expect("残留暂存文件不该让正常写入失败");
+
+        assert_eq!(fs::read_to_string(&target).unwrap(), "model = 'after'\n");
+        assert_ne!(
+            fs::read_to_string(&residue).unwrap(),
+            "model = 'after'\n",
+            "残留文件被当成了发布目标"
+        );
+    }
+
 }

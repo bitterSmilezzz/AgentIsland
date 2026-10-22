@@ -551,7 +551,7 @@ pub fn run() -> Report {
 /// 可能取到同一个纳秒。撞上之后彼此会看见对方的清单：本机实测症状是「加两条却读到
 /// 三条」「勾选/删除按 id 全部落空」「读坏留档后加不进去」，且只在 Windows 偶发。
 /// 进程内原子序号是唯一可靠的判据，碰撞面直接为零。
-fn unique_dir(tag: &str) -> std::path::PathBuf {
+pub(crate) fn unique_dir(tag: &str) -> std::path::PathBuf {
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "agentisland-selftest-{tag}-{}-{}",
