@@ -205,7 +205,7 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；缺：自定义 ID 映射、参数与推理配置、保存≠生成权限、目录超限",
+      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；目录超限：`interface_models` 对目录规模设 200 条上限并带回 `truncated` 标志，超出时只截断不谎报，用例覆盖（`truncated` 断言）；本轮补**推理参数**：`CodexProfile.reasoning_effort` 只接受 Codex 认识的四档（minimal/low/medium/high），选过才写 `model_reasoning_effort`，**没选绝不覆盖用户自己写的值**（用例双向覆盖，变异「没选也写默认值」可拒错）；读回既有配置时从根键取该档位，供界面回显。缺：自定义 ID 映射（客户端名与上游模型 ID 的显式映射）、保存≠生成权限的显式断言、推理档位尚未在界面暴露（当前只能由配置/接口设定）",
       "status": "partial"
     },
     "GW-07": {

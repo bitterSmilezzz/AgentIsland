@@ -126,6 +126,7 @@ mod tests {
     use serde_json::json;
     fn profile() -> CodexProfile {
         CodexProfile {
+            reasoning_effort: None,
             id: "fixture".into(),
             name: "Fixture".into(),
             model: "before".into(),

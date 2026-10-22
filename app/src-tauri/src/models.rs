@@ -950,6 +950,7 @@ mod tests {
         };
         let profile = keys(
             &serde_json::to_value(CodexProfile {
+                reasoning_effort: None,
                 id: "work".into(),
                 name: "工作账号".into(),
                 model: "gpt-5".into(),

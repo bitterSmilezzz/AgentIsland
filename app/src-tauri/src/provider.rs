@@ -65,6 +65,10 @@ pub struct CodexProfile {
     pub env_key: String,
     /// `responses`; legacy `chat` remains readable but cannot be written to Codex.
     pub wire_api: String,
+    /// 推理档位（Codex 的 `model_reasoning_effort`）。`None` = 不写这一键，
+    /// 保持用户原配置不变——「没选」不等于「选成默认值」，后者会覆盖用户自己写的值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 impl CodexProfile {
@@ -107,6 +111,12 @@ impl CodexProfile {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
         {
             return Err("env_key 只允许大写字母、数字与下划线（它是环境变量名）".into());
+        }
+        // 推理档位只收 Codex 认识的四个值：写一个它不认识的值等于把配置改成无效。
+        if let Some(effort) = &self.reasoning_effort {
+            if !matches!(effort.as_str(), "minimal" | "low" | "medium" | "high") {
+                return Err("推理档位只支持 minimal / low / medium / high".into());
+            }
         }
         validate_base_url(self.base_url.trim())?;
         if self.wire_api != "chat" && self.wire_api != "responses" {
@@ -184,6 +194,11 @@ pub fn plan_codex_apply(original: &str, profile: &CodexProfile) -> io::Result<St
     }
     replace_value_preserving_decor(&mut doc, "model", &profile.model);
     replace_value_preserving_decor(&mut doc, "model_provider", &profile.provider_id);
+    // 推理档位：只在我们**明确选过**时写。空着就不动用户的键——
+    // 「没选」与「选成默认」是两件事，后者会覆盖用户自己写下的设置。
+    if let Some(effort) = profile.reasoning_effort.as_deref() {
+        replace_value_preserving_decor(&mut doc, "model_reasoning_effort", effort);
+    }
 
     // provider 表：已存在就只更新我们认识的四个键（用户额外写的 retry 等**不删**）
     let providers =
@@ -495,6 +510,11 @@ pub fn capture_codex_profile(text: &str) -> Result<CodexProfile, String> {
     }
     let read = |key: &str| entry.get(key).and_then(|v| v.as_str());
     let profile = CodexProfile {
+        // 推理档位是**根键**（不在 provider 表里），别拿 provider 的读取器去取
+        reasoning_effort: doc
+            .get("model_reasoning_effort")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
         id: "current".into(),
         name: "当前配置".into(),
         model: model.into(),
@@ -1274,6 +1294,47 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn reasoning_effort_is_written_only_when_explicitly_chosen() {
+        let base = "model = \"gpt-5\"\nmodel_provider = \"acme\"\n";
+        let mut chosen = profile();
+        chosen.reasoning_effort = Some("high".into());
+        let planned = plan_codex_apply(base, &chosen).unwrap();
+        assert!(
+            planned.contains("model_reasoning_effort = \"high\""),
+            "选过推理档位就必须写进配置：{planned}"
+        );
+
+        // 没选：不写这一键，用户自己写的值也不许被动
+        let mut untouched = profile();
+        untouched.reasoning_effort = None;
+        let planned = plan_codex_apply(base, &untouched).unwrap();
+        assert!(!planned.contains("model_reasoning_effort"));
+        let with_user_value = "model_reasoning_effort = \"low\"\n";
+        let planned = plan_codex_apply(with_user_value, &untouched).unwrap();
+        assert!(
+            planned.contains("model_reasoning_effort = \"low\""),
+            "没选档位时不该覆盖用户自己的值：{planned}"
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_only_accepts_values_codex_understands() {
+        for effort in ["minimal", "low", "medium", "high"] {
+            let mut chosen = profile();
+            chosen.reasoning_effort = Some(effort.into());
+            assert!(chosen.normalized().is_ok(), "{effort} 应被接受");
+        }
+        for effort in ["ultra", "HIGH", "", "medium "] {
+            let mut chosen = profile();
+            chosen.reasoning_effort = Some(effort.into());
+            assert!(
+                chosen.normalized().is_err(),
+                "{effort:?} 不该被接受：写一个 Codex 不认识的值等于把配置改成无效"
+            );
+        }
+    }
+
+    #[test]
     fn unrelated_private_fields_block_profile_backup_and_restore_without_copying_them() {
         let sandbox = Sandbox::new();
         let target = sandbox.codex_config();
@@ -1586,6 +1647,7 @@ mod tests {
     /// 一份合用的档位 fixture
     fn profile() -> CodexProfile {
         CodexProfile {
+            reasoning_effort: None,
             id: "work".into(),
             name: "工作账号".into(),
             model: "gpt-5".into(),
