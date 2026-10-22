@@ -476,6 +476,38 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(pipeline.PipelineError):
                 pipeline.load_registry()
 
+    def test_a_failed_check_is_classified_without_publishing_its_transcript(self):
+        """失败要可定位，但**不得**把转录搬进证据。
+
+        只输出固定词表里的一个记号：`returncode=1:python_traceback`。
+        这样「红在哪一类失败」可见，而原文（可能含私有路径/正文/凭据）不出进程。
+        """
+        sentinel = "SYNTHETIC_PRIVATE_OUTPUT_SENTINEL"
+        code = ("import sys; sys.stderr.write('Traceback (most recent call last):\\n"
+                "  ' + %r + '\\n'); sys.exit(1)" % sentinel)
+        proc, record, run_dir = self.run_profile({"broken": check_entry(code)})
+        self.assertEqual(proc.returncode, 1)
+        failed = record["checks"][0]
+        self.assertEqual(failed["reason"], "returncode=1:python_traceback", failed["reason"])
+        # 转录仍然不发布：证据目录里任何一个文件都不该出现原文
+        for path in run_dir.iterdir():
+            self.assertNotIn(sentinel, path.read_text())
+        self.assertEqual(failed["stderr_tail"], "")
+
+    def test_a_failure_without_a_known_shape_keeps_the_plain_reason(self):
+        proc, record, _ = self.run_profile({"plain": check_entry("import sys; sys.exit(4)")})
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(record["checks"][0]["reason"], "returncode=4")
+
+    def test_a_passing_check_publishes_no_output(self):
+        proc, record, _ = self.run_profile(
+            {"ok": check_entry("import sys; sys.stderr.write('noise')")})
+        self.assertEqual(proc.returncode, 0)
+        passed = record["checks"][0]
+        self.assertEqual(passed["status"], "passed")
+        self.assertEqual(passed["stderr_tail"], "")
+        self.assertEqual(passed["stdout_tail"], "")
+
     def test_registry_schema_and_reference_negative_cases(self):
         mutations = [
             lambda r: r["profiles"].update(test=[]),

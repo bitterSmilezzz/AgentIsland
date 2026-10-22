@@ -122,6 +122,17 @@ scripts/install-git-hooks.sh       # 新克隆/新工作区先装 pre-commit
 - `.scratch/`、`artifacts/`、`dist/`、`.build/`、根目录 `*.zip` 均不入库、不交付（屏幕截图可能含个人会话内容）
 - 交付第三方收集数据的工具前，先删上述本地目录再跑 `scripts/scan-secrets.sh --release`；细节见 `docs/agent/desensitization.md`
 
+### Rust 编译产物定期清理（存储不会无限膨胀）
+
+`app/src-tauri/target/` 随构建无限增长（本轮清理前实测 41 GB）。本机装了一条**独立于本仓**的周清理任务，换机器/新克隆时按这里重装即可：
+
+- **调度**：LaunchAgent `local.agents.rust-clean`，每周日 03:00 运行 `~/.agents/scripts/rust-clean-sweep.sh`
+- **策略**：扫 `~/workspace` 下所有 `Cargo.toml`，仅当某项目 `target/` ≥ 5 GiB 时执行 `cargo clean`（debug + release 全清）
+- **护栏**：只要有 `cargo` / `rustc` / `rust-analyzer` / `cargo-tauri` / `rustdoc` 在跑，**整轮跳过**——正在构建或调试的产物不动；仓根放 `.rust-clean-skip` 可让本仓永久跳过；`.scratch/`、`vendor/`、`node_modules/` 默认不扫
+- **手动**：`~/.agents/scripts/rust-clean-sweep.sh --dry-run` 先看会清什么；`--project "$PWD"` 只清本仓；`--min-gb 0` 忽略阈值。日志在 `~/Library/Logs/rust-clean/sweep.log`
+- **重装/迁移**：plist 模板在 `~/.agents/scripts/local.agents.rust-clean.plist`，把 `__HOME__` 换成家目录后 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.agents.rust-clean.plist`
+- **代价**：清理后下一次 `cargo test` / `scripts/build-app.sh` 是全量重编（debug 约几分钟）。清理与正在运行的应用无关——`dist/AgentIsland.app` 用的是打包产物，不是 `target/`
+
 ## 工程纪律（从历史事故提炼）
 
 以下是跨轮次必须执行的规则。排查白屏/资源异常、修改解析与缓存、添加门禁或重做原生验收前，按主题读 [改造踩坑史](docs/agent/pitfalls-history.md)；其中 Swift 案例是历史证据，当前领域口径以 `CONTEXT.md` 和相应 ADR 为准。

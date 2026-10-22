@@ -312,14 +312,54 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         pass
 
 
-def _drain(stream: Any) -> None:
-    # Keep at most 4096 bytes per stream in memory; deliberately discard all output.
+TAIL_BYTES = 4096
+
+# 失败时**不保留原文**（证据目录要进 CI 制品）：只在内存里读一眼，吐一个固定记号。
+
+
+# 固定词表：失败时只吐这里的一个记号，**绝不输出原文**。
+# 顺序即优先级——先命中更具体的形态（编译错误比泛泛的 Error 更有信息量）。
+_SIGNATURES = [
+    ("python_traceback", ("Traceback (most recent call last)",)),
+    ("rust_panic", ("panicked at",)),
+    ("typescript_error", ("error TS",)),
+    ("compile_error", ("error[E", "error: could not compile")),
+    ("assertion_failed", ("AssertionError", "assert_eq!", "assertion failed")),
+    ("test_failed", ("FAILED (", "=== FAIL:", "FAIL: ")),
+    ("npm_error", ("npm ERR!",)),
+    ("missing_command", ("command not found",)),
+    ("permission_denied", ("Permission denied", "EACCES")),
+    ("connection_refused", ("Connection refused", "ECONNREFUSED")),
+]
+
+
+def _failure_signature(raw: bytes) -> str:
+    """把输出归类成固定词表里的一个记号；不认识就返回空串。
+
+    为什么不直接留尾部输出：证据目录是**要进 CI 制品**的，而检查转录里可能有
+    私有路径、正文甚至凭据。「一条可读的 reason 不能拿转录去换」是本仓既有契约
+    （`test_output_never_published_even_on_failure` 钉着）。这条只回答
+    「红在哪一类失败上」，不回答「原文是什么」——足够把 random red 变成可定位线索，
+    又不需要把任何原文搬出进程。
+    """
+    text = raw.decode("utf-8", "replace")
+    for name, needles in _SIGNATURES:
+        if any(needle in text for needle in needles):
+            return name
+    return ""
+
+
+def _drain(stream: Any, sink: bytearray | None = None) -> None:
+    # Keep at most TAIL_BYTES per stream: enough to name the failing assertion,
+    # never the whole log. `sink` may be None for callers that want them discarded.
     tail = bytearray()
     try:
         for chunk in iter(lambda: stream.read(65536), b""):
-            tail[:] = (tail + chunk)[-4096:]
+            tail[:] = (tail + chunk)[-TAIL_BYTES:]
     finally:
         stream.close()
+        if sink is not None:
+            sink.extend(tail)
 
 
 def missing_external(entry: dict[str, Any], cwd: Path | None = None) -> str:
@@ -464,8 +504,9 @@ def run_check(check_id: str, registry: dict[str, Any], cwd: Path, timeout: int) 
         return CheckResult(check_id, "blocked", reason="command_unavailable")
     except OSError:
         return CheckResult(check_id, "failed", reason="command_start_failed")
-    readers = [threading.Thread(target=_drain, args=(stream,), daemon=True)
-               for stream in (proc.stdout, proc.stderr)]
+    sinks = (bytearray(), bytearray())
+    readers = [threading.Thread(target=_drain, args=(stream, sink), daemon=True)
+               for stream, sink in zip((proc.stdout, proc.stderr), sinks)]
     reason = ""
     try:
         for reader in readers:
@@ -492,8 +533,15 @@ def run_check(check_id: str, registry: dict[str, Any], cwd: Path, timeout: int) 
         status = "blocked"
     else:
         status = "failed"
+    # **转录永不发布**：`stdout_tail`/`stderr_tail` 保持为空是既有契约
+    # （「一条可读的 reason 不能拿转录去换」）。可诊断性靠下面这句**签名分类**给：
+    # 只输出固定词表里的一个记号，不含任何原文。
+    signature = _failure_signature(bytes(sinks[0]) + bytes(sinks[1])) if status != "passed" else ""
+    detail = reason or ("" if status == "passed" else f"returncode={proc.returncode}")
+    if signature:
+        detail = f"{detail}:{signature}"
     return CheckResult(check_id, status, proc.returncode, round(time.monotonic() - started, 3),
-                       reason=reason or ("" if status == "passed" else f"returncode={proc.returncode}"))
+                       reason=detail)
 
 
 def write_json(path: Path, payload: Any) -> None:
