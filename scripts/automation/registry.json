@@ -203,11 +203,12 @@
         "gw02.modeldir",
         "gw02.ifacemodels",
         "rust.default",
-        "gw02.profileui"
+        "gw02.profileui",
+        "gw02.profilepage"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；目录超限：`interface_models` 200 条上限 + `truncated` 标志（用例覆盖）；推理参数：四档白名单、选过才写、没选不覆盖（双向用例 + 变异可拒错）、空串归一为未设置；自定义 ID 映射：`catalog_id` 只用于显示/匹配、不落盘（用例断言）；界面已暴露两项（`gw02.profileui`）；保存≠生成权限：能力边界文案逐字钉住（`applying_a_profile_never_claims_the_model_can_generate`，断言含「不验证账号或模型可用性」、且切换结果与状态都不许出现 available/verified/generat/usable 类字段，变异删掉该句即变红）；并修掉一处**界面漏显示**——应用结果里的 `limitations` 此前没上屏，用户只会看到「配置已写入」（`gw02.profileui` 已断言该行存在，含负例）。缺：档位页无浏览器行为回归（形状门禁为界）",
-      "status": "partial"
+      "coverage_note": "done — 搜索/身份/键盘 a11y/目标漂移已有；目录超限：`interface_models` 200 条上限 + `truncated` 标志（用例覆盖）；推理参数：四档白名单、选过才写、没选不覆盖（双向用例 + 变异可拒错）、空串归一为未设置、界面可配；自定义 ID 映射：`catalog_id` 只用于显示/匹配、不落盘（用例断言），界面可填；保存≠生成权限：能力边界文案逐字钉住 + DTO 不许出现 available/verified/generat/usable 类字段（变异可拒错），并修掉界面漏显示（应用提示现在逐字带上边界）；档位页已有**真实浏览器回归**（`gw02.profilepage`）：回填、提交体含两项新字段、应用提示含能力边界且不宣称可用性；形状门禁 `gw02.profileui` 继续守控件与文案。未在此需求内覆盖：真实 Codex 客户端加载该配置后的生成能力（需官方客户端与真凭据，属别处）。",
+      "status": "done"
     },
     "GW-07": {
       "title": "客户端接管、Profile 与恢复",
@@ -2114,6 +2115,24 @@
       "test_files": [
         "scripts/test-provider-profile-ui.py"
       ]
+    },
+    "gw02.profilepage": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-provider-page.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-02：档位页真实浏览器回归（真 DOM，非形状断言）。编辑既有档位时推理档位/目录标识/模型 ID 必须回填；提交体真的带上两者（提交体是**按 data-field 统一收集**的，新控件掉出 payload 会在这里暴露）；应用后的提示必须逐字包含能力边界「不验证账号或模型可用性」且含备份名，并断言不得出现「可以生成」「已验证可用」这类宣称。main.js 用桩替换（它是应用启动器），其余全部是真实模块。",
+      "test_files": [
+        "scripts/test-provider-page.mjs"
+      ]
     }
   },
   "agents": {
@@ -2206,14 +2225,16 @@
       "auto01.headlesslog",
       "gw01.refreshui",
       "gw01.connectionsui",
-      "gw02.profileui"
+      "gw02.profileui",
+      "gw02.profilepage"
     ],
     "browser": [
       "not01.latencyui",
       "task01.detailnav",
       "task04.readerleave",
       "task04.refreshfocus",
-      "gw01.connectionsui"
+      "gw01.connectionsui",
+      "gw02.profilepage"
     ],
     "ci": [
       "secrets.workspace",
@@ -2292,7 +2313,8 @@
       "auto01.headlesslog",
       "gw01.refreshui",
       "gw01.connectionsui",
-      "gw02.profileui"
+      "gw02.profileui",
+      "gw02.profilepage"
     ],
     "package": [
       "package.artifact",
@@ -2425,7 +2447,8 @@
       "auto01.headlesslogbin",
       "gw01.refreshui",
       "gw01.connectionsui",
-      "gw02.profileui"
+      "gw02.profileui",
+      "gw02.profilepage"
     ],
     "protocol": [
       "gw02.ifacemodels",

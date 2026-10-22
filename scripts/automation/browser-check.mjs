@@ -11,6 +11,7 @@ const scripts = new Set([
   'test-notify-latency-ui.mjs',
   'test-update-panel.mjs',
   'test-connections-page.mjs',
+  'test-provider-page.mjs',
 ]);
 const name = process.argv[2];
 const override = process.env.TEST_BROWSER_MODULE;
