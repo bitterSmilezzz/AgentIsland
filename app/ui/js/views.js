@@ -2164,7 +2164,10 @@ function bindProviderEvents(root, status, profiles) {
       const applied = await workspaceFlow.execute('profile', args.id, verifyWorkspace, () => invoke(context?'workspace_apply_profile':command, { ...args, revision: status.revision, ...(context?{context}:{}) })).catch(error => { failure = String(error); return null; });
       const refreshed = feedback.current() && await hydrateProvider({ canRender: feedback.current });
       showProviderToast(root, failure || !applied ? `应用失败：${failure || '命令没有返回结果'}`
-        : `${applied.record_warning || '配置已写入'}。备份：${applied.backup_name}。请开启新会话，必要时重启 Codex。${refreshed ? '' : '页面未刷新，请刷新核对。'}`, feedback);
+        // 应用结果自带能力边界：**必须逐字显示**。后端把它随结果返回，
+        // 就是为了「界面上少显示一次就没有第二道防线」——这里漏掉它，
+        // 用户只会看到「配置已写入」，很容易理解成「模型现在能用了」。
+        : `${applied.record_warning || '配置已写入'}。备份：${applied.backup_name}。${escapeHtml(applied.limitations ?? '')}${refreshed ? '' : '页面未刷新，请刷新核对。'}`, feedback);
     } finally { feedback.dispose(); }
   };
   const preview = (choice, callback) => askConfirm(

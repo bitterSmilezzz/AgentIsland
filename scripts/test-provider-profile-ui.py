@@ -52,6 +52,23 @@ class ProviderProfileUiTests(unittest.TestCase):
                           stripped, re.S)
         self.assertIsNone(match, "负例：控件被改名时，上面第一条用例必须变红")
 
+    def test_the_capability_boundary_is_shown_after_applying(self):
+        # 后端随结果返回 `limitations` 是「第二道防线」；界面漏显示就只剩「配置已写入」，
+        # 用户会把「写成功了」读成「模型能用了」。
+        self.assertIn("data-limitations", self.source)
+        self.assertIn("status.limitations", self.source)
+        apply_flow = self.source[self.source.index("const apply = async"):]
+        apply_flow = apply_flow[:apply_flow.index("const preview = (choice, callback)")]
+        self.assertIn("applied.limitations", apply_flow,
+                      "应用结果的能力边界必须上屏，不能只留在后端返回值里")
+
+    def test_negative_control_without_the_boundary_line_fails(self):
+        stripped = self.source.replace("${escapeHtml(applied.limitations ?? '')}", "")
+        apply_flow = stripped[stripped.index("const apply = async"):]
+        apply_flow = apply_flow[:apply_flow.index("const preview = (choice, callback)")]
+        self.assertNotIn("applied.limitations", apply_flow,
+                         "负例：这一行被删掉时，上面那条用例必须变红")
+
 
 if __name__ == "__main__":
     unittest.main()

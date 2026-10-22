@@ -1311,6 +1311,70 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 保存/应用**不等于**拥有生成权限：结果里必须逐字带上能力边界，
+    /// 且 DTO 不许出现任何「可用 / 已验证 / 能生成」这类字段。
+    ///
+    /// 这条钉的是最容易招来的误解：用户切了档，界面如果只说「已应用」，
+    /// 他会以为别家模型现在能用了。真正能证明的只有「配置写成功了」。
+    #[test]
+    fn applying_a_profile_never_claims_the_model_can_generate() {
+        assert!(
+            PROVIDER_LIMITATIONS.contains("不验证账号或模型可用性"),
+            "能力边界必须逐字写明「不验证账号或模型可用性」：{PROVIDER_LIMITATIONS}"
+        );
+        let applied = ProviderApplyResult {
+            config_path: "/fixture/config.toml".into(),
+            backup_name: "config-1.toml".into(),
+            record_warning: None,
+            limitations: PROVIDER_LIMITATIONS,
+        };
+        let value = serde_json::to_value(&applied).unwrap();
+        let keys: Vec<String> = value
+            .as_object()
+            .expect("切换结果应序列化成对象")
+            .keys()
+            .cloned()
+            .collect();
+        assert!(keys.iter().any(|key| key == "limitations"), "结果必须带能力边界");
+        for key in &keys {
+            let lowered = key.to_ascii_lowercase();
+            assert!(
+                !["available", "verified", "generat", "usable", "working"]
+                    .iter()
+                    .any(|word| lowered.contains(word)),
+                "切换结果不该出现「可用/已验/能生成」类字段：{key}"
+            );
+        }
+        let status = ProviderStatus {
+            installed: true,
+            config_path: None,
+            active_provider_id: None,
+            active_profile_id: None,
+            profile_count: 0,
+            configured_model: None,
+            configured_provider: None,
+            current_draft: None,
+            capture_notice: String::new(),
+            config_error: None,
+            revision: None,
+            last_applied: None,
+            drifted: false,
+            record_error: None,
+            limitations: PROVIDER_LIMITATIONS,
+        };
+        let status_keys = serde_json::to_value(&status)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            status_keys.iter().any(|key| key == "limitations"),
+            "状态也必须带能力边界，界面上少显示一次就没有第二道防线"
+        );
+    }
+
     #[test]
     fn blank_optional_fields_mean_unset() {
         let mut blank = profile();

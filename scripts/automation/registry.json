@@ -206,7 +206,7 @@
         "gw02.profileui"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；目录超限：`interface_models` 200 条上限 + `truncated` 标志，超出只截断不谎报（用例覆盖）；推理参数：`CodexProfile.reasoning_effort` 四档白名单，选过才写 `model_reasoning_effort`，没选绝不覆盖用户已有值（双向用例 + 变异可拒错）；空串归一为「未设置」；自定义 ID 映射：新增 `catalog_id`（目录里选中的标识，**只用于显示/匹配**，写入配置的仍是上游 `model`；字符集与模型标识同一条判据；用例断言它不落盘）；界面已暴露两项（`gw02.profileui` 形状门禁，含负例）。缺：保存≠生成权限的显式断言、档位页无浏览器行为回归（形状门禁为界）",
+      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；目录超限：`interface_models` 200 条上限 + `truncated` 标志（用例覆盖）；推理参数：四档白名单、选过才写、没选不覆盖（双向用例 + 变异可拒错）、空串归一为未设置；自定义 ID 映射：`catalog_id` 只用于显示/匹配、不落盘（用例断言）；界面已暴露两项（`gw02.profileui`）；保存≠生成权限：能力边界文案逐字钉住（`applying_a_profile_never_claims_the_model_can_generate`，断言含「不验证账号或模型可用性」、且切换结果与状态都不许出现 available/verified/generat/usable 类字段，变异删掉该句即变红）；并修掉一处**界面漏显示**——应用结果里的 `limitations` 此前没上屏，用户只会看到「配置已写入」（`gw02.profileui` 已断言该行存在，含负例）。缺：档位页无浏览器行为回归（形状门禁为界）",
       "status": "partial"
     },
     "GW-07": {
