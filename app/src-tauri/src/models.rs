@@ -950,6 +950,7 @@ mod tests {
         };
         let profile = keys(
             &serde_json::to_value(CodexProfile {
+                catalog_id: None,
                 reasoning_effort: None,
                 id: "work".into(),
                 name: "工作账号".into(),

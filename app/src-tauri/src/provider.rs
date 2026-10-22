@@ -65,6 +65,11 @@ pub struct CodexProfile {
     pub env_key: String,
     /// `responses`; legacy `chat` remains readable but cannot be written to Codex.
     pub wire_api: String,
+    /// 目录里选中的模型标识（如 `claude-sonnet-4-5`）。**只用于显示与匹配**，
+    /// 真正写进配置的是 [`Self::model`]（上游 ID）。这就是「自定义 ID 映射」：
+    /// 目录名与上游要求的名字可以不同，缺省时视作与 `model` 相同。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_id: Option<String>,
     /// 推理档位（Codex 的 `model_reasoning_effort`）。`None` = 不写这一键，
     /// 保持用户原配置不变——「没选」不等于「选成默认值」，后者会覆盖用户自己写的值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +87,13 @@ impl CodexProfile {
     /// Saving and application additionally require ensure_writable_protocol.
     /// 一个写坏的档位会在切换时把用户的 `config.toml` 改成 Codex 读不懂的东西。
     pub fn normalized(mut self) -> Result<Self, String> {
+        // 界面的「未设置」送的是空串：先归一成 `None`，否则会被当成非法档位拒绝。
+        if self.reasoning_effort.as_deref() == Some("") {
+            self.reasoning_effort = None;
+        }
+        if self.catalog_id.as_deref() == Some("") {
+            self.catalog_id = None;
+        }
         for (label, value) in [
             ("id", &self.id),
             ("provider_id", &self.provider_id),
@@ -91,6 +103,11 @@ impl CodexProfile {
         ] {
             if value.trim().is_empty() {
                 return Err(format!("{label} 不能为空"));
+            }
+        }
+        if let Some(catalog) = &self.catalog_id {
+            if safe_label(Some(catalog.trim())).is_none() {
+                return Err("目录模型标识只允许字母、数字与 - _ . / : [ ] @，且不能包含密钥".into());
             }
         }
         if safe_label(Some(self.model.trim())).is_none() {
@@ -510,6 +527,7 @@ pub fn capture_codex_profile(text: &str) -> Result<CodexProfile, String> {
     }
     let read = |key: &str| entry.get(key).and_then(|v| v.as_str());
     let profile = CodexProfile {
+        catalog_id: None,
         // 推理档位是**根键**（不在 provider 表里），别拿 provider 的读取器去取
         reasoning_effort: doc
             .get("model_reasoning_effort")
@@ -1294,6 +1312,36 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn blank_optional_fields_mean_unset() {
+        let mut blank = profile();
+        blank.reasoning_effort = Some(String::new());
+        blank.catalog_id = Some(String::new());
+        let normalized = blank.normalized().expect("空串应被归一成未设置");
+        assert_eq!(normalized.reasoning_effort, None, "界面「不设置」送空串，不能当成非法档位");
+        assert_eq!(normalized.catalog_id, None);
+        // 归一到未设置后，写入配置时不该出现推理档位键
+        let planned = plan_codex_apply("model = \"gpt-5\"\n", &normalized).unwrap();
+        assert!(!planned.contains("model_reasoning_effort"));
+    }
+
+    #[test]
+    fn catalog_id_is_display_only_and_uses_the_model_identifier_charset() {
+        let mut catalogued = profile();
+        catalogued.catalog_id = Some("claude-sonnet-4-5".into());
+        let normalized = catalogued.normalized().expect("合法目录标识应通过");
+        // 写入配置的仍然是上游模型 ID，目录标识不落盘
+        let planned = plan_codex_apply("model = \"gpt-5\"\n", &normalized).unwrap();
+        assert!(planned.contains("model = \"gpt-5\""));
+        assert!(!planned.contains("claude-sonnet-4-5"), "目录标识只用于显示，不该写进配置");
+
+        for bad in ["模型 名字", "with space", "sk-secret-value"] {
+            let mut invalid = profile();
+            invalid.catalog_id = Some(bad.into());
+            assert!(invalid.normalized().is_err(), "{bad:?} 不该被接受");
+        }
+    }
+
+    #[test]
     fn reasoning_effort_is_written_only_when_explicitly_chosen() {
         let base = "model = \"gpt-5\"\nmodel_provider = \"acme\"\n";
         let mut chosen = profile();
@@ -1324,7 +1372,8 @@ mod tests {
             chosen.reasoning_effort = Some(effort.into());
             assert!(chosen.normalized().is_ok(), "{effort} 应被接受");
         }
-        for effort in ["ultra", "HIGH", "", "medium "] {
+        // 空串不在这里：它表示「未设置」，由 normalized 归一为 None（见 blank_optional_fields_mean_unset）
+        for effort in ["ultra", "HIGH", "medium "] {
             let mut chosen = profile();
             chosen.reasoning_effort = Some(effort.into());
             assert!(
@@ -1647,6 +1696,7 @@ mod tests {
     /// 一份合用的档位 fixture
     fn profile() -> CodexProfile {
         CodexProfile {
+            catalog_id: None,
             reasoning_effort: None,
             id: "work".into(),
             name: "工作账号".into(),

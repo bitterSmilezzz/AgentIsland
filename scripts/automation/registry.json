@@ -202,10 +202,11 @@
       "checks": [
         "gw02.modeldir",
         "gw02.ifacemodels",
-        "rust.default"
+        "rust.default",
+        "gw02.profileui"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；目录超限：`interface_models` 对目录规模设 200 条上限并带回 `truncated` 标志，超出时只截断不谎报，用例覆盖（`truncated` 断言）；本轮补**推理参数**：`CodexProfile.reasoning_effort` 只接受 Codex 认识的四档（minimal/low/medium/high），选过才写 `model_reasoning_effort`，**没选绝不覆盖用户自己写的值**（用例双向覆盖，变异「没选也写默认值」可拒错）；读回既有配置时从根键取该档位，供界面回显。缺：自定义 ID 映射（客户端名与上游模型 ID 的显式映射）、保存≠生成权限的显式断言、推理档位尚未在界面暴露（当前只能由配置/接口设定）",
+      "coverage_note": "partial — 搜索/身份/键盘 a11y/目标漂移已有；目录超限：`interface_models` 200 条上限 + `truncated` 标志，超出只截断不谎报（用例覆盖）；推理参数：`CodexProfile.reasoning_effort` 四档白名单，选过才写 `model_reasoning_effort`，没选绝不覆盖用户已有值（双向用例 + 变异可拒错）；空串归一为「未设置」；自定义 ID 映射：新增 `catalog_id`（目录里选中的标识，**只用于显示/匹配**，写入配置的仍是上游 `model`；字符集与模型标识同一条判据；用例断言它不落盘）；界面已暴露两项（`gw02.profileui` 形状门禁，含负例）。缺：保存≠生成权限的显式断言、档位页无浏览器行为回归（形状门禁为界）",
       "status": "partial"
     },
     "GW-07": {
@@ -2095,6 +2096,24 @@
       "test_files": [
         "scripts/test-connections-page.mjs"
       ]
+    },
+    "gw02.profileui": {
+      "command": [
+        "python3",
+        "scripts/test-provider-profile-ui.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-02：档位页暴露推理档位与目录模型标识（形状断言，非浏览器行为）：档位下拉恰好是「不设置 + minimal/low/medium/high」且与后端白名单逐字一致；目录标识控件带 aria-label 且文案写明「仅用于显示、写入用上游模型 ID」；表单按 data-field 统一回填/收集（新增控件自动进 payload）；含负例（控件改名即变红）。",
+      "test_files": [
+        "scripts/test-provider-profile-ui.py"
+      ]
     }
   },
   "agents": {
@@ -2186,7 +2205,8 @@
       "automation.status",
       "auto01.headlesslog",
       "gw01.refreshui",
-      "gw01.connectionsui"
+      "gw01.connectionsui",
+      "gw02.profileui"
     ],
     "browser": [
       "not01.latencyui",
@@ -2271,7 +2291,8 @@
       "not02.smtp",
       "auto01.headlesslog",
       "gw01.refreshui",
-      "gw01.connectionsui"
+      "gw01.connectionsui",
+      "gw02.profileui"
     ],
     "package": [
       "package.artifact",
@@ -2403,7 +2424,8 @@
       "auto01.headlesslog",
       "auto01.headlesslogbin",
       "gw01.refreshui",
-      "gw01.connectionsui"
+      "gw01.connectionsui",
+      "gw02.profileui"
     ],
     "protocol": [
       "gw02.ifacemodels",

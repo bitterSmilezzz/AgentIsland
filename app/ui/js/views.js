@@ -2101,6 +2101,8 @@ export function renderProviderPage(root, status, profiles, backups, errors = [],
           ${providerField('provider_name', 'Provider 名称')}${providerField('base_url', 'API 地址')}
           ${providerField('env_key', '密钥环境变量名')}
           <label class="sb-field"><span>API 协议</span><select aria-label="API 协议" data-field="wire_api"><option value="responses">Responses</option><option value="chat" disabled>Chat · 旧档位，需改为 Responses</option></select></label>
+          <label class="sb-field"><span>目录模型标识 · 可选</span><input aria-label="目录模型标识" data-field="catalog_id" placeholder="如 claude-sonnet-4-5；仅用于显示，写入用上面的模型 ID" autocomplete="off" /></label>
+          <label class="sb-field"><span>推理档位 · 可选</span><select aria-label="推理档位" data-field="reasoning_effort"><option value="">不设置（保留配置里已有的值）</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
         </div></details>
         <p class="sb-note">保存后需单独应用。密钥使用环境变量，API 地址不能含认证信息。</p>
         <div class="actions"><button type="submit" class="mini-btn" data-save-profile>保存档位</button><button type="button" class="mini-btn" data-cancel-edit>取消编辑</button></div>
@@ -2302,8 +2304,9 @@ function bindProviderEvents(root, status, profiles) {
     const protocol = event.target.value === '@responses' ? 'responses' : null;
     const choice = protocol ? { provider_id: 'custom', provider_name: '自定义接口', base_url: '', env_key: 'CODEX_API_KEY', wire_api: protocol, model: '' } : profiles.find(p => p.id === event.target.value);
     if (!choice) { root.querySelector('[data-provider-advanced]').open = true; return; }
-    for (const key of ['provider_id', 'provider_name', 'base_url', 'env_key', 'wire_api']) {
-      form.querySelector(`[data-field="${key}"]`).value = choice[key];
+    for (const key of ['provider_id', 'provider_name', 'base_url', 'env_key', 'wire_api',
+      'catalog_id', 'reasoning_effort']) {
+      form.querySelector(`[data-field="${key}"]`).value = choice[key] ?? '';
     }
     if (protocol) root.querySelector('[data-provider-advanced]').open = true;
     const modelControl = form.querySelector('[data-field="model"]');
