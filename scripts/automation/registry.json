@@ -229,10 +229,11 @@
         "gw08.usagetrend",
         "gw08.reportpanel",
         "gw08.cliusage",
-        "rust.default"
+        "rust.default",
+        "gw08.otlp"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；本轮补**未知费用显式呈现**：`cost::is_uncosted` 把「有用量但无费率」与「真的是零」分开，报表在明细前新增「未计价来源：N 个（名字）——`$0.00` 不代表免费」一行；行内仍按既有契约写钱数（`$0.00`），不破坏报表文档的零写法口径；`an_unpriced_source_is_called_out_instead_of_looking_free` 覆盖「有点名」与「不无中生有」两个方向，变异（关掉这一行）可拒错。缺：尝试账目对账、本机与网关不双计、OTLP 度量",
+      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；未知费用显式呈现：`cost::is_uncosted` 区分「有用量但无费率」与「确实是零」，报表新增「未计价来源」一行（变异可拒错）；OTLP 度量导出：`otlp` 模块把当前聚合值编成 OTLP/HTTP JSON（metrics v1，gauge），端点先过既有传输策略（HTTPS 或仅回环 HTTP）、不带任何凭据、单次有界不重试；入口为 Tauri 命令 `export_otlp_metrics`（**默认关闭**，不调用就不发任何东西），`gw08.otlp` 用真实回环接收端断言报文形状与「无 Authorization」；缺：尝试账目对账（请求/尝试/重试分别计数）、本机与网关不双计（需网关用量源）、OTLP 的界面开关与后台周期上报",
       "status": "partial"
     },
     "GW-10": {
@@ -2133,6 +2134,29 @@
       "test_files": [
         "scripts/test-provider-page.mjs"
       ]
+    },
+    "gw08.otlp": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "--",
+        "otlp::"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-08：OTLP/HTTP 度量导出。断言三件事：①报文是 OTLP metrics v1 JSON（service.name=agentisland、四个固定指标名、gauge 与 timeUnixNano、单位 USD/1）；②端点策略在建连之前生效（回环 HTTP 与 HTTPS 放行，非回环明文拒绝、带凭据的 URL 拒绝）；③真实回环接收端只收到一次 JSON POST，且**不带 Authorization**，回执声明 sent_authorization=false。",
+      "test_files": [
+        "app/src-tauri/src/otlp.rs"
+      ]
     }
   },
   "agents": {
@@ -2226,7 +2250,8 @@
       "gw01.refreshui",
       "gw01.connectionsui",
       "gw02.profileui",
-      "gw02.profilepage"
+      "gw02.profilepage",
+      "gw08.otlp"
     ],
     "browser": [
       "not01.latencyui",
@@ -2314,7 +2339,8 @@
       "gw01.refreshui",
       "gw01.connectionsui",
       "gw02.profileui",
-      "gw02.profilepage"
+      "gw02.profilepage",
+      "gw08.otlp"
     ],
     "package": [
       "package.artifact",
@@ -2448,7 +2474,8 @@
       "gw01.refreshui",
       "gw01.connectionsui",
       "gw02.profileui",
-      "gw02.profilepage"
+      "gw02.profilepage",
+      "gw08.otlp"
     ],
     "protocol": [
       "gw02.ifacemodels",

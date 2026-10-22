@@ -26,6 +26,7 @@ mod engine;
 mod filemon;
 mod forecast;
 mod headless;
+mod otlp;
 mod health;
 mod im;
 mod installed;
@@ -1010,6 +1011,33 @@ fn open_agent_session(
     }
     session_navigation::launch(&target)?;
     Ok(target)
+}
+
+/// 把当前聚合值以 OTLP/HTTP 导出到**显式端点**（默认关闭：不调它就什么都不发）。
+///
+/// 口径：只发聚合量、不带任何凭据、端点先过传输策略（HTTPS，或仅回环 HTTP）。
+/// 这不是后台定时上报——每次导出都是调用方明确发起的一次动作。
+#[tauri::command]
+fn export_otlp_metrics(state: State<SharedEngine>, endpoint: String) -> Result<otlp::Receipt, String> {
+    let snapshot = {
+        let engine = state.lock().unwrap();
+        let view = engine.state();
+        otlp::Snapshot {
+            tokens_total: view.grand_total.tokens_total,
+            cost_total: view.grand_total.cost_total,
+            agents_running: view
+                .snapshots
+                .iter()
+                .filter(|snapshot| snapshot.pid.is_some())
+                .count() as u32,
+            pending_events: view.pending_events,
+        }
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    otlp::export(&endpoint, &snapshot, now).map_err(|failure| failure.code().to_string())
 }
 
 #[tauri::command]
@@ -4683,6 +4711,7 @@ fn main() {
             window_layout_remove_rule,
             window_layout_resolve_rule,
             get_engine_state,
+            export_otlp_metrics,
             open_agent_session,
             window_is_visible,
             set_workbench_draft,
