@@ -83,6 +83,17 @@ fn starts_like_formula(text: &str) -> bool {
         || text.starts_with('\r')
 }
 
+/// 公式护栏：以 OWASP 五触发字符（`=` `+` `-` `@`、tab/CR）开头的文本
+/// 前面加一个单引号，让表格软件把它当文本。**report.rs 的 Token 报表共用这一份**——
+/// 那边曾自己手写 CSV 转义、漏了这层（SEC-01），单源之后不会再各改各的。
+pub fn formula_guard(text: &str) -> String {
+    if starts_like_formula(text) {
+        format!("'{text}")
+    } else {
+        text.to_string()
+    }
+}
+
 /// CSV 字段转义，两件事：
 ///
 /// 1. **结构**：含逗号、引号或换行时整体加引号，内部引号加倍（RFC 4180）。
@@ -99,11 +110,7 @@ fn starts_like_formula(text: &str) -> bool {
 /// 注意单引号是**加在引号之外**的：`'=x` 不会被引号转义规则再改一遍，
 /// 而表格软件把它当「这是文本」的开头，显示时不带这个撇号。
 pub fn escape_csv(text: &str) -> String {
-    let guarded = if starts_like_formula(text) {
-        format!("'{text}")
-    } else {
-        text.to_string()
-    };
+    let guarded = formula_guard(text);
     if guarded.contains(',') || guarded.contains('"') || guarded.contains('\n') {
         format!("\"{}\"", guarded.replace('"', "\"\""))
     } else {

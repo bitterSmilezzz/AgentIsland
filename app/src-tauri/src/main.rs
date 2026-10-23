@@ -81,6 +81,7 @@ mod task_sources;
 mod tasks;
 #[cfg(test)]
 mod testutil;
+mod text_guard;
 mod todos;
 mod tokens;
 mod transport;

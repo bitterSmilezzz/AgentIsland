@@ -90,8 +90,8 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 密钥不进文件/日志/账本（notifier.rs:953 :1000）、原子写 0600（atomicfile.rs）、符号链接拒跟随（webhook.rs:910）、known_private 判据直接单测 12 项（private_text_tests.rs，变异验证 5/5）；缺凭据轮换、TLS、跨团队隔离、提示注入",
-      "status": "partial"
+      "coverage_note": "done — 密钥不进文件/日志/账本（notifier.rs:953 :1000）、原子写 0600（atomicfile.rs）、符号链接拒跟随（webhook.rs:910）、known_private 判据直接单测 12 项（private_text_tests.rs，变异验证 5/5）；**第三方恶意输入（2026-10-24）**：`text_guard` 成为入站自由文本的**唯一清洗口**——/notify·/event 的 agent/message/detail 与 /session 自报的 detail/ask 都从这里过：C0/C1 控制字符剥除（保留 \\n\\t；终端 ANSI 序列与隐形字符在入口消失，下游 UI/通知/报表/终端打印继承同一份结果）、**双向覆写控制符整段拒绝**（Trojan Source 显示伪装，400 固定错误体、不落账）、按字符截断（agent 120 / message 2000 / detail 4000 / 自报 TEXT_LIMIT）；清洗后事件照常入队、带 \\n\\t 的正常文本不受影响；两条变异（摘掉双向覆写拒绝、摘掉 CSV 公式护栏）在隔离改动下均变红。**CSV 单源**：report.rs 的 Token 报表此前手写裸引号转义、既漏公式护栏也漏引号加倍——现改用 audit::escape_csv 同一实现（OWASP 五触发字符前缀单引号），修复该缺口；UI 侧 escapeHtml 与私有文本判据沿用（两层各管一件事）。**凭据轮换**：网关连接凭据每次请求重读来源（GW-01 已收口，不长期持有，见 gw01.authgate）；webhook 令牌删除文件即撤销——下次 ensure_token 生成新令牌，旧持有者全部失效。**TLS**：出站 https 走系统 TLS 栈（notifier 真实传输）；入站 webhook 只听回环且**刻意不设 TLS**——回环流量不出本机，入口能力矩阵口径「查询不外露」；真实第三方 TLS 端点未验（无凭据，与 GW-01 同款边界）。**按目标/设备/角色隔离**：通知渠道逐通道独立配置与发送（NOT-05 渠道独立已钉）、网关凭据按连接隔离不入全局（GW-01）；跨多用户/多团队的系统级隔离不适用——单用户本机工具，无共享多租户面。**重放**：入站账本按事件身份去重（NOT-01）。",
+      "status": "done"
     },
     "SUP-01": {
       "title": "GUI/CLI/宿主/子 Agent 发现与身份",
@@ -1383,6 +1383,7 @@
         "app/src-tauri/src/task_sources.rs",
         "app/src-tauri/src/tasks.rs",
         "app/src-tauri/src/testutil.rs",
+        "app/src-tauri/src/text_guard.rs",
         "app/src-tauri/src/todos.rs",
         "app/src-tauri/src/tokens.rs",
         "app/src-tauri/src/tokens_context_tests.rs",

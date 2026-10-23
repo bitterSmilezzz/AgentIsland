@@ -456,7 +456,24 @@ pub(crate) fn notify_route(
         Some(serde_json::Value::String(id)) if crate::notify_ledger::valid_id(id) => Some(id.clone()),
         Some(_) => return (400, r#"{"error":"invalid id"}"#),
     };
-    let agent = doc.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+    // 自由文本在**入口**过唯一的清洗口：agent / message / detail 会流到 UI、
+    // 通知正文、报表导出与终端打印（`report` 把它们印到 stdout）。
+    // 双向覆写控制符在这里整段拒绝（固定错误体）；控制字符剥除、按字符截断。
+    let mut bidi = false;
+    let mut sanitize = |raw: &str, max_chars: usize| -> String {
+        match crate::text_guard::sanitize_text(raw, max_chars) {
+            Ok(text) => text,
+            Err(_) => {
+                bidi = true;
+                String::new()
+            }
+        }
+    };
+    let agent = doc
+        .get("agent")
+        .and_then(|v| v.as_str())
+        .map(|s| sanitize(s, crate::text_guard::AGENT_LIMIT))
+        .unwrap_or_default();
     let event = doc
         .get("event")
         .and_then(|v| v.as_str())
@@ -464,11 +481,14 @@ pub(crate) fn notify_route(
     let message = doc
         .get("message")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(|s| sanitize(s, crate::text_guard::MESSAGE_LIMIT));
     let detail = doc
         .get("detail")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(|s| sanitize(s, crate::text_guard::DETAIL_LIMIT));
+    if bidi {
+        return (400, r#"{"error":"text contains bidirectional override"}"#);
+    }
     if agent.is_empty() {
         return (400, r#"{"error":"agent 必填"}"#);
     }
@@ -650,15 +670,28 @@ fn bind_self_report(
         Ok(pid) => pid,
         Err(reason) => return reject(400, reason.reason(), "pid 必须是正整数或纯数字字符串"),
     };
+    // 自报的动作文本与通知文本走**同一个清洗口**：它们同样流到 UI 状态行与报表。
+    // 双向覆写拒绝；控制字符剥除；上限沿用 clamp_text 的 TEXT_LIMIT。
+    let sanitize_optional = |raw: Option<String>| -> Result<Option<String>, ()> {
+        raw.map(|text| crate::text_guard::sanitize_text(&text, crate::selfreport::TEXT_LIMIT))
+            .transpose()
+            .map_err(|_| ())
+    };
+    let detail = match sanitize_optional(json.get("detail").and_then(|v| v.as_str()).map(str::to_string)) {
+        Ok(value) => value,
+        Err(()) => return reject(400, Rejection::Malformed.reason(), "detail 含双向覆写控制符"),
+    };
+    let ask = match sanitize_optional(json.get("ask").and_then(|v| v.as_str()).map(str::to_string)) {
+        Ok(value) => value,
+        Err(()) => return reject(400, Rejection::Malformed.reason(), "ask 含双向覆写控制符"),
+    };
     let submission = Submission::new(
         agent_id.to_string(),
         session_id.to_string(),
         pid,
         state,
-        json.get("detail")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        json.get("ask").and_then(|v| v.as_str()).map(str::to_string),
+        detail,
+        ask,
         json.get("ttl").and_then(|v| v.as_i64()),
     );
     if let Err(reason) = submission.validate() {
@@ -853,6 +886,39 @@ mod session_tests {
         );
     }
 
+    /// SEC-01：自报的动作文本与通知文本走**同一个清洗口**。带令牌的通道只是
+    /// 「可信来源」，不代表它的**上游**（被分析会话、被注入的仓库指令）是干净的。
+    #[test]
+    fn self_report_text_passes_the_same_sanitizer() {
+        let engine = shared_engine();
+        // 控制字符剥除、正文保留
+        let (status, _) = bind_self_report(
+            r#"{"state":"working","detail":"改 \u001b[31mview\u0000 文件"}"#,
+            "claude",
+            "s-1",
+            &engine,
+        );
+        assert_eq!(status, 200);
+        let guard = engine.lock().unwrap();
+        let record = guard.self_reports.record("claude").expect("应已登记");
+        assert_eq!(record.detail.as_deref(), Some("改 [31mview 文件"));
+        drop(guard);
+        // 双向覆写整段拒绝：伪装成「工作完成」的显示层攻击在这里停下
+        let (status, body) = bind_self_report(
+            r#"{"state":"completed","detail":"已完成\u202E札记"}"#,
+            "claude",
+            "s-2",
+            &engine,
+        );
+        assert_eq!(status, 400, "{body}");
+        assert!(
+            !engine.lock().unwrap().self_reports.record("claude").is_some_and(
+                |record| record.session_id == "s-2"
+            ),
+            "被拒的提交不得登记"
+        );
+    }
+
     #[test]
     fn a_report_claiming_someone_elses_pid_is_refused() {
         let engine = shared_engine();
@@ -967,6 +1033,84 @@ mod session_tests {
         );
         let guard = engine.lock().unwrap();
         assert_eq!(guard.notify_latency.samples(), 1, "/event 也必须记延迟");
+    }
+
+    // ── SEC-01：第三方自由文本在入口清洗 ─────────────────────────────────────
+    //
+    // /notify·/event 的 agent/message/detail 会流到 UI、通知正文、报表导出与
+    // 终端打印（`report` 把它们印到 stdout）。清洗口只有 text_guard 一处；
+    // 这里的用例钉的是「路由真的过了那个口」，清洗规则本身的负例在 text_guard。
+
+    #[test]
+    fn the_notify_route_sanitizes_free_text_at_the_gate() {
+        let engine = deliver(
+            r#"{"agent":"dim\r","event":"question","message":"a\u0000\u001b[31mb\nc","detail":"x\t\u009b1y"}"#,
+            "/notify",
+            HookArrival::before(5),
+        );
+        let guard = engine.lock().unwrap();
+        let event = guard
+            .recent_events()
+            .into_iter()
+            .find(|event| event.event_type == "question")
+            .expect("清洗后的事件必须照常入队");
+        assert_eq!(event.agent_id, "dim", "\\r 必须从 agent 里剥掉");
+        let message = event.message.as_deref().expect("message 应保留");
+        assert_eq!(message, "a[31mb\nc", "控制字符剥除、换行保留");
+        let detail = event.detail.as_deref().expect("detail 应保留");
+        assert_eq!(detail, "x\t1y", "C1（单字符 CSI）剥除、制表与正文保留");
+    }
+
+    #[test]
+    fn bidirectional_overrides_in_notify_text_are_refused_wholesale() {
+        for (path, body) in [
+            ("/notify", r#"{"agent":"dim","message":"允许\u202Ex\u202C"}"#),
+            ("/event", r#"{"agent":"dim\u2066x\u2069"}"#),
+            ("/notify", r#"{"agent":"dim","detail":"\u202Ahook"}"#),
+        ] {
+            let (tx, rx) = mpsc::channel();
+            let (wake_tx, wake_rx) = mpsc::sync_channel::<()>(1);
+            let engine: crate::SharedEngine = Arc::new(Mutex::new(
+                crate::engine::ActivityEngine::new(Settings::default(), rx),
+            ));
+            let (status, reply) = route(
+                path,
+                &Method::Post,
+                body,
+                "",
+                &engine,
+                path,
+                &tx,
+                &wake_tx,
+                HookArrival::before(0),
+            );
+            assert_eq!(status, 400, "{path} {body}");
+            assert_eq!(reply, r#"{"error":"text contains bidirectional override"}"#);
+            assert!(
+                engine.lock().unwrap().recent_events().is_empty(),
+                "被拒事件不得入队"
+            );
+            let _ = wake_rx.try_recv();
+            let _ = tx;
+        }
+    }
+
+    #[test]
+    fn oversized_notify_text_is_truncated_by_characters() {
+        let long = "字".repeat(crate::text_guard::MESSAGE_LIMIT + 100);
+        let body = format!(
+            r#"{{"agent":"dim","event":"completed","message":"{long}"}}"#
+        );
+        let engine = deliver(&body, "/notify", HookArrival::before(0));
+        let guard = engine.lock().unwrap();
+        let events = guard.recent_events();
+        let event = events.last().expect("事件应入队");
+        let message = event.message.as_deref().expect("message 应保留");
+        assert_eq!(
+            message.chars().count(),
+            crate::text_guard::MESSAGE_LIMIT,
+            "按字符截断，不是按字节"
+        );
     }
 
     #[test]

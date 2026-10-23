@@ -251,6 +251,10 @@ pub fn generate_markdown_with_attempts(
 }
 
 /// 生成 CSV（UTF-8 **带 BOM**，否则 Excel 打开是乱码）
+///
+/// 文本字段统一走 `audit::escape_csv` **单源**：结构引号 + 公式护栏（`=cmd|…`
+/// 这类单元格名在这里同样可能出现——Agent 名与连接名是自由文本）。SEC-01 之前
+/// 这里是一份手写的裸引号转义，漏了公式护栏，还漏了引号加倍。
 pub fn generate_csv(timeline: &Timeline, now_ms: i64) -> String {
     let mut csv = String::from("\u{FEFF}");
     csv.push_str("报表时间,周期,Agent,Tokens,费用,状态\n");
@@ -268,13 +272,13 @@ pub fn generate_csv(timeline: &Timeline, now_ms: i64) -> String {
             "未发现"
         };
         csv.push_str(&format!(
-            "\"{}\",\"{}\",\"{}\",{},\"{}\",\"{}\"\n",
-            timestamp_text(now_ms),
-            timeline.range.label(),
-            source.agent_id,
+            "{},{},{},{},{},{}\n",
+            crate::audit::escape_csv(&timestamp_text(now_ms)),
+            crate::audit::escape_csv(timeline.range.label()),
+            crate::audit::escape_csv(&source.agent_id),
             source.tokens,
-            fee,
-            status
+            crate::audit::escape_csv(&fee),
+            crate::audit::escape_csv(status)
         ));
     }
     csv
@@ -532,17 +536,42 @@ mod tests {
         let claude_row = csv.lines().nth(1).unwrap();
         let gemini_row = csv.lines().nth(2).unwrap();
         assert!(
-            claude_row.contains("\"claude\",1234,\"$0.50\",\"已连接\""),
+            claude_row.contains("claude,1234,$0.50,已连接"),
             "{claude_row}"
         );
         assert!(
-            gemini_row.contains("\"gemini\",0,\"$0.00\",\"未发现\""),
+            gemini_row.contains("gemini,0,$0.00,未发现"),
             "{gemini_row}"
         );
-        // 每行列数固定（Tokens 不加引号，其余加），脚本按逗号切才稳
+        // 每行列数固定（文本字段只在含逗号/引号/换行时才加引号——转义单源在
+        // `audit::escape_csv`），脚本按逗号切才稳
         for line in csv.lines().skip(1) {
             assert_eq!(line.split(',').count(), 6, "{line}");
         }
+    }
+
+    /// SEC-01：Token 报表的文本单元格必须带**公式护栏**。Agent 名与连接名是自由文本，
+    /// 一个叫 `=cmd|…` 的连接名不加护栏就会被电子表格当公式执行。
+    /// 护栏与审计报告共用同一份实现（`audit::formula_guard`）——report.rs 曾经
+    /// 自己手写转义漏掉这层，单源之后改一处两边同时生效。
+    #[test]
+    fn the_token_report_csv_neutralizes_formula_cells() {
+        let report = timeline(
+            TokenTimeRange::Day,
+            vec![
+                source("=cmd|'/c calc'!A1", 10, 0.0, true),
+                source("+url", 5, 0.0, true),
+                source("@home", 1, 0.0, false),
+            ],
+        );
+        let csv = generate_csv(&report, 1_700_000_000_000);
+        assert!(csv.contains("'=cmd|'/c calc'!A1"), "{csv}");
+        assert!(csv.contains("'+url"), "{csv}");
+        assert!(csv.contains("'@home"), "{csv}");
+        // 护栏只落在文本列（这里是第三列），时间戳列不受影响。
+        assert!(csv
+            .lines()
+            .any(|line| line.split(',').nth(2) == Some("'=cmd|'/c calc'!A1")), "{csv}");
     }
 
     #[test]
