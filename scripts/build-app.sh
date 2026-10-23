@@ -226,7 +226,24 @@ codesign --verify --deep --strict "$APP_DIR"
 # `codesign` 报 `Read-only file system`；而 `codesign ... && echo ✓` 在 rc=0 时会打印 ✓
 # ——即使校验其实失败。**校验必须看 `codesign --verify` 的判据，不能看前一条命令的退出码。**
 echo "==> 打 DMG 安装包（ad-hoc 签名；密钥已在主构建前注入）"
-APPLE_SIGNING_IDENTITY="-" cargo tauri build --bundles dmg "${UPDATER_BUILD_ARGS[@]+"${UPDATER_BUILD_ARGS[@]}"}"
+# **有界重试**：createdmg 打包要靠 AppleScript 让 Finder 摆窗口，机器一忙就会卡住或
+# 失败——而**单独**重跑同一条命令每次都成功（BUG-010）。所以这里重试两次：
+# 第一次失败就再打一次，仍失败才报错退出。
+# 重试的是**打包**，不是放宽判据：产物照样要走后面的签名自校验。
+DMG_BUILT=0
+for attempt in 1 2 3; do
+    if APPLE_SIGNING_IDENTITY="-" cargo tauri build --bundles dmg "${UPDATER_BUILD_ARGS[@]+"${UPDATER_BUILD_ARGS[@]}"}"; then
+        DMG_BUILT=1
+        break
+    fi
+    if [[ "$attempt" == "3" ]]; then
+        echo "✗ DMG 打包连续三次失败（createdmg 依赖 Finder 摆窗口，机器一忙就会卡）" >&2
+        exit 1
+    fi
+    echo "==> DMG 打包失败，重试（第 $((attempt + 1)) 次）" >&2
+    sleep 10
+done
+[[ "$DMG_BUILT" == "1" ]] || { echo "✗ DMG 未产出" >&2; exit 1; }
 DMG_SRC="$(ls -t app/src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1)"
 [[ -n "$DMG_SRC" && -f "$DMG_SRC" ]] || { echo "✗ DMG 未产出" >&2; exit 1; }
 DMG_VER="$(basename "$DMG_SRC" | sed -E 's/.*_([0-9]+\.[0-9]+\.[0-9]+)_.*/\1/')"

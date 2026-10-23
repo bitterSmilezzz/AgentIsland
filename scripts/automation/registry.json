@@ -300,9 +300,10 @@
       "title": "多界面、共享与备份同步",
       "checks": [
         "rust.default",
-        "gw09.encryptedbackup"
+        "gw09.encryptedbackup",
+        "gw09.matrix"
       ],
-      "coverage_note": "partial — Rust 侧 webhook.rs serve 入口/令牌/端口、cli.rs --usage 按需取数已有；**加密备份**（本轮）：`backup_crypt` 提供自描述容器（magic+版本+盐+nonce+密文），口令经 PBKDF2-HMAC-SHA256（210k 次）派生 AES-256-GCM 密钥，**口令不落盘**；解密失败（口令错或文件被改）→ 明确报错，**不返回半截明文**；档位页新增「导出加密备份 / 选择加密备份」，文件后缀 `.aibk`；密码学本体 5 条单元测试（往返、密文不含明文、口令错、篡改、每次新盐新 nonce）与界面边界 4 条形状断言（`gw09.encryptedbackup`，含负例）覆盖，两条变异（写明文冒充加密、解不开也返回半截）均被拒。缺：GUI/CLI/TUI/Web 等价矩阵（各入口能力逐项对齐，尚未逐项核对）",
+      "coverage_note": "partial — Rust 侧 webhook.rs serve 入口/令牌/端口、cli.rs --usage 按需取数已有；**加密备份**：`backup_crypt` 自描述容器（magic+版本+盐+nonce+密文），口令经 PBKDF2-HMAC-SHA256（210k）派生 AES-256-GCM 密钥且**不落盘**；解密失败明确报错、**不返回半截明文**；档位页可导出/导入 `.aibk`；密码学本体 5 条单测 + 界面边界 4 条形状断言（`gw09.encryptedbackup`，含负例），两条变异（写明文冒充加密、解不开也返回半截）均被拒。**等价矩阵**：`docs/spec/入口能力矩阵.md` 把 GUI/CLI/TUI/Web 的能力逐格列出，门禁 `gw09.matrix` 逐条核对实现锚点（声称存在的必须找得到、标「不具备」的必须真的没有、`cli.rs` 已实现命令不得漏写），变异（摘掉 `notify` 入口）可拒错。缺：各能力在多入口间的**行为是否逐字一致**（`status --json` 与 GUI 概览字段对齐）尚未逐项对拍",
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
       "status": "partial"
     },
@@ -2178,6 +2179,24 @@
       "test_files": [
         "scripts/test-encrypted-backup-ui.py"
       ]
+    },
+    "gw09.matrix": {
+      "command": [
+        "python3",
+        "scripts/test-entry-capability-matrix.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-09：GUI/CLI/TUI/Web 等价矩阵。矩阵是**数据**（`docs/spec/入口能力矩阵.md`），门禁逐条核对：①矩阵声称某入口能做的事，必须能在代码里找到实现锚点（CLI 子命令 / Web 路由 / GUI 工作台页面）；②标「不具备」的格必须真的没有；③`cli.rs` 能力表里每个已实现命令都要落在矩阵的 CLI 或 TUI 列（漏写即红）。变异验证：从 dispatch 里摘掉 `notify` → 矩阵门禁立刻变红。",
+      "test_files": [
+        "scripts/test-entry-capability-matrix.py"
+      ]
     }
   },
   "agents": {
@@ -2273,7 +2292,8 @@
       "gw02.profileui",
       "gw02.profilepage",
       "gw08.otlp",
-      "gw09.encryptedbackup"
+      "gw09.encryptedbackup",
+      "gw09.matrix"
     ],
     "browser": [
       "not01.latencyui",
@@ -2363,7 +2383,8 @@
       "gw02.profileui",
       "gw02.profilepage",
       "gw08.otlp",
-      "gw09.encryptedbackup"
+      "gw09.encryptedbackup",
+      "gw09.matrix"
     ],
     "package": [
       "package.artifact",
@@ -2499,7 +2520,8 @@
       "gw02.profileui",
       "gw02.profilepage",
       "gw08.otlp",
-      "gw09.encryptedbackup"
+      "gw09.encryptedbackup",
+      "gw09.matrix"
     ],
     "protocol": [
       "gw02.ifacemodels",
@@ -2580,6 +2602,13 @@
       "requirement": "OPS-01",
       "evidence": "已修（v0.0.352 之后）：事故现场——`scripts/release.sh --resume 0.0.353` 在 HEAD 仍是 `release: v0.0.352 …`、且工作树有未提交改动时被接受，脚本跳过提交并把 `v0.0.353` 打在 v0.0.352 的提交上，同时上传了从脏树编出的附件（发布记录可以很漂亮，但证明不了附件来自哪个源码）。修法：新增 `resume_precondition_error`，`--resume` 必须同时满足「HEAD 标题恰为 `release: v<版本> - <标题>`」与「工作区干净」，否则带理由退出；自动续跑（标题匹配时自动启用）同样要求干净树。`scripts/test-release-staging.sh` 新增三条断言（放行 / 标题不符 / 树不净），实跑 `--resume` 现场已复现拒绝文案。善后：删除打在错提交上的 `v0.0.353` release 与 tag，按普通模式重新提交并发布同一版本。",
       "fixed_in": "0.0.353"
+    },
+    {
+      "id": "BUG-010",
+      "title": "发版流程里的 DMG 打包偶发卡在 createdmg 的 AppleScript 步骤（bundle_dmg.sh 失败）",
+      "status": "closed",
+      "requirement": "OPS-01",
+      "evidence": "现象：v0.0.358 与 v0.0.361 两次发版在 `bundle_dmg.sh` 环节失败（一次进程无 CPU 活动地挂住 36 分钟，一次直接报错退出）。**单独**执行同一条 `cargo tauri build --bundles dmg` 每次都通过——差别是发版流程里它紧跟着别的步骤跑，createdmg 的 AppleScript 步骤要等 Finder 摆窗口。已核对：单独打包与发版流程用的是同一条命令，因此不是打包内容或签名的问题，而是时序/环境（Finder 响应）。**修法**：`scripts/build-app.sh` 的 DMG 环节加**有界重试**（最多三次，间隔 10 秒）——重试的是**打包**，不是放宽判据：产物照样要走后面的签名自校验（`verify_dmg_signature`）。未做（如实登记）：createdmg 等待 Finder 的具体超时点仍未定位，若重试三次仍失败仍会中断发版（那是有界重试的应有行为，不是静默通过）。"
     }
   ]
 }
