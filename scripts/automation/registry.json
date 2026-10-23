@@ -77,11 +77,12 @@
       "checks": [
         "automation.selfcheck",
         "automation.lessons",
-        "automation.status"
+        "automation.status",
+        "auto02.retro"
       ],
       "audit_ref": "docs/测试映射盘点.md",
-      "coverage_note": "partial — 复盘账本校验、跨日期晋升、恶意规则拒绝、人工撤销（lessons.py revoke，只改该账本文件）已有；缺：自动触发复盘（需求只授权设计触发契约，本轮不建定时任务）",
-      "status": "partial"
+      "coverage_note": "done — 复盘账本校验、跨日期晋升、恶意规则拒绝、人工撤销已有（automation.lessons 全套用例：键归一与碰撞消歧/真实日历日/幂等/并发 flock 不丢更新/坏账本保字节/晋升阈值按不同日期且每个日期必须带证据/撤销只动自己的键不改权限）；「Done right」（保存做对的实例）由账本条目模型覆盖——规则+证据条目按日期聚合，正向实例与错题同一入口、同受证据绑定与幂等约束（test_promotion_needs_distinct_dates_that_each_carry_evidence 等）；**触发契约**（auto02.retro，2026-10-24）：`docs/spec/复盘触发契约.md` 定稿并带形状门禁——复盘附着在 run 收尾（现状：--lesson 显式给规则、证据自动绑 run_id、晋升候选落盘本轮证据目录），契约指名入口（add_lesson→append_entry 幂等单点、promotion_candidates 只读聚合、revoke_key 仅人工、validate 显式晋升）逐一存在，禁止事项（定时器/cron、绕过幂等单点直接拼账本字节、自动晋升）逐条核对；三个方向变异（契约引用被改名、塞入 cron 挂点、直接拼账本字节）均被拒。**边界（需求划的界）**：本轮不建定时任务类触发器（需求明确排除）；「从 run 事实自动生成候选条目」是契约允许的唯一自动化方向，按授权边界只设计未实现。",
+      "status": "done"
     },
     "SEC-01": {
       "title": "数据与凭据边界",
@@ -2253,6 +2254,24 @@
       "test_files": [
         "scripts/test-disk-full-write.py"
       ]
+    },
+    "auto02.retro": {
+      "command": [
+        "python3",
+        "scripts/test-retro-contract.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "AUTO-02：复盘触发契约的形状门禁。契约是数据（docs/spec/复盘触发契约.md）：触发点=run 收尾（现状 --lesson 显式给规则、证据自动绑 run_id、promotion_candidates 落盘本轮证据目录）；权限边界=写账本只走 add_lesson→append_entry 幂等单点、晋升只读呈现、revoke 仅人工；禁止=定时器/cron、绕过幂等单点直接拼账本字节、自动晋升。核对：①契约指名入口逐一存在（doc→code 绑定：指名标识符在代码里消失即红）；②禁止事项真的没有；③契约与门禁互相指认。变异验证（隔离副本）：契约引用被改名 → 红；pipeline 塞入 cron 挂点 → 红。",
+      "test_files": [
+        "scripts/test-retro-contract.py"
+      ]
     }
   },
   "agents": {
@@ -2329,6 +2348,7 @@
       "automation.verifier",
       "automation.snapshot",
       "automation.lessons",
+      "auto02.retro",
       "automation.matrix",
       "automation.candidate",
       "automation.pause",
@@ -2422,6 +2442,7 @@
       "automation.verifier",
       "automation.snapshot",
       "automation.lessons",
+      "auto02.retro",
       "automation.matrix",
       "automation.candidate",
       "automation.pause",
@@ -2556,6 +2577,7 @@
       "automation.verifier",
       "automation.snapshot",
       "automation.lessons",
+      "auto02.retro",
       "automation.matrix",
       "sup01.clidispatch",
       "gw08.cliusage",
