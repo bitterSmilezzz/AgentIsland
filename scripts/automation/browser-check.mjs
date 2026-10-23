@@ -12,6 +12,7 @@ const scripts = new Set([
   'test-update-panel.mjs',
   'test-connections-page.mjs',
   'test-provider-page.mjs',
+  'test-reduced-motion.mjs',
 ]);
 const name = process.argv[2];
 const override = process.env.TEST_BROWSER_MODULE;

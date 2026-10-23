@@ -4,6 +4,13 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.368] - 2026-10-24 — 减少动态有了真浏览器门禁：reduce 下不许有任何东西在动（SUP-05 进展）
+
+- **补的缺口**：`prefers-reduced-motion: reduce` 的代码路径散在 5 处 JS 守卫与多段 CSS `@media` 里，但没有任何测试证明「开了 reduce 动画真的停了」——代码读了媒体查询不等于行为正确。
+- **新门禁 `sup05.reducedmotion`（真浏览器，playwright）钉四层**：①**对照面**——no-preference 下切换页面确有 WAAPI 动画（证明门禁分得出动与不动，不是恒绿）；②reduce 下 **JS 动画零调用**（page-motion / island-navigation 的媒体查询守卫）；③**CSS 全局扫描**——reduce 下渲染中的任何元素不得有非零 transition 时长，散点 `@media` 规则漏配了谁就点名谁（防「明天新增样式忘了配 reduce」这条最容易烂的路径），岛形态（主表面）同样过扫描；④功能不受影响——reduce 只是停动效，路由照常切换。
+- **能拒错**：双变异均被拒——摘掉 page-motion 的媒体查询守卫（「reduce 下页面切换不得调用 WAAPI 动画，实际 1 次」）、摘掉 `.wb-nav-item` 的 reduce 规则（「transitionDuration 应为 0s，实际 0.15s」）。当前基线一次通过：现有 reduce 规则对渲染面覆盖完备。
+- **SUP-05 剩余（如实）**：多屏/DPI（需真实多屏环境，原生档）、键盘导航专项、热区≠视觉（命中面积专项）。
+
 ## [0.0.367] - 2026-10-24 — 会话库的三种坏形态都有了名字：截断、空库、写入方在场（SUP-02 收口）
 
 - **先对账再动手**：SUP-02 的 note 是含糊的英文（"source/probe gaps remain"），本轮把场景逐 token 对账——同事件重放/新事件不漏报由 SUP-03 收口、未知不零由 SUP-04 收口、时钟回拨与 TTL 窗口已有直接用例；真正没有测试的是会话库的三种坏形态。

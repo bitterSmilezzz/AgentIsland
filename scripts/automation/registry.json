@@ -157,10 +157,11 @@
         "shell.functionalui",
         "shell.workbench",
         "sup05.deeplink.workbench",
-        "sup05.deeplink.cold"
+        "sup05.deeplink.cold",
+        "sup05.reducedmotion"
       ],
       "audit_ref": "docs/测试映射盘点.md",
-      "coverage_note": "partial — 深链/动效/焦点/几何/四边原生/壳变体已有；缺：多屏/DPI/键盘/热区≠视觉/减少动态",
+      "coverage_note": "partial — 深链/动效/焦点/几何/四边原生/壳变体已有；**减少动态**（sup05.reducedmotion，2026-10-24）：真浏览器门禁钉住三层——①对照面（no-preference 下切换页面确有 WAAPI 动画，门禁不恒绿）；②reduce 下 JS 动画零调用（page-motion / island-navigation 的媒体查询守卫）；③CSS 全局扫描（reduce 下渲染中的任何元素不得有非零 transition 时长——散点 @media 规则漏配即点名，岛形态同扫）；④路由功能在 reduce 下不受影响；双变异（摘 JS 守卫、摘 .wb-nav-item 的 reduce 规则）均被拒。缺：多屏/DPI（需真实多屏环境，属原生档）、键盘导航专项、热区≠视觉（命中面积专项）。",
       "status": "partial"
     },
     "TASK-01": {
@@ -2272,6 +2273,25 @@
       "test_files": [
         "scripts/test-retro-contract.py"
       ]
+    },
+    "sup05.reducedmotion": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-reduced-motion.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "SUP-05「减少动态」：prefers-reduced-motion: reduce 必须真的把动效停下来。①对照面：no-preference 下页面切换产生 WAAPI 动画（证明门禁分得出动与不动，不恒绿）；②reduce 下 JS 动画零调用（page-motion / island-navigation 的媒体查询守卫）；③CSS 全局扫描：reduce 下渲染中的任何元素不得有非零 transition 时长——散点 @media 规则漏了谁就点名谁（防「新增样式忘了配 reduce」），岛形态（主表面）同样过扫描；④功能不受影响：路由照常切换。变异验证（隔离副本）：摘掉 page-motion 的媒体查询守卫 → WAAPI 断言红；摘掉 .wb-nav-item 的 reduce 规则 → CSS 断言红。",
+      "test_files": [
+        "scripts/test-reduced-motion.mjs"
+      ]
     }
   },
   "agents": {
@@ -2307,6 +2327,7 @@
       "sup05.deeplink",
       "sup05.quicknav",
       "sup05.pagemotion",
+      "sup05.reducedmotion",
       "sup05.winlifecycle",
       "sup05.winlayout",
       "sup05.taskfocus",
@@ -2395,6 +2416,7 @@
       "sup05.deeplink",
       "sup05.quicknav",
       "sup05.pagemotion",
+      "sup05.reducedmotion",
       "sup05.winlifecycle",
       "sup05.winlayout",
       "sup05.taskfocus",
@@ -2529,6 +2551,7 @@
       "sup05.deeplink",
       "sup05.quicknav",
       "sup05.pagemotion",
+      "sup05.reducedmotion",
       "sup05.winlifecycle",
       "sup05.winlayout",
       "sup05.taskfocus",
