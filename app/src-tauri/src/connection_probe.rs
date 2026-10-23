@@ -56,6 +56,9 @@ pub struct BalanceInfo {
     pub amount: f64,
     pub unit: String,
     pub raw_text: String,
+    /// 订阅套餐（plan/tier）**原样**：网关自己怎么说就怎么显示。
+    /// `None` = 这次没取到（网关没给，或没声明路径）——**不显示占位**。
+    pub plan: Option<String>,
 }
 /// 有效认证方案：显式声明的优先，未声明时按服务类型沿用既有语义。
 ///
@@ -207,12 +210,23 @@ fn probe(
                                     result.usage_verified = true;
                                     let unit = quota.unit.clone().unwrap_or_default();
                                     let raw_text = format!("{amount} {unit}").trim().to_owned();
+                                    // 套餐：声明了路径才取，取到才带上；**原样**显示。
+                                    let plan = quota
+                                        .plan_path
+                                        .as_deref()
+                                        .and_then(|path| extract_plan(&q_val, path));
                                     result.balance = Some(BalanceInfo {
                                         amount,
                                         unit,
                                         raw_text: raw_text.clone(),
+                                        plan,
                                     });
-                                    result.reason = format!("服务状态可读；余额/用量已核实（{raw_text}）");
+                                    let plan_note = match &result.balance.as_ref().and_then(|b| b.plan.clone()) {
+                                        Some(plan) => format!("，套餐 {plan}"),
+                                        None => String::new(),
+                                    };
+                                    result.reason =
+                                        format!("服务状态可读；余额/用量已核实（{raw_text}{plan_note}）");
                                 } else {
                                     result.usage_verified = false;
                                     result.reason = format!(
@@ -257,6 +271,29 @@ fn quota_url(base_url: &str, endpoint: &str) -> Option<url::Url> {
     }
 }
 
+/// 按点分隔路径从 JSON 对象中提取**字符串**（套餐名用）。
+///
+/// 只认字符串与数字：对象/数组一律不认（那不是套餐名，是结构）。
+/// 返回**原样**（仅去首尾空白）——套餐名是网关的说法，我们不翻译、不归一。
+fn extract_plan(root: &Value, path: &str) -> Option<String> {
+    let mut current = root;
+    for segment in path.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        current = current.get(segment)?;
+    }
+    let text = match current {
+        Value::String(s) => s.trim().to_owned(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    if text.is_empty() || text.chars().count() > 64 || text.chars().any(char::is_control) {
+        return None;
+    }
+    Some(text)
+}
+
 /// 按点分隔路径从 JSON 对象中提取浮点数值（支持数值类型与数字字符串）。
 fn extract_balance(root: &Value, path: &str) -> Option<f64> {
     let mut current = root;
@@ -288,6 +325,30 @@ fn valid_version(version: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 套餐（plan/tier）语义：**按网关原话说**，取不到就没有。
+    ///
+    /// 三条：①声明了路径且网关给了值 → 原样取回（含大小写与内部连字符，不归一）；
+    /// ②没声明路径 → 一律没有（不许「猜」一个套餐出来）；
+    /// ③声明了但网关没给 / 给的不是字符串 → 也没有，**不显示占位**。
+    #[test]
+    fn the_plan_is_taken_verbatim_and_never_invented() {
+        let payload: Value = serde_json::from_str(
+            r#"{"data":{"plan":"Team-Enterprise","tier":"pro"},"quota":42}"#,
+        )
+        .unwrap();
+        assert_eq!(extract_plan(&payload, "data.plan").as_deref(), Some("Team-Enterprise"));
+        assert_eq!(extract_plan(&payload, "data.tier").as_deref(), Some("pro"));
+        // 数字也能当套餐名（有些网关给序号），但仍按原样
+        assert_eq!(extract_plan(&payload, "quota").as_deref(), Some("42"));
+        // 没有的、非字符串的、空的 → 没有
+        assert_eq!(extract_plan(&payload, "data.missing"), None);
+        assert_eq!(extract_plan(&payload, "data"), None);
+        let empty: Value = serde_json::from_str(r#"{"plan":"  "}"#).unwrap();
+        assert_eq!(extract_plan(&empty, "plan"), None, "空字符串不算套餐");
+        // 路径不许穿越
+        assert_eq!(extract_plan(&payload, "..plan"), None);
+    }
 
     #[test]
     fn lease_rejects_overlap_and_releases_on_drop() {
@@ -449,6 +510,73 @@ mod tests {
         assert!(matches!(limited.status, Status::Error));
     }
 
+    /// 套餐（plan/tier）走完一整条路：声明 → 提取 → 上屏。
+    ///
+    /// 三种情形都要分得清：**有就是有**（原样）、**没有就是没有**（不显示占位）、
+    /// **没声明就当没这回事**（不许猜一个套餐出来）。
+    #[test]
+    fn the_plan_reaches_the_reason_only_when_the_gateway_actually_declares_it() {
+        use crate::connections::QuotaConfig;
+
+        let mut c = connection(Kind::CustomEndpoint);
+        c.auth = AuthScheme::Bearer;
+        c.quota = Some(QuotaConfig {
+            plan_path: Some("data.plan".into()),
+            endpoint: "api/user/quota".into(),
+            balance_path: "data.remain_quota".into(),
+            unit: Some("Tokens".into()),
+        });
+        // ① 网关给了 → 原样带上
+        let result = probe(&c, 100, |url, _, _| {
+            if url.path() == "/proxy/api/user/quota" {
+                Ok(serde_json::json!({"data": {"remain_quota": 500000.0, "plan": "Team-Enterprise"}}))
+            } else {
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+        });
+        let balance = result.balance.expect("balance info must exist");
+        assert_eq!(balance.plan.as_deref(), Some("Team-Enterprise"), "套餐名必须原样");
+        assert!(
+            result.reason.contains("Team-Enterprise"),
+            "状态文案里要能看到套餐：{}",
+            result.reason
+        );
+
+        // ② 声明了但网关没给 → 没有套餐，也不显示占位
+        let result = probe(&c, 100, |url, _, _| {
+            if url.path() == "/proxy/api/user/quota" {
+                Ok(serde_json::json!({"data": {"remain_quota": 500000.0}}))
+            } else {
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+        });
+        let balance = result.balance.expect("balance info must exist");
+        assert_eq!(balance.plan, None, "网关没给就不该有套餐");
+        assert!(
+            !result.reason.contains("套餐"),
+            "没有套餐就不该出现套餐字样：{}",
+            result.reason
+        );
+
+        // ③ 没声明路径 → 一律没有（不许猜）
+        let mut without = c.clone();
+        without.quota = Some(QuotaConfig {
+            plan_path: None,
+            endpoint: "api/user/quota".into(),
+            balance_path: "data.remain_quota".into(),
+            unit: Some("Tokens".into()),
+        });
+        let result = probe(&without, 100, |url, _, _| {
+            if url.path() == "/proxy/api/user/quota" {
+                Ok(serde_json::json!({"data": {"remain_quota": 500000.0, "plan": "Team-Enterprise"}}))
+            } else {
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+        });
+        let balance = result.balance.expect("balance info must exist");
+        assert_eq!(balance.plan, None, "没声明路径就当没有这回事");
+    }
+
     #[test]
     fn quota_protocol_verifies_usage_and_extracts_balance() {
         use crate::connections::QuotaConfig;
@@ -456,6 +584,7 @@ mod tests {
         let mut c = connection(Kind::CustomEndpoint);
         c.auth = AuthScheme::Bearer;
         c.quota = Some(QuotaConfig {
+            plan_path: None,
             endpoint: "api/user/quota".into(),
             balance_path: "data.remain_quota".into(),
             unit: Some("Tokens".into()),
@@ -481,6 +610,7 @@ mod tests {
         // 路径不存在或非数字
         let mut c_bad = c.clone();
         c_bad.quota = Some(QuotaConfig {
+            plan_path: None,
             endpoint: "api/user/quota".into(),
             balance_path: "data.missing_field".into(),
             unit: Some("USD".into()),

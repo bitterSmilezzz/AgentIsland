@@ -19,7 +19,7 @@ const SNAPSHOT = {
     credential_ref: { kind: 'environment', name: 'FIXTURE_AUTH' },
     auth: { kind: 'bearer' },
     refresh: { token_url: 'https://gw.example/token', client_id: 'web-client', refresh_token_env: 'FIXTURE_REFRESH' },
-    quota: { endpoint: 'api/user/quota', balance_path: 'data.remain_quota', unit: 'Tokens' },
+    quota: { endpoint: 'api/user/quota', balance_path: 'data.remain_quota', unit: 'Tokens', plan_path: 'data.plan' },
     enabled: true, created_ms: 1, updated_ms: 2,
   }, {
     id: 'conn-plain', kind: 'custom_endpoint', name: '普通端点', base_url: 'http://127.0.0.1:11434/',
@@ -32,7 +32,7 @@ const PROBE_WITH_BALANCE = {
   connection_id: 'conn-refresh', checked_at_ms: 42, status: 'readable', failure_code: null,
   service_version: null, reason: '服务状态可读；余额/用量已核实（1000000 Tokens）',
   models_verified: false, usage_verified: true,
-  balance: { amount: 1000000, unit: 'Tokens', raw_text: '1000000 Tokens' },
+  balance: { amount: 1000000, unit: 'Tokens', raw_text: '1000000 Tokens', plan: 'Team-Enterprise' },
 };
 
 const FIXTURE_PAGE = `<!DOCTYPE html><html lang="zh-Hans" data-theme="dark"><head><meta charset="utf-8">
@@ -144,6 +144,7 @@ try {
   await field('quota_endpoint').fill('api/user/quota');
   await field('quota_path').fill('data.remain_quota');
   await field('quota_unit').fill('Tokens');
+  await field('quota_plan_path').fill('data.plan');
   await page.locator('[data-connection-save]').click();
   await page.waitForFunction(() => window.__saved);
   saved = await page.evaluate(() => window.__saved);
@@ -152,6 +153,7 @@ try {
   }, '三件套必须整体提交且环境变量名转大写');
   assert.deepEqual(saved.quota, {
     endpoint: 'api/user/quota', balance_path: 'data.remain_quota', unit: 'Tokens',
+    plan_path: 'data.plan',
   });
 
   // ── 编辑回填：既有连接的刷新与余额声明必须原样回到表单 ─────────────────────
@@ -160,6 +162,7 @@ try {
   assert.equal(await field('refresh_env').inputValue(), 'FIXTURE_REFRESH');
   assert.equal(await field('quota_path').inputValue(), 'data.remain_quota');
   assert.equal(await field('quota_unit').inputValue(), 'Tokens');
+  assert.equal(await field('quota_plan_path').inputValue(), 'data.plan', '套餐路径必须回填');
   await page.locator('[data-connection-cancel]').click();
 
   // ── 余额渲染：查到数值才显示，且显示的是回执原文；没查到的不显示占位 ────────
@@ -168,10 +171,16 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.connection-balance').length === 1);
   const balanceText = await page.locator('.connection-balance').first().textContent();
   assert.ok(balanceText.includes('1000000 Tokens'), `余额必须显示回执原文：${balanceText}`);
+  assert.ok(balanceText.includes('Team-Enterprise'), `套餐必须按网关原样显示：${balanceText}`);
   assert.equal(await page.locator('[data-connection-test="conn-plain"]').count(), 1);
   await page.locator('[data-connection-test="conn-plain"]').click();
   await page.waitForTimeout(200);
   assert.equal(await page.locator('.connection-balance').count(), 1, '无余额读数的连接不得渲染占位');
+  // 套餐同理：回执里没有套餐就不许出现「套餐」字样（不显示占位）。
+  // 整页只应有一处「套餐」字样（conn-refresh 那条），其余连接不显示。
+  // 只数**余额行里**的「套餐」：编辑表单里那个「套餐取值路径」标签不算渲染占位。
+  const planMentions = await page.locator('.connection-balance', { hasText: '套餐' }).count();
+  assert.equal(planMentions, 1, `没有套餐读数的连接不得渲染套餐占位（实际 ${planMentions} 处）`);
 
   assert.deepEqual(errors, [], '页面不得抛出未处理异常');
   console.log('PASS: connections page behaves in a real browser — linkage, submit payloads, backfill and balance rendering verified');

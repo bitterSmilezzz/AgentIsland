@@ -88,6 +88,12 @@ pub struct QuotaConfig {
     /// 货币或单位标识（如 "USD"、"CNY"、"Tokens"、"点"），缺省为空
     #[serde(default)]
     pub unit: Option<String>,
+    /// 订阅套餐（plan/tier）字段的提取路径（如 "data.plan"、"membership.tier"）。
+    ///
+    /// 提取到的**原样显示**：套餐名是网关自己的说法，我们不翻译、不归一、
+    /// 也不推断它对应哪一档能力。没声明或没取到就当没有——**不显示占位**。
+    #[serde(default)]
+    pub plan_path: Option<String>,
 }
 
 
@@ -409,6 +415,16 @@ fn validate(data: &Snapshot) -> Result<(), String> {
                     return Err("余额单位不能超过 16 个字符，不能含控制字符或凭据值".into());
                 }
             }
+            if let Some(plan) = &quota.plan_path {
+                // 与余额路径同一条判据：点分隔的属性名，不许穿越、不许带凭据。
+                if plan.is_empty()
+                    || plan.len() > 100
+                    || contains_credential(plan)
+                    || !plan.split('.').all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                {
+                    return Err("套餐提取路径须为点分隔的属性名（如 data.plan），不能包含凭据值".into());
+                }
+            }
         }
                 if !item.auth.is_none() && item.credential_ref.is_none() {
             return Err("该认证方案需要先指定凭据来源（环境变量名）".into());
@@ -481,6 +497,35 @@ mod tests {
             enabled: true,
         }
     }
+    /// 套餐路径的校验：与余额路径同一条判据（点分隔属性名，不许穿越/带凭据）。
+    #[test]
+    fn the_plan_path_is_validated_like_the_balance_path() {
+        let root = Sandbox::new("connections-plan-path");
+        let s = store(&root);
+        let mut good = draft();
+        good.quota = Some(QuotaConfig {
+            endpoint: "api/user/quota".into(),
+            balance_path: "data.quota".into(),
+            unit: None,
+            plan_path: Some("data.plan".into()),
+        });
+        assert!(s.save(good, 0, 100).is_ok(), "合法的套餐路径应被接受");
+
+        for bad in ["", "data..plan", "data.plan path", "..plan", "sk-ABCDEFGH12345"] {
+            let mut d_bad = draft();
+            d_bad.quota = Some(QuotaConfig {
+                endpoint: "api/user/quota".into(),
+                balance_path: "data.quota".into(),
+                unit: None,
+                plan_path: Some(bad.into()),
+            });
+            assert!(
+                s.save(d_bad, 0, 100).is_err(),
+                "非法套餐路径 {bad:?} 不该被接受"
+            );
+        }
+    }
+
     #[test]
     fn roundtrip_edit_disable_remove_preserves_identity_and_creation() {
         let root = Sandbox::new("connections");
@@ -809,6 +854,7 @@ mod tests {
             auth: AuthScheme::Bearer,
             refresh: None,
             quota: Some(QuotaConfig {
+                plan_path: None,
                 endpoint: endpoint.into(),
                 balance_path: path.into(),
                 unit: Some("Tokens".into()),

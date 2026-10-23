@@ -622,7 +622,7 @@ fn serve_quota(mut stream: TcpStream) {
     let request = String::from_utf8_lossy(&buffer[..size]).to_string();
     let path = request.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("/");
     let (status, body) = if path.ends_with("/api/user/quota") {
-        (200u16, r#"{"data":{"remain_quota":1000000.0}}"#.to_owned())
+        (200u16, r#"{"data":{"remain_quota":1000000.0,"plan":"Team-Enterprise"}}"#.to_owned())
     } else {
         (200u16, r#"{"object":"list"}"#.to_owned())
     };
@@ -647,6 +647,7 @@ fn quota_section() -> Result<(Value, Vec<String>), String> {
         FIXTURE_ENV,
     );
     item.quota = Some(QuotaConfig {
+        plan_path: Some("data.plan".into()),
         endpoint: "api/user/quota".into(),
         balance_path: "data.remain_quota".into(),
         unit: Some("Tokens".into()),
@@ -654,9 +655,22 @@ fn quota_section() -> Result<(Value, Vec<String>), String> {
     let verified = connection_probe::inspect(&item, 10);
     let amount = verified.balance.as_ref().map(|b| b.amount);
     let unit = verified.balance.as_ref().map(|b| b.unit.clone());
+    let plan = verified.balance.as_ref().and_then(|b| b.plan.clone());
+
+    // 同一响应、但**没声明**套餐路径 → 不该出现套餐（不许从响应里猜）
+    let mut without_plan = item.clone();
+    without_plan.quota = Some(QuotaConfig {
+        plan_path: None,
+        endpoint: "api/user/quota".into(),
+        balance_path: "data.remain_quota".into(),
+        unit: Some("Tokens".into()),
+    });
+    let undeclared = connection_probe::inspect(&without_plan, 12);
+    let plan_undeclared = undeclared.balance.as_ref().and_then(|b| b.plan.clone());
 
     // 声明路径与实际返回不符：不冒充核实，但基础状态仍可读
     item.quota = Some(QuotaConfig {
+        plan_path: None,
         endpoint: "api/user/quota".into(),
         balance_path: "data.unknown_field".into(),
         unit: None,
@@ -667,6 +681,7 @@ fn quota_section() -> Result<(Value, Vec<String>), String> {
     let plaintext_blocked = {
         let mut probe = item.clone();
         probe.quota = Some(QuotaConfig {
+            plan_path: None,
             endpoint: "http://example.com/quota".into(),
             balance_path: "data.remain_quota".into(),
             unit: None,
@@ -681,6 +696,8 @@ fn quota_section() -> Result<(Value, Vec<String>), String> {
         "extracted_unit": unit,
         "mismatched_path_rejected": !mismatched.usage_verified,
         "plaintext_endpoint_blocked": plaintext_blocked,
+        "extracted_plan": plan,
+        "plan_absent_without_declaration": plan_undeclared.is_none(),
     });
     Ok((value, reasons))
 }
@@ -817,6 +834,8 @@ mod tests {
         assert_eq!(quota["extracted_unit"], "Tokens");
         assert_eq!(quota["mismatched_path_rejected"], true);
         assert_eq!(quota["plaintext_endpoint_blocked"], true);
+        assert_eq!(quota["extracted_plan"], "Team-Enterprise", "套餐按网关原样提取");
+        assert_eq!(quota["plan_absent_without_declaration"], true, "没声明就不该有套餐");
 
         let proxy = &receipt["proxy_isolation"];
         assert_eq!(proxy["env_proxy_configured"], true);
@@ -857,9 +876,11 @@ mod tests {
             vec![
                 "configured_usage_verified",
                 "extracted_amount",
+                "extracted_plan",
                 "extracted_unit",
                 "mismatched_path_rejected",
-                "plaintext_endpoint_blocked"
+                "plaintext_endpoint_blocked",
+                "plan_absent_without_declaration"
             ]
         );
         assert_eq!(

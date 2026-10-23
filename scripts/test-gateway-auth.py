@@ -64,9 +64,11 @@ SYNTHETIC_FIXTURE: dict[str, Any] = {
     "quota_protocol": {
         "configured_usage_verified": True,
         "extracted_amount": 1000000.0,
+        "extracted_plan": "Team-Enterprise",
         "extracted_unit": "Tokens",
         "mismatched_path_rejected": True,
         "plaintext_endpoint_blocked": True,
+        "plan_absent_without_declaration": True,
     },
     "proxy_isolation": {
         "env_proxy_configured": True,
