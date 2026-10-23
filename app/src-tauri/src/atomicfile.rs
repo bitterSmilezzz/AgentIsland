@@ -314,4 +314,89 @@ mod tests {
         );
     }
 
+    /// 磁盘满 / 有界写入失败：`write_all` 中途 Err ⇒ **原件逐字节不动**、
+    /// 暂存文件被守卫清掉、错误显式返回。这是「断网/睡眠/崩溃/升级不丢任务与
+    /// 账目」在写入侧的兜底：设置与档位的落盘都走这一层，失败永远到不了 rename。
+    ///
+    /// **以 RLIMIT_FSIZE 注入同一条失败路径**（`write_all` 返回 EFBIG）——不是
+    /// ENOSPC 本身：真实磁盘满需要挂载小容量镜像，而 `hdiutil` 在本机被系统拒绝
+    /// （Operation not permitted，TCC 级环境限制，如实登记）。两条错误码走的是
+    /// **完全相同**的处理路径：错误传播、暂存清理、原件保护，都不看 errno。
+    ///
+    /// RLIMIT 是**进程级**限制，会波及并行线程的其它写文件测试——所以本测试
+    /// 标 `#[ignore]`，由 `ops01.diskfull` 门禁以 `--ignored --test-threads=1`
+    /// 单独运行，测试退出前恢复限额与信号处理（守卫保证，失败路径也不例外）。
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "RLIMIT_FSIZE 是进程级限制，必须独占运行；由 ops01.diskfull 门禁显式运行"]
+    fn a_write_that_hits_the_size_limit_preserves_the_original_and_leaves_no_residue() {
+        struct ProcessGuard {
+            saved_limit: libc::rlimit,
+            saved_sigxfsz: usize,
+        }
+        impl Drop for ProcessGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::setrlimit(libc::RLIMIT_FSIZE, &self.saved_limit);
+                    libc::signal(libc::SIGXFSZ, self.saved_sigxfsz as libc::sighandler_t);
+                }
+            }
+        }
+        let sandbox = Sandbox::new();
+        let target = sandbox.0.join("settings.json");
+        let original = vec![b'a'; 4096];
+
+        // 写入限额前的正常基线：先落一份原件。
+        atomic_replace_validated(&target, &original, |stage| {
+            Ok(fs::metadata(stage).map(|_| ())?)
+        })
+        .expect("限额内写入应当成功");
+
+        let mut saved_limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let rc = unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut saved_limit) };
+        assert_eq!(rc, 0, "getrlimit 应当可用");
+        // 只降软限：限额=原件大小+少量余量；硬限不动（降硬限不可逆）。
+        let mut limited = saved_limit;
+        limited.rlim_cur = (original.len() as u64 + 4096).min(limited.rlim_max);
+        let saved_sigxfsz = unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+        assert_ne!(saved_sigxfsz, libc::SIG_ERR, "signal 不应失败");
+        let _guard = ProcessGuard {
+            saved_limit,
+            saved_sigxfsz: saved_sigxfsz as usize,
+        };
+        let rc = unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limited) };
+        assert_eq!(rc, 0, "setrlimit 应当可用");
+
+        // 超限写入（1MB ≫ 8KB 限额）：write_all 必须失败，且失败是显式的。
+        let too_big = vec![b'b'; 1024 * 1024];
+        let result = atomic_replace_validated(&target, &too_big, |stage| {
+            Ok(fs::metadata(stage).map(|_| ())?)
+        });
+        let error = result.expect_err("超限写入必须失败，而不是截断成功");
+        assert_ne!(
+            error.kind(),
+            io::ErrorKind::Other,
+            "失败要有真实原因，不是包装出来的空错误"
+        );
+
+        // 原件逐字节不动；暂存无残留（守卫在错误路径上也要清理）。
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            original,
+            "失败的写入不得碰原件"
+        );
+        only_target_remains(&sandbox.0, "settings.json");
+
+        // 限额内的写入照常成功：证明上面的失败归因于限额本身，不是环境坏了。
+        let small = vec![b'c'; 1024];
+        atomic_replace_validated(&target, &small, |stage| {
+            Ok(fs::metadata(stage).map(|_| ())?)
+        })
+        .expect("限额内写入应当成功");
+        assert_eq!(fs::read(&target).unwrap(), small);
+    }
+
 }

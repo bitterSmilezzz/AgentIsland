@@ -256,10 +256,11 @@
         "ops01.measuremem",
         "ops01.resourcesoak",
         "ops01.nativegates",
-        "rust.default"
+        "rust.default",
+        "ops01.diskfull"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 热/稳态 soak、清理失败、崩溃部分、原子写与坏文件保原件已有；缺：冷 soak、扩展 soak(>30min)、网关背压、升级回滚、磁盘满",
+      "coverage_note": "partial — 热/稳态 soak、清理失败、崩溃部分、原子写与坏文件保原件已有；**磁盘满/有界写入失败**（ops01.diskfull，2026-10-24）：atomic_write_validated 的 write_all 中途 Err ⇒ 原件逐字节不动、暂存被守卫清理、错误显式返回、限额内写入照常成功（归因于限额本身）；以 RLIMIT_FSIZE 注入同一条失败路径（EFBIG 而非 ENOSPC——真实磁盘满需挂载小容量镜像，hdiutil 在本机被系统拒绝（Operation not permitted，TCC 级环境限制，如实登记）；两条错误码的处理路径完全相同，失败处理不看 errno）；RLIMIT 是进程级限制，测试 #[ignore] 由门禁以 --ignored --test-threads=1 单独运行；变异（吞掉 write_all 错误）被拒。缺：冷 soak、扩展 soak(>30min)、网关背压（GW-08 边界：当前代码不存在网关用量源）、升级回滚（与 NOT-06 真实安装路径同属外部验收层）。",
       "status": "partial"
     },
     "NOT-02": {
@@ -2236,6 +2237,22 @@
       "test_files": [
         "scripts/test-automation-publish.py"
       ]
+    },
+    "ops01.diskfull": {
+      "command": [
+        "python3",
+        "scripts/test-disk-full-write.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "OPS-01：磁盘满/有界写入失败路径。atomic_write_validated 的 write_all 中途 Err ⇒ 原件逐字节不动、暂存文件被守卫清掉、错误显式返回、限额内写入照常成功（归因于限额本身）。以 RLIMIT_FSIZE 注入同一条失败路径（EFBIG 而非 ENOSPC——真实磁盘满需挂载小容量镜像，hdiutil 在本机被系统拒绝 Operation not permitted，TCC 级环境限制，如实登记；两条错误码在原子写里处理路径完全相同，失败处理不看 errno）。RLIMIT 是进程级限制，测试标 #[ignore] 由本门禁以 --ignored --test-threads=1 单独运行，不误伤并行线程。变异验证：吞掉 write_all 错误 → 门禁变红。",
+      "test_files": [
+        "scripts/test-disk-full-write.py"
+      ]
     }
   },
   "agents": {
@@ -2291,6 +2308,7 @@
       "ops01.measuremem",
       "ops01.resourcesoak",
       "ops01.nativegates",
+      "ops01.diskfull",
       "auto01.staging",
       "sec01.scansecrets",
       "auto01.version",
@@ -2377,6 +2395,7 @@
       "ops01.measuremem",
       "ops01.resourcesoak",
       "ops01.nativegates",
+      "ops01.diskfull",
       "auto01.staging",
       "sec01.scansecrets",
       "auto01.version",
@@ -2509,6 +2528,7 @@
       "ops01.measuremem",
       "ops01.resourcesoak",
       "ops01.nativegates",
+      "ops01.diskfull",
       "auto01.staging",
       "sec01.scansecrets",
       "auto01.version",
@@ -2661,6 +2681,12 @@
       "status": "open",
       "requirement": "GW-09",
       "evidence": "在干净 HEAD（de52147，v0.0.361，无本轮改动）复跑 `scripts/check-windows-crate.sh` 同样失败于 `ring v0.17.14` 的 build script（Windows 目标缺 C 头文件）——证明该失败自 v0.0.360 引入 ring（AES-256-GCM/PBKDF2 用 ring 实现，AEAD 与 KDF 不该自己写）起就存在，与本轮 diff 无关。同型先例见 docs/agent/HANDOFF.md 第 8 节第 1 条：updater 的 default 特征曾把 ring 带进依赖树打红同一门禁，当时改走 native-tls 移出；这次 ring 是**刻意**引入的密码学依赖，不能如法移除。未做：本机没有 Windows SDK，无法为交叉检查提供目标头文件；按「门禁故障明确失败」登记，不放宽判据、不跳过。权威 Windows 判据仍是 .github/workflows/build.yml 的 windows job（检查脚本自述），下次 CI 运行时以该 job 的真实结果为准。 **2026-10-24 证据更新**：CI 已给出权威答案——v0.0.360 与 v0.0.361 的 build.yml **Windows job 均 success**（run 39965670764 / 39978097642），而这两版依赖树里都有 ring：ring 不破坏真实 Windows 构建，本地红纯属交叉检查环境缺头文件。遗留问题收窄为「本机这道门禁如何恢复判别力」（提供 Windows 头文件/换判据/单列环境范围），风险面已由 CI 覆盖。"
+    },
+    {
+      "id": "BUG-012",
+      "title": "全量 Rust 套件出现一次未定位的红（2 failed）：用例名未捕获，需复现时带全量日志定位",
+      "status": "open",
+      "evidence": "2026-10-24 一次全量 cargo test 记到 `1182 passed; 2 failed`（随后同源码连续 3 次全绿：1184 passed / 0 failed）。该次运行的输出只保留了 tail -3，失败用例名未捕获——按「保留失败样本」登记，不当作没发生。处置：下次复现必须带全量日志（失败名 + 断言），先定位是否与负载/并行时序相关（本机当时无重负载）；若复现两次以上按 flaky 测试修根因。"
     }
   ]
 }
