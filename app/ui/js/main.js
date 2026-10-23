@@ -232,6 +232,7 @@ async function boot() {
     cpu_threshold: 6, battery_saver_enabled: true,
     token_alert_enabled: true, token_alert_threshold: 200000,
     daily_token_budget: 0, budget_alert_enabled: true,
+    otlp_enabled: false, otlp_endpoint: '', otlp_interval: 300,
     auto_anomalies_alert: true,
     notification_policy: 'standard', play_completion_sound: true, disabled_agents: [],
     launch_at_login: false, hide_docked_sliver: false, compact_view: false,

@@ -57,6 +57,12 @@ pub struct Settings {
     /// 日预算（token）。**0 = 未设**（与 Swift `dailyTokenBudget` 同键同默认同区间）。
     /// 口径是滚动 24 小时，不是自然日——见 `budget.rs` 的模块头。
     pub daily_token_budget: i64,
+    /// OTLP 度量导出开关（**默认关**：不打开就一个包都不发）。
+    pub otlp_enabled: bool,
+    /// OTLP 端点（HTTPS，或仅回环 HTTP；空值 = 未配置）。
+    pub otlp_endpoint: String,
+    /// 周期上报间隔（秒）。钳在 30..3600：太快是自伤，太慢等于没上报。
+    pub otlp_interval: f64,
     /// 每个工具的本机滚动 24h 净 token 预算；不代表服务商配额。
     pub tool_token_budgets: BTreeMap<String, i64>,
     /// 预算告警开关（Swift `budgetAlertEnabled`，默认开）。
@@ -104,6 +110,9 @@ impl Default for Settings {
             auto_anomalies_alert: true,
             token_alert_threshold: 200_000,
             daily_token_budget: 0,
+            otlp_enabled: false,
+            otlp_endpoint: String::new(),
+            otlp_interval: 300.0,
             tool_token_budgets: BTreeMap::new(),
             budget_alert_enabled: true,
             remote_kind: "ntfy".into(),
@@ -296,6 +305,7 @@ impl Settings {
             (&mut s.active_session_window, base.active_session_window),
             (&mut s.min_working_hold, base.min_working_hold),
             (&mut s.runaway_cpu_threshold, base.runaway_cpu_threshold),
+            (&mut s.otlp_interval, base.otlp_interval),
             (
                 &mut s.runaway_duration_threshold,
                 base.runaway_duration_threshold,
@@ -326,6 +336,10 @@ impl Settings {
         s.min_working_hold = clamp(s.min_working_hold, 1.0, 300.0);
         s.runaway_cpu_threshold = clamp(s.runaway_cpu_threshold, 10.0, 100.0);
         s.runaway_duration_threshold = clamp(s.runaway_duration_threshold, 30.0, 3600.0);
+        s.otlp_interval = clamp(s.otlp_interval, 30.0, 3600.0);
+        // 端点只做**格式**归一（去空白）：协议策略由 `otlp::endpoint` 在导出前判。
+        // 在设置层拒绝会把「刚填一半」也判死，用户改到一半就存不下去。
+        s.otlp_endpoint = s.otlp_endpoint.trim().to_string();
         // 收起延迟上限 5s（Swift `SettingLimits.collapseDelayRange`）。此前 Rust 放到 30s，
         // 脏值能让面板久驻十几秒——那不是「宽容」，是用户找不到它关哪儿了。
         s.collapse_delay = clamp(s.collapse_delay, 0.2, 5.0);
@@ -458,6 +472,32 @@ mod tests {
 
     /// `normalized()` 钳的是**用户可写的脏值**（设置界面是文本/滑块，写坏是常态）。
     /// 上下界每个都要覆盖：越界必须被夹回——否则 `sample_interval = 0` 会让引擎空转占核。
+    /// OTLP 导出：**默认关闭**，间隔被钳在 30..3600，端点只做去空白。
+    ///
+    /// 「默认关闭」这条要单独钉：它是「不打开就一个包都不发」的唯一保证，
+    /// 而这正是 OTLP 与其它设置项的区别——别的旋钮最多影响显示，这个会对外连网。
+    #[test]
+    fn otlp_defaults_off_and_bounds_the_interval() {
+        let defaults = Settings::default();
+        assert!(!defaults.otlp_enabled, "OTLP 必须默认关闭");
+        assert_eq!(defaults.otlp_endpoint, "");
+        assert_eq!(defaults.otlp_interval, 300.0);
+
+        let mut dirty = defaults.clone();
+        dirty.otlp_interval = 1.0;
+        assert_eq!(dirty.normalized().otlp_interval, 30.0, "太快是自伤");
+        dirty.otlp_interval = 1e9;
+        assert_eq!(dirty.normalized().otlp_interval, 3600.0);
+        dirty.otlp_interval = f64::NAN;
+        assert_eq!(dirty.normalized().otlp_interval, 300.0, "NaN 归位到出厂值");
+        dirty.otlp_endpoint = "  https://collector.example.invalid/v1/metrics  ".into();
+        assert_eq!(
+            dirty.normalized().otlp_endpoint,
+            "https://collector.example.invalid/v1/metrics",
+            "端点只去空白，协议策略留给导出前判定"
+        );
+    }
+
     #[test]
     fn normalized_clamps_every_dirty_field() {
         let mut lo = Settings::default();

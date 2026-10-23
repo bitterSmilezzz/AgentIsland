@@ -1850,6 +1850,13 @@ const SETTING_FIELDS = [
     { key: 'runaway_cpu_threshold', label: '高负载阈值', type: 'number', unit: '%', min: 10, max: 100, step: 1 },
     { key: 'runaway_duration_threshold', label: '高负载持续时间', type: 'number', unit: '秒', min: 30, max: 3600, step: 30 },
   ]},
+  { group: '可观测（OTLP 导出）', items: [
+    { key: 'otlp_enabled', label: '周期导出度量', type: 'bool',
+      hint: '默认关闭；开启后按下面的间隔把聚合值发到端点，不带任何凭据' },
+    { key: 'otlp_endpoint', label: 'OTLP 端点', type: 'text',
+      hint: 'HTTPS，或仅回环 HTTP（http://127.0.0.1:4318/v1/metrics）' },
+    { key: 'otlp_interval', label: '导出间隔', type: 'number', unit: '秒', min: 30, max: 3600, step: 30 },
+  ]},
   { group: 'Token 与预算', items: [
     { key: 'token_alert_enabled', label: 'Token 暴涨告警', type: 'bool' },
     { key: 'token_alert_threshold', label: '暴涨阈值', type: 'number', unit: 'token/分', min: 1000, max: 10000000, step: 1000 },
@@ -1909,6 +1916,10 @@ function settingRow(field, raw) {
       .map(([v, label]) => `<option value="${escapeHtml(v)}"${v === raw ? ' selected' : ''}>${escapeHtml(label)}</option>`)
       .join('');
     control = `<select data-set="${id}">${options}</select>`;
+  } else if (field.type === 'text') {
+    // 文本字段（端点/地址）：**不能**画成 number——浏览器会把地址静默清空。
+    const value = (raw === undefined || raw === null) ? '' : String(raw);
+    control = `<input type="text" data-set="${id}" value="${escapeHtml(value)}" spellcheck="false" autocomplete="off">`;
   } else {
     // 读不到就留空而不是写 0：这一栏的含义是「未核实」，0 会被读成「用户设成 0」
     const value = (raw === undefined || raw === null) ? '' : String(raw);
@@ -1937,6 +1948,9 @@ export function bindSettings() {
       let value;
       if (field.type === 'bool') value = el.checked;
       else if (field.type === 'select') value = el.value;
+      // 文本字段（如 OTLP 端点）原样写回：**不要**走数字分支，
+      // 否则地址会被 `Number()` 变成 NaN 然后被当成「没填」。
+      else if (field.type === 'text') value = el.value.trim();
       else {
         // 空值不写：用户清空输入框不等于「设成 0」
         if (el.value.trim() === '') return;

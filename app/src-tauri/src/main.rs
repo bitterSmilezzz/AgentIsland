@@ -3226,9 +3226,13 @@ pub(crate) fn log_line(msg: &str) {
 fn engine_loop(shared: SharedEngine, app: AppHandle, wake_rx: mpsc::Receiver<()>) {
     let scheduler = engine::HookScheduler::new(wake_rx);
     let mut source_signature = Vec::<String>::new();
+    // OTLP 周期上报的两个跨拍状态：上次**成功**发送的时刻（毫秒）与「是否正在飞」。
+    // 失败不更新时间戳，于是下一拍会按间隔重试——但只有一个在飞，不会堆线程。
+    let last_otlp_ms = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let otlp_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     loop {
         // 徽标文本在临界区里**算好**，写托盘留到锁外（理由见 `apply_tray_badge`）。
-        let (state, interval, badge, observations) = {
+        let (state, interval, badge, observations, settings_for_otlp, otlp_snapshot, now_ms_for_otlp) = {
             let mut e = shared.lock().unwrap();
             e.consume_hook_events();
             let badge_mode = e.settings.menu_bar_badge_mode.clone();
@@ -3271,6 +3275,21 @@ fn engine_loop(shared: SharedEngine, app: AppHandle, wake_rx: mpsc::Receiver<()>
                     base
                 }
             };
+            let settings_for_otlp = (
+                e.settings.otlp_enabled,
+                e.settings.otlp_endpoint.clone(),
+                e.settings.otlp_interval,
+            );
+            let otlp_snapshot = otlp::Snapshot {
+                tokens_total: s.grand_total.tokens_total,
+                cost_total: s.grand_total.cost_total,
+                agents_running: s.snapshots.iter().filter(|snap| snap.pid.is_some()).count() as u32,
+                pending_events: s.pending_events,
+            };
+            let now_ms_for_otlp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as i64)
+                .unwrap_or(0);
             (
                 s,
                 interval,
@@ -3279,8 +3298,37 @@ fn engine_loop(shared: SharedEngine, app: AppHandle, wake_rx: mpsc::Receiver<()>
                     .values()
                     .map(|c| c.observation.clone())
                     .collect::<Vec<_>>(),
+                settings_for_otlp,
+                otlp_snapshot,
+                now_ms_for_otlp,
             )
         };
+        // OTLP 周期上报：判定在锁内（需要设置与快照），**发送在锁外**。
+        // 发送要建连、最多 5s，绝不能占着引擎锁——那是 ADR 0014 的老账。
+        // 同时在飞只允许一个：上一发还没回来就不再叠加（慢端点不该把线程堆起来）。
+        if otlp::due(
+            settings_for_otlp.0,
+            &settings_for_otlp.1,
+            last_otlp_ms.load(std::sync::atomic::Ordering::Relaxed),
+            now_ms_for_otlp,
+            settings_for_otlp.2,
+        ) && !otlp_in_flight.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            let endpoint = settings_for_otlp.1.clone();
+            let snapshot = otlp_snapshot;
+            let in_flight = otlp_in_flight.clone();
+            let last = last_otlp_ms.clone();
+            std::thread::spawn(move || {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis() as i64)
+                    .unwrap_or(0);
+                if otlp::export(&endpoint, &snapshot, now).is_ok() {
+                    last.store(now, std::sync::atomic::Ordering::Relaxed);
+                }
+                in_flight.store(false, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
         // 发布与 hook 唤醒均不延后下一次全量采样的期限。
         let sample_at = std::time::Instant::now() + std::time::Duration::from_secs_f64(interval);
         // 锁已释放，才轮到托盘——顺序不能反，见 `apply_tray_badge` 的注释。

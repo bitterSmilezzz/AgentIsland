@@ -233,7 +233,7 @@
         "gw08.otlp"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；未知费用显式呈现：`cost::is_uncosted` 区分「有用量但无费率」与「确实是零」，报表新增「未计价来源」一行（变异可拒错）；OTLP 度量导出：`otlp` 模块（OTLP/HTTP JSON、默认关闭、不带凭据、端点先过传输策略），`gw08.otlp` 用真实回环接收端断言；尝试账目对账：`tokens::AttemptLedger`（records / requests / duplicates，恒等式 `requests + duplicates == records`），重复响应只计次数不重复计用量，报表新增「尝试账目」行（`generate_markdown_with_attempts`）；两方向用例（重复→计一次用量两次尝试；新 id→两次请求）均经变异拒错验证。缺：本机与网关不双计（需网关用量源）、OTLP 的界面开关与周期上报",
+      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；未知费用显式呈现（`is_uncosted` + 报表「未计价来源」行，变异可拒错）；OTLP 度量导出（模块 + Tauri 命令 + **设置项与周期上报**）：`otlp_enabled`（默认 false）/`otlp_endpoint`/`otlp_interval`（钳 30..3600s，NaN 归位），判定 `otlp::due`（开关、端点、间隔、在飞去重）为纯函数；发送在锁外、同时在飞只允许一个、失败不更新时间戳；界面已暴露三项（设置页「可观测（OTLP 导出）」组，含文本输入分支）；`gw08.otlp` 覆盖报文形状/端点策略/无 Authorization。缺：本机与网关不双计（需网关用量源）",
       "status": "partial"
     },
     "GW-10": {

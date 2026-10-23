@@ -33,6 +33,23 @@ pub struct Snapshot {
     pub pending_events: usize,
 }
 
+/// 周期上报该不该在这一拍发。
+///
+/// 三条都必须成立：开关打开、端点非空、距上次成功发送已过间隔。
+/// 纯函数（`now`/`last` 都由调用方给）——时间判据必须能用构造的时间断言，
+/// 而不是靠 `sleep` 去撞。
+pub fn due(enabled: bool, endpoint: &str, last_ms: i64, now_ms: i64, interval_secs: f64) -> bool {
+    if !enabled || endpoint.trim().is_empty() {
+        return false;
+    }
+    // 间隔按设置层的钳制区间兜底：脏值不该变成「每拍一发」。
+    let interval_ms = (interval_secs.clamp(30.0, 3600.0) * 1000.0) as i64;
+    if last_ms <= 0 {
+        return true;
+    }
+    now_ms.saturating_sub(last_ms) >= interval_ms
+}
+
 /// 端点解析：先按连接那套规范化（拒凭据/控制字符/超长），再过传输策略。
 ///
 /// 两处判据都必须在**建连之前**跑完——一旦发出请求，地址本身就已经是泄漏面。
@@ -223,6 +240,24 @@ mod tests {
         assert_eq!(
             body["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][1]["unit"],
             "USD"
+        );
+    }
+
+    #[test]
+    fn the_periodic_schedule_never_fires_when_disabled_or_without_an_endpoint() {
+        let now = 1_700_000_000_000;
+        assert!(!due(false, "https://collector.example.invalid", 0, now, 300.0));
+        assert!(!due(true, "   ", 0, now, 300.0), "没有端点就不发");
+        assert!(due(true, "https://collector.example.invalid", 0, now, 300.0), "第一次该发");
+        assert!(
+            !due(true, "https://collector.example.invalid", now - 299_000, now, 300.0),
+            "没到间隔不该发"
+        );
+        assert!(due(true, "https://collector.example.invalid", now - 300_000, now, 300.0));
+        // 脏间隔被钳到 30s 下限：不该出现「每拍一发」
+        assert!(
+            !due(true, "https://collector.example.invalid", now - 1_000, now, 0.001),
+            "间隔低于下限要钳制，不能变成每拍一发"
         );
     }
 
