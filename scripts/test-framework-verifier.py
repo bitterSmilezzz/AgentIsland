@@ -19,7 +19,8 @@ META = (
     "test-automation-runner", "test-test-registry", "test-automation-artifact",
     "test-automation-adapters", "test-automation-driver", "test-automation-trigger",
     "test-automation-lessons", "test-automation-evidence", "test-automation-development",
-    "test-framework-verifier", "test-automation-snapshot", "test-automation-candidate", "test-automation-pause",
+    "test-framework-verifier", "test-automation-snapshot", "test-automation-candidate", "test-automation-publish",
+    "test-automation-pause",
     "test-automation-break",
 )
 STUB = r'''

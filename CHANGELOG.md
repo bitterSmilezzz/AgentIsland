@@ -4,6 +4,17 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.363] - 2026-10-24 — 发布门禁与回滚：候选之后的授权合并有了闸门（AUTO-01 进展）
+
+- **补的缺口**：候选（candidate）此前止步于只读校验——证据再完整也没有下一步可走。本轮新增 `publish.py`：`merge` 与 `rollback` 两个显式操作，把需求链的「授权内合并/发布→回滚」补成可执行的闸门。
+- **合并前的四道 refusal**：①candidate.verify 的 evidence+git 全链（审查绑定、patch==git diff、基线未漂）；②目标 HEAD 恰为被审基线（漂移即拒，仓库一字节不动）；③工作区干净；④CI 报告**绑定精确候选 SHA 且 state==success**——pending/failure/missing/外来 SHA/字段坏各有独立拒绝码，「CI pending 不得 merge」在这里是硬判据，不是倾向。
+- **合并完整性收口**：merge 后 `git diff base..HEAD` 必须与 candidate.patch 逐字节一致，才独占创建合并记录（`publish.json`，含 CI 报告的 SHA256——接受过哪份报告永远可查）；二次合并拒绝。
+- **回滚按记录执行**：`rollback` 以合并记录为准恢复到被审基线；脏树、HEAD 漂移、记录被篡改、重复回滚全部拒绝；恢复后工作树与被审基线逐字节一致。13 项夹具用例（真实管线产出候选、克隆变异），CI 拒绝矩阵兼作变异对照。
+- **授权边界（说清而不是含糊）**：工具自身永不自启、不推送、不发 Release；操作者的显式调用就是授权，闸门只管证据形状与 SHA/CI 绑定。`--require-independent-review` 提供严格模式；默认 follows 现行策略（review driver 为确定性 mock）。
+- **真实 driver 证据**（传输层探针，非管线轮次）：hermes `status=OK`（32.4s，最终答案解析成功、用量入账）；agy 因本机未认证被有界拒绝（驱动层按设计只报固定码）。管线级真实 author/reviewer 轮次仍被 `trusted_authorization_policy_unconfigured` 硬门拦住——真实 driver 需要先有可信授权策略验证器，这是需要显式决策的安全边界，不在决策前绕过。
+- **勘误**：AUTO-01 此前 note 把「暂停通知默认关闭」记为缺口——实际 `--notify-failure` 早已默认关闭且双向用例在，本轮改写 note。
+- **BUG-011 证据更新**：CI 已给出权威答案——v0.0.360/v0.0.361 的 Windows job 均 success（依赖树含 ring），ring 不破坏真实 Windows 构建；本地 windows crate 门禁红收窄为「交叉检查缺头文件」的环境限制。
+
 ## [0.0.362] - 2026-10-23 — 字段对拍：status --json 与 GUI 概览逐项核对（GW-09 收口）
 
 - **补的缺口**：入口能力矩阵只回答「哪个入口能做什么」；同一个事实在两个入口读的是不是**同一个字段、同一处措辞**，此前没对过。本轮把**运行态快照**（唯一多入口共享同一份数据形状的能力）逐项对拍：`status --json` ↔ GUI 概览（`agentRowModel`/`agentNextStep`/`healthReason`/`isVisible`）。

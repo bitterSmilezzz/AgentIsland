@@ -75,7 +75,7 @@ for t in test-automation-runner test-test-registry test-automation-artifact \
          test-automation-adapters test-automation-driver test-automation-trigger \
          test-automation-lessons test-automation-evidence test-automation-development \
          test-framework-verifier test-automation-snapshot test-automation-candidate \
-         test-automation-pause test-automation-break; do
+         test-automation-publish test-automation-pause test-automation-break; do
   run_suite "$t" "$PY" "scripts/$t.py"
 done
 

@@ -65,10 +65,11 @@
         "automation.update-manifest",
         "automation.status",
         "auto01.headlesslog",
-        "auto01.headlesslogbin"
+        "auto01.headlesslogbin",
+        "auto01.publish"
       ],
       "audit_ref": "docs/测试映射盘点.md",
-      "coverage_note": "partial — 需求解析、隔离工作区、门禁 blocked/failed 分流、清理、来源摘要绑定、候选延迟发布与只读消费校验、失败暂停记录与重复输入识别、Red 基线（先于作者调用）、真实 Break 消融执行已有；缺：真实 driver 受控轮次、CI 状态绑定、回滚、暂停通知默认关闭（需显式 --notify-failure）",
+      "coverage_note": "partial — 需求解析、隔离工作区、门禁 blocked/failed 分流、清理、来源摘要绑定、候选延迟发布与只读消费校验、失败暂停记录与重复输入识别、Red 基线（先于作者调用）、真实 Break 消融执行已有；**发布门禁与回滚**（auto01.publish，2026-10-24）：`publish.py merge` 先过 candidate.verify 的 evidence+git 全链（审查绑定、patch==git diff、基线未漂），再要求目标 HEAD 恰为被审基线（漂移即拒且仓库一字节不动）、工作区干净、CI 报告**绑定精确候选 SHA 且 state==success**（pending/failure/missing/外来 SHA/字段坏各有独立拒绝码）；合并后 diff 与 patch 逐字节对拍通过才独占创建合并记录（二次合并拒绝）；`rollback` 按合并记录恢复到被审基线，脏树/HEAD 漂移/记录篡改/重复回滚全拒，恢复后树与基线逐字节一致——13 项真实管线夹具用例，CI 拒绝矩阵兼作变异对照；**失败通知**默认关闭、仅显式 --notify-failure 才发（双向用例；此前 note 误记为缺口）；**真实 driver 受控探针**（传输层，非管线轮次，2026-10-24）：hermes status=OK（32.4s，最终答案解析成功、用量入账）、agy 因本机未认证被有界拒绝（authentication timed out，驱动层按设计只报固定码）。**剩余缺口（如实）**：管线级真实 author/reviewer 轮次被 `trusted_authorization_policy_unconfigured` 硬门拦住——真实 driver 需要先有可信授权策略验证器，这是需要显式决策的安全边界，不在决策前绕过；发布以操作者显式调用为授权边界，不自动推送、不发 Release。",
       "status": "partial"
     },
     "AUTO-02": {
@@ -2216,6 +2217,24 @@
       "test_files": [
         "scripts/test-entry-field-parity.py"
       ]
+    },
+    "auto01.publish": {
+      "command": [
+        "python3",
+        "scripts/test-automation-publish.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "AUTO-01：授权内合并/发布与回滚（candidate 之后的下一环）。`publish.py merge` 先过 candidate.verify 的 evidence+git 全链（审查绑定、patch==git diff、基线未漂），再要求：目标 HEAD 恰为被审基线（漂移即拒且仓库一字节不动）、工作区干净、CI 报告**绑定精确候选 SHA 且 state==success**——pending/failure/missing/外来 SHA/字段坏各有独立拒绝码；合并后 diff 与 patch 逐字节对拍通过才独占创建合并记录（二次合并拒绝）；`rollback` 按合并记录恢复到被审基线，脏树/HEAD 漂移/记录篡改/重复回滚全拒，恢复后树与基线逐字节一致。夹具用真实管线（mock driver）产出候选；CI 拒绝矩阵兼作变异对照（接受 pending 或外来 SHA 的门禁立即变红）。",
+      "test_files": [
+        "scripts/test-automation-publish.py"
+      ]
     }
   },
   "agents": {
@@ -2297,6 +2316,7 @@
       "automation.break",
       "automation.break-artifact",
       "automation.break-snapshot",
+      "auto01.publish",
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
@@ -2388,6 +2408,7 @@
       "automation.break",
       "automation.break-artifact",
       "automation.break-snapshot",
+      "auto01.publish",
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
@@ -2523,6 +2544,7 @@
       "automation.break",
       "automation.break-artifact",
       "automation.break-snapshot",
+      "auto01.publish",
       "not01.ledgerrestart",
       "auto01.restartapp",
       "not05.remotedelivery",
@@ -2637,7 +2659,7 @@
       "title": "verify-framework 的 windows crate 门禁在本机持续红：加密备份引入的 ring 需要 Windows SDK 头文件，本机交叉类型检查编译不过",
       "status": "open",
       "requirement": "GW-09",
-      "evidence": "在干净 HEAD（de52147，v0.0.361，无本轮改动）复跑 `scripts/check-windows-crate.sh` 同样失败于 `ring v0.17.14` 的 build script（Windows 目标缺 C 头文件）——证明该失败自 v0.0.360 引入 ring（AES-256-GCM/PBKDF2 用 ring 实现，AEAD 与 KDF 不该自己写）起就存在，与本轮 diff 无关。同型先例见 docs/agent/HANDOFF.md 第 8 节第 1 条：updater 的 default 特征曾把 ring 带进依赖树打红同一门禁，当时改走 native-tls 移出；这次 ring 是**刻意**引入的密码学依赖，不能如法移除。未做：本机没有 Windows SDK，无法为交叉检查提供目标头文件；按「门禁故障明确失败」登记，不放宽判据、不跳过。权威 Windows 判据仍是 .github/workflows/build.yml 的 windows job（检查脚本自述），下次 CI 运行时以该 job 的真实结果为准。"
+      "evidence": "在干净 HEAD（de52147，v0.0.361，无本轮改动）复跑 `scripts/check-windows-crate.sh` 同样失败于 `ring v0.17.14` 的 build script（Windows 目标缺 C 头文件）——证明该失败自 v0.0.360 引入 ring（AES-256-GCM/PBKDF2 用 ring 实现，AEAD 与 KDF 不该自己写）起就存在，与本轮 diff 无关。同型先例见 docs/agent/HANDOFF.md 第 8 节第 1 条：updater 的 default 特征曾把 ring 带进依赖树打红同一门禁，当时改走 native-tls 移出；这次 ring 是**刻意**引入的密码学依赖，不能如法移除。未做：本机没有 Windows SDK，无法为交叉检查提供目标头文件；按「门禁故障明确失败」登记，不放宽判据、不跳过。权威 Windows 判据仍是 .github/workflows/build.yml 的 windows job（检查脚本自述），下次 CI 运行时以该 job 的真实结果为准。 **2026-10-24 证据更新**：CI 已给出权威答案——v0.0.360 与 v0.0.361 的 build.yml **Windows job 均 success**（run 39965670764 / 39978097642），而这两版依赖树里都有 ring：ring 不破坏真实 Windows 构建，本地红纯属交叉检查环境缺头文件。遗留问题收窄为「本机这道门禁如何恢复判别力」（提供 Windows 头文件/换判据/单列环境范围），风险面已由 CI 覆盖。"
     }
   ]
 }
