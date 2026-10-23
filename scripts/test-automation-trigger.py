@@ -67,8 +67,11 @@ class TriggerTests(unittest.TestCase):
         scripts = self.root / "scripts/automation"
         scripts.mkdir(parents=True)
         self.trigger = scripts / "trigger.py"
-        # A short deadline is injected into this test copy, never production.
-        self.trigger.write_text(self.trigger_source.replace("GH_TIMEOUT_SECONDS = 30", "GH_TIMEOUT_SECONDS = 2"))
+        # 默认用**生产预算**（30s）：早先把 2 秒注入到**每一条**用例的副本里，
+        # 于是「测 gh 超时」那条路的设置污染了其余全部用例——机器一忙，
+        # 正常用例也被判成「gh 超时」，红得莫名其妙。
+        # 要短预算的用例自己换一份副本（见 test_gh_failure_timeout_and_limits）。
+        self.trigger.write_text(self.trigger_source)
         self.entry = scripts / "trigger-github.sh"
         self.entry.write_text(SHELL_SOURCE)
         self.entry.chmod(0o755)
@@ -97,7 +100,7 @@ class TriggerTests(unittest.TestCase):
     def run_trigger(self, *args, shell=False, stdin=None, **env):
         command = (["/bin/sh", str(self.entry)] if shell else [sys.executable, str(self.trigger)])
         result = subprocess.run([*command, *args], cwd=self.base, env={**self.env, **env},
-                                input=stdin, text=True, capture_output=True, timeout=5)
+                                input=stdin, text=True, capture_output=True, timeout=30)
         self.assertTrue(self.private not in result.stdout + result.stderr, "private input was reflected")
         return result
 
@@ -211,6 +214,10 @@ class TriggerTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_gh_failure_timeout_and_limits(self):
+        # 这一条**要**短预算（假 gh 会睡 10 秒，触发器必须先到期）。
+        # 只改自己的副本，不动共享的 trigger 源。
+        self.trigger.write_text(
+            self.trigger_source.replace("GH_TIMEOUT_SECONDS = 30", "GH_TIMEOUT_SECONDS = 2"))
         for mode in ("nonzero", "timeout", "large", "large_stderr"):
             with self.subTest(mode=mode):
                 result = self.run_trigger("--issue", "123", GH_MODE=mode)

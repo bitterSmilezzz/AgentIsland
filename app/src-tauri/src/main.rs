@@ -26,6 +26,7 @@ mod engine;
 mod filemon;
 mod forecast;
 mod headless;
+mod ledger_guard;
 mod otlp;
 mod health;
 mod im;

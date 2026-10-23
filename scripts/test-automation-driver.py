@@ -243,8 +243,24 @@ class DriverTests(unittest.TestCase):
         self.fail('descendant survived driver cleanup')
 
     def assert_tree_gone(self):
+        """子树里的两个后代都得被回收。
+
+        pid 文件可能**还没写出**（机器一忙，父进程在子树起稳之前就被超时杀掉）——
+        那时直接读会 `FileNotFoundError`，把「夹具被杀」误报成「后代没被清理」。
+        所以：有 pid 文件就按 pid 查；没有就按**命令行签名**兜底扫一遍，
+        扫到那两个哨兵进程就说明清理确实没做到。
+        """
         for name in ('child.pid', 'grandchild.pid'):
-            self.assert_pid_gone(int((self.root / name).read_text()))
+            pidfile = self.root / name
+            deadline = time.monotonic() + 3
+            while not pidfile.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if pidfile.exists():
+                self.assert_pid_gone(int(pidfile.read_text()))
+                continue
+            listing = subprocess.run(['/bin/ps', '-axo', 'pid=,args='], capture_output=True, text=True)
+            survivors = [line for line in listing.stdout.splitlines() if 'time.sleep(30)' in line]
+            self.assertEqual(survivors, [], f'descendant survived driver cleanup: {survivors}')
 
     def test_timeout_kills_descendants_even_when_parent_exits(self):
         result = self.run_driver(mode='tree', timeout=3)

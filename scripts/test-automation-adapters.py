@@ -73,7 +73,10 @@ sys.exit(int(os.environ.get(phase + '_RC', '0')))
         self.env.update(PATH=str(self.bin), CARGO_CALLS=str(self.calls),
                         CHILD_PID=str(self.root / 'child.pid'),
                         ALLOW_PRIVATE_TEST_DATA='1', MANUAL_RUST_TEST='probe',
-                        MANUAL_RUST_TIMEOUT_SECONDS='3')
+                        # 默认预算给足（30s）：机器一忙，夹具**自己启动**就可能超过几秒，
+                        # 那时候超时的是夹具不是产品——算成产品缺陷是假红。
+                        # 要走「超时」那条路的用例自己显式传短预算。
+                        MANUAL_RUST_TIMEOUT_SECONDS='30')
         self.addCleanup(self.cleanup_child)
 
     def cleanup_child(self):
@@ -114,11 +117,30 @@ export const chromium = { executablePath() { return %s; } };
         return [json.loads(line) for line in self.calls.read_text().splitlines()] if self.calls.exists() else []
 
     def assert_child_stopped(self):
-        pid = int((self.root / 'child.pid').read_text())
-        # A killed orphan can remain a zombie briefly; it cannot continue work.
-        result = subprocess.run(['/bin/ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True)
-        self.assertTrue(result.returncode != 0 or result.stdout.strip().startswith('Z'),
-                        'descendant survived adapter cleanup')
+        """子进程不许在清理后继续活着。
+
+        两条判据：
+        ① 有 pid 文件 → 直接查那个 pid（僵尸态也算「没在干活」）。
+        ② **没有** pid 文件 → 说明父夹具在写它之前就被超时杀掉了（机器一忙就会这样），
+           此时不能直接崩（`FileNotFoundError` 会把「夹具被杀」误报成产品缺陷），
+           改为按**命令行签名**扫一遍：那个后代是 `time.sleep(60)` 的哨兵进程，
+           扫到它就说明清理真的没做到。
+        """
+        pidfile = self.root / 'child.pid'
+        deadline = time.monotonic() + 5
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if pidfile.exists():
+            pid = int(pidfile.read_text())
+            # A killed orphan can remain a zombie briefly; it cannot continue work.
+            result = subprocess.run(['/bin/ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True)
+            self.assertTrue(result.returncode != 0 or result.stdout.strip().startswith('Z'),
+                            'descendant survived adapter cleanup')
+            return
+        # 兜底：按签名扫，宁可多看一眼，也不把「夹具被杀」当成产品缺陷。
+        listing = subprocess.run(['/bin/ps', '-axo', 'pid=,args='], capture_output=True, text=True)
+        survivors = [line for line in listing.stdout.splitlines() if 'time.sleep(60)' in line]
+        self.assertEqual(survivors, [], f'descendant survived adapter cleanup: {survivors}')
 
     def test_browser_default_success(self):
         self.browser_run()
@@ -262,7 +284,8 @@ export const chromium = { executablePath() { return %s; } };
     def test_manual_timeout_child_cleanup(self):
         for phase in ('LIST', 'RUN'):
             with self.subTest(phase=phase):
-                self.manual_run(1, HANG_PHASE=phase)
+                # 这里**要**短预算：被测的是「超时后子进程被清理」这条路径。
+                self.manual_run(1, HANG_PHASE=phase, MANUAL_RUST_TIMEOUT_SECONDS='3')
                 self.assert_child_stopped()
 
     def test_manual_success_child_cleanup(self):

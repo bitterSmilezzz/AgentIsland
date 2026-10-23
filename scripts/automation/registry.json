@@ -233,8 +233,8 @@
         "gw08.otlp"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；未知费用显式呈现（`is_uncosted` + 报表「未计价来源」行，变异可拒错）；OTLP 度量导出（模块 + Tauri 命令 + **设置项与周期上报**）：`otlp_enabled`（默认 false）/`otlp_endpoint`/`otlp_interval`（钳 30..3600s，NaN 归位），判定 `otlp::due`（开关、端点、间隔、在飞去重）为纯函数；发送在锁外、同时在飞只允许一个、失败不更新时间戳；界面已暴露三项（设置页「可观测（OTLP 导出）」组，含文本输入分支）；`gw08.otlp` 覆盖报文形状/端点策略/无 Authorization。缺：本机与网关不双计（需网关用量源）",
-      "status": "partial"
+      "coverage_note": "done — 净口径公式/跨来源差异/重复响应归位/rollup 保和/报表层已有；未知费用显式呈现：`cost::is_uncosted` + 报表「未计价来源」行（变异可拒错）；尝试账目对账：`tokens::AttemptLedger`（records/requests/duplicates，恒等式 + 报表行，两方向用例与变异）；OTLP：模块 + Tauri 命令 + 设置项（默认 false/端点/间隔钳制）与周期上报（纯函数判定、锁外发送、在飞去重、失败不更新时间戳），`gw08.otlp` 用真实回环接收端断言报文与「无 Authorization」；本机与网关不双计：口径为「配额只做展示、永不并入本地合计」，`ledger_guard` 结构哨兵扫描六个聚合模块的引用面（含正例控制证明扫描器抓得到），变异（把 BalanceInfo 引入 report.rs）可拒错。**边界**：当前代码里不存在网关用量源，因此该条以「边界 + 守卫」形式收口，不是端到端对账；若将来接入网关用量，需按其契约另立对账断言。",
+      "status": "done"
     },
     "GW-10": {
       "title": "插件、Library、媒体与工具扩展",
@@ -1405,7 +1405,8 @@
         "app/src-tauri/src/workspaces.rs",
         "app/src-tauri/tests/fixtures/contracts/notify-keys.json",
         "app/ui/js/update-panel.js",
-        "app/ui/js/update-state.js"
+        "app/ui/js/update-state.js",
+        "app/src-tauri/src/ledger_guard.rs"
       ]
     },
     "rust.manual": {
