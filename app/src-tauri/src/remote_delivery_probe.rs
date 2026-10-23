@@ -67,7 +67,15 @@ impl Peer {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let code = remaining.pop_front().unwrap_or(200);
-                        let _ = serve_one(stream, code, &seen_thread);
+                        // **每个连接一条线程**：在 accept 线程里串行服务时，
+                        // 正在服务的那一次会把后续连接堵在 backlog 里；机器一忙，
+                        // 重试就可能连不上而被算成「少了一次请求」——
+                        // CI 上真的发生过（三次 500 期望 6 次请求，实际 5 次）。
+                        // 对端是夹具，夹具不该把自己的串行当成被测代码的行为。
+                        let seen = seen_thread.clone();
+                        std::thread::spawn(move || {
+                            let _ = serve_one(stream, code, &seen);
+                        });
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(20));

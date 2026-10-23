@@ -456,6 +456,39 @@ def _python_satisfying(floor: str, cwd: Path, env: dict[str, str]) -> str | None
     return None
 
 
+# 摘要里绝不能带出去的形态：凭据、主目录用户名、控制字符。
+_EXCERPT_REDACTIONS = [
+    (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), "<redacted>"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{8,}"), "<redacted>"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "<redacted>"),
+    (re.compile(r"(?i)bearer\s+\S+"), "bearer <redacted>"),
+    (re.compile(r"/(Users|home)/[^/\s\"']+"), r"/\1/<user>"),
+]
+_EXCERPT_LIMIT = 160
+
+
+def _failure_excerpt(raw: bytes) -> str:
+    """取**最后一条异常行**的类型与消息，脱敏后截断；取不到就返回空串。
+
+    只回答「炸在哪一句」，不回答「全部输出是什么」：证据目录要进 CI 制品，
+    转录永远不进去（`test_output_never_published_even_on_failure` 钉着这条）。
+    """
+    text = raw.decode("utf-8", "replace")
+    candidate = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^[A-Za-z_]*(Error|Exception|Failure)\b", stripped) or stripped.startswith(
+            "AssertionError"
+        ):
+            candidate = stripped
+    if not candidate:
+        return ""
+    summary = "".join(char for char in candidate if char.isprintable())
+    for pattern, replacement in _EXCERPT_REDACTIONS:
+        summary = pattern.sub(replacement, summary)
+    summary = " ".join(summary.split())
+    return summary[:_EXCERPT_LIMIT]
+
 def run_check(check_id: str, registry: dict[str, Any], cwd: Path, timeout: int) -> CheckResult:
     if timeout <= 0:
         raise PipelineError("check timeout must be positive")
@@ -536,10 +569,16 @@ def run_check(check_id: str, registry: dict[str, Any], cwd: Path, timeout: int) 
     # **转录永不发布**：`stdout_tail`/`stderr_tail` 保持为空是既有契约
     # （「一条可读的 reason 不能拿转录去换」）。可诊断性靠下面这句**签名分类**给：
     # 只输出固定词表里的一个记号，不含任何原文。
-    signature = _failure_signature(bytes(sinks[0]) + bytes(sinks[1])) if status != "passed" else ""
+    combined = bytes(sinks[0]) + bytes(sinks[1]) if status != "passed" else b""
+    signature = _failure_signature(combined)
     detail = reason or ("" if status == "passed" else f"returncode={proc.returncode}")
     if signature:
         detail = f"{detail}:{signature}"
+        # 再补一句**有界、脱敏**的失败摘要：只有异常类型与消息，没有转录。
+        # 没有它，「python_traceback」只能告诉我「炸了」，却不知道炸在哪句断言上。
+        excerpt = _failure_excerpt(combined)
+        if excerpt:
+            detail = f"{detail}:{excerpt}"
     return CheckResult(check_id, status, proc.returncode, round(time.monotonic() - started, 3),
                        reason=detail)
 

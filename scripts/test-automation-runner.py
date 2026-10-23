@@ -476,6 +476,29 @@ class RunnerTests(unittest.TestCase):
             with self.assertRaises(pipeline.PipelineError):
                 pipeline.load_registry()
 
+    def test_a_failure_excerpt_names_the_assertion_without_publishing_the_transcript(self):
+        """摘要要能指着断言说话，但不能把转录（或凭据、用户名）带出去。"""
+        sentinel = "SYNTHETIC_PRIVATE_OUTPUT_SENTINEL"
+        source = (
+            "import sys\n"
+            "sys.stderr.write('Traceback (most recent call last):\\n')\n"
+            "sys.stderr.write('AssertionError: expected 6 requests at "
+            "/Users/synthetic-person/work got sk-ABCDEFGH12345\\n')\n"
+            "sys.stderr.write(" + repr(sentinel) + ")\n"
+            "sys.exit(1)\n"
+        )
+        proc, record, run_dir = self.run_profile({"broken": check_entry(source)})
+        self.assertEqual(proc.returncode, 1)
+        failed = record["checks"][0]
+        self.assertTrue(failed["reason"].startswith("returncode=1:python_traceback:"))
+        self.assertIn("AssertionError", failed["reason"], "摘要必须指出异常类型")
+        self.assertIn("expected 6 requests", failed["reason"], "摘要必须带消息")
+        self.assertNotIn("sk-ABCDEFGH12345", failed["reason"], "摘要不许带凭据")
+        self.assertNotIn("synthetic-person", failed["reason"], "摘要不许带主目录用户名")
+        self.assertLessEqual(len(failed["reason"]), 260, "摘要必须有界")
+        for path in run_dir.iterdir():
+            self.assertNotIn(sentinel, path.read_text())
+
     def test_a_failed_check_is_classified_without_publishing_its_transcript(self):
         """失败要可定位，但**不得**把转录搬进证据。
 
