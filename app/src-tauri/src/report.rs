@@ -155,6 +155,19 @@ fn sorted_sources(sources: &[SourceUsage]) -> Vec<&SourceUsage> {
 
 /// 生成 Markdown 报表。`grand_total` 是面板汇总栏那份跨源累计
 pub fn generate_markdown(timeline: &Timeline, grand_total: &TokenUsage, now_ms: i64) -> String {
+    generate_markdown_with_attempts(timeline, grand_total, None, now_ms)
+}
+
+/// 带尝试账目的报表。`ledger` 为 `None` 时输出与 [`generate_markdown`] 逐字相同。
+///
+/// 为什么要单独一行：重试/重抄在用量上只算一次（不双计），但如果次数也不露面，
+/// 读者会以为「请求数 = 尝试数」——**看不到重试，就等于没有重试**。
+pub fn generate_markdown_with_attempts(
+    timeline: &Timeline,
+    grand_total: &TokenUsage,
+    ledger: Option<crate::tokens::AttemptLedger>,
+    now_ms: i64,
+) -> String {
     let total_cost = crate::cost::resolve_cost(timeline.cost, None, Some(timeline.tokens));
     // 用 `text` 而不是按数值重排：估出来的成本带 `~`，重排会把那个标记弄丢
     let cost_display = if total_cost.1.is_empty() {
@@ -182,6 +195,14 @@ pub fn generate_markdown(timeline: &Timeline, grand_total: &TokenUsage, now_ms: 
         crate::tokens::compact(grand_total.tokens_total),
         crate::cost::format_cost(grand_total.cost_total)
     ));
+    if let Some(ledger) = ledger {
+        if ledger.records > 0 {
+            md.push_str(&format!(
+                "- 尝试账目：{} 条响应记录 = {} 次请求 + {} 次重复（重复只计次数，不重复计用量）\n",
+                ledger.records, ledger.requests, ledger.duplicates
+            ));
+        }
+    }
     // 有用量却没费率的来源：行内按契约仍写 $0.00，但**必须**在这里点出来。
     // 少了这一行，「没费率」会被读成「不花钱」，合计看起来比实际便宜且无从察觉。
     let uncosted: Vec<&SourceUsage> = timeline
@@ -393,6 +414,29 @@ mod tests {
     /// Rust 照搬这个结构（对齐优先），并用这条用例把「实际行为」钉住。
     /// 未知费用必须被**明说**：行内按契约写 `$0.00`，但汇总里要看得出
     /// 「这几行不是免费，是没费率」。少了这行，合计会被读成真实开销。
+    /// 尝试账目要**上报表**：重复不重复计用量，但次数必须露面。
+    #[test]
+    fn the_report_shows_requests_attempts_and_duplicates_separately() {
+        let timeline = timeline(
+            TokenTimeRange::Day,
+            vec![source("claude", 1_000, 0.5, true)],
+        );
+        let ledger = crate::tokens::AttemptLedger {
+            records: 5,
+            requests: 3,
+            duplicates: 2,
+        };
+        let md = generate_markdown_with_attempts(&timeline, &grand(1_000, 0.5), Some(ledger), 1_700_000_000_000);
+        assert!(
+            md.contains("尝试账目：5 条响应记录 = 3 次请求 + 2 次重复"),
+            "报表必须把请求与尝试分开写：{md}"
+        );
+        assert!(md.contains("不重复计用量"), "要点明重复不计用量：{md}");
+        // 没有账目时逐字不变（不引入空行/多余内容）
+        let plain = generate_markdown(&timeline, &grand(1_000, 0.5), 1_700_000_000_000);
+        assert!(!plain.contains("尝试账目"), "未提供账目时不该出现这一行");
+    }
+
     #[test]
     fn an_unpriced_source_is_called_out_instead_of_looking_free() {
         let unpriced = timeline(

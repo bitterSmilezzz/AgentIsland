@@ -4,6 +4,14 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.355] - 2026-10-23 — 尝试账目对账：用量只计一次，次数照实记（GW-08 进展）
+
+- **缺陷**：重复响应（resume/fork 重抄、重试）在账本上被**静默跳过**——用量不双计是对的，但次数也不露面，于是「请求数永远等于尝试数」：看不到重试，就等于没有重试。
+- **实现**：`tokens::AttemptLedger { records, requests, duplicates }`。在两个跳过点（同文件去重、跨文件强身份去重）各记一次尝试；恒等式 `requests + duplicates == records` 就是「不双计」的可核对形式。
+- **上报表**：新增 `generate_markdown_with_attempts`，输出一行「尝试账目：N 条响应记录 = M 次请求 + K 次重复（重复只计次数，不重复计用量）」。`generate_markdown` 的输出**逐字不变**（内部转发为 `None`），不破坏既有报表契约。
+- **断言**：重复响应 → 用量 150（计一次）、`records=2 / requests=1 / duplicates=1`；新 id → `(2,2,0)` 且用量 350。两方向都经变异验证：去掉 `duplicates` 计数，用例立刻变红（`left: 2, right: 1`）。
+- **一次自我更正**：第一次变异「通过」其实是替换没匹配上（脚本没断言替换次数）——把断言补上后变异才真正生效。这类「假变异」比假绿灯更危险，已按纪律每次断言替换命中。
+- **未做（如实登记）**：GW-08 仍 `partial`，剩「本机与网关不双计（需网关用量源）」「OTLP 的界面开关与周期上报」。
 ## [0.0.354] - 2026-10-23 — OTLP 度量导出：默认关闭、不带凭据（GW-08 进展）
 
 - **新能力**：把当前聚合值编成 **OTLP/HTTP JSON**（metrics v1，gauge）导出——`agentisland.tokens.total`、`agentisland.cost.total`（USD）、`agentisland.agents.running`、`agentisland.notifications.pending`。

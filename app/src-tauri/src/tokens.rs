@@ -149,6 +149,26 @@ struct FileState {
     revisable_usage: bool,
     /// 归并结果依赖本轮文件集合，不能复用上轮已过滤的明细或折入合计。
     cross_file_usage: bool,
+    /// 见过的响应记录条数（含重复）。**尝试账目**的分子：一条记录 = 一次尝试。
+    records_seen: u64,
+    /// 因同一响应 id 被判为重复而**跳过**的条数（resume/fork 重抄、重试）。
+    /// 用量只计一次，但次数要照实记——否则「尝试数」会等于「请求数」，重试就看不见了。
+    duplicates_skipped: u64,
+}
+
+/// 尝试账目：请求与尝试分开计数。
+///
+/// * `records` = 见过的响应记录数（一次尝试一条）
+/// * `requests` = 不同的响应 id 数（去重后的真实请求量，也就是计费口径）
+/// * `duplicates` = 被判重复而跳过的条数 = `records - requests`
+///
+/// 三者必须满足 `requests + duplicates == records`：这条恒等式就是「不双计」的可核对形式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptLedger {
+    pub records: u64,
+    pub requests: u64,
+    pub duplicates: u64,
 }
 
 impl FileState {
@@ -305,6 +325,18 @@ impl TokenUsageMonitor {
         }
         if self.states.is_empty() {
             self.states = HashMap::new();
+        }
+    }
+
+    /// 尝试账目（请求 / 尝试 / 重复）。计数只增不减：它们是本进程的观测事实，
+    /// 不随缓存折入而回退；`diagnostic_cache` 那套是内存口径，两者别混。
+    pub fn attempt_ledger(&self) -> AttemptLedger {
+        let records: u64 = self.states.values().map(|state| state.records_seen).sum();
+        let duplicates: u64 = self.states.values().map(|state| state.duplicates_skipped).sum();
+        AttemptLedger {
+            records,
+            requests: records.saturating_sub(duplicates),
+            duplicates,
         }
     }
 
@@ -675,6 +707,8 @@ impl TokenUsageMonitor {
                             if previous.context != u.context {
                                 previous.context = None;
                             }
+                            st.records_seen += 1;
+                            st.duplicates_skipped += 1;
                             continue;
                         }
                         self.scan_index.insert(identity.clone(), ScanResponse {
@@ -682,7 +716,9 @@ impl TokenUsageMonitor {
                         });
                     }
                 }
+                st.records_seen += 1;
                 if let Some(&index) = st.seen_ids.get(&dedup) {
+                    st.duplicates_skipped += 1;
                     let previous = if index < st.entries.len() {
                         &mut st.entries[index]
                     } else {
@@ -2042,6 +2078,57 @@ mod tests {
     /// 其余方言（Claude / ZCode / WorkBuddy）**刻意不归并**：它们的 id 字段本机取证
     /// 都不能证明是调用级身份，强行归并会把两次真实请求合并成一次（静默少计），
     /// 比重复多计更坏。见 `cross_file_duplicate_responses_of_unverified_identities_are_counted_per_source`。
+    /// 尝试账目对账：同一响应被重抄/重试时，**用量只计一次，次数照实记**。
+    ///
+    /// 恒等式 `requests + duplicates == records` 就是「不双计」的可核对形式：
+    /// 少了它，重试在账本上等于没发生，用户看到的请求数永远等于尝试数。
+    #[test]
+    fn attempts_are_counted_even_when_duplicates_are_not_billed() {
+        let sandbox = crate::testutil::Sandbox::new("attempt-ledger");
+        std::fs::create_dir_all(sandbox.path().join("a")).unwrap();
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        // 同一响应 id 两行（resume/重试）：用量一次，尝试两次
+        let body = format!(
+            "{}\n{}\n",
+            codex_record_at(150, 0, 0, "shared-response", &timestamp),
+            codex_record_at(150, 0, 0, "shared-response", &timestamp)
+        );
+        std::fs::write(sandbox.path().join("a/one.jsonl"), &body).unwrap();
+        let profile = one_root_profile("a", &sandbox.path().to_string_lossy());
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&profile);
+        assert_eq!(report.usage.tokens24h, 150, "重复响应不许重复计费");
+        let ledger = monitor.attempt_ledger();
+        assert_eq!(ledger.records, 2, "两行记录 = 两次尝试");
+        assert_eq!(ledger.requests, 1, "同一响应 id 只算一次请求");
+        assert_eq!(ledger.duplicates, 1);
+        assert_eq!(
+            ledger.requests + ledger.duplicates,
+            ledger.records,
+            "请求 + 重复必须等于记录总数"
+        );
+    }
+
+    /// 上一个用例的对照：新响应 id 不该被算成重复。
+    #[test]
+    fn a_second_distinct_response_is_a_new_request_not_a_duplicate() {
+        let sandbox = crate::testutil::Sandbox::new("attempt-ledger-distinct");
+        std::fs::create_dir_all(sandbox.path().join("a")).unwrap();
+        let timestamp = iso_utc_from_ms(now_ms() - 3_600_000);
+        let body = format!(
+            "{}\n{}\n",
+            codex_record_at(150, 0, 0, "response-one", &timestamp),
+            codex_record_at(200, 0, 0, "response-two", &timestamp)
+        );
+        std::fs::write(sandbox.path().join("a/one.jsonl"), &body).unwrap();
+        let profile = one_root_profile("a", &sandbox.path().to_string_lossy());
+        let mut monitor = TokenUsageMonitor::new();
+        let report = monitor.monitor(&profile);
+        assert_eq!(report.usage.tokens24h, 350);
+        let ledger = monitor.attempt_ledger();
+        assert_eq!((ledger.records, ledger.requests, ledger.duplicates), (2, 2, 0));
+    }
+
     #[test]
     fn cross_file_duplicate_codex_responses_are_counted_once() {
         let sandbox = crate::testutil::Sandbox::new("cross-file-merge");
