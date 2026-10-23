@@ -299,9 +299,10 @@
     "GW-09": {
       "title": "多界面、共享与备份同步",
       "checks": [
-        "rust.default"
+        "rust.default",
+        "gw09.encryptedbackup"
       ],
-      "coverage_note": "partial — Rust 侧 webhook.rs serve 入口/令牌/端口、cli.rs --usage 按需取数已有；缺 GUI/CLI/TUI/Web 等价矩阵、加密备份",
+      "coverage_note": "partial — Rust 侧 webhook.rs serve 入口/令牌/端口、cli.rs --usage 按需取数已有；**加密备份**（本轮）：`backup_crypt` 提供自描述容器（magic+版本+盐+nonce+密文），口令经 PBKDF2-HMAC-SHA256（210k 次）派生 AES-256-GCM 密钥，**口令不落盘**；解密失败（口令错或文件被改）→ 明确报错，**不返回半截明文**；档位页新增「导出加密备份 / 选择加密备份」，文件后缀 `.aibk`；密码学本体 5 条单元测试（往返、密文不含明文、口令错、篡改、每次新盐新 nonce）与界面边界 4 条形状断言（`gw09.encryptedbackup`，含负例）覆盖，两条变异（写明文冒充加密、解不开也返回半截）均被拒。缺：GUI/CLI/TUI/Web 等价矩阵（各入口能力逐项对齐，尚未逐项核对）",
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
       "status": "partial"
     },
@@ -1406,7 +1407,8 @@
         "app/src-tauri/tests/fixtures/contracts/notify-keys.json",
         "app/ui/js/update-panel.js",
         "app/ui/js/update-state.js",
-        "app/src-tauri/src/ledger_guard.rs"
+        "app/src-tauri/src/ledger_guard.rs",
+        "app/src-tauri/src/backup_crypt.rs"
       ]
     },
     "rust.manual": {
@@ -2158,6 +2160,24 @@
       "test_files": [
         "app/src-tauri/src/otlp.rs"
       ]
+    },
+    "gw09.encryptedbackup": {
+      "command": [
+        "python3",
+        "scripts/test-encrypted-backup-ui.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-09：加密备份的界面边界（形状断言）。断言：传输区有加密导出/导入两个控件与可访问标签、只收 .aibk；口令只在内存里交给命令——不进 URL、不进日志、不进 localStorage/sessionStorage；导入用命令回传的**解密后文本**，而不是把密文当 JSON 读。含负例（控件改名即变红）。密码学本体（PBKDF2 + AES-256-GCM）的断言在 `backup_crypt` 单元测试里：往返一致、密文不含明文、口令错明确报错且不返回半截明文、篡改被拒、同明文同口令两次加密产出不同密文。",
+      "test_files": [
+        "scripts/test-encrypted-backup-ui.py"
+      ]
     }
   },
   "agents": {
@@ -2252,7 +2272,8 @@
       "gw01.connectionsui",
       "gw02.profileui",
       "gw02.profilepage",
-      "gw08.otlp"
+      "gw08.otlp",
+      "gw09.encryptedbackup"
     ],
     "browser": [
       "not01.latencyui",
@@ -2341,7 +2362,8 @@
       "gw01.connectionsui",
       "gw02.profileui",
       "gw02.profilepage",
-      "gw08.otlp"
+      "gw08.otlp",
+      "gw09.encryptedbackup"
     ],
     "package": [
       "package.artifact",
@@ -2476,7 +2498,8 @@
       "gw01.connectionsui",
       "gw02.profileui",
       "gw02.profilepage",
-      "gw08.otlp"
+      "gw08.otlp",
+      "gw09.encryptedbackup"
     ],
     "protocol": [
       "gw02.ifacemodels",

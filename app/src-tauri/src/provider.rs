@@ -1021,6 +1021,65 @@ impl ProviderStore {
         Ok(path)
     }
 
+    /// 导出**加密**备份：落盘的是密文容器，口令不写进任何文件。
+    ///
+    /// 口径：文件名带 `.aibk` 后缀（让人一眼知道这是加密备份），
+    /// 但**内容**只有密文——文件名与内容都不泄露里面有什么。
+    pub fn export_encrypted_to_directory(
+        &self,
+        directory: &Path,
+        passphrase: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let text = self.export_bundle()?;
+        let container = crate::backup_crypt::encrypt(text.as_bytes(), passphrase)
+            .map_err(|error| format!("加密失败：{error}"))?;
+        let path = directory.join(format!(
+            "agentisland-profiles-{}.aibk",
+            crate::tokens::now_ms()
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|_| "下载目录不可写，或同名文件已存在；请稍后重试")?;
+        use std::io::Write;
+        if file
+            .write_all(&container)
+            .and_then(|_| file.sync_all())
+            .is_err()
+        {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err("加密备份写入失败".into());
+        }
+        Ok(path)
+    }
+
+    /// 解开一份加密备份，得到可预览的档位文本。
+    ///
+    /// 口令错 → 明确报错，**不返回半截明文**（半截比报错更危险）。
+    pub fn preview_encrypted_import(
+        &self,
+        container: &[u8],
+        passphrase: &str,
+    ) -> Result<ImportPreview, String> {
+        self.preview_encrypted_import_with_text(container, passphrase)
+            .map(|(preview, _)| preview)
+    }
+
+    /// 解开加密备份并同时给出**解密后的文本**（导入那一步要用它）。
+    pub fn preview_encrypted_import_with_text(
+        &self,
+        container: &[u8],
+        passphrase: &str,
+    ) -> Result<(ImportPreview, String), String> {
+        let plain = crate::backup_crypt::decrypt(container, passphrase)
+            .map_err(|error| error.to_string())?;
+        let text = String::from_utf8(plain).map_err(|_| "备份内容不是合法文本".to_string())?;
+        let preview = self.preview_import(&text)?;
+        Ok((preview, text))
+    }
+
     pub fn preview_import(&self, text: &str) -> Result<ImportPreview, String> {
         if text.len() > 65536 {
             return Err("导入文件不能超过 64 KB".into());
@@ -1648,6 +1707,59 @@ mod tests {
         assert_eq!(fs::read_to_string(output).unwrap(), exported);
         assert!(!exported.contains("api_key"));
         assert!(!exported.contains("fixture-value"));
+    }
+
+    /// 加密备份：落盘的是**密文**，口令不写进任何文件，解开后内容逐字相同。
+    ///
+    /// 三件事要同时成立：①文件里看不到明文；②口令错时明确报错、**不返回半截明文**；
+    /// ③解开后与导出的原文一致（备份不能因为加密而变形）。
+    #[test]
+    fn the_encrypted_backup_hides_the_plaintext_and_restores_it_verbatim() {
+        let sandbox = Sandbox::new();
+        let store = ProviderStore::new(sandbox.0.join("providers"));
+        store.save(profile()).unwrap();
+        let exported = store.export_bundle().unwrap();
+        let path = store
+            .export_encrypted_to_directory(&sandbox.0, "correct horse")
+            .unwrap();
+        assert!(
+            path.extension().is_some_and(|ext| ext == "aibk"),
+            "加密备份要有自己的后缀：{path:?}"
+        );
+        let bytes = fs::read(&path).unwrap();
+        let as_text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !as_text.contains("api_key") && !as_text.contains("fixture-value"),
+            "备份文件里不许出现明文：{as_text}"
+        );
+        assert!(
+            !as_text.contains("工作账号") && !as_text.contains("gpt-5"),
+            "档位名与模型名也不该出现在密文里：{as_text}"
+        );
+        assert!(
+            !as_text.contains("correct horse"),
+            "口令不许写进备份文件"
+        );
+
+        // 解开后与原文逐字相同：直接比解密出来的字节，而不是比预览的统计
+        // （预览里的 added/skipped 是**相对当前库**算的，库里已有同一档位时它是 skipped）。
+        let plain = crate::backup_crypt::decrypt(&bytes, "correct horse").expect("正确口令应能解开");
+        assert_eq!(
+            String::from_utf8_lossy(&plain),
+            exported,
+            "解开的内容必须与导出的原文逐字相同"
+        );
+        // 预览也要能走通（它会重新解析解密出来的文本）
+        store
+            .preview_encrypted_import(&bytes, "correct horse")
+            .expect("正确口令应能解开并预览");
+
+        // 口令错 → 明确报错，不给半截明文
+        let error = match store.preview_encrypted_import(&bytes, "wrong passphrase") {
+            Err(error) => error,
+            Ok(_) => panic!("错误口令必须被拒"),
+        };
+        assert!(error.contains("口令不对") || error.contains("改动"), "错误提示要说清：{error}");
     }
 
     #[test]

@@ -2124,7 +2124,7 @@ export function renderProviderPage(root, status, profiles, backups, errors = [],
       </form>
     </details>
     <details class="provider-backups"><summary>备份与还原（${backups.length}）</summary>${backupRows}</details>
-    <details class="provider-transfer"><summary>导入与导出</summary><p class="sb-note">仅支持 AgentIsland 档位文件。导出至下载目录，包含配置与环境变量名，不含密钥。</p><div class="actions"><button type="button" class="mini-btn" data-profile-export>导出档位</button><label class="mini-btn provider-file">选择文件并预览<input type="file" accept=".json,application/json" aria-label="选择档位文件并预览" data-profile-import /></label></div></details>
+    <details class="provider-transfer"><summary>导入与导出</summary><p class="sb-note">仅支持 AgentIsland 档位文件。导出至下载目录，包含配置与环境变量名，不含密钥。</p><div class="actions"><button type="button" class="mini-btn" data-profile-export>导出档位</button><button type="button" class="mini-btn" data-profile-export-encrypted>导出加密备份</button><label class="mini-btn provider-file">选择文件并预览<input type="file" accept=".json,application/json" aria-label="选择档位文件并预览" data-profile-import /></label><label class="mini-btn provider-file">选择加密备份<input type="file" accept=".aibk,application/octet-stream" aria-label="选择加密备份文件" data-profile-import-encrypted /></label></div><p class="sb-note">加密备份用口令派生密钥（AES-256-GCM）；口令不会保存，留给你的备份请自己记牢——丢了就解不开。</p></details>
     ${isWorkbench() ? '<div class="actions"><button type="button" class="mini-btn" data-open-extensions>管理 MCP 与 Skills</button></div>' : '<details class="provider-capabilities" data-capabilities><summary>本机 MCP 与 Skills</summary><div data-capability-list></div></details>'}
     ${limitations}<div class="sb-confirm" data-confirm role="dialog" aria-modal="true" aria-label="确认配置操作" tabindex="-1" hidden></div>`;
   bindProviderEvents(root, status, profiles);
@@ -2253,6 +2253,30 @@ function bindProviderEvents(root, status, profiles) {
   root.querySelector('[data-profile-export]').onclick = async () => {
     const path = await invoke('provider_export_file').catch(() => null);
     showProviderToast(root, path === null ? '导出失败，请检查档位清单与下载目录权限后重试。' : `已保存到 ${path}；仅包含配置字段与环境变量名。`);
+  };
+  root.querySelector('[data-profile-export-encrypted]').onclick = async () => {
+    // 口令只在这一轮里用：既不进 URL，也不进日志，也不写进任何文件。
+    const passphrase = window.prompt('为这份加密备份设置口令（不会保存，丢了就解不开）：');
+    if (!passphrase) { showProviderToast(root, '已取消加密导出。'); return; }
+    const path = await invoke('provider_export_encrypted_file', { passphrase }).catch(() => null);
+    showProviderToast(root, path === null
+      ? '加密导出失败，请检查下载目录权限后重试。'
+      : `加密备份已保存到 ${path}；口令不会保存，丢了无法恢复。`);
+  };
+  root.querySelector('[data-profile-import-encrypted]').onchange = async (event) => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    if (file.size > 1048576) { showProviderToast(root, '加密备份不能超过 1 MB'); return; }
+    const content = new Uint8Array(await file.arrayBuffer());
+    const passphrase = window.prompt('这份加密备份的口令：');
+    if (!passphrase) { showProviderToast(root, '已取消解密预览。'); return; }
+    const result = await invoke('provider_preview_encrypted_import', { content, passphrase }).catch(() => null);
+    if (!result) { showProviderToast(root, '解密失败：口令不对，或文件已被改动。'); return; }
+    if (!result.preview.added.length) { showProviderToast(root, `没有新档位；跳过 ${result.preview.skipped.length} 个已有 ID。`); return; }
+    askConfirm(`<b>将增加 ${result.preview.added.length} 个档位</b><p>${result.preview.added.map(p => escapeHtml(p.name)).join('、')}</p><p>跳过 ${result.preview.skipped.length} 个已有 ID，保留本机档位。导入后不会应用到 Codex。</p>`, async () => {
+      const count = await invoke('provider_import_bundle', { text: result.text, revision: result.preview.revision }).catch(() => null);
+      await hydrateProvider(); showProviderToast(root, count === null ? '导入失败，清单可能已变化；请重新预览。' : `已导入 ${count} 个档位。`);
+    });
   };
   root.querySelector('[data-profile-import]').onchange = async (event) => {
     const file = event.target.files?.[0]; event.target.value = '';

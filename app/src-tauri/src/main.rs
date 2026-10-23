@@ -26,6 +26,7 @@ mod engine;
 mod filemon;
 mod forecast;
 mod headless;
+mod backup_crypt;
 mod ledger_guard;
 mod otlp;
 mod health;
@@ -1874,6 +1875,37 @@ fn provider_export_file() -> Result<String, String> {
         .export_to_directory(&directory)
         .map(|path| path.to_string_lossy().into_owned())
 }
+/// 导出**加密**备份到下载目录。口令只在这一次调用里用，不落盘、不进日志。
+#[tauri::command]
+fn provider_export_encrypted_file(passphrase: String) -> Result<String, String> {
+    let directory = dirs::download_dir().ok_or("下载目录不可用")?;
+    crate::provider::ProviderStore::at_default()
+        .export_encrypted_to_directory(&directory, &passphrase)
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// 解开一份加密备份并给出预览（不写入任何状态）。
+///
+/// 同时回传**解密后的文本**：导入那一步需要它，而密文容器本身不是 JSON——
+/// 让界面去读原始文件再当 JSON 解析，必然失败。
+#[tauri::command]
+fn provider_preview_encrypted_import(
+    content: Vec<u8>,
+    passphrase: String,
+) -> Result<EncryptedImportPreview, String> {
+    crate::provider::ProviderStore::at_default()
+        .preview_encrypted_import_with_text(&content, &passphrase)
+        .map(|(preview, text)| EncryptedImportPreview { preview, text })
+}
+
+/// 加密备份的预览结果：档位预览 + 解密后的原始文本（供随后的导入使用）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EncryptedImportPreview {
+    preview: crate::provider::ImportPreview,
+    text: String,
+}
+
 #[tauri::command]
 fn provider_preview_import(text: String) -> Result<crate::provider::ImportPreview, String> {
     crate::provider::ProviderStore::at_default().preview_import(&text)
@@ -4810,6 +4842,8 @@ fn main() {
             provider_scan_tools,
             provider_list_profiles,
             provider_export_file,
+            provider_export_encrypted_file,
+            provider_preview_encrypted_import,
             provider_preview_import,
             provider_import_bundle,
             provider_preview_backup,
