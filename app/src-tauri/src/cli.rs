@@ -197,6 +197,45 @@ fn sample_once_with(
 
 // MARK: - status
 
+/// `status --json` 的一行。字段面与 GUI 概览**逐项对拍**：
+/// `scripts/test-entry-field-parity.py` 核对「界面读的每个事实，JSON 里都有同一个出处」，
+/// 所以加/删键都要同步那张对拍表，不能只改一边。
+///
+/// 两侧刻意不同、且都登记过的差异：`cpuPercent` 恒为 null（单拍没有差分窗口，
+/// 见 `status` 表格列的同一条注释）；健康度给**整份报告**而不是只给分数
+/// （GUI 的 healthChip / 健康度详情读的就是这份，再造一个「只有分数」的形状只会分叉）。
+fn status_json_row(s: &crate::models::AgentSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "id": s.id,
+        "name": s.name,
+        "level": s.level.as_str(),
+        "levelLabel": s.level_label,
+        // 这句话凭什么：GUI 的状态文案是「label + 出处后缀」整体
+        // （views.js `agentRowModel.statusText` 拼的就是这两截）。
+        // `provenance` 给身份码、`provenanceSuffix` 给**逐字措辞**——
+        // 拼法只在 selfreport::badge_suffix 一处，JSON 不自己编。
+        // CLI 进程看不到 app 的自报记录，这里恒为 null + 空串：明说，不是漏说。
+        "provenance": s.provenance.map(|p| p.as_str()),
+        "provenanceSuffix": s.provenance_suffix,
+        "processRunning": s.process_running,
+        "pid": s.pid,
+        // 单拍没有 CPU 差分窗口 ⇒ **恒为 null**，不是 0.0。
+        // 引擎那一拍的 `Some(0.0)` 是「没采到过」折出来的，不是读数
+        "cpuPercent": serde_json::Value::Null,
+        "isHung": s.is_hung,
+        "health": serde_json::to_value(&s.health).unwrap_or(serde_json::Value::Null),
+        "observability": s.observability.code.as_str(),
+        "observabilitySummary": s.observability.summary,
+        "installed": s.installed,
+        "tokens24h": s.token_usage.as_ref().map(|u| u.tokens24h),
+        "cost24h": s.token_usage.as_ref().map(|u| u.cost24h),
+        "lastActivity": s.last_activity_text,
+        // 工作中/等待确认的行在 GUI 概览里显示这一句（`agentNextStep` 的 detail）；
+        // JSON 里没有它，脚本就拿不到用户看得见的那个事实
+        "currentAction": s.current_action,
+    })
+}
+
 fn status(flags: &[String], positional: &[String]) -> i32 {
     let has = |name: &str| flags.iter().any(|f| f == name);
     // `-w/--watch` 交给 `top`（持续观测那一套），与 Swift 同一条路径
@@ -226,30 +265,7 @@ fn status(flags: &[String], positional: &[String]) -> i32 {
 
     if as_json {
         // JSON 契约：`—` 是**键缺席或 null**，0 是查了确实为零
-        let rows: Vec<serde_json::Value> = list
-            .iter()
-            .map(|s| {
-                serde_json::json!({
-                    "id": s.id,
-                    "name": s.name,
-                    "level": s.level.as_str(),
-                    "levelLabel": s.level_label,
-                    "processRunning": s.process_running,
-                    "pid": s.pid,
-                    // 单拍没有 CPU 差分窗口 ⇒ **恒为 null**，不是 0.0。
-                    // 引擎那一拍的 `Some(0.0)` 是「没采到过」折出来的，不是读数
-                    "cpuPercent": serde_json::Value::Null,
-                    "isHung": s.is_hung,
-                    "healthScore": s.health.score,
-                    "observability": s.observability.code.as_str(),
-                    "observabilitySummary": s.observability.summary,
-                    "installed": s.installed,
-                    "tokens24h": s.token_usage.as_ref().map(|u| u.tokens24h),
-                    "cost24h": s.token_usage.as_ref().map(|u| u.cost24h),
-                    "lastActivity": s.last_activity_text,
-                })
-            })
-            .collect();
+        let rows: Vec<serde_json::Value> = list.iter().map(|s| status_json_row(s)).collect();
         match serde_json::to_string_pretty(&rows) {
             Ok(text) => println!("{text}"),
             Err(error) => {
@@ -1443,6 +1459,161 @@ mod tests {
             source.contains("\"cpuPercent\": serde_json::Value::Null"),
             "status --json 的 cpuPercent 必须恒为 null，不是 0.0"
         );
+    }
+
+    /// `status --json` 的**键集与逐字段映射**是契约，不是实现细节。
+    ///
+    /// 键集变了而没人知道，就是静默破坏下游脚本；对拍门禁
+    /// （`scripts/test-entry-field-parity.py`）守的是「与 GUI 概览的对应」，
+    /// 这里守的是「键确实来自同一份快照字段、值逐字一致」。
+    #[test]
+    fn the_status_json_row_is_the_pinned_contract() {
+        let mut snapshot = crate::models::AgentSnapshot {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            level: crate::models::ActivityLevel::Attention,
+            level_label: "等待确认".into(),
+            observability: crate::observability::Verdict {
+                code: crate::observability::Code::Observed,
+                summary: "会话强语义",
+                evidence: Vec::new(),
+            },
+            is_hung: Some(false),
+            health: crate::health::Report::not_running(),
+            process_running: true,
+            installed: Some(true),
+            work_stats: crate::duration::Stats::empty(),
+            provenance: Some(crate::selfreport::Provenance::SelfReported),
+            provenance_suffix: crate::selfreport::Provenance::badge_suffix(Some(
+                crate::selfreport::Provenance::SelfReported,
+            )),
+            cpu_percent: Some(12.5),
+            memory_bytes: 0,
+            memory_text: "—".into(),
+            last_activity_text: "刚刚".into(),
+            token_usage: None,
+            pid: Some(4242),
+            current_action: Some("等待你确认".into()),
+            subagent_count: 0,
+            session_probe_health: None,
+            background_tasks: vec![],
+            subagents: vec![],
+            token_breakdown: None,
+        };
+        snapshot.health = crate::health::Report {
+            score: 88,
+            grade: crate::health::Grade::Partial,
+            grade_label: "观测不全".into(),
+            summary: "部分来源不可用".into(),
+            issues: vec!["会话源读不到".into()],
+            suggestion: "检查会话目录".into(),
+        };
+
+        let row = status_json_row(&snapshot);
+        let keys: Vec<&str> = row
+            .as_object()
+            .expect("JSON 行应是对象")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        // 键集**钉死**：多一个（没登记的新键）或少一个（删了 GUI 在读的事实）都红。
+        // 与 GUI 概览的逐项对应由对拍门禁核对，这里保证形状本身不漂。
+        assert_eq!(
+            keys,
+            vec![
+                "cost24h",
+                "cpuPercent",
+                "currentAction",
+                "health",
+                "id",
+                "installed",
+                "isHung",
+                "lastActivity",
+                "level",
+                "levelLabel",
+                "name",
+                "observability",
+                "observabilitySummary",
+                "pid",
+                "processRunning",
+                "provenance",
+                "provenanceSuffix",
+                "tokens24h",
+            ]
+        );
+
+        // 每个键都必须来自**同一个**快照字段，值逐字一致
+        assert_eq!(row["id"], "fixture");
+        assert_eq!(row["name"], "Fixture");
+        assert_eq!(row["level"], "attention");
+        assert_eq!(row["levelLabel"], "等待确认");
+        assert_eq!(row["provenance"], "selfReported");
+        assert_eq!(row["provenanceSuffix"], " · 自报");
+        assert_eq!(row["processRunning"], true);
+        assert_eq!(row["pid"], 4242);
+        assert!(row["cpuPercent"].is_null(), "单拍没有 CPU 读数");
+        assert_eq!(row["isHung"], false);
+        assert_eq!(row["health"]["score"], 88);
+        assert_eq!(row["health"]["grade"], "partial");
+        assert_eq!(row["health"]["gradeLabel"], "观测不全");
+        assert_eq!(row["health"]["issues"][0], "会话源读不到");
+        assert_eq!(row["observability"], "observed");
+        assert_eq!(row["observabilitySummary"], "会话强语义");
+        assert_eq!(row["installed"], true);
+        assert!(row["tokens24h"].is_null(), "没取用量就是 null，不是 0");
+        assert!(row["cost24h"].is_null());
+        assert_eq!(row["lastActivity"], "刚刚");
+        assert_eq!(row["currentAction"], "等待你确认");
+    }
+
+    /// 出处冲突时：身份码是 `conflict`、措辞是「 · 自报冲突」，
+    /// 且 `currentAction` 为空——引擎在冲突那一拍**刻意不**拿自报的句子填动作行
+    /// （engine.rs 同一条规则），JSON 不许把它漏成有动作。
+    #[test]
+    fn the_conflict_provenance_keeps_its_own_wording_and_no_action() {
+        let snapshot = crate::models::AgentSnapshot {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            glyph: String::new(),
+            emoji: String::new(),
+            level: crate::models::ActivityLevel::Idle,
+            level_label: "空闲".into(),
+            observability: crate::observability::Verdict {
+                code: crate::observability::Code::Observed,
+                summary: "",
+                evidence: Vec::new(),
+            },
+            is_hung: None,
+            health: crate::health::Report::not_running(),
+            process_running: true,
+            installed: None,
+            work_stats: crate::duration::Stats::empty(),
+            provenance: Some(crate::selfreport::Provenance::Conflict),
+            provenance_suffix: crate::selfreport::Provenance::badge_suffix(Some(
+                crate::selfreport::Provenance::Conflict,
+            )),
+            cpu_percent: None,
+            memory_bytes: 0,
+            memory_text: "—".into(),
+            last_activity_text: "—".into(),
+            token_usage: None,
+            pid: None,
+            // 引擎在冲突拍把 current_action 折成 None；这里同样给 None，
+            // 断言 JSON 忠实呈现 null 而不是编一句
+            current_action: None,
+            subagent_count: 0,
+            session_probe_health: None,
+            background_tasks: vec![],
+            subagents: vec![],
+            token_breakdown: None,
+        };
+
+        let row = status_json_row(&snapshot);
+        assert_eq!(row["provenance"], "conflict");
+        assert_eq!(row["provenanceSuffix"], " · 自报冲突");
+        assert!(row["currentAction"].is_null());
     }
 
     /// 三个新子命令必须在表里**且真的分派得到**——上一版那条「表与分派要一致」

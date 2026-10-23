@@ -301,11 +301,12 @@
       "checks": [
         "rust.default",
         "gw09.encryptedbackup",
-        "gw09.matrix"
+        "gw09.matrix",
+        "gw09.fieldparity"
       ],
-      "coverage_note": "partial — Rust 侧 webhook.rs serve 入口/令牌/端口、cli.rs --usage 按需取数已有；**加密备份**：`backup_crypt` 自描述容器（magic+版本+盐+nonce+密文），口令经 PBKDF2-HMAC-SHA256（210k）派生 AES-256-GCM 密钥且**不落盘**；解密失败明确报错、**不返回半截明文**；档位页可导出/导入 `.aibk`；密码学本体 5 条单测 + 界面边界 4 条形状断言（`gw09.encryptedbackup`，含负例），两条变异（写明文冒充加密、解不开也返回半截）均被拒。**等价矩阵**：`docs/spec/入口能力矩阵.md` 把 GUI/CLI/TUI/Web 的能力逐格列出，门禁 `gw09.matrix` 逐条核对实现锚点（声称存在的必须找得到、标「不具备」的必须真的没有、`cli.rs` 已实现命令不得漏写），变异（摘掉 `notify` 入口）可拒错。缺：各能力在多入口间的**行为是否逐字一致**（`status --json` 与 GUI 概览字段对齐）尚未逐项对拍",
+      "coverage_note": "done — Rust 侧 webhook.rs serve 入口/令牌/端口、cli.rs --usage 按需取数已有；**加密备份**：`backup_crypt` 自描述容器（magic+版本+盐+nonce+密文），口令经 PBKDF2-HMAC-SHA256（210k）派生 AES-256-GCM 密钥且**不落盘**；解密失败明确报错、**不返回半截明文**；档位页可导出/导入 `.aibk`；密码学本体 5 条单测 + 界面边界 4 条形状断言（`gw09.encryptedbackup`，含负例），两条变异（写明文冒充加密、解不开也返回半截）均被拒。**等价矩阵**：`docs/spec/入口能力矩阵.md` 把 GUI/CLI/TUI/Web 的能力逐格列出，门禁 `gw09.matrix` 逐条核对实现锚点（声称存在的必须找得到、标「不具备」的必须真的没有、`cli.rs` 已实现命令不得漏写），变异（摘掉 `notify` 入口）可拒错。**字段对拍**：`status --json`（`status_json_row`，Rust 契约单测钉键集与逐字段取值）与 GUI 概览（`agentRowModel`/`agentNextStep`/`healthReason`/`isVisible`）逐项对拍（`gw09.fieldparity`）：GUI 概览读的每个快照字段 JSON 都有对应键且引用**同一个 Rust 字段**、键集钉死、「 · 自报」措辞只在 `selfreport.rs` 的 badge_suffix 一处（两侧只转发不重拼）、默认可见口径两侧同认 `process_running`；对拍补齐了 JSON 缺的 `currentAction`/`provenance`/`provenanceSuffix`，并把 `healthScore` 升成整份 `health` 报告（GUI healthChip/agentNextStep 读的就是这份；旧键无消费者）；两个方向变异（摘 `currentAction`、GUI 新读未登记字段）在隔离副本均被拒。登记在案的有意差异：`cpuPercent` 恒为 null（单拍没有差分窗口）、`provenanceSuffix` 在 CLI 进程恒为空串（CLI 是另一个进程，看不到 app 的自报记录——`state` 命令的同一条诚实边界）。**未覆盖（如实标注）**：字段对拍只做了运行态快照（唯一多入口共享同一数据形状的能力行）；其余能力行的各入口表面各有专属门禁与端到端验收，未另建措辞对拍。",
       "audit_ref": "docs/测试映射盘点.md §8 Rust 侧补充",
-      "status": "partial"
+      "status": "done"
     },
     "GW-01": {
       "title": "Provider、API key、订阅及认证适配",
@@ -2197,6 +2198,24 @@
       "test_files": [
         "scripts/test-entry-capability-matrix.py"
       ]
+    },
+    "gw09.fieldparity": {
+      "command": [
+        "python3",
+        "scripts/test-entry-field-parity.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-09：`status --json` 与 GUI 概览的**字段对拍**（入口矩阵的下一层：同一个事实，两入口读的是不是同一个字段、同一处措辞）。核对：①GUI 概览（agentRowModel/agentNextStep/healthReason/isVisible）读的每个快照字段，status_json_row 里都有对应键；②键集钉死（多键少键都红）；③每个键的取值表达式引用同一个 Rust 字段（名字对上而来源漂了也红）；④「 · 自报」措辞只在 selfreport::badge_suffix 一处，views.js 显示代码与 JSON 构建器都只转发不重拼；⑤默认可见口径两侧同认 process_running；⑥登记的有意差异（cpuPercent 恒 null、整份 health 报告）仍然是登记的样子。变异验证（隔离副本）：摘掉 currentAction 键 → 3 处断言红；agentRowModel 新读 snap.memory_text 而不登记 → 红。",
+      "test_files": [
+        "scripts/test-entry-field-parity.py"
+      ]
     }
   },
   "agents": {
@@ -2293,7 +2312,8 @@
       "gw02.profilepage",
       "gw08.otlp",
       "gw09.encryptedbackup",
-      "gw09.matrix"
+      "gw09.matrix",
+      "gw09.fieldparity"
     ],
     "browser": [
       "not01.latencyui",
@@ -2384,7 +2404,8 @@
       "gw02.profilepage",
       "gw08.otlp",
       "gw09.encryptedbackup",
-      "gw09.matrix"
+      "gw09.matrix",
+      "gw09.fieldparity"
     ],
     "package": [
       "package.artifact",
@@ -2521,7 +2542,8 @@
       "gw02.profilepage",
       "gw08.otlp",
       "gw09.encryptedbackup",
-      "gw09.matrix"
+      "gw09.matrix",
+      "gw09.fieldparity"
     ],
     "protocol": [
       "gw02.ifacemodels",
@@ -2609,6 +2631,13 @@
       "status": "closed",
       "requirement": "OPS-01",
       "evidence": "现象：v0.0.358 与 v0.0.361 两次发版在 `bundle_dmg.sh` 环节失败（一次进程无 CPU 活动地挂住 36 分钟，一次直接报错退出）。**单独**执行同一条 `cargo tauri build --bundles dmg` 每次都通过——差别是发版流程里它紧跟着别的步骤跑，createdmg 的 AppleScript 步骤要等 Finder 摆窗口。已核对：单独打包与发版流程用的是同一条命令，因此不是打包内容或签名的问题，而是时序/环境（Finder 响应）。**修法**：`scripts/build-app.sh` 的 DMG 环节加**有界重试**（最多三次，间隔 10 秒）——重试的是**打包**，不是放宽判据：产物照样要走后面的签名自校验（`verify_dmg_signature`）。未做（如实登记）：createdmg 等待 Finder 的具体超时点仍未定位，若重试三次仍失败仍会中断发版（那是有界重试的应有行为，不是静默通过）。"
+    },
+    {
+      "id": "BUG-011",
+      "title": "verify-framework 的 windows crate 门禁在本机持续红：加密备份引入的 ring 需要 Windows SDK 头文件，本机交叉类型检查编译不过",
+      "status": "open",
+      "requirement": "GW-09",
+      "evidence": "在干净 HEAD（de52147，v0.0.361，无本轮改动）复跑 `scripts/check-windows-crate.sh` 同样失败于 `ring v0.17.14` 的 build script（Windows 目标缺 C 头文件）——证明该失败自 v0.0.360 引入 ring（AES-256-GCM/PBKDF2 用 ring 实现，AEAD 与 KDF 不该自己写）起就存在，与本轮 diff 无关。同型先例见 docs/agent/HANDOFF.md 第 8 节第 1 条：updater 的 default 特征曾把 ring 带进依赖树打红同一门禁，当时改走 native-tls 移出；这次 ring 是**刻意**引入的密码学依赖，不能如法移除。未做：本机没有 Windows SDK，无法为交叉检查提供目标头文件；按「门禁故障明确失败」登记，不放宽判据、不跳过。权威 Windows 判据仍是 .github/workflows/build.yml 的 windows job（检查脚本自述），下次 CI 运行时以该 job 的真实结果为准。"
     }
   ]
 }
