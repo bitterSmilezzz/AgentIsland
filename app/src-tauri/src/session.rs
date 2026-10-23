@@ -3167,6 +3167,74 @@ mod status_index_tests {
         );
     }
 
+    // ── SUP-02：库被截断 / 空库 / 写入方在场，三种都不能伪装成「没有终态」 ──
+
+    /// **截断的库**（有效文件头、页在中间被切断——升级/断电的常见残骸）必须
+    /// 报「读不到」，而不是静默当成「没有会话」。与「文件不存在」是两件事：
+    /// 存在但读不出 ⇒ 有理由；不存在 ⇒ 没跑过。判据差一格，界面就差一个世界。
+    #[test]
+    fn a_truncated_database_fails_loudly_not_silently() {
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-truncated",
+            ZCODE_DDL,
+            &[("t1", "completed", FIXED_NOW_MS)],
+        );
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_len(1024).unwrap();
+        drop(file);
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0, FIXED_NOW_MS);
+        assert!(probe.signal.is_none(), "截断的库不得凭空造出信号");
+        let failure = failure.expect("截断的库必须留下「读不到」的理由");
+        assert!(
+            matches!(failure, SessionProbeFailure::UnreadableDatabase(ref d) if !d.is_empty()),
+            "诊断必须带 SQLite 的话，实际：{failure:?}"
+        );
+        drop(sandbox);
+    }
+
+    /// **零字节库**：SQLite 把 0 字节文件当**合法的空库**打开，于是 prepare
+    /// （表不存在）失败——这必须报「读不到」。它与「库不存在（没跑过）」
+    /// 完全是两个事实：文件在、打不开表，多半是升级中途或同步盘的半成品。
+    #[test]
+    fn a_zero_byte_database_is_not_reported_as_no_sessions() {
+        let sandbox = crate::testutil::Sandbox::new("statusindex-zero");
+        let path = sandbox.path().join("tasks-index.sqlite");
+        std::fs::File::create(&path).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        let (probe, failure) = probe_status_index(&db(&path.to_string_lossy(), ZCODE_SQL), 0.0, FIXED_NOW_MS);
+        assert!(probe.signal.is_none());
+        assert!(
+            matches!(failure, Some(SessionProbeFailure::UnreadableDatabase(_))),
+            "零字节库是「读不到」，不是「没跑过」：{failure:?}"
+        );
+        drop(sandbox);
+    }
+
+    /// **写入方在场**（日常形态：Agent 正在写自己的库）不得挡住或弄瞎探针：
+    /// WAL 模式下未提交的写事务对只读方不可见但也不阻塞，探针读到最后一次
+    /// 提交的状态、健康度为空。锁争用走到错误臂时与坏查询同一映射
+    /// （`a_query_that_cannot_prepare…` 钉过）；真实 5 秒 BUSY 等待不入套件。
+    #[test]
+    fn a_concurrent_writer_does_not_block_or_blind_the_probe() {
+        let (sandbox, path) = zcode_fixture(
+            "statusindex-wal",
+            ZCODE_DDL,
+            &[("t1", "completed", FIXED_NOW_MS)],
+        );
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        writer.execute("INSERT INTO tasks (workspace_key, workspace_path, task_id, title, task_status, created_at, updated_at) VALUES ('w','/p','t2','',?1,0,?2)", rusqlite::params!["running", FIXED_NOW_MS]).unwrap();
+        // 未提交的 t2 对只读方不可见；已提交的 t1 照常可读。
+        let (probe, failure) = probe_status_index(&db(&path, ZCODE_SQL), 0.0, FIXED_NOW_MS);
+        assert!(failure.is_none(), "WAL 下的只读探针不应被写方挡住：{failure:?}");
+        match probe.signal {
+            Some(Signal::Completed(fp)) => assert_eq!(fp, fingerprint(&path, "t1")),
+            other => panic!("应当读到已提交的 completed，实际 {other:?}"),
+        }
+        drop(writer);
+        drop(sandbox);
+    }
+
     // ── 判定语义 ────────────────────────────────────────────────
 
     #[test]

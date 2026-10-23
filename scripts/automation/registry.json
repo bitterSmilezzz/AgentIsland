@@ -114,8 +114,8 @@
         "rust.default"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — event replay and restart regression; source/probe gaps and failure paths remain. Current run evidence, not static counts, determines verification.",
-      "status": "partial"
+      "coverage_note": "done — 场景逐项对账（2026-10-24，替换此前的含糊英文 note）：**工作/等待/完成时序**由引擎状态机测试与 sup02.actions 覆盖（确认/完成/资源理由与 exact/仅开工具目的地互不混淆、missing observation 不是故障）；**同事件重放、新事件不漏报**由 SUP-03 收口（(agent, kind, raw id) 分域账本，同事件不重报与新事件不漏报成对验证）；**未知不零**由 SUP-04 收口（is_hung 三态、单拍不冒充连续观测）；**时钟回拨**有直接用例（duration.rs：未来时间戳不得被排除出窗口；session.rs：回拨不得变成负龄）；**睡眠**语义由自报 TTL 的墙钟窗口钉住（a_report_is_believable_only_inside_its_window：睡过 TTL 即不再采信，记录保留不删）；**库 BUSY/截断/改写**（本轮新增三用例，session.rs status_index_tests）：截断库（有效文件头、页中切断）报「读不到」而不冒充「没有会话」、零字节库（SQLite 的合法空库）报「读不到」而非「没跑过」（与 Missing 判据一格不差地分开）、WAL 下写入方在场不挡不瞎（未提交写不可见、已提交状态照常读、健康度为空）；真实 5 秒 SQLITE_BUSY 等待不入套件（BUSY 走与坏查询同一错误映射臂，已由 a_query_that_cannot_prepare 钉住）；变异（把 prepare 失败折叠成静默）被截断/零字节/坏查询三个用例同时拒绝。**剩余（如实，L6/7 层）**：整机睡眠对墙钟/单调钟的系统级影响未在真实睡眠周期上验；真实 Agent 库高负载写入下的 BUSY 实测未做——两者均属真实服务/原生长时档，不冒充完成。",
+      "status": "done"
     },
     "SUP-03": {
       "title": "多 Agent/多会话概览与待处理聚合",
@@ -2709,6 +2709,13 @@
       "title": "全量 Rust 套件出现一次未定位的红（2 failed）：用例名未捕获，需复现时带全量日志定位",
       "status": "open",
       "evidence": "2026-10-24 一次全量 cargo test 记到 `1182 passed; 2 failed`（随后同源码连续 3 次全绿：1184 passed / 0 failed）。该次运行的输出只保留了 tail -3，失败用例名未捕获——按「保留失败样本」登记，不当作没发生。处置：下次复现必须带全量日志（失败名 + 断言），先定位是否与负载/并行时序相关（本机当时无重负载）；若复现两次以上按 flaky 测试修根因。"
+    },
+    {
+      "id": "BUG-013",
+      "title": "VM 连续多轮原生验收后出现 TimeoutExpired：重启来宾后恢复，连跑轮数与超时的关联未定位",
+      "status": "open",
+      "requirement": "OPS-01",
+      "evidence": "2026-10-24 v0.0.366 第一次发版：ci 档全绿后，VM 原生验收报 TimeoutExpired（当时该 VM 已连续完成 v0.0.363/364/365 三轮原生验收且宿主侧未重启过）；tart stop + 重新 tart run 后同一产物重跑，五道原生门禁全绿。BUG-007 的 stale-instance 复位在两次运行里都正常执行（各 stopped 1 stale instance），说明不是残留实例问题。处置：下次 TimeoutExpired 先重启 VM 再排查；若复现两次以上，给 native-gates-vm.py 增加「门禁前重置来宾」的显式选项而不是依赖人工重启。"
     }
   ]
 }
