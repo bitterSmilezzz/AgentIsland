@@ -391,9 +391,12 @@ if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(pro
 ''')
     run(['swiftc', str(source), '-o', str(helper)], capture_output=True, timeout=120)
     lifetime_target = ROOT / '.build/window-lifetime-target'
+    # 探针 crate vendor 了 tao，**每次版本号 bump 都全量重编**（agentisland 版本进了
+    # 它的依赖闭包）——BUG-013 两次 TimeoutExpired 的根因都是这里 180 秒不够。
+    # 这是基础设施超时不是门禁判据：判据是后面的五道原生检查，构建慢不该误伤发布。
     run(['cargo', 'build', '--locked', '--quiet', '--manifest-path',
          str(ROOT / 'scripts/window-lifetime-probe/Cargo.toml')],
-        env=dict(os.environ, CARGO_TARGET_DIR=str(lifetime_target)), timeout=180)
+        env=dict(os.environ, CARGO_TARGET_DIR=str(lifetime_target)), timeout=900)
     lifetime_helper = evidence / 'window-lifetime-probe'
     lifetime_helper.write_bytes((lifetime_target / 'debug/agentisland-window-lifetime-probe').read_bytes())
     lifetime_helper.chmod(0o700)

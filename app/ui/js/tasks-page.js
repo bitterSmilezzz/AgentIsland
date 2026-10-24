@@ -40,7 +40,7 @@ export function pageTasks() {
     <div class="task-panes">
     <div class="task-list-pane">
     <div class="task-controls">
-    <div class="task-toolbar"><label class="task-filter">项目<select data-task-filter aria-label="筛选项目"><option value="">全部项目</option></select></label><label class="task-archive-filter"><input type="checkbox" data-task-archived>已归档</label><button class="mini-btn" type="button" data-task-refresh>刷新</button></div>
+    <div class="task-toolbar"><label class="task-filter">项目<select data-task-filter aria-label="筛选项目"><option value="">全部项目</option></select></label><label class="task-search">搜索<input type="search" data-task-search aria-label="搜索任务（跨项目，按名称或来源）" placeholder="名称或来源…" autocomplete="off"></label><label class="task-archive-filter"><input type="checkbox" data-task-archived>已归档</label><button class="mini-btn" type="button" data-task-refresh>刷新</button></div>
     <form class="task-compose" data-task-create><label class="sr-only" for="task-new-title">任务名称</label><input id="task-new-title" name="title" placeholder="记录一个任务…" maxlength="500" required autocomplete="off"><select name="projectId" aria-label="任务所属项目"><option value="">未分组</option></select><button class="mini-btn primary" type="submit">添加任务</button></form>
     <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form></details>
     </div>
@@ -113,7 +113,12 @@ export async function hydrateTasks(isVisible = () => true) {
     }
     const project = root.querySelector('[data-task-filter]').value;
     const archived = root.querySelector('[data-task-archived]').checked;
-    const tasks = data.tasks.filter(t => Boolean(t.archived_ms != null) === archived && (!project || t.project_id === project));
+    // 跨项目搜索：按名称或来源 agent 模糊匹配，与项目过滤、归档开关组合（AND）。
+    // 默认项目过滤是「全部项目」，所以空查询=原行为；有查询时想不起项目也能找到。
+    const query = root.querySelector('[data-task-search]').value.trim().toLowerCase();
+    const tasks = data.tasks.filter(t => Boolean(t.archived_ms != null) === archived
+      && (!project || t.project_id === project)
+      && (!query || t.title.toLowerCase().includes(query) || (t.source && t.source.agent_id.toLowerCase().includes(query))));
     const groups = [['attention', '需处理'], ['running', '执行中'], ['queued', '未开始'], ['finished', '已结束']];
     root.querySelector('[data-task-board]').innerHTML = tasks.length ? groups.map(([key, label]) => {
       const items = tasks.filter(t => taskGroup(data, t) === key);
@@ -125,7 +130,7 @@ export async function hydrateTasks(isVisible = () => true) {
         const sourceMissing = t.source && !sources.some(c => c.source.agent_id === t.source.agent_id && c.source.session_id === t.source.session_id);
         return `<button class="task-row${t.id === selected ? ' is-selected' : ''}" type="button" data-task-select="${esc(t.id)}" aria-expanded="${t.id === selected}"><span><strong>${esc(t.title)}</strong><small>${esc(project?.name ?? '未分组')}${t.source ? ` · ${esc(t.source.agent_id)}${sourceMissing ? ' · 来源暂未观测' : ''}` : ' · 本地任务'}</small></span><span class="task-state state-${key}">${esc(attention ? kinds[attention.kind] : sourceMissing && run?.status === 'running' ? '执行中 · 最后记录' : statuses[run?.status] ?? '未开始')}</span></button>`;
       }).join('')}</div></section>`;
-    }).join('') : `<div class="wb-empty">${archived ? '暂无归档任务' : project ? '这个项目还没有任务' : '还没有任务。先记录一件要做的事。'}</div>`;
+    }).join('') : `<div class="wb-empty">${query ? `没有匹配「${esc(root.querySelector('[data-task-search]').value.trim())}」的任务` : archived ? '暂无归档任务' : project ? '这个项目还没有任务' : '还没有任务。先记录一件要做的事。'}</div>`;
     root.querySelectorAll('[data-task-select]').forEach(button => { button.onclick = () => {
       if (busy || !leaveDetail()) return;
       selected = selected === button.dataset.taskSelect ? null : button.dataset.taskSelect;
@@ -301,6 +306,8 @@ export async function hydrateTasks(isVisible = () => true) {
   root.querySelector('[data-task-refresh]').onclick = refresh;
   root.querySelector('[data-task-filter]').onchange = () => { if (data) redraw(false); };
   root.querySelector('[data-task-archived]').onchange = () => { if (data) redraw(false); };
+  // 搜索即输即筛：纯前端过滤（板上的数据本来就是全量的），不触发网络请求。
+  root.querySelector('[data-task-search]').oninput = () => { if (data) redraw(false); };
   root.querySelector('[data-task-create]').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; mutate('task_create', { title: form.elements.title.value, projectId: form.elements.projectId.value || null }, form); };
   root.querySelector('[data-task-project]').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; mutate('task_project_create', { name: form.elements.name.value }, form); };
   await refresh();

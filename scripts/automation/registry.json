@@ -169,10 +169,11 @@
       "checks": [
         "task01.tasks",
         "task01.detailnav",
-        "rust.default"
+        "rust.default",
+        "task01.tasksearch"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — task/run ownership, stale revision, create/update/archive, corrupt/future inputs and write-failure preservation have regression coverage. Missing: board drag, cross-project search and actor-based authorization; those cannot be inferred from ID association checks.",
+      "coverage_note": "partial — task/run ownership, stale revision, create/update/archive, corrupt/future inputs and write-failure preservation have regression coverage; **跨项目搜索**（task01.tasksearch，2026-10-24）：看板搜索框按名称或来源 agent 模糊匹配、跨项目命中，与项目过滤/归档开关组合为 AND，空结果如实说「没有匹配」（区别于「还没有任务」），纯前端过滤不触发新快照请求，aria-label 在位；变异（中和过滤）被拒。缺：看板拖拽（列是观测派生状态——拖拽语义需先定「拖到已结束是否改写运行记录」的产品口径，未拍板不做）、actor-based authorization（当前是单用户本机工具，无多 actor 面；若引入多人协作需按子系统契约另立授权）。",
       "status": "partial"
     },
     "TASK-04": {
@@ -2292,6 +2293,25 @@
       "test_files": [
         "scripts/test-reduced-motion.mjs"
       ]
+    },
+    "task01.tasksearch": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-search.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "TASK-01「跨项目搜索」：任务看板搜索框（纯前端过滤——板上数据本就全量，断言搜索不触发新 tasks_snapshot）。断言六层：①跨项目匹配（两个项目里的同名前缀同时命中）；②按来源 agent_id 匹配；③与项目过滤组合为 AND；④空结果如实说「没有匹配」（区别于「还没有任务」）；⑤清空恢复全量、与归档开关组合（归档视图内搜索）；⑥aria-label 在位。变异验证（隔离副本）：中和搜索过滤 → waitForFunction 等待过滤后行数超时变红。",
+      "test_files": [
+        "scripts/test-task-search.mjs"
+      ]
     }
   },
   "agents": {
@@ -2398,6 +2418,7 @@
     "browser": [
       "not01.latencyui",
       "task01.detailnav",
+      "task01.tasksearch",
       "task04.readerleave",
       "task04.refreshfocus",
       "gw01.connectionsui",
@@ -2452,6 +2473,7 @@
       "rust.default",
       "not01.latencyui",
       "task01.detailnav",
+      "task01.tasksearch",
       "task04.readerleave",
       "task04.refreshfocus",
       "automation.selfcheck",
@@ -2588,6 +2610,7 @@
       "rust.default",
       "not01.latencyui",
       "task01.detailnav",
+      "task01.tasksearch",
       "task04.readerleave",
       "task04.refreshfocus",
       "automation.selfcheck",
@@ -2736,9 +2759,9 @@
     {
       "id": "BUG-013",
       "title": "VM 连续多轮原生验收后出现 TimeoutExpired：重启来宾后恢复，连跑轮数与超时的关联未定位",
-      "status": "open",
+      "status": "closed",
       "requirement": "OPS-01",
-      "evidence": "2026-10-24 v0.0.366 第一次发版：ci 档全绿后，VM 原生验收报 TimeoutExpired（当时该 VM 已连续完成 v0.0.363/364/365 三轮原生验收且宿主侧未重启过）；tart stop + 重新 tart run 后同一产物重跑，五道原生门禁全绿。BUG-007 的 stale-instance 复位在两次运行里都正常执行（各 stopped 1 stale instance），说明不是残留实例问题。处置：下次 TimeoutExpired 先重启 VM 再排查；若复现两次以上，给 native-gates-vm.py 增加「门禁前重置来宾」的显式选项而不是依赖人工重启。"
+      "evidence": "已修（2026-10-24，v0.0.370 发版时定位）：两次 TimeoutExpired（v0.0.366、v0.0.370 首跑）的根因都是 scripts/native-gates-vm.py 给 window-lifetime-probe 的 cargo build 设了 180 秒超时——该探针 crate vendor 了 tao，且 agentisland 的版本号 bump 会进入它的依赖闭包，**每次发版都触发全量重编**，热机上也不止 180 秒。这是基础设施超时不是门禁判据（判据是后面的五道原生检查），构建慢误伤发布属于假失败。修法：超时 180→900 秒并注明原因；VM 重启只是巧合掩盖（重启耗时让缓存状态变化）。未做：把探针依赖与主程序版本解耦（那要动 vendor 结构，收益小）。"
     }
   ]
 }
