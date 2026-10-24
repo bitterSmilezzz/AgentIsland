@@ -5,6 +5,7 @@
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod artifact_version;
 mod atomicfile;
 mod audit;
 mod budget;

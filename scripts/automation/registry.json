@@ -403,9 +403,10 @@
       "title": "方案/diff/产出版本",
       "checks": [
         "rust.default",
-        "task05.artifactcap"
+        "task05.artifactcap",
+        "task05.versioning"
       ],
-      "coverage_note": "partial — 第一片（2026-10-24）：**产出的有界留存与超限说明**。产出条目是派生的展示元数据（来源观测的投影），此前只受全库 8MB 硬顶保护——长期运行攒下的产出行会先撑满容量，把「任务记录达到容量上限」挡在**用户手写数据**的写入上（派生数据饿死用户数据）。现有 MAX_ARTIFACTS=2000：超限时从最旧的**未被引用**行淘汰（被任何 attention 引用的行永远保留——那条链接是用户回到来源内容的路；全被引用时不淘汰、仍由 MAX_BYTES 兜底拒绝），淘汰数记入 Data.evicted_artifacts （serde default，旧文件可读）对界面可见——淘汰不静默。三条用例：精确回落上限+引用行一个不少+计数如实、全被引用时零淘汰零虚增、缺字段的旧文件按 0 起步加载；变异（淘汰不看引用）被两个用例同时拒绝。缺：任意版本比较/恢复（需产出内容留存的存储语义设计）、验证清单、外部只读源的历史口径文档化。",
+      "coverage_note": "partial — 第一片（v0.0.371）：产出有界留存（MAX_ARTIFACTS=2000，未引用行先淘汰，引用行永不淘汰，evicted_artifacts 对界面可见）；**第二片（2026-10-25）：产出版本演进、比较与恢复判据**（artifact_version.rs 纯函数）。①版本演进向后追加不覆盖（revision 单调递增）；②外部只读源不伪造历史（event_ref 只许初始记录、拒绝本仓自造演进）；③任意两版本比较（diff 元数据、标题变化、跨 run 标记）；④任意版本恢复向前追加新 revision（历史不删不改）；4 条用例 + 变异（允许外部源演进）被拒。全量 1236 passed，脱敏 0 命中。缺：验证清单口径、产出内容主体（大文本/二进制）的存储与按版本读取（当前版本链管理的是产出元数据）、与 tasks.rs 的存储层接线。",
       "status": "partial"
     },
     "TASK-06": {
@@ -2567,6 +2568,25 @@
       "test_files": [
         "app/src-tauri/src/push_guard.rs"
       ]
+    },
+    "task05.versioning": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "artifact_version"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-05 第二片：产出版本留存、比较与恢复判据（artifact_version.rs 纯函数）。四条语义：①**版本演进**（同一产物新版本单调递增，旧版本原样保留——向后追加不覆盖）；②**外部只读源不伪造历史**（带 event_ref 的外部产物只许初始记录，本仓明确拒绝替其演进版本——外部历史来自外部实际观测）；③**任意版本比较**（两 revision 的元数据比对：标题前后变化、是否跨 run）；④**任意版本恢复**（恢复产出新 revision = 当前最高+1，内容取自被恢复版本，历史不可改写不删旧版）。4 条用例 + 变异（允许外部源演进版本）被拒。",
+      "test_files": [
+        "app/src-tauri/src/artifact_version.rs"
+      ]
     }
   },
   "agents": {
@@ -2738,6 +2758,7 @@
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",
+      "task05.versioning",
       "task03.lifecycle",
       "task02.orchestration",
       "not01.latencyui",
@@ -2887,6 +2908,7 @@
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",
+      "task05.versioning",
       "task03.lifecycle",
       "task02.orchestration",
       "not01.latencyui",
