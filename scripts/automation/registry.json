@@ -341,9 +341,12 @@
     },
     "GW-03": {
       "title": "四类模型协议网关",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "gw03.protocolmatrix"
+      ],
+      "coverage_note": "partial — 首片（2026-10-24）：**四类协议的兼容矩阵**（gateway_protocol.rs 唯一声明处 + docs/spec/协议兼容矩阵.md 渲染 + 门禁逐格核对 doc↔code）。Chat/Responses/Messages/Gemini × 流式/tools/reasoning/usage/cancel；**不支持 ≠ 未知**（Chat 的 reasoning 是不支持——协议没这个语义；Gemini 的 reasoning 是未知——还没验过，写「支持」会让调用方按支持写代码然后静默失败）；未知不算 usable；矩阵两次读出必须一致（它是声明不是计算）。4 条 Rust 用例 + 5 条门禁用例；双变异（代码改一格/文档改一格）均被拒。**剩余（如实）**：16 协议方向的细粒度场景（tools 分片/结果/并行、reasoning 内容形态、usage 字段映射）、SSE 任意切片解析、畸形/过深/超限输入、取消与流中断语义、四类协议的真实端到端验收（需真实网关与凭据）。",
+      "status": "partial"
     },
     "GW-04": {
       "title": "路由组与候选策略",
@@ -2457,6 +2460,25 @@
       "test_files": [
         "app/src-tauri/src/gateway_conditions.rs"
       ]
+    },
+    "gw03.protocolmatrix": {
+      "command": [
+        "python3",
+        "scripts/test-protocol-matrix.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-03 首片：四类协议（Chat/Responses/Messages/Gemini）× 五能力（流式/tools/reasoning/usage/cancel）的**兼容矩阵**。矩阵的唯一声明处在 gateway_protocol.rs 的 cell()（Rust 侧 4 条用例：每格恰好一次、未知不可用、两次读出稳定、每列至少有一协议支持）；文档 docs/spec/协议兼容矩阵.md 是它的渲染，由本门禁逐格核对（doc↔code 双向：文档漂了红、代码漂了红；**未知不许被写成支持**——那会让调用方按支持写代码然后静默失败）。变异验证（隔离副本）：代码把 Gemini/reasoning 改成 supported → 红；文档把 Chat/reasoning 改成支持 → 红。",
+      "test_files": [
+        "scripts/test-protocol-matrix.py",
+        "app/src-tauri/src/gateway_protocol.rs"
+      ]
     }
   },
   "agents": {
@@ -2624,6 +2646,7 @@
       "gw06.retrytable",
       "gw04.routing",
       "gw05.conditions",
+      "gw03.protocolmatrix",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",
@@ -2768,6 +2791,7 @@
       "gw06.retrytable",
       "gw04.routing",
       "gw05.conditions",
+      "gw03.protocolmatrix",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",

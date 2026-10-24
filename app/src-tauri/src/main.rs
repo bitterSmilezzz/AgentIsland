@@ -24,6 +24,7 @@ mod dedup;
 mod duration;
 mod engine;
 mod gateway_conditions;
+mod gateway_protocol;
 mod gateway_retry;
 mod gateway_routing;
 mod filemon;
