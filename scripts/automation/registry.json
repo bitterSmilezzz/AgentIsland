@@ -329,9 +329,12 @@
     },
     "NOT-03": {
       "title": "运营商 SMS 短信",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "not03.smsguard"
+      ],
+      "coverage_note": "partial — 首片（2026-10-24）：**运营商 SMS 的发送前置判据**（sms_guard.rs 纯函数，供应商接入前先钉语义——各供应商的号码规则、幂等键、限额口径都不同，等接第一个时再定会各定一套）。号码校验（E.164 形状 + 国家码允许名单；国家码由名单判定——号码本身分不出「86+1…」与「861」；空名单 fail closed；每条失败有独立理由码）；幂等键（(事件, 号码)，不含正文）；费用限额（未配限额=不放行、达上限=拒、重放先查幂等不消耗额度评估）；拒绝码固定且不含号码（个人信息）。5 条用例 + 变异（未配限额却放行）被拒。**IM 不算 SMS**（需求原文）：现有通道枚举只有 ntfy/飞书/微信/QQ/HTTP/邮件，**没有 SMS**——本轮未新增通道，SMS 是**尚未接入**的能力面（不是已实现但没文档）。**剩余（如实）**：供应商 HTTP 交互与凭据、模板渲染、送达回执状态机（受理/送达/失败三段）、业务失败 HTTP 200 的处理、重放回执与「先受理后超时」的查单、真实号码与真实供应商的端到端验收。",
+      "status": "partial"
     },
     "NOT-04": {
       "title": "手机推送与移动入口",
@@ -2479,6 +2482,25 @@
         "scripts/test-protocol-matrix.py",
         "app/src-tauri/src/gateway_protocol.rs"
       ]
+    },
+    "not03.smsguard": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "sms_guard"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "NOT-03 首片：运营商 SMS 的**发送前置判据**（sms_guard.rs 纯函数，供应商接入前先钉语义）。①号码：E.164 形状（+ 前缀、全数字、国家码非 0 开头、≤15 位）且每条失败有独立理由码（empty/not_e164/non_digit/too_long/missing_country_code/country_not_allowed）；**国家码由允许名单判定**（名单即运营侧国家表，取最长前缀匹配——号码本身分不出「86+1…」与「861」），空名单 fail closed。②幂等：键由 (事件 id, 号码) 构成且**不含正文**（正文变一个字是另一条消息，不是重放）。③费用限额：未配限额=**不放行**（不知道上限就不该发）、达上限=拒、重放的消息**先查幂等**不消耗额度评估。④拒绝码固定且**不含号码**（号码是个人信息）。5 条用例 + 变异（未配限额却放行）被拒。",
+      "test_files": [
+        "app/src-tauri/src/sms_guard.rs"
+      ]
     }
   },
   "agents": {
@@ -2647,6 +2669,7 @@
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
+      "not03.smsguard",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",
@@ -2792,6 +2815,7 @@
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
+      "not03.smsguard",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",

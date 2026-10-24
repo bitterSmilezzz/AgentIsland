@@ -69,6 +69,7 @@ mod secret;
 mod selfreport;
 mod selftest;
 mod session;
+mod sms_guard;
 mod session_catalog;
 mod session_navigation;
 mod settings;
