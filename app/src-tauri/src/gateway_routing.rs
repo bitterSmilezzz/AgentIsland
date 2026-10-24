@@ -173,6 +173,58 @@ pub fn validate_group(
 
 pub const MAX_GROUP_DEPTH: usize = 8;
 
+/// 成员类型：叶子模型候选或嵌套子组。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Member {
+    Leaf(Candidate),
+    Group(String),
+}
+
+/// 嵌套组的展开与**叶子去重**（GW-04 场景：嵌套去重）。
+///
+/// 当同一个叶子候选出现在多个子组里（例如「高速组」与「兜底组」都包含同一个模型），
+/// 展开为平铺候选列表时**必须去重**——否则该模型在轮转/加权里会占据双倍份额，
+/// 破坏配置声明的权重意图。
+///
+/// 去重规则：
+/// - 按遍历顺序保留**首次出现**的那一份（声明顺序优先）；
+/// - 如果多次出现的候选设置了不同属性（如一个暂停一个未暂停），以**首次出现**为准；
+/// - 先做 `validate_group` 环检测，通过后才展开——带环的组不予展开。
+pub fn flatten_group(
+    root: &str,
+    group_resolver: &dyn Fn(&str) -> Vec<Member>,
+    edges: &dyn Fn(&str) -> Vec<String>,
+    max_depth: usize,
+) -> Result<Vec<Candidate>, &'static str> {
+    validate_group(root, edges, max_depth)?;
+    let mut flat = Vec::new();
+    let mut seen_names = Vec::new();
+
+    fn collect(
+        group_name: &str,
+        resolver: &dyn Fn(&str) -> Vec<Member>,
+        flat: &mut Vec<Candidate>,
+        seen: &mut Vec<String>,
+    ) {
+        for member in resolver(group_name) {
+            match member {
+                Member::Leaf(c) => {
+                    if !seen.contains(&c.name) {
+                        seen.push(c.name.clone());
+                        flat.push(c);
+                    }
+                }
+                Member::Group(sub) => {
+                    collect(&sub, resolver, flat, seen);
+                }
+            }
+        }
+    }
+
+    collect(root, group_resolver, &mut flat, &mut seen_names);
+    Ok(flat)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +366,56 @@ mod tests {
         assert_eq!(validate_group("root", &ok, MAX_GROUP_DEPTH), Ok(()));
         // 上限为 0 直接拒绝（配置错误）
         assert_eq!(validate_group("a", &ok, 0), Err("depth_limit_zero"));
+    }
+
+    #[test]
+    fn nested_group_flattening_deduplicates_leaves_in_first_seen_order() {
+        // 结构：
+        // root 包含：sub-fast, sub-fallback, 叶子 standalone
+        // sub-fast 包含：model-a, model-b
+        // sub-fallback 包含：model-b（重复！）, model-c
+        let resolver = |name: &str| match name {
+            "root" => vec![
+                Member::Group("sub-fast".into()),
+                Member::Group("sub-fallback".into()),
+                Member::Leaf(candidate("standalone")),
+            ],
+            "sub-fast" => vec![
+                Member::Leaf(candidate("model-a")),
+                Member::Leaf(candidate("model-b")),
+            ],
+            "sub-fallback" => vec![
+                Member::Leaf(candidate("model-b")), // 重复出现
+                Member::Leaf(candidate("model-c")),
+            ],
+            _ => vec![],
+        };
+        let edges = |name: &str| match name {
+            "root" => vec!["sub-fast".into(), "sub-fallback".into()],
+            _ => vec![],
+        };
+        let flat = flatten_group("root", &resolver, &edges, MAX_GROUP_DEPTH).unwrap();
+        let names: Vec<&str> = flat.iter().map(|c| c.name.as_str()).collect();
+        // 重复的 model-b 只保留首次出现（在 sub-fast 里）
+        assert_eq!(
+            names,
+            vec!["model-a", "model-b", "model-c", "standalone"],
+            "去重后应只有 4 个独立候选，且按首次出现排序"
+        );
+    }
+
+    #[test]
+    fn cyclic_group_refuses_to_flatten() {
+        let cyclic_edges = |name: &str| match name {
+            "a" => vec!["b".into()],
+            "b" => vec!["a".into()],
+            _ => vec![],
+        };
+        let resolver = |_name: &str| vec![];
+        assert_eq!(
+            flatten_group("a", &resolver, &cyclic_edges, MAX_GROUP_DEPTH),
+            Err("cycle"),
+            "带环组必须在展开前被拒"
+        );
     }
 }
