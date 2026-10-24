@@ -375,9 +375,12 @@
     },
     "TASK-05": {
       "title": "方案/diff/产出版本",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task05.artifactcap"
+      ],
+      "coverage_note": "partial — 第一片（2026-10-24）：**产出的有界留存与超限说明**。产出条目是派生的展示元数据（来源观测的投影），此前只受全库 8MB 硬顶保护——长期运行攒下的产出行会先撑满容量，把「任务记录达到容量上限」挡在**用户手写数据**的写入上（派生数据饿死用户数据）。现有 MAX_ARTIFACTS=2000：超限时从最旧的**未被引用**行淘汰（被任何 attention 引用的行永远保留——那条链接是用户回到来源内容的路；全被引用时不淘汰、仍由 MAX_BYTES 兜底拒绝），淘汰数记入 Data.evicted_artifacts （serde default，旧文件可读）对界面可见——淘汰不静默。三条用例：精确回落上限+引用行一个不少+计数如实、全被引用时零淘汰零虚增、缺字段的旧文件按 0 起步加载；变异（淘汰不看引用）被两个用例同时拒绝。缺：任意版本比较/恢复（需产出内容留存的存储语义设计）、验证清单、外部只读源的历史口径文档化。",
+      "status": "partial"
     },
     "TASK-06": {
       "title": "独立 AI 审查与修改闭环",
@@ -2312,6 +2315,22 @@
       "test_files": [
         "scripts/test-task-search.mjs"
       ]
+    },
+    "task05.artifactcap": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "artifact_retention"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-05 产出有界留存：MAX_ARTIFACTS=2000，超限从未被引用的最旧行淘汰、引用行永不淘汰、淘汰计数 evicted_artifacts 对界面可见（淘汰不静默）；全被引用时零淘汰由 MAX_BYTES 兜底；旧文件缺字段按 0 加载。定向跑 artifact_retention 两条 + old_task_files 兼容一条（全量套件里也有）。变异：淘汰不看引用 → 两条用例同红。（test_files 不重复登记：tasks.rs 归 rust.default；本检查是它的定向过滤。）"
     }
   },
   "agents": {
@@ -2471,6 +2490,7 @@
       "automation.runner",
       "automation.registry",
       "rust.default",
+      "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",
@@ -2608,6 +2628,7 @@
       "automation.runner",
       "automation.registry",
       "rust.default",
+      "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",

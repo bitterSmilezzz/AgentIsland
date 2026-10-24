@@ -4,6 +4,14 @@ use std::{fs, path::PathBuf};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECEIPTS: usize = 20_000;
+/// 产出条目的留存上限（TASK-05「超限说明」）。产出是**派生的展示元数据**
+/// （来源观测的投影），不像任务/项目是用户手写的记录——没有这条上限时，
+/// 长期运行攒下的产出行会先撑满 `MAX_BYTES`，把「任务记录达到容量上限」
+/// 挡在**用户数据**的写入上：派生数据饿死用户数据。淘汰从最旧、且**没有**
+/// 被任何 attention 引用的行开始（那条链接是用户回到来源内容的路）；
+/// 全都被引用时不淘汰，仍由 `MAX_BYTES` 兜底拒绝。被淘汰的数量记在
+/// `evicted_artifacts`，对界面可见——「淘汰发生了」不许静默。
+const MAX_ARTIFACTS: usize = 2_000;
 fn id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -112,6 +120,9 @@ pub struct Data {
     pub runs: Vec<Run>,
     pub attentions: Vec<Attention>,
     pub artifacts: Vec<Artifact>,
+    /// 留存上限累计淘汰的产出条数（见 `MAX_ARTIFACTS`）。0 = 从未淘汰。
+    #[serde(default)]
+    pub evicted_artifacts: u64,
     pub event_receipts: Vec<Receipt>,
 }
 impl Default for Data {
@@ -124,7 +135,27 @@ impl Default for Data {
             runs: vec![],
             attentions: vec![],
             artifacts: vec![],
+            evicted_artifacts: 0,
             event_receipts: vec![],
+        }
+    }
+}
+impl Data {
+    /// 产出留存的上限执行。见 `MAX_ARTIFACTS` 的注释：淘汰只动**未被引用**的
+    /// 最旧行，引用中的行永远保留；一个都动不了时安静返回（`MAX_BYTES` 仍兜底）。
+    fn enforce_artifact_cap(&mut self) {
+        while self.artifacts.len() > MAX_ARTIFACTS {
+            let referenced =
+                |artifact: &str| self.attentions.iter().any(|a| a.artifact_id.as_deref() == Some(artifact));
+            let Some(index) = self
+                .artifacts
+                .iter()
+                .position(|artifact| !referenced(&artifact.id))
+            else {
+                break;
+            };
+            self.artifacts.remove(index);
+            self.evicted_artifacts = self.evicted_artifacts.saturating_add(1);
         }
     }
 }
@@ -461,10 +492,12 @@ impl Store {
                             kind: evidence.kind,
                         });
                         attention.artifact_id = Some(artifact_id);
+                        let run_id = attention.run_id.clone();
+                        d.enforce_artifact_cap();
                         let run = d
                             .runs
                             .iter_mut()
-                            .find(|r| r.id == attention.run_id)
+                            .find(|r| r.id == run_id)
                             .unwrap();
                         run.revision += 1;
                         let task_id = run.task_id.clone();
@@ -768,6 +801,7 @@ impl Data {
                 revision: 1,
                 kind: kind.unwrap_or(AttentionKind::ResultReview),
             });
+            self.enforce_artifact_cap();
             artifact_id
         });
         if let Some(kind) = kind {
@@ -945,6 +979,107 @@ mod tests {
             session_id: "a".repeat(64),
             thread_id: None,
         }
+    }
+
+    // ── TASK-05：产出的有界留存（派生数据不得饿死用户数据）──────────────────
+
+    /// 直接在 `Data` 上构造一批产出与引用，跑上限执行。
+    fn artifact_hoard(count: usize, referenced_every: usize) -> Data {
+        let mut data = Data::default();
+        for index in 0..count {
+            let artifact_id = format!("artifact-{index}");
+            let run_id = format!("run-{index}");
+            data.runs.push(Run {
+                id: run_id.clone(),
+                task_id: "task-1".into(),
+                status: RunStatus::Ready,
+                started_ms: index as i64,
+                finished_ms: None,
+                revision: 1,
+                source: None,
+            });
+            data.artifacts.push(Artifact {
+                event_ref: None,
+                id: artifact_id.clone(),
+                run_id,
+                title: format!("产出 {index}"),
+                revision: 1,
+                kind: AttentionKind::ResultReview,
+            });
+            if index % referenced_every.max(1) == 0 {
+                data.attentions.push(Attention {
+                    observed: true,
+                    id: format!("attention-{index}"),
+                    run_id: format!("run-{index}"),
+                    kind: AttentionKind::ResultReview,
+                    state: AttentionState::Resolved,
+                    artifact_id: Some(artifact_id),
+                    manual_resolution: true,
+                });
+            }
+        }
+        data
+    }
+
+    /// 超限时从**最旧的未引用行**开始淘汰、计数可见；引用中的行永远保留。
+    #[test]
+    fn artifact_retention_evicts_oldest_unreferenced_and_counts() {
+        let mut data = artifact_hoard(MAX_ARTIFACTS + 10, 500);
+        // 夹具里 0/500/1000/1500/2000 被引用；超限 11 行要从未引用的最旧行淘汰。
+        let referenced_before: Vec<String> = data
+            .attentions
+            .iter()
+            .filter_map(|a| a.artifact_id.clone())
+            .collect();
+        data.enforce_artifact_cap();
+        assert_eq!(data.artifacts.len(), MAX_ARTIFACTS, "容量应精确落回上限");
+        assert_eq!(data.evicted_artifacts, 10, "淘汰数必须如实计数");
+        // 引用中的行一个不少——链接是用户回到来源内容的路。
+        for id in &referenced_before {
+            assert!(
+                data.artifacts.iter().any(|a| &a.id == id),
+                "被引用的产出 {id} 不得被淘汰"
+            );
+        }
+        // 被淘汰的是最旧的未引用行：artifact-1..=artifact-10 里未引用的先走。
+        assert!(
+            !data.artifacts.iter().any(|a| a.id == "artifact-2"),
+            "最旧的未引用行应先被淘汰"
+        );
+        assert!(
+            data.artifacts.iter().any(|a| a.id == "artifact-2009"),
+            "最新的行必须保留"
+        );
+    }
+
+    /// 全部被引用时**一个都不淘汰**：宁可继续增长（`MAX_BYTES` 仍兜底），
+    /// 也不切断用户还指着的那条链接。计数不动。
+    #[test]
+    fn artifact_retention_never_evicts_a_referenced_row() {
+        let mut data = artifact_hoard(MAX_ARTIFACTS + 5, 1);
+        data.enforce_artifact_cap();
+        assert_eq!(
+            data.artifacts.len(),
+            MAX_ARTIFACTS + 5,
+            "全被引用时不得淘汰任何行"
+        );
+        assert_eq!(data.evicted_artifacts, 0, "计数不得虚增");
+    }
+
+    /// 旧文件（没有 `evicted_artifacts` 字段）必须还能读进来：
+    /// `#[serde(default)]` 的存在理由就是这条兼容。
+    #[test]
+    fn old_task_files_without_the_eviction_counter_still_load() {
+        let mut data = Data::default();
+        data.revision = 7;
+        let mut value = serde_json::to_value(&data).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("evicted_artifacts");
+        let loaded: Data = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.revision, 7);
+        assert_eq!(loaded.evicted_artifacts, 0, "缺字段按 0 起步，不炸不猜");
     }
     #[test]
     fn historical_navigation_uses_run_snapshot_and_never_falls_back() {
