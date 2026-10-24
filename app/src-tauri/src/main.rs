@@ -59,6 +59,7 @@ mod private_text;
 mod procmon;
 mod prompts;
 mod provider;
+mod push_guard;
 mod registry;
 mod remote;
 mod render;

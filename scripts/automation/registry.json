@@ -338,9 +338,12 @@
     },
     "NOT-04": {
       "title": "手机推送与移动入口",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "not04.pushguard"
+      ],
+      "coverage_note": "partial — 首片（2026-10-25）：**手机推送与移动设备的注册/配对/前置判据**（push_guard.rs 纯函数）。渠道推送与自有 App 明确分开（类型层分清）、一次性配对码有时效且成功后作废、设备撤销即失效（不进网络重试）、离线补偿有界（上限 20 条防通知风暴，超 24 小时过期不补发，同一事件幂等）；4 条用例 + 变异（撤销后放行）被拒。全量 1232 passed，脱敏 0 命中。**剩余（如实）**：APNs/FCM 真实网络交互与服务凭据、自有移动端 App 工程、通知点击后的深链跳转（精确进入对应事项）、后台/睡眠真机唤醒与到达验证。",
+      "status": "partial"
     },
     "GW-03": {
       "title": "四类模型协议网关",
@@ -2545,6 +2548,25 @@
       "test_files": [
         "app/src-tauri/src/chief_orchestration.rs"
       ]
+    },
+    "not04.pushguard": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "push_guard"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "NOT-04 首片：手机推送与移动设备的**前置判据**（push_guard.rs 纯函数，真机接入前先钉语义）。①**渠道推送与自有 App 明确分开**（PushKind 枚举在类型层分清：Channel 走通道配置、不能走设备入口，NativeApp 走设备表）；②**一次性配对码**（时效可设、成功后立刻作废、重复注册更新 token 活跃时间幂等）；③**撤销即失效**（撤销后 precheck 立即拒以 DeviceRevoked、不进网络重试、离线队列一并清空）；④**离线补偿有界且过期不补**（最多 20 条防通知风暴、超 24 小时丢弃、同一事件幂等不重入）。4 条用例 + 变异（撤销后放行）被拒。",
+      "test_files": [
+        "app/src-tauri/src/push_guard.rs"
+      ]
     }
   },
   "agents": {
@@ -2714,6 +2736,7 @@
       "gw05.conditions",
       "gw03.protocolmatrix",
       "not03.smsguard",
+      "not04.pushguard",
       "task05.artifactcap",
       "task03.lifecycle",
       "task02.orchestration",
@@ -2862,6 +2885,7 @@
       "gw05.conditions",
       "gw03.protocolmatrix",
       "not03.smsguard",
+      "not04.pushguard",
       "task05.artifactcap",
       "task03.lifecycle",
       "task02.orchestration",
