@@ -384,9 +384,12 @@
     },
     "TASK-06": {
       "title": "独立 AI 审查与修改闭环",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task06.reviewloop"
+      ],
+      "coverage_note": "partial — 闭环机制已完整钉住（task06.reviewloop，2026-10-24）：docs/spec/审查闭环口径.md 把四个 token 逐一钉到实现锚点并由形状门禁核对——①独立只读审查（一次性工作区 readonly_source + 前后指纹对拍，写一个字整轮拒绝，mutate 场景是专门负例）；②作者≠审查者（validate_review 比对身份）；③修改后重审（revise 回完整审查、有轮次上限、门禁先绿前置）；④结果不越权批准（审查 verdict 只是报告字段；合并永远先过 candidate.verify 全链 + HEAD 绑定 + CI SHA 绑定，publish 闸门从不禁用校验）。双变异（删指纹对拍 / merge 跳过 verify）均被拒。**显式边界（如实）**：「独立 AI 审查」的 AI 部分当前是确定性 mock（review_kind 如实标注、independent_review=false、严格模式下不够格）——真实审查 driver 与真实作者 driver 走同一条可信授权策略硬门（trusted_authorization_policy_unconfigured，ADR 0040 边界），决策前不绕过；机制不因 driver 是 mock 而变弱。缺：真实 AI 审查 driver（待授权策略）、审查内容质量的度量。",
+      "status": "partial"
     },
     "TASK-07": {
       "title": "Git 仓库与并行隔离",
@@ -2331,6 +2334,24 @@
       "requires_live_service": false,
       "requires_spending": false,
       "source": "TASK-05 产出有界留存：MAX_ARTIFACTS=2000，超限从未被引用的最旧行淘汰、引用行永不淘汰、淘汰计数 evicted_artifacts 对界面可见（淘汰不静默）；全被引用时零淘汰由 MAX_BYTES 兜底；旧文件缺字段按 0 加载。定向跑 artifact_retention 两条 + old_task_files 兼容一条（全量套件里也有）。变异：淘汰不看引用 → 两条用例同红。（test_files 不重复登记：tasks.rs 归 rust.default；本检查是它的定向过滤。）"
+    },
+    "task06.reviewloop": {
+      "command": [
+        "python3",
+        "scripts/test-review-loop-contract.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "TASK-06：审查闭环口径的形状门禁。四个 token 逐一钉到实现锚点：①独立只读审查=一次性工作区 readonly_source + 前后指纹对拍（review_source_modified 拒绝码，宣称只读不算只读——对拍必须真的比两份指纹）；②作者≠审查者=validate_review 比对两个身份（review_identity_invalid）；③修改后重审=revise 回到下一轮完整审查且有轮次上限（revision_limit_exhausted）+ 门禁先绿前置（blocked_by_checks）；④结果不越权批准=publish.merge 在真正 git merge 之前永远先过 candidate.verify 全链，审查 verdict 只是报告字段（review_kind/independent_review）不是授权字段，不存在只凭 verdict 合并的旁路。doc→code 绑定：契约指名标识符消失即红。变异验证（隔离副本）：删审查指纹对拍 → 2 用例红；merge 跳过 candidate.verify → 1 用例红。",
+      "test_files": [
+        "scripts/test-review-loop-contract.py"
+      ]
     }
   },
   "agents": {
@@ -2416,6 +2437,7 @@
       "automation.break-artifact",
       "automation.break-snapshot",
       "auto01.publish",
+      "task06.reviewloop",
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
@@ -2514,6 +2536,7 @@
       "automation.break-artifact",
       "automation.break-snapshot",
       "auto01.publish",
+      "task06.reviewloop",
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
@@ -2655,6 +2678,7 @@
       "automation.break-artifact",
       "automation.break-snapshot",
       "auto01.publish",
+      "task06.reviewloop",
       "not01.ledgerrestart",
       "auto01.restartapp",
       "not05.remotedelivery",
