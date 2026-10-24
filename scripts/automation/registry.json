@@ -158,10 +158,11 @@
         "shell.workbench",
         "sup05.deeplink.workbench",
         "sup05.deeplink.cold",
-        "sup05.reducedmotion"
+        "sup05.reducedmotion",
+        "sup05.keyboard"
       ],
       "audit_ref": "docs/测试映射盘点.md",
-      "coverage_note": "partial — 深链/动效/焦点/几何/四边原生/壳变体已有；**减少动态**（sup05.reducedmotion，2026-10-24）：真浏览器门禁钉住三层——①对照面（no-preference 下切换页面确有 WAAPI 动画，门禁不恒绿）；②reduce 下 JS 动画零调用（page-motion / island-navigation 的媒体查询守卫）；③CSS 全局扫描（reduce 下渲染中的任何元素不得有非零 transition 时长——散点 @media 规则漏配即点名，岛形态同扫）；④路由功能在 reduce 下不受影响；双变异（摘 JS 守卫、摘 .wb-nav-item 的 reduce 规则）均被拒。缺：多屏/DPI（需真实多屏环境，属原生档）、键盘导航专项、热区≠视觉（命中面积专项）。",
+      "coverage_note": "partial — 深链/动效/焦点/几何/四边原生/壳变体已有；减少动态（sup05.reducedmotion）已有；**键盘导航专项**（sup05.keyboard，2026-10-24）：主流程不依赖鼠标——Tab 到达主导航（原生可聚焦控件，div 冒充会被抓住）、Enter 真实切页、⌘K 快速导航全键盘（ArrowDown/Enter）、Escape 关闭并还焦点给触发器；两种动效模式各验一遍；变异（按钮退化为 div）被拒。缺：多屏/DPI（需真实多屏环境，属原生档）、热区≠视觉（命中面积专项）。",
       "status": "partial"
     },
     "TASK-01": {
@@ -2393,6 +2394,25 @@
       "test_files": [
         "app/src-tauri/src/gateway_retry.rs"
       ]
+    },
+    "sup05.keyboard": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-keyboard-navigation.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "SUP-05「键盘导航专项」：主流程不依赖鼠标。四层断言（两种动效模式各跑一遍）：①Tab 到达主导航项——必须是原生可聚焦控件（wb-nav-item 有 class 判定，div 冒充会被 Tab 序列漏掉）；②Enter 激活导航项真实切页；③⌘K 快速导航全键盘（打开后焦点在输入框、ArrowDown 选择、Enter 切页且对话框关闭）；④Escape 关闭快速导航并把焦点还给触发器。变异验证（隔离副本）：导航按钮退化成 div → Tab 聚焦断言超时变红。",
+      "test_files": [
+        "scripts/test-keyboard-navigation.mjs"
+      ]
     }
   },
   "agents": {
@@ -2427,6 +2447,7 @@
       "sup05.contentmotion",
       "sup05.deeplink",
       "sup05.quicknav",
+      "sup05.keyboard",
       "sup05.pagemotion",
       "sup05.reducedmotion",
       "sup05.winlifecycle",
@@ -2519,6 +2540,7 @@
       "sup05.contentmotion",
       "sup05.deeplink",
       "sup05.quicknav",
+      "sup05.keyboard",
       "sup05.pagemotion",
       "sup05.reducedmotion",
       "sup05.winlifecycle",
@@ -2659,6 +2681,7 @@
       "sup05.contentmotion",
       "sup05.deeplink",
       "sup05.quicknav",
+      "sup05.keyboard",
       "sup05.pagemotion",
       "sup05.reducedmotion",
       "sup05.winlifecycle",
