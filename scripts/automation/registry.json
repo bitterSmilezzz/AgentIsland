@@ -380,9 +380,12 @@
     },
     "TASK-02": {
       "title": "Chief 与团队 Agent",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task02.orchestration"
+      ],
+      "coverage_note": "partial — 首片（2026-10-24）：**Chief 与团队 Agent 的编排判据**（chief_orchestration.rs 纯函数）。拆解去重（去空白归一——中文标题的空格是排版产物）、分派去重、watch 幂等、停止与预算只挡新活不打断在跑的工人、记忆按主题分域且跨主题读取被拒（memory 污染的入口）；6 条用例 + 变异（取消跨主题拒绝）被拒。**剩余（如实）**：**worker 失败后的处置**（判据已定「不自动重派——重派是人的决定」，但重派流程与人工介入点未实现）、角色/运行时/模型/记忆四类资源的**配置形态**（本轮只钉了记忆的主题分域）、主题 watch 与 check-in 的时间语义、预算的计量单位与消耗点、主控与工人的真实进程编排（需真实运行时，属外部验收层）。",
+      "status": "partial"
     },
     "TASK-03": {
       "title": "执行生命周期与运行时",
@@ -2523,6 +2526,25 @@
       "test_files": [
         "app/src-tauri/src/run_lifecycle.rs"
       ]
+    },
+    "task02.orchestration": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "chief_orchestration"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-02 首片：Chief（主控）与团队 Agent 的**编排判据**（chief_orchestration.rs 纯函数；编排规则散在调用点各写一遍，每加一个 worker 角色就多一套隐式约定）。五条语义：①**拆解去重**（去重键=主题+标题去空白归一——中文标题里「修 登录页」与「修登录页」是同一件事，空白折叠做不到；保留首次出现的那条；大小写敏感，合并与否由人判断）；②**分派**（同一子任务不分给两个工人；停止/预算耗尽 ⇒ 拒；**未设预算=不限**，不是「预算为 0」）；③**watch 幂等**（同一 (主题, 工人) 只登记一次——重复 watch 会让同一事件被通知两遍）；④**停止与预算只挡新活、不打断在跑的工人**（杀掉在跑的工人可能留半成品，比多接一个活更糟）；⑤**记忆按主题分域，跨主题读取被拒**（那正是 memory 污染的入口——A 主题的结论被带进 B 主题，看起来像 B 主题自己知道的事）。6 条用例 + 变异（取消跨主题拒绝）被拒。",
+      "test_files": [
+        "app/src-tauri/src/chief_orchestration.rs"
+      ]
     }
   },
   "agents": {
@@ -2694,6 +2716,7 @@
       "not03.smsguard",
       "task05.artifactcap",
       "task03.lifecycle",
+      "task02.orchestration",
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",
@@ -2841,6 +2864,7 @@
       "not03.smsguard",
       "task05.artifactcap",
       "task03.lifecycle",
+      "task02.orchestration",
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",

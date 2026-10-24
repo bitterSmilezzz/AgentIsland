@@ -14,6 +14,7 @@ mod claude_plan_capture;
 mod claude_plan_receiver;
 mod claude_plan_runtime;
 mod cleaner;
+mod chief_orchestration;
 mod cli;
 mod connection_http;
 mod connection_probe;
