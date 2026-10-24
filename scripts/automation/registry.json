@@ -245,11 +245,12 @@
       "checks": [
         "gw10.prompts",
         "gw10.skillspkg",
-        "rust.default"
+        "rust.default",
+        "gw10.extmatrix"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 提示词写入门禁、Skills 预览/恢复/资源限额已有；缺：Instructions/MCP/媒体/中间件矩阵、签名、预热",
-      "status": "partial"
+      "coverage_note": "done — 提示词写入门禁（AGENTS.md/CLAUDE.md 双工具、备份与恢复、门禁先行）、Skills 预览/恢复/资源限额已有；**扩展适配矩阵**（gw10.extmatrix，2026-10-24）：docs/spec/扩展适配矩阵.md 把「每个扩展点在每个工具上能不能配」变成可核对的事实——Instructions 双工具有锚点、MCP 仅 Codex（is_codex_config_target；Claude 侧无管理锚点，接入前按其契约另立=ADR 0040 边界）、Skills 走共享根（.claude/skills 为软链，synced/anthropic-skills 对 Claude 禁写）、媒体与预热全仓无适配器（「没有」而非「忘了写」）；门禁双向核对（有锚点的必须在、标没有的必须真没有——mcp_config 长出 .claude 即红、预热/媒体适配器出现矩阵不说即红）+ doc→code 绑定；双变异均被拒。**边界（如实）**：矩阵只管「能不能配」；「配了之后工具真的加载」属官方客户端/真实工具层（与 GW-02/GW-07 同款边界）；媒体与预热是未开始的功能面——需要时按需求另立切片，不在本需求里冒充。",
+      "status": "done"
     },
     "OPS-01": {
       "title": "资源、稳定性、升级与灾难恢复",
@@ -2352,6 +2353,24 @@
       "test_files": [
         "scripts/test-review-loop-contract.py"
       ]
+    },
+    "gw10.extmatrix": {
+      "command": [
+        "python3",
+        "scripts/test-extension-matrix.py"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "requires_python": "3.11",
+      "source": "GW-10：扩展适配矩阵的形状门禁。矩阵是数据（docs/spec/扩展适配矩阵.md）：扩展点（Instructions/MCP/Skills/媒体/预热）× 工具（Codex/Claude）逐格核对——声称有的必须有锚点（AGENTS.md/CLAUDE.md 双工具指令、mcp_config 的 Codex 目标判定、skills 共享根与 Claude 禁写名）；声称「不具备/没有」的必须真的没有（Claude 无 MCP 管理锚点——mcp_config 里出现 .claude 即红；媒体/预热全仓无适配器——长出来矩阵不说即红）。doc→code 绑定：矩阵指名锚点消失即红。变异验证（隔离副本）：摘 Codex 目标判定 → 红；mcp_config 长出 .claude 目标 → 红。",
+      "test_files": [
+        "scripts/test-extension-matrix.py"
+      ]
     }
   },
   "agents": {
@@ -2403,6 +2422,7 @@
       "gw08.reportpanel",
       "gw10.prompts",
       "gw10.skillspkg",
+      "gw10.extmatrix",
       "ops01.memosoak",
       "ops01.memosoakres",
       "ops01.measuremem",
@@ -2494,6 +2514,7 @@
       "gw08.reportpanel",
       "gw10.prompts",
       "gw10.skillspkg",
+      "gw10.extmatrix",
       "ops01.memosoak",
       "ops01.memosoakres",
       "ops01.measuremem",
@@ -2632,6 +2653,7 @@
       "gw08.reportpanel",
       "gw10.prompts",
       "gw10.skillspkg",
+      "gw10.extmatrix",
       "ops01.memosoak",
       "ops01.memosoakres",
       "ops01.measuremem",
