@@ -64,6 +64,7 @@ mod render;
 mod report;
 mod resilience;
 mod resource_diagnostics;
+mod run_lifecycle;
 mod runtime_log;
 mod secret;
 mod selfreport;
