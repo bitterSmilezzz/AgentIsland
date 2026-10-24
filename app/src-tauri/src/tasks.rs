@@ -577,6 +577,11 @@ impl Store {
                 | RunStatus::Ready
                 | RunStatus::Failed
                 | RunStatus::Cancelled
+                // **受理（Accepted）走来源路径**：它需要「可信事件」，而可信事件的
+                // 载体正是本方法（来源绑定 + 指纹 + 幂等回执）。本地 `record` 刻意
+                // 拒绝受理（「本地记录永不批准来源操作」）——两边的分工在这里合上：
+                // 只有绑定了已知来源的事件才能把一次运行标为已受理。
+                | RunStatus::Accepted
         ) {
             return Err(error("invalid_input", "不支持的来源状态"));
         }
@@ -772,6 +777,17 @@ impl Data {
             });
             run_id
         } else {
+            // **已受理的运行不得被改写回未完成状态**（TASK-03「晚到结果不得复活
+            // 已结束的运行」在 RunStatus 上的接线）。受理是终态：一条已经验收过的
+            // 运行被后来的迟到观测改回「就绪/失败/取消」，等于把一段已结束的过程
+            // 改写成另一种结局，账目与审计都对不上。重复受理（Accepted → Accepted）
+            // 允许——那是同一条结论的幂等重报，不是改写。
+            if old.is_some_and(|r| r.status == RunStatus::Accepted) && status != RunStatus::Accepted {
+                return Err(error(
+                    "run_already_accepted",
+                    "这次运行已被受理，不能被后来的结果改回未完成状态",
+                ));
+            }
             old_run.unwrap()
         };
         // A new source step expires unresolved questions from the previous step.
@@ -1931,5 +1947,71 @@ mod tests {
                 assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
             }
         }
+    }
+
+    /// TASK-03 接线：受理（Accepted）只走**来源路径**，且受理是终态。
+    ///
+    /// 此前 `Accepted` 状态在**所有路径上都不可达**（本地 record 刻意拒绝，
+    /// observe 的白名单又没列它），于是「来源验收」这条需求没有落地路径。
+    /// 本轮补上：可信来源事件（来源绑定 + 指纹 + 幂等回执）可以受理一次运行；
+    /// 而受理之后，**迟到的结果不得把它改写回未完成**。
+    #[test]
+    fn acceptance_comes_from_a_trusted_source_event_and_is_final() {
+        let f = Fixture::new();
+        let d = f.task();
+        let tid = d.tasks[0].id.clone();
+        let d = f.store.link(&tid, source("codex"), d.revision, 2).unwrap();
+        // ① 可信来源事件可以把运行标为已受理
+        let d = f
+            .store
+            .observe(
+                source("codex"),
+                "accept-1".into(),
+                RunStatus::Accepted,
+                None,
+                3,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.runs[0].status, RunStatus::Accepted, "受理必须落到运行上");
+        assert!(
+            d.runs[0].finished_ms.is_some(),
+            "受理是终态 ⇒ 有完成时刻"
+        );
+        // ② 受理后迟到的「就绪」结果**不得改写**它
+        let refused = f.store.observe(
+            source("codex"),
+            "late-ready".into(),
+            RunStatus::Ready,
+            None,
+            4,
+        );
+        let error = refused.expect_err("已受理的运行不得被晚到结果改写");
+        assert_eq!(error.code, "run_already_accepted");
+        let after = f.store.load().unwrap();
+        assert_eq!(
+            after.runs[0].status,
+            RunStatus::Accepted,
+            "状态必须原样保留"
+        );
+        // ③ 重复受理（同一条结论的幂等重报）允许
+        let again = f
+            .store
+            .observe(
+                source("codex"),
+                "accept-2".into(),
+                RunStatus::Accepted,
+                None,
+                5,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.runs[0].status, RunStatus::Accepted);
+        // ④ 本地路径依然永不受理（既有边界不变）
+        let local = f
+            .store
+            .record(&tid, RunStatus::Accepted, None, None, again.revision, 6)
+            .unwrap_err();
+        assert_eq!(local.code, "invalid_input");
     }
 }
