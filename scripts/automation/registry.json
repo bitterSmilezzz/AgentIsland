@@ -358,9 +358,12 @@
     },
     "GW-06": {
       "title": "fallback、退避与错误分类",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "gw06.retrytable"
+      ],
+      "coverage_note": "partial — 首片（2026-10-24）：**错误分类与首字节前重试资格的判据表**（gateway_retry.rs，纯函数、转发层 GW-03 落地前先钉口径——等实现时再定口径，每个新协议都会各定一套）。账号（401/403/刷新失败=重试换不来权限）/模型·请求（400/404/422/坏响应=原样重发必然失败）/限流（429=对端指示节奏）/服务·网络（5xx/超时/TLS=有界重试共 3 次）/配置（修配置不重试）五类分开；HttpStatus 桶全状态码落类确定、未列名 4xx 显式兜底（新语义必须列名配用例）；三条用例 + 变异（账号错误判为可重试）被两用例同拒。**明文排除（如实）**：流中失败不拼接回答/不重复工具与计费——属转发层流式状态机（首字节已到、部分内容已交给调用方之后任何失败都不可自动重试），判据表不冒充覆盖；fallback 链与退避节奏（候选组/指数退避）待 GW-04 路由组一起落地（同一消费方）。缺：转发层真实接入后的端到端验收。",
+      "status": "partial"
     },
     "TASK-02": {
       "title": "Chief 与团队 Agent",
@@ -2371,6 +2374,25 @@
       "test_files": [
         "scripts/test-extension-matrix.py"
       ]
+    },
+    "gw06.retrytable": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "gateway_retry"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-06 首片：网关错误的**重试资格判据表**（gateway_retry.rs 纯函数，转发层落地前先钉口径）。Eligibility 五类分开：Transient（链路/服务抖动 5xx/超时/TLS——有界重试共 3 次尝试）、Throttled（429——资格由对端 Retry-After 指示，不自行猜测）、Credential（401/403/刷新失败——重试换不来权限）、Request（400/404/422/坏响应——原样重发必然原样失败）、Configuration（地址/明文/凭据来源——修配置不重试）；HttpStatus 桶每个状态码落类确定、未列名 4xx 显式兜底为 Request（新语义必须列名配用例）；流中失败明文排除在表外（属转发层流式状态机，不冒充覆盖）。三条用例：五类分开、仅 Transient 有界预算、全状态码落类无静默。变异（账号错误判为 Transient）被两用例同拒。",
+      "test_files": [
+        "app/src-tauri/src/gateway_retry.rs"
+      ]
     }
   },
   "agents": {
@@ -2533,6 +2555,7 @@
       "automation.runner",
       "automation.registry",
       "rust.default",
+      "gw06.retrytable",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",
@@ -2673,6 +2696,7 @@
       "automation.runner",
       "automation.registry",
       "rust.default",
+      "gw06.retrytable",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",

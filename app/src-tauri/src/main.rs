@@ -23,6 +23,7 @@ mod deeplink;
 mod dedup;
 mod duration;
 mod engine;
+mod gateway_retry;
 mod filemon;
 mod forecast;
 mod headless;
