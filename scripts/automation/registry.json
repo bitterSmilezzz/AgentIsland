@@ -347,9 +347,12 @@
     },
     "GW-04": {
       "title": "路由组与候选策略",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "gw04.routing"
+      ],
+      "coverage_note": "partial — 首片（2026-10-24）：**六策略的确定性判据与嵌套组边界**（gateway_routing.rs 纯函数）。smart/order/rotate/usage/pace/weight 全部确定性（同状态同结果、并列取声明序、rotate 循环回卷、weight 以轮次号做种子使权重 9:1 时 heavy 显著占优）；**未知额度不折算 0**（usage/smart 不让「当作 0」胜出，全未知回退声明序——与 GW-08 的未知不折叠同口径）；**暂停排除但非错误**（全暂停=Exhausted）；**循环/深度边界在加载时拒绝**（直环、自环、深度上限 8；带环配置一次都不该被跑）；5 条用例 + 变异（未知折算 0）被拒。**剩余（如实）**：真实健康度评分（smart 的评分地基现为「用量已知且最低」，接入转发层后替换，但确定性规则不变）、嵌套组的**去重**语义、配额读数接入、候选耗尽后的 fallback 链（与 GW-06 同属未来消费方）、端到端验收（需真实网关）。",
+      "status": "partial"
     },
     "GW-05": {
       "title": "条件/意图/会话路由",
@@ -2413,6 +2416,25 @@
       "test_files": [
         "scripts/test-keyboard-navigation.mjs"
       ]
+    },
+    "gw04.routing": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "gateway_routing"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-04 首片：路由组与候选策略的**确定性判据**（gateway_routing.rs 纯函数，转发层落地前先钉策略语义——与 GW-06 同理由）。六策略 smart/order/rotate/usage/pace/weight 全部确定性（同一状态同结果，需求第一个词）：并列取声明序、rotate 循环回卷、weight 用轮次号做种子（权重 9:1 时 200 轮 heavy 显著占优）；**未知用量不折算 0**（usage/smart 不让「当作 0」胜出，全未知时回退声明序）；**暂停候选被排除但不是错误**（全暂停=Exhausted，如实说没有候选）；嵌套组在**加载时**拒绝循环（直环/自环）与超深（深度上限 8、链长 9 拒绝），合法浅嵌套照常通过。5 条用例 + 变异（Usage 把未知折成 0）被拒。",
+      "test_files": [
+        "app/src-tauri/src/gateway_routing.rs"
+      ]
     }
   },
   "agents": {
@@ -2578,6 +2600,7 @@
       "automation.registry",
       "rust.default",
       "gw06.retrytable",
+      "gw04.routing",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",
@@ -2720,6 +2743,7 @@
       "automation.registry",
       "rust.default",
       "gw06.retrytable",
+      "gw04.routing",
       "task05.artifactcap",
       "not01.latencyui",
       "task01.detailnav",
