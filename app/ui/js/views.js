@@ -1544,6 +1544,19 @@ function enqueueLatencyText(summary) {
   return `${p95} · 有效样本 ${summary.samples} · 丢弃 ${summary.discarded} · ${verdict}`;
 }
 
+/// 外发段与入队段**同一份摘要形状**，但「还没有摘要」是常态（从未开过外发），
+/// 文案要如实说「尚未外发」，不能说「读不到」——那是故障语义。
+function outboundLatencyText(summary) {
+  if (!summary) return '尚未外发过任何提醒（开启远程通知后开始统计）。';
+  if (!Number.isInteger(summary.samples) || !Number.isInteger(summary.discarded)) return '读不到外发统计，请重试。';
+  const p95 = Number.isFinite(summary.p95Ms) ? `p95 ${summary.p95Ms}ms` : '尚无样本';
+  const verdict = summary.discarded > 0 ? '测量不完整，未判定'
+    : !summary.verdictAvailable ? '样本不足20条，未判定'
+    : summary.meetsTarget === true ? '达标'
+    : summary.meetsTarget === false ? '未达标' : '未判定';
+  return `${p95} · 有效样本 ${summary.samples} · 丢弃 ${summary.discarded} · ${verdict}`;
+}
+
 export async function hydrateRemote() {
   const root = document.querySelector('[data-remote-root]');
   if (!root) return;
@@ -1615,6 +1628,8 @@ export async function hydrateRemote() {
       <div class="sb-group-title">本地事件入队延迟</div>
       <div class="sb-note" data-enqueue-summary role="status" aria-live="polite">${escapeHtml(enqueueLatencyText(diagnostics?.notify_latency))}</div>
       <div class="sb-hint">最近最多1000条有效样本，初始目标 p95 ≤1000ms。仅统计 hook 进入服务到通知入队，不表示桌面或手机已送达；重启后重新积累。</div>
+      <div class="sb-note" data-outbound-summary role="status" aria-live="polite">${escapeHtml(outboundLatencyText(diagnostics?.notify_outbound_latency))}</div>
+      <div class="sb-hint">外发段统计「事件发生 → 外发尝试完成」（含失败与限流的尝试；被开关或策略挡下的不计时）。受理不代表已收到或已读。</div>
       <div class="sb-note" data-enqueue-ledger role="status" aria-live="polite">${escapeHtml(enqueueLedgerText(diagnostics))}</div>
       <div class="sb-hint">身份去重窗口最多1024条；恢复仅保留最近64条未确认提醒的摘要，不保存私密正文。</div>
       <div class="sb-hint">HTTP 受理不等于已保存。异常退出前未落盘，最近入队可能丢失，最近已确认提醒可能再次出现。</div>
@@ -1654,6 +1669,7 @@ export async function hydrateRemote() {
     const diagnostics = await readEnqueueDiagnostics();
     if (current() && currentRequest()) {
       diagnostic.querySelector('[data-enqueue-summary]').textContent = enqueueLatencyText(diagnostics?.notify_latency);
+      diagnostic.querySelector('[data-outbound-summary]').textContent = outboundLatencyText(diagnostics?.notify_outbound_latency);
       diagnostic.querySelector('[data-enqueue-ledger]').textContent = enqueueLedgerText(diagnostics);
     }
     if (current.ownsRequest()) refresh.disabled = false;

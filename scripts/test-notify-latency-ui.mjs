@@ -139,6 +139,12 @@ try {
   // 提醒类呈现面必须认全部「需人处理」类型。本轮首版只有卡片认新类型，
   // 收起态摘要与窄条提醒对 question 完全无感——用户收起了岛就再也看不到它。
   const alertKinds = contract.event_kinds.filter(k => k !== 'completed');
+  // 外发段延迟行（NOT-01「两段 p95」）：夹具不带 notify_outbound_latency（从未外发的常态），
+  // 界面必须如实说「尚未外发」——那是常态语义，不是「读不到」的故障语义。
+  await assert.doesNotReject(() => group.locator('[data-outbound-summary]').waitFor());
+  const outboundText = await group.locator('[data-outbound-summary]').textContent();
+  assert.ok(outboundText.includes('尚未外发'),
+    `从未外发时外发段应显示常态文案，实际：${outboundText}`);
   for (const kind of alertKinds) {
     assert.ok(viewsSource.includes(`isAlertEvent`),
       'views.js 缺少集中的提醒类型判定');

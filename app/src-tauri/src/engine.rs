@@ -1520,6 +1520,7 @@ impl ActivityEngine {
                 .any(|s| s.level == ActivityLevel::Attention),
             demo: self.demo_mode,
             notify_latency: self.notify_latency.summary(),
+            notify_outbound_latency: self.notifier.outbound_latency_summary(),
             notify_duplicates: self.notify_ledger.duplicates(),
             notify_conflicts: self.notify_ledger.conflicts(),
             notify_evicted: self.notify_ledger.evicted(),

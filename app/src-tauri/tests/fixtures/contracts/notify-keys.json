@@ -20,6 +20,7 @@
   ],
   "engine_state": [
     "notify_latency",
+    "notify_outbound_latency",
     "notify_duplicates",
     "notify_conflicts",
     "notify_evicted",

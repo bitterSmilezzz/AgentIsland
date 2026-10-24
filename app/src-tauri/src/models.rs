@@ -507,6 +507,9 @@ pub struct EngineState {
     /// 但若没有读取出口，「须实测后锁定」就只能靠自检里的合成样本——
     /// 那不能代表常驻进程的真实表现。
     pub notify_latency: crate::notify_latency::LatencySummary,
+    /// 来源事件 → 外发尝试完成的延迟摘要（NOT-01「两段 p95」的外发段）。
+    /// 只记真的往网络上试过的尝试；与入队段共用 `LatencySummary` 形状。
+    pub notify_outbound_latency: crate::notify_latency::LatencySummary,
     /// Lifetime enqueue replays suppressed by the bounded notification ledger.
     pub notify_duplicates: u64,
     /// Explicit ids reused with a different payload. The first payload wins and is

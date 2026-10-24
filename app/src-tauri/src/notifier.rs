@@ -206,6 +206,9 @@ struct Inner {
     failure_streak: HashMap<String, i64>,
     /// key = 通道种类 → 是否已升级为「通道故障」
     escalated: HashMap<String, bool>,
+    /// 来源事件 → 外发尝试完成的延迟样本（NOT-01「两段 p95」的外发段）。
+    /// 只记**真的往网络上试过**的那次（闸门挡下的早退不记——那段没有外发）。
+    outbound_latency: crate::notify_latency::NotifyLatency,
 }
 
 /// 外发调度器。内部状态是共享的（`Arc<Mutex<_>>`），所以它可克隆、
@@ -442,6 +445,16 @@ impl Notifier {
             self.release(&throttle_key, now.ms);
         }
         self.note_channel_result(channel, &outcome);
+        // NOT-01「两段 p95」的外发段：事件发生（`now.ms`，调用方传事件时间戳）
+        // → 外发尝试完成（真实墙钟）。到得了这一行的都是**真的往网络上试过**的
+        // （闸门挡下在两处早退，根本到不了这里）；失败与限流同样计时——
+        // 「多久知道发不出去」和「多久发出去」是同一条链路的健康度。
+        // 时钟回拨产生负值时由记录器丢弃并计数，不冒充样本。
+        self.inner
+            .lock()
+            .expect("外发状态锁不应中毒")
+            .outbound_latency
+            .record(crate::tokens::now_ms() - now.ms);
         self.record(Attempt {
             at_ms: now.ms,
             title,
@@ -449,6 +462,16 @@ impl Notifier {
             tries,
         });
         outcome
+    }
+
+    /// 外发段延迟摘要（事件发生 → 外发尝试完成）。与入队段同一份记录器，
+    /// 界面与自检共用同一个形状，不另造第二套统计。
+    pub fn outbound_latency_summary(&self) -> crate::notify_latency::LatencySummary {
+        self.inner
+            .lock()
+            .expect("外发状态锁不应中毒")
+            .outbound_latency
+            .summary()
     }
 
     /// 把一次外发丢给工作线程，**立刻返回**。
@@ -689,6 +712,45 @@ mod tests {
             &unavailable(),
             false,
         )
+    }
+
+    /// NOT-01「两段 p95」的外发段：**只有真的往网络上试过的尝试**才计时。
+    /// 闸门挡下（开关关、静默、在场）没有外发，不该有样本——否则统计把
+    /// 「没发」算成「秒发」，p95 变成给没发生的事贴数字。
+    #[test]
+    fn outbound_latency_samples_only_network_attempts() {
+        // ① 开关关：被挡下，零样本
+        let (mut notifier, _seen) = fixture(Outcome::Accepted);
+        let disabled = Policy::default();
+        let blocked = run(&mut notifier, EventKind::Attention, &disabled, 1_000);
+        assert!(matches!(blocked, Outcome::Suppressed { .. }));
+        let summary = notifier.outbound_latency_summary();
+        assert_eq!(summary.samples, 0, "被闸门挡下的尝试不得计时");
+        assert_eq!(summary.discarded, 0);
+
+        // ② 开关开、传输成功：一条样本，非负
+        let outcome = run(&mut notifier, EventKind::Attention, &enabled(), 2_000);
+        assert!(outcome.is_accepted());
+        let summary = notifier.outbound_latency_summary();
+        assert_eq!(summary.samples, 1, "真的外发过必须计时");
+        assert_eq!(summary.discarded, 0);
+        let p95 = summary.p95_ms.expect("一条有效样本就有 p95");
+        assert!(p95 >= 0, "耗时非负（真实墙钟对事件时刻的差）");
+        // 判定要等 20 条样本——两条之内不得提前达标/未达标
+        assert!(!summary.verdict_available, "样本不足时不得判定");
+
+        // ③ 失败的外发同样计时：多久知道发不出去也是链路健康度
+        let (mut failing, _seen) = fixture(Outcome::Failed {
+            permanent: false,
+            reason: "timeout".into(),
+        });
+        let failed = run(&mut failing, EventKind::Attention, &enabled(), 3_000);
+        assert!(matches!(failed, Outcome::Failed { .. }));
+        assert_eq!(
+            failing.outbound_latency_summary().samples,
+            1,
+            "失败尝试必须计时"
+        );
     }
 
     #[test]
