@@ -117,6 +117,7 @@ mod window_layout_service;
 mod window_lifecycle;
 mod window_smoke;
 mod window_visibility;
+mod worktree_guard;
 mod workspace_journal;
 mod workspaces;
 

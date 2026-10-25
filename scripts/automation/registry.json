@@ -422,9 +422,12 @@
     },
     "TASK-07": {
       "title": "Git 仓库与并行隔离",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task07.worktree"
+      ],
+      "coverage_note": "partial — 首片（2026-10-25）：**Git 工作区并行隔离与基线漂移判据**（worktree_guard.rs 纯函数）。独立分支分配不碰撞、脏工作树保护（未提交不派新 worktree）、合并前基线漂移检测（目标 HEAD 变动即拒以 BaseDrifted）、修改路径重叠预警（交集定位潜在冲突，正交改动安全放行）；5 条用例 + 变异（忽略基线漂移）被拒。全量 1272 passed，脱敏 0 命中。缺：真实 git worktree 系统命令与磁盘目录生命周期管理（pipeline.py 已有 Python 版，Rust 侧尚未接入）、PR/其他 Git 服务（GitLab/自托管）的远程交互、真实合并冲突解决与回退操作。",
+      "status": "partial"
     },
     "TASK-08": {
       "title": "定时与触发",
@@ -2668,6 +2671,25 @@
       "test_files": [
         "app/src-tauri/src/task_schedule.rs"
       ]
+    },
+    "task07.worktree": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "worktree_guard"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-07 首片：Git 工作区并行隔离与基线漂移判据（worktree_guard.rs 纯函数）。四条语义：①**并行分支隔离**（每个任务必须绑定独立分支，两个活跃任务不许碰撞同一分支名）；②**脏工作树保护**（未提交修改的工作树拒绝派发新 worktree）；③**基线漂移检测**（合并前目标分支当前 HEAD 必须等于任务开始时的 base_commit，被别人抢先推进即拒以 BaseDrifted，必须重新 review）；④**修改路径重叠预警**（两并行分支改动文件求交集，正交改动无重叠、重叠文件精确列出）。5 条用例 + 变异（忽略基线漂移）被拒。全量 1272 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/worktree_guard.rs"
+      ]
     }
   },
   "agents": {
@@ -2842,6 +2864,7 @@
       "task05.versioning",
       "task03.lifecycle",
       "task08.schedule",
+      "task07.worktree",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
@@ -2996,6 +3019,7 @@
       "task05.versioning",
       "task03.lifecycle",
       "task08.schedule",
+      "task07.worktree",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
