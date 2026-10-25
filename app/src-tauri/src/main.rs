@@ -23,6 +23,7 @@ mod connections;
 mod cost;
 mod deeplink;
 mod dedup;
+mod device_pairing;
 mod duration;
 mod engine;
 mod gateway_conditions;

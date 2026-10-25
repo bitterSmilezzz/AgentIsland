@@ -467,9 +467,12 @@
     },
     "TASK-12": {
       "title": "多端完整工作台",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task12.pairing"
+      ],
+      "coverage_note": "partial — 首片（2026-10-25）：**扫码登录/配对与能力差异说明**判据（device_pairing.rs 纯函数）。配对码一次性 + 120s 时效、重放即拒、按端种授予能力、各端能力差异明确列出（手机/Web 缺哪些要写在界面上，不能静默藏按钮）、跨端写归属唯一（防止两台设备各答一半）；4 条用例 + 变异（允许重放）被拒。全量 1287 passed，脱敏 0 命中。**剩余（如实）**：多端 UI 本身（手机/桌面/Web 的任务、对话、方案 diff、审查、机器管理界面）、二维码的实际生成与展示、后台/弱网/睡眠下的配对行为、Web 部署与认证、真机端到端验收。",
+      "status": "partial"
     }
   },
   "checks": {
@@ -2734,6 +2737,25 @@
       "test_files": [
         "app/src-tauri/src/mcp_grant.rs"
       ]
+    },
+    "task12.pairing": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "device_pairing"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-12 首片：扫码登录/配对与**能力差异说明**判据（device_pairing.rs 纯函数，不画二维码、不连服务端）。五条语义：①**配对码一次性且有时效**（默认 120s TTL，过期作废）；②**重放即拒**（用过的码立即作废——截图转发给别人等于把账号交出去，这是扫码登录与密码登录最大的差别）；③**配对后按端种授予能力**（未配对设备没有任何能力）；④**能力差异如实说明**（手机能答不能触发执行、Web 无推送、桌面全能力；不可用能力必须被**明确列出**而不是静默隐藏按钮）；⑤**跨端写归属唯一**（同一待办的回答/审批只归属一台设备，后到者被拒——两台设备各答一半是最坏的结果）。4 条用例 + 变异（允许重放）被拒。全量 1287 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/device_pairing.rs"
+      ]
     }
   },
   "agents": {
@@ -2911,6 +2933,7 @@
       "task07.worktree",
       "task09.machines",
       "task10.grants",
+      "task12.pairing",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
@@ -3068,6 +3091,7 @@
       "task07.worktree",
       "task09.machines",
       "task10.grants",
+      "task12.pairing",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
