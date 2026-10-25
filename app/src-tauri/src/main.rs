@@ -40,6 +40,7 @@ mod im;
 mod installed;
 mod interface_models;
 mod localclock;
+mod machine_node;
 mod mcp_config;
 mod memory;
 mod message_order;

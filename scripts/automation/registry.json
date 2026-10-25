@@ -440,9 +440,12 @@
     },
     "TASK-09": {
       "title": "多机器与云执行",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task09.machines"
+      ],
+      "coverage_note": "partial — 首片（2026-10-25）：**多机器节点的注册、心跳与派发判据**（machine_node.rs 纯函数）。能力标签匹配、心跳超时离线/恢复、并发槽位上限、自动派发（负载最低、同分按 id 字典序取定）、指定离线机器只排队不强塞、租约版本核对防重连重复执行（脑裂防护）；6 条用例 + 变异被拒。全量 1278 passed（连跑两次），脱敏 0 命中。缺：真实心跳传输与节点身份认证、云沙箱的创建/唤醒/销毁、机器撤销与凭证轮换、离线恢复与任务在节点间的迁移执行、端到端验收（需真实多机环境）。",
+      "status": "partial"
     },
     "TASK-10": {
       "title": "MCP、Skills、Memory 与上下文",
@@ -2690,6 +2693,25 @@
       "test_files": [
         "app/src-tauri/src/worktree_guard.rs"
       ]
+    },
+    "task09.machines": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "machine_node"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-09 首片：多机器节点的**注册、心跳与派发判据**（machine_node.rs 纯函数）。六条语义：①**能力标签匹配**（任务所需能力必须全部命中）；②**心跳与在线判定**（60s 超窗离线、离线节点不接新活、心跳恢复在线）；③**并发限额**（max_concurrency 槽位满即不派）；④**自动派发**（选空闲槽位最多者，**同分按 id 字典序取定**——HashMap 迭代序不确定，并列随机挑会让同一批任务两次运行派到不同机器）；⑤**指定派发不强塞**（目标离线/满载即排队或拒绝）；⑥**重连不重复执行**（租约版本核对，旧机器的陈旧租约被拒——防两台机器执行同一任务）。6 条用例 + 变异（强派离线机器）被拒。",
+      "test_files": [
+        "app/src-tauri/src/machine_node.rs"
+      ]
     }
   },
   "agents": {
@@ -2865,6 +2887,7 @@
       "task03.lifecycle",
       "task08.schedule",
       "task07.worktree",
+      "task09.machines",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
@@ -3020,6 +3043,7 @@
       "task03.lifecycle",
       "task08.schedule",
       "task07.worktree",
+      "task09.machines",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
