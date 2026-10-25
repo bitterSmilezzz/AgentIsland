@@ -435,9 +435,10 @@
       "title": "定时与触发",
       "checks": [
         "rust.default",
-        "task08.schedule"
+        "task08.schedule",
+        "task08.dst"
       ],
-      "coverage_note": "partial — 首片（2026-10-25）：**定时与触发的调度判据**（task_schedule.rs 纯函数，定时器实现前先钉调度语义）。四类规格（Once/Hourly/Daily/Weekly）；三重叠策略（Skip 记错过、Queue 有界排队上限 5、Replace 替换新一轮）；失败严格重试一次（第二次失败记入账本不循环）；暂停冻结/取消终态；6 条用例 + 变异（无限重试）被拒。全量 1267 passed，脱敏 0 命中。缺：真实定时器运行时（tokio timer / 系统 LaunchAgent / cron 适配）、本地时区 DST 切换点的实际时钟测试、额度熔断与定时暂停联动、真实任务定时触发端到端验收。",
+      "coverage_note": "partial — 首片（v0.0.394）：定时与触发的调度判据（task_schedule.rs 纯函数：四类规格 Once/Hourly/Daily/Weekly、三重叠策略 Skip/Queue(上限5)/Replace、失败严格重试一次、暂停冻结/取消终态；6 条用例）；**第二片（2026-10-27）：本地墙钟 → UTC 的反向解析与 DST 边界**（localclock.rs）。用系统 mktime 反解（不自己判断 DST）+ **读回校验**（mktime 把不存在的本地时刻规范化到相邻时刻，读回对不上即判 Nonexistent）+ 判定逻辑**依赖注入**（使 DST 分支在任何时区可测——本机 UTC+8 无夏令时，否则摘掉校验后测试仍全绿）；6 条用例 + 变异（读回判定恒真）被拒。全量 1309 passed，脱敏 0 命中。缺：真实定时器运行时（tokio timer / LaunchAgent / cron 适配）、额度熔断与定时暂停联动、真实任务定时触发端到端验收。",
       "status": "partial"
     },
     "TASK-09": {
@@ -2816,6 +2817,24 @@
       "test_files": [
         "app/src-tauri/src/artifact_limits.rs"
       ]
+    },
+    "task08.dst": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "localclock"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-08 第二片：本地墙钟 → UTC 时刻的**反向解析与 DST 边界**（localclock.rs）。正向（时刻→本地日历）此前已有，反向才是定时任务的难点——「每天 09:00」要换算成下一次触发的 UTC 时刻，而夏令时会让同一本地时刻对应两个 UTC 时刻（秋季回拨）或**不存在**（春季跳变）。判据：①用系统 mktime（tm_isdst=-1，**我们不自己判断 DST**——那是时区数据库的事，自研一套必然与系统规则漂移）；②**读回校验**：mktime 会把不存在的本地时刻规范化到相邻时刻，读回日历对不上即判 Nonexistent（如实说它不存在，而不是把规范化后的时刻当成用户要的时间）；③判定逻辑**依赖注入**（resolve_by_read_back），使 DST 分支在任何时区下可测——本机 UTC+8 无夏令时，否则摘掉校验后测试仍全绿。6 条用例 + 变异（读回判定恒真）被拒。全量 1309 passed，脱敏 0 命中。（test_files 不重复登记：localclock.rs 归 rust.default；本检查是它的定向过滤。）"
     }
   },
   "agents": {
@@ -2991,6 +3010,7 @@
       "task05.versioning",
       "task03.lifecycle",
       "task08.schedule",
+      "task08.dst",
       "task07.worktree",
       "task09.machines",
       "task10.grants",
@@ -3152,6 +3172,7 @@
       "task05.versioning",
       "task03.lifecycle",
       "task08.schedule",
+      "task08.dst",
       "task07.worktree",
       "task09.machines",
       "task10.grants",
