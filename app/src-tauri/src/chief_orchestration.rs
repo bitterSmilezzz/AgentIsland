@@ -93,6 +93,63 @@ pub fn decompose(tasks: Vec<SubTask>) -> Decomposition {
     }
 }
 
+/// 预算的计量单位（需求原文：预算/停止；消掉裸数字语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetUnit {
+    /// Token 消耗（总数）。
+    Tokens,
+    /// 子任务分派次数（每派一个扣 1）。
+    Tasks,
+    /// 运行墙钟秒数。
+    Seconds,
+}
+
+impl BudgetUnit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tokens => "tokens",
+            Self::Tasks => "tasks",
+            Self::Seconds => "seconds",
+        }
+    }
+}
+
+/// 带单位的预算账本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetLedger {
+    pub unit: BudgetUnit,
+    pub limit: u64,
+    pub spent: u64,
+}
+
+impl BudgetLedger {
+    pub fn new(unit: BudgetUnit, limit: u64) -> Self {
+        BudgetLedger { unit, limit, spent: 0 }
+    }
+
+    pub fn remaining(&self) -> u64 {
+        self.limit.saturating_sub(self.spent)
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.spent >= self.limit
+    }
+
+    pub fn record_spend(&mut self, amount: u64) {
+        self.spent = self.spent.saturating_add(amount);
+    }
+}
+
+/// 工人的 check-in 记录（最后活跃时刻）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckInRecord {
+    pub worker: String,
+    pub last_seen_ms: i64,
+}
+
+/// 默认 check-in 超时窗口：5 分钟（工人超过 5 分钟未签到判定失联）。
+pub const CHECKIN_TIMEOUT_MS: i64 = 5 * 60 * 1000;
+
 /// 编排状态。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Orchestration {
@@ -100,17 +157,49 @@ pub struct Orchestration {
     pub watched: Vec<(String, String)>,
     /// 已分派的子任务（按分派顺序）。
     pub assigned: Vec<SubTask>,
-    /// 剩余预算（`None` = 未设预算 = 不限）。
+    /// 剩余预算（兼容旧字段；`None` = 未设预算 = 不限）。
     pub remaining_budget: Option<u64>,
+    /// 带单位的显式预算账本。
+    pub budget_ledger: Option<BudgetLedger>,
     /// 是否收到停止指令。
     pub stopped: bool,
     /// 发生的工人故障记录（待人工介入）。
     pub incidents: Vec<FailureIncident>,
+    /// 工人 check-in 记录表（worker -> CheckInRecord）。
+    pub checkins: std::collections::HashMap<String, CheckInRecord>,
 }
 
 impl Orchestration {
     pub fn new() -> Orchestration {
         Orchestration::default()
+    }
+
+    /// 设置带单位的预算账本。
+    pub fn with_budget(mut self, unit: BudgetUnit, limit: u64) -> Self {
+        self.budget_ledger = Some(BudgetLedger::new(unit, limit));
+        self.remaining_budget = Some(limit);
+        self
+    }
+
+    /// 工人定期签到（check-in）。更新最后活跃时刻。
+    pub fn checkin(&mut self, worker: &str, now_ms: i64) {
+        let entry = self
+            .checkins
+            .entry(worker.to_string())
+            .or_insert_with(|| CheckInRecord {
+                worker: worker.to_string(),
+                last_seen_ms: now_ms,
+            });
+        entry.last_seen_ms = now_ms;
+    }
+
+    /// 判定某个工人是否**失联**（超过给定窗口未签到）。
+    /// 未签到过的工人视作尚未就绪，不报失联。
+    pub fn is_worker_stale(&self, worker: &str, now_ms: i64, timeout_ms: i64) -> bool {
+        match self.checkins.get(worker) {
+            Some(rec) => now_ms - rec.last_seen_ms >= timeout_ms,
+            None => false,
+        }
     }
 
     /// 是否还允许分派新的子任务。
@@ -120,6 +209,11 @@ impl Orchestration {
     pub fn accepts_new_work(&self) -> bool {
         if self.stopped {
             return false;
+        }
+        if let Some(ledger) = &self.budget_ledger {
+            if ledger.is_exhausted() {
+                return false;
+            }
         }
         match self.remaining_budget {
             Some(0) => false,
@@ -157,9 +251,12 @@ impl Orchestration {
         true
     }
 
-    /// 消费预算（分派一次花一次）。
+    /// 消费预算（分派一次花一次；带单位账本同步更新）。
     pub fn spend(&mut self, amount: u64) {
-        if let Some(remaining) = self.remaining_budget {
+        if let Some(ledger) = &mut self.budget_ledger {
+            ledger.record_spend(amount);
+            self.remaining_budget = Some(ledger.remaining());
+        } else if let Some(remaining) = self.remaining_budget {
             self.remaining_budget = Some(remaining.saturating_sub(amount));
         }
     }
@@ -441,5 +538,58 @@ mod tests {
             orch.manual_reassign(&inc_id, "worker-2"),
             Err(Refusal::Stopped)
         );
+    }
+
+    #[test]
+    fn budget_ledger_tracks_units_and_blocks_on_exhaustion() {
+        let mut orch = Orchestration::new().with_budget(BudgetUnit::Tasks, 2);
+        assert_eq!(orch.budget_ledger.as_ref().unwrap().unit.as_str(), "tasks");
+        assert_eq!(orch.budget_ledger.as_ref().unwrap().remaining(), 2);
+        assert!(orch.accepts_new_work());
+
+        // 分派第 1 个任务
+        orch.assign(task("web", "任务-1"), "worker-1").unwrap();
+        orch.spend(1);
+        assert_eq!(orch.budget_ledger.as_ref().unwrap().remaining(), 1);
+        assert!(orch.accepts_new_work());
+
+        // 分派第 2 个任务，额度耗尽
+        orch.assign(task("web", "任务-2"), "worker-2").unwrap();
+        orch.spend(1);
+        assert_eq!(orch.budget_ledger.as_ref().unwrap().remaining(), 0);
+        assert!(orch.budget_ledger.as_ref().unwrap().is_exhausted());
+        assert!(!orch.accepts_new_work(), "额度耗尽后不再接受新任务");
+
+        // 试图分派第 3 个任务 ⇒ 拒绝
+        assert_eq!(
+            orch.assign(task("web", "任务-3"), "worker-3"),
+            Err(Refusal::BudgetExhausted)
+        );
+    }
+
+    #[test]
+    fn worker_checkin_tracks_freshness_and_detects_staleness() {
+        let mut orch = Orchestration::new();
+        // 刚 check-in 的工人是新鲜的
+        orch.checkin("worker-1", 1_000);
+        assert!(!orch.is_worker_stale("worker-1", 1_000 + 60_000, CHECKIN_TIMEOUT_MS));
+
+        // 超过窗口（5 分钟）未签到 ⇒ 判定失联
+        assert!(orch.is_worker_stale(
+            "worker-1",
+            1_000 + CHECKIN_TIMEOUT_MS + 1000,
+            CHECKIN_TIMEOUT_MS
+        ));
+
+        // 重新签到恢复
+        orch.checkin("worker-1", 1_000 + CHECKIN_TIMEOUT_MS + 2000);
+        assert!(!orch.is_worker_stale(
+            "worker-1",
+            1_000 + CHECKIN_TIMEOUT_MS + 3000,
+            CHECKIN_TIMEOUT_MS
+        ));
+
+        // 从未签到过的工人不判定失联（尚未就绪）
+        assert!(!orch.is_worker_stale("worker-new", 5_000, CHECKIN_TIMEOUT_MS));
     }
 }

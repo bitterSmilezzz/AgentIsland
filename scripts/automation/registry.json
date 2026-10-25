@@ -389,7 +389,7 @@
         "rust.default",
         "task02.orchestration"
       ],
-      "coverage_note": "partial — 首片（v0.0.381）：拆解去重（去空白归一）、分派去重、watch 幂等、停止/预算只挡新活、跨主题记忆隔离（6 条用例）；**第二片（2026-10-25）：worker 失败与人工介入重派流程**（chief_orchestration.rs 扩展）。①worker 失败留故障单（FailureIncident）、**不自动重派**（自动重派等于编排层替人做决定，重跑可能重复失败）；②**显式人工介入点** `manual_reassign`：必须引用有效 incident_id、必须指定新工人（重派给原失败工人拒绝以 SameWorkerReassign——无意义重试）；③单据已重派过拒绝（AlreadyReassigned，不许重复介入）；④停止与预算同样约束人工重派（停止=不出新活，包括重派）；2 条新用例 + 变异（允许重派给同一工人）被拒。全量 1248 passed，脱敏 0 命中。缺：角色/运行时/模型/记忆四类资源的配置形态、check-in 的时间语义、预算的计量单位、主控与工人的真实进程编排。",
+      "coverage_note": "partial — 首片（v0.0.381）：拆解去重（去空白归一）、分派去重、watch 幂等、停止只挡新活、跨主题记忆隔离；第二片（v0.0.388）：worker 失败留故障单、不自动重派、显式人工换人介入 manual_reassign（重派给同一人拒绝）；**第三片（2026-10-25）：预算单位显式化与 check-in 时间语义**（chief_orchestration.rs 扩展）。①**预算单位显式化** `BudgetLedger`：消掉裸数字语义——BudgetUnit 枚举（Tokens/Tasks/Seconds），带耗尽判定与超限阻断（remaining=0 时 accepts_new_work 拒以 BudgetExhausted，未设预算不限）；②**check-in 时间语义**：工人的定期签到（`checkin` 记录 last_seen_ms）、超时判定失联（`is_worker_stale`，超窗判定失联，重新签到恢复，未签到者不报失联）；2 条新用例 + 变异（绕过预算检查）被拒。全量 1257 passed，脱敏 0 命中。缺：角色/运行时/模型/记忆四类资源的配置形态（当前以代码内模型为准）、主控与工人的真实进程编排（外部验收层）。",
       "status": "partial"
     },
     "TASK-03": {
