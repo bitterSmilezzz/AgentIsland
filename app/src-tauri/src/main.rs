@@ -63,6 +63,7 @@ mod placement;
 mod power;
 mod private_text;
 mod procmon;
+mod project_deps;
 mod prompts;
 mod provider;
 mod push_guard;

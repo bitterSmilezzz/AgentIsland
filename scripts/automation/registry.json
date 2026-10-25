@@ -171,10 +171,11 @@
         "task01.tasks",
         "task01.detailnav",
         "rust.default",
-        "task01.tasksearch"
+        "task01.tasksearch",
+        "task01.deps"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — task/run ownership, stale revision, create/update/archive, corrupt/future inputs and write-failure preservation have regression coverage; **跨项目搜索**（task01.tasksearch，2026-10-24）：看板搜索框按名称或来源 agent 模糊匹配、跨项目命中，与项目过滤/归档开关组合为 AND，空结果如实说「没有匹配」（区别于「还没有任务」），纯前端过滤不触发新快照请求，aria-label 在位；变异（中和过滤）被拒。缺：看板拖拽（列是观测派生状态——拖拽语义需先定「拖到已结束是否改写运行记录」的产品口径，未拍板不做）、actor-based authorization（当前是单用户本机工具，无多 actor 面；若引入多人协作需按子系统契约另立授权）。",
+      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；**跨项目搜索**（task01.tasksearch：按名称或来源跨项目命中、与项目/归档过滤组合、空结果如实说、纯前端过滤不多发请求）；**项目依赖判据**（task01.deps，2026-10-27）：依赖存在性、循环拒绝（直接/间接）、深度上限 8、删除守卫（仍被依赖不许删）、自依赖拒绝、传递依赖闭包去重；6 条用例 + 变异（摘环检测）被拒。全量 1315 passed，脱敏 0 命中。缺：看板拖拽（列是观测派生状态——拖拽语义需先定「拖到已结束是否改写运行记录」的产品口径，未拍板不做）、actor-based authorization（单用户本机工具无多 actor 面）、依赖关系与存储层的接线（判据已定，实现未接）。",
       "status": "partial"
     },
     "TASK-04": {
@@ -2835,6 +2836,25 @@
       "requires_live_service": false,
       "requires_spending": false,
       "source": "TASK-08 第二片：本地墙钟 → UTC 时刻的**反向解析与 DST 边界**（localclock.rs）。正向（时刻→本地日历）此前已有，反向才是定时任务的难点——「每天 09:00」要换算成下一次触发的 UTC 时刻，而夏令时会让同一本地时刻对应两个 UTC 时刻（秋季回拨）或**不存在**（春季跳变）。判据：①用系统 mktime（tm_isdst=-1，**我们不自己判断 DST**——那是时区数据库的事，自研一套必然与系统规则漂移）；②**读回校验**：mktime 会把不存在的本地时刻规范化到相邻时刻，读回日历对不上即判 Nonexistent（如实说它不存在，而不是把规范化后的时刻当成用户要的时间）；③判定逻辑**依赖注入**（resolve_by_read_back），使 DST 分支在任何时区下可测——本机 UTC+8 无夏令时，否则摘掉校验后测试仍全绿。6 条用例 + 变异（读回判定恒真）被拒。全量 1309 passed，脱敏 0 命中。（test_files 不重复登记：localclock.rs 归 rust.default；本检查是它的定向过滤。）"
+    },
+    "task01.deps": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "project_deps"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-01 进展：项目依赖关系的判据（project_deps.rs 纯函数；此前 Project 只有 id/name，依赖关系完全没建模）。五条语义：①依赖存在性（不能指向空气）；②循环拒绝（直接或间接的环都拒——带环的图让「先做谁」算不出来）；③深度上限（链长 > 8 即拒，过深依赖链让计划无法展开）；④删除守卫（仍被依赖的项目不许删，否则留下的依赖指向空气）；⑤自依赖拒绝。另提供传递依赖闭包（菱形依赖去重）。6 条用例 + 变异（摘掉环检测）被拒。全量 1315 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/project_deps.rs"
+      ]
     }
   },
   "agents": {
@@ -3021,6 +3041,7 @@
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",
+      "task01.deps",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",
@@ -3183,6 +3204,7 @@
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",
+      "task01.deps",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",
