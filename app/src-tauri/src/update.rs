@@ -35,6 +35,75 @@ pub struct UpdateProgress {
     pub total: Option<u64>,
 }
 
+// ── NOT-06：跳过版本判据（纯函数）────────────────────────────────────────
+//
+// 需求原文：旧版客户端实际安装升级、跳过版本与 Intel/universal 路径。
+//
+// 语义：
+// 1. **版本比较严格**：三段 SemVer（major.minor.patch），数字比较而非字典序
+//    （"0.0.10" > "0.0.9"）；畸形版本号拒绝（返回 None）。
+// 2. **跳过是按版本粒度的**：用户选「跳过 0.0.380」，那么 0.0.380 永远不再提示；
+//    但 **0.0.381 到达时必须照常提示**——跳过一个版本不是「关闭自动更新」。
+// 3. **降级与同版本不提示**：目标 <= 当前 ⇒ 无论是跳过还是提示，都为 false。
+// 4. **跳过旧版本被拒**：只能跳过**比当前更高**的版本（跳过旧版本无意义）。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SemVer {
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+pub fn parse_semver(text: &str) -> Option<SemVer> {
+    let text = text.trim().strip_prefix('v').unwrap_or(text.trim());
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(SemVer {
+        major,
+        minor,
+        patch,
+    })
+}
+
+/// 某次检查发现的更新是否应该向用户提示。
+///
+/// - `target`：检查到的最新版本；
+/// - `current`：当前运行版本；
+/// - `skipped`：用户之前选过跳过的版本（`None` = 未跳过任何版本）。
+pub fn should_prompt_update(target: &str, current: &str, skipped: Option<&str>) -> bool {
+    let (Some(target_ver), Some(current_ver)) = (parse_semver(target), parse_semver(current))
+    else {
+        return false;
+    };
+    // 目标不高于当前 ⇒ 降级/同版本，不提示
+    if target_ver <= current_ver {
+        return false;
+    }
+    // 目标版本被用户明确跳过 ⇒ 不提示
+    if let Some(skipped_raw) = skipped {
+        if let Some(skipped_ver) = parse_semver(skipped_raw) {
+            if target_ver == skipped_ver {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// 记录一次「跳过此版本」。只能跳过比当前高的版本。
+pub fn can_skip_version(target: &str, current: &str) -> bool {
+    let (Some(target_ver), Some(current_ver)) = (parse_semver(target), parse_semver(current))
+    else {
+        return false;
+    };
+    target_ver > current_ver
+}
+
 /// 当前版本。**不出网**，供设置页在用户点击之前显示。
 #[tauri::command]
 pub fn update_current_version(app: AppHandle) -> String {
@@ -199,5 +268,54 @@ mod tests {
         .unwrap();
         assert_eq!(json["downloaded"], 1024);
         assert!(json["total"].is_null(), "总大小未知时不得编一个数字");
+    }
+
+    #[test]
+    fn semver_parsing_and_numeric_comparison() {
+        assert_eq!(
+            parse_semver("0.0.389"),
+            Some(SemVer {
+                major: 0,
+                minor: 0,
+                patch: 389,
+            })
+        );
+        assert_eq!(parse_semver("v1.2.3"), Some(SemVer { major: 1, minor: 2, patch: 3 }));
+        // 数字比较，非字典序（"0.0.10" > "0.0.9"）
+        assert!(parse_semver("0.0.10").unwrap() > parse_semver("0.0.9").unwrap());
+        // 畸形拒绝
+        assert_eq!(parse_semver("0.0"), None);
+        assert_eq!(parse_semver("0.0.0.1"), None);
+        assert_eq!(parse_semver("abc"), None);
+    }
+
+    #[test]
+    fn skipped_version_is_suppressed_but_a_newer_one_still_prompts() {
+        let current = "0.0.380";
+        // 新版本无跳过 ⇒ 提示
+        assert!(should_prompt_update("0.0.381", current, None));
+
+        // 跳过 0.0.381 ⇒ 不提示该版本
+        assert!(!should_prompt_update("0.0.381", current, Some("0.0.381")));
+
+        // 更高版本 0.0.382 到达 ⇒ **照常提示**（跳过一个版本不是关闭更新）
+        assert!(
+            should_prompt_update("0.0.382", current, Some("0.0.381")),
+            "新版本必须突破历史跳过限制"
+        );
+
+        // 降级与同版本 ⇒ 永远不提示
+        assert!(!should_prompt_update("0.0.380", current, None));
+        assert!(!should_prompt_update("0.0.379", current, None));
+
+        // 畸形版本号 ⇒ 不提示（安全兜底）
+        assert!(!should_prompt_update("invalid", current, None));
+    }
+
+    #[test]
+    fn can_only_skip_versions_higher_than_current() {
+        assert!(can_skip_version("0.0.381", "0.0.380"));
+        assert!(!can_skip_version("0.0.380", "0.0.380"), "同版本不可跳");
+        assert!(!can_skip_version("0.0.379", "0.0.380"), "旧版本不可跳");
     }
 }
