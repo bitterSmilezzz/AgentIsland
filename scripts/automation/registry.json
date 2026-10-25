@@ -185,10 +185,11 @@
         "task04.claudeplanclient",
         "task01.detailnav",
         "rust.default",
-        "task04.ordering"
+        "task04.ordering",
+        "task04.limits"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 附件正文隔离（task04.readerleave）、刷新焦点（task04.refreshfocus）、Claude plan 受控 loopback 已有；**消息顺序与断线续接判据**（task04.ordering，2026-10-25）：单调 seq 缓冲重排、重叠片段静默丢弃不堆积缓冲区、断线间隙超时跳空推进（GapDetected）、缓冲区有界（MAX_BUFFER=200）；5 条用例 + 变异（重复不丢弃）被拒。全量 1243 passed。问题过期（tasks.rs 已有 AttentionState::Expired 与晚到改写拒绝）。缺：语音与图片标注（需前端富媒体组件与系统录音/图形库）、下载限额（当前靠 MAX_BODY=512KB 硬截断，缺细粒度限额）。",
+      "coverage_note": "partial — 附件正文隔离（task04.readerleave）、刷新焦点（task04.refreshfocus）、Claude plan 受控 loopback 已有；消息顺序与断线续接判据（task04.ordering，单调序号重排/重叠丢弃/间隙跳空）；问题过期（tasks.rs 已有）；**细粒度预览与下载限额判据**（task04.limits，2026-10-26）：预览/下载限额隔离（预览软 64KB/硬 256KB 防卡死，下载 10MB 满足导出）、软上限 UTF-8 安全截断并如实说明、硬上限拒绝、凭据零容忍；5 条用例 + 变异被拒。全量 1304 passed，脱敏 0 命中。缺：语音与图片标注（需前端富媒体组件与系统录音/图形库交互，属富媒体专项）。",
       "status": "partial"
     },
     "NOT-01": {
@@ -2796,6 +2797,25 @@
       "test_files": [
         "app/src-tauri/src/skill_package_guard.rs"
       ]
+    },
+    "task04.limits": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "artifact_limits"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-04 第二片：产物内容的**细粒度预览与下载限额判据**（artifact_limits.rs 纯函数）。四条语义：①**预览/下载限额隔离**（预览软 64KB/硬 256KB 严格防卡死前端 DOM，下载 10MB 宽松满足文件导出）；②**软上限截断并说明**（软硬之间在 UTF-8 字符边界安全截取并附说明「已截取前段预览，完整文件打开来源查看」，不是整篇不可读）；③**硬上限拒绝**（超硬上限报 ExceededHardLimit，彻底不读）；④**私密内容零容忍**（涉及凭据无论大小一律拒 RedactedSecret，对齐 SEC-01 红线）。5 条用例 + 变异（硬上限放行）被拒。全量 1304 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/artifact_limits.rs"
+      ]
     }
   },
   "agents": {
@@ -2983,6 +3003,7 @@
       "task01.tasksearch",
       "task04.readerleave",
       "task04.ordering",
+      "task04.limits",
       "task04.refreshfocus",
       "automation.selfcheck",
       "automation.evidence",
@@ -3143,6 +3164,7 @@
       "task01.tasksearch",
       "task04.readerleave",
       "task04.ordering",
+      "task04.limits",
       "task04.refreshfocus",
       "automation.selfcheck",
       "automation.evidence",
