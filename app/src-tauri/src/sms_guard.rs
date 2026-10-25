@@ -200,6 +200,106 @@ pub fn precheck(
     Ok(())
 }
 
+// ── NOT-03 第二片：运营商送达回执状态机 ─────────────────────────────────
+//
+// 需求原文：送达回执；场景 token：业务失败 HTTP 200；重放回执/先受理后超时。
+//
+// 运营商短信特有的时序：
+// 1. 供应商返回 HTTP 200（Accepted）：只代表「供应商受理了」，**不等于手机收到**；
+// 2. 异步回执（Receipt）随后到达：`Delivered`（真送达）或 `Undelivered`（退信/停机/拦截）；
+// 3. 超时窗口（默认 72 小时，运营商网关标准）：在窗口内没收到回执 ⇒ `Timeout`；
+// 4. 重放回执：终态（Delivered/Undelivered/Timeout）后再次到达的回执**被拒**，
+//    不得把一次已经失败的记录改写成成功。
+
+/// 短信的送达状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptState {
+    /// 供应商已受理（HTTP 200），等待异步送达回执。
+    Accepted,
+    /// 运营商送达回执确认到达手机（DELIVRD）。终态。
+    Delivered,
+    /// 运营商退信拒收（UNDELIV / 停机 / 空号 / 黑名单）。终态。
+    Undelivered,
+    /// 先受理但超窗未收到回执。终态。
+    Timeout,
+}
+
+impl ReceiptState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Delivered => "delivered",
+            Self::Undelivered => "undelivered",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    /// 该状态是否是终态（不可再转移）。
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Delivered | Self::Undelivered | Self::Timeout)
+    }
+}
+
+/// 回执转移拒绝原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptRefusal {
+    /// 记录已达终态，拒绝改写（重放回执）。
+    AlreadyTerminal,
+    /// 未受理的记录不能直接标记送达。
+    NotAccepted,
+}
+
+/// 默认回执等待窗口：72 小时（SMPP / 运营商网关常见的最长存活期）。
+pub const RECEIPT_TIMEOUT_MS: i64 = 72 * 60 * 60 * 1000;
+
+/// 一条短信的履约记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmsFulfillment {
+    pub message_id: String,
+    pub state: ReceiptState,
+    pub accepted_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl SmsFulfillment {
+    /// 初始状态：供应商已受理。
+    pub fn accepted(message_id: &str, accepted_at_ms: i64) -> Self {
+        SmsFulfillment {
+            message_id: message_id.to_string(),
+            state: ReceiptState::Accepted,
+            accepted_at_ms,
+            updated_at_ms: accepted_at_ms,
+        }
+    }
+
+    /// 接收运营商异步回执（Delivered 或 Undelivered）。
+    ///
+    /// 终态后到达的回执一律拒绝——重放回执不能改写终态。
+    pub fn apply_receipt(&mut self, delivered: bool, now_ms: i64) -> Result<(), ReceiptRefusal> {
+        if self.state.is_terminal() {
+            return Err(ReceiptRefusal::AlreadyTerminal);
+        }
+        self.state = if delivered {
+            ReceiptState::Delivered
+        } else {
+            ReceiptState::Undelivered
+        };
+        self.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    /// 检查是否超时（先受理后超时）。未到终态且超窗时进入 Timeout。
+    pub fn check_timeout(&mut self, now_ms: i64, timeout_ms: i64) -> bool {
+        if self.state == ReceiptState::Accepted && now_ms - self.accepted_at_ms >= timeout_ms {
+            self.state = ReceiptState::Timeout;
+            self.updated_at_ms = now_ms;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,5 +434,53 @@ mod tests {
             !text.contains("+86") && !text.contains("1380"),
             "拒绝理由里不许出现号码：{text}"
         );
+    }
+
+    #[test]
+    fn receipts_transition_from_accepted_to_terminal_and_refuse_replay() {
+        let mut f = SmsFulfillment::accepted("msg-1", 1_000);
+        assert_eq!(f.state, ReceiptState::Accepted);
+        assert!(!f.state.is_terminal());
+
+        // 异步回执确认送达
+        assert_eq!(f.apply_receipt(true, 5_000), Ok(()));
+        assert_eq!(f.state, ReceiptState::Delivered);
+        assert!(f.state.is_terminal());
+        assert_eq!(f.updated_at_ms, 5_000);
+
+        // 重放回执（比如迟到的退信）被拒，终态原样保留
+        assert_eq!(
+            f.apply_receipt(false, 6_000),
+            Err(ReceiptRefusal::AlreadyTerminal),
+            "重放回执不得改写终态"
+        );
+        assert_eq!(f.state, ReceiptState::Delivered);
+    }
+
+    #[test]
+    fn undelivered_receipt_marks_failure_and_refuses_further_receipts() {
+        let mut f = SmsFulfillment::accepted("msg-2", 1_000);
+        assert_eq!(f.apply_receipt(false, 3_000), Ok(()));
+        assert_eq!(f.state, ReceiptState::Undelivered);
+        assert!(f.state.is_terminal());
+        // 晚到的成功回执不能把退信改写成送达
+        assert_eq!(f.apply_receipt(true, 4_000), Err(ReceiptRefusal::AlreadyTerminal));
+    }
+
+    #[test]
+    fn unconfirmed_sms_times_out_after_window() {
+        let mut f = SmsFulfillment::accepted("msg-3", 1_000);
+        // 窗口内未超时
+        assert!(!f.check_timeout(1_000 + 10_000, RECEIPT_TIMEOUT_MS));
+        assert_eq!(f.state, ReceiptState::Accepted);
+
+        // 超窗后标记超时
+        let after_window = 1_000 + RECEIPT_TIMEOUT_MS + 1;
+        assert!(f.check_timeout(after_window, RECEIPT_TIMEOUT_MS));
+        assert_eq!(f.state, ReceiptState::Timeout);
+        assert!(f.state.is_terminal());
+
+        // 超时后到达的回执同样被拒
+        assert_eq!(f.apply_receipt(true, after_window + 100), Err(ReceiptRefusal::AlreadyTerminal));
     }
 }
