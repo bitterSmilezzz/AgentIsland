@@ -42,6 +42,7 @@ mod interface_models;
 mod localclock;
 mod machine_node;
 mod mcp_config;
+mod mcp_grant;
 mod memory;
 mod message_order;
 mod minimax;
