@@ -84,6 +84,7 @@ mod session_catalog;
 mod session_navigation;
 mod settings;
 mod skill_files;
+mod skill_package_guard;
 mod skills_config;
 #[cfg(unix)]
 mod skills_package;

@@ -452,9 +452,10 @@
       "title": "MCP、Skills、Memory 与上下文",
       "checks": [
         "rust.default",
-        "task10.grants"
+        "task10.grants",
+        "task10.skillpkg"
       ],
-      "coverage_note": "partial — 首片（2026-10-25）：**MCP 能力授权与记忆按来源隔离**判据（mcp_grant.rs 纯函数）。授权精确匹配（工具+目标）、未知工具直接拒、过期与撤销即失效、通配不默认（仍需具体授权）、上下文压缩不丢授权、记忆同 id 换来源拒绝/跨来源读拒/删除不误删；5 条用例 + 变异被拒。全量 1283 passed，脱敏 0 命中。缺：内外 MCP 服务器的真实接入与取消语义、Skills 完整树/资源/执行位校验、记忆的持久化与版本回溯、能力差异说明的界面呈现、端到端验收。",
+      "coverage_note": "partial — 首片（v0.0.397）：MCP 能力授权与记忆按来源隔离（mcp_grant.rs 纯函数：授权精确匹配、未知工具直接拒、过期与撤销即失效、通配不默认、上下文压缩不丢授权、记忆同 id 换来源拒/跨来源读拒/删除不误删）；**第二片（2026-10-26）：技能包的完整性与复制安全判据**（skill_package_guard.rs 纯函数）。完整树（必须含 SKILL.md，空包拒）、路径不越界（`..`/绝对路径一律拒）、正文与资源不得带执行位（否则是可执行的攻击面）、跨设备复制须保持脚本执行位（丢了就是「技能装了但说不会用」）与来源信息（可追溯）；4 条用例 + 变异被拒。全量 1297 passed，脱敏 0 命中。缺：内外 MCP 服务器真实接入与取消语义、记忆的持久化与版本回溯、能力差异说明的界面呈现、端到端验收。",
       "status": "partial"
     },
     "TASK-11": {
@@ -2776,6 +2777,25 @@
       "test_files": [
         "app/src-tauri/src/sse_parser.rs"
       ]
+    },
+    "task10.skillpkg": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "skill_package_guard"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-10 第二片：技能包的**完整性与复制安全判据**（skill_package_guard.rs 纯函数）。四条语义：①**完整树**（必须含 SKILL.md 入口，缺它只是散落资源目录；空包也拒）；②**路径不越界**（`..`/绝对路径一律拒——按描述符相对路径处理时归一规则跨实现不一致，一律拒更安全）；③**正文与资源不得带执行位**（SKILL.md 带 x 位意味着它可能被当脚本执行=资源型攻击面；脚本才可执行）；④**跨设备复制**（脚本执行位不得丢——丢了就是「技能装了但说不会用」；来源信息不得被改写——「这个技能从哪来」必须可追溯）。4 条用例 + 变异（不检查执行位丢失）被拒。全量 1297 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/skill_package_guard.rs"
+      ]
     }
   },
   "agents": {
@@ -2954,6 +2974,7 @@
       "task07.worktree",
       "task09.machines",
       "task10.grants",
+      "task10.skillpkg",
       "task12.pairing",
       "task02.orchestration",
       "task11.securityaudit",
@@ -3113,6 +3134,7 @@
       "task07.worktree",
       "task09.machines",
       "task10.grants",
+      "task10.skillpkg",
       "task12.pairing",
       "task02.orchestration",
       "task11.securityaudit",
@@ -3280,6 +3302,13 @@
       "status": "open",
       "requirement": "OPS-01",
       "evidence": "2026-10-25 v0.0.385 首跑发版：五道原生门禁第一道 ui-smoke.sh 报三窗口均为 running、未点到元素失败；同一产物在 tart stop + tart run 重启来宾后单独复跑 native-gates-vm.py，五道门禁全绿（All native gates passed）。与 BUG-013 同型（连跑多轮后累积的来宾系统状态劣化）。处置：连续跑多轮发布时，每 3–4 轮主动重启一次来宾；若再次出现，考虑让 native-gates-vm.py 在起跑前检测来宾运行时间或加一次重试。"
+    },
+    {
+      "id": "BUG-015",
+      "title": "外发交付探针在机器繁忙时偶发少算一次请求（三次临时失败期望 6 次、实测 5 次）",
+      "status": "closed",
+      "requirement": "NOT-05",
+      "evidence": "2026-10-25 v0.0.399 发版时 not05.remotedelivery 门禁失败：「三次临时失败应为 3×(初次+重试)=6 次请求，实际 5」。根因：v0.0.356 已把对端夹具从「accept 线程串行服务」改成「每连接一线程」，但主线程从 perform 返回时，对端 worker 线程可能还没把请求写进 seen 数组（写 socket 与记账之间存在微秒级竞态）；机器一忙（发版刚跑完全量编译）就立刻读到 5。修法：Peer::wait_for_requests(expected, timeout) 有界等待对端完成记账（最多 1s，每 10ms 查一次）——**不是放宽判据**，超时未达仍按原样报失败。验证：debug 二进制连跑 5 次探针全部 requestsAfterThree=6 / rc=0。"
     }
   ]
 }
