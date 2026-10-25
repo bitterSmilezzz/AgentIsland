@@ -351,9 +351,10 @@
       "title": "四类模型协议网关",
       "checks": [
         "rust.default",
-        "gw03.protocolmatrix"
+        "gw03.protocolmatrix",
+        "gw03.sse"
       ],
-      "coverage_note": "partial — 首片（2026-10-24）：**四类协议的兼容矩阵**（gateway_protocol.rs 唯一声明处 + docs/spec/协议兼容矩阵.md 渲染 + 门禁逐格核对 doc↔code）。Chat/Responses/Messages/Gemini × 流式/tools/reasoning/usage/cancel；**不支持 ≠ 未知**（Chat 的 reasoning 是不支持——协议没这个语义；Gemini 的 reasoning 是未知——还没验过，写「支持」会让调用方按支持写代码然后静默失败）；未知不算 usable；矩阵两次读出必须一致（它是声明不是计算）。4 条 Rust 用例 + 5 条门禁用例；双变异（代码改一格/文档改一格）均被拒。**剩余（如实）**：16 协议方向的细粒度场景（tools 分片/结果/并行、reasoning 内容形态、usage 字段映射）、SSE 任意切片解析、畸形/过深/超限输入、取消与流中断语义、四类协议的真实端到端验收（需真实网关与凭据）。",
+      "coverage_note": "partial — 首片（v0.0.378）：四类协议兼容矩阵（gateway_protocol.rs + docs/spec/协议兼容矩阵.md，Chat/Responses/Messages/Gemini × 流式/tools/reasoning/usage/cancel，不支持≠未知）；**第二片（2026-10-25）：流式网关的 SSE 增量解析器**（sse_parser.rs 纯函数）。①任意切片安全（逐字节/两字节/拆开 CRLF 的切片与一次性解析完全一致）；②字段解析（data 多行以 \\n 拼接、注释行忽略、空行派发）；③有界（行 64KB、事件 256KB、流 10000 条，超限明确拒绝）；④取消即停（cancel 丢缓冲、后续字节拒以 Cancelled）；6 条用例 + 变异（data 换空格拼接）被拒。全量 1293 passed，脱敏 0 命中。缺：16 协议方向的细粒度场景（tools 分片/结果/并行、reasoning 内容形态、usage 字段映射）、畸形/过深/超限 JSON 输入在各协议适配器里的解析、四类协议的真实端到端验收。",
       "status": "partial"
     },
     "GW-04": {
@@ -2756,6 +2757,25 @@
       "test_files": [
         "app/src-tauri/src/device_pairing.rs"
       ]
+    },
+    "gw03.sse": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "sse_parser"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-03 第二片：流式网关的 **SSE 增量解析器**（sse_parser.rs 纯函数/无 IO）。四条语义：①**任意切片安全**（字节流无论怎么切分，逐字节/两字节切片与一次性解析完全一致，CRLF 被拆两半不误判）；②**标准字段解析**（data 多行以 \\n 拼接、event、id、retry，冒号前缀注释行忽略，空行触发派发）；③**有界防御**（单行 64KB、单事件 256KB、流 10000 事件上限，超限明确拒绝以 LineTooLong/EventTooLarge/TooManyEvents，不静默截断）；④**取消即停**（cancel 丢弃缓冲，后续字节拒绝以 Cancelled，取消后不再把流写进界面）。6 条用例 + 变异（多行 data 换空格拼接）被拒。全量 1293 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/sse_parser.rs"
+      ]
     }
   },
   "agents": {
@@ -2924,6 +2944,7 @@
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
+      "gw03.sse",
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",
@@ -3082,6 +3103,7 @@
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
+      "gw03.sse",
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",

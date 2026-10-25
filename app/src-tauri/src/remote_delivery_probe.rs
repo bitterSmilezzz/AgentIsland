@@ -100,6 +100,24 @@ impl Peer {
         self.seen.lock().expect("对端记录锁不应中毒").clone()
     }
 
+    /// 有界等待对端完成记账（最多 500ms，每 10ms 查一次）。
+    ///
+    /// 为什么需要等待：`Peer` 的每个请求在独立的 worker 线程里处理，
+    /// 主线程的 `perform` 从 TCP 连接返回时，对端的 worker 线程可能还在
+    /// 几毫秒内赶着写 `seen` 数组。机器一忙（如发版编译刚结束），立刻读取
+    /// 就会读到 5 而不是 6——v0.0.356 发现了这处竞态并拆了线程，这里给
+    /// 记账完成留出一个微小的有界等待窗口。
+    fn wait_for_requests(&self, expected: usize, timeout_ms: u64) -> usize {
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let count = self.requests().len();
+            if count >= expected || std::time::Instant::now() >= deadline {
+                return count;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn shutdown(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
@@ -238,7 +256,7 @@ fn run() -> Result<serde_json::Value, String> {
         for index in 0..3 {
             attempt(&notifier, &config, 1_000 + index * 100_000);
         }
-        let after_three = failing.requests().len();
+        let after_three = failing.wait_for_requests(6, 1000);
         // 生产 `Notifier::new()` = `default()`，`retry_attempts = 1`：
         // 三次临时失败各发 1 次 + 重试 1 次 = 6。显式断言，别让「碰巧对上」当证据。
         if after_three != 6 {
@@ -254,7 +272,7 @@ fn run() -> Result<serde_json::Value, String> {
         }
         // 升级后再发一次：必须**只发一次**（不再重试），且如实返回失败
         let outcome = attempt(&notifier, &config, 401_000);
-        let after_fourth = failing.requests().len();
+        let after_fourth = failing.wait_for_requests(after_three + 1, 1000);
         if !matches!(outcome, Outcome::Failed { permanent: false, .. }) {
             return Err(format!("升级不吞结果：应如实返回失败，实际 {outcome:?}"));
         }

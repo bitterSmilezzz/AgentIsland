@@ -77,6 +77,7 @@ mod secret;
 mod security_audit;
 mod selfreport;
 mod selftest;
+mod sse_parser;
 mod session;
 mod sms_guard;
 mod session_catalog;
