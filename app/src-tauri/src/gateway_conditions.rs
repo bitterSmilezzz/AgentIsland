@@ -100,6 +100,73 @@ pub enum Intent {
     NoMatch,
 }
 
+/// 路由模式（GW-05 场景：Strict 不切）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RoutingMode {
+    /// 默认模式：意图优先，不可用/无匹配时**降级**到条件规则。
+    #[default]
+    Normal,
+    /// 严格模式（Strict 不切）：必须按意图走，意图失败/无匹配时**直接返回 Unrouted**，
+    /// 不切回条件规则——用于「意图没把握就宁可不发」的场景。
+    Strict,
+}
+
+/// 意图缓存条目。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedIntent {
+    pub target: String,
+    pub cached_at_ms: i64,
+}
+
+/// 意图缓存（避免同一 prompt 重复调模型分类；带 TTL 与容量上限）。
+#[derive(Debug, Default)]
+pub struct IntentCache {
+    entries: std::collections::HashMap<String, CachedIntent>,
+}
+
+pub const INTENT_CACHE_TTL_MS: i64 = 10 * 60 * 1000; // 10 分钟
+pub const INTENT_CACHE_CAP: usize = 1000;
+
+impl IntentCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 查缓存：存在且在 TTL 窗口内返回目标；超窗自动清除。
+    pub fn get(&mut self, prompt: &str, now_ms: i64) -> Option<&str> {
+        let key = prompt.trim();
+        if let Some(entry) = self.entries.get(key) {
+            if now_ms - entry.cached_at_ms <= INTENT_CACHE_TTL_MS {
+                return Some(&self.entries.get(key).unwrap().target);
+            }
+        }
+        self.entries.remove(key); // 超窗清除
+        None
+    }
+
+    /// 写入缓存。容量达到 `INTENT_CACHE_CAP` 时淘汰最旧的条目。
+    pub fn put(&mut self, prompt: &str, target: &str, now_ms: i64) {
+        let key = prompt.trim();
+        if self.entries.len() >= INTENT_CACHE_CAP {
+            if let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, v)| v.cached_at_ms)
+                .map(|(k, _)| k.clone())
+            {
+                self.entries.remove(&oldest_key);
+            }
+        }
+        self.entries.insert(
+            key.to_string(),
+            CachedIntent {
+                target: target.to_string(),
+                cached_at_ms: now_ms,
+            },
+        );
+    }
+}
+
 /// 选择结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
@@ -117,16 +184,25 @@ pub struct Sticky {
     source: Option<String>,
 }
 
-/// 路由决策入口。
-///
-/// `round` 是**轮次号**：同一轮内多次决策（例如同一对话里的多个请求）
-/// 共享同一个 round，因而共享同一个黏性目标。
+/// 路由决策入口（默认 Normal 模式；与既有签名兼容）。
 pub fn route(
     rules: &[Rule],
     facts: &Facts,
     intent: &Intent,
     round: u64,
     sticky: &mut Sticky,
+) -> Selection {
+    route_with_mode(rules, facts, intent, round, sticky, RoutingMode::Normal)
+}
+
+/// 带模式的路由决策入口。
+pub fn route_with_mode(
+    rules: &[Rule],
+    facts: &Facts,
+    intent: &Intent,
+    round: u64,
+    sticky: &mut Sticky,
+    mode: RoutingMode,
 ) -> Selection {
     // 轮内一致性：同一轮且上一轮选的目标这一轮仍可用 → 保持。
     if sticky.round == round {
@@ -137,18 +213,28 @@ pub fn route(
             };
         }
     }
-    // 意图优先；不可用/无匹配则**降级**到条件规则（意图是加速器，不是必需品）。
+    // 意图处理
     let (target, source) = match intent {
         Intent::Resolved(target) => (target.clone(), "intent".to_string()),
-        Intent::Unavailable | Intent::NoMatch => match rules.iter().find(|rule| rule.matches(facts)) {
-            Some(rule) => (rule.target.clone(), format!("rule:{}", rule.name)),
-            None => {
+        Intent::Unavailable | Intent::NoMatch => {
+            // Strict 模式：意图失败不切条件规则，直接 Unrouted
+            if mode == RoutingMode::Strict {
                 sticky.round = round;
                 sticky.target = None;
                 sticky.source = None;
                 return Selection::Unrouted;
             }
-        },
+            // Normal 模式：降级到条件规则（首条满足的）
+            match rules.iter().find(|rule| rule.matches(facts)) {
+                Some(rule) => (rule.target.clone(), format!("rule:{}", rule.name)),
+                None => {
+                    sticky.round = round;
+                    sticky.target = None;
+                    sticky.source = None;
+                    return Selection::Unrouted;
+                }
+            }
+        }
     };
     sticky.round = round;
     sticky.target = Some(target.clone());
@@ -338,5 +424,57 @@ mod tests {
             },
             "新轮次才允许重新选择"
         );
+    }
+
+    #[test]
+    fn strict_mode_does_not_fall_back_to_rules() {
+        let rules = vec![rule("项目", vec![Condition::Project("web".into())], "web-target")];
+        let mut sticky = Sticky::default();
+
+        // Normal 模式：意图不可用 ⇒ 降级到条件规则
+        assert_eq!(
+            route_with_mode(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky, RoutingMode::Normal),
+            Selection::Target { target: "web-target".into(), source: "rule:项目".into() }
+        );
+
+        // Strict 模式：意图不可用 ⇒ **直接 Unrouted**（Strict 不切，不猜）
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route_with_mode(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky, RoutingMode::Strict),
+            Selection::Unrouted,
+            "Strict 模式下意图失败不许降级到条件规则"
+        );
+        // Strict 模式：意图命中正常走
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route_with_mode(&rules, &facts(), &Intent::Resolved("t1".into()), 1, &mut sticky, RoutingMode::Strict),
+            Selection::Target { target: "t1".into(), source: "intent".into() }
+        );
+    }
+
+    #[test]
+    fn intent_cache_hits_within_ttl_and_evicts_oldest_on_cap() {
+        let mut cache = IntentCache::new();
+        cache.put("帮我写个登录页", "model-coding", 1_000);
+
+        // 窗口内命中
+        assert_eq!(cache.get("帮我写个登录页", 1_000 + 60_000), Some("model-coding"));
+        // 超窗未命中（自动清除）
+        assert_eq!(
+            cache.get("帮我写个登录页", 1_000 + INTENT_CACHE_TTL_MS + 1),
+            None,
+            "超窗的意图必须重新识别"
+        );
+
+        // 塞满容量淘汰最旧
+        let mut small_cache = IntentCache::new();
+        for i in 0..INTENT_CACHE_CAP {
+            small_cache.put(&format!("prompt-{i}"), &format!("target-{i}"), 1_000 + i as i64);
+        }
+        assert_eq!(small_cache.entries.len(), INTENT_CACHE_CAP);
+        // 塞第 1001 条：最旧的 prompt-0 被淘汰
+        small_cache.put("prompt-new", "target-new", 2_000);
+        assert_eq!(small_cache.get("prompt-0", 2_000), None);
+        assert_eq!(small_cache.get("prompt-new", 2_000), Some("target-new"));
     }
 }
