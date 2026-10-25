@@ -71,6 +71,7 @@ mod resource_diagnostics;
 mod run_lifecycle;
 mod runtime_log;
 mod secret;
+mod security_audit;
 mod selfreport;
 mod selftest;
 mod session;

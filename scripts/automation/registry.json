@@ -446,9 +446,12 @@
     },
     "TASK-11": {
       "title": "团队、权限、Secrets 与审计",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task11.securityaudit"
+      ],
+      "coverage_note": "partial — 首片（2026-10-25）：**双轨审计不可冒充、远程 shell 双授权与最小秘密注入**（security_audit.rs 纯函数）。①双轨审计：Actor 四分层（人/Agent/机器/Key）由系统调用边界强绑定，文本不得伪装身份；②远程 shell 双授权：主开关与目标单独授权缺一即拒；③最小秘密注入：严格环境变量白名单，无关凭据不带进子环境；④凭据撤销即清空；4 条用例 + 变异（单开关放行）被拒。全量 1261 passed，脱敏 0 命中。缺：远程 shell 的真实网络传输与终端交互、团队角色配置持久化形态、多用户权限分级管理。",
+      "status": "partial"
     },
     "TASK-12": {
       "title": "多端完整工作台",
@@ -2624,6 +2627,25 @@
       "requires_live_service": false,
       "requires_spending": false,
       "source": "NOT-06：跳过版本判据（update.rs 纯函数）。三条语义：①**SemVer 严格三段解析与数字比较**（parse_semver，畸形版本号拒绝，数字比较非字典序）；②**跳过版本精准压制**（跳过 0.0.381 仅压制 0.0.381，**0.0.382 到达时照常提示**——跳过不是关闭自动更新）；③**降级/同版本永远不提示**，只能跳过高于当前的版本（can_skip_version）。3 条用例 + 变异（跳过压制所有后续版本）被拒。全量 1253 passed，脱敏 0 命中。（test_files 不重复登记：update.rs 归 rust.default；本检查是它的定向过滤。）"
+    },
+    "task11.securityaudit": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "security_audit"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-11 首片：团队权限、双轨审计与最小凭据注入判据（security_audit.rs 纯函数）。四条语义：①**双轨审计不可冒充**（Actor 四分层 Human/Agent/Machine/ApiKey；主体身份由系统调用边界强行绑定，不得由消息文本字段伪装）；②**远程 shell 双授权**（全局主开关 + 目标单独授权缺一即拒以 MasterDisabled / TargetUnauthorized）；③**最小秘密注入**（只将显式白名单变量注入子环境，无关 AWS/GitHub 凭据绝不流进 Agent 环境）；④**凭据撤销即失效**（撤销后立即返回 None，无旧值缓存）。4 条用例 + 变异（单开关放行远程 shell）被拒。全量 1261 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/security_audit.rs"
+      ]
     }
   },
   "agents": {
@@ -2798,6 +2820,7 @@
       "task05.versioning",
       "task03.lifecycle",
       "task02.orchestration",
+      "task11.securityaudit",
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",
@@ -2950,6 +2973,7 @@
       "task05.versioning",
       "task03.lifecycle",
       "task02.orchestration",
+      "task11.securityaudit",
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",
