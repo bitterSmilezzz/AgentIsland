@@ -89,6 +89,7 @@ mod sqlite;
 mod task_artifacts;
 mod task_attention;
 mod task_sources;
+mod task_schedule;
 mod tasks;
 #[cfg(test)]
 mod testutil;

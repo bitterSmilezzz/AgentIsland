@@ -428,9 +428,12 @@
     },
     "TASK-08": {
       "title": "定时与触发",
-      "checks": [],
-      "coverage_note": "planned — no executable check mapped; this is not coverage",
-      "status": "planned"
+      "checks": [
+        "rust.default",
+        "task08.schedule"
+      ],
+      "coverage_note": "partial — 首片（2026-10-25）：**定时与触发的调度判据**（task_schedule.rs 纯函数，定时器实现前先钉调度语义）。四类规格（Once/Hourly/Daily/Weekly）；三重叠策略（Skip 记错过、Queue 有界排队上限 5、Replace 替换新一轮）；失败严格重试一次（第二次失败记入账本不循环）；暂停冻结/取消终态；6 条用例 + 变异（无限重试）被拒。全量 1267 passed，脱敏 0 命中。缺：真实定时器运行时（tokio timer / 系统 LaunchAgent / cron 适配）、本地时区 DST 切换点的实际时钟测试、额度熔断与定时暂停联动、真实任务定时触发端到端验收。",
+      "status": "partial"
     },
     "TASK-09": {
       "title": "多机器与云执行",
@@ -2646,6 +2649,25 @@
       "test_files": [
         "app/src-tauri/src/security_audit.rs"
       ]
+    },
+    "task08.schedule": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "task_schedule"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-08 首片：任务定时与触发的**调度判据**（task_schedule.rs 纯函数）。四条语义：①**四类规格**（Once/Hourly/Daily/Weekly）；②**三重叠策略**（Skip 记录 missed_count、Queue 缓冲至上限 5 次超限降级跳过、Replace 取消并启动新一轮）；③**失败严格自动重试一次**（retries_left 0..=1，第二次失败停下不循环）；④**暂停与取消**（Paused 冻结触发不丢配置、Cancelled 终态）。6 条用例 + 变异（无限重试）被拒。全量 1267 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/task_schedule.rs"
+      ]
     }
   },
   "agents": {
@@ -2819,6 +2841,7 @@
       "task05.artifactcap",
       "task05.versioning",
       "task03.lifecycle",
+      "task08.schedule",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
@@ -2972,6 +2995,7 @@
       "task05.artifactcap",
       "task05.versioning",
       "task03.lifecycle",
+      "task08.schedule",
       "task02.orchestration",
       "task11.securityaudit",
       "not01.latencyui",
