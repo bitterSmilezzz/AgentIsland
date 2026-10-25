@@ -184,10 +184,11 @@
         "task04.refreshfocus",
         "task04.claudeplanclient",
         "task01.detailnav",
-        "rust.default"
+        "rust.default",
+        "task04.ordering"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 附件正文隔离、刷新焦点、Claude plan 受控 loopback 已有；缺：消息顺序、断线续接、问题过期、语音、图片标注、下载限额",
+      "coverage_note": "partial — 附件正文隔离（task04.readerleave）、刷新焦点（task04.refreshfocus）、Claude plan 受控 loopback 已有；**消息顺序与断线续接判据**（task04.ordering，2026-10-25）：单调 seq 缓冲重排、重叠片段静默丢弃不堆积缓冲区、断线间隙超时跳空推进（GapDetected）、缓冲区有界（MAX_BUFFER=200）；5 条用例 + 变异（重复不丢弃）被拒。全量 1243 passed。问题过期（tasks.rs 已有 AttentionState::Expired 与晚到改写拒绝）。缺：语音与图片标注（需前端富媒体组件与系统录音/图形库）、下载限额（当前靠 MAX_BODY=512KB 硬截断，缺细粒度限额）。",
       "status": "partial"
     },
     "NOT-01": {
@@ -2587,6 +2588,25 @@
       "test_files": [
         "app/src-tauri/src/artifact_version.rs"
       ]
+    },
+    "task04.ordering": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "message_order"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-04：对话过程消息的**顺序重排与断线续接判据**（message_order.rs 纯函数）。四条语义：①**单调序号重排**（乱序到达的消息按单调 seq 缓冲，只有连续前缀才按序交付）；②**重叠丢弃**（已交付序号静默丢弃、不进入缓冲区——重连推过来的重叠片段不产生第二条消息）；③**断线间隙检测**（空洞等待超时后声明 GapDetected 跳空交付后续消息，不永久挂起）；④**缓冲区有界**（最多 200 条防大序号内存耗尽）。5 条用例 + 变异（重复消息不丢弃）被拒。",
+      "test_files": [
+        "app/src-tauri/src/message_order.rs"
+      ]
     }
   },
   "agents": {
@@ -2765,6 +2785,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task04.readerleave",
+      "task04.ordering",
       "task04.refreshfocus",
       "automation.selfcheck",
       "automation.evidence",
@@ -2915,6 +2936,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task04.readerleave",
+      "task04.ordering",
       "task04.refreshfocus",
       "automation.selfcheck",
       "automation.evidence",

@@ -42,6 +42,7 @@ mod interface_models;
 mod localclock;
 mod mcp_config;
 mod memory;
+mod message_order;
 mod minimax;
 mod models;
 mod motion_probe;
