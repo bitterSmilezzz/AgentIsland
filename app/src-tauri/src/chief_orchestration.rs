@@ -104,6 +104,8 @@ pub struct Orchestration {
     pub remaining_budget: Option<u64>,
     /// 是否收到停止指令。
     pub stopped: bool,
+    /// 发生的工人故障记录（待人工介入）。
+    pub incidents: Vec<FailureIncident>,
 }
 
 impl Orchestration {
@@ -181,6 +183,77 @@ impl Orchestration {
         }
         Ok(allowed)
     }
+
+    /// 记录一个工人的失败。
+    ///
+    /// 失败的子任务**不自动重派**——自动重派等于编排层替人做决定，
+    /// 而失败可能是环境坏了、指令有误或超出权限，重跑只会重复失败。
+    /// 状态标记为待人工介入；子任务仍在 `assigned` 里，防止被并发重派。
+    pub fn record_failure(&mut self, task: &SubTask, worker: &str, reason: &str) -> String {
+        let key = dedup_key(task);
+        let incident_id = format!("inc-{}", self.incidents.len() + 1);
+        self.incidents.push(FailureIncident {
+            incident_id: incident_id.clone(),
+            task_key: key,
+            worker: worker.to_string(),
+            reason: reason.to_string(),
+            reassigned: false,
+        });
+        incident_id
+    }
+
+    /// **人工介入重派**：必须显式引用故障单（`incident_id`）并指名新工人。
+    ///
+    /// 判据：
+    /// - 故障单不存在 ⇒ 拒绝；
+    /// - 故障单已重派过 ⇒ 拒绝（不许重复介入）；
+    /// - 新工人与原失败工人相同 ⇒ 拒绝（原样重派给同一个工人毫无意义）；
+    /// - 编排已停止或预算耗尽 ⇒ 拒绝（停止只挡新活，包括重派）。
+    pub fn manual_reassign(
+        &mut self,
+        incident_id: &str,
+        new_worker: &str,
+    ) -> Result<SubTask, Refusal> {
+        if !self.accepts_new_work() {
+            return Err(if self.stopped {
+                Refusal::Stopped
+            } else {
+                Refusal::BudgetExhausted
+            });
+        }
+        let incident = self
+            .incidents
+            .iter_mut()
+            .find(|i| i.incident_id == incident_id)
+            .ok_or(Refusal::IncidentNotFound)?;
+
+        if incident.reassigned {
+            return Err(Refusal::AlreadyReassigned);
+        }
+        if incident.worker == new_worker {
+            return Err(Refusal::SameWorkerReassign);
+        }
+
+        incident.reassigned = true;
+        let task = self
+            .assigned
+            .iter()
+            .find(|t| dedup_key(t) == incident.task_key)
+            .cloned()
+            .ok_or(Refusal::IncidentNotFound)?;
+
+        Ok(task)
+    }
+}
+
+/// 工人故障记录。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureIncident {
+    pub incident_id: String,
+    pub task_key: String,
+    pub worker: String,
+    pub reason: String,
+    pub reassigned: bool,
 }
 
 /// 拒绝原因。固定码。
@@ -194,6 +267,12 @@ pub enum Refusal {
     AlreadyAssigned,
     /// 跨主题读取记忆被拒。
     CrossTopicMemory,
+    /// 人工介入引用的故障单不存在。
+    IncidentNotFound,
+    /// 该故障已重派过。
+    AlreadyReassigned,
+    /// 重派给同一个工人（无意义重试）。
+    SameWorkerReassign,
 }
 
 impl Refusal {
@@ -203,6 +282,9 @@ impl Refusal {
             Self::BudgetExhausted => "budget_exhausted",
             Self::AlreadyAssigned => "already_assigned",
             Self::CrossTopicMemory => "cross_topic_memory",
+            Self::IncidentNotFound => "incident_not_found",
+            Self::AlreadyReassigned => "already_reassigned",
+            Self::SameWorkerReassign => "same_worker_reassign",
         }
     }
 }
@@ -315,5 +397,49 @@ mod tests {
         let same_topic = vec![("web".to_string(), "登录页用的是 OAuth".to_string())];
         let read = orchestration.read_memory("web", &same_topic).unwrap();
         assert_eq!(read.len(), 1);
+    }
+
+    #[test]
+    fn worker_failure_does_not_auto_reassign_and_requires_manual_intervention() {
+        let mut orch = Orchestration::new();
+        let sub = task("web", "复杂重构");
+        orch.assign(sub.clone(), "worker-1").unwrap();
+
+        // worker-1 失败：留单，**不自动重派**
+        let inc_id = orch.record_failure(&sub, "worker-1", "out of memory");
+        assert_eq!(orch.incidents.len(), 1);
+        assert!(!orch.incidents[0].reassigned);
+
+        // 重派给原失败工人 ⇒ 拒绝（原样重试无意义）
+        assert_eq!(
+            orch.manual_reassign(&inc_id, "worker-1"),
+            Err(Refusal::SameWorkerReassign)
+        );
+
+        // 人工指定新工人 worker-2 ⇒ 成功，返回被重派的任务
+        let reassigned = orch.manual_reassign(&inc_id, "worker-2").unwrap();
+        assert_eq!(reassigned.title, "复杂重构");
+        assert!(orch.incidents[0].reassigned);
+
+        // 重复介入同一单 ⇒ 拒绝
+        assert_eq!(
+            orch.manual_reassign(&inc_id, "worker-3"),
+            Err(Refusal::AlreadyReassigned)
+        );
+    }
+
+    #[test]
+    fn manual_reassignment_respects_stopped_and_budget_guards() {
+        let mut orch = Orchestration::new();
+        let sub = task("web", "任务");
+        orch.assign(sub.clone(), "worker-1").unwrap();
+        let inc_id = orch.record_failure(&sub, "worker-1", "network timeout");
+
+        // 停止状态下人工重派也必须被挡住（停止 = 不出新活，包括重派）
+        orch.stopped = true;
+        assert_eq!(
+            orch.manual_reassign(&inc_id, "worker-2"),
+            Err(Refusal::Stopped)
+        );
     }
 }
