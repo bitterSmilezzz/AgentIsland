@@ -151,6 +151,100 @@ impl ArtifactChain {
     }
 }
 
+// ── TASK-05 第三片：验证清单（Verification Checklist）──────────────────
+//
+// 需求原文：验证清单；产出伴随明确的验收项列表。
+//
+// 判据：
+// 1. **空清单不得声称通过**：空清单 = 还没写清单 = 不能代表验证完成；
+// 2. **全通过才算通过**：所有条目必须明确为 Passed（Pending/Failed 都不算）；
+// 3. **条目状态互斥**：Pending（待验）、Passed（通过）、Failed（未过）；
+// 4. **条目不可匿名**：标题去空白后不能为空（未命名的条目是摆设）。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckStatus {
+    Pending,
+    Passed,
+    Failed,
+}
+
+impl CheckStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckItem {
+    pub id: String,
+    pub title: String,
+    pub status: CheckStatus,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Checklist {
+    pub items: Vec<CheckItem>,
+}
+
+impl Checklist {
+    pub fn new() -> Self {
+        Checklist::default()
+    }
+
+    /// 添加一条验证项。标题去空白为空时拒绝。
+    pub fn add(&mut self, id: &str, title: &str) -> Result<(), &'static str> {
+        let clean = title.trim();
+        if clean.is_empty() {
+            return Err("title_empty");
+        }
+        if self.items.iter().any(|i| i.id == id) {
+            return Err("duplicate_id");
+        }
+        self.items.push(CheckItem {
+            id: id.to_string(),
+            title: clean.to_string(),
+            status: CheckStatus::Pending,
+            note: None,
+        });
+        Ok(())
+    }
+
+    /// 记录某项的验证结果。
+    pub fn mark(&mut self, id: &str, status: CheckStatus, note: Option<&str>) -> bool {
+        if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
+            item.status = status;
+            item.note = note.map(|n| n.trim().to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 整体是否**全部通过**：条目非空，且每一条都必须是 Passed。
+    /// 空清单返回 false（没写清单不能声称通过）。
+    pub fn all_passed(&self) -> bool {
+        !self.items.is_empty() && self.items.iter().all(|i| i.status == CheckStatus::Passed)
+    }
+
+    /// 是否存在失败项。
+    pub fn has_failures(&self) -> bool {
+        self.items.iter().any(|i| i.status == CheckStatus::Failed)
+    }
+
+    /// 待验证的条目数。
+    pub fn pending_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| i.status == CheckStatus::Pending)
+            .count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +343,39 @@ mod tests {
             chain.restore_to(99, "e4", "run-4"),
             Err(VersionRefusal::TargetVersionNotFound)
         );
+    }
+
+    #[test]
+    fn checklist_all_passed_requires_non_empty_and_every_item_passed() {
+        let mut list = Checklist::new();
+        // 空清单不得声称通过——没写清单不是通过
+        assert!(!list.all_passed(), "空清单不得通过");
+
+        list.add("c1", "单测全绿").unwrap();
+        list.add("c2", "脱敏扫描 0 命中").unwrap();
+        assert_eq!(list.pending_count(), 2);
+        assert!(!list.all_passed(), "全部处于 Pending 时不得通过");
+
+        list.mark("c1", CheckStatus::Passed, None);
+        assert!(!list.all_passed(), "部分通过不算全部通过");
+
+        list.mark("c2", CheckStatus::Passed, None);
+        assert!(list.all_passed(), "全部条目 Passed 才算通过");
+        assert!(!list.has_failures());
+        assert_eq!(list.pending_count(), 0);
+
+        // 出现一项 Failed ⇒ 不再通过且 has_failures 为真
+        list.mark("c2", CheckStatus::Failed, Some("发现 1 条命中"));
+        assert!(!list.all_passed());
+        assert!(list.has_failures());
+    }
+
+    #[test]
+    fn checklist_rejects_empty_titles_and_duplicate_ids() {
+        let mut list = Checklist::new();
+        assert_eq!(list.add("c1", ""), Err("title_empty"));
+        assert_eq!(list.add("c1", "   "), Err("title_empty"));
+        assert_eq!(list.add("c1", "合法标题"), Ok(()));
+        assert_eq!(list.add("c1", "重复 id"), Err("duplicate_id"));
     }
 }
