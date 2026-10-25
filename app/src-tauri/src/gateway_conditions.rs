@@ -34,6 +34,14 @@ pub enum Condition {
     HasImage(bool),
     /// 上下文里是否提到某个词（大小写不敏感）。
     ContextMentions(String),
+    /// **目录/文件边界**：请求触及的路径必须落在声明的根目录内。
+    ///
+    /// 判据是「路径解析后仍在根内」，不是「字符串前缀相同」——
+    /// `/work/app-evil` 以 `/work/app` 开头但**不在** `/work/app` 内，
+    /// 前缀比较会把它放行。含 `..` 的相对路径一律不满足（归一规则跨实现不一致）。
+    PathWithin { root: String, path: String },
+    /// **上下文升级**：上下文轮次达到阈值才命中（用于「长上下文升级到更强模型」）。
+    ContextDepth { min_turns: u32 },
 }
 
 /// 一次路由决策所依据的事实。**读不到的字段是 `None`**，不是默认值。
@@ -44,6 +52,10 @@ pub struct Facts {
     pub local_minutes: Option<u16>,
     pub has_image: Option<bool>,
     pub context: Option<String>,
+    /// 本次请求触及的路径（相对路径或绝对路径都行）。
+    pub touched_path: Option<String>,
+    /// 上下文轮次（对话已进行多少轮）。`None` = 读不到。
+    pub context_turns: Option<u32>,
 }
 
 /// 一条规则：条件全部满足（AND）才命中，指向一个目标。
@@ -84,8 +96,39 @@ impl Rule {
                 Some(context) => context.to_lowercase().contains(&needle.to_lowercase()),
                 None => false,
             },
+            Condition::PathWithin { root, path } => match &facts.touched_path {
+                Some(touched) => path_within(root, touched),
+                None => false,
+            },
+            Condition::ContextDepth { min_turns } => match facts.context_turns {
+                Some(turns) => turns >= *min_turns,
+                None => false,
+            },
         })
     }
+}
+
+/// 路径是否落在根目录内（**按路径段判断**，不是字符串前缀）。
+///
+/// `/work/app-evil` 以 `/work/app` 开头但不在其内——前缀比较会把它放行。
+/// 含 `..` 的相对路径一律判为不在根内（归一规则跨实现不一致，宁可拒）。
+pub fn path_within(root: &str, path: &str) -> bool {
+    let root = root.trim_end_matches('/');
+    let root_parts: Vec<&str> = root.split('/').filter(|s| !s.is_empty()).collect();
+    let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if path_parts.iter().any(|part| *part == "..") {
+        return false;
+    }
+    if root_parts.is_empty() {
+        return false;
+    }
+    if path_parts.len() < root_parts.len() {
+        return false;
+    }
+    root_parts
+        .iter()
+        .zip(path_parts.iter())
+        .all(|(root_part, path_part)| root_part == path_part)
 }
 
 /// 意图路由的结果。`Unavailable` 覆盖「超时/出错」——两者对路由的意义相同：
@@ -254,12 +297,14 @@ mod tests {
         }
     }
 
-    fn facts() -> Facts {
+    fn base_facts() -> Facts {
         Facts {
             project: Some("web".into()),
             local_minutes: Some(9 * 60), // 09:00
             has_image: Some(false),
             context: Some("请修一下登录页的样式".into()),
+            touched_path: None,
+            context_turns: None,
         }
     }
 
@@ -271,7 +316,7 @@ mod tests {
             rule("兜底", vec![], "fallback"),
         ];
         let mut sticky = Sticky::default();
-        let selection = route(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky);
+        let selection = route(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky);
         assert_eq!(
             selection,
             Selection::Target {
@@ -298,14 +343,14 @@ mod tests {
         // 图片为 false ⇒ AND 不满足 ⇒ 落到兜底
         let mut sticky = Sticky::default();
         assert_eq!(
-            route(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky),
+            route(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky),
             Selection::Target {
                 target: "fallback".into(),
                 source: "rule:兜底".into()
             }
         );
         // 事实读不到（None）⇒ 同样不满足（不折算成 true 也不折算成 false）
-        let mut unknown = facts();
+        let mut unknown = base_facts();
         unknown.has_image = None;
         let mut sticky = Sticky::default();
         assert_eq!(
@@ -331,7 +376,7 @@ mod tests {
         // 每个时刻用**独立**的黏性状态与轮次：否则上一例的黏性目标会被
         // 下一例继承（轮内一致性按设计如此——用例不能共享状态）。
         let at = |minutes: u16| {
-            let mut facts = facts();
+            let mut facts = base_facts();
             facts.local_minutes = Some(minutes);
             let mut sticky = Sticky::default();
             route(&rules, &facts, &Intent::Unavailable, minutes as u64, &mut sticky)
@@ -362,7 +407,7 @@ mod tests {
         let mut sticky = Sticky::default();
         // 意图不可用 ⇒ 降级到条件规则
         assert_eq!(
-            route(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky),
+            route(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky),
             Selection::Target {
                 target: "web-target".into(),
                 source: "rule:项目".into()
@@ -371,7 +416,7 @@ mod tests {
         // 意图可用 ⇒ 用意图目标（优先于规则）
         let mut sticky = Sticky::default();
         assert_eq!(
-            route(&rules, &facts(), &Intent::Resolved("intent-target".into()), 1, &mut sticky),
+            route(&rules, &base_facts(), &Intent::Resolved("intent-target".into()), 1, &mut sticky),
             Selection::Target {
                 target: "intent-target".into(),
                 source: "intent".into()
@@ -380,7 +425,7 @@ mod tests {
         // 意图可用但无匹配 ⇒ 也降级到规则（不是 Unrouted）
         let mut sticky = Sticky::default();
         assert_eq!(
-            route(&rules, &facts(), &Intent::NoMatch, 1, &mut sticky),
+            route(&rules, &base_facts(), &Intent::NoMatch, 1, &mut sticky),
             Selection::Target {
                 target: "web-target".into(),
                 source: "rule:项目".into()
@@ -396,7 +441,7 @@ mod tests {
         ];
         let mut sticky = Sticky::default();
         // 第一轮：命中项目规则
-        let first = route(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky);
+        let first = route(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky);
         assert_eq!(
             first,
             Selection::Target {
@@ -405,7 +450,7 @@ mod tests {
             }
         );
         // 同一轮内：事实变了（图片出现）也**保持**原目标（轮内一致性）
-        let mut with_image = facts();
+        let mut with_image = base_facts();
         with_image.has_image = Some(true);
         assert_eq!(
             route(&rules, &with_image, &Intent::Unavailable, 1, &mut sticky),
@@ -433,21 +478,21 @@ mod tests {
 
         // Normal 模式：意图不可用 ⇒ 降级到条件规则
         assert_eq!(
-            route_with_mode(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky, RoutingMode::Normal),
+            route_with_mode(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky, RoutingMode::Normal),
             Selection::Target { target: "web-target".into(), source: "rule:项目".into() }
         );
 
         // Strict 模式：意图不可用 ⇒ **直接 Unrouted**（Strict 不切，不猜）
         let mut sticky = Sticky::default();
         assert_eq!(
-            route_with_mode(&rules, &facts(), &Intent::Unavailable, 1, &mut sticky, RoutingMode::Strict),
+            route_with_mode(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky, RoutingMode::Strict),
             Selection::Unrouted,
             "Strict 模式下意图失败不许降级到条件规则"
         );
         // Strict 模式：意图命中正常走
         let mut sticky = Sticky::default();
         assert_eq!(
-            route_with_mode(&rules, &facts(), &Intent::Resolved("t1".into()), 1, &mut sticky, RoutingMode::Strict),
+            route_with_mode(&rules, &base_facts(), &Intent::Resolved("t1".into()), 1, &mut sticky, RoutingMode::Strict),
             Selection::Target { target: "t1".into(), source: "intent".into() }
         );
     }
@@ -476,5 +521,93 @@ mod tests {
         small_cache.put("prompt-new", "target-new", 2_000);
         assert_eq!(small_cache.get("prompt-0", 2_000), None);
         assert_eq!(small_cache.get("prompt-new", 2_000), Some("target-new"));
+    }
+
+    #[test]
+    fn path_conditions_are_judged_by_path_segments_not_string_prefix() {
+        let rules = vec![rule(
+            "工作区内",
+            vec![Condition::PathWithin {
+                root: "/work/app".into(),
+                path: "/work/app/src/main.rs".into(),
+            }],
+            "in-workspace",
+        )];
+
+        // 根内的路径命中
+        let mut facts = base_facts();
+        facts.touched_path = Some("/work/app/src/main.rs".into());
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route(&rules, &facts, &Intent::Unavailable, 1, &mut sticky),
+            Selection::Target {
+                target: "in-workspace".into(),
+                source: "rule:工作区内".into()
+            }
+        );
+
+        // **同前缀但不在根内** ⇒ 不命中（前缀比较会放行，这是最容易写错的一处）
+        let mut outside = base_facts();
+        outside.touched_path = Some("/work/app-evil/steal.sh".into());
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route(&rules, &outside, &Intent::Unavailable, 1, &mut sticky),
+            Selection::Unrouted,
+            "/work/app-evil 不在 /work/app 内"
+        );
+
+        // 含 `..` 的相对路径一律不满足
+        let mut traversal = base_facts();
+        traversal.touched_path = Some("/work/app/../../etc/passwd".into());
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route(&rules, &traversal, &Intent::Unavailable, 1, &mut sticky),
+            Selection::Unrouted,
+            "含 .. 的路径不得被放行"
+        );
+
+        // 读不到路径 ⇒ 不满足
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky),
+            Selection::Unrouted
+        );
+    }
+
+    #[test]
+    fn context_depth_drives_the_upgrade_rule() {
+        let rules = vec![rule(
+            "长上下文升级",
+            vec![Condition::ContextDepth { min_turns: 20 }],
+            "strong-model",
+        )];
+
+        // 轮次不足 ⇒ 不命中升级规则
+        let mut short = base_facts();
+        short.context_turns = Some(5);
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route(&rules, &short, &Intent::Unavailable, 1, &mut sticky),
+            Selection::Unrouted
+        );
+
+        // 轮次达到阈值 ⇒ 命中
+        let mut deep = base_facts();
+        deep.context_turns = Some(20);
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route(&rules, &deep, &Intent::Unavailable, 1, &mut sticky),
+            Selection::Target {
+                target: "strong-model".into(),
+                source: "rule:长上下文升级".into()
+            }
+        );
+
+        // 读不到轮次 ⇒ 不满足（不猜）
+        let mut sticky = Sticky::default();
+        assert_eq!(
+            route(&rules, &base_facts(), &Intent::Unavailable, 1, &mut sticky),
+            Selection::Unrouted
+        );
     }
 }
