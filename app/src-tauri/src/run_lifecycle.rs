@@ -61,6 +61,39 @@ impl Stage {
     }
 }
 
+/// 终态的具体原因（TASK-03「取消与关闭的对外区别」）。
+///
+/// 需求原文同时列了「完成/失败/关闭」与「启动、续跑、取消、重跑」：
+/// `Stage::Closed` 承载了人主动终止的语义，对外文案与审计必须能分清：
+/// - 用户在执行中按取消（`CancelledByUser`：有执行过程、被中断）；
+/// - 操作者在规划/等确认阶段作废（`ClosedByOperator`：无执行产出、计划被否）；
+/// - 机器掉线后被系统回收（`ReclaimedAfterDisconnect`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminationReason {
+    Completed,
+    Failed { error: String },
+    CancelledByUser { at_ms: i64 },
+    ClosedByOperator { at_ms: i64, note: Option<String> },
+    ReclaimedAfterDisconnect { machine_id: String },
+}
+
+impl TerminationReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed { .. } => "failed",
+            Self::CancelledByUser { .. } => "cancelled_by_user",
+            Self::ClosedByOperator { .. } => "closed_by_operator",
+            Self::ReclaimedAfterDisconnect { .. } => "reclaimed_after_disconnect",
+        }
+    }
+
+    /// 是否属于「取消」（区别于关闭/失败/完成）。
+    pub fn is_cancellation(&self) -> bool {
+        matches!(self, Self::CancelledByUser { .. })
+    }
+}
+
 /// 一次转移被拒绝时的理由。固定码，不带任何上下文。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -76,6 +109,8 @@ pub enum Refusal {
     RunAlreadyEnded,
     /// 已取消/关闭的运行不接受续跑。
     NotResumable,
+    /// 该机器的执行认领已过期或被抢占。
+    StaleExecutionClaim,
 }
 
 impl Refusal {
@@ -87,6 +122,7 @@ impl Refusal {
             Self::SameRole => "same_role",
             Self::RunAlreadyEnded => "run_already_ended",
             Self::NotResumable => "not_resumable",
+            Self::StaleExecutionClaim => "stale_execution_claim",
         }
     }
 }
@@ -132,8 +168,12 @@ pub struct Lifecycle {
     pub plan_confirmed: bool,
     /// 规划者。
     pub planner: Option<String>,
-    /// 执行者。
+    /// 执行者（当前被指派的机器或工人）。
     pub executor: Option<String>,
+    /// 终态原因（进入终态后必须设置）。
+    pub termination: Option<TerminationReason>,
+    /// 认领版本号（每次重新认领递增；防掉线机器脑裂）。
+    pub claim_version: u64,
 }
 
 impl Lifecycle {
@@ -144,7 +184,55 @@ impl Lifecycle {
             plan_confirmed: false,
             planner: None,
             executor: None,
+            termination: None,
+            claim_version: 1,
         }
+    }
+
+    /// 用户主动取消（必须处于执行或等待确认中）。
+    pub fn cancel_by_user(&mut self, now_ms: i64) -> Result<(), Refusal> {
+        if self.stage.is_terminal() {
+            return Err(Refusal::RunAlreadyEnded);
+        }
+        self.stage = Stage::Closed;
+        self.termination = Some(TerminationReason::CancelledByUser { at_ms: now_ms });
+        Ok(())
+    }
+
+    /// 操作者关闭/作废（计划被否或废弃）。
+    pub fn close_by_operator(&mut self, now_ms: i64, note: Option<&str>) -> Result<(), Refusal> {
+        if self.stage.is_terminal() {
+            return Err(Refusal::RunAlreadyEnded);
+        }
+        self.stage = Stage::Closed;
+        self.termination = Some(TerminationReason::ClosedByOperator {
+            at_ms: now_ms,
+            note: note.map(|n| n.trim().to_string()),
+        });
+        Ok(())
+    }
+
+    /// 机器掉线后被系统**重新认领**：版本递增、执行者切到新机器。
+    pub fn reclaim_after_disconnect(&mut self, new_executor: &str) -> Result<u64, Refusal> {
+        if self.stage.is_terminal() {
+            return Err(Refusal::RunAlreadyEnded);
+        }
+        self.claim_version += 1;
+        self.executor = Some(new_executor.to_string());
+        Ok(self.claim_version)
+    }
+
+    /// 执行机器汇报结果时**核对认领版本**：旧机器版本过时 ⇒ 拒绝以 StaleExecutionClaim（防脑裂）。
+    pub fn accept_claimed_result(
+        &mut self,
+        executor: &str,
+        claim_version: u64,
+        outcome: Stage,
+    ) -> Result<(), Refusal> {
+        if self.executor.as_deref() != Some(executor) || self.claim_version != claim_version {
+            return Err(Refusal::StaleExecutionClaim);
+        }
+        self.accept_result(outcome)
     }
 
     /// 通用转移：先查转移表，再查该转移附加的前置条件。
@@ -188,6 +276,13 @@ impl Lifecycle {
             return Err(Refusal::IllegalTransition);
         }
         self.stage = outcome;
+        self.termination = Some(match outcome {
+            Stage::Completed => TerminationReason::Completed,
+            Stage::Failed => TerminationReason::Failed {
+                error: "execution_failed".into(),
+            },
+            _ => unreachable!(),
+        });
         Ok(())
     }
 
@@ -383,5 +478,54 @@ mod tests {
             assert_eq!(life.stage, stage);
             assert_eq!(life.transition(Stage::Closed), Ok(()), "{stage:?} 应可关闭");
         }
+    }
+
+    #[test]
+    fn cancellation_and_operator_close_are_distinguished_externally() {
+        // 用户主动取消：is_cancellation 为真，带时间戳
+        let mut user_run = planned("worker-b");
+        user_run.plan_confirmed = true;
+        user_run.transition(Stage::Executing).unwrap();
+        user_run.cancel_by_user(5_000).unwrap();
+        assert_eq!(user_run.stage, Stage::Closed);
+        let term = user_run.termination.as_ref().unwrap();
+        assert_eq!(term.as_str(), "cancelled_by_user");
+        assert!(term.is_cancellation(), "用户取消必须被明确标为取消");
+
+        // 操作者关闭：is_cancellation 为假，带 note
+        let mut op_run = planned("worker-b");
+        op_run.close_by_operator(6_000, Some("需求变更")).unwrap();
+        assert_eq!(op_run.stage, Stage::Closed);
+        let op_term = op_run.termination.as_ref().unwrap();
+        assert_eq!(op_term.as_str(), "closed_by_operator");
+        assert!(!op_term.is_cancellation(), "操作者作废不是用户取消");
+    }
+
+    #[test]
+    fn machine_disconnect_reclaim_increments_claim_version_and_rejects_stale_executor() {
+        let mut life = planned("machine-1");
+        life.plan_confirmed = true;
+        life.transition(Stage::Executing).unwrap();
+        assert_eq!(life.claim_version, 1);
+
+        // machine-1 掉线，系统重新认领并交由 machine-2
+        let ver = life.reclaim_after_disconnect("machine-2").unwrap();
+        assert_eq!(ver, 2);
+        assert_eq!(life.executor.as_deref(), Some("machine-2"));
+
+        // machine-1 恢复后试图汇报版本 1 的结果 ⇒ 拒绝（防脑裂）
+        assert_eq!(
+            life.accept_claimed_result("machine-1", 1, Stage::Completed),
+            Err(Refusal::StaleExecutionClaim),
+            "旧机器持有的陈旧认领必须被拒绝"
+        );
+        assert_ne!(life.stage, Stage::Completed);
+
+        // machine-2 持有版本 2 汇报 ⇒ 正常接纳
+        assert_eq!(
+            life.accept_claimed_result("machine-2", 2, Stage::Completed),
+            Ok(())
+        );
+        assert_eq!(life.stage, Stage::Completed);
     }
 }
