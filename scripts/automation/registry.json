@@ -424,9 +424,10 @@
       "title": "独立 AI 审查与修改闭环",
       "checks": [
         "rust.default",
-        "task06.reviewloop"
+        "task06.reviewloop",
+        "task06.quality"
       ],
-      "coverage_note": "partial — 闭环机制已完整钉住（task06.reviewloop，2026-10-24）：docs/spec/审查闭环口径.md 把四个 token 逐一钉到实现锚点并由形状门禁核对——①独立只读审查（一次性工作区 readonly_source + 前后指纹对拍，写一个字整轮拒绝，mutate 场景是专门负例）；②作者≠审查者（validate_review 比对身份）；③修改后重审（revise 回完整审查、有轮次上限、门禁先绿前置）；④结果不越权批准（审查 verdict 只是报告字段；合并永远先过 candidate.verify 全链 + HEAD 绑定 + CI SHA 绑定，publish 闸门从不禁用校验）。双变异（删指纹对拍 / merge 跳过 verify）均被拒。**显式边界（如实）**：「独立 AI 审查」的 AI 部分当前是确定性 mock（review_kind 如实标注、independent_review=false、严格模式下不够格）——真实审查 driver 与真实作者 driver 走同一条可信授权策略硬门（trusted_authorization_policy_unconfigured，ADR 0040 边界），决策前不绕过；机制不因 driver 是 mock 而变弱。缺：真实 AI 审查 driver（待授权策略）、审查内容质量的度量。",
+      "coverage_note": "partial — 首片（v0.0.372）：审查闭环口径（docs/spec/审查闭环口径.md + 形状门禁 task06.reviewloop：只读审查+指纹对拍、作者≠审查者、修改后重审有界、结论不越权批准——merge 永远先过 candidate.verify 全链）；**第二片（2026-10-27）：审查内容质量的度量口径**（review_quality.rs）：关键文件覆盖度（漏审 ⇒ 报告不完整不算通过）、发现分级与结论自洽（pass 却有阻断项 ⇒ 拒绝）、修改后重审须重新覆盖被改动的文件、作者≠审查者（身份或模型相同都算同一作者）、结论上限按最严重发现取。5 条用例 + 变异（摘掉覆盖度检查）被拒。全量 1353 passed，脱敏 0 命中。缺：真实 AI 审查 driver（待可信授权策略验证器——ADR 0040 边界）、质量度量接入审查闭环的接线、端到端验收。",
       "status": "partial"
     },
     "TASK-07": {
@@ -2992,6 +2993,25 @@
       "test_files": [
         "app/src-tauri/src/task_board_drag.rs"
       ]
+    },
+    "task06.quality": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "review_quality"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-06 第二片：审查**内容质量**的度量口径（review_quality.rs 纯函数；闭环机制已在 v0.0.372 定住，但「什么样的审查结论才算数」没有口径——漏审关键文件、或列了阻断项却给 pass 的审查，与认真审过的审查长得一模一样）。四条语义：①**覆盖度**（关键文件必须全部被审查覆盖，漏审任一 ⇒ 报告不完整，不能算通过——报告不完整 ≠ 没问题）；②**发现分级**（阻断/建议/提示）与**结论自洽**（有阻断项却判 pass ⇒ 自相矛盾，拒绝而不是采信其中一边）；③**修改后重审须重新覆盖**（旧结论覆盖的是旧内容，不能顺延到新内容上）；④**作者≠审查者**（身份或模型相同都算同一作者——自我审查不算独立）；另给出 verdict_ceiling（结论该取什么）与自洽性分开。5 条用例 + 变异（摘掉覆盖度检查）被拒。全量 1353 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/review_quality.rs"
+      ]
     }
   },
   "agents": {
@@ -3209,6 +3229,7 @@
       "automation.break-snapshot",
       "auto01.publish",
       "task06.reviewloop",
+      "task06.quality",
       "auto01.buildlock",
       "auto01.restartapp",
       "automation.update-manifest",
@@ -3382,6 +3403,7 @@
       "automation.break-snapshot",
       "auto01.publish",
       "task06.reviewloop",
+      "task06.quality",
       "not01.ledgerrestart",
       "auto01.restartapp",
       "not05.remotedelivery",
@@ -3517,7 +3539,7 @@
       "title": "VM 连跑多轮原生验收后来宾 UI 冒烟偶发「没有结果」：三个窗口前端未完成点按，重启来宾后恢复",
       "status": "open",
       "requirement": "OPS-01",
-      "evidence": "2026-10-25 v0.0.385 首跑发版：五道原生门禁第一道 ui-smoke.sh 报三窗口均为 running、未点到元素失败；同一产物在 tart stop + tart run 重启来宾后单独复跑 native-gates-vm.py，五道门禁全绿（All native gates passed）。与 BUG-013 同型（连跑多轮后累积的来宾系统状态劣化）。处置：连续跑多轮发布时，每 3–4 轮主动重启一次来宾；若再次出现，考虑让 native-gates-vm.py 在起跑前检测来宾运行时间或加一次重试。"
+      "evidence": "2026-10-25 v0.0.385 首跑发版：五道原生门禁第一道 ui-smoke.sh 报三窗口均为 running、未点到元素失败；同一产物在 tart stop + tart run 重启来宾后单独复跑 native-gates-vm.py，五道门禁全绿（All native gates passed）。与 BUG-013 同型（连跑多轮后累积的来宾系统状态劣化）。处置：连续跑多轮发布时，每 3–4 轮主动重启一次来宾；若再次出现，考虑让 native-gates-vm.py 在起跑前检测来宾运行时间或加一次重试。 **2026-10-25 追加（关键操作细节）**：v0.0.414 发版时查明——**来宾重启后的第一次原生门禁必失败**（UI 冒烟三窗口报「没有结果」= WebView 冷启动未就绪），第二次跑才全绿。因此「重启来宾」不是修复手段本身：必须**重启后先跑一次预热**（失败也算预热完成），紧接着发版；来宾长时间闲置（每轮间隔 4 分钟）也会让 WebKit 被挂起而复现同样的假失败。处置：发版前预热来宾一次；预热后立刻发版，缩短来宾空闲时间。"
     },
     {
       "id": "BUG-015",
