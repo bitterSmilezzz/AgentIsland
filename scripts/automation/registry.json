@@ -172,10 +172,11 @@
         "task01.detailnav",
         "rust.default",
         "task01.tasksearch",
-        "task01.deps"
+        "task01.deps",
+        "task01.drag"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；**跨项目搜索**（task01.tasksearch：按名称或来源跨项目命中、与项目/归档过滤组合、空结果如实说、纯前端过滤不多发请求）；**项目依赖判据**（task01.deps，2026-10-27）：依赖存在性、循环拒绝（直接/间接）、深度上限 8、删除守卫（仍被依赖不许删）、自依赖拒绝、传递依赖闭包去重；6 条用例 + 变异（摘环检测）被拒。全量 1315 passed，脱敏 0 命中。缺：看板拖拽（列是观测派生状态——拖拽语义需先定「拖到已结束是否改写运行记录」的产品口径，未拍板不做）、actor-based authorization（单用户本机工具无多 actor 面）、依赖关系与存储层的接线（判据已定，实现未接）。",
+      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；跨项目搜索（task01.tasksearch）；项目依赖判据（task01.deps：依赖存在性/循环/深度上限/删除守卫/自依赖/传递闭包）；**看板拖拽语义**（task01.drag，2026-10-27）：把「拖到已结束意味着什么」固化成可选项——看板四列全由运行状态派生，因此拖到派生列**不直接改状态**，而是产出带 expected_revision 的状态变更请求由既有状态机执行；拖拽**不改写历史**（不产生新运行记录）；拖到项目分组改归属；任务不存在/已归档/目标缺失/revision 不符一律拒绝（并发改动拒绝而非覆盖）。5 条用例 + 变异（绕过状态机直接改）被拒。全量 1348 passed，脱敏 0 命中。缺：拖拽的界面实现与接线（判据已定）、依赖关系与存储层的接线、actor-based authorization（单用户工具无多 actor 面）。",
       "status": "partial"
     },
     "TASK-04": {
@@ -2972,6 +2973,25 @@
       "test_files": [
         "app/src-tauri/src/soak_phases.rs"
       ]
+    },
+    "task01.drag": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "task_board_drag"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-01 进展：看板**拖拽语义**判据（task_board_drag.rs 纯函数）。背景：看板四列（需处理/执行中/未开始/已结束）全部由运行状态派生（前端 taskGroup），不是可随手拖入的容器——因此「拖到已结束」必须先说清后果。四条语义：①**不改写历史**（拖拽只改看板投影，不产生新运行记录、不改运行状态——否则「拖一下卡片」就凭空多出一次执行，账目与审计全对不上）；②**状态变更请求**（拖到派生列不直接改状态，产出带 expected_revision 的请求，由既有状态机执行）；③**归属变更**（拖到项目分组改归属，同样带 revision）；④**越权与未知目标一律拒绝**（任务不存在/已归档/目标缺失/revision 不符——并发改动拒绝而非覆盖）。5 条用例 + 变异（绕过状态机直接改）被拒。全量 1348 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/task_board_drag.rs"
+      ]
     }
   },
   "agents": {
@@ -3165,6 +3185,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task01.deps",
+      "task01.drag",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",
@@ -3334,6 +3355,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task01.deps",
+      "task01.drag",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",

@@ -97,6 +97,7 @@ mod skills_picker;
 mod smtp;
 mod sqlite;
 mod task_artifacts;
+mod task_board_drag;
 mod task_attention;
 mod task_sources;
 mod task_schedule;
