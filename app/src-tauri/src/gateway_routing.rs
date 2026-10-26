@@ -42,6 +42,9 @@ pub struct Candidate {
     pub weight: Option<u32>,
     /// 运行态：被暂停的候选不参与选择（不改变配置合法性）。
     pub paused: bool,
+    /// smart 策略的健康度评分（0..=100 分制，对齐 `health.rs`）。
+    /// `None` = 尚未观测/未评估（不折算 0 也不折算 100）。
+    pub health_score: Option<u8>,
     /// usage 策略的用量读数；`None` = 读不到（不折算 0）。
     pub usage: Option<u64>,
     /// pace 策略的已发请求数；未统计按 0。
@@ -83,15 +86,33 @@ impl Strategy {
         let index = match self {
             Self::Order => active[0],
             Self::Smart => {
-                // smart 的评分地基：暂以「用量已知且最低」为最优，未知不参与比较、
-                // 评分并列取声明序。真正的健康度评分接入转发层后在此替换——
-                // 但「并列取声明序、未知不猜测」的确定性规则不变。
-                active
-                    .iter()
-                    .copied()
-                    .filter(|&i| candidates[i].usage.is_some())
-                    .min_by_key(|&i| (candidates[i].usage.unwrap(), i))
-                    .unwrap_or(active[0])
+                // smart 的多维健康度判定（GW-04 真实健康度评分判据）：
+                // 1. 已知健康度（0..=100）最高者优先（未知排在已知之后）；
+                // 2. 健康度相同，用量（已知且最低）优先；
+                // 3. 仍并列取声明序（确定性优先，需求第一个词）。
+                let mut best = active[0];
+                for &i in &active {
+                    let score = candidates[i].health_score;
+                    let best_score = candidates[best].health_score;
+                    let better = match (score, best_score) {
+                        (Some(s), Some(bs)) if s != bs => s > bs,
+                        (Some(_), None) => true,  // 已知健康度优于未知
+                        (None, Some(_)) => false, // 未知排在已知之后
+                        _ => {
+                            // 健康度相同或都未知 ⇒ 比用量（已知且最低优先）
+                            match (candidates[i].usage, candidates[best].usage) {
+                                (Some(u), Some(bu)) if u != bu => u < bu,
+                                (Some(_), None) => true,
+                                (None, Some(_)) => false,
+                                _ => i < best, // 仍并列取声明序
+                            }
+                        }
+                    };
+                    if better {
+                        best = i;
+                    }
+                }
+                best
             }
             Self::Rotate => active[(rotation_index as usize) % active.len()],
             Self::Usage => active
@@ -234,6 +255,7 @@ mod tests {
             name: name.into(),
             weight: None,
             paused: false,
+            health_score: None,
             usage: None,
             issued: 0,
         }
@@ -417,5 +439,37 @@ mod tests {
             Err("cycle"),
             "带环组必须在展开前被拒"
         );
+    }
+
+    #[test]
+    fn smart_strategy_prioritizes_health_then_usage_then_declaration_order() {
+        // a: 健康度 80，用量 100
+        // b: 健康度 95（最高），用量 500
+        // c: 健康度未知，用量 50（最低）
+        let mut a = candidate("a");
+        a.health_score = Some(80);
+        a.usage = Some(100);
+
+        let mut b = candidate("b");
+        b.health_score = Some(95);
+        b.usage = Some(500);
+
+        let mut c = candidate("c");
+        c.health_score = None;
+        c.usage = Some(50);
+
+        // 健康度第一：虽然 b 用量高，但健康度最高 ⇒ 选 b
+        let list = vec![a.clone(), b.clone(), c.clone()];
+        assert_eq!(chosen(Strategy::Smart, &list, 0), Some(1), "健康度最高者优先");
+
+        // 当健康度相同（同为 90）：比用量最低
+        let mut a_equal = a.clone();
+        a_equal.health_score = Some(95); // 与 b 相同，但 a 用量 100 < b 用量 500
+        let list_equal = vec![a_equal, b.clone()];
+        assert_eq!(chosen(Strategy::Smart, &list_equal, 0), Some(0), "健康度并列时用量最低者优先");
+
+        // 未知健康度的候选排在已知之后（即使其用量再低，也不能胜过已知健康节点）
+        let list_unknown = vec![c.clone(), a.clone()];
+        assert_eq!(chosen(Strategy::Smart, &list_unknown, 0), Some(1), "已知健康节点优于未知节点");
     }
 }
