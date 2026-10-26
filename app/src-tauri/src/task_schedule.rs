@@ -51,7 +51,10 @@ pub const MAX_QUEUED_OVERLAPS: usize = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleState {
     Active,
+    /// 人手动暂停（**只有人能解除**）。
     Paused,
+    /// 额度熔断（额度恢复后可自动回到 Active）。
+    BudgetExhausted,
     Cancelled,
     Finished, // Once 触发完成
 }
@@ -69,6 +72,8 @@ pub enum TriggerAction {
     ReplaceRunning,
     /// 处于暂停、取消或完成状态，不触发。
     Suppressed,
+    /// 额度熔断：不触发（已在跑的**不打断**）。
+    BudgetBlocked,
 }
 
 /// 一条定时触发任务的判据状态。
@@ -88,6 +93,10 @@ pub struct ScheduledTask {
     pub fire_count: u64,
     /// 剩余重试次数：每轮触发分配 1 次，失败重试后归 0。
     pub retries_left: u8,
+    /// 额度上限（`None` = 未设额度 = 不限）。
+    pub budget_limit: Option<u64>,
+    /// 本周期已消耗的额度。
+    pub budget_spent: u64,
 }
 
 impl ScheduledTask {
@@ -102,13 +111,71 @@ impl ScheduledTask {
             missed_count: 0,
             fire_count: 0,
             retries_left: 1,
+            budget_limit: None,
+            budget_spent: 0,
         }
+    }
+
+    /// 设置额度上限（`None` = 不限）。
+    pub fn with_budget(mut self, limit: Option<u64>) -> Self {
+        self.budget_limit = limit;
+        self
+    }
+
+    /// 额度是否已耗尽。
+    pub fn budget_exhausted(&self) -> bool {
+        match self.budget_limit {
+            Some(limit) => self.budget_spent >= limit,
+            None => false,
+        }
+    }
+
+    /// 消费额度（一次触发记一次）。**不打断在跑的运行**——
+    /// 额度用尽只挡新活，打断在跑的只会留下半成品。
+    pub fn spend_budget(&mut self, amount: u64) {
+        self.budget_spent = self.budget_spent.saturating_add(amount);
+        self.apply_budget_state();
+    }
+
+    /// 额度周期重置：把已消耗清零并**尝试解冻**。
+    ///
+    /// **手动暂停不会被额度重置解除**——暂停是人的决定，只有人能解除。
+    pub fn reset_budget(&mut self) {
+        self.budget_spent = 0;
+        self.apply_budget_state();
+    }
+
+    /// 额度状态同步到调度状态。
+    fn apply_budget_state(&mut self) {
+        if self.state == ScheduleState::Paused || self.state == ScheduleState::Cancelled {
+            return; // 手动暂停/取消优先，不被额度状态覆盖
+        }
+        if self.state == ScheduleState::Finished {
+            return;
+        }
+        self.state = if self.budget_exhausted() {
+            ScheduleState::BudgetExhausted
+        } else {
+            ScheduleState::Active
+        };
+    }
+
+    /// 额度恢复（充值/额度提升）：若当前因额度熔断则回到 Active。
+    pub fn grant_budget(&mut self, additional: u64) {
+        self.budget_spent = self.budget_spent.saturating_sub(additional);
+        self.apply_budget_state();
     }
 
     /// 触发拍到达时的判定。
     pub fn on_schedule_tick(&mut self) -> TriggerAction {
-        if self.state != ScheduleState::Active {
-            return TriggerAction::Suppressed;
+        match self.state {
+            ScheduleState::Active => {}
+            ScheduleState::BudgetExhausted => return TriggerAction::BudgetBlocked,
+            _ => return TriggerAction::Suppressed,
+        }
+        if self.budget_exhausted() {
+            self.state = ScheduleState::BudgetExhausted;
+            return TriggerAction::BudgetBlocked;
         }
 
         if !self.is_running {
@@ -166,16 +233,24 @@ impl ScheduledTask {
     }
 
     /// 暂停触发（不改变规格，不丢计数）。
+    ///
+    /// **手动暂停优先于额度状态**：额度恢复/重置都不会解除它——暂停是人的决定。
     pub fn pause(&mut self) {
-        if self.state == ScheduleState::Active {
+        if self.state == ScheduleState::Active
+            || self.state == ScheduleState::BudgetExhausted
+        {
             self.state = ScheduleState::Paused;
         }
     }
 
-    /// 恢复触发。
+    /// 恢复触发（只有人能解除手动暂停）。
     pub fn resume(&mut self) {
         if self.state == ScheduleState::Paused {
-            self.state = ScheduleState::Active;
+            self.state = if self.budget_exhausted() {
+                ScheduleState::BudgetExhausted
+            } else {
+                ScheduleState::Active
+            };
         }
     }
 
@@ -286,6 +361,69 @@ mod tests {
         // 重试再次失败 ⇒ 不再重试（返回 false，running 变为 false）
         assert!(!task.on_run_finished(false));
         assert!(!task.is_running);
+    }
+
+    #[test]
+    fn an_exhausted_budget_blocks_new_ticks_but_does_not_interrupt_a_running_one() {
+        let mut task = ScheduledTask::new(
+            "t-budget",
+            ScheduleSpec::Hourly { minute: 0 },
+            OverlapPolicy::Skip,
+        )
+        .with_budget(Some(2));
+
+        // 两轮触发消耗完额度（每轮结束后再触发下一轮——重叠策略下上一轮未结束时
+        // 本就是 SkipOverlap，不是 Fire）
+        assert_eq!(task.on_schedule_tick(), TriggerAction::Fire);
+        task.spend_budget(1);
+        task.on_run_finished(true);
+        assert_eq!(task.on_schedule_tick(), TriggerAction::Fire);
+        task.spend_budget(1);
+        assert!(task.budget_exhausted());
+        // **第二轮此刻仍在跑**（不调 on_run_finished）——下面要断言的就是
+        // 「熔断不打断在跑的那次」。
+
+        // 额度耗尽 ⇒ 不再触发新活，但**在跑的那次不受影响**
+        assert!(task.is_running, "额度熔断不得打断在跑的运行");
+        assert_eq!(task.on_schedule_tick(), TriggerAction::BudgetBlocked);
+        assert_eq!(task.state, ScheduleState::BudgetExhausted);
+        assert!(task.is_running, "熔断后仍在跑的那次继续跑完");
+    }
+
+    #[test]
+    fn budget_recovery_unfreezes_but_never_unpauses_a_manual_pause() {
+        let mut task = ScheduledTask::new(
+            "t-recover",
+            ScheduleSpec::Daily { hour: 9, minute: 0 },
+            OverlapPolicy::Skip,
+        )
+        .with_budget(Some(1));
+        task.on_schedule_tick();
+        task.spend_budget(1);
+        task.on_run_finished(true);
+        assert_eq!(task.on_schedule_tick(), TriggerAction::BudgetBlocked);
+
+        // 额度恢复 ⇒ 解冻
+        task.grant_budget(1);
+        assert_eq!(task.state, ScheduleState::Active);
+        assert_eq!(task.on_schedule_tick(), TriggerAction::Fire);
+        task.on_run_finished(true);
+
+        // 手动暂停后，额度重置**不解除**暂停（暂停是人的决定）
+        task.pause();
+        task.spend_budget(1);
+        task.reset_budget();
+        assert_eq!(
+            task.state,
+            ScheduleState::Paused,
+            "额度重置不得解除手动暂停——只有人能解除"
+        );
+        assert_eq!(task.on_schedule_tick(), TriggerAction::Suppressed);
+
+        // 人自己恢复 ⇒ 触发
+        task.resume();
+        assert_eq!(task.state, ScheduleState::Active);
+        assert_eq!(task.on_schedule_tick(), TriggerAction::Fire);
     }
 
     #[test]
