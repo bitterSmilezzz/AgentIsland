@@ -381,9 +381,10 @@
       "title": "fallback、退避与错误分类",
       "checks": [
         "rust.default",
-        "gw06.retrytable"
+        "gw06.retrytable",
+        "gw06.fallback"
       ],
-      "coverage_note": "partial — 首片（2026-10-24）：**错误分类与首字节前重试资格的判据表**（gateway_retry.rs，纯函数、转发层 GW-03 落地前先钉口径——等实现时再定口径，每个新协议都会各定一套）。账号（401/403/刷新失败=重试换不来权限）/模型·请求（400/404/422/坏响应=原样重发必然失败）/限流（429=对端指示节奏）/服务·网络（5xx/超时/TLS=有界重试共 3 次）/配置（修配置不重试）五类分开；HttpStatus 桶全状态码落类确定、未列名 4xx 显式兜底（新语义必须列名配用例）；三条用例 + 变异（账号错误判为可重试）被两用例同拒。**明文排除（如实）**：流中失败不拼接回答/不重复工具与计费——属转发层流式状态机（首字节已到、部分内容已交给调用方之后任何失败都不可自动重试），判据表不冒充覆盖；fallback 链与退避节奏（候选组/指数退避）待 GW-04 路由组一起落地（同一消费方）。缺：转发层真实接入后的端到端验收。",
+      "coverage_note": "partial — 首片（v0.0.374）：**重试资格判据表**（gateway_retry.rs 纯函数）：Transient（链路/服务抖动）才自动重试、有界预算（共 3 次尝试）、账号权限类不重试（换不来权限）、请求类不重试（原样重发必然同样失败）、限流不重试（对端说了什么时候再来）。**第二片（2026-10-27）：候选耗尽后的有序降级链**（gateway_fallback.rs）。只有 Transient 值得降级（账号/请求/配置/限流都不降级——换机器换凭据换不来结果，只会把失败扩散到整条链）；链按声明顺序走（挑选是 gateway_routing 的职责，两者不混）、重复候选拒绝（会绕圈）、链长上限 8、空链拒绝、链走完返回 None（如实报「所有候选都试过了」）；重试=同一目标再试一次，fallback=换目标。4 条用例 + 变异（任何错误都降级）被拒。全量 1319 passed，脱敏 0 命中。缺：转发层真实接入后的端到端验收（需真实网关与凭据）、流中失败的状态机（属转发层）。",
       "status": "partial"
     },
     "TASK-02": {
@@ -2855,6 +2856,25 @@
       "test_files": [
         "app/src-tauri/src/project_deps.rs"
       ]
+    },
+    "gw06.fallback": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "gateway_fallback"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-06 第二片：候选耗尽后的**有序降级链**判据（gateway_fallback.rs 纯函数）。核心语义：**fallback 不是「失败就换下一个」**——①**降级资格**只有 Transient（链路/服务抖动）才降级；账号权限类不降级（换机器换凭据都换不来结果，只会把失败扩散到整条链）、请求/模型侧不降级（原样重发必然同样失败）、配置类不降级、限流也不自动降级（对端说了什么时候再来，换节点撞同一堵墙只是浪费配额）；②链是**声明顺序**的候选列表（挑选是 gateway_routing 的职责，两者不混）；③链上重复候选拒绝（会绕圈）、链长上限 8、空链拒绝；④链走完返回 None（**不是错误**：调用方据此如实报「所有候选都试过了」）；重试与降级的区别：重试是同一目标再试一次，fallback 是换目标。4 条用例 + 变异（任何错误都降级）被拒。全量 1319 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/gateway_fallback.rs"
+      ]
     }
   },
   "agents": {
@@ -3020,6 +3040,7 @@
       "automation.registry",
       "rust.default",
       "gw06.retrytable",
+      "gw06.fallback",
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
@@ -3183,6 +3204,7 @@
       "automation.registry",
       "rust.default",
       "gw06.retrytable",
+      "gw06.fallback",
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
