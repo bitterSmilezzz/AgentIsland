@@ -265,10 +265,11 @@
         "ops01.resourcesoak",
         "ops01.nativegates",
         "rust.default",
-        "ops01.diskfull"
+        "ops01.diskfull",
+        "ops01.soakphases"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 热/稳态 soak、清理失败、崩溃部分、原子写与坏文件保原件已有；**磁盘满/有界写入失败**（ops01.diskfull，2026-10-24）：atomic_write_validated 的 write_all 中途 Err ⇒ 原件逐字节不动、暂存被守卫清理、错误显式返回、限额内写入照常成功（归因于限额本身）；以 RLIMIT_FSIZE 注入同一条失败路径（EFBIG 而非 ENOSPC——真实磁盘满需挂载小容量镜像，hdiutil 在本机被系统拒绝（Operation not permitted，TCC 级环境限制，如实登记）；两条错误码的处理路径完全相同，失败处理不看 errno）；RLIMIT 是进程级限制，测试 #[ignore] 由门禁以 --ignored --test-threads=1 单独运行；变异（吞掉 write_all 错误）被拒。缺：冷 soak、扩展 soak(>30min)、网关背压（GW-08 边界：当前代码不存在网关用量源）、升级回滚（与 NOT-06 真实安装路径同属外部验收层）。",
+      "coverage_note": "partial — 热/稳态 soak、清理失败、崩溃部分、原子写与坏文件保原件已有；**冷/热/稳态分段判据**（ops01.soakphases，2026-10-27）：三阶段按「连续稳定采样」推进（不按分钟数）；冷启动窗口的峰值单列、不作稳态基线也不参与漂移/增长判定（一次性开销不是泄漏）；稳态漂移越界报告基线与上限（不下「泄漏」结论）；单调增长早于越界报警；间隔异常/时钟回拨的采样被排除而非当成增长（判定基准是最近观测）。5 条用例 + 变异（摘掉漂移检查）被拒。全量 1343 passed，脱敏 0 命中。**过程中修掉三个真 bug**：①漂移判据拿「增量 > 绝对上限」比较（条件永远为假，越界形同虚设）；②冷启动峰值只在第一个样本记录（phase 立刻转 Warm）；③不规整样本不更新基准，导致时钟回拨被算成正常间隔。缺：扩展 soak(>30min) 与真实进程采样（需长时档）、网关背压（GW-08 边界：当前无网关用量源）、升级回滚（与 NOT-06 真实安装路径同属外部验收层）。",
       "status": "partial"
     },
     "NOT-02": {
@@ -2952,6 +2953,25 @@
       "requires_live_service": false,
       "requires_spending": false,
       "source": "TASK-08 第二片：额度熔断与**手动暂停的优先级**（task_schedule.rs 扩展）。三条语义：①额度耗尽 ⇒ 熔断触发（TriggerAction::BudgetBlocked），**已在跑的那次不被打断**（额度用尽只挡新活，打断在跑的只会留下半成品）；②额度恢复（充值 grant_budget）或周期重置（reset_budget）⇒ 自动解冻回 Active；③**手动暂停优先且不被额度状态覆盖**——暂停是人的决定，只有人能解除，额度重置不得解除它。2 条新用例 + 变异（额度重置解除手动暂停）被拒。全量 1338 passed，脱敏 0 命中。（test_files 不重复登记：task_schedule.rs 归 task08.schedule；本检查是它的定向过滤。）"
+    },
+    "ops01.soakphases": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "soak_phases"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "OPS-01 首片：资源 soak 的**冷/热/稳态分段判据**（soak_phases.rs 纯函数；此前 soak 检查是故障注入式的，不验证「长时间跑会不会涨」）。四条语义：①**三阶段推进**（冷启动窗口前 COLD_SAMPLES 个样本 → 预热 → 连续 STEADY_SAMPLES 次稳定达阈值才进稳态；按「连续稳定」而非「跑够多少分钟」——机器慢时按时间判定会把没稳的当稳的）；②**冷启动峰值单列**（一次性开销不是泄漏，不作稳态基线，也不参与漂移/增长判定）；③**稳态漂移越界报告事实**（基线+允许漂移的绝对上限，越界给出基线与上限，**不下「泄漏」的结论**）；④**单调增长检测**（连续 GROWTH_STREAK 次增长，早于越界报警）+**不规整采样排除**（间隔异常/时钟回拨的样本排除而非当成增长；判定基准是最近一次观测，否则回拨会被算成正常间隔）。5 条用例 + 变异（摘掉漂移检查）被拒。全量 1343 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/soak_phases.rs"
+      ]
     }
   },
   "agents": {
@@ -3102,6 +3122,7 @@
       "ops01.memosoakres",
       "ops01.measuremem",
       "ops01.resourcesoak",
+      "ops01.soakphases",
       "ops01.nativegates",
       "ops01.diskfull",
       "auto01.staging",
@@ -3269,6 +3290,7 @@
       "ops01.memosoakres",
       "ops01.measuremem",
       "ops01.resourcesoak",
+      "ops01.soakphases",
       "ops01.nativegates",
       "ops01.diskfull",
       "auto01.staging",

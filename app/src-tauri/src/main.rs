@@ -89,6 +89,7 @@ mod session_navigation;
 mod settings;
 mod skill_files;
 mod skill_package_guard;
+mod soak_phases;
 mod skills_config;
 #[cfg(unix)]
 mod skills_package;
