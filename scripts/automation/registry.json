@@ -354,9 +354,10 @@
       "checks": [
         "rust.default",
         "gw03.protocolmatrix",
-        "gw03.sse"
+        "gw03.sse",
+        "gw03.toolcalls"
       ],
-      "coverage_note": "partial — 首片（v0.0.378）：四类协议兼容矩阵（gateway_protocol.rs + docs/spec/协议兼容矩阵.md，Chat/Responses/Messages/Gemini × 流式/tools/reasoning/usage/cancel，不支持≠未知）；**第二片（2026-10-25）：流式网关的 SSE 增量解析器**（sse_parser.rs 纯函数）。①任意切片安全（逐字节/两字节/拆开 CRLF 的切片与一次性解析完全一致）；②字段解析（data 多行以 \\n 拼接、注释行忽略、空行派发）；③有界（行 64KB、事件 256KB、流 10000 条，超限明确拒绝）；④取消即停（cancel 丢缓冲、后续字节拒以 Cancelled）；6 条用例 + 变异（data 换空格拼接）被拒。全量 1293 passed，脱敏 0 命中。缺：16 协议方向的细粒度场景（tools 分片/结果/并行、reasoning 内容形态、usage 字段映射）、畸形/过深/超限 JSON 输入在各协议适配器里的解析、四类协议的真实端到端验收。",
+      "coverage_note": "partial — 首片（v0.0.378）：四类协议兼容矩阵（Chat/Responses/Messages/Gemini × 流式/tools/reasoning/usage/cancel，不支持≠未知）；第二片（v0.0.399）：SSE 增量解析器（任意切片安全、行/事件/流三级有界、取消即停）；**第三片（2026-10-27）：流式工具调用的聚合判据**（tool_call_aggregate.rs）：按 call id 归属（无 id 拒绝，不并到最近一个调用）、参数分片按序拼接（seq 必须递增，乱序判协议违例）、结果归属唯一（不同结果冲突拒绝，相同重报幂等）、**未闭合的调用如实标 Incomplete**（半截参数被当完整参数去执行是危险的）、并行调用互不干扰；7 条用例 + 变异（未闭合当完成）被拒。全量 1331 passed，脱敏 0 命中。缺：reasoning 内容形态与 usage 字段映射、流中失败的状态机、畸形/过深 JSON、四类协议真实端到端验收。",
       "status": "partial"
     },
     "GW-04": {
@@ -2895,6 +2896,25 @@
       "test_files": [
         "app/src-tauri/src/artifact_store.rs"
       ]
+    },
+    "gw03.toolcalls": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "tool_call_aggregate"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-03 第三片：流式工具调用的**聚合判据**（tool_call_aggregate.rs 纯函数，消费 sse_parser 的事件）。五条语义：①按 call id 归属（无 id 的事件**无法归属**⇒拒绝 MissingCallId，不并到「最近一个」调用上——那会把参数接到别的工具上）；②参数分片按序拼接（带 seq 的分片序号必须递增，乱序判协议违例 OutOfOrderDelta，不拼出错乱参数串）；③结果归属唯一（同一调用收到两个**不同**结果⇒冲突拒绝 ConflictingResult；相同结果重报是幂等，允许）；④**未闭合的调用如实标注 Incomplete**（半截参数被当成完整参数去执行是危险的）；⑤并行调用互不干扰（各自累积、按到达顺序）。非工具事件（文本 delta/usage）由别的层消费，本层返回 Ok(false) 表示「不归我管」。7 条用例 + 变异（未闭合当完成）被拒。全量 1331 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/tool_call_aggregate.rs"
+      ]
     }
   },
   "agents": {
@@ -3065,6 +3085,7 @@
       "gw05.conditions",
       "gw03.protocolmatrix",
       "gw03.sse",
+      "gw03.toolcalls",
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",
@@ -3230,6 +3251,7 @@
       "gw05.conditions",
       "gw03.protocolmatrix",
       "gw03.sse",
+      "gw03.toolcalls",
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",

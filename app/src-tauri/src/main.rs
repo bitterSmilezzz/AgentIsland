@@ -104,6 +104,7 @@ mod tasks;
 mod testutil;
 mod text_guard;
 mod todos;
+mod tool_call_aggregate;
 mod tokens;
 mod transport;
 mod trees;
