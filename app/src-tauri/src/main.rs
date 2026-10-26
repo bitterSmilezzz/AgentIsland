@@ -5,6 +5,7 @@
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod agent_resources;
 mod artifact_limits;
 mod artifact_store;
 mod artifact_version;
