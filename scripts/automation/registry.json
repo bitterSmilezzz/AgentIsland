@@ -355,9 +355,10 @@
         "rust.default",
         "gw03.protocolmatrix",
         "gw03.sse",
-        "gw03.toolcalls"
+        "gw03.toolcalls",
+        "gw03.usage"
       ],
-      "coverage_note": "partial — 首片（v0.0.378）：四类协议兼容矩阵（Chat/Responses/Messages/Gemini × 流式/tools/reasoning/usage/cancel，不支持≠未知）；第二片（v0.0.399）：SSE 增量解析器（任意切片安全、行/事件/流三级有界、取消即停）；**第三片（2026-10-27）：流式工具调用的聚合判据**（tool_call_aggregate.rs）：按 call id 归属（无 id 拒绝，不并到最近一个调用）、参数分片按序拼接（seq 必须递增，乱序判协议违例）、结果归属唯一（不同结果冲突拒绝，相同重报幂等）、**未闭合的调用如实标 Incomplete**（半截参数被当完整参数去执行是危险的）、并行调用互不干扰；7 条用例 + 变异（未闭合当完成）被拒。全量 1331 passed，脱敏 0 命中。缺：reasoning 内容形态与 usage 字段映射、流中失败的状态机、畸形/过深 JSON、四类协议真实端到端验收。",
+      "coverage_note": "partial — 首片（v0.0.378）：四类协议兼容矩阵（不支持≠未知）；第二片（v0.0.399）：SSE 增量解析器（任意切片、三级有界、取消即停）；第三片（v0.0.408）：流式工具调用聚合（按 call id 归属、分片按序拼接、结果归属唯一、未闭合标 Incomplete、并行互不干扰）；**第四片（2026-10-27）：reasoning 内容形态与 usage 字段映射**（gateway_usage.rs）。四类协议的推理字段各归一（加密推理无文本不编造、空壳推理标 Redacted——「被删减」与「没有推理」对用户含义不同）；usage 逐字段映射（各协议别名与驼峰形式、缓存 token 在各自 details 里）；缺失用 None 不折算 0；reasoning token 不重复计入 output、缓存命中单独列出（避免重复计费）；4 条用例 + 变异被拒。全量 1335 passed，脱敏 0 命中。缺：流中失败的状态机、畸形/过深 JSON、四类协议真实端到端验收。",
       "status": "partial"
     },
     "GW-04": {
@@ -2915,6 +2916,25 @@
       "test_files": [
         "app/src-tauri/src/tool_call_aggregate.rs"
       ]
+    },
+    "gw03.usage": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "gateway_usage"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-03 第四片：四类协议的 **reasoning 内容形态**与 **usage 字段映射**（gateway_usage.rs 纯函数）。四条语义：①推理归一后**只承载推理、与回答分开**（Chat 的 reasoning_content、Responses 的 reasoning/summary、Anthropic 的 thinking、Gemini 的 thoughts 各归一）；加密推理**无文本不编造**、空壳推理标 Redacted（**「被删减」与「没有推理」对用户含义不同**）；②usage 逐字段映射（prompt_tokens/input_tokens、completion_tokens/output_tokens、驼峰 promptTokenCount 等，缓存 token 藏在各自的 details 里）；③**缺失就是缺失**用 None 表达，不折算 0（否则「不知道花了多少」变成「没花钱」）；④**reasoning token 不重复计入 output**、缓存命中 token 单独列出不与输入相加（避免重复计费）。4 条用例 + 变异（缺失折算 0）被拒。全量 1335 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/gateway_usage.rs"
+      ]
     }
   },
   "agents": {
@@ -3086,6 +3106,7 @@
       "gw03.protocolmatrix",
       "gw03.sse",
       "gw03.toolcalls",
+      "gw03.usage",
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",
@@ -3252,6 +3273,7 @@
       "gw03.protocolmatrix",
       "gw03.sse",
       "gw03.toolcalls",
+      "gw03.usage",
       "not03.smsguard",
       "not04.pushguard",
       "task05.artifactcap",

@@ -4,6 +4,18 @@
 
 历史发布按时间统一编号为 0.0.1–0.0.53；对应关系见 [版本映射](docs/version-mapping.md)。
 
+## [0.0.409] - 2026-10-27 — 推理内容与用量字段映射：推理不是答案，缺失不是零（GW-03 进展）
+
+- **在第三片之上推进（GW-03 第四片）**：前三片已做协议矩阵、SSE 增量解析与工具调用聚合；本片解决各协议差异最大的两处——**reasoning 内容形态**与 **usage 字段映射**。新模块 `gateway_usage.rs`（纯函数）。
+- **四条语义**：
+  1. **推理归一后只承载推理、与回答分开**（Chat 的 `reasoning_content`、Responses 的 `reasoning`/`summary`、Anthropic 的 `thinking`、Gemini 的 `thoughts` 各归一）；**加密推理无文本、不编造**；**空壳推理标 `Redacted`**——「被服务方删减」与「没有推理」对用户含义完全不同；
+  2. **usage 逐字段映射**：`prompt_tokens`/`input_tokens`/`promptTokenCount` 等别名与驼峰形式，缓存 token 藏在各自的 details 里；
+  3. **缺失就是缺失**（用 `None` 表达，不折算 0）——折算成 0 会让「不知道花了多少」变成「没花钱」；
+  4. **不重复计费**：reasoning token 不计入 output、缓存命中 token 单独列出不与输入相加。
+- **顺手修掉三个真 bug**：①带点号的路径（`input_tokens_details.cached_tokens`）用 `get` 取不到；②Gemini 的用量在 `usageMetadata` 下而非 `usage`；③对象形态里的空 `text`（空壳推理）被当成「没有推理」而不是「被删减」。
+- **能拒错**：4 条用例 + 变异（缺失折算 0）被拒。全量 1335 passed，脱敏自检 0 命中。
+- **GW-03 缺口收窄**：消掉 reasoning 内容形态与 usage 字段映射；剩余：流中失败状态机、畸形/过深 JSON、真实端到端验收。
+
 ## [0.0.408] - 2026-10-27 — 流式工具调用聚合：分片拼接、并行独立、半截调用不算完成（GW-03 进展）
 
 - **在第二片之上推进（GW-03 第三片）**：第二片（v0.0.399）已把字节流解析成 SSE 事件，但事件仍是碎的——一次工具调用的参数被拆成多个 delta 到达、一次对话可能有多个**并行**调用、结果又要按 call id 归回各自。新模块 `tool_call_aggregate.rs`（纯函数，消费 SSE 事件）。
