@@ -6,6 +6,7 @@
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod artifact_limits;
+mod artifact_store;
 mod artifact_version;
 mod atomicfile;
 mod audit;

@@ -410,9 +410,10 @@
       "checks": [
         "rust.default",
         "task05.artifactcap",
-        "task05.versioning"
+        "task05.versioning",
+        "task05.content"
       ],
-      "coverage_note": "partial — 第一片（v0.0.371）：产出有界留存（MAX_ARTIFACTS=2000，未引用行先淘汰，引用行永不淘汰，evicted_artifacts 对界面可见）；第二片（v0.0.384）：产出版本演进、两两比较与历史恢复（向后追加不覆盖、外部只读源不伪造历史、恢复产出新 revision）；**第三片（2026-10-25）：验证清单数据模型与判据**（artifact_version.rs 扩展）。①**空清单不得通过**（空清单=没写清单=不能代表验证完成）；②**全通过才算通过**（所有条目明确为 Passed，Pending/Failed 都不算）；③条目状态三态互斥（Pending/Passed/Failed）；④条目不可匿名（标题去空白非空、id 唯一）；2 条新用例 + 变异（空清单允许通过）被拒。全量 1255 passed，脱敏 0 命中。缺：产出内容主体（大文本/二进制）的存储与按版本读取（当前版本链与清单管理的是产出元数据）、与 tasks.rs 的存储层接线。",
+      "coverage_note": "partial — 第一片（v0.0.371）：产出有界留存（MAX_ARTIFACTS=2000，未引用行先淘汰，引用行永不淘汰，evicted_artifacts 对界面可见）；第二片（v0.0.384）：产出版本演进、两两比较与历史恢复（向后追加不覆盖、外部只读源不伪造历史、恢复产出新 revision）；第三片（v0.0.391）：验证清单模型与判据（空清单不得通过、全 Passed 才算通过、条目不可匿名）；**第四片（2026-10-27）：产出内容主体按版本的存取**（artifact_store.rs）：按 (逻辑 id, revision) 存取、读不到如实说没有（不返回别版）、同版本不可二次写入、单版 4MiB/总量 64MiB 超限拒绝不截断、私密内容当场拒收、sha256 内容寻址可核对；5 条用例 + 变异（缺失版本返回别版内容）被 2 用例同拒。全量 1324 passed，脱敏 0 命中。缺：内容存储与 tasks.rs 的接线（判据已定，实现未接）、真实文件后端。",
       "status": "partial"
     },
     "TASK-06": {
@@ -2875,6 +2876,25 @@
       "test_files": [
         "app/src-tauri/src/gateway_fallback.rs"
       ]
+    },
+    "task05.content": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "artifact_store"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-05 第三片：产出**内容主体**按版本的存取判据（artifact_store.rs 纯函数/内存实现，判据可复用到真实文件后端）。五条语义：①内容与版本一一对应（按 (逻辑 id, revision) 存；读不到**如实说没有**，绝不返回别的版本——那会让「对比两版」悄悄变成「同一版比两遍」）；②内容**不可变**（同版本二次写入拒绝 ContentImmutable——内容与元数据不一致就是账目问题）；③大小上限有界（单版 4 MiB / 总量 64 MiB，超限**拒绝**不截断——截断的内容看起来完整，比没有更危险）；④私密内容当场拒收不留副本（对齐 SEC-01）；⑤内容寻址 sha256，可核对「元数据说的那一份」与「实际存着的」是同一份字节。5 条用例 + 变异（缺失版本返回别版内容）被 2 用例同拒。全量 1324 passed，脱敏 0 命中。",
+      "test_files": [
+        "app/src-tauri/src/artifact_store.rs"
+      ]
     }
   },
   "agents": {
@@ -3049,6 +3069,7 @@
       "not04.pushguard",
       "task05.artifactcap",
       "task05.versioning",
+      "task05.content",
       "task03.lifecycle",
       "task08.schedule",
       "task08.dst",
@@ -3213,6 +3234,7 @@
       "not04.pushguard",
       "task05.artifactcap",
       "task05.versioning",
+      "task05.content",
       "task03.lifecycle",
       "task08.schedule",
       "task08.dst",
