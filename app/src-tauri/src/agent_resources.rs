@@ -17,7 +17,13 @@
 //!    （跨主题读记忆被拒——与首片的主题隔离同口径）。
 //! 4. **运行时并发上限**：同一运行时的并发槽位有上限（与 TASK-09 的机器槽位
 //!    同一口径），超限的分派在**分派时**被拒。
+//!
+//! **第四片（2026-10-27）**：并发槽位从**裸计数**换成**版本化租约**
+//! （`slot_lease.rs`）。裸计数不知道「谁持有这个槽位」，于是迟到的一次释放
+//! 会减掉**别人的**占用 ⇒ 账实不符 ⇒ 并发超卖；重复派发同一任务还会把计数
+//! 抬高 ⇒ 看起来满了其实没满。租约版本让「释放」必须自证是当前持有者。
 
+use crate::slot_lease::{LeaseRefusal, SlotRegistry};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +77,8 @@ pub enum ResourceRefusal {
     ScopeEscalation,
     /// 运行时并发已满。
     RuntimeBusy,
+    /// 槽位租约被拒（陈旧版本 / 无租约 / 运行时不存在）。
+    LeaseRefused(LeaseRefusal),
 }
 
 impl ResourceRefusal {
@@ -80,6 +88,7 @@ impl ResourceRefusal {
             Self::CapabilityIncompatible => "capability_incompatible",
             Self::ScopeEscalation => "scope_escalation",
             Self::RuntimeBusy => "runtime_busy",
+            Self::LeaseRefused(reason) => reason.as_str(),
         }
     }
 }
@@ -89,8 +98,11 @@ pub struct ResourceRegistry {
     roles: HashMap<String, RoleSpec>,
     runtimes: HashMap<String, RuntimeSpec>,
     models: HashMap<String, ModelSpec>,
-    /// 运行时 → 当前占用的槽位数。
-    runtime_usage: HashMap<String, usize>,
+    /// 运行时 → 槽位租约表（**版本化**：释放必须带版本，见 `slot_lease.rs`）。
+    ///
+    /// 此前是裸计数（`HashMap<String, usize>`）：它**不知道谁持有槽位**，
+    /// 于是迟到的一次释放会减掉别人的占用 ⇒ 账实不符 ⇒ 并发超卖。
+    pub(crate) slots: SlotRegistry,
 }
 
 impl ResourceRegistry {
@@ -99,7 +111,7 @@ impl ResourceRegistry {
             roles: HashMap::new(),
             runtimes: HashMap::new(),
             models: HashMap::new(),
-            runtime_usage: HashMap::new(),
+            slots: SlotRegistry::new(),
         }
     }
 
@@ -108,6 +120,8 @@ impl ResourceRegistry {
     }
 
     pub fn add_runtime(&mut self, runtime: RuntimeSpec) {
+        self.slots
+            .set_max_concurrency(&runtime.name, runtime.max_concurrency);
         self.runtimes.insert(runtime.name.clone(), runtime);
     }
 
@@ -160,29 +174,54 @@ impl ResourceRegistry {
     }
 
     /// 占用一个运行时槽位（分派时调用）。超限拒绝。
-    pub fn acquire_runtime_slot(&mut self, runtime_name: &str) -> Result<(), ResourceRefusal> {
-        let runtime = self
-            .runtimes
-            .get(runtime_name)
-            .ok_or(ResourceRefusal::MissingBinding)?;
-        let used = self.runtime_usage.get(runtime_name).copied().unwrap_or(0);
-        if used >= runtime.max_concurrency {
-            return Err(ResourceRefusal::RuntimeBusy);
+    ///
+    /// 返回**租约版本**——释放时必须带着它，否则一次迟到的释放会减掉
+    /// 新持有者的占用（裸计数口径的真实缺陷）。
+    pub fn acquire_runtime_slot(
+        &mut self,
+        runtime_name: &str,
+        task_id: &str,
+    ) -> Result<u64, ResourceRefusal> {
+        if !self.runtimes.contains_key(runtime_name) {
+            return Err(ResourceRefusal::LeaseRefused(
+                LeaseRefusal::UnknownRuntime,
+            ));
         }
-        self.runtime_usage.insert(runtime_name.to_string(), used + 1);
-        Ok(())
+        self.slots
+            .acquire(runtime_name, task_id)
+            .map_err(|reason| match reason {
+                LeaseRefusal::SlotExhausted => ResourceRefusal::RuntimeBusy,
+                other => ResourceRefusal::LeaseRefused(other),
+            })
     }
 
-    /// 释放一个运行时槽位。
-    pub fn release_runtime_slot(&mut self, runtime_name: &str) {
-        if let Some(used) = self.runtime_usage.get_mut(runtime_name) {
-            *used = used.saturating_sub(1);
-        }
+    /// 释放一个运行时槽位。**必须带租约版本**。
+    ///
+    /// 版本不符（迟到释放 / 陈旧持有者）⇒ 拒绝，**账不动**。
+    pub fn release_runtime_slot(
+        &mut self,
+        runtime_name: &str,
+        task_id: &str,
+        version: u64,
+    ) -> Result<(), ResourceRefusal> {
+        self.slots
+            .release(runtime_name, task_id, version)
+            .map_err(ResourceRefusal::LeaseRefused)
     }
 
     /// 当前某个运行时的占用槽位数。
     pub fn runtime_usage(&self, runtime_name: &str) -> usize {
-        self.runtime_usage.get(runtime_name).copied().unwrap_or(0)
+        self.slots.used(runtime_name)
+    }
+
+    /// 当前某个运行时的空闲槽位数。
+    pub fn runtime_idle(&self, runtime_name: &str) -> usize {
+        self.slots.idle(runtime_name)
+    }
+
+    /// 某任务在某运行时持有的租约版本（None = 未持有）。
+    pub fn runtime_lease_version(&self, runtime_name: &str, task_id: &str) -> Option<u64> {
+        self.slots.lease_version(runtime_name, task_id)
     }
 }
 
@@ -285,15 +324,68 @@ mod tests {
     #[test]
     fn runtime_concurrency_is_capped() {
         let mut reg = registry();
-        assert_eq!(reg.acquire_runtime_slot("mac-mini"), Ok(()));
+        let lease = reg.acquire_runtime_slot("mac-mini", "task-1").unwrap();
         assert_eq!(reg.runtime_usage("mac-mini"), 1);
         // 槽位已满 ⇒ 拒绝
         assert_eq!(
-            reg.acquire_runtime_slot("mac-mini"),
+            reg.acquire_runtime_slot("mac-mini", "task-2"),
             Err(ResourceRefusal::RuntimeBusy)
         );
         // 释放后可再取
-        reg.release_runtime_slot("mac-mini");
-        assert_eq!(reg.acquire_runtime_slot("mac-mini"), Ok(()));
+        reg.release_runtime_slot("mac-mini", "task-1", lease).unwrap();
+        assert!(reg.acquire_runtime_slot("mac-mini", "task-2").is_ok());
+    }
+
+    /// **迟到释放不得减掉新持有者的占用**——裸计数口径的真实缺陷。
+    #[test]
+    fn a_late_release_does_not_free_the_new_holder_slot() {
+        let mut reg = registry();
+        let old_lease = reg.acquire_runtime_slot("mac-mini", "task-1").unwrap();
+        // 抢占：任务易主，版本推进
+        let new_lease = reg
+            .slots
+            .transfer("mac-mini", "task-1", "worker-b")
+            .unwrap();
+        assert_ne!(old_lease, new_lease);
+
+        // 旧持有者迟到的释放 ⇒ 拒绝，账不动
+        assert_eq!(
+            reg.release_runtime_slot("mac-mini", "task-1", old_lease),
+            Err(ResourceRefusal::LeaseRefused(LeaseRefusal::StaleLease))
+        );
+        assert_eq!(reg.runtime_usage("mac-mini"), 1);
+        assert_eq!(reg.runtime_idle("mac-mini"), 0);
+
+        // 新持有者释放 ⇒ 成功
+        reg.release_runtime_slot("mac-mini", "task-1", new_lease)
+            .unwrap();
+        assert_eq!(reg.runtime_usage("mac-mini"), 0);
+    }
+
+    /// **重复派发不得把计数抬高**：裸计数会 +1，于是「看起来满了，其实没满」。
+    #[test]
+    fn repeated_dispatch_of_one_task_does_not_inflate_the_count() {
+        let mut reg = registry();
+        reg.acquire_runtime_slot("mac-mini", "task-1").unwrap();
+        reg.acquire_runtime_slot("mac-mini", "task-1").unwrap();
+        assert_eq!(reg.runtime_usage("mac-mini"), 1);
+        assert_eq!(reg.runtime_idle("mac-mini"), 0);
+    }
+
+    #[test]
+    fn an_unknown_runtime_is_refused_on_both_slot_paths() {
+        let mut reg = registry();
+        assert_eq!(
+            reg.acquire_runtime_slot("nope", "task-1"),
+            Err(ResourceRefusal::LeaseRefused(
+                LeaseRefusal::UnknownRuntime
+            ))
+        );
+        assert_eq!(
+            reg.release_runtime_slot("nope", "task-1", 1),
+            Err(ResourceRefusal::LeaseRefused(
+                LeaseRefusal::UnknownRuntime
+            ))
+        );
     }
 }

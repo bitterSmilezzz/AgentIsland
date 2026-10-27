@@ -20,6 +20,19 @@
 //!      全部不可用时排队。
 //! 5. **重连不重复执行（防脑裂）**：离线机器重连时，如果它之前认领的任务已在超时后
 //!    被别人抢占/重新派发，旧机器**必须放弃**该任务——不得出现「两台机器执行同一个任务」。
+//!
+//! **2026-10-27 修正三处真实缺陷**（在隔离副本上复现后修掉，见 CHANGELOG）：
+//!
+//! - **迟到释放踢掉当前持有者的租约**（脑裂的根因）：释放原本只按 `task_id`
+//!   删租约、不核对版本——旧机器恢复后补报一次「我结束了」，**新**持有者的
+//!   租约就被删了 ⇒ 任务可再次派发 ⇒ 两台机器同时执行同一个任务。
+//!   现在释放**必须带租约版本**，版本不符 ⇒ 拒绝且**不动账**。
+//! - **抢占失败却已扣掉旧机器的槽位**（超卖的根因）：抢占原本先给旧机器减 1
+//!   再检查新机器能否接；新机器满载时直接返回错误，旧机器的槽位却被减掉了
+//!   ⇒ 它还能再接一个 ⇒ 实际并发超上限。现在**先校验目标再一并提交**。
+//! - **重复派发同一任务**（槽位泄漏的根因）：已派发的任务再次派发会让旧机器
+//!   的槽位永久泄漏（旧机器不再持有该任务，账上却还占着），新机器又占一个。
+//!   现在已持有租约的任务**不重复派发**。
 
 use std::collections::{HashMap, HashSet};
 
@@ -79,6 +92,27 @@ pub enum DispatchDecision {
     Queue,
     /// 指定的机器已被显式撤销或不存在。
     Rejected(&'static str),
+}
+
+/// 释放槽位被拒的原因。固定码。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotReleaseRefusal {
+    /// 该任务当前没有租约（从未派发，或已被释放/易主）。
+    NoLease,
+    /// 租约属于另一台机器：不是持有者来释放。
+    NotHolder,
+    /// 租约版本已过时（迟到释放 / 陈旧持有者）。
+    StaleLease,
+}
+
+impl SlotReleaseRefusal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoLease => "no_lease",
+            Self::NotHolder => "not_holder",
+            Self::StaleLease => "stale_lease",
+        }
+    }
 }
 
 /// 多机器节点注册与调度表（纯判据状态）。
@@ -154,6 +188,12 @@ impl NodeRegistry {
         task_id: &str,
         required_capabilities: &[&str],
     ) -> DispatchDecision {
+        // **同一任务不重复派发**：已持有租约的任务再次派发会让旧机器的槽位
+        // 永久泄漏（旧机器不再持有该任务，账上却还占着一个），而新机器
+        // 又多占一个 ⇒ 账实不符。
+        if self.leases.contains_key(task_id) {
+            return DispatchDecision::Rejected("task_already_leased");
+        }
         let mut candidate: Option<&MachineNode> = None;
         for node in self.nodes.values() {
             if !node.can_accept() || !node.satisfies(required_capabilities) {
@@ -187,6 +227,10 @@ impl NodeRegistry {
         target_machine: &str,
         required_capabilities: &[&str],
     ) -> DispatchDecision {
+        // 同上：已持有租约的任务不重复派发。
+        if self.leases.contains_key(task_id) {
+            return DispatchDecision::Rejected("task_already_leased");
+        }
         let Some(node) = self.nodes.get(target_machine) else {
             return DispatchDecision::Rejected("machine_not_found");
         };
@@ -212,33 +256,64 @@ impl NodeRegistry {
     }
 
     /// 任务完成或在节点上终止，释放槽位。
-    pub fn release_slot(&mut self, machine_id: &str, task_id: &str) -> bool {
-        self.leases.remove(task_id);
-        if let Some(node) = self.nodes.get_mut(machine_id) {
-            node.active_tasks = node.active_tasks.saturating_sub(1);
-            true
-        } else {
-            false
+    ///
+    /// **必须带租约版本**：`release_slot` 早期版本只按 `task_id` 删租约，
+    /// 于是**迟到的一次释放会踢掉当前持有者的租约**——旧机器恢复后
+    /// 报一声「我结束了」，正在执行该任务的**新**机器的租约就被删了，
+    /// 任务随后可以被再次派发 ⇒ **两台机器同时执行同一个任务**（脑裂）。
+    ///
+    /// 现在：版本不符 ⇒ **拒绝且不动账**；租约不属于该机器 ⇒ 拒绝。
+    pub fn release_slot(
+        &mut self,
+        machine_id: &str,
+        task_id: &str,
+        claimed_version: u64,
+    ) -> Result<(), SlotReleaseRefusal> {
+        match self.leases.get(task_id) {
+            None => Err(SlotReleaseRefusal::NoLease),
+            Some((holder, version)) => {
+                if holder != machine_id {
+                    return Err(SlotReleaseRefusal::NotHolder);
+                }
+                if *version != claimed_version {
+                    return Err(SlotReleaseRefusal::StaleLease);
+                }
+                self.leases.remove(task_id);
+                if let Some(node) = self.nodes.get_mut(machine_id) {
+                    node.active_tasks = node.active_tasks.saturating_sub(1);
+                }
+                Ok(())
+            }
         }
     }
 
     /// 抢占 / 重新派发：将任务从机器 A 重新分派给机器 B（租约版本推进）。
+    ///
+    /// **失败时账不动**：早期版本先给旧机器减 1，再检查新机器能不能接；
+    /// 新机器满载时直接 `Err`，于是**旧机器的槽位被减掉了却没派出去**
+    /// ⇒ 账实不符 ⇒ 旧机器还能再接一个任务 ⇒ **并发超卖**。
+    /// 现在先校验目标，再一并提交。
     pub fn preempt_to(&mut self, task_id: &str, new_machine: &str) -> Result<u64, &'static str> {
         let Some((old_machine, old_version)) = self.leases.get(task_id).cloned() else {
             return Err("task_not_leased");
         };
-        if let Some(node) = self.nodes.get_mut(&old_machine) {
-            node.active_tasks = node.active_tasks.saturating_sub(1);
-        }
-        let Some(new_node) = self.nodes.get_mut(new_machine) else {
+        // 先校验目标可接（**只读**），失败时账完全不动
+        let Some(new_node) = self.nodes.get(new_machine) else {
             return Err("new_machine_not_found");
         };
         if !new_node.can_accept() {
             return Err("new_machine_busy_or_offline");
         }
-        new_node.active_tasks += 1;
+        // 目标可接 ⇒ 才动账
+        if let Some(node) = self.nodes.get_mut(&old_machine) {
+            node.active_tasks = node.active_tasks.saturating_sub(1);
+        }
+        if let Some(node) = self.nodes.get_mut(new_machine) {
+            node.active_tasks += 1;
+        }
         let new_version = old_version + 1;
-        self.leases.insert(task_id.to_string(), (new_machine.to_string(), new_version));
+        self.leases
+            .insert(task_id.to_string(), (new_machine.to_string(), new_version));
         Ok(new_version)
     }
 
@@ -330,8 +405,8 @@ mod tests {
         // 满载 ⇒ 排队
         assert_eq!(reg.dispatch_auto("t2", &["any"]), DispatchDecision::Queue);
 
-        // 释放 t1
-        assert!(reg.release_slot("solo", "t1"));
+        // 释放 t1（带版本）
+        assert_eq!(reg.release_slot("solo", "t1", 1), Ok(()));
         assert_eq!(reg.nodes["solo"].idle_slots(), 1);
 
         // 此时可以派发 t2
@@ -378,5 +453,106 @@ mod tests {
             !reg.verify_lease("t1", "m1", 1),
             "旧机器持有的陈旧租约必须被拒绝，防止两台机器执行同一任务"
         );
+    }
+
+    /// **迟到释放不得踢掉当前持有者的租约**（脑裂的根因）。
+    ///
+    /// 早期实现按 `task_id` 删租约、不核对版本：m1 掉线后 t1 被抢占给 m2，
+    /// m1 恢复后补报一次「我结束了」，m2 的租约就被删了 ⇒ t1 可以再次派发
+    /// ⇒ m1 与 m2 同时执行同一个任务。
+    #[test]
+    fn a_late_release_cannot_take_the_current_holders_lease() {
+        let mut reg = NodeRegistry::new();
+        reg.register("m1", "机器 1", &["worker"], 2, 1_000);
+        reg.register("m2", "机器 2", &["worker"], 2, 1_000);
+
+        reg.dispatch_auto("t1", &["worker"]); // t1 → m1，版本 1
+        let new_ver = reg.preempt_to("t1", "m2").unwrap(); // 抢占 → m2，版本 2
+        assert_eq!(new_ver, 2);
+
+        // m1 迟到释放（带的是它的旧版本 1）⇒ 拒绝，账不动
+        //
+        // 拒绝码是 `NotHolder` 而不是 `StaleLease`：抢占后 t1 的持有者已是 m2，
+        // m1 **根本不是持有者**——这是比「版本过时」更根本的事实。
+        // 两种情况都拒绝、账都不动，这里钉住的是「迟到释放动不了账」。
+        assert_eq!(
+            reg.release_slot("m1", "t1", 1),
+            Err(SlotReleaseRefusal::NotHolder)
+        );
+        assert!(
+            reg.verify_lease("t1", "m2", 2),
+            "迟到释放不得踢掉当前持有者的租约"
+        );
+        assert_eq!(reg.nodes["m1"].active_tasks, 0);
+        assert_eq!(reg.nodes["m2"].active_tasks, 1);
+
+        // 租约还在 ⇒ t1 不能被再次派发
+        assert_eq!(
+            reg.dispatch_auto("t1", &["worker"]),
+            DispatchDecision::Rejected("task_already_leased")
+        );
+
+        // 持有者自己拿**过时版本**释放 ⇒ 同样拒绝（版本核对独立于持有者核对）
+        assert_eq!(
+            reg.release_slot("m2", "t1", 1),
+            Err(SlotReleaseRefusal::StaleLease)
+        );
+        assert!(reg.verify_lease("t1", "m2", 2));
+        assert_eq!(reg.nodes["m2"].active_tasks, 1);
+    }
+
+    /// **抢占失败时账不动**（超卖的根因）。
+    ///
+    /// 早期实现先给旧机器减 1 再检查新机器能否接；新机器满载时直接 `Err`，
+    /// 旧机器的槽位却被减掉了 ⇒ 旧机器还能再接一个 ⇒ 实际并发超上限。
+    #[test]
+    fn a_failed_preemption_leaves_both_machines_accounting_untouched() {
+        let mut reg = NodeRegistry::new();
+        reg.register("m1", "机器 1", &["worker"], 1, 1_000);
+        reg.register("m2", "机器 2", &["worker"], 1, 1_000);
+
+        reg.dispatch_auto("t1", &["worker"]); // t1 → m1（m1 满载 1/1）
+        reg.dispatch_auto("t2", &["worker"]); // t2 → m2（m2 满载 1/1）
+
+        // 抢占 t1 给满载的 m2 ⇒ 失败
+        assert_eq!(
+            reg.preempt_to("t1", "m2"),
+            Err("new_machine_busy_or_offline")
+        );
+
+        // 账必须原样：m1 仍持有 t1，仍是满载
+        assert_eq!(reg.nodes["m1"].active_tasks, 1, "抢占失败不得减掉旧机器的占用");
+        assert_eq!(reg.nodes["m2"].active_tasks, 1);
+        assert_eq!(reg.nodes["m1"].idle_slots(), 0, "m1 实际在跑 t1，不得再接一个");
+        assert!(reg.verify_lease("t1", "m1", 1), "租约不得被失败的抢占改掉");
+    }
+
+    /// **同一任务不重复派发**（槽位泄漏的根因）。
+    ///
+    /// 早期实现允许把已派发的任务再派一次：旧机器不再持有该任务，账上却还
+    /// 占着一个槽位（永久泄漏），新机器又占一个 ⇒ 账实不符 ⇒ 可用槽位虚高。
+    #[test]
+    fn dispatching_an_already_leased_task_is_refused_without_leaking_a_slot() {
+        let mut reg = NodeRegistry::new();
+        reg.register("m1", "机器 1", &["worker"], 2, 1_000);
+        reg.register("m2", "机器 2", &["worker"], 2, 1_000);
+
+        reg.dispatch_auto("t1", &["worker"]); // t1 → m1
+        assert_eq!(reg.nodes["m1"].active_tasks, 1);
+
+        // 再次派发同一个任务 ⇒ 拒绝
+        assert_eq!(
+            reg.dispatch_auto("t1", &["worker"]),
+            DispatchDecision::Rejected("task_already_leased")
+        );
+        assert_eq!(
+            reg.dispatch_targeted("t1", "m2", &["worker"]),
+            DispatchDecision::Rejected("task_already_leased")
+        );
+
+        // 账原样：m1 仍占 1（它确实在跑 t1），m2 没被占
+        assert_eq!(reg.nodes["m1"].active_tasks, 1);
+        assert_eq!(reg.nodes["m2"].active_tasks, 0);
+        assert_eq!(reg.nodes["m2"].idle_slots(), 2);
     }
 }

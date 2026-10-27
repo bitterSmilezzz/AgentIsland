@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for isolation gates; never start a VM or native window."""
 import importlib.util
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
@@ -143,10 +144,17 @@ class ResourceGateTests(unittest.TestCase):
             def fake_ssh(argv, **options):
                 calls.append(argv)
                 # ssh 前缀换成 shell 执行：这段脚本本来就是给 `sh -c` 用的命令串。
-                return real_run(['/bin/sh', '-c', argv[-1]], **options)
+                # `argv[-1]` 已是「解释器路径 + 引号包裹的代码」拼成的命令串，
+                # 再交给 `sh -c` 会**二次解析**：解释器路径含空格时
+                # （本机 python 位于 `.../Application Support/...`）会被切成两截，
+                # 于是夹具恒红而真实 VM 路径（来宾 python 不含空格）不受影响。
+                # `shlex.split` 按 shell 词法拆成 argv，与真实调用一样**不二次解析**。
+                return real_run(shlex.split(argv[-1]), **options)
 
             with patch.object(vm.subprocess, 'run', side_effect=fake_ssh):
-                vm.reset_guest_acceptance(['ssh'], sys.executable, str(home), evidence)
+                # 与真实调用一致：解释器路径先经 `shlex.quote` 转义再传入。
+                vm.reset_guest_acceptance(
+                    ['ssh'], shlex.quote(sys.executable), str(home), evidence)
             record = __import__('json').loads((evidence / 'guest-reset.log').read_text())
             self.assertEqual(record['stopped'], 1)
             self.assertEqual(record['remaining'], 0)

@@ -97,6 +97,7 @@ mod skills_config;
 #[cfg(unix)]
 mod skills_package;
 mod skills_picker;
+mod slot_lease;
 mod smtp;
 mod sqlite;
 mod task_artifacts;
