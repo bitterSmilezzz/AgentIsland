@@ -19,6 +19,7 @@ mod claude_plan_receiver;
 mod claude_plan_runtime;
 mod cleaner;
 mod chief_orchestration;
+mod chief_resource_store;
 mod cli;
 mod connection_http;
 mod connection_probe;
@@ -920,12 +921,10 @@ fn apply_window_appearance(app: &AppHandle, mode: &str) {
 
 /// Background modes suppress user controls; isolated UI smoke explicitly shows its test workbench.
 fn background_test_requested() -> bool {
-    std::env::args().any(|a| {
-        matches!(
-            a.as_str(),
-            "--background-test" | "--memory-smoke" | "--ui-smoke"
-        )
-    })
+    std::env::args().any(|a| background_test_arg(&a))
+}
+fn background_test_arg(arg: &str) -> bool {
+    matches!(arg, "--background-test" | "--memory-smoke" | "--ui-smoke")
 }
 
 /// Test instances that must not collide with a running user app get their own bundle
@@ -935,9 +934,10 @@ fn background_test_requested() -> bool {
 /// sequence. Deliberately *not* part of `background_test_requested`: the Dock
 /// regression needs the real reveal/conceal path, which that predicate disables.
 fn isolated_instance_requested() -> bool {
-    background_test_requested()
-        || motion_probe::requested()
-        || std::env::args().any(|a| a == "--dock-smoke")
+    isolated_instance_for_args(std::env::args(), motion_probe::requested())
+}
+fn isolated_instance_for_args(mut args: impl Iterator<Item = String>, motion: bool) -> bool {
+    motion || args.any(|a| background_test_arg(&a) || a == "--dock-smoke")
 }
 
 // Tauri executes run_on_main_thread inline when already on the main thread.
@@ -2566,6 +2566,51 @@ async fn workspace_operations(
     .map_err(|_| "操作记录读取未完成".to_string())?
 }
 
+// Configuration declarations only: saving them never starts a worker or grants access.
+type ChiefResourceStore = Mutex<chief_resource_store::Store>;
+fn with_chief_resources<T>(
+    state: State<ChiefResourceStore>,
+    f: impl FnOnce(&chief_resource_store::Store) -> Result<T, chief_resource_store::Error>,
+) -> Result<T, chief_resource_store::Error> {
+    let store = state.lock().map_err(|_| chief_resource_store::Error {
+        code: "unavailable".into(),
+        message: "资源配置服务暂不可用".into(),
+    })?;
+    f(&store)
+}
+#[tauri::command]
+fn chief_resources_snapshot(
+    state: State<ChiefResourceStore>,
+) -> Result<chief_resource_store::Snapshot, chief_resource_store::Error> {
+    with_chief_resources(state, |s| s.load())
+}
+#[tauri::command]
+fn chief_resources_save(
+    app: AppHandle,
+    state: State<ChiefResourceStore>,
+    profile: chief_resource_store::Profile,
+    expected_revision: u64,
+) -> Result<chief_resource_store::Snapshot, chief_resource_store::Error> {
+    let result = with_chief_resources(state, |s| s.save(profile, expected_revision));
+    if let Ok(data) = &result {
+        let _ = app.emit("chief-resources://changed", data.revision);
+    }
+    result
+}
+#[tauri::command]
+fn chief_resources_delete(
+    app: AppHandle,
+    state: State<ChiefResourceStore>,
+    id: String,
+    expected_revision: u64,
+) -> Result<chief_resource_store::Snapshot, chief_resource_store::Error> {
+    let result = with_chief_resources(state, |s| s.delete(&id, expected_revision));
+    if let Ok(data) = &result {
+        let _ = app.emit("chief-resources://changed", data.revision);
+    }
+    result
+}
+
 // Local task commands share one writer and never invoke source-agent actions.
 type TaskStore = Mutex<crate::tasks::Store>;
 fn with_tasks<T>(
@@ -3537,6 +3582,7 @@ const EMBEDDED_ASSET_SAMPLE: &[&str] = &[
     "js/page-host.js",
     "js/page-motion.js",
     "js/provider-feedback.js",
+    "js/chief-resources-page.js",
     "js/tasks-page.js",
     "js/task-focus.js",
     "js/sessions-page.js",
@@ -4474,6 +4520,9 @@ fn main() {
         .manage(SkillPackageStore::new())
         .manage(ConnectionStore::new(connections::Store::at_default()))
         .manage(Mutex::new(crate::tasks::Store::at_default()))
+        .manage(Mutex::new(chief_resource_store::Store::at_default(
+            isolated_instance_requested(),
+        )))
         .manage(Mutex::new(navigation::Mailbox::default()))
         .manage(Mutex::new(window_lifecycle::WorkbenchLease::default()))
         .on_window_event(|window, event| {
@@ -4857,6 +4906,9 @@ fn main() {
             tasks_attention_summary,
             task_show_workbench,
             tasks_snapshot,
+            chief_resources_snapshot,
+            chief_resources_save,
+            chief_resources_delete,
             task_project_create,
             task_create,
             task_update,

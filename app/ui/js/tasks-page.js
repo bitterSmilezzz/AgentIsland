@@ -2,6 +2,7 @@ import { watchArtifactLifetime } from './artifact-lifetime.js';
 import { invoke, listen } from './tauri.js';
 import { pageRequest } from './page-host.js';
 import { retainTaskFocus } from './task-focus.js';
+import { chiefResourcesPage, bindChiefResources } from './chief-resources-page.js';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const statuses = { queued: '未开始', running: '执行中', waiting: '等待处理', ready: '结果就绪', failed: '执行失败', cancelled: '已取消', accepted: '来源已验收' };
 const kinds = { answer: '待回答', plan_approval: '确认方案', result_review: '验收结果', confirmation: '需要确认' };
@@ -43,6 +44,7 @@ export function pageTasks() {
     <div class="task-toolbar"><label class="task-filter">项目<select data-task-filter aria-label="筛选项目"><option value="">全部项目</option></select></label><label class="task-search">搜索<input type="search" data-task-search aria-label="搜索任务（跨项目，按名称或来源）" placeholder="名称或来源…" autocomplete="off"></label><label class="task-archive-filter"><input type="checkbox" data-task-archived>已归档</label><button class="mini-btn" type="button" data-task-refresh>刷新</button></div>
     <form class="task-compose" data-task-create><label class="sr-only" for="task-new-title">任务名称</label><input id="task-new-title" name="title" placeholder="记录一个任务…" maxlength="500" required autocomplete="off"><select name="projectId" aria-label="任务所属项目"><option value="">未分组</option></select><button class="mini-btn primary" type="submit">添加任务</button></form>
     <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form></details>
+    <button class="mini-btn task-chief-open" type="button" data-chief-open>团队资源配置</button>
     </div>
     <div class="task-board" data-task-board></div>
     </div>
@@ -50,6 +52,7 @@ export function pageTasks() {
     <aside class="task-detail-empty"><strong>选择任务</strong><p>查看来源、记录进度与运行历史。</p></aside>
     </div>
     <div class="task-footer"><p class="task-feedback" data-task-feedback role="status" aria-live="polite">正在读取任务</p><p class="task-note">仅整理本地记录，不会启动任务或批准操作。</p></div>
+    ${chiefResourcesPage()}
   </section>`;
 }
 let requestedTask = null;
@@ -73,6 +76,7 @@ export async function hydrateTasks(isVisible = () => true) {
   taskVisible = isVisible;
   const root = document.querySelector('[data-tasks-root]');
   if (!root) return;
+  bindChiefResources(root);
   const current = pageRequest(root);
   const message = root.querySelector('[data-task-feedback]');
   let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null, detailRevision=null;

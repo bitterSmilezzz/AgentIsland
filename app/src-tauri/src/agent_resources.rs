@@ -19,9 +19,11 @@
 //!    同一口径），超限的分派在**分派时**被拒。
 
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
 /// 角色。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RoleSpec {
     pub name: String,
     /// 角色要求的能力（运行时/模型必须支持）。
@@ -31,7 +33,8 @@ pub struct RoleSpec {
 }
 
 /// 运行时（执行环境）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeSpec {
     pub name: String,
     pub capabilities: Vec<String>,
@@ -40,7 +43,8 @@ pub struct RuntimeSpec {
 }
 
 /// 模型。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelSpec {
     pub name: String,
     pub capabilities: Vec<String>,

@@ -1051,6 +1051,7 @@ export function renderWorkbench() {
   const motionSurface = taskViewSwitch ? '[data-task-view-panel]' : '.wb-content';
   // Clear source content before both the outgoing snapshot and retained DOM.
   previousContent?.querySelector('[data-tasks-root]')?.leavePage?.();
+  previousContent?.querySelector('[data-chief-resources]')?.chiefSuspend?.();
   rememberPage(root, selected, motionSurface);
   const restored = workbenchPagesCache.take(selected);
   if (root.querySelector('.wb')) {
@@ -1105,6 +1106,7 @@ export function renderWorkbench() {
   const quickButton=root.querySelector('[data-wb-quick]');if(quickButton)quickButton.onclick=quick.open;
   renderTaskAttentionOnly();
   if (restored && selected === 'tasks') refreshTasks();
+  if (restored && selected === 'tasks') restored.querySelector('[data-chief-resources]')?.chiefResume?.();
   if (restored && selected === 'sessions') refreshSessions();
   if (restored && selected === 'overview') renderWorkbenchMonitorOnly();
   workspaceFlow.route(selected);

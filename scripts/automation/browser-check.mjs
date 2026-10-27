@@ -14,6 +14,7 @@ const scripts = new Set([
   'test-provider-page.mjs',
   'test-reduced-motion.mjs',
   'test-task-search.mjs',
+  'test-chief-resources.mjs',
   'test-keyboard-navigation.mjs',
 ]);
 const name = process.argv[2];

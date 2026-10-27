@@ -281,6 +281,38 @@ class RegistryTests(unittest.TestCase):
         self.registry = pipeline.load_registry()
         self.discovered = discover(ROOT)
 
+    def test_matrix_regeneration_is_idempotent_and_preserves_following_content(self):
+        # Exercise the actual CLI against a disposable repository; the separator and
+        # handwritten section after END belong to the document, not the renderer.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / 'scripts/automation/render-matrix.py'
+            script.parent.mkdir(parents=True)
+            script.write_bytes((ROOT / 'scripts/automation/render-matrix.py').read_bytes())
+            (script.parent / 'registry.json').write_text(json.dumps({
+                'profiles': {'ci': ['check.one']},
+                'checks': {'check.one': {}},
+                'requirements': {'TASK-01': {'checks': ['check.one']}},
+            }), encoding='utf-8')
+            matrix = root / 'docs/需求测试矩阵.md'
+            matrix.parent.mkdir()
+            prefix = '# 人工编写的场景\n\n'
+            suffix = '\n\n## 后续手写内容\n保留原样。\n'
+            matrix.write_text(prefix + BEGIN_MARK + '\n旧内容\n' + END_MARK + suffix,
+                              encoding='utf-8')
+            for _ in range(2):
+                subprocess.run([sys.executable, str(script), '--write'], check=True,
+                               capture_output=True, text=True)
+                current = matrix.read_bytes()
+                self.assertTrue(current.startswith(prefix.encode('utf-8')))
+                self.assertTrue(current.endswith((END_MARK + suffix).encode('utf-8')))
+                if _ == 0:
+                    first = current
+                else:
+                    self.assertEqual(current, first)
+            subprocess.run([sys.executable, str(script)], check=True,
+                           capture_output=True, text=True)
+
     def test_no_profile_is_an_unreferenced_alias(self):
         # A profile that duplicates another profile's exact contents advertises
         # coverage no run ever produces; recovery was exactly that before it was

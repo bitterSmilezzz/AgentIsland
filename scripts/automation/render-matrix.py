@@ -60,6 +60,9 @@ def main() -> int:
         if BEGIN in text and END in text:
             head = text[: text.index(BEGIN)]
             tail = text[text.index(END) + len(END):]
+            # The tail owns the separator after END; render() also provides a
+            # newline for the append case, so exclude it when replacing a block.
+            expected = expected.rstrip("\n")
         else:
             head, tail = text.rstrip() + "\n\n", ""
         MATRIX.write_text(head + expected + tail, encoding="utf-8")
