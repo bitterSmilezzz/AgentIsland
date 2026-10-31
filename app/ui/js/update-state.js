@@ -4,11 +4,12 @@
 //   1. 只有 `check()` 会检查更新；
 //   2. 只有 `install()` 且当前处于 `available` 才安装——没有「自动安装」这条路径；
 //   3. 只有 `restart()` 且当前处于 `ready` 才重启——**安装完不自动重启**。
+//   4. 离开设置页后从后端恢复待重启状态；签名拒绝必须先关闭说明才能重新检查。
 //
 // 测试要能证明「安装成功后仍在 ready、重启函数一次都没被调用」，否则
 // 「不在用户不知情时重启」就只是一句注释。
 
-const BUSY_PHASES = ['checking', 'downloading', 'restarting'];
+const BUSY_PHASES = ['restoring', 'checking', 'downloading', 'restarting'];
 
 /**
  * 取出可直接展示的错误文案。
@@ -23,9 +24,9 @@ export function errorText(error, fallback) {
   return raw.trim() ? raw : fallback;
 }
 
-export function createUpdateController({ check, install, restart, changed = () => {} } = {}) {
+export function createUpdateController({ check, install, restart, dismissRejection, changed = () => {}, initialPhase = 'idle' } = {}) {
   const state = {
-    phase: 'idle',
+    phase: initialPhase,
     currentVersion: '',
     version: '',
     notes: '',
@@ -36,8 +37,10 @@ export function createUpdateController({ check, install, restart, changed = () =
   };
   const notify = () => changed(controller.state);
   const fail = (error, fallback) => {
-    state.phase = 'failed';
     state.reason = errorText(error, fallback);
+    const refusedSignature = (state.reason.includes('签名校验失败') && state.reason.includes('拒绝安装'))
+      || /signature.*(?:invalid|fail|verif)|(?:invalid|fail|verif).*signature/i.test(state.reason);
+    state.phase = refusedSignature ? 'rejected' : 'failed';
   };
 
   const controller = {
@@ -58,8 +61,45 @@ export function createUpdateController({ check, install, restart, changed = () =
       state.currentVersion = String(version);
       notify();
     },
+    restoreSessionStatus(session) {
+      if (!['restoring', 'checking', 'downloading'].includes(state.phase)) return;
+      const phase = typeof session === 'string' ? session : session?.phase;
+      const reason = typeof session?.reason === 'string' ? session.reason : '';
+      if (phase === state.phase) return;
+      if (phase === 'ready') {
+        state.phase = 'ready';
+        state.reason = '';
+      } else if (phase === 'rejected') {
+        state.phase = 'rejected';
+        state.reason = reason || '更新包签名校验失败，已拒绝安装';
+      } else if (phase === 'failed') {
+        state.phase = 'failed';
+        state.reason = reason || '更新失败，请重新检查';
+      } else if (phase === 'checking') {
+        state.phase = 'checking';
+        state.reason = '';
+      } else if (phase === 'downloading') {
+        state.phase = 'downloading';
+        state.reason = '';
+      } else if (phase === 'idle' && ['restoring', 'checking'].includes(state.phase)) {
+        state.phase = 'idle';
+        state.reason = '';
+      } else if (phase === 'idle' && state.phase === 'downloading') {
+        state.phase = 'failed';
+        state.reason = '更新失败，请重新检查';
+      } else {
+        state.phase = 'failed';
+        state.reason = '无法读取更新状态，请重新检查';
+      }
+      notify();
+    },
+    beginSessionRestore() {
+      state.phase = 'restoring';
+      state.reason = '';
+      notify();
+    },
     async check() {
-      if (controller.busy || typeof check !== 'function') return;
+      if (!['idle', 'failed'].includes(state.phase) || controller.busy || typeof check !== 'function') return;
       state.phase = 'checking';
       state.reason = '';
       notify();
@@ -128,6 +168,17 @@ export function createUpdateController({ check, install, restart, changed = () =
       state.reason = '';
       notify();
     },
+    async closeRejection() {
+      if (state.phase !== 'rejected' || typeof dismissRejection !== 'function') return;
+      try {
+        await dismissRejection();
+        state.phase = 'idle';
+        state.reason = '';
+        notify();
+      } catch {
+        // Keep the refusal visible and the backend gate closed if the explicit dismissal failed.
+      }
+    },
   };
   return controller;
 }
@@ -143,6 +194,8 @@ export function formatBytes(bytes) {
 /// 状态 → 一句话。空字符串表示「没有可显示的进度」。
 export function updateStatusText(state) {
   switch (state?.phase) {
+    case 'restoring':
+      return '正在读取更新状态…';
     case 'checking':
       return '正在检查更新…';
     case 'uptodate':
@@ -159,6 +212,8 @@ export function updateStatusText(state) {
       return '正在重启…';
     case 'failed':
       return state.reason || '更新失败，请稍后重试';
+    case 'rejected':
+      return state.reason || '更新包签名校验失败，已拒绝安装';
     default:
       return '尚未检查更新';
   }

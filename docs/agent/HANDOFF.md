@@ -4,8 +4,8 @@
 > 与它配套的还有：[`AGENTS.md`](../../AGENTS.md)（工作约定，Agent 无关）、
 > [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
-**交接时点**：2026-10-27
-**基线**：`main` = `origin/main` = `6da2284`（release v0.0.417），**工作区干净**
+**交接时点**：2026-10-31
+**本轮起始基线**：`main` at `865f615`（v0.0.417），当时工作区干净；v0.0.418 当前未发布
 **最新发布**：`v0.0.417`（DMG / zip / updater 更新包 / `latest.json` 均已上线，已实测 HTTP 200）
 **基线是否绿**：门禁 `verify-framework.sh` 中 `ci` profile **123/125 通过**；
 `windows crate` 交叉类型检查因本机无 Windows SDK 失败（**已登记 BUG-011，与代码无关**）；
@@ -392,3 +392,28 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
   本机无 Windows SDK；**基线同样红**，与本轮改动无关）。
 - 原生动效逐边取证、官方 Claude 客户端取证（本轮未运行，需外部环境）。
 - 真实多机环境、真实进程编排、端到端验收：均未涉及。
+
+---
+
+## 12. 2026-10-31 追加：NOT-06 更新命令边界与跨页恢复（v0.0.418，待发版）
+
+### 改动
+
+- Rust 更新命令现在执行进程级状态门禁：检查成功后才可安装，安装成功后才可由用户显式重启；重启状态只消费一次。
+- 设置页重进恢复检查、下载、待重启、签名拒绝与普通失败状态。签名拒绝须用户关闭说明后才能重试；失败原因沿用已脱敏文案。
+- 离页时清理进度监听与轮询；工作台缓存页恢复时重新读取后端状态，并用挂载代次丢弃旧页面的迟到响应。
+
+### 验证
+
+- `cargo test --locked --manifest-path app/src-tauri/Cargo.toml`：**1380 passed / 0 failed / 15 ignored**。
+- `node scripts/test-update-state.mjs`：通过。
+- `node scripts/automation/browser-check.mjs test-update-panel.mjs`：通过，覆盖检查/下载/错误/待重启恢复、签名拒绝、缓存页恢复、旧挂载迟到回包与监听清理。
+- `scripts/common.sh` 已优先选 Python 3.15，再检查 `python3` 与较旧兼容版本；`scripts/test-framework-verifier.py` 新增优先级回归。VM 原生门禁单独保留 macOS 系统 Python：Tart ARP 元数据可能受本地网络隐私限制，其他解释器读取为空。
+- `scripts/check-version.py 0.0.418` 与状态文档生成校验通过。
+- `/opt/homebrew/bin/python3 scripts/native-gates-vm.py --vm agentisland-update-e2e --user admin --check-only`：通过，克隆 VM 的 Aqua 会话与 SSH 前置已验证。
+
+### 尚未验收与环境
+
+- 本轮尚未跑真实客户端点击升级或真实 updater 错签拒绝。隔离克隆 `agentisland-update-e2e` 中已从公开 v0.0.416 DMG 安装并启动旧客户端，基础 VM 未改动；当前没有可用的来宾 UI 控制回执，需在后续验收时完成检查、安装、显式重启与版本核对。
+- 跳过版本的 UI/持久化、Intel/universal 架构仍未覆盖，NOT-06 继续标为 partial。
+- 本轮代码审查通过；两位审查者确认的剩余范围是上述跳过版本 UI 与真实 updater 端到端验收。

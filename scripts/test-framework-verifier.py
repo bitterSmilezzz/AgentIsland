@@ -85,7 +85,7 @@ class FrameworkVerifierTests(unittest.TestCase):
             target = shutil.which(tool)
             if target:
                 (self.bin / tool).symlink_to(target)
-        for tool in ("cargo", "bash", "python3", "python3.14"):
+        for tool in ("cargo", "bash", "python3", "python3.15", "python3.14"):
             entry = self.bin / tool
             entry.write_text(f"#!/bin/bash\nREAL_PYTHON={shlex.quote(sys.executable)}\n" + STUB)
             entry.chmod(0o755)
@@ -201,7 +201,14 @@ class FrameworkVerifierTests(unittest.TestCase):
         self.assert_fails()
         self.assertIn("test-automation-development", {call["key"] for call in self.calls})
 
+    def test_python315_is_preferred_when_available(self):
+        self.assert_passes()
+        python_calls = [call for call in self.calls if call["tool"].startswith("python")]
+        self.assertTrue(python_calls)
+        self.assertTrue(all(call["tool"] == "python3.15" for call in python_calls))
+
     def test_python3_without_versioned_python_is_supported_everywhere(self):
+        (self.bin / "python3.15").unlink()
         (self.bin / "python3.14").unlink()
         self.assert_passes()
         python_calls = [call for call in self.calls if call["tool"].startswith("python")]
@@ -210,6 +217,7 @@ class FrameworkVerifierTests(unittest.TestCase):
         self.assertTrue(set(META).issubset({call["key"] for call in python_calls}))
 
     def test_unsupported_python_fails_before_running_suites(self):
+        (self.bin / "python3.15").unlink()
         (self.bin / "python3.14").unlink()
         (self.bin / "python3").write_text("#!/bin/bash\nprintf '3.9\\n'\n")
         self.assert_fails()

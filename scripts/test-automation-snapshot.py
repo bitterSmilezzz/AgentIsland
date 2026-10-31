@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Snapshot safety tests: synthetic temporary repos; no real model or shared index.
 
-Run: python3.14 scripts/test-automation-snapshot.py
+Run: python3 scripts/test-automation-snapshot.py
 Sensitive-shaped fixture inputs are assembled at runtime, never printed. The
 checker itself writes no files. Git writes are restricted to temporary repos.
 """

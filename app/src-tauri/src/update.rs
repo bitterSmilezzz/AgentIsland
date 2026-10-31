@@ -13,8 +13,175 @@
 //! `update://progress` 事件；状态机在 JS 侧可被 node 直接测。
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use std::sync::{Mutex, MutexGuard};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_updater::UpdaterExt;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum UpdatePhase {
+    #[default]
+    Idle,
+    Checking,
+    Available,
+    Installing,
+    ReadyToRestart,
+    Failed,
+    Rejected,
+}
+
+#[derive(Default)]
+struct UpdateSession {
+    phase: UpdatePhase,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSessionStatus {
+    phase: &'static str,
+    reason: Option<String>,
+}
+
+/// Enforce the user-driven update sequence at the command boundary as well as in the UI.
+///
+/// The webview state machine prevents accidental calls, but commands are independently
+/// invocable. Keep install behind a successful check and restart behind a successful install.
+#[derive(Default)]
+pub struct UpdateCommandState(Mutex<UpdateSession>);
+
+impl UpdateCommandState {
+    fn lock(&self) -> Result<MutexGuard<'_, UpdateSession>, String> {
+        self.0
+            .lock()
+            .map_err(|_| "更新状态不可用，请重启后重试".to_string())
+    }
+
+    fn transition(
+        &self,
+        expected: UpdatePhase,
+        next: UpdatePhase,
+        refusal: &str,
+    ) -> Result<(), String> {
+        let mut session = self.lock()?;
+        if session.phase != expected {
+            return Err(refusal.to_string());
+        }
+        session.phase = next;
+        session.reason = None;
+        Ok(())
+    }
+
+    fn begin_check(&self) -> Result<(), String> {
+        let mut session = self.lock()?;
+        match session.phase {
+            UpdatePhase::Idle | UpdatePhase::Available | UpdatePhase::Failed => {
+                session.phase = UpdatePhase::Checking;
+                session.reason = None;
+            }
+            UpdatePhase::Rejected => return Err("请先关闭签名校验拒绝说明".to_string()),
+            _ => return Err("更新操作正在进行，或已有更新等待重启".to_string()),
+        }
+        Ok(())
+    }
+
+    fn finish_check(&self, available: bool) -> Result<(), String> {
+        let mut session = self.lock()?;
+        if session.phase != UpdatePhase::Checking {
+            return Err("更新检查状态已失效，请重新检查".to_string());
+        }
+        session.phase = if available {
+            UpdatePhase::Available
+        } else {
+            UpdatePhase::Idle
+        };
+        session.reason = None;
+        Ok(())
+    }
+
+    fn abort_check(&self, reason: &str) {
+        if let Ok(mut session) = self.0.lock() {
+            if session.phase == UpdatePhase::Checking {
+                session.phase = if is_signature_refusal(reason) {
+                    UpdatePhase::Rejected
+                } else {
+                    UpdatePhase::Failed
+                };
+                session.reason = Some(reason.to_string());
+            }
+        }
+    }
+
+    fn begin_install(&self) -> Result<(), String> {
+        self.transition(
+            UpdatePhase::Available,
+            UpdatePhase::Installing,
+            "请先检查更新并确认有可用版本",
+        )
+    }
+
+    fn finish_install(&self, result: &Result<(), String>) -> Result<(), String> {
+        let mut session = self.lock()?;
+        if session.phase != UpdatePhase::Installing {
+            return Err("更新安装状态已失效，请重新检查".to_string());
+        }
+        match result {
+            Ok(()) => {
+                session.phase = UpdatePhase::ReadyToRestart;
+                session.reason = None;
+            }
+            Err(reason) => {
+                session.phase = if is_signature_refusal(reason) {
+                    UpdatePhase::Rejected
+                } else {
+                    UpdatePhase::Failed
+                };
+                session.reason = Some(reason.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn take_restart(&self) -> bool {
+        let Ok(mut session) = self.0.lock() else {
+            return false;
+        };
+        if session.phase != UpdatePhase::ReadyToRestart {
+            return false;
+        }
+        session.phase = UpdatePhase::Idle;
+        session.reason = None;
+        true
+    }
+
+    fn session_status(&self) -> Result<UpdateSessionStatus, String> {
+        let session = self.lock()?;
+        Ok(UpdateSessionStatus {
+            phase: match session.phase {
+                UpdatePhase::Checking => "checking",
+                UpdatePhase::Installing => "downloading",
+                UpdatePhase::ReadyToRestart => "ready",
+                UpdatePhase::Failed => "failed",
+                UpdatePhase::Rejected => "rejected",
+                _ => "idle",
+            },
+            reason: session.reason.clone(),
+        })
+    }
+
+    fn dismiss_rejection(&self) -> Result<(), String> {
+        let mut session = self.lock()?;
+        if session.phase != UpdatePhase::Rejected {
+            return Err("当前没有待关闭的签名拒绝说明".to_string());
+        }
+        session.phase = UpdatePhase::Idle;
+        session.reason = None;
+        Ok(())
+    }
+}
+
+fn is_signature_refusal(reason: &str) -> bool {
+    reason.contains("签名校验失败") && reason.contains("拒绝安装")
+}
 
 /// 一次检查的结果。`available=false` 时其余字段为空，**不伪造版本号**。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -110,33 +277,62 @@ pub fn update_current_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// Return the process-wide update state so a remounted settings panel can resume accurately.
+#[tauri::command]
+pub fn update_session_status(
+    command_state: State<'_, UpdateCommandState>,
+) -> Result<UpdateSessionStatus, String> {
+    command_state.session_status()
+}
+
+/// Clear a signature refusal only after the user closes its explanation.
+#[tauri::command]
+pub fn update_dismiss_rejection(
+    command_state: State<'_, UpdateCommandState>,
+) -> Result<(), String> {
+    command_state.dismiss_rejection()
+}
+
 /// 只回答「有没有可用更新」，不改动任何文件、不下载。
 #[tauri::command]
-pub async fn update_check(app: AppHandle) -> Result<UpdateStatus, String> {
-    let current_version = app.package_info().version.to_string();
-    let updater = app
-        .updater()
-        .map_err(|error| updater_reason(&error.to_string()))?;
-    let found = updater
-        .check()
-        .await
-        .map_err(|error| updater_reason(&error.to_string()))?;
-    Ok(match found {
-        Some(update) => UpdateStatus {
-            current_version,
-            available: true,
-            version: Some(update.version.clone()),
-            notes: update.body.clone(),
-            date: update.date.map(|date| date.to_string()),
-        },
-        None => UpdateStatus {
-            current_version,
-            available: false,
-            version: None,
-            notes: None,
-            date: None,
-        },
-    })
+pub async fn update_check(
+    app: AppHandle,
+    command_state: State<'_, UpdateCommandState>,
+) -> Result<UpdateStatus, String> {
+    command_state.begin_check()?;
+    let result: Result<UpdateStatus, String> = async {
+        let current_version = app.package_info().version.to_string();
+        let updater = app
+            .updater()
+            .map_err(|error| updater_reason(&error.to_string()))?;
+        let found = updater
+            .check()
+            .await
+            .map_err(|error| updater_reason(&error.to_string()))?;
+        Ok(match found {
+            Some(update) => UpdateStatus {
+                current_version,
+                available: true,
+                version: Some(update.version.clone()),
+                notes: update.body.clone(),
+                date: update.date.map(|date| date.to_string()),
+            },
+            None => UpdateStatus {
+                current_version,
+                available: false,
+                version: None,
+                notes: None,
+                date: None,
+            },
+        })
+    }
+    .await;
+
+    match &result {
+        Ok(status) => command_state.finish_check(status.available)?,
+        Err(reason) => command_state.abort_check(reason),
+    }
+    result
 }
 
 /// 下载并安装；**不重启**。进度通过 `update://progress` 事件回报。
@@ -144,36 +340,52 @@ pub async fn update_check(app: AppHandle) -> Result<UpdateStatus, String> {
 /// 安装前重新 check 一次：用户可能已经等了一会儿，期间又发了新版本。用最新那次
 /// 的结果，避免把「检查时看到的版本」和「实际安装的版本」对不上。
 #[tauri::command]
-pub async fn update_install(app: AppHandle) -> Result<(), String> {
-    let updater = app
-        .updater()
-        .map_err(|error| updater_reason(&error.to_string()))?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|error| updater_reason(&error.to_string()))?
-        .ok_or_else(|| "没有可用更新".to_string())?;
-    let emitter = app.clone();
-    update
-        .download_and_install(
-            move |downloaded, total| {
-                let _ = emitter.emit(
-                    "update://progress",
-                    UpdateProgress {
-                        downloaded: downloaded as u64,
-                        total,
-                    },
-                );
-            },
-            || {},
-        )
-        .await
-        .map_err(|error| updater_reason(&error.to_string()))
+pub async fn update_install(
+    app: AppHandle,
+    command_state: State<'_, UpdateCommandState>,
+) -> Result<(), String> {
+    command_state.begin_install()?;
+    let result: Result<(), String> = async {
+        let updater = app
+            .updater()
+            .map_err(|error| updater_reason(&error.to_string()))?;
+        let update = updater
+            .check()
+            .await
+            .map_err(|error| updater_reason(&error.to_string()))?
+            .ok_or_else(|| "没有可用更新".to_string())?;
+        let emitter = app.clone();
+        update
+            .download_and_install(
+                move |downloaded, total| {
+                    let _ = emitter.emit(
+                        "update://progress",
+                        UpdateProgress {
+                            downloaded: downloaded as u64,
+                            total,
+                        },
+                    );
+                },
+                || {},
+            )
+            .await
+            .map_err(|error| updater_reason(&error.to_string()))
+    }
+    .await;
+
+    command_state.finish_install(&result)?;
+    result
 }
 
 /// 安装完成后由用户显式触发。这里**只做重启**，不在这里做任何检查或安装。
 #[tauri::command]
-pub fn update_restart(app: AppHandle) {
+pub fn update_restart(
+    app: AppHandle,
+    command_state: State<'_, UpdateCommandState>,
+) -> Result<(), String> {
+    if !command_state.take_restart() {
+        return Err("没有已成功安装且等待重启的更新".to_string());
+    }
     app.restart()
 }
 
@@ -203,6 +415,84 @@ fn updater_reason(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_requires_a_successful_check_and_restart_requires_a_successful_install() {
+        let state = UpdateCommandState::default();
+
+        assert!(!state.take_restart(), "初始状态不得重启");
+        assert!(state.begin_install().is_err(), "检查前不得安装");
+
+        state.begin_check().unwrap();
+        assert!(state.begin_check().is_err(), "检查期间不得重复检查");
+        assert!(state.begin_install().is_err(), "检查尚未完成时不得安装");
+        state.finish_check(false).unwrap();
+        assert!(state.begin_install().is_err(), "无更新时不得安装");
+
+        state.begin_check().unwrap();
+        state.finish_check(true).unwrap();
+        state.begin_install().unwrap();
+        assert!(state.begin_install().is_err(), "安装期间不得并行安装");
+        assert_eq!(state.session_status().unwrap().phase, "downloading");
+        assert!(!state.take_restart(), "安装完成前不得重启");
+        state.finish_install(&Err("下载失败".to_string())).unwrap();
+        assert!(!state.take_restart(), "安装失败不得重启");
+        let failed = state.session_status().unwrap();
+        assert_eq!(failed.phase, "failed");
+        assert_eq!(failed.reason.as_deref(), Some("下载失败"));
+
+        state.begin_check().unwrap();
+        state.finish_check(true).unwrap();
+        state.begin_install().unwrap();
+        state.finish_install(&Ok(())).unwrap();
+        assert_eq!(
+            state.session_status().unwrap().phase,
+            "ready",
+            "安装成功后需保留待重启状态"
+        );
+        assert!(state.begin_check().is_err(), "安装成功后应等待用户重启");
+        assert!(state.take_restart(), "安装成功后允许一次显式重启");
+        assert_eq!(
+            state.session_status().unwrap().phase,
+            "idle",
+            "显式重启请求消费待重启状态"
+        );
+        assert!(!state.take_restart(), "同一次安装不得重复重启");
+    }
+
+    #[test]
+    fn signature_refusal_survives_panel_reentry_until_explicit_dismissal() {
+        let state = UpdateCommandState::default();
+        state.begin_check().unwrap();
+        state.finish_check(true).unwrap();
+        state.begin_install().unwrap();
+        let refusal = Err("更新包签名校验失败，已拒绝安装".to_string());
+        state.finish_install(&refusal).unwrap();
+
+        assert_eq!(state.session_status().unwrap().phase, "rejected");
+        assert!(state.begin_check().is_err(), "关闭拒绝说明前不得重新检查");
+        state.dismiss_rejection().unwrap();
+        assert_eq!(state.session_status().unwrap().phase, "idle");
+        state.begin_check().unwrap();
+    }
+
+    #[test]
+    fn signature_refusal_during_check_can_be_cleared_by_the_same_explicit_action() {
+        let state = UpdateCommandState::default();
+        state.begin_check().unwrap();
+        assert_eq!(state.session_status().unwrap().phase, "checking");
+        state.abort_check("更新包签名校验失败，已拒绝安装");
+
+        let status = state.session_status().unwrap();
+        assert_eq!(status.phase, "rejected");
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("更新包签名校验失败，已拒绝安装")
+        );
+        state.dismiss_rejection().unwrap();
+        assert_eq!(state.session_status().unwrap().phase, "idle");
+        state.begin_check().unwrap();
+    }
 
     #[test]
     fn status_serializes_with_camel_case_keys() {

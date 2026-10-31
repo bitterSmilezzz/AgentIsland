@@ -1,10 +1,10 @@
 import { invoke, listen } from './tauri.js';
 import { createUpdateController, updateStatusText, formatBytes } from './update-state.js';
 
-const BUSY = new Set(['checking', 'downloading', 'restarting']);
+const BUSY = new Set(['restoring', 'checking', 'downloading', 'restarting']);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-/** 「检查更新」分区。**默认不检查**——渲染出来时状态是「尚未检查更新」。
+/** 「检查更新」分区。**默认不检查**——挂载时先恢复进程级待重启状态；无待更新时显示「尚未检查更新」。
  *  容器带 `data-update` 而不是 `data-update-root`：项目里已有一个 `data-draft-ignore`
  *  之类的约定，这里用独立前缀避免与其它模块的选择器冲突。 */
 export function updatePanelHtml() {
@@ -61,7 +61,8 @@ export function bindUpdatePanel(root = document) {
     restart.hidden = state.phase !== 'ready';
     restart.disabled = BUSY.has(state.phase);
     const dismiss = find('dismiss');
-    dismiss.hidden = !['available', 'failed', 'uptodate'].includes(state.phase);
+    dismiss.hidden = !['available', 'failed', 'rejected', 'uptodate'].includes(state.phase);
+    dismiss.textContent = state.phase === 'rejected' ? '关闭' : '稍后再说';
     const notes = find('notes');
     const text = state.notes || '';
     notes.hidden = !text;
@@ -77,27 +78,112 @@ export function bindUpdatePanel(root = document) {
     check: () => invoke('update_check'),
     install: () => invoke('update_install'),
     restart: () => invoke('update_restart'),
+    dismissRejection: () => invoke('update_dismiss_rejection'),
     changed: render,
+    initialPhase: 'restoring',
   });
   panel.__updateController = controller;
 
   let unlisten = null;
+  let subscribePendingGeneration = null;
+  let monitor = null;
+  let monitorBusyGeneration = null;
+  let detached = false;
+  let attached = false;
+  let attachmentGeneration = 0;
+  let observer = null;
   const subscribe = async () => {
-    if (unlisten) return;
-    unlisten = await listen('update://progress', message => {
-      // Tauri 的 listen 回调收到的是 `{event, id, payload}`，进度数据在 **payload** 里。
-      // 写成 `message.downloaded` 的话取到 undefined，进度条永远停在「下载中…」——
-      // 而且不抛错、测试要靠真实事件才看得出来。
-      const payload = message?.payload ?? message;
-      controller.progress(payload?.downloaded, payload?.total);
-    });
+    const generation = attachmentGeneration;
+    if (unlisten || detached) return;
+    if (subscribePendingGeneration === generation) return;
+    subscribePendingGeneration = generation;
+    try {
+      const stop = await listen('update://progress', message => {
+        // Tauri 的 listen 回调收到的是 `{event, id, payload}`，进度数据在 **payload** 里。
+        // 写成 `message.downloaded` 的话取到 undefined，进度条永远停在「下载中…」——
+        // 而且不抛错、测试要靠真实事件才看得出来。
+        const payload = message?.payload ?? message;
+        controller.progress(payload?.downloaded, payload?.total);
+      });
+      if (detached || generation !== attachmentGeneration) stop();
+      else unlisten = stop;
+    } finally {
+      if (subscribePendingGeneration === generation) subscribePendingGeneration = null;
+    }
   };
-  panel.addEventListener('update:detach', () => { unlisten?.(); unlisten = null; });
+  const monitorSession = generation => {
+    if (monitor?.generation === generation) return;
+    const timer = setInterval(async () => {
+      if (monitorBusyGeneration === generation) return;
+      monitorBusyGeneration = generation;
+      try {
+        const session = await invoke('update_session_status');
+        if (detached || generation !== attachmentGeneration) return;
+        controller.restoreSessionStatus(session);
+        if (!['checking', 'downloading'].includes(controller.state.phase)) {
+          clearInterval(timer);
+          if (monitor?.timer === timer) monitor = null;
+        }
+      } catch {
+        if (detached || generation !== attachmentGeneration) return;
+        controller.restoreSessionStatus(null);
+        clearInterval(timer);
+        if (monitor?.timer === timer) monitor = null;
+      } finally {
+        if (monitorBusyGeneration === generation) monitorBusyGeneration = null;
+      }
+    }, 1000);
+    monitor = { generation, timer };
+  };
+  const watchRemoval = () => {
+    if (observer || typeof MutationObserver !== 'function' || !document.documentElement) return;
+    observer = new MutationObserver(() => {
+      if (!panel.isConnected) detach();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  };
+  const resume = () => {
+    if (attached || !panel.isConnected) return;
+    if (detached) controller.beginSessionRestore();
+    detached = false;
+    attached = true;
+    const generation = ++attachmentGeneration;
+    watchRemoval();
+    invoke('update_session_status')
+      .then(session => {
+        if (detached || generation !== attachmentGeneration) return;
+        controller.restoreSessionStatus(session);
+        if (['checking', 'downloading'].includes(session?.phase)) {
+          subscribe().catch(() => {});
+          monitorSession(generation);
+        }
+      })
+      .catch(() => {
+        if (!detached && generation === attachmentGeneration) controller.restoreSessionStatus(null);
+      });
+  };
+  const detach = () => {
+    if (detached) return;
+    detached = true;
+    attached = false;
+    attachmentGeneration += 1;
+    unlisten?.();
+    unlisten = null;
+    if (monitor) clearInterval(monitor.timer);
+    monitor = null;
+    observer?.disconnect();
+    observer = null;
+  };
+  panel.addEventListener('update:detach', detach);
+  panel.addEventListener('update:resume', resume);
 
   find('check').addEventListener('click', () => { subscribe(); controller.check(); });
   find('install').addEventListener('click', () => controller.install());
   find('restart').addEventListener('click', () => controller.restart());
-  find('dismiss').addEventListener('click', () => controller.dismiss());
+  find('dismiss').addEventListener('click', () => {
+    if (controller.state.phase === 'rejected') controller.closeRejection();
+    else controller.dismiss();
+  });
 
   // **先渲染一次初始状态**。changed 回调只在状态**变化**时触发，而初始状态
   // 从未被谁改动过——不主动渲染的话，面板会一直是空白：无版本号、无文案、
@@ -108,6 +194,7 @@ export function bindUpdatePanel(root = document) {
   invoke('update_current_version')
     .then(version => controller.setCurrentVersion(version))
     .catch(() => {});
+  resume();
   return controller;
 }
 

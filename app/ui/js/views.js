@@ -1062,7 +1062,10 @@ export function renderWorkbench() {
     nextContent.className = `wb-content${selected === 'overview' ? ' wb-overview' : ''}`;
     if (!restored) nextContent.innerHTML = content;
     previousContent.replaceWith(nextContent);
-    if(restored)nextContent.querySelector('[data-skills-packages]')?.dispatchEvent(new Event('skill-package-resume'));
+    if (restored) {
+      nextContent.querySelector('[data-update-panel]')?.dispatchEvent(new Event('update:resume'));
+      nextContent.querySelector('[data-skills-packages]')?.dispatchEvent(new Event('skill-package-resume'));
+    }
     nextContent.scrollTop = workbenchScroll.get(selected) ?? 0;
     root.querySelector('.wb-head-title').textContent = title;
     root.querySelector('[data-wb-status]').textContent = workbenchStatus(st.engine);

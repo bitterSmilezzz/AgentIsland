@@ -92,6 +92,44 @@ const makeUpdate = (over = {}) => ({
   assert.equal(restarts, 1);
 }
 
+// 离开设置页后再进入，必须从后端恢复已安装待重启状态。
+{
+  let checks = 0, restarts = 0;
+  const controller = createUpdateController({
+    initialPhase: 'restoring',
+    check: async () => { checks += 1; return makeUpdate(); },
+    restart: async () => { restarts += 1; },
+  });
+  await controller.check();
+  assert.equal(checks, 0, '恢复状态前不得发起检查');
+  controller.restoreSessionStatus({ phase: 'ready' });
+  assert.equal(controller.state.phase, 'ready');
+  assert.equal(controller.canRestart, true);
+  await controller.restart();
+  assert.equal(restarts, 1, '恢复后的待重启状态仍允许用户显式重启');
+}
+
+{
+  const controller = createUpdateController({ initialPhase: 'restoring' });
+  controller.restoreSessionStatus({ phase: 'idle' });
+  assert.equal(controller.state.phase, 'idle', '没有待重启更新时恢复为初始状态');
+}
+
+{
+  const controller = createUpdateController({ initialPhase: 'restoring' });
+  controller.restoreSessionStatus({ phase: 'failed', reason: '网络不可用，无法连接更新服务' });
+  assert.equal(controller.state.phase, 'failed');
+  assert.equal(controller.state.reason, '网络不可用，无法连接更新服务', '重进设置页后保留脱敏失败原因');
+}
+
+{
+  const controller = createUpdateController({ initialPhase: 'restoring' });
+  controller.restoreSessionStatus({ phase: 'checking' });
+  assert.equal(controller.state.phase, 'checking', '检查尚未完成时重进不能开放第二次检查');
+  controller.restoreSessionStatus({ phase: 'idle' });
+  assert.equal(controller.state.phase, 'idle', '检查完成后轮询应解除检查锁定');
+}
+
 // --- 失败与重试 ---------------------------------------------------------------
 {
   let attempt = 0;
@@ -111,16 +149,25 @@ const makeUpdate = (over = {}) => ({
 
 // 安装失败不得停在「可重启」——否则用户会重启到一个半装的状态。
 {
+  let checks = 0;
+  let dismissals = 0;
   const controller = createUpdateController({
-    check: async () => makeUpdate(),
+    check: async () => { checks += 1; return makeUpdate(); },
     install: async () => { throw new Error('更新包签名校验失败，已拒绝安装'); },
     restart: async () => {},
+    dismissRejection: async () => { dismissals += 1; },
   });
   await controller.check();
   await controller.install();
-  assert.equal(controller.state.phase, 'failed');
+  assert.equal(controller.state.phase, 'rejected');
   assert.equal(controller.canRestart, false, '安装失败不得显示重启入口');
   assert.match(controller.state.reason, /签名/);
+  await controller.check();
+  assert.equal(checks, 1, '签名拒绝后不得直接重试');
+  await controller.closeRejection();
+  assert.equal(dismissals, 1, '清除后端拒绝状态必须来自用户关闭动作');
+  await controller.check();
+  assert.equal(checks, 2, '用户关闭拒绝提示后可重新手动检查');
 }
 
 // 畸形响应按失败处理，不得当成「有更新」。
@@ -170,6 +217,7 @@ for (const bad of [null, {}, { available: 'yes' }, { available: 1 }]) {
 
 // --- 文案 ----------------------------------------------------------------------
 assert.equal(updateStatusText({ phase: 'idle' }), '尚未检查更新');
+assert.equal(updateStatusText({ phase: 'restoring' }), '正在读取更新状态…');
 assert.equal(updateStatusText({ phase: 'checking' }), '正在检查更新…');
 assert.equal(updateStatusText({ phase: 'uptodate' }), '已是最新版本');
 assert.equal(updateStatusText({ phase: 'available', version: '0.0.327' }), '发现新版本 v0.0.327');
@@ -179,6 +227,7 @@ assert.match(updateStatusText({ phase: 'downloading', downloaded: 1024, total: 4
 assert.equal(updateStatusText({ phase: 'ready' }), '更新已安装，重启后生效');
 assert.equal(updateStatusText({ phase: 'failed', reason: 'x' }), 'x');
 assert.equal(updateStatusText({ phase: 'failed' }), '更新失败，请稍后重试');
+assert.equal(updateStatusText({ phase: 'rejected' }), '更新包签名校验失败，已拒绝安装');
 assert.equal(updateStatusText(null), '尚未检查更新');
 
 assert.equal(formatBytes(0), '0 B');

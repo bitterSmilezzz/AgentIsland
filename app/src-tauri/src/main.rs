@@ -4506,6 +4506,7 @@ fn main() {
         // `tauri.conf.json` 的 `plugins.updater`，检查/下载由界面按需触发。
         // 签名校验不可关闭——它验的是「这个更新包确实是我们发布的」。
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(update::UpdateCommandState::default())
         .manage(shared.clone())
         .manage(WindowLayoutStore::new(
             window_layout_service::Store::with_journal(window_layout_journal::Store::at_default()),
@@ -4983,6 +4984,8 @@ fn main() {
             show_workbench,
             collapse_to_tray,
             update::update_current_version,
+            update::update_session_status,
+            update::update_dismiss_rejection,
             update::update_check,
             update::update_install,
             update::update_restart
