@@ -35,7 +35,7 @@ bash scripts/verify-framework.sh                    # 确认基线是绿的
 
 ## 2. 当前状态
 
-> 本节保留 2026-10-17 的历史快照；截至 2026-11-01 的当前状态与下一步见第 16 节。
+> 本节保留 2026-10-17 的历史快照；截至 2026-11-01 的当前状态与下一步见第 17 节。
 
 ### 已完成（本轮相关）
 
@@ -520,3 +520,25 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝、Intel/universal 路径仍未验；不将公开 updater manifest 可达性或隔离 VM 原生门禁通过解读为真实升级通过。
 - 后续开发按 [`04 · 实施计划`](../workbench/04-plan.md) 和当前需求缺口选取，不把单用户场景里没有 actor 表面的 authorization 作为伪实现；NOT-06 桌面交互验收继续使用可自动操作的隔离环境，不要求用户代为点按。
 - 独立规格与工程规范复审均 PASS；过程、初审修复与范围见 [`2026-11-01-0454-v0.0.422-independent.md`](../code-review/2026-11-01-0454-v0.0.422-independent.md)。
+
+## 17. 2026-11-01 追加：NOT-06 更新检查有界等待（v0.0.423）
+
+### 改动
+
+- `update_check` 对一次用户显式发起的检查设置 30 秒总时限。超时会丢弃未完成的检查 future，把共享会话写为可重试失败态，并显示固定脱敏文案“连接更新服务超时，请稍后重试”。超时归类与检查超时共用 `UPDATE_TIMEOUT_REASON`。
+- Rust 回归用永久 pending future 复现无界结算会使会话停在 `checking`；加入限时后验证会话进入 `failed`、原因固定且允许再次检查。真实 DOM 回归验证超时原因可见、“重试”恢复、安装入口不出现。
+- 安装仍需用户单独点击；安装完成仍需用户再次显式重启。此保护不自动重试、安装或重启，也不改变隔离 VM。
+
+### 验证与发布
+
+- 定向 Rust updater 测试 **14 passed / 0 failed**；浏览器更新面板回归与 `test-update-state.mjs` 通过；registry 测试 **23 passed**，版本检查与需求矩阵/状态文档生成检查通过。改动文件的 rustfmt、Node 语法和 `git diff --check` 均通过。
+- 完整源码 CI run `20261031T214307Z-36d6da5f08b9`：**128 passed / 0 failed / 0 blocked**。构建身份与随包 CLI 检查 run `20261031T215231Z-668f8cb0827e`：**7/7**；真实签名正例与错签/篡改负例 **7/7**。
+- 隔离发布 VM 原生门禁全部通过，证据目录 `.build/vm/acceptance-c98d06dabaca48ea9ffc5214038cf94a`，并核对传输产物哈希。发布明确保留两项未验：原生动效逐边取证、真实官方 Claude 客户端取证。
+- 提交前与提交后历史脱敏扫描均通过。`scripts/release.sh 0.0.423 "NOT-06：更新检查超时后可重试"` 成功：提交 `7427c0a7d468`、tag `v0.0.423` 已推送；GitHub [v0.0.423 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.423) 已核实包含 DMG、ZIP、updater 包、签名和 `latest.json`。脚本确认应用重启成功，PID `36928` 运行 `dist/AgentIsland.app`。
+- 独立规格与工程规范审查均 PASS；报告见 [`2026-11-01-0541-v0.0.423-independent.md`](../code-review/2026-11-01-0541-v0.0.423-independent.md)。
+
+### 未验项与下一步
+
+- NOT-06 仍为 partial：v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝、Intel/universal 架构未验。
+- BUG-016 保持 open。代码级 pending future 证明该类未完成请求会造成相同的 `checking` 症状，也证明新版本 30 秒保护可恢复；这不能确认 v0.0.416 VM 的原始原因。隔离 VM 的图形界面自动化仍受主机锁屏和来宾辅助功能限制，本轮没有触发其检查、安装或重启，也没有要求用户手工操作。
+- 后续如无需 VM 的开发继续按 [`04 · 实施计划`](../workbench/04-plan.md) 选择；BUG-016 的根因确认仍需来自旧版客户端本身的 updater 请求/错误证据。
