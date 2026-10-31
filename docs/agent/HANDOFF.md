@@ -35,7 +35,7 @@ bash scripts/verify-framework.sh                    # 确认基线是绿的
 
 ## 2. 当前状态
 
-> 本节保留 2026-10-17 的历史快照；截至 2026-11-01 的当前状态与下一步见第 13 节。
+> 本节保留 2026-10-17 的历史快照；截至 2026-11-01 的当前状态与下一步见第 16 节。
 
 ### 已完成（本轮相关）
 
@@ -495,3 +495,28 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - `verify-framework.sh` 的 Windows 交叉类型检查仍受既有 BUG-011（本机缺 Windows SDK 头文件）影响；release CI profile 独立通过。
 - TASK-01 仍为 partial：派生状态请求消费链、actor-based authorization 未完成。NOT-06 的 v0.0.416 真实升级、真实 updater/UI 错签拒绝及 Intel/universal 路径未验；BUG-016 仍未复现。没有要求用户进行手工 VM 操作。
 - 独立审查报告：[`2026-11-01-0345-v0.0.421-independent.md`](../code-review/2026-11-01-0345-v0.0.421-independent.md)。
+
+## 16. 2026-11-01 追加：TASK-01 派生状态列拖放消费链（v0.0.422）
+
+### 改动
+
+- 任务卡拖到派生状态列后先打开可键盘操作的确认框，用户需选择具体的本地进度；确认写入 `observed=false`，不会启动、停止或批准外部智能体，也不能通过拖放设置“来源已验收”。
+- 新 Tauri 命令由 Store 按聚合 revision、任务当前来源列、归档状态和目标/状态映射复核；取消、同列 no-op、无效请求、草稿保护和过期 revision 均不写入。普通写入失败保留选择并显示后端原因。
+- Rust 与真实 DOM 回归进入 CI/release；TASK-01 仍为 partial，actor-based authorization 仍在当前单用户界面之外。
+
+### 验证与更正
+
+- 定向 Rust 拖拽用例：**13 passed / 0 failed**。新增的 Store 表驱动用例覆盖全部合法目标、人工关口语义、Accepted/映射/来源/revision/归档/缺失拒绝及拒绝时文件字节保持。
+- `node scripts/automation/browser-check.mjs test-task-board-status-drag.mjs` 与既有 `test-task-board-drag.mjs` 均通过；前者覆盖真实 DOM 确认/取消、所有选项、原始 revision、草稿保护、过期和普通写失败时的选择保留。
+- 第一次源码 CI 留存失败样本 `.scratch/automation-runs/20261031T205818Z-9f5a831aa080`：**127 passed / 1 failed**，`automation.registry` 报同一 Rust 测试文件被两个 check id 重复认领。修正后 Rust 源文件仍由既有唯一登记项和全量 Rust 门禁覆盖，新浏览器门禁只认领自己的回归脚本。完整复跑 `20261031T211209Z-5686f464a6d0` 为 **128 passed / 0 failed / 0 blocked**。
+- 首次发布尝试在打包前因当前 shell 未注入 updater 私钥路径而安全退出；随后按本机既有受限权限文件路径重跑，文件权限核对为 600，私钥内容没有读取或输出。构建产物、打包身份/随包 CLI 检查 **7/7**，错签/篡改签名用例 **7/7**。
+- 隔离 VM 原生门禁全部通过，证据目录 `.build/vm/acceptance-0035de07622d4dd4b3f4dbfc770ef4f3`，并核对传输产物哈希。Release 明确保留两项未验：原生动效逐边取证、真实官方 Claude 客户端取证。
+- 提交前与提交后历史脱敏扫描均通过。`scripts/release.sh 0.0.422 "TASK-01：看板任务卡拖放记录本地进度"` 成功：提交 `0baf09cbb180`、tag `v0.0.422` 已推送，GitHub [v0.0.422 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.422) 已核实含 DMG、ZIP、updater 包、签名与 `latest.json`；脚本确认应用重启成功，PID `89634` 运行 `dist/AgentIsland.app`。
+- 全仓 `cargo fmt --check` 仍会报大量既有文件格式差异；本轮改动 Rust 文件的定向 `rustfmt --check` 通过。`verify-framework.sh` 受既有 BUG-011（本机无 Windows SDK 头文件）影响的记录见 §15；本轮 release CI 独立通过。
+
+### 未验项与下一步
+
+- NOT-06 继续为 partial。自动续查只读核实隔离 VM 安装包是 v0.0.416、当前进程是另一份验收构建；主机处于锁屏，Tart Guest Agent 的系统查询无响应，来宾辅助功能查询超时且无法抓屏。未触发 updater 检查/安装/重启，没有 updater 请求证据，BUG-016 仍未复现；证据已追加到 registry。没有要求用户进行手工操作，也没有改动该旧包或验收进程。
+- v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝、Intel/universal 路径仍未验；不将公开 updater manifest 可达性或隔离 VM 原生门禁通过解读为真实升级通过。
+- 后续开发按 [`04 · 实施计划`](../workbench/04-plan.md) 和当前需求缺口选取，不把单用户场景里没有 actor 表面的 authorization 作为伪实现；NOT-06 桌面交互验收继续使用可自动操作的隔离环境，不要求用户代为点按。
+- 独立规格与工程规范复审均 PASS；过程、初审修复与范围见 [`2026-11-01-0454-v0.0.422-independent.md`](../code-review/2026-11-01-0454-v0.0.422-independent.md)。
