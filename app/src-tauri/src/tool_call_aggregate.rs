@@ -50,6 +50,8 @@ pub struct ToolCallSummary {
 /// 聚合拒绝原因。固定码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateRefusal {
+    /// 工具事件的 JSON 畸形、过深或顶层不是对象。
+    MalformedPayload,
     /// 事件没有 call id，无法归属。
     MissingCallId,
     /// 同一调用的参数分片乱序到达。
@@ -63,6 +65,7 @@ pub enum AggregateRefusal {
 impl AggregateRefusal {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::MalformedPayload => "malformed_payload",
             Self::MissingCallId => "missing_call_id",
             Self::OutOfOrderDelta => "out_of_order_delta",
             Self::ConflictingResult => "conflicting_result",
@@ -101,10 +104,7 @@ impl ToolCallAggregator {
             "response.output_item.added"
             | "response.function_call_arguments.delta"
             | "response.function_call_arguments.done"
-            | "response.output_item.done" => match parse_payload(&event.data) {
-                Some(payload) => payload,
-                None => return Err(AggregateRefusal::MissingCallId),
-            },
+            | "response.output_item.done" => parse_payload(&event.data)?,
             _ => return Ok(false),
         };
         let call_id = payload
@@ -173,7 +173,10 @@ impl ToolCallAggregator {
                     .index
                     .get(&call_id)
                     .ok_or(AggregateRefusal::MissingCallId)?;
-                let result = payload.get("result").and_then(|v| v.as_str()).map(str::to_string);
+                let result = payload
+                    .get("result")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
                 if let (Some(existing), Some(incoming)) = (&self.calls[at].result, &result) {
                     if existing != incoming {
                         return Err(AggregateRefusal::ConflictingResult);
@@ -210,14 +213,14 @@ impl ToolCallAggregator {
     }
 }
 
-/// 解析事件数据（必须是 JSON 对象）。
-fn parse_payload(data: &str) -> Option<serde_json::Value> {
-    let value: serde_json::Value = serde_json::from_str(data).ok()?;
-    if value.is_object() {
-        Some(value)
-    } else {
-        None
+/// 解析事件数据（必须是 JSON 对象）；错误只返回固定码，不保留原始 payload。
+fn parse_payload(data: &str) -> Result<serde_json::Value, AggregateRefusal> {
+    let value: serde_json::Value =
+        serde_json::from_str(data).map_err(|_| AggregateRefusal::MalformedPayload)?;
+    if !value.is_object() {
+        return Err(AggregateRefusal::MalformedPayload);
     }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -295,13 +298,7 @@ mod tests {
 
         let summaries = agg.finalize();
         assert_eq!(summaries.len(), 2, "并行调用各自独立");
-        let by_id = |id: &str| {
-            summaries
-                .iter()
-                .find(|s| s.call_id == id)
-                .cloned()
-                .unwrap()
-        };
+        let by_id = |id: &str| summaries.iter().find(|s| s.call_id == id).cloned().unwrap();
         assert_eq!(by_id("c1").arguments, "file.rs");
         assert_eq!(by_id("c2").arguments, "--all");
     }
@@ -326,6 +323,66 @@ mod tests {
             )),
             Err(AggregateRefusal::MissingCallId)
         );
+    }
+
+    #[test]
+    fn malformed_or_over_deep_payloads_are_distinguished_and_leave_state_unchanged() {
+        assert_eq!(
+            AggregateRefusal::MalformedPayload.as_str(),
+            "malformed_payload"
+        );
+        let mut agg = ToolCallAggregator::new();
+        agg.on_event(&event(
+            "response.output_item.added",
+            r#"{"call_id":"c1","name":"read"}"#,
+        ))
+        .unwrap();
+        agg.on_event(&event(
+            "response.function_call_arguments.delta",
+            r#"{"call_id":"c1","delta":"path.rs"}"#,
+        ))
+        .unwrap();
+
+        let mut too_deep = String::from(r#"{"call_id":"c2","nested": "#);
+        too_deep.push_str(&"[".repeat(130));
+        too_deep.push('0');
+        too_deep.push_str(&"]".repeat(130));
+        too_deep.push('}');
+
+        let rejected_payloads = [r#"{"call_id":"c2""#, r#"["call_id","c2"]"#, &too_deep];
+        for payload in rejected_payloads {
+            let calls_before = agg.calls.clone();
+            let index_before = agg.index.clone();
+            let delta_counts_before = agg.delta_counts.clone();
+            assert_eq!(
+                agg.on_event(&event("response.function_call_arguments.delta", payload,)),
+                Err(AggregateRefusal::MalformedPayload),
+                "invalid event shape must have a stable, distinct refusal code"
+            );
+            assert_eq!(
+                agg.calls, calls_before,
+                "rejected payload must not change calls"
+            );
+            assert_eq!(
+                agg.index, index_before,
+                "rejected payload must not change call ids"
+            );
+            assert_eq!(
+                agg.delta_counts, delta_counts_before,
+                "rejected payload must not change fragment sequencing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_object_without_a_call_id_keeps_the_missing_identity_refusal() {
+        let mut agg = ToolCallAggregator::new();
+        for payload in [r#"{}"#, r#"{"call_id":""}"#] {
+            assert_eq!(
+                agg.on_event(&event("response.function_call_arguments.delta", payload,)),
+                Err(AggregateRefusal::MissingCallId)
+            );
+        }
     }
 
     #[test]
