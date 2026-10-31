@@ -470,7 +470,7 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - NOT-06 仍为 partial：v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝、Intel/universal 路径未验；BUG-016 仍未复现。`agentisland-update-e2e` 保持运行，本轮原生门禁使用的是独立 `agentisland-iso`，没有操作旧版升级实例。
 - 可脱离来宾 UI 的下一片优先完成 TASK-01 看板拖拽界面接线；NOT-06 真实升级与错签验收待隔离来宾桌面自动控制链可用时继续。
 
-## 15. 2026-11-01 追加：TASK-01 看板项目归属拖放（v0.0.421 候选，未发布）
+## 15. 2026-11-01 追加：TASK-01 看板项目归属拖放（v0.0.421）
 
 ### 改动
 
@@ -486,9 +486,12 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - 最终稳定源码 CI run `20261031T193956Z-abc279c27993`：**127 passed / 0 failed / 0 blocked**。更早 run `20261031T191334Z-62b9d67e1308` 保留了第一次布局回归失败与源在验证期间变动导致的 `source.integrity` 失败；随后修复并完整复跑通过。
 - 规格与工程规范两项最终复核均 PASS。审查发现键盘测试误称、短窗口目标栏挤压列表、drop 清理依赖已清空的 `activeDrag`，均已修复并加入浏览器断言。前端与 Rust 独立推导来源列是服务端信任边界所需；建议未来增加共享状态夹具，不作为当前阻断项。
 
-### 未发布状态与未验项
+### 发布结果与未验项
 
-- 工作树版本文件、README、CHANGELOG 与站点下载链接已准备为 v0.0.421；**未提交、未打包、未重启、未打 tag、未创建 GitHub Release**。当前 shell 未注入 updater 签名私钥（`TAURI_SIGNING_PRIVATE_KEY` / `_PATH`），release 脚本的签名构建硬门无法通过；不能用无签名包替代。
-- `verify-framework.sh` 的 Windows 交叉类型检查仍受既有 BUG-011（本机缺 Windows SDK 头文件）影响；本轮 CI profile 独立通过。原生门禁与 release/package 未运行。
-- TASK-01 仍为 partial：派生状态请求消费链、actor-based authorization 未完成。NOT-06 的 v0.0.416 真实升级、真实 updater/UI 错签拒绝及 Intel/universal 路径未验；BUG-016 仍未复现。本轮未操作隔离升级 VM，也不需要用户手动操作。
+- `scripts/release.sh 0.0.421 "TASK-01：看板任务卡拖放修改项目归属"` 成功：源码 CI run `20261031T200751Z-abc708b7f024` 为 **127 passed / 0 failed / 0 blocked**；打包身份验证 **7/7**；实际签名正例和错签/篡改负例 **7/7**；提交前与提交后历史脱敏扫描通过。
+- 隔离 VM 原生验收最终通过，证据目录 `.build/vm/acceptance-36e06f9340d74b5c9ca2366980a79212`，包含 UI、Dock、单实例、主包与 helper CLI 投递、窗口生命周期五项，并验证传输产物哈希。Release 脚本明确保留原生动效逐边与真实官方 Claude 客户端两项未验。
+- 首次发布尝试的原生门禁失败样本保留在 `.build/vm/acceptance-b406668df05c4ed9a4fc373ff1c9dac0`：`test-cli-native.py` 停在 `primary-hide-delivery`，状态为 incomplete。随后在同一隔离 VM 对已注册同名副本场景做受控重放，主包和 helper 的收起/展开均成功；独立完整原生验收 `.build/vm/acceptance-757be60d2e544651a82938c82ad11697` 及发布流程中的完整重跑均通过。失败原因尚未确认，因此保留为一次未复现的间歇性失败，不据重跑结果抹除。
+- 提交 `56e3989`，tag `v0.0.421` 已推送；GitHub [v0.0.421 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.421) 已核实包含 DMG、ZIP、updater 包、签名与 `latest.json`。脚本最终确认应用重启成功，PID `32835` 运行 `dist/AgentIsland.app`。本轮只操作发布用 `agentisland-iso`，没有操作 `agentisland-update-e2e`；升级签名密钥从受限权限文件读取，内容未查看或输出。
+- `verify-framework.sh` 的 Windows 交叉类型检查仍受既有 BUG-011（本机缺 Windows SDK 头文件）影响；release CI profile 独立通过。
+- TASK-01 仍为 partial：派生状态请求消费链、actor-based authorization 未完成。NOT-06 的 v0.0.416 真实升级、真实 updater/UI 错签拒绝及 Intel/universal 路径未验；BUG-016 仍未复现。没有要求用户进行手工 VM 操作。
 - 独立审查报告：[`2026-11-01-0345-v0.0.421-independent.md`](../code-review/2026-11-01-0345-v0.0.421-independent.md)。
