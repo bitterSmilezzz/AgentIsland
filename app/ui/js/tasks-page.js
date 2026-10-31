@@ -43,7 +43,7 @@ export function pageTasks() {
     <div class="task-controls">
     <div class="task-toolbar"><label class="task-filter">项目<select data-task-filter aria-label="筛选项目"><option value="">全部项目</option></select></label><label class="task-search">搜索<input type="search" data-task-search aria-label="搜索任务（跨项目，按名称或来源）" placeholder="名称或来源…" autocomplete="off"></label><label class="task-archive-filter"><input type="checkbox" data-task-archived>已归档</label><button class="mini-btn" type="button" data-task-refresh>刷新</button></div>
     <form class="task-compose" data-task-create><label class="sr-only" for="task-new-title">任务名称</label><input id="task-new-title" name="title" placeholder="记录一个任务…" maxlength="500" required autocomplete="off"><select name="projectId" aria-label="任务所属项目"><option value="">未分组</option></select><button class="mini-btn primary" type="submit">添加任务</button></form>
-    <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form></details>
+    <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form><section class="task-project-manager" data-task-project-manager aria-label="项目依赖管理"><label>配置项目<select data-task-project-select aria-label="选择要配置依赖的项目"><option value="">选择项目</option></select></label><form data-task-project-dependencies hidden></form><div class="task-project-delete" data-task-project-delete hidden><p data-project-task-count></p><button class="mini-btn" type="button" data-task-project-delete-button>删除项目</button></div></section></details>
     <button class="mini-btn task-chief-open" type="button" data-chief-open>团队资源配置</button>
     </div>
     <div class="task-board" data-task-board></div>
@@ -79,7 +79,7 @@ export async function hydrateTasks(isVisible = () => true) {
   bindChiefResources(root);
   const current = pageRequest(root);
   const message = root.querySelector('[data-task-feedback]');
-  let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null, detailRevision=null;
+  let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null, detailRevision=null, projectEditorId=null;
   subscribeTasks();
   const projectOptions = blank => `<option value="">${blank}</option>${data.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}`;
   const feedback = (text, form) => {
@@ -88,6 +88,64 @@ export async function hydrateTasks(isVisible = () => true) {
     else message.textContent = text;
   };
   const detailDirty = except => [...root.querySelectorAll('[data-task-detail] input, [data-task-detail] select')].some(control => !except?.contains(control) && control.value !== control.dataset.savedValue);
+  const projectManagerDirty = () => {
+    const form = root.querySelector('[data-task-project-dependencies]');
+    return Boolean(form && !form.hidden && [...form.querySelectorAll('[data-project-dependency]')]
+      .some(control => String(control.checked) !== control.dataset.savedValue));
+  };
+  const renderProjectManager = (force = false) => {
+    if (!force && projectManagerDirty()) return;
+    const manager = root.querySelector('[data-task-project-manager]');
+    const select = manager.querySelector('[data-task-project-select]');
+    const form = manager.querySelector('[data-task-project-dependencies]');
+    const deletePanel = manager.querySelector('[data-task-project-delete]');
+    form.oninput = null;
+    form.onchange = null;
+    form.onsubmit = null;
+    const previous = select.value || projectEditorId;
+    select.innerHTML = `<option value="">选择项目</option>${data.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}`;
+    projectEditorId = data.projects.some(p => p.id === previous) ? previous : data.projects[0]?.id ?? null;
+    select.value = projectEditorId ?? '';
+    if (!projectEditorId) { form.hidden = true; form.innerHTML = ''; deletePanel.hidden = true; return; }
+    const project = data.projects.find(p => p.id === projectEditorId);
+    const dependencies = new Set(project.dependencies ?? []);
+    const choices = data.projects.filter(item => item.id !== project.id);
+    form.dataset.projectId = project.id;
+    form.dataset.baseRevision = String(data.revision);
+    form.hidden = false;
+    form.innerHTML = `<fieldset><legend>${esc(project.name)} 依赖的项目</legend>${choices.length
+      ? choices.map(item => `<label class="task-project-dependency"><input type="checkbox" data-project-dependency="${esc(item.id)}" value="${esc(item.id)}"${dependencies.has(item.id) ? ' checked' : ''}>${esc(item.name)}</label>`).join('')
+      : '<p class="task-note">添加其他项目后，可以在这里设置依赖。</p>'}</fieldset>${choices.length ? draftActions('保存依赖') : ''}`;
+    form.querySelectorAll('[data-project-dependency]').forEach(control => { control.dataset.savedValue = String(control.checked); });
+    const controls = [...form.querySelectorAll('[data-project-dependency]')];
+    const discard = form.querySelector('[data-task-discard]');
+    if (discard) {
+      discard.textContent = '撤销草稿并重新载入';
+      const update = () => {
+        discard.hidden = !projectManagerDirty();
+        const notice = form.querySelector('[data-task-form-feedback]');
+        notice.textContent = ''; notice.hidden = true;
+      };
+      form.oninput = update;
+      form.onchange = update;
+      discard.onclick = () => {
+        if (busy) return;
+        renderProjectManager(true);
+        manager.querySelector('[data-task-project-select]').focus({ preventScroll: true });
+        feedback('已重新载入当前项目记录。');
+      };
+      form.onsubmit = event => {
+        event.preventDefault();
+        const nextDependencies = controls.filter(control => control.checked).map(control => control.value);
+        mutate('task_project_dependencies_update', { projectId: project.id, dependencies: nextDependencies }, form, Number(form.dataset.baseRevision));
+      };
+    }
+    deletePanel.hidden = false;
+    const taskCount = data.tasks.filter(task => task.project_id === project.id).length;
+    deletePanel.querySelector('[data-project-task-count]').textContent = taskCount
+      ? `有 ${taskCount} 个任务归属此项目；调整归属后才可删除。`
+      : '没有任务归属此项目。';
+  };
   const leaveDetail = () => {
     if (!detailDirty()) return true;
     feedback('详情有未保存修改，请先保存或撤销。'); return false;
@@ -109,12 +167,13 @@ export async function hydrateTasks(isVisible = () => true) {
     selected = null; redraw();
     reveal([...root.querySelectorAll('[data-task-select]')].find(button => button.dataset.taskSelect === origin) ?? root.querySelector('[data-task-filter]'));
   };
-  const redraw = (detail = true) => retainTaskFocus(root, () => {
+  const redraw = (detail = true, forceProjectManager = false) => retainTaskFocus(root, () => {
     for (const select of [root.querySelector('[data-task-filter]'), root.querySelector('[data-task-create] select')]) {
       const value = select.value;
       select.innerHTML = projectOptions(select.hasAttribute('data-task-filter') ? '全部项目' : '未分组');
       select.value = value;
     }
+    renderProjectManager(forceProjectManager);
     const project = root.querySelector('[data-task-filter]').value;
     const archived = root.querySelector('[data-task-archived]').checked;
     // 跨项目搜索：按名称或来源 agent 模糊匹配，与项目过滤、归档开关组合（AND）。
@@ -248,9 +307,10 @@ export async function hydrateTasks(isVisible = () => true) {
     const progress = box.querySelector('[data-task-progress]');
     if (progress) progress.onsubmit = event => { event.preventDefault(); const value = progress.elements.progress.value; const kind = kinds[value] ? value : null; const status = value === 'result_review' ? 'ready' : kind ? 'waiting' : value; mutate('task_record_progress', { id: task.id, status, kind, artifactTitle: progress.elements.artifactTitle.value.trim() || null }, progress); };
   };
-  const mutate = async (command, args, form) => {
+  const mutate = async (command, args, form, expectedRevisionOverride = null) => {
     if (busy || !data) return;
     if (args.id === selected && detailDirty(form)) { feedback('另一处有未保存修改，请先保存或撤销。', form); return; }
+    if (args.id !== selected && detailDirty(form)) { feedback('任务详情有未保存修改，请先保存或撤销。', form); return; }
     busy = true;
     const controls = [...root.querySelectorAll('input, select, button')];
     const disabled = controls.map(control => control.disabled);
@@ -258,14 +318,17 @@ export async function hydrateTasks(isVisible = () => true) {
     root.setAttribute('aria-busy', 'true');
     feedback('正在保存', form);
     try {
-      const next = await invoke(command, { ...args, expectedRevision: args.id === selected ? detailRevision : data.revision });
+      const next = await invoke(command, { ...args, expectedRevision: expectedRevisionOverride ?? (args.id === selected ? detailRevision : data.revision) });
       if (!current.ownsRequest()) return;
       data = next;
+      if (command === 'task_project_create') projectEditorId = next.projects.at(-1)?.id ?? projectEditorId;
       if (form) { form.reset(); form.dispatchEvent(new Event('input', { bubbles: true })); }
-      redraw(args.id === selected); feedback('已保存到本机');
+      redraw(args.id === selected, command.startsWith('task_project_')); feedback('已保存到本机');
     } catch (error) {
       if (current.ownsRequest()) feedback(form && error?.code === 'stale_revision'
-        ? '任务已更新，草稿已保留。撤销修改后核对新记录。'
+        ? form.hasAttribute('data-task-project-dependencies')
+          ? '任务记录已更新，依赖草稿已保留。撤销草稿并重新载入后再保存。'
+          : '任务已更新，草稿已保留。撤销修改后核对新记录。'
         : error?.message ?? String(error), form);
     }
     finally { busy = false; controls.forEach((control, index) => { control.disabled = disabled[index]; }); root.removeAttribute('aria-busy'); if (refreshQueued) { refreshQueued = false; refresh(); } }
@@ -308,11 +371,31 @@ export async function hydrateTasks(isVisible = () => true) {
     closeDetail();
   };
   root.querySelector('[data-task-refresh]').onclick = refresh;
+  const projectSelect = root.querySelector('[data-task-project-select]');
+  projectSelect.onchange = () => {
+    if (projectManagerDirty()) {
+      projectSelect.value = projectEditorId ?? '';
+      feedback('项目依赖有未保存草稿，请先保存或撤销。');
+      return;
+    }
+    projectEditorId = projectSelect.value || null;
+    renderProjectManager(true);
+  };
+  root.querySelector('[data-task-project-delete-button]').onclick = () => {
+    if (!projectEditorId || busy) return;
+    if (projectManagerDirty()) { feedback('项目依赖有未保存草稿，请先保存或撤销。'); return; }
+    mutate('task_project_delete', { projectId: projectEditorId });
+  };
   root.querySelector('[data-task-filter]').onchange = () => { if (data) redraw(false); };
   root.querySelector('[data-task-archived]').onchange = () => { if (data) redraw(false); };
   // 搜索即输即筛：纯前端过滤（板上的数据本来就是全量的），不触发网络请求。
   root.querySelector('[data-task-search]').oninput = () => { if (data) redraw(false); };
   root.querySelector('[data-task-create]').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; mutate('task_create', { title: form.elements.title.value, projectId: form.elements.projectId.value || null }, form); };
-  root.querySelector('[data-task-project]').onsubmit = event => { event.preventDefault(); const form = event.currentTarget; mutate('task_project_create', { name: form.elements.name.value }, form); };
+  root.querySelector('[data-task-project]').onsubmit = event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (projectManagerDirty()) { feedback('请先保存或撤销项目依赖草稿，再添加项目。'); return; }
+    mutate('task_project_create', { name: form.elements.name.value }, form);
+  };
   await refresh();
 }

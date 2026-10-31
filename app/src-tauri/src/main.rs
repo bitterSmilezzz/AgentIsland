@@ -1050,7 +1050,10 @@ fn open_agent_session(
 /// 口径：只发聚合量、不带任何凭据、端点先过传输策略（HTTPS，或仅回环 HTTP）。
 /// 这不是后台定时上报——每次导出都是调用方明确发起的一次动作。
 #[tauri::command]
-fn export_otlp_metrics(state: State<SharedEngine>, endpoint: String) -> Result<otlp::Receipt, String> {
+fn export_otlp_metrics(
+    state: State<SharedEngine>,
+    endpoint: String,
+) -> Result<otlp::Receipt, String> {
     let snapshot = {
         let engine = state.lock().unwrap();
         let view = engine.state();
@@ -2701,6 +2704,33 @@ fn task_project_create(
     )
 }
 #[tauri::command]
+fn task_project_dependencies_update(
+    app: AppHandle,
+    state: State<TaskStore>,
+    project_id: String,
+    dependencies: Vec<String>,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| {
+            s.project_dependencies_update(&project_id, dependencies, expected_revision)
+        }),
+    )
+}
+#[tauri::command]
+fn task_project_delete(
+    app: AppHandle,
+    state: State<TaskStore>,
+    project_id: String,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |s| s.project_delete(&project_id, expected_revision)),
+    )
+}
+#[tauri::command]
 fn task_create(
     app: AppHandle,
     state: State<TaskStore>,
@@ -3340,7 +3370,15 @@ fn engine_loop(shared: SharedEngine, app: AppHandle, wake_rx: mpsc::Receiver<()>
     let otlp_in_flight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     loop {
         // 徽标文本在临界区里**算好**，写托盘留到锁外（理由见 `apply_tray_badge`）。
-        let (state, interval, badge, observations, settings_for_otlp, otlp_snapshot, now_ms_for_otlp) = {
+        let (
+            state,
+            interval,
+            badge,
+            observations,
+            settings_for_otlp,
+            otlp_snapshot,
+            now_ms_for_otlp,
+        ) = {
             let mut e = shared.lock().unwrap();
             e.consume_hook_events();
             let badge_mode = e.settings.menu_bar_badge_mode.clone();
@@ -4541,7 +4579,9 @@ fn main() {
             if !demo && !isolated_instance_requested() && !background_test_requested() {
                 let mut engine = shared.lock().unwrap();
                 engine.enable_dedup_persistence(settings::config_dir().join("dedup-state.json"));
-                engine.enable_notify_ledger_persistence(settings::config_dir().join("notify-ledger.json"));
+                engine.enable_notify_ledger_persistence(
+                    settings::config_dir().join("notify-ledger.json"),
+                );
                 *setup_notify_shutdown.lock().unwrap() = engine.notify_ledger.flush_handle();
                 // Startup read failures are visible immediately via EngineState.notifyPersistence.
             }
@@ -4688,8 +4728,7 @@ fn main() {
             if !isolated_instance_requested() {
                 let shared_for_webhook = shared.clone();
                 std::thread::spawn(move || {
-                    let _server =
-                        webhook::LocalEventServer::start(tx, shared_for_webhook, wake_tx);
+                    let _server = webhook::LocalEventServer::start(tx, shared_for_webhook, wake_tx);
                     loop {
                         std::thread::sleep(std::time::Duration::from_secs(3600));
                     }
@@ -4912,6 +4951,8 @@ fn main() {
             chief_resources_save,
             chief_resources_delete,
             task_project_create,
+            task_project_dependencies_update,
+            task_project_delete,
             task_create,
             task_update,
             task_archive,
@@ -5004,7 +5045,9 @@ fn main() {
             tauri::RunEvent::ExitRequested { .. } => {
                 if let Some(handle) = notify_shutdown.lock().unwrap().clone() {
                     if !handle.flush(std::time::Duration::from_secs(2)) {
-                        log_line("notify ledger shutdown flush incomplete; recovery not guaranteed");
+                        log_line(
+                            "notify ledger shutdown flush incomplete; recovery not guaranteed",
+                        );
                     }
                 }
             }
@@ -5013,7 +5056,9 @@ fn main() {
                 let handle = notify_shutdown.lock().unwrap().take();
                 if let Some(handle) = handle {
                     if !handle.shutdown(std::time::Duration::from_secs(2)) {
-                        log_line("notify ledger shutdown flush incomplete; recovery not guaranteed");
+                        log_line(
+                            "notify ledger shutdown flush incomplete; recovery not guaranteed",
+                        );
                     }
                 }
             }

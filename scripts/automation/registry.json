@@ -173,10 +173,11 @@
         "rust.default",
         "task01.tasksearch",
         "task01.deps",
+        "task01.projectdeps",
         "task01.drag"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；跨项目搜索（task01.tasksearch）；项目依赖判据（task01.deps：依赖存在性/循环/深度上限/删除守卫/自依赖/传递闭包）；**看板拖拽语义**（task01.drag，2026-10-27）：把「拖到已结束意味着什么」固化成可选项——看板四列全由运行状态派生，因此拖到派生列**不直接改状态**，而是产出带 expected_revision 的状态变更请求由既有状态机执行；拖拽**不改写历史**（不产生新运行记录）；拖到项目分组改归属；任务不存在/已归档/目标缺失/revision 不符一律拒绝（并发改动拒绝而非覆盖）。5 条用例 + 变异（绕过状态机直接改）被拒。全量 1348 passed，脱敏 0 命中。缺：拖拽的界面实现与接线（判据已定）、依赖关系与存储层的接线、actor-based authorization（单用户工具无多 actor 面）。",
+      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；跨项目搜索（task01.tasksearch）；项目依赖判据（task01.deps：依赖存在性/循环/深度上限/删除守卫/自依赖/传递闭包）；项目依赖存储与管理页接线（task01.projectdeps：旧文件兼容、聚合 revision、循环/深度拒绝、删除守卫、浏览器草稿冲突保持）；**看板拖拽语义**（task01.drag，2026-10-27）：把「拖到已结束意味着什么」固化成可选项——看板四列全由运行状态派生，因此拖到派生列**不直接改状态**，而是产出带 expected_revision 的状态变更请求由既有状态机执行；拖拽**不改写历史**（不产生新运行记录）；拖到项目分组改归属；任务不存在/已归档/目标缺失/revision 不符一律拒绝（并发改动拒绝而非覆盖）。5 条用例 + 变异（绕过状态机直接改）被拒。仍缺：拖拽的界面实现与接线（判据已定）、actor-based authorization（单用户工具无多 actor 面）。",
       "status": "partial"
     },
     "TASK-04": {
@@ -2864,9 +2865,28 @@
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "TASK-01 进展：项目依赖关系的判据（project_deps.rs 纯函数；此前 Project 只有 id/name，依赖关系完全没建模）。五条语义：①依赖存在性（不能指向空气）；②循环拒绝（直接或间接的环都拒——带环的图让「先做谁」算不出来）；③深度上限（链长 > 8 即拒，过深依赖链让计划无法展开）；④删除守卫（仍被依赖的项目不许删，否则留下的依赖指向空气）；⑤自依赖拒绝。另提供传递依赖闭包（菱形依赖去重）。6 条用例 + 变异（摘掉环检测）被拒。全量 1315 passed，脱敏 0 命中。",
+      "source": "TASK-01 项目依赖判据（project_deps.rs 纯函数）：五条语义为依赖存在性（不能指向空气）、直接/间接循环拒绝、链长超过 8 拒绝、删除仍被依赖项目时拒绝、自依赖拒绝；另提供传递依赖闭包（菱形依赖去重）。8 条用例覆盖边界与完整图校验。",
       "test_files": [
         "app/src-tauri/src/project_deps.rs"
+      ]
+    },
+    "task01.projectdeps": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-dependencies.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "TASK-01 项目依赖生产接线：旧任务文件兼容、依赖列表原子持久化与读回、聚合 revision 冲突、未知项目/重复/自依赖/循环/超过 8 层拒绝；项目删除拒绝被依赖及仍有归属任务的项目；浏览器覆盖添加/移除、拒绝反馈、无项目时隐藏空操作、共享 revision 写入前拦截未保存草稿以及冲突后草稿保留。",
+      "test_files": [
+        "scripts/test-task-dependencies.mjs"
       ]
     },
     "gw06.fallback": {
@@ -3204,6 +3224,7 @@
       "not01.latencyui",
       "task01.detailnav",
       "task01.tasksearch",
+      "task01.projectdeps",
       "task04.readerleave",
       "task04.refreshfocus",
       "gw01.connectionsui",
@@ -3290,6 +3311,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task01.deps",
+      "task01.projectdeps",
       "task01.drag",
       "task04.readerleave",
       "task04.ordering",
@@ -3465,6 +3487,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task01.deps",
+      "task01.projectdeps",
       "task01.drag",
       "task04.readerleave",
       "task04.ordering",

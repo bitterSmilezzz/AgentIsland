@@ -28,6 +28,9 @@ pub struct Source {
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// 该项目开始前依赖的项目。旧 tasks.v1.json 缺少此字段时为空。
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -145,8 +148,11 @@ impl Data {
     /// 最旧行，引用中的行永远保留；一个都动不了时安静返回（`MAX_BYTES` 仍兜底）。
     fn enforce_artifact_cap(&mut self) {
         while self.artifacts.len() > MAX_ARTIFACTS {
-            let referenced =
-                |artifact: &str| self.attentions.iter().any(|a| a.artifact_id.as_deref() == Some(artifact));
+            let referenced = |artifact: &str| {
+                self.attentions
+                    .iter()
+                    .any(|a| a.artifact_id.as_deref() == Some(artifact))
+            };
             let Some(index) = self
                 .artifacts
                 .iter()
@@ -168,6 +174,18 @@ fn error(code: &str, message: &str) -> Error {
     Error {
         code: code.into(),
         message: message.into(),
+    }
+}
+fn dependency_error(reason: crate::project_deps::DepRefusal) -> Error {
+    use crate::project_deps::DepRefusal;
+    match reason {
+        DepRefusal::UnknownDependency => error("unknown_dependency", "依赖项目不存在"),
+        DepRefusal::DuplicateDependency => error("duplicate_dependency", "依赖项目不能重复"),
+        DepRefusal::DuplicateProject => error("duplicate_project", "项目记录重复"),
+        DepRefusal::Cycle => error("dependency_cycle", "该依赖会形成循环"),
+        DepRefusal::DepthExceeded => error("dependency_depth_exceeded", "依赖链最多 8 层"),
+        DepRefusal::SelfDependency => error("self_dependency", "项目不能依赖自己"),
+        DepRefusal::StillDependedOn => error("still_depended_on", "仍有其他项目依赖此项目"),
     }
 }
 fn text(value: &str) -> Result<String, Error> {
@@ -259,7 +277,50 @@ impl Store {
     pub fn project_create(&self, name: &str, revision: u64) -> Result<Data, Error> {
         let name = text(name)?;
         self.edit(revision, |d| {
-            d.projects.push(Project { id: id(), name });
+            d.projects.push(Project {
+                id: id(),
+                name,
+                dependencies: Vec::new(),
+            });
+            Ok(())
+        })
+    }
+    pub fn project_dependencies_update(
+        &self,
+        project: &str,
+        dependencies: Vec<String>,
+        revision: u64,
+    ) -> Result<Data, Error> {
+        self.edit(revision, |d| {
+            let project_index = d
+                .projects
+                .iter()
+                .position(|item| item.id == project)
+                .ok_or_else(|| error("not_found", "项目不存在"))?;
+            let mut graph = d.project_dependency_graph();
+            graph[project_index].1 = dependencies.clone();
+            crate::project_deps::validate_graph(&graph).map_err(dependency_error)?;
+            d.projects[project_index].dependencies = dependencies;
+            Ok(())
+        })
+    }
+    pub fn project_delete(&self, project: &str, revision: u64) -> Result<Data, Error> {
+        self.edit(revision, |d| {
+            if !d.projects.iter().any(|item| item.id == project) {
+                return Err(error("not_found", "项目不存在"));
+            }
+            crate::project_deps::check_removable(&d.project_dependency_graph(), project)
+                .map_err(dependency_error)?;
+            if d.tasks
+                .iter()
+                .any(|task| task.project_id.as_deref() == Some(project))
+            {
+                return Err(error(
+                    "project_in_use",
+                    "该项目仍有任务归属，请先调整任务项目",
+                ));
+            }
+            d.projects.retain(|item| item.id != project);
             Ok(())
         })
     }
@@ -494,11 +555,7 @@ impl Store {
                         attention.artifact_id = Some(artifact_id);
                         let run_id = attention.run_id.clone();
                         d.enforce_artifact_cap();
-                        let run = d
-                            .runs
-                            .iter_mut()
-                            .find(|r| r.id == run_id)
-                            .unwrap();
+                        let run = d.runs.iter_mut().find(|r| r.id == run_id).unwrap();
                         run.revision += 1;
                         let task_id = run.task_id.clone();
                         let task = d.task_mut(&task_id)?;
@@ -619,6 +676,13 @@ impl Store {
     }
 }
 impl Data {
+    fn project_dependency_graph(&self) -> crate::project_deps::DepGraph {
+        self.projects
+            .iter()
+            .map(|project| (project.id.clone(), project.dependencies.clone()))
+            .collect()
+    }
+
     /// Late body availability enriches only the exact still-open observed plan gate.
     fn late_plan_attention(&self, o: &crate::task_sources::Observation) -> Option<String> {
         let evidence = o
@@ -782,7 +846,8 @@ impl Data {
             // 运行被后来的迟到观测改回「就绪/失败/取消」，等于把一段已结束的过程
             // 改写成另一种结局，账目与审计都对不上。重复受理（Accepted → Accepted）
             // 允许——那是同一条结论的幂等重报，不是改写。
-            if old.is_some_and(|r| r.status == RunStatus::Accepted) && status != RunStatus::Accepted {
+            if old.is_some_and(|r| r.status == RunStatus::Accepted) && status != RunStatus::Accepted
+            {
                 return Err(error(
                     "run_already_accepted",
                     "这次运行已被受理，不能被后来的结果改回未完成状态",
@@ -855,6 +920,14 @@ impl Data {
             if id.is_empty() || !ids.insert(id) {
                 return Err(invalid());
             }
+        }
+        if self
+            .projects
+            .iter()
+            .any(|project| text(&project.name).is_err())
+            || crate::project_deps::validate_graph(&self.project_dependency_graph()).is_err()
+        {
+            return Err(invalid());
         }
         for t in &self.tasks {
             self.check_project(t.project_id.as_deref())
@@ -1089,10 +1162,7 @@ mod tests {
         let mut data = Data::default();
         data.revision = 7;
         let mut value = serde_json::to_value(&data).unwrap();
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("evicted_artifacts");
+        value.as_object_mut().unwrap().remove("evicted_artifacts");
         let loaded: Data = serde_json::from_value(value).unwrap();
         assert_eq!(loaded.revision, 7);
         assert_eq!(loaded.evicted_artifacts, 0, "缺字段按 0 起步，不炸不猜");
@@ -1529,6 +1599,154 @@ mod tests {
     }
 
     #[test]
+    fn project_dependencies_persist_and_enforce_graph_and_delete_guards() {
+        let (_sandbox, store) = store_in("tasks-project-dependencies");
+        let a = store.project_create("前端", 0).unwrap();
+        let aid = a.projects[0].id.clone();
+        let b = store.project_create("接口", a.revision).unwrap();
+        let bid = b.projects[1].id.clone();
+        let c = store.project_create("文档", b.revision).unwrap();
+        let cid = c.projects[2].id.clone();
+
+        let linked = store
+            .project_dependencies_update(&aid, vec![bid.clone()], c.revision)
+            .unwrap();
+        assert_eq!(linked.projects[0].dependencies, vec![bid.clone()]);
+        let loaded = Store {
+            path: store.path.clone(),
+        }
+        .load()
+        .unwrap();
+        assert_eq!(loaded.projects[0].dependencies, vec![bid.clone()]);
+
+        let bytes = fs::read(&store.path).unwrap();
+        for (project, dependencies, expected) in [
+            (&bid, vec![aid.clone()], "dependency_cycle"),
+            (&aid, vec!["missing-project".into()], "unknown_dependency"),
+            (&aid, vec![aid.clone()], "self_dependency"),
+            (&aid, vec![bid.clone(), bid.clone()], "duplicate_dependency"),
+        ] {
+            let refused = store
+                .project_dependencies_update(project, dependencies, linked.revision)
+                .unwrap_err();
+            assert_eq!(refused.code, expected);
+            assert_eq!(
+                fs::read(&store.path).unwrap(),
+                bytes,
+                "拒绝的依赖写入不得改动原文件"
+            );
+        }
+        assert_eq!(
+            store
+                .project_delete(&bid, linked.revision)
+                .unwrap_err()
+                .code,
+            "still_depended_on"
+        );
+        assert_eq!(
+            fs::read(&store.path).unwrap(),
+            bytes,
+            "依赖守卫拒绝后原文件不变"
+        );
+
+        let task = store
+            .create("文档任务", Some(cid.clone()), linked.revision, 10)
+            .unwrap();
+        assert_eq!(
+            store.project_delete(&cid, task.revision).unwrap_err().code,
+            "project_in_use"
+        );
+        let unlinked = store
+            .project_dependencies_update(&aid, vec![], task.revision)
+            .unwrap();
+        let without_b = store.project_delete(&bid, unlinked.revision).unwrap();
+        let unassigned = store
+            .update(&task.tasks[0].id, "文档任务", None, without_b.revision, 11)
+            .unwrap();
+        let without_c = store.project_delete(&cid, unassigned.revision).unwrap();
+        assert_eq!(without_c.projects.len(), 1);
+        without_c.validate().unwrap();
+    }
+
+    #[test]
+    fn stale_project_dependency_revision_preserves_the_newer_snapshot() {
+        let (_sandbox, store) = store_in("tasks-project-dependency-stale");
+        let a = store.project_create("甲", 0).unwrap();
+        let aid = a.projects[0].id.clone();
+        let b = store.project_create("乙", a.revision).unwrap();
+        let bid = b.projects[1].id.clone();
+        let stale_revision = b.revision;
+        let newer = store.project_create("丙", stale_revision).unwrap();
+        let bytes = fs::read(&store.path).unwrap();
+
+        assert_eq!(
+            store
+                .project_dependencies_update(&aid, vec![bid], stale_revision)
+                .unwrap_err()
+                .code,
+            "stale_revision"
+        );
+        assert_eq!(
+            fs::read(&store.path).unwrap(),
+            bytes,
+            "过期草稿不得覆盖新项目"
+        );
+        assert_eq!(store.load().unwrap().revision, newer.revision);
+        assert!(store.load().unwrap().projects[0].dependencies.is_empty());
+    }
+
+    #[test]
+    fn project_dependency_store_rejects_a_new_edge_that_makes_nine_levels() {
+        let (_sandbox, store) = store_in("tasks-project-dependency-depth");
+        let mut revision = 0;
+        let mut projects = Vec::new();
+        for index in 0..9 {
+            let next = store
+                .project_create(&format!("项目 {index}"), revision)
+                .unwrap();
+            revision = next.revision;
+            projects.push(next.projects[index].id.clone());
+        }
+        for index in 0..7 {
+            let next = store
+                .project_dependencies_update(
+                    &projects[index],
+                    vec![projects[index + 1].clone()],
+                    revision,
+                )
+                .unwrap();
+            revision = next.revision;
+        }
+        let bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .project_dependencies_update(&projects[8], vec![projects[0].clone()], revision)
+                .unwrap_err()
+                .code,
+            "dependency_depth_exceeded"
+        );
+        assert_eq!(
+            fs::read(&store.path).unwrap(),
+            bytes,
+            "深度拒绝不得改写原记录"
+        );
+    }
+
+    #[test]
+    fn legacy_project_dependencies_default_empty() {
+        let (_sandbox, store) = store_in("tasks-legacy-project-dependencies");
+        let mut legacy = serde_json::to_value(Data::default()).unwrap();
+        legacy["projects"] = serde_json::json!([{"id":"legacy-project","name":"旧项目"}]);
+        fs::write(&store.path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = store.load().unwrap();
+        assert!(loaded.projects[0].dependencies.is_empty());
+        loaded.validate().unwrap();
+        let written = store.project_create("新项目", loaded.revision).unwrap();
+        assert!(written.projects[0].dependencies.is_empty());
+        assert!(store.load().unwrap().projects[0].dependencies.is_empty());
+    }
+
+    #[test]
     fn create_rejects_bad_titles_unknown_projects_and_credential_shaped_text() {
         let (_sandbox, store) = store_in("tasks-create-reject");
         assert!(!store.path.exists(), "夹具起始必须是空目录");
@@ -1861,6 +2079,10 @@ mod tests {
                 "future-schema",
                 br#"{"schema_version":2,"revision":0,"projects":[],"tasks":[],"runs":[],"attentions":[],"artifacts":[],"event_receipts":[]}"#.to_vec(),
             ),
+            (
+                "unknown-project-dependency",
+                r#"{"schema_version":1,"revision":0,"projects":[{"id":"project","name":"项目","dependencies":["missing"]}],"tasks":[],"runs":[],"attentions":[],"artifacts":[],"event_receipts":[]}"#.as_bytes().to_vec(),
+            ),
         ];
         for (label, bytes) in variants {
             fs::write(&store.path, &bytes).unwrap();
@@ -1904,7 +2126,7 @@ mod tests {
     }
 
     #[test]
-    fn write_failure_leaves_no_staging_file_and_no_empty_snapshot() {
+    fn project_dependency_write_failure_leaves_no_staging_file_and_preserves_original() {
         let (sandbox, store) = store_in("tasks-write-failure");
         assert!(!store.path.exists());
         // 目录链路上挡着一个文件：连目录都建不起来 ⇒ 不得留下任何文件
@@ -1945,6 +2167,33 @@ mod tests {
                     "写失败前后目录全集必须一致，包括原有 blocker"
                 );
                 assert_eq!(fs::read(&blocker).unwrap(), b"not a directory");
+
+                let first = store.project_create("依赖方", d.revision).unwrap();
+                let first_id = first.projects[0].id.clone();
+                let second = store.project_create("前置项目", first.revision).unwrap();
+                let second_id = second.projects[1].id.clone();
+                let bytes = fs::read(&store.path).unwrap();
+                let names_before = directory_names();
+                fs::set_permissions(sandbox.path(), fs::Permissions::from_mode(0o500)).unwrap();
+                let failed =
+                    store.project_dependencies_update(&first_id, vec![second_id], second.revision);
+                fs::set_permissions(sandbox.path(), fs::Permissions::from_mode(0o700)).unwrap();
+                assert_eq!(
+                    failed.unwrap_err().code,
+                    "io_error",
+                    "依赖写失败必须显式返回"
+                );
+                assert_eq!(
+                    fs::read(&store.path).unwrap(),
+                    bytes,
+                    "依赖写失败不动原字节"
+                );
+                assert_eq!(store.load().unwrap().revision, second.revision);
+                assert_eq!(
+                    directory_names(),
+                    names_before,
+                    "依赖写失败不得留下暂存文件"
+                );
             }
         }
     }
@@ -1974,10 +2223,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(d.runs[0].status, RunStatus::Accepted, "受理必须落到运行上");
-        assert!(
-            d.runs[0].finished_ms.is_some(),
-            "受理是终态 ⇒ 有完成时刻"
-        );
+        assert!(d.runs[0].finished_ms.is_some(), "受理是终态 ⇒ 有完成时刻");
         // ② 受理后迟到的「就绪」结果**不得改写**它
         let refused = f.store.observe(
             source("codex"),
