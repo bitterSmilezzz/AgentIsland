@@ -564,3 +564,24 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - GW-03 仍为 partial：流中失败状态机与四类协议真实端到端验收未完成；SSE parser 的单行 64 KiB、单事件 256 KiB 和每次解析 10,000 个事件上限已由现有解析器拒绝并有回归覆盖。
 - BUG-016 仍为 open。v0.0.416 真实客户端检查、安装、显式重启与真实错签拒绝仍未验；旧版 `agentisland-update-e2e` VM 保持原样，本轮没有要求用户手工操作。
 - TASK-01 的项目归属拖放与派生状态列拖放已分别在 v0.0.421 / v0.0.422 发布，下一片按当前 [`需求状态`](../需求状态.md)与[`需求测试矩阵`](../spec/需求测试矩阵.md)中的未完成缺口选择，不重复排已完成的拖放项。
+
+## 19. 2026-11-01 追加：GW-06 首字节边界与流中失败状态机（v0.0.425）
+
+### 改动
+
+- 新增 `gateway_stream_failure.rs` 纯状态机，复用 `gateway_retry` 的失败资格/每候选重试预算与 `gateway_fallback` 的候选校验及顺序。非空上游字节块越过首字节提交边界；首字节前 transient 按预算重试，耗尽后才切下一个候选；首字节后任何失败都终止部分响应，不重试、不降级。
+- Throttled 进入显式 Retry-After 等待态；调用方确认条件满足后可在同一请求、同一候选恢复，恢复消耗原有每候选与总预算。等待期拒绝写入、失败结算和完成，允许取消。
+- 每次上游尝试都有内存终态；最多候选数 × 3 次、硬上限 24。该记录不是费用账本。GW-06 仍为 partial：没有接入真实转发、provider、工具执行或费用账本。
+
+### 验证与发布
+
+- 定向测试：`gateway_stream_failure` **7 passed**，`gateway_retry` **3 passed**；测试注册表 **23 passed**；版本、矩阵/状态生成、rustfmt 与 `git diff --check` 通过。变异测试在隔离 worktree 中将首字节后判据关闭，回归按预期以 `RetrySameCandidate` 对比期望 `AbortPartialResponse` 失败。
+- Standards 与 Spec 独立复审均 PASS；Spec 初审曾指出 Retry-After 不能保留请求预算，修正后复审确认关闭。报告 [`2026-11-01-0640-v0.0.425-independent.md`](../code-review/2026-11-01-0640-v0.0.425-independent.md)。
+- 本轮框架基线的 Rust 全量套件 **1409 passed / 15 ignored**，统一 CI **passed**；不过 `verify-framework.sh` 总结果非绿：旧本地签名 updater 包为 v0.0.424，与本轮配置不一致导致预构建只读漂移检查失败（v0.0.425 打包后真实 manifest 校验通过）；Windows 整 crate 类型检查在 `ring v0.17.14` 自定义构建步骤失败，基线只输出到 `ring` 入口，底层原因未确定。Windows 这项仍需在后续基线复核，本轮不能据此声称通过。
+- 发布 CI run `20261031T225110Z-770fa7b2720a`：**129 passed / 0 failed / 0 blocked**；包内 CLI run `20261031T230215Z-acaa1b9832a9`：**7/7**。隔离发布 VM 原生门禁全部通过，证据 `.build/vm/acceptance-ab21f6e37d134fca8fbab187bd847ecf`；updater 签名正例/错签与篡改负例 **7/7**。提交前与提交后历史脱敏扫描通过。
+- `v0.0.425` 发布提交 `1b9d9c4e1fe7932d6a5dee647c3ca81c585e2278`、tag 与 GitHub [v0.0.425 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.425) 已核实；附件含 DMG、ZIP、updater 包、签名与 `latest.json`。脚本确认宿主应用已重启，PID `72057`。明确未验：原生动效逐边取证、真实 pinned Claude 客户端取证。
+
+### 未验项与下一步
+
+- BUG-016 仍为 open：v0.0.416 真实客户端检查、安装、显式重启与真实错签拒绝尚未完成；旧版 `agentisland-update-e2e` VM 保持原样。本轮没有要求用户手工操作，也未把 v0.0.418/0.0.425 宿主或隔离发布 VM 的结果冒充旧版复现。
+- 下一片从当前 [`需求状态`](../需求状态.md)与[`需求测试矩阵`](../spec/需求测试矩阵.md)的未完成缺口选取；若继续 GW-06，必须先接入消费该状态机的转发/工具/账本子系统并按 ADR 0040 另行定义授权与真实验收，不能把纯状态判据升级描述为端到端完成。
