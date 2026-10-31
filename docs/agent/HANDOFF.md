@@ -5,8 +5,9 @@
 > [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
 **交接时点**：2026-11-01
-**本轮起始基线**：`main` at `da909e8`（v0.0.418）；本轮正在准备 v0.0.419（NOT-06 跳过版本可保存与恢复提示）
+**本轮起始基线**：`main` at `da909e8`（v0.0.418）；本轮改造为 NOT-06 跳过版本可保存与恢复提示
 **本轮开始时最新发布**：`v0.0.418`（DMG / zip / updater 更新包 / `latest.json`）
+**本轮完成发布**：`v0.0.419`，提交 `bb4fdec`，tag 与 GitHub Release 已创建；发布后文档同步见第 13 节。
 **基线状态**：`verify-framework.sh` 的 Windows 交叉类型检查因本机缺 Windows SDK 失败（已登记 BUG-011）；ci/package 可运行，原生门禁依赖 `agentisland-iso` 来宾会话。
 
 > 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9、12、13 节。
@@ -441,4 +442,6 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - NOT-06 仍为 partial：v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝及 Intel/universal 架构路径未验收。
 - BUG-016 仍未复现。自动检查核实原 VM 安装包为 v0.0.416，但正在运行的是验收构建；克隆副本启动了确切 .416 应用后，主机锁屏阻止桌面自动化，未触发检查，也没有 updater 请求或日志证据。原 VM 未改动，临时克隆已清理。
 - `agentisland-iso` 已重新启动，来宾 Aqua/SSH 只读前置通过；`agentisland-update-e2e` 保持运行，未结束其中的验收进程。
-- 后续优先完成 v0.0.419 发布，再安排旧版真实升级、签名拒绝和 Intel/universal 验收；BUG-016 需获得可自动操作的来宾桌面或独立的 updater 请求证据后继续定因。
+- `scripts/release.sh 0.0.419 "NOT-06：跳过版本可保存并恢复提示"`：成功；GitHub [v0.0.419 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.419) 含 DMG、ZIP、updater 包、签名和 `latest.json`。CI 125/125 通过、package 7/7、原生门禁全部通过、真实产物签名验证 7/7；提交前及提交后脱敏扫描均通过。
+- 发布未验项：原生动效逐边取证、真实 Claude 客户端取证。它们已由 `release.sh` 明确登记，不能据本次全绿推断覆盖。
+- 后续优先安排旧版真实升级、签名拒绝和 Intel/universal 验收；BUG-016 需获得可自动操作的来宾桌面或独立的应用 updater 请求证据后继续定因。原 VM 的公开 updater manifest 有界 GET 为 HTTP 200、1.91 秒，但这不能证明 v0.0.416 应用本身完成了检查。

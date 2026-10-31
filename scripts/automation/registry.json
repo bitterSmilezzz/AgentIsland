@@ -3643,7 +3643,7 @@
       "title": "隔离 VM 已安装 v0.0.416 的检查更新被用户报告卡在检查中（尚未复现）",
       "status": "open",
       "requirement": "NOT-06",
-      "evidence": "用户报告隔离 VM 的 ~/Applications/AgentIsland.app（核实版本 v0.0.416）点击检查更新后一直停在检查中；截图显示另一份 v0.0.418 验收包并显示“已是最新版本”。自动化只读检查确认原 VM 中 .416 安装包未运行，运行的是 agentisland-native-acceptance-* 下的验收构建。已克隆 VM 并启动确切 .416 安装包；tart exec 无响应，SSH 的 Aqua/会话检查通过，但主机 CUA 报告 Mac 锁屏，来宾 System Events 查询超时，且无图形会话时无法抓取屏幕。没有触发检查、没有 updater 日志或请求证据；因此症状未复现，根因与可复现条件仍未知。原 VM 与验收进程未改动；克隆副本已停止并删除。"
+      "evidence": "用户报告隔离 VM 的 ~/Applications/AgentIsland.app（核实版本 v0.0.416）点击检查更新后一直停在检查中；截图显示另一份 v0.0.418 验收包并显示“已是最新版本”。自动化只读检查确认原 VM 中 .416 安装包未运行，运行的是 agentisland-native-acceptance-* 下的验收构建。已克隆 VM 并启动确切 .416 安装包；tart exec 无响应，SSH 的 Aqua/会话检查通过，但主机 CUA 报告 Mac 锁屏，来宾 System Events 查询超时，且无图形会话时无法抓取屏幕。随后在原 VM 通过 SSH 对公开 updater manifest 做有界只读 GET，HTTP 200、1.91 秒；这只证明端点可达，不证明 .416 updater API 已请求或解析。没有触发检查、没有应用 updater 日志或请求证据；因此症状未复现，根因与可复现条件仍未知。原 VM 与验收进程未改动；克隆副本已停止并删除。"
     }
   ]
 }
