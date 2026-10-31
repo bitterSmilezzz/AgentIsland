@@ -1,6 +1,6 @@
 [package]
 name = "agentisland"
-version = "0.0.422"
+version = "0.0.423"
 description = "Agent 会话灵动岛监控器 — 多平台端 (Tauri)"
 authors = ["bitterSmilezzz"]
 edition = "2021"
@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tokio = { version = "1", features = ["rt", "time"] }
 serde = { version = "1", features = ["derive"] }
 # Persisted geometry must round-trip exactly for strict operation receipts.
 serde_json = { version = "1", features = ["float_roundtrip"] }

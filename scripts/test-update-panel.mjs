@@ -446,6 +446,35 @@ try {
   assert.match(await failedAgain.locator('[data-update-status]').textContent(), /网络不可用/, '重进后保留具体脱敏失败原因');
   assert.equal(await failedAgain.locator('[data-update-check]').isVisible(), true, '普通失败后保留用户明确点击的重试入口');
 
+  // 超时必须结束「检查中」，保留具体原因并恢复显式重试入口。
+  const timedOutCheck = await browser.newPage();
+  timedOutCheck.on('pageerror', e => errors.push(e.message));
+  await timedOutCheck.addInitScript(() => {
+    window.__fixture = { checkStarted: false };
+    window.__TAURI__ = {
+      core: { invoke: async cmd => {
+        if (cmd === 'update_current_version') return '0.0.423';
+        if (cmd === 'update_session_status') return { phase: 'idle', reason: null };
+        if (cmd === 'update_check') {
+          window.__fixture.checkStarted = true;
+          await new Promise(resolve => setTimeout(resolve, 10));
+          throw '连接更新服务超时，请稍后重试';
+        }
+        return null;
+      } },
+      event: { listen: async () => () => {} },
+    };
+  });
+  await timedOutCheck.goto(`http://127.0.0.1:${server.address().port}/update-panel-fixture.html`);
+  await timedOutCheck.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'idle', null, { timeout: 5000 });
+  await timedOutCheck.click('[data-update-check]');
+  await timedOutCheck.waitForFunction(() => window.__fixture.checkStarted, null, { timeout: 5000 });
+  await timedOutCheck.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'failed', null, { timeout: 5000 });
+  assert.match(await timedOutCheck.locator('[data-update-status]').textContent(), /连接更新服务超时/, '超时原因必须显示给用户');
+  assert.equal(await timedOutCheck.locator('[data-update-check]').textContent(), '重试', '超时后允许用户明确重试');
+  assert.equal(await timedOutCheck.locator('[data-update-check]').isDisabled(), false, '超时后重试入口不得残留禁用');
+  assert.equal(await timedOutCheck.locator('[data-update-install]').isVisible(), false, '超时后不得显示安装入口');
+
   // 检查中离开设置页再进入，直到旧检查结束前不得开放并发检查。
   const checking = await browser.newPage();
   checking.on('pageerror', e => errors.push(e.message));

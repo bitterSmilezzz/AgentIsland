@@ -308,7 +308,7 @@
         "not06.update-signature",
         "not06.skipversion"
       ],
-      "coverage_note": "partial — 手动检查、确认安装、显式重启 UI、Ed25519 签名与篡改拒绝已有；**跳过版本判据**（not06.skipversion）：SemVer 严格三段解析、按版本精准压制、跳过旧版不阻断新版提示、降级与同版本不提示、只能跳过高于当前的版本；并补上 Rust 命令边界、settings.json 原子持久化、旧设置兼容、页面重进恢复、真 DOM 按钮与“恢复提示”回归。异步检查、跳过和恢复回包绑定面板代次，旧挂载结果不得覆盖新状态。v0.0.418 的检查/安装/显式重启门禁、跨页状态恢复、签名拒绝关闭后才可重试、脱敏失败原因、离页监听清理与迟到回包丢弃仍覆盖。未完成：v0.0.416 客户端真实升级及真实 updater/UI 错签拒绝、Intel/universal 架构；另有 BUG-016 用户报告的 v0.0.416 检查卡住，尚未复现。自动化排查核实安装包为 v0.0.416，当前进程是另一份 v0.0.418 验收构建；克隆副本启动 v0.0.416 后，主机锁屏且来宾 UI 自动化请求超时，未能触发检查或取得 updater 请求证据。",
+      "coverage_note": "partial — 手动检查、确认安装、显式重启 UI、Ed25519 签名与篡改拒绝已有；**跳过版本判据**（not06.skipversion）：SemVer 严格三段解析、按版本精准压制、跳过旧版不阻断新版提示、降级与同版本不提示、只能跳过高于当前的版本；并补上 Rust 命令边界、settings.json 原子持久化、旧设置兼容、页面重进恢复、真 DOM 按钮与“恢复提示”回归。异步检查、跳过和恢复回包绑定面板代次，旧挂载结果不得覆盖新状态。v0.0.418 的检查/安装/显式重启门禁、跨页状态恢复、签名拒绝关闭后才可重试、脱敏失败原因、离页监听清理与迟到回包丢弃仍覆盖。**检查挂起保护**（not06.update-panel，2026-11-01）：update_check 设置 30 秒总时限；超时取消未完成检查、把共享会话记为可重试失败，并由真实 DOM 回归核对超时文案与重试入口，不改变显式安装/重启门禁。 未完成：v0.0.416 客户端真实升级及真实 updater/UI 错签拒绝、Intel/universal 架构；另有 BUG-016 用户报告的 v0.0.416 检查卡住，尚未复现。自动化排查核实安装包为 v0.0.416，当前进程是另一份 v0.0.418 验收构建；克隆副本启动 v0.0.416 后，主机锁屏且来宾 UI 自动化请求超时，未能触发检查或取得 updater 请求证据。",
       "audit_ref": "docs/testing/测试自动化交付.md",
       "status": "partial"
     },
@@ -3713,7 +3713,7 @@
       "title": "隔离 VM 已安装 v0.0.416 的检查更新被用户报告卡在检查中（尚未复现）",
       "status": "open",
       "requirement": "NOT-06",
-      "evidence": "用户报告隔离 VM 的 ~/Applications/AgentIsland.app（核实版本 v0.0.416）点击检查更新后一直停在检查中；截图显示另一份 v0.0.418 验收包并显示“已是最新版本”。自动化只读检查确认原 VM 中 .416 安装包未运行，运行的是 agentisland-native-acceptance-* 下的验收构建。已克隆 VM 并启动确切 .416 安装包；tart exec 无响应，SSH 的 Aqua/会话检查通过，但主机 CUA 报告 Mac 锁屏，来宾 System Events 查询超时，且无图形会话时无法抓取屏幕。随后在原 VM 通过 SSH 对公开 updater manifest 做有界只读 GET，HTTP 200、1.91 秒；这只证明端点可达，不证明 .416 updater API 已请求或解析。没有触发检查、没有应用 updater 日志或请求证据；因此症状未复现，根因与可复现条件仍未知。原 VM 与验收进程未改动；克隆副本已停止并删除。 2026-11-01 自动化续查（无需用户手工操作）：对 agentisland-update-e2e 的 VM 前置检查通过，确认 Aqua 会话与 pinned SSH 连接；SSH 只读核实安装包仍为 v0.0.416，而运行进程属于另一份 agentisland-native-acceptance 验收构建。Tart Guest Agent 的只读系统查询无响应并以 GRPC socket connection error 结束；SSH 的 System Events 辅助功能查询在 12 秒超时，来宾 screencapture 无法创建显示图像；主机 CUA 状态为锁屏且无法自动解锁。未向 VM 输入、未触发 updater 检查/安装/重启，也未更改已安装旧包或验收进程；仍无 updater 请求证据，BUG-016 未复现，根因未知。"
+      "evidence": "用户报告隔离 VM 的 ~/Applications/AgentIsland.app（核实版本 v0.0.416）点击检查更新后一直停在检查中；截图显示另一份 v0.0.418 验收包并显示“已是最新版本”。自动化只读检查确认原 VM 中 .416 安装包未运行，运行的是 agentisland-native-acceptance-* 下的验收构建。已克隆 VM 并启动确切 .416 安装包；tart exec 无响应，SSH 的 Aqua/会话检查通过，但主机 CUA 报告 Mac 锁屏，来宾 System Events 查询超时，且无图形会话时无法抓取屏幕。随后在原 VM 通过 SSH 对公开 updater manifest 做有界只读 GET，HTTP 200、1.91 秒；这只证明端点可达，不证明 .416 updater API 已请求或解析。没有触发检查、没有应用 updater 日志或请求证据；因此症状未复现，根因与可复现条件仍未知。原 VM 与验收进程未改动；克隆副本已停止并删除。 2026-11-01 自动化续查（无需用户手工操作）：对 agentisland-update-e2e 的 VM 前置检查通过，确认 Aqua 会话与 pinned SSH 连接；SSH 只读核实安装包仍为 v0.0.416，而运行进程属于另一份 agentisland-native-acceptance 验收构建。Tart Guest Agent 的只读系统查询无响应并以 GRPC socket connection error 结束；SSH 的 System Events 辅助功能查询在 12 秒超时，来宾 screencapture 无法创建显示图像；主机 CUA 状态为锁屏且无法自动解锁。未向 VM 输入、未触发 updater 检查/安装/重启，也未更改已安装旧包或验收进程；仍无 updater 请求证据，BUG-016 未复现，根因未知。 2026-11-01 代码级症状复现与防护：因隔离 VM 图形界面仍无法自动访问，没有证明 v0.0.416 的具体触发原因。对生产检查状态结算入口注入永不完成的 Future，无界版本的定向回归在 0.06 秒外层保护处失败，表明会话持续停在 checking；加 30 秒上限后同一测试通过，检查会进入 failed、给出脱敏超时原因并允许重试。真实 DOM 回归核对超时错误文案、重试按钮恢复且不出现安装入口。这证明未完成的检查 future 可产生用户报告的卡住状态，并验证当前版防卡死保护；不证明旧版 VM 就是同一根因。BUG-016 保持 open。"
     }
   ]
 }

@@ -13,9 +13,14 @@
 //! `update://progress` 事件；状态机在 JS 侧可被 node 直接测。
 
 use serde::Serialize;
+use std::future::Future;
 use std::sync::{Mutex, MutexGuard};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_updater::UpdaterExt;
+
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_TIMEOUT_REASON: &str = "连接更新服务超时，请稍后重试";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum UpdatePhase {
@@ -240,6 +245,27 @@ impl UpdateCommandState {
     }
 }
 
+async fn settle_update_check<F>(
+    command_state: &UpdateCommandState,
+    check: F,
+    timeout: Duration,
+) -> Result<UpdateStatus, String>
+where
+    F: Future<Output = Result<UpdateStatus, String>>,
+{
+    // This seam keeps command lifecycle settlement beside the timeout boundary so a
+    // rejected or hung check cannot leave the process-wide phase stuck at Checking.
+    let result = match tokio::time::timeout(timeout, check).await {
+        Ok(result) => result,
+        Err(_) => Err(UPDATE_TIMEOUT_REASON.to_string()),
+    };
+    match &result {
+        Ok(status) => command_state.finish_check(status)?,
+        Err(reason) => command_state.abort_check(reason),
+    }
+    result
+}
+
 fn is_signature_refusal(reason: &str) -> bool {
     reason.contains("签名校验失败") && reason.contains("拒绝安装")
 }
@@ -420,7 +446,7 @@ pub async fn update_check(
     engine_state: State<'_, crate::SharedEngine>,
 ) -> Result<UpdateStatus, String> {
     command_state.begin_check()?;
-    let result: Result<UpdateStatus, String> = async {
+    let check = async {
         let skipped_version = engine_state
             .lock()
             .map_err(|_| "设置不可用，请重启后重试".to_string())?
@@ -467,14 +493,9 @@ pub async fn update_check(
                 date: None,
             },
         })
-    }
-    .await;
+    };
 
-    match &result {
-        Ok(status) => command_state.finish_check(status)?,
-        Err(reason) => command_state.abort_check(reason),
-    }
-    result
+    settle_update_check(&command_state, check, UPDATE_CHECK_TIMEOUT).await
 }
 
 /// 下载并安装；**不重启**。进度通过 `update://progress` 事件回报。
@@ -540,7 +561,7 @@ fn updater_reason(raw: &str) -> String {
     if lower.contains("signature") || lower.contains("verify") || lower.contains("minisign") {
         "更新包签名校验失败，已拒绝安装".to_string()
     } else if lower.contains("timed out") || lower.contains("timeout") {
-        "连接更新服务超时，请稍后重试".to_string()
+        UPDATE_TIMEOUT_REASON.to_string()
     } else if lower.contains("404") || lower.contains("not found") {
         "更新清单不存在（可能尚未发布）".to_string()
     } else if lower.contains("network")
@@ -567,6 +588,41 @@ mod tests {
             notes: None,
             date: None,
         }
+    }
+
+    #[test]
+    fn a_hung_update_check_must_leave_checking_with_a_retryable_timeout() {
+        let state = UpdateCommandState::default();
+        state.begin_check().unwrap();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                settle_update_check(
+                    &state,
+                    std::future::pending::<Result<UpdateStatus, String>>(),
+                    Duration::from_millis(10),
+                ),
+            )
+            .await
+        });
+
+        assert!(
+            result.is_ok(),
+            "hung update check exceeded the guard deadline"
+        );
+        assert_eq!(result.unwrap().unwrap_err(), UPDATE_TIMEOUT_REASON);
+        let status = state.session_status().unwrap();
+        assert_eq!(status.phase, "failed");
+        assert_eq!(status.reason.as_deref(), Some(UPDATE_TIMEOUT_REASON));
+        assert!(
+            state.begin_check().is_ok(),
+            "timeout must leave retry available"
+        );
     }
 
     #[test]
