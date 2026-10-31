@@ -577,7 +577,7 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 
 - 定向测试：`gateway_stream_failure` **7 passed**，`gateway_retry` **3 passed**；测试注册表 **23 passed**；版本、矩阵/状态生成、rustfmt 与 `git diff --check` 通过。变异测试在隔离 worktree 中将首字节后判据关闭，回归按预期以 `RetrySameCandidate` 对比期望 `AbortPartialResponse` 失败。
 - Standards 与 Spec 独立复审均 PASS；Spec 初审曾指出 Retry-After 不能保留请求预算，修正后复审确认关闭。报告 [`2026-11-01-0640-v0.0.425-independent.md`](../code-review/2026-11-01-0640-v0.0.425-independent.md)。
-- 本轮框架基线的 Rust 全量套件 **1409 passed / 15 ignored**，统一 CI **passed**；不过 `verify-framework.sh` 总结果非绿：旧本地签名 updater 包为 v0.0.424，与本轮配置不一致导致预构建只读漂移检查失败（v0.0.425 打包后真实 manifest 校验通过）；Windows 整 crate 类型检查在 `ring v0.17.14` 自定义构建步骤失败，基线只输出到 `ring` 入口，底层原因未确定。Windows 这项仍需在后续基线复核，本轮不能据此声称通过。
+- 本轮框架基线的 Rust 全量套件 **1409 passed / 15 ignored**，统一 CI **passed**；不过 `verify-framework.sh` 总结果非绿：旧本地签名 updater 包为 v0.0.424，与本轮配置不一致导致预构建只读漂移检查失败（v0.0.425 打包后真实 manifest 校验通过）；Windows 整 crate 类型检查在 `ring v0.17.14` 自定义构建步骤失败，与 registry 已登记的 **BUG-011** 相同：本机没有 Windows SDK 头文件，导致 `ring` 的 Windows 目标 C 构建不能交叉完成。该本机门禁仍为 open；权威 Windows CI 曾在 v0.0.360 / v0.0.361 含 `ring` 的依赖树下通过。本轮不能据此声称本机 Windows 整 crate 类型检查通过。
 - 发布 CI run `20261031T225110Z-770fa7b2720a`：**129 passed / 0 failed / 0 blocked**；包内 CLI run `20261031T230215Z-acaa1b9832a9`：**7/7**。隔离发布 VM 原生门禁全部通过，证据 `.build/vm/acceptance-ab21f6e37d134fca8fbab187bd847ecf`；updater 签名正例/错签与篡改负例 **7/7**。提交前与提交后历史脱敏扫描通过。
 - `v0.0.425` 发布提交 `1b9d9c4e1fe7932d6a5dee647c3ca81c585e2278`、tag 与 GitHub [v0.0.425 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.425) 已核实；附件含 DMG、ZIP、updater 包、签名与 `latest.json`。脚本确认宿主应用已重启，PID `72057`。明确未验：原生动效逐边取证、真实 pinned Claude 客户端取证。
 
