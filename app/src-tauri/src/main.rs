@@ -4986,7 +4986,10 @@ fn main() {
             update::update_current_version,
             update::update_session_status,
             update::update_dismiss_rejection,
+            update::update_skipped_version,
             update::update_check,
+            update::update_skip_version,
+            update::update_restore_skipped_version,
             update::update_install,
             update::update_restart
         ])

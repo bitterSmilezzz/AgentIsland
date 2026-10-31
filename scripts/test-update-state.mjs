@@ -115,6 +115,182 @@ const makeUpdate = (over = {}) => ({
   assert.equal(controller.state.phase, 'idle', '没有待重启更新时恢复为初始状态');
 }
 
+// 跳过由命令持久化；重进面板后可以恢复被跳过的提示，也能再次恢复更新通知。
+{
+  let skippedVersion = null;
+  let skipCalls = 0, restoreCalls = 0;
+  const controller = createUpdateController({
+    check: async () => skippedVersion === '0.0.327'
+      ? makeUpdate({ available: false, skipped: true, version: skippedVersion })
+      : makeUpdate({ version: '0.0.327' }),
+    skipVersion: async () => { skipCalls += 1; skippedVersion = '0.0.327'; return skippedVersion; },
+    restoreSkippedVersion: async () => { restoreCalls += 1; skippedVersion = null; },
+  });
+  await controller.skipCurrentVersion();
+  assert.equal(skipCalls, 0, '未检查前不能跳过一个客户端指定的版本');
+  await controller.check();
+  await controller.skipCurrentVersion();
+  assert.equal(controller.state.phase, 'skipped');
+  assert.equal(controller.state.skippedVersion, '0.0.327');
+  assert.equal(controller.canInstall, false, '跳过之后不能继续安装该版本');
+
+  await controller.check();
+  assert.equal(controller.state.phase, 'skipped', '再次检查命中持久跳过版本时显示已跳过');
+  assert.equal(controller.state.version, '0.0.327');
+  await controller.restoreSkippedVersion();
+  assert.equal(restoreCalls, 1);
+  assert.equal(skippedVersion, null);
+  assert.equal(controller.state.phase, 'idle', '恢复提示后要求用户再次显式检查');
+  await controller.check();
+  assert.equal(controller.state.phase, 'available', '恢复提示后再次检查可重新提供该版本');
+}
+
+{
+  const controller = createUpdateController({ initialPhase: 'restoring' });
+  controller.setSkippedVersion('0.0.327');
+  controller.restoreSessionStatus({ phase: 'skipped' });
+  assert.equal(controller.state.phase, 'skipped');
+  assert.equal(controller.state.version, '0.0.327', '重进设置页恢复跳过版本号');
+}
+
+{
+  const controller = createUpdateController({
+    restoreSkippedVersion: async () => { throw new Error('设置文件只读'); },
+  });
+  controller.setSkippedVersion('0.0.327');
+  await controller.restoreSkippedVersion();
+  assert.equal(controller.state.skippedVersion, '0.0.327', '恢复失败时保留已保存的跳过选择');
+  assert.match(updateStatusText(controller.state), /恢复更新提示失败：设置文件只读/);
+}
+
+{
+  const controller = createUpdateController({
+    initialPhase: 'restoring',
+    restoreSkippedVersion: async () => {},
+  });
+  controller.setSkippedVersion('0.0.327');
+  controller.restoreSessionStatus({ phase: 'failed', reason: '连接更新服务超时，请稍后重试' });
+  await controller.restoreSkippedVersion();
+  assert.equal(controller.state.phase, 'failed');
+  assert.equal(controller.state.reason, '连接更新服务超时，请稍后重试', '恢复设置不能清掉检查失败原因');
+  assert.match(updateStatusText(controller.state), /连接更新服务超时/);
+}
+
+{
+  const controller = createUpdateController({ check: async () => makeUpdate({ version: '0.0.328' }) });
+  controller.setNotice('读取跳过版本设置失败：设置不可用');
+  await controller.check();
+  assert.match(updateStatusText(controller.state), /读取跳过版本设置失败/, '检查结果不能替代成功重读设置的证据');
+  controller.setSkippedVersion('0.0.327');
+  assert.doesNotMatch(updateStatusText(controller.state), /读取跳过版本设置失败/, '仅成功读取设置后才清除错误');
+}
+
+{
+  let resolveOldCheck;
+  let checks = 0;
+  const controller = createUpdateController({
+    check: () => {
+      checks += 1;
+      if (checks === 1) return new Promise(resolve => { resolveOldCheck = resolve; });
+      return Promise.resolve(makeUpdate({ version: '0.0.329' }));
+    },
+  });
+  const oldCheck = controller.check();
+  controller.beginSessionRestore();
+  controller.restoreSessionStatus({ phase: 'idle' });
+  await controller.check();
+  assert.equal(controller.state.version, '0.0.329');
+  resolveOldCheck(makeUpdate({ version: '0.0.328' }));
+  await oldCheck;
+  assert.equal(controller.state.version, '0.0.329', '重挂载后旧检查回包不得覆盖新检查');
+}
+
+{
+  let rejectOldSkip;
+  let checks = 0;
+  const controller = createUpdateController({
+    check: async () => makeUpdate({ version: checks++ === 0 ? '0.0.327' : '0.0.329' }),
+    skipVersion: () => new Promise((resolve, reject) => { rejectOldSkip = reject; }),
+  });
+  await controller.check();
+  const oldSkip = controller.skipCurrentVersion();
+  controller.beginSessionRestore();
+  controller.restoreSessionStatus({ phase: 'idle' });
+  await controller.check();
+  assert.equal(controller.state.phase, 'available');
+  assert.equal(controller.state.version, '0.0.329');
+  rejectOldSkip(new Error('旧面板的保存失败'));
+  await oldSkip;
+  assert.equal(controller.state.phase, 'available', '重挂载后旧跳过写入失败不得改写新阶段');
+  assert.equal(controller.state.version, '0.0.329', '旧跳过写入失败不得覆盖新检查版本');
+  assert.equal(controller.state.reason, '', '旧操作的错误不应泄漏到新面板');
+}
+
+{
+  let resolveOldSkip;
+  let checks = 0;
+  const controller = createUpdateController({
+    check: async () => makeUpdate({ version: checks++ === 0 ? '0.0.327' : '0.0.329' }),
+    skipVersion: () => new Promise(resolve => { resolveOldSkip = resolve; }),
+  });
+  await controller.check();
+  const oldSkip = controller.skipCurrentVersion();
+  controller.beginSessionRestore();
+  controller.setSkippedVersion('0.0.328');
+  controller.restoreSessionStatus({ phase: 'idle' });
+  await controller.check();
+  resolveOldSkip('0.0.327');
+  await oldSkip;
+  assert.equal(controller.state.phase, 'available', '重挂载后旧跳过写入成功不得改写新阶段');
+  assert.equal(controller.state.version, '0.0.329');
+  assert.equal(controller.state.skippedVersion, '0.0.328', '旧跳过写入不得覆盖新读取的设置');
+}
+
+{
+  let rejectOldRestore;
+  const controller = createUpdateController({
+    initialPhase: 'restoring',
+    restoreSkippedVersion: () => new Promise((resolve, reject) => { rejectOldRestore = reject; }),
+  });
+  controller.setSkippedVersion('0.0.327');
+  controller.restoreSessionStatus({ phase: 'skipped' });
+  const oldRestore = controller.restoreSkippedVersion();
+  controller.beginSessionRestore();
+  controller.setSkippedVersion('0.0.328');
+  controller.restoreSessionStatus({ phase: 'skipped' });
+  rejectOldRestore(new Error('旧面板的恢复失败'));
+  await oldRestore;
+  assert.equal(controller.state.skippedVersion, '0.0.328', '重挂载后旧恢复回包不得清掉新读取的跳过版本');
+  assert.equal(controller.state.phase, 'skipped');
+  assert.equal(controller.state.notice, '', '旧恢复失败不能污染新面板');
+}
+
+{
+  let resolveOldRestore;
+  const controller = createUpdateController({
+    initialPhase: 'restoring',
+    restoreSkippedVersion: () => new Promise(resolve => { resolveOldRestore = resolve; }),
+  });
+  controller.setSkippedVersion('0.0.327');
+  controller.restoreSessionStatus({ phase: 'skipped' });
+  const oldRestore = controller.restoreSkippedVersion();
+  controller.beginSessionRestore();
+  controller.setSkippedVersion('0.0.328');
+  controller.restoreSessionStatus({ phase: 'skipped' });
+  resolveOldRestore();
+  await oldRestore;
+  assert.equal(controller.state.skippedVersion, '0.0.328', '重挂载后旧恢复成功不得清掉新读取的跳过版本');
+  assert.equal(controller.state.phase, 'skipped');
+}
+
+{
+  const controller = createUpdateController({ initialPhase: 'restoring' });
+  controller.setSkippedVersion('0.0.327');
+  controller.restoreSessionStatus({ phase: 'skipped' });
+  controller.setNotice('读取跳过版本设置失败：设置不可用');
+  assert.match(updateStatusText(controller.state), /已跳过版本 v0\.0\.327；读取跳过版本设置失败：设置不可用/);
+}
+
 {
   const controller = createUpdateController({ initialPhase: 'restoring' });
   controller.restoreSessionStatus({ phase: 'failed', reason: '网络不可用，无法连接更新服务' });
@@ -171,7 +347,9 @@ const makeUpdate = (over = {}) => ({
 }
 
 // 畸形响应按失败处理，不得当成「有更新」。
-for (const bad of [null, {}, { available: 'yes' }, { available: 1 }]) {
+for (const bad of [null, {}, { available: 'yes' }, { available: 1 },
+  { available: false, skipped: 'yes' }, { available: false, skipped: true, version: null },
+  { available: true, skipped: true, version: '0.0.327' }]) {
   const controller = createUpdateController({ check: async () => bad });
   await controller.check();
   assert.equal(controller.state.phase, 'failed', `畸形响应 ${JSON.stringify(bad)} 不得被当成有更新`);
@@ -217,10 +395,14 @@ for (const bad of [null, {}, { available: 'yes' }, { available: 1 }]) {
 
 // --- 文案 ----------------------------------------------------------------------
 assert.equal(updateStatusText({ phase: 'idle' }), '尚未检查更新');
+assert.equal(updateStatusText({ phase: 'idle', skippedVersion: '0.0.327' }), '已跳过版本 v0.0.327');
+assert.equal(updateStatusText({ phase: 'idle', skippedVersion: '0.0.327', notice: '恢复更新提示失败：设置文件只读' }), '已跳过版本 v0.0.327；恢复更新提示失败：设置文件只读');
 assert.equal(updateStatusText({ phase: 'restoring' }), '正在读取更新状态…');
 assert.equal(updateStatusText({ phase: 'checking' }), '正在检查更新…');
 assert.equal(updateStatusText({ phase: 'uptodate' }), '已是最新版本');
+assert.equal(updateStatusText({ phase: 'skipped', version: '0.0.327' }), '已跳过版本 v0.0.327');
 assert.equal(updateStatusText({ phase: 'available', version: '0.0.327' }), '发现新版本 v0.0.327');
+assert.equal(updateStatusText({ phase: 'available', version: '0.0.327', notice: '恢复更新提示失败：设置文件只读' }), '发现新版本 v0.0.327；恢复更新提示失败：设置文件只读');
 assert.equal(updateStatusText({ phase: 'downloading', downloaded: null }), '正在下载更新包…');
 assert.match(updateStatusText({ phase: 'downloading', downloaded: 1024, total: null }), /已下载 1\.0 KB/);
 assert.match(updateStatusText({ phase: 'downloading', downloaded: 1024, total: 4096 }), /^正在下载 25%/);

@@ -1,7 +1,7 @@
 import { invoke, listen } from './tauri.js';
-import { createUpdateController, updateStatusText, formatBytes } from './update-state.js';
+import { createUpdateController, updateStatusText, formatBytes, errorText } from './update-state.js';
 
-const BUSY = new Set(['restoring', 'checking', 'downloading', 'restarting']);
+const BUSY = new Set(['restoring', 'checking', 'downloading', 'skipping', 'restarting']);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** 「检查更新」分区。**默认不检查**——挂载时先恢复进程级待重启状态；无待更新时显示「尚未检查更新」。
@@ -10,11 +10,13 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 export function updatePanelHtml() {
   return `<section class="settings-section update-section" data-update-panel>
     <h2>更新</h2>
-    <p class="update-note">仅在你点击时检查与安装更新；安装完成后需你再次确认才会重启。</p>
+    <p class="update-note">仅在你点击时检查与安装更新；跳过只对当前版本生效，新版本仍会提示。安装完成后需你再次确认才会重启。</p>
     <p class="update-current" data-update-current></p>
     <div class="update-actions">
       <button type="button" class="mini-btn" data-update-check>检查更新</button>
       <button type="button" class="mini-btn" data-update-install hidden>下载并安装</button>
+      <button type="button" class="mini-btn" data-update-skip hidden>跳过此版本</button>
+      <button type="button" class="mini-btn" data-update-restore-skip hidden>恢复更新提示</button>
       <button type="button" class="mini-btn" data-update-restart hidden>立即重启</button>
       <button type="button" class="mini-btn" data-update-dismiss hidden>稍后再说</button>
     </div>
@@ -48,7 +50,7 @@ export function bindUpdatePanel(root = document) {
     find('current').textContent = state.currentVersion ? `当前版本 v${esc(state.currentVersion)}` : '';
     find('status').textContent = updateStatusText(state);
     // 按钮的可见性就是「这条路径此刻允许吗」的状态机投影，不要另写一套条件。
-    find('check').hidden = state.phase !== 'idle' && state.phase !== 'failed';
+    find('check').hidden = !['idle', 'failed', 'skipped'].includes(state.phase);
     find('check').disabled = BUSY.has(state.phase);
     find('check').textContent = state.phase === 'failed' ? '重试' : '检查更新';
     const install = find('install');
@@ -57,11 +59,17 @@ export function bindUpdatePanel(root = document) {
     install.textContent = state.phase === 'downloading'
       ? (state.total ? `${Math.min(100, Math.floor((state.downloaded ?? 0) / state.total * 100))}%` : '下载中…')
       : '下载并安装';
+    const skip = find('skip');
+    skip.hidden = state.phase !== 'available';
+    skip.disabled = BUSY.has(state.phase);
+    const restoreSkip = find('restore-skip');
+    restoreSkip.hidden = !state.skippedVersion || BUSY.has(state.phase);
+    restoreSkip.disabled = BUSY.has(state.phase);
     const restart = find('restart');
     restart.hidden = state.phase !== 'ready';
     restart.disabled = BUSY.has(state.phase);
     const dismiss = find('dismiss');
-    dismiss.hidden = !['available', 'failed', 'rejected', 'uptodate'].includes(state.phase);
+    dismiss.hidden = !['available', 'failed', 'rejected', 'uptodate', 'skipped'].includes(state.phase);
     dismiss.textContent = state.phase === 'rejected' ? '关闭' : '稍后再说';
     const notes = find('notes');
     const text = state.notes || '';
@@ -75,10 +83,19 @@ export function bindUpdatePanel(root = document) {
   // 之前写成 `(依赖对象, render)` 会把 render 当成第二个位置参数丢掉——界面仍然
   // 挂载成功、controller 状态也对，只是永远不重绘 DOM，非常难查。
   controller = createUpdateController({
-    check: () => invoke('update_check'),
+    check: async () => {
+      const result = await invoke('update_check');
+      const skippedSettings = await invoke('update_skipped_version').then(
+        version => ({ ok: true, version }),
+        error => ({ ok: false, error: errorText(error, '请重新进入设置页重试') }),
+      );
+      return { ...result, skippedSettings };
+    },
     install: () => invoke('update_install'),
     restart: () => invoke('update_restart'),
     dismissRejection: () => invoke('update_dismiss_rejection'),
+    skipVersion: () => invoke('update_skip_version'),
+    restoreSkippedVersion: () => invoke('update_restore_skipped_version'),
     changed: render,
     initialPhase: 'restoring',
   });
@@ -149,9 +166,22 @@ export function bindUpdatePanel(root = document) {
     attached = true;
     const generation = ++attachmentGeneration;
     watchRemoval();
-    invoke('update_session_status')
-      .then(session => {
+    Promise.allSettled([
+      invoke('update_session_status'),
+      invoke('update_skipped_version').then(
+        version => ({ version }),
+        error => ({ error }),
+      ),
+    ])
+      .then(([sessionResult, skippedResult]) => {
         if (detached || generation !== attachmentGeneration) return;
+        const session = sessionResult.status === 'fulfilled' ? sessionResult.value : null;
+        const skipped = skippedResult.status === 'fulfilled' ? skippedResult.value : { error: skippedResult.reason };
+        if (skipped.error) {
+          controller.setNotice(`读取跳过版本设置失败：${errorText(skipped.error, '请重新进入设置页重试')}`);
+        } else {
+          controller.setSkippedVersion(skipped.version);
+        }
         controller.restoreSessionStatus(session);
         if (['checking', 'downloading'].includes(session?.phase)) {
           subscribe().catch(() => {});
@@ -179,6 +209,8 @@ export function bindUpdatePanel(root = document) {
 
   find('check').addEventListener('click', () => { subscribe(); controller.check(); });
   find('install').addEventListener('click', () => controller.install());
+  find('skip').addEventListener('click', () => controller.skipCurrentVersion());
+  find('restore-skip').addEventListener('click', () => controller.restoreSkippedVersion());
   find('restart').addEventListener('click', () => controller.restart());
   find('dismiss').addEventListener('click', () => {
     if (controller.state.phase === 'rejected') controller.closeRejection();

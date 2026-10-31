@@ -4,15 +4,13 @@
 > 与它配套的还有：[`AGENTS.md`](../../AGENTS.md)（工作约定，Agent 无关）、
 > [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
-**交接时点**：2026-10-31
-**本轮起始基线**：`main` at `865f615`（v0.0.417），当时工作区干净；v0.0.418 当前未发布
-**最新发布**：`v0.0.417`（DMG / zip / updater 更新包 / `latest.json` 均已上线，已实测 HTTP 200）
-**基线是否绿**：门禁 `verify-framework.sh` 中 `ci` profile **123/125 通过**；
-`windows crate` 交叉类型检查因本机无 Windows SDK 失败（**已登记 BUG-011，与代码无关**）；
-`native` profile 因 VM 前置 blocked。
+**交接时点**：2026-11-01
+**本轮起始基线**：`main` at `da909e8`（v0.0.418）；本轮正在准备 v0.0.419（NOT-06 跳过版本可保存与恢复提示）
+**本轮开始时最新发布**：`v0.0.418`（DMG / zip / updater 更新包 / `latest.json`）
+**基线状态**：`verify-framework.sh` 的 Windows 交叉类型检查因本机缺 Windows SDK 失败（已登记 BUG-011）；ci/package 可运行，原生门禁依赖 `agentisland-iso` 来宾会话。
 
-> 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9 节。
-> 本轮（v0.0.417）补上**槽位租约**口径并修掉三处真实缺陷，见 [第 11 节](#11-2026-10-27-追加槽位租约口径与三处真实缺陷v0-0-417)。
+> 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9、12、13 节。
+> 本轮（v0.0.419）补上跳过版本持久化、恢复入口与异步代次保护，见第 13 节；NOT-06 仍有真实升级和 Intel/universal 验收缺口。
 
 > ⚠️ 本文件由**多个会话接力**：第 1–6 节是 2026-10-17 晚（NOT-05 交付与三轮复审），
 > 第 7 节是 CI 身份规则修复（**不是本次交接者写的**，但记录的是真实修复，保留不删），
@@ -35,6 +33,8 @@ bash scripts/verify-framework.sh                    # 确认基线是绿的
 ---
 
 ## 2. 当前状态
+
+> 本节保留 2026-10-17 的历史快照；截至 2026-11-01 的当前状态与下一步见第 13 节。
 
 ### 已完成（本轮相关）
 
@@ -67,7 +67,7 @@ bash scripts/verify-framework.sh                    # 确认基线是绿的
 | 依赖 | 现状 | 缺了会怎样 |
 | :--- | :--- | :--- |
 | `playwright` | 已装（`npm i playwright`） | `release.sh` **明确失败**，不跳过 |
-| 隔离 VM | `tart` 有 `agentisland-iso`（**stopped**，需 `tart run` 启动） | `release.sh` 直接 `die`「未运行原生门禁，不发布」 |
+| 隔离 VM | `tart` 有 `agentisland-iso`（本轮已启动，来宾 Aqua/SSH 前置通过） | `release.sh` 直接 `die`「未运行原生门禁，不发布」 |
 | VM 来宾账号 | `NATIVE_TEST_USER=admin`（历史命令里找到的，非文档固定） | 同上 |
 | `gh` | 已认证（bitterSmilezzz） | 建不了 Release |
 
@@ -417,3 +417,28 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - 本轮尚未跑真实客户端点击升级或真实 updater 错签拒绝。隔离克隆 `agentisland-update-e2e` 中已从公开 v0.0.416 DMG 安装并启动旧客户端，基础 VM 未改动；当前没有可用的来宾 UI 控制回执，需在后续验收时完成检查、安装、显式重启与版本核对。
 - 跳过版本的 UI/持久化、Intel/universal 架构仍未覆盖，NOT-06 继续标为 partial。
 - 本轮代码审查通过；两位审查者确认的剩余范围是上述跳过版本 UI 与真实 updater 端到端验收。
+
+---
+
+## 13. 2026-11-01 追加：NOT-06 跳过版本持久化与恢复入口（v0.0.419）
+
+### 改动
+
+- 更新页允许跳过最近检查确认的具体版本；选择写入本地设置，重进页面仍可恢复，也可以显式恢复更新提示。更高版本仍会出现。
+- 新增更新专用读/写/恢复命令；普通设置补丁不能改跳过记录。Settings 归一化版本号并原子写入；旧设置缺少字段时默认为未跳过。
+- 检查、跳过与恢复操作的异步回包绑定面板代次；跨页重进后的旧结果不覆盖新状态。失败文案持续可见，只有成功重读设置才清除读取错误。
+
+### 验证
+
+- `cargo test --locked --manifest-path app/src-tauri/Cargo.toml skipped_version`：**7 passed / 0 failed**。
+- `node scripts/test-update-state.mjs`：通过，包含检查、跳过写入与恢复提示的跨重挂载迟到回包用例。
+- `node scripts/automation/browser-check.mjs test-update-panel.mjs`：通过，覆盖跳过按钮、跨页恢复、更高版本提示、恢复失败与设置读取失败。
+- `python3 scripts/check-version.py 0.0.419`、状态文档生成器与 `git diff --check`：通过。
+- 独立规格与工程规范复核均通过；finding、修复和证据见 [`2026-11-01-0116-v0.0.419-independent.md`](../code-review/2026-11-01-0116-v0.0.419-independent.md)。
+
+### 未验项与环境
+
+- NOT-06 仍为 partial：v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝及 Intel/universal 架构路径未验收。
+- BUG-016 仍未复现。自动检查核实原 VM 安装包为 v0.0.416，但正在运行的是验收构建；克隆副本启动了确切 .416 应用后，主机锁屏阻止桌面自动化，未触发检查，也没有 updater 请求或日志证据。原 VM 未改动，临时克隆已清理。
+- `agentisland-iso` 已重新启动，来宾 Aqua/SSH 只读前置通过；`agentisland-update-e2e` 保持运行，未结束其中的验收进程。
+- 后续优先完成 v0.0.419 发布，再安排旧版真实升级、签名拒绝和 Intel/universal 验收；BUG-016 需获得可自动操作的来宾桌面或独立的 updater 请求证据后继续定因。

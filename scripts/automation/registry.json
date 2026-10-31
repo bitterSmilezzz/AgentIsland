@@ -305,7 +305,7 @@
         "not06.update-signature",
         "not06.skipversion"
       ],
-      "coverage_note": "partial — 手动检查、确认安装、显式重启 UI、Ed25519 签名与篡改拒绝已有；**跳过版本判据**（not06.skipversion，2026-10-25）：SemVer 严格三段解析、跳过按版本粒度精准压制（跳过旧版不阻断新版提示——跳过一个版本不是关闭更新）、降级/同版本永远不提示、只能跳过高于当前的版本；3 条用例 + 变异（跳过压制所有后续更新）被拒。v0.0.418 补上 Rust 命令边界检查（检查后才允许安装、安装成功后只允许一次显式重启）、设置页重进恢复检查/下载/待重启/失败状态、签名拒绝跨页保留且关闭说明前不开放重试、普通失败保留已脱敏原因；离页时清理进度监听与状态轮询，恢复缓存页时重新读取进程状态并丢弃旧挂载的迟到回包；定向状态机、真 DOM 和 Rust 全量回归通过。缺：旧版客户端真实安装升级与真实 updater/UI 错签拒绝、跳过版本的 UI 与持久化、Intel/universal 架构路径（当前本机构建为 arm64，x86_64 需要交叉编译环境或真实 Intel Mac）。",
+      "coverage_note": "partial — 手动检查、确认安装、显式重启 UI、Ed25519 签名与篡改拒绝已有；**跳过版本判据**（not06.skipversion）：SemVer 严格三段解析、按版本精准压制、跳过旧版不阻断新版提示、降级与同版本不提示、只能跳过高于当前的版本；并补上 Rust 命令边界、settings.json 原子持久化、旧设置兼容、页面重进恢复、真 DOM 按钮与“恢复提示”回归。异步检查、跳过和恢复回包绑定面板代次，旧挂载结果不得覆盖新状态。v0.0.418 的检查/安装/显式重启门禁、跨页状态恢复、签名拒绝关闭后才可重试、脱敏失败原因、离页监听清理与迟到回包丢弃仍覆盖。未完成：v0.0.416 客户端真实升级及真实 updater/UI 错签拒绝、Intel/universal 架构；另有 BUG-016 用户报告的 v0.0.416 检查卡住，尚未复现。自动化排查核实安装包为 v0.0.416，当前进程是另一份 v0.0.418 验收构建；克隆副本启动 v0.0.416 后，主机锁屏且来宾 UI 自动化请求超时，未能触发检查或取得 updater 请求证据。",
       "audit_ref": "docs/testing/测试自动化交付.md",
       "status": "partial"
     },
@@ -1990,7 +1990,7 @@
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "NOT-06 状态机：只有显式点击才检查/安装/重启，安装完成不自动重启，进度未知不编数字；覆盖检查中/待重启/失败原因恢复、签名拒绝持久到显式关闭后才可重试；变异验证 3/3。",
+      "source": "NOT-06 状态机：只有显式点击才检查/安装/重启，安装完成不自动重启，进度未知不编数字；覆盖检查中/待重启/失败原因恢复、签名拒绝关闭后才可重试、跳过版本结果恢复与持久化命令失败回退、跳过设置读取和恢复失败原因可见；变异验证 3/3。",
       "test_files": [
         "scripts/test-update-state.mjs"
       ]
@@ -2008,7 +2008,7 @@
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "NOT-06 真 DOM：按钮显隐随阶段、进度文案、迟到进度不覆盖已完成、设置页重进及缓存页恢复检查/下载/待重启/具体失败原因、旧挂载回包不覆盖新状态、签名拒绝重进后仍无重试入口且须显式关闭、离页清理监听、命令注册一致性；变异验证 2/2。",
+      "source": "NOT-06 真 DOM：按钮显隐随阶段、进度文案、迟到进度不覆盖已完成、设置页重进及缓存页恢复检查/下载/待重启/具体失败原因、跳过版本持久化与恢复提示、跳过旧版后仍提示更高版本、跳过设置读取及恢复写入失败原因可见、旧挂载回包不覆盖新状态、签名拒绝重进后仍无重试入口且须显式关闭、离页清理监听、命令注册一致性；变异验证 2/2。",
       "test_files": [
         "scripts/test-update-panel.mjs"
       ]
@@ -2652,14 +2652,14 @@
         "--locked",
         "--manifest-path",
         "app/src-tauri/Cargo.toml",
-        "update::tests::skipped_version"
+        "skipped_version"
       ],
       "host_os": [
         "darwin"
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "NOT-06：跳过版本判据（update.rs 纯函数）。三条语义：①**SemVer 严格三段解析与数字比较**（parse_semver，畸形版本号拒绝，数字比较非字典序）；②**跳过版本精准压制**（跳过 0.0.381 仅压制 0.0.381，**0.0.382 到达时照常提示**——跳过不是关闭自动更新）；③**降级/同版本永远不提示**，只能跳过高于当前的版本（can_skip_version）。3 条用例 + 变异（跳过压制所有后续版本）被拒。全量 1253 passed，脱敏 0 命中。（test_files 不重复登记：update.rs 归 rust.default；本检查是它的定向过滤。）"
+      "source": "NOT-06 跳过版本：SemVer 严格比较、只压制被跳过的精确版本、新版本仍提示；命令只允许跳过最近一次检查确认的可升级版本，持久化失败保持可安装状态，恢复提示后要求用户重新检查。定向 Rust 用例覆盖判据、命令边界与状态转换；Settings 用例覆盖旧配置默认值、归一化及原子落盘。（test_files 不重复登记：Rust 源归 rust.default；本检查为定向过滤。）"
     },
     "task11.securityaudit": {
       "command": [
@@ -3637,6 +3637,13 @@
       "status": "closed",
       "requirement": "NOT-05",
       "evidence": "2026-10-25 v0.0.399 发版时 not05.remotedelivery 门禁失败：「三次临时失败应为 3×(初次+重试)=6 次请求，实际 5」。根因：v0.0.356 已把对端夹具从「accept 线程串行服务」改成「每连接一线程」，但主线程从 perform 返回时，对端 worker 线程可能还没把请求写进 seen 数组（写 socket 与记账之间存在微秒级竞态）；机器一忙（发版刚跑完全量编译）就立刻读到 5。修法：Peer::wait_for_requests(expected, timeout) 有界等待对端完成记账（最多 1s，每 10ms 查一次）——**不是放宽判据**，超时未达仍按原样报失败。验证：debug 二进制连跑 5 次探针全部 requestsAfterThree=6 / rc=0。"
+    },
+    {
+      "id": "BUG-016",
+      "title": "隔离 VM 已安装 v0.0.416 的检查更新被用户报告卡在检查中（尚未复现）",
+      "status": "open",
+      "requirement": "NOT-06",
+      "evidence": "用户报告隔离 VM 的 ~/Applications/AgentIsland.app（核实版本 v0.0.416）点击检查更新后一直停在检查中；截图显示另一份 v0.0.418 验收包并显示“已是最新版本”。自动化只读检查确认原 VM 中 .416 安装包未运行，运行的是 agentisland-native-acceptance-* 下的验收构建。已克隆 VM 并启动确切 .416 安装包；tart exec 无响应，SSH 的 Aqua/会话检查通过，但主机 CUA 报告 Mac 锁屏，来宾 System Events 查询超时，且无图形会话时无法抓取屏幕。没有触发检查、没有 updater 日志或请求证据；因此症状未复现，根因与可复现条件仍未知。原 VM 与验收进程未改动；克隆副本已停止并删除。"
     }
   ]
 }

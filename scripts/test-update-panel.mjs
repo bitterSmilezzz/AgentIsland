@@ -28,7 +28,7 @@ for (const file of (await readdir(uiDir)).filter(f => f.endsWith('.js'))) {
   const source = await readFile(new URL(file, uiDir), 'utf8');
   for (const match of source.matchAll(/invoke\(\s*'([a-z0-9_]+)'/g)) invoked.add(match[1]);
 }
-const updateCommands = ['update_check', 'update_install', 'update_restart', 'update_session_status', 'update_dismiss_rejection', 'update_current_version'];
+const updateCommands = ['update_check', 'update_install', 'update_restart', 'update_session_status', 'update_dismiss_rejection', 'update_current_version', 'update_skipped_version', 'update_skip_version', 'update_restore_skipped_version'];
 for (const command of updateCommands) {
   assert.ok(invoked.has(command), `update 面板没有调用 ${command}`);
   assert.ok(registered.has(command), `${command} 未在 invoke_handler 注册——界面会静默降级`);
@@ -185,6 +185,141 @@ try {
   // 用户显式点击才重启。
   await page.click('[data-update-restart]');
   await page.waitForFunction(() => window.__fixture.restartCalls === 1, null, { timeout: 5000 });
+
+  // 跳过选择要落盘、跨设置页重进恢复；旧跳过版本不能挡住更高版本，且可恢复提示。
+  const skipped = await browser.newPage();
+  skipped.on('pageerror', e => errors.push(e.message));
+  await skipped.addInitScript(() => {
+    window.__fixture = {
+      resultVersion: '0.0.327', persistedVersion: null,
+      sessionStatus: { phase: 'idle', reason: null }, skipCalls: 0, restoreCalls: 0, restoreFailure: false,
+    };
+    window.__TAURI__ = {
+      core: { invoke: async cmd => {
+        if (cmd === 'update_current_version') return '0.0.326';
+        if (cmd === 'update_session_status') return window.__fixture.sessionStatus;
+        if (cmd === 'update_skipped_version') return window.__fixture.persistedVersion;
+        if (cmd === 'update_check') {
+          const version = window.__fixture.resultVersion;
+          if (window.__fixture.persistedVersion === version) {
+            window.__fixture.sessionStatus = { phase: 'skipped', reason: null };
+            return { currentVersion: '0.0.326', available: false, skipped: true, version, notes: null, date: null };
+          }
+          window.__fixture.sessionStatus = { phase: 'idle', reason: null };
+          return { currentVersion: '0.0.326', available: true, skipped: false, version, notes: '', date: '' };
+        }
+        if (cmd === 'update_skip_version') {
+          window.__fixture.skipCalls += 1;
+          window.__fixture.persistedVersion = window.__fixture.resultVersion;
+          window.__fixture.sessionStatus = { phase: 'skipped', reason: null };
+          return window.__fixture.persistedVersion;
+        }
+        if (cmd === 'update_restore_skipped_version') {
+          window.__fixture.restoreCalls += 1;
+          if (window.__fixture.restoreFailure) throw new Error('设置文件只读');
+          window.__fixture.persistedVersion = null;
+          if (window.__fixture.sessionStatus.phase === 'skipped') {
+            window.__fixture.sessionStatus = { phase: 'idle', reason: null };
+          }
+          return null;
+        }
+        return null;
+      } },
+      event: { listen: async () => () => {} },
+    };
+  });
+  await skipped.goto(`http://127.0.0.1:${server.address().port}/update-panel-fixture.html`);
+  await skipped.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'idle', null, { timeout: 5000 });
+  await skipped.click('[data-update-check]');
+  await skipped.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'available', null, { timeout: 5000 });
+  assert.equal(await skipped.locator('[data-update-skip]').isVisible(), true, '有新版本时给出跳过入口');
+  await skipped.click('[data-update-skip]');
+  await skipped.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'skipped', null, { timeout: 5000 });
+  assert.equal(await skipped.evaluate(() => window.__fixture.persistedVersion), '0.0.327', '跳过动作写入持久设置');
+  assert.equal(await skipped.locator('[data-update-install]').isVisible(), false, '跳过版本后不得保留安装入口');
+  assert.equal(await skipped.locator('[data-update-restore-skip]').isVisible(), true, '跳过后可恢复提示');
+  assert.match(await skipped.locator('[data-update-status]').textContent(), /已跳过版本 v0\.0\.327/);
+
+  await skipped.evaluate(async () => {
+    const panel = document.querySelector('[data-update-panel]');
+    window.__fixture.cachedPanel = panel;
+    panel.remove();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    document.body.append(panel);
+    panel.dispatchEvent(new Event('update:resume'));
+  });
+  await skipped.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'skipped', null, { timeout: 5000 });
+  assert.equal(await skipped.locator('[data-update-restore-skip]').isVisible(), true, '重进页面恢复持久跳过选择');
+
+  await skipped.evaluate(() => { window.__fixture.resultVersion = '0.0.328'; });
+  await skipped.click('[data-update-check]');
+  await skipped.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'available', null, { timeout: 5000 });
+  assert.match(await skipped.locator('[data-update-status]').textContent(), /发现新版本 v0\.0\.328/, '跳过一个版本仍提示更高版本');
+  assert.equal(await skipped.locator('[data-update-restore-skip]').isVisible(), true, '更高版本出现时仍可清除旧跳过选择');
+
+  await skipped.evaluate(() => { window.__fixture.restoreFailure = true; });
+  await skipped.click('[data-update-restore-skip]');
+  await skipped.waitForFunction(() => /恢复更新提示失败：设置文件只读/.test(document.querySelector('[data-update-status]')?.textContent || ''), null, { timeout: 5000 });
+  assert.equal(await skipped.evaluate(() => window.__fixture.persistedVersion), '0.0.327', '恢复失败时保留原跳过选择');
+  assert.equal(await skipped.locator('[data-update-restore-skip]').isVisible(), true, '恢复失败后仍允许重试');
+  assert.match(await skipped.locator('[data-update-status]').textContent(), /发现新版本 v0\.0\.328；恢复更新提示失败：设置文件只读/);
+  await skipped.evaluate(() => { window.__fixture.restoreFailure = false; });
+  await skipped.click('[data-update-restore-skip]');
+  assert.equal(await skipped.evaluate(() => window.__fixture.restoreCalls), 2);
+  assert.equal(await skipped.evaluate(() => window.__fixture.persistedVersion), null);
+  assert.equal(await skipped.locator('[data-update-install]').isVisible(), true, '恢复旧跳过选择不得丢掉当前新版本');
+  assert.equal(await skipped.locator('[data-update-restore-skip]').isVisible(), false);
+  await skipped.click('[data-update-dismiss]');
+  await skipped.evaluate(() => { window.__fixture.resultVersion = '0.0.327'; });
+  await skipped.click('[data-update-check]');
+  await skipped.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'available', null, { timeout: 5000 });
+  assert.match(await skipped.locator('[data-update-status]').textContent(), /发现新版本 v0\.0\.327/, '恢复提示后允许再次看到原版本');
+  assert.equal(await skipped.evaluate(() => window.__fixture.skipCalls), 1);
+
+  const skipReadFailure = await browser.newPage();
+  skipReadFailure.on('pageerror', e => errors.push(e.message));
+  await skipReadFailure.addInitScript(() => {
+    window.__fixture = { skipReadCalls: 0 };
+    window.__TAURI__ = {
+      core: { invoke: async cmd => {
+        if (cmd === 'update_current_version') return '0.0.326';
+        if (cmd === 'update_session_status') return { phase: 'idle', reason: null };
+        if (cmd === 'update_skipped_version') {
+          window.__fixture.skipReadCalls += 1;
+          if (window.__fixture.skipReadCalls === 1) throw new Error('设置不可用，请重启后重试');
+          return '0.0.327';
+        }
+        if (cmd === 'update_check') return { currentVersion: '0.0.326', available: true, skipped: false, version: '0.0.328', notes: '', date: '' };
+        return null;
+      } },
+      event: { listen: async () => () => {} },
+    };
+  });
+  await skipReadFailure.goto(`http://127.0.0.1:${server.address().port}/update-panel-fixture.html`);
+  await skipReadFailure.waitForFunction(() => /读取跳过版本设置失败：设置不可用/.test(document.querySelector('[data-update-status]')?.textContent || ''), null, { timeout: 5000 });
+  assert.equal(await skipReadFailure.locator('[data-update-check]').isVisible(), true, '读取失败不得伪装成正在跳过');
+  await skipReadFailure.click('[data-update-check]');
+  await skipReadFailure.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'available', null, { timeout: 5000 });
+  assert.equal(await skipReadFailure.locator('[data-update-restore-skip]').isVisible(), true, '检查后重读成功应恢复跳过版本入口');
+  assert.doesNotMatch(await skipReadFailure.locator('[data-update-status]').textContent(), /读取跳过版本设置失败/, '设置重读成功后才清除错误提示');
+
+  const sessionReadFailure = await browser.newPage();
+  sessionReadFailure.on('pageerror', e => errors.push(e.message));
+  await sessionReadFailure.addInitScript(() => {
+    window.__TAURI__ = {
+      core: { invoke: async cmd => {
+        if (cmd === 'update_current_version') return '0.0.326';
+        if (cmd === 'update_session_status') throw new Error('更新状态不可用，请重启后重试');
+        if (cmd === 'update_skipped_version') return '0.0.327';
+        return null;
+      } },
+      event: { listen: async () => () => {} },
+    };
+  });
+  await sessionReadFailure.goto(`http://127.0.0.1:${server.address().port}/update-panel-fixture.html`);
+  await sessionReadFailure.waitForFunction(() => document.querySelector('[data-update-panel]')?.dataset.updatePhase === 'failed', null, { timeout: 5000 });
+  assert.equal(await sessionReadFailure.locator('[data-update-restore-skip]').isVisible(), true, '读取后端状态失败不得丢弃成功读取的跳过选择');
+  assert.match(await sessionReadFailure.locator('[data-update-status]').textContent(), /无法读取更新状态，请重新检查/);
 
   // 安装失败：显示原因，且**不得**出现重启入口。
   const failure = await browser.newPage();
@@ -448,7 +583,7 @@ try {
   assert.match(await degraded.locator('[data-update-status]').textContent(), /尚未检查更新/);
 
   assert.deepEqual(errors, [], `页面抛出异常：${errors.join(' | ')}`);
-  console.log('PASS: update panel DOM — button visibility, progress, reentry state/reason restore, explicit refusal, no signature retry, listener cleanup');
+  console.log('PASS: update panel DOM — button visibility, progress, reentry state/reason and skipped-version restore, newer-version prompt, explicit refusal, no signature retry, listener cleanup');
 } finally {
   await browser.close();
   server.close();

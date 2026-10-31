@@ -84,6 +84,8 @@ pub struct Settings {
     pub menu_bar_badge_mode: String,
     /// 屏幕跟随模式（Swift `screenFollowMode`）：`followMouse` | `mainScreen` | `builtInScreen` | `externalScreen`
     pub screen_follow_mode: String,
+    /// 用户明确跳过的更新版本。仅由 NOT-06 的更新命令写入，不进入通用设置表单。
+    pub skipped_update_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -133,6 +135,7 @@ impl Default for Settings {
             global_hot_key_enabled: true,
             menu_bar_badge_mode: "iconOnly".into(),
             screen_follow_mode: "followMouse".into(),
+            skipped_update_version: None,
         }
     }
 }
@@ -277,6 +280,9 @@ impl Settings {
             if key == "tool_token_budgets" && current.get(key) != Some(field) {
                 return Err("工具预算请在用量分析中逐项保存".into());
             }
+            if key == "skipped_update_version" && current.get(key) != Some(field) {
+                return Err("跳过版本请在更新分区操作".into());
+            }
             if !current.contains_key(key) {
                 return Err(format!("未知设置项：{key}"));
             }
@@ -379,6 +385,13 @@ impl Settings {
             }
             _ => "followMouse".to_string(),
         };
+        s.skipped_update_version = s.skipped_update_version.take().and_then(|version| {
+            let parsed = crate::update::parse_semver(&version)?;
+            Some(format!(
+                "{}.{}.{}",
+                parsed.major, parsed.minor, parsed.patch
+            ))
+        });
         // 形态与侧边栏：认得的值以外一律回落，宽度钳进可用区间
         // （手改 settings.json 写进 0 或 5000 会让侧边栏变成一条缝或盖住整块屏）
         s.shell_mode = crate::models::ShellMode::parse(&s.shell_mode)
@@ -728,6 +741,7 @@ mod tests {
         original.disabled_agents = vec!["codex".into(), "opencode".into()];
         original.dock_edge = "left".into();
         original.appearance = "dark".into();
+        original.skipped_update_version = Some("0.0.419".into());
 
         let json = serde_json::to_string(&original).expect("应可序列化");
         let back: Settings = serde_json::from_str(&json).expect("应可反序列化");
@@ -740,6 +754,41 @@ mod tests {
         );
         assert_eq!(original.cpu_threshold, back.cpu_threshold);
         assert_eq!(original.token_alert_threshold, back.token_alert_threshold);
+        assert_eq!(original.skipped_update_version, back.skipped_update_version);
+    }
+
+    #[test]
+    fn legacy_settings_without_a_skipped_version_default_to_none() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":"dark"}"#).unwrap();
+        assert_eq!(old.appearance, "dark");
+        assert_eq!(old.skipped_update_version, None);
+    }
+
+    #[test]
+    fn skipped_version_is_canonicalized_and_invalid_values_are_discarded() {
+        let mut settings = Settings::default();
+        settings.skipped_update_version = Some(" v000.0.0419 ".into());
+        assert_eq!(
+            settings.normalized().skipped_update_version.as_deref(),
+            Some("0.0.419")
+        );
+
+        settings.skipped_update_version = Some("latest".into());
+        assert_eq!(settings.normalized().skipped_update_version, None);
+    }
+
+    #[test]
+    fn skipped_version_survives_the_atomic_settings_file_roundtrip() {
+        let sandbox = crate::testutil::Sandbox::new("settings-skipped-update");
+        let dir = sandbox.path().to_path_buf();
+        let mut settings = Settings::default();
+        settings.skipped_update_version = Some("0.0.419".into());
+        settings.try_save_to(&dir).unwrap();
+
+        assert_eq!(
+            Settings::load_from(&dir).skipped_update_version.as_deref(),
+            Some("0.0.419")
+        );
     }
 
     #[test]
@@ -1034,6 +1083,10 @@ mod ui_parity {
     /// 每补一页就从这里移走一条，名单空了这条断言就自动收紧成「零例外」。
     const MANAGED_ELSEWHERE: &[(&str, &str)] = &[
         (
+            "skipped_update_version",
+            "NOT-06 更新分区的「跳过此版本 / 恢复提示」专属操作",
+        ),
+        (
             "tool_token_budgets",
             "工作台用量分析的工具预算逐项编辑，带并发版本校验",
         ),
@@ -1170,6 +1223,9 @@ mod patch_regressions {
             .is_err());
         assert!(settings
             .patched(serde_json::json!({"unknown_setting": true}))
+            .is_err());
+        assert!(settings
+            .patched(serde_json::json!({"skipped_update_version": "0.0.419"}))
             .is_err());
     }
     #[test]

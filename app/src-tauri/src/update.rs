@@ -25,6 +25,7 @@ enum UpdatePhase {
     Available,
     Installing,
     ReadyToRestart,
+    Skipped,
     Failed,
     Rejected,
 }
@@ -33,6 +34,8 @@ enum UpdatePhase {
 struct UpdateSession {
     phase: UpdatePhase,
     reason: Option<String>,
+    current_version: Option<String>,
+    available_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -74,9 +77,14 @@ impl UpdateCommandState {
     fn begin_check(&self) -> Result<(), String> {
         let mut session = self.lock()?;
         match session.phase {
-            UpdatePhase::Idle | UpdatePhase::Available | UpdatePhase::Failed => {
+            UpdatePhase::Idle
+            | UpdatePhase::Available
+            | UpdatePhase::Skipped
+            | UpdatePhase::Failed => {
                 session.phase = UpdatePhase::Checking;
                 session.reason = None;
+                session.current_version = None;
+                session.available_version = None;
             }
             UpdatePhase::Rejected => return Err("请先关闭签名校验拒绝说明".to_string()),
             _ => return Err("更新操作正在进行，或已有更新等待重启".to_string()),
@@ -84,17 +92,69 @@ impl UpdateCommandState {
         Ok(())
     }
 
-    fn finish_check(&self, available: bool) -> Result<(), String> {
+    fn finish_check(&self, status: &UpdateStatus) -> Result<(), String> {
         let mut session = self.lock()?;
         if session.phase != UpdatePhase::Checking {
             return Err("更新检查状态已失效，请重新检查".to_string());
         }
-        session.phase = if available {
+        session.phase = if status.available {
             UpdatePhase::Available
+        } else if status.skipped {
+            UpdatePhase::Skipped
         } else {
             UpdatePhase::Idle
         };
         session.reason = None;
+        session.current_version = Some(status.current_version.clone());
+        session.available_version = status.available.then(|| status.version.clone()).flatten();
+        Ok(())
+    }
+
+    fn skip_available_version(
+        &self,
+        persist: impl FnOnce(&str) -> Result<(), String>,
+    ) -> Result<String, String> {
+        let mut session = self.lock()?;
+        if session.phase != UpdatePhase::Available {
+            return Err("请先检查并确认有可跳过的更新版本".to_string());
+        }
+        let current = session
+            .current_version
+            .as_deref()
+            .ok_or_else(|| "当前更新版本信息已失效，请重新检查".to_string())?;
+        let version = session
+            .available_version
+            .clone()
+            .ok_or_else(|| "当前更新版本信息已失效，请重新检查".to_string())?;
+        if !can_skip_version(&version, current) {
+            return Err("只能跳过高于当前版本的更新".to_string());
+        }
+        // 保持更新状态锁直到持久化完成，避免跳过与安装命令竞态。
+        persist(&version)?;
+        session.phase = UpdatePhase::Skipped;
+        session.available_version = None;
+        session.reason = None;
+        Ok(version)
+    }
+
+    fn restore_skipped_version(
+        &self,
+        persist: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut session = self.lock()?;
+        if matches!(
+            session.phase,
+            UpdatePhase::Checking | UpdatePhase::Installing
+        ) {
+            return Err("当前更新操作完成后再恢复提示".to_string());
+        }
+        persist()?;
+        if session.phase == UpdatePhase::Skipped {
+            session.phase = UpdatePhase::Idle;
+            session.current_version = None;
+            session.available_version = None;
+            session.reason = None;
+        }
         Ok(())
     }
 
@@ -160,6 +220,7 @@ impl UpdateCommandState {
                 UpdatePhase::Checking => "checking",
                 UpdatePhase::Installing => "downloading",
                 UpdatePhase::ReadyToRestart => "ready",
+                UpdatePhase::Skipped => "skipped",
                 UpdatePhase::Failed => "failed",
                 UpdatePhase::Rejected => "rejected",
                 _ => "idle",
@@ -189,6 +250,7 @@ fn is_signature_refusal(reason: &str) -> bool {
 pub struct UpdateStatus {
     pub current_version: String,
     pub available: bool,
+    pub skipped: bool,
     pub version: Option<String>,
     pub notes: Option<String>,
     pub date: Option<String>,
@@ -271,6 +333,13 @@ pub fn can_skip_version(target: &str, current: &str) -> bool {
     target_ver > current_ver
 }
 
+fn is_skipped_version(target: &str, current: &str, skipped: Option<&str>) -> bool {
+    can_skip_version(target, current)
+        && skipped
+            .and_then(parse_semver)
+            .is_some_and(|skipped_version| parse_semver(target) == Some(skipped_version))
+}
+
 /// 当前版本。**不出网**，供设置页在用户点击之前显示。
 #[tauri::command]
 pub fn update_current_version(app: AppHandle) -> String {
@@ -293,14 +362,71 @@ pub fn update_dismiss_rejection(
     command_state.dismiss_rejection()
 }
 
+/// Return the locally persisted skipped version without contacting the update service.
+#[tauri::command]
+pub fn update_skipped_version(
+    engine_state: State<'_, crate::SharedEngine>,
+) -> Result<Option<String>, String> {
+    let engine = engine_state
+        .lock()
+        .map_err(|_| "设置不可用，请重启后重试".to_string())?;
+    Ok(engine.settings.skipped_update_version.clone())
+}
+
+fn persist_skipped_update_version(
+    engine_state: &State<'_, crate::SharedEngine>,
+    version: Option<String>,
+) -> Result<(), String> {
+    let mut engine = engine_state
+        .lock()
+        .map_err(|_| "设置不可用，请重启后重试".to_string())?;
+    let mut settings = engine.settings.clone();
+    settings.skipped_update_version = version;
+    settings = settings.normalized();
+    if !crate::background_test_requested() {
+        settings
+            .try_save_to(&crate::settings::config_dir())
+            .map_err(|_| "无法保存更新设置，请检查磁盘空间或权限".to_string())?;
+    }
+    engine.settings = settings;
+    Ok(())
+}
+
+/// Persist only the version that was checked and shown as available; clients cannot supply a version.
+#[tauri::command]
+pub fn update_skip_version(
+    command_state: State<'_, UpdateCommandState>,
+    engine_state: State<'_, crate::SharedEngine>,
+) -> Result<String, String> {
+    command_state.skip_available_version(|version| {
+        persist_skipped_update_version(&engine_state, Some(version.to_string()))
+    })
+}
+
+/// Remove the saved skip choice so the next explicit check may offer that version again.
+#[tauri::command]
+pub fn update_restore_skipped_version(
+    command_state: State<'_, UpdateCommandState>,
+    engine_state: State<'_, crate::SharedEngine>,
+) -> Result<(), String> {
+    command_state.restore_skipped_version(|| persist_skipped_update_version(&engine_state, None))
+}
+
 /// 只回答「有没有可用更新」，不改动任何文件、不下载。
 #[tauri::command]
 pub async fn update_check(
     app: AppHandle,
     command_state: State<'_, UpdateCommandState>,
+    engine_state: State<'_, crate::SharedEngine>,
 ) -> Result<UpdateStatus, String> {
     command_state.begin_check()?;
     let result: Result<UpdateStatus, String> = async {
+        let skipped_version = engine_state
+            .lock()
+            .map_err(|_| "设置不可用，请重启后重试".to_string())?
+            .settings
+            .skipped_update_version
+            .clone();
         let current_version = app.package_info().version.to_string();
         let updater = app
             .updater()
@@ -310,16 +436,32 @@ pub async fn update_check(
             .await
             .map_err(|error| updater_reason(&error.to_string()))?;
         Ok(match found {
-            Some(update) => UpdateStatus {
-                current_version,
-                available: true,
-                version: Some(update.version.clone()),
-                notes: update.body.clone(),
-                date: update.date.map(|date| date.to_string()),
-            },
+            Some(update) => {
+                let available = should_prompt_update(
+                    &update.version,
+                    &current_version,
+                    skipped_version.as_deref(),
+                );
+                let skipped = is_skipped_version(
+                    &update.version,
+                    &current_version,
+                    skipped_version.as_deref(),
+                );
+                UpdateStatus {
+                    current_version,
+                    available,
+                    skipped,
+                    version: (available || skipped).then(|| update.version.clone()),
+                    notes: available.then(|| update.body.clone()).flatten(),
+                    date: available
+                        .then(|| update.date.map(|date| date.to_string()))
+                        .flatten(),
+                }
+            }
             None => UpdateStatus {
                 current_version,
                 available: false,
+                skipped: false,
                 version: None,
                 notes: None,
                 date: None,
@@ -329,7 +471,7 @@ pub async fn update_check(
     .await;
 
     match &result {
-        Ok(status) => command_state.finish_check(status.available)?,
+        Ok(status) => command_state.finish_check(status)?,
         Err(reason) => command_state.abort_check(reason),
     }
     result
@@ -416,6 +558,17 @@ fn updater_reason(raw: &str) -> String {
 mod tests {
     use super::*;
 
+    fn check_result(available: bool, skipped: bool) -> UpdateStatus {
+        UpdateStatus {
+            current_version: "0.0.380".to_string(),
+            available,
+            skipped,
+            version: (available || skipped).then(|| "0.0.381".to_string()),
+            notes: None,
+            date: None,
+        }
+    }
+
     #[test]
     fn install_requires_a_successful_check_and_restart_requires_a_successful_install() {
         let state = UpdateCommandState::default();
@@ -426,11 +579,11 @@ mod tests {
         state.begin_check().unwrap();
         assert!(state.begin_check().is_err(), "检查期间不得重复检查");
         assert!(state.begin_install().is_err(), "检查尚未完成时不得安装");
-        state.finish_check(false).unwrap();
+        state.finish_check(&check_result(false, false)).unwrap();
         assert!(state.begin_install().is_err(), "无更新时不得安装");
 
         state.begin_check().unwrap();
-        state.finish_check(true).unwrap();
+        state.finish_check(&check_result(true, false)).unwrap();
         state.begin_install().unwrap();
         assert!(state.begin_install().is_err(), "安装期间不得并行安装");
         assert_eq!(state.session_status().unwrap().phase, "downloading");
@@ -442,7 +595,7 @@ mod tests {
         assert_eq!(failed.reason.as_deref(), Some("下载失败"));
 
         state.begin_check().unwrap();
-        state.finish_check(true).unwrap();
+        state.finish_check(&check_result(true, false)).unwrap();
         state.begin_install().unwrap();
         state.finish_install(&Ok(())).unwrap();
         assert_eq!(
@@ -464,7 +617,7 @@ mod tests {
     fn signature_refusal_survives_panel_reentry_until_explicit_dismissal() {
         let state = UpdateCommandState::default();
         state.begin_check().unwrap();
-        state.finish_check(true).unwrap();
+        state.finish_check(&check_result(true, false)).unwrap();
         state.begin_install().unwrap();
         let refusal = Err("更新包签名校验失败，已拒绝安装".to_string());
         state.finish_install(&refusal).unwrap();
@@ -499,6 +652,7 @@ mod tests {
         let status = UpdateStatus {
             current_version: "0.0.326".to_string(),
             available: true,
+            skipped: false,
             version: Some("0.0.327".to_string()),
             notes: Some("修复若干问题".to_string()),
             date: Some("2026-10-19T00:00:00Z".to_string()),
@@ -506,6 +660,7 @@ mod tests {
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["currentVersion"], "0.0.326");
         assert_eq!(json["available"], true);
+        assert_eq!(json["skipped"], false);
         assert_eq!(json["version"], "0.0.327");
         assert_eq!(json["notes"], "修复若干问题");
     }
@@ -515,12 +670,14 @@ mod tests {
         let status = UpdateStatus {
             current_version: "0.0.326".to_string(),
             available: false,
+            skipped: false,
             version: None,
             notes: None,
             date: None,
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["available"], false);
+        assert_eq!(json["skipped"], false);
         assert!(json["version"].is_null(), "没有更新时不得编一个版本号出来");
         assert!(json["notes"].is_null());
     }
@@ -537,7 +694,9 @@ mod tests {
 
     #[test]
     fn transient_failures_are_actionable_and_do_not_leak_details() {
-        let timeout = updater_reason("error sending request: operation timed out at https://example.invalid/latest.json");
+        let timeout = updater_reason(
+            "error sending request: operation timed out at https://example.invalid/latest.json",
+        );
         assert_eq!(timeout, "连接更新服务超时，请稍后重试");
         assert!(!timeout.contains("http"), "错误文案不得回显 URL");
         let missing = updater_reason("updater endpoint returned 404 Not Found");
@@ -570,7 +729,14 @@ mod tests {
                 patch: 389,
             })
         );
-        assert_eq!(parse_semver("v1.2.3"), Some(SemVer { major: 1, minor: 2, patch: 3 }));
+        assert_eq!(
+            parse_semver("v1.2.3"),
+            Some(SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3
+            })
+        );
         // 数字比较，非字典序（"0.0.10" > "0.0.9"）
         assert!(parse_semver("0.0.10").unwrap() > parse_semver("0.0.9").unwrap());
         // 畸形拒绝
@@ -603,9 +769,63 @@ mod tests {
     }
 
     #[test]
-    fn can_only_skip_versions_higher_than_current() {
+    fn skipped_version_can_only_be_higher_than_current() {
         assert!(can_skip_version("0.0.381", "0.0.380"));
         assert!(!can_skip_version("0.0.380", "0.0.380"), "同版本不可跳");
         assert!(!can_skip_version("0.0.379", "0.0.380"), "旧版本不可跳");
+    }
+
+    #[test]
+    fn skipped_version_command_persists_only_a_successful_available_check() {
+        let state = UpdateCommandState::default();
+        let mut persisted = None;
+        assert!(state
+            .skip_available_version(|version| {
+                persisted = Some(version.to_string());
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(persisted, None, "检查前拒绝写入跳过版本");
+
+        state.begin_check().unwrap();
+        state.finish_check(&check_result(true, false)).unwrap();
+        assert!(state
+            .skip_available_version(|_| Err("磁盘写入失败".to_string()))
+            .is_err());
+        assert_eq!(
+            state.lock().unwrap().phase,
+            UpdatePhase::Available,
+            "持久化失败时保留原来的可安装状态"
+        );
+
+        let version = state
+            .skip_available_version(|version| {
+                persisted = Some(version.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(version, "0.0.381");
+        assert_eq!(persisted.as_deref(), Some("0.0.381"));
+        assert_eq!(state.session_status().unwrap().phase, "skipped");
+        assert!(state.begin_install().is_err(), "已跳过的版本不得进入安装");
+
+        state.begin_check().unwrap();
+        state.finish_check(&check_result(false, true)).unwrap();
+        assert_eq!(state.session_status().unwrap().phase, "skipped");
+        state
+            .restore_skipped_version(|| {
+                persisted = None;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(persisted, None);
+        assert_eq!(state.session_status().unwrap().phase, "idle");
+    }
+
+    #[test]
+    fn only_the_exact_skipped_version_is_reported_as_skipped() {
+        assert!(is_skipped_version("0.0.381", "0.0.380", Some("0.0.381")));
+        assert!(!is_skipped_version("0.0.382", "0.0.380", Some("0.0.381")));
+        assert!(!is_skipped_version("0.0.380", "0.0.380", Some("0.0.380")));
     }
 }

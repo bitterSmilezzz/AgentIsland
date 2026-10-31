@@ -9,7 +9,7 @@
 // 测试要能证明「安装成功后仍在 ready、重启函数一次都没被调用」，否则
 // 「不在用户不知情时重启」就只是一句注释。
 
-const BUSY_PHASES = ['restoring', 'checking', 'downloading', 'restarting'];
+const BUSY_PHASES = ['restoring', 'checking', 'downloading', 'skipping', 'restarting'];
 
 /**
  * 取出可直接展示的错误文案。
@@ -24,13 +24,16 @@ export function errorText(error, fallback) {
   return raw.trim() ? raw : fallback;
 }
 
-export function createUpdateController({ check, install, restart, dismissRejection, changed = () => {}, initialPhase = 'idle' } = {}) {
+export function createUpdateController({ check, install, restart, dismissRejection, skipVersion, restoreSkippedVersion, changed = () => {}, initialPhase = 'idle' } = {}) {
+  let stateGeneration = 0;
   const state = {
     phase: initialPhase,
     currentVersion: '',
     version: '',
     notes: '',
     date: '',
+    skippedVersion: '',
+    notice: '',
     downloaded: null,
     total: null,
     reason: '',
@@ -61,6 +64,15 @@ export function createUpdateController({ check, install, restart, dismissRejecti
       state.currentVersion = String(version);
       notify();
     },
+    setSkippedVersion(version) {
+      state.skippedVersion = typeof version === 'string' ? version : '';
+      state.notice = '';
+      notify();
+    },
+    setNotice(message) {
+      state.notice = typeof message === 'string' ? message : '';
+      notify();
+    },
     restoreSessionStatus(session) {
       if (!['restoring', 'checking', 'downloading'].includes(state.phase)) return;
       const phase = typeof session === 'string' ? session : session?.phase;
@@ -84,6 +96,10 @@ export function createUpdateController({ check, install, restart, dismissRejecti
       } else if (phase === 'idle' && ['restoring', 'checking'].includes(state.phase)) {
         state.phase = 'idle';
         state.reason = '';
+      } else if (phase === 'skipped') {
+        state.phase = 'skipped';
+        state.version = state.skippedVersion;
+        state.reason = '';
       } else if (phase === 'idle' && state.phase === 'downloading') {
         state.phase = 'failed';
         state.reason = '更新失败，请重新检查';
@@ -94,24 +110,45 @@ export function createUpdateController({ check, install, restart, dismissRejecti
       notify();
     },
     beginSessionRestore() {
+      stateGeneration += 1;
       state.phase = 'restoring';
       state.reason = '';
+      state.notice = '';
       notify();
     },
     async check() {
-      if (!['idle', 'failed'].includes(state.phase) || controller.busy || typeof check !== 'function') return;
+      if (!['idle', 'failed', 'skipped'].includes(state.phase) || controller.busy || typeof check !== 'function') return;
+      const generation = ++stateGeneration;
       state.phase = 'checking';
       state.reason = '';
       notify();
       try {
         const result = await check();
+        if (generation !== stateGeneration) return;
         if (!result || typeof result.available !== 'boolean') throw new Error('invalid');
+        if (result.skipped != null && typeof result.skipped !== 'boolean') throw new Error('invalid');
+        if (result.skipped === true
+          && (result.available || typeof result.version !== 'string' || !result.version.trim())) throw new Error('invalid');
+        if (result.skippedSettings?.ok === true) {
+          state.skippedVersion = typeof result.skippedSettings.version === 'string' ? result.skippedSettings.version : '';
+          state.notice = '';
+        } else if (result.skippedSettings?.ok === false) {
+          state.notice = `读取跳过版本设置失败：${errorText(result.skippedSettings.error, '请重新进入设置页重试')}`;
+        }
         if (result.currentVersion) state.currentVersion = String(result.currentVersion);
         if (result.available) {
           state.phase = 'available';
           state.version = String(result.version ?? '');
           state.notes = String(result.notes ?? '');
           state.date = String(result.date ?? '');
+          state.reason = '';
+        } else if (result.skipped === true && result.version) {
+          state.phase = 'skipped';
+          state.version = String(result.version);
+          state.skippedVersion = state.version;
+          state.notes = '';
+          state.date = '';
+          state.reason = '';
         } else {
           state.phase = 'uptodate';
           state.version = '';
@@ -119,10 +156,60 @@ export function createUpdateController({ check, install, restart, dismissRejecti
           state.date = '';
         }
       } catch (error) {
+        if (generation !== stateGeneration) return;
         fail(error, '检查更新失败，请稍后重试');
       } finally {
-        notify();
+        if (generation === stateGeneration) notify();
       }
+    },
+    async skipCurrentVersion() {
+      if (state.phase !== 'available' || typeof skipVersion !== 'function') return;
+      const generation = ++stateGeneration;
+      const checkedVersion = state.version;
+      state.phase = 'skipping';
+      state.reason = '';
+      notify();
+      try {
+        const savedVersion = await skipVersion();
+        if (generation !== stateGeneration) return;
+        if (typeof savedVersion !== 'string' || savedVersion !== checkedVersion) {
+          throw new Error('更新版本信息已变化，请重新检查');
+        }
+        state.skippedVersion = savedVersion;
+        state.phase = 'skipped';
+        state.notice = '';
+        state.notes = '';
+        state.date = '';
+      } catch (error) {
+        if (generation !== stateGeneration) return;
+        state.phase = 'available';
+        state.reason = errorText(error, '无法保存跳过选择，请重试');
+      } finally {
+        if (generation === stateGeneration) notify();
+      }
+    },
+    async restoreSkippedVersion() {
+      if (!state.skippedVersion || typeof restoreSkippedVersion !== 'function' || controller.busy) return;
+      const generation = ++stateGeneration;
+      try {
+        await restoreSkippedVersion();
+        if (generation !== stateGeneration) return;
+        state.skippedVersion = '';
+        state.notice = '';
+        if (state.phase === 'skipped') {
+          state.phase = 'idle';
+          state.reason = '';
+          state.version = '';
+          state.notes = '';
+          state.date = '';
+        } else if (state.phase === 'available') {
+          state.reason = '';
+        }
+      } catch (error) {
+        if (generation !== stateGeneration) return;
+        state.notice = `恢复更新提示失败：${errorText(error, '请稍后重试')}`;
+      }
+      if (generation === stateGeneration) notify();
     },
     async install() {
       // 关键：只有 available 才允许安装。idle / uptodate / failed / ready 一律不动。
@@ -163,7 +250,7 @@ export function createUpdateController({ check, install, restart, dismissRejecti
       }
     },
     dismiss() {
-      if (!['available', 'failed', 'uptodate'].includes(state.phase)) return;
+      if (!['available', 'failed', 'uptodate', 'skipped'].includes(state.phase)) return;
       state.phase = 'idle';
       state.reason = '';
       notify();
@@ -193,28 +280,41 @@ export function formatBytes(bytes) {
 
 /// 状态 → 一句话。空字符串表示「没有可显示的进度」。
 export function updateStatusText(state) {
-  switch (state?.phase) {
-    case 'restoring':
-      return '正在读取更新状态…';
-    case 'checking':
-      return '正在检查更新…';
-    case 'uptodate':
-      return '已是最新版本';
-    case 'available':
-      return state.version ? `发现新版本 v${state.version}` : '发现新版本';
-    case 'downloading':
-      if (state.downloaded == null) return '正在下载更新包…';
-      if (state.total == null) return `已下载 ${formatBytes(state.downloaded)}…`;
-      return `正在下载 ${Math.min(100, Math.floor((state.downloaded / state.total) * 100))}%（${formatBytes(state.downloaded)} / ${formatBytes(state.total)}）`;
-    case 'ready':
-      return '更新已安装，重启后生效';
-    case 'restarting':
-      return '正在重启…';
-    case 'failed':
-      return state.reason || '更新失败，请稍后重试';
-    case 'rejected':
-      return state.reason || '更新包签名校验失败，已拒绝安装';
-    default:
-      return '尚未检查更新';
-  }
+  const message = (() => {
+    switch (state?.phase) {
+      case 'restoring':
+        return '正在读取更新状态…';
+      case 'checking':
+        return '正在检查更新…';
+      case 'uptodate':
+        return '已是最新版本';
+      case 'skipped':
+        return state.version ? `已跳过版本 v${state.version}` : '已跳过此更新版本';
+      case 'available':
+        return state.version ? `发现新版本 v${state.version}` : '发现新版本';
+      case 'downloading':
+        if (state.downloaded == null) return '正在下载更新包…';
+        if (state.total == null) return `已下载 ${formatBytes(state.downloaded)}…`;
+        return `正在下载 ${Math.min(100, Math.floor((state.downloaded / state.total) * 100))}%（${formatBytes(state.downloaded)} / ${formatBytes(state.total)}）`;
+      case 'skipping':
+        return '正在保存跳过选择…';
+      case 'ready':
+        return '更新已安装，重启后生效';
+      case 'restarting':
+        return '正在重启…';
+      case 'failed':
+        return state.reason || '更新失败，请稍后重试';
+      case 'rejected':
+        return state.reason || '更新包签名校验失败，已拒绝安装';
+      case 'idle':
+        return state.skippedVersion ? `已跳过版本 v${state.skippedVersion}` : '尚未检查更新';
+      default:
+        return '尚未检查更新';
+    }
+  })();
+  const reason = typeof state?.reason === 'string' ? state.reason.trim() : '';
+  const notice = typeof state?.notice === 'string' ? state.notice.trim() : '';
+  const additional = [reason, notice].filter((item, index, values) =>
+    item && !message.includes(item) && values.indexOf(item) === index);
+  return additional.length ? `${message}；${additional.join('；')}` : message;
 }
