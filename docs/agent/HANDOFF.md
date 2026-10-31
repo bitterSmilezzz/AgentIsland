@@ -542,3 +542,25 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - NOT-06 仍为 partial：v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝、Intel/universal 架构未验。
 - BUG-016 保持 open。代码级 pending future 证明该类未完成请求会造成相同的 `checking` 症状，也证明新版本 30 秒保护可恢复；这不能确认 v0.0.416 VM 的原始原因。隔离 VM 的图形界面自动化仍受主机锁屏和来宾辅助功能限制，本轮没有触发其检查、安装或重启，也没有要求用户手工操作。
 - 后续如无需 VM 的开发继续按 [`04 · 实施计划`](../workbench/04-plan.md) 选择；BUG-016 的根因确认仍需来自旧版客户端本身的 updater 请求/错误证据。
+
+## 18. 2026-11-01 追加：GW-03 工具事件 JSON 防御解析（v0.0.424）
+
+### 改动
+
+- `ToolCallAggregator` 对畸形 JSON、非对象 payload 和 serde_json 默认递归深度拒绝统一返回固定 `MalformedPayload`；合法对象缺少或空 `call_id` 仍返回 `MissingCallId`。
+- 解析拒绝发生在写入聚合状态前。回归建立一条已有工具调用，再分别提交畸形、非对象和 130 层嵌套输入，并确认调用列表、索引和分片计数保持不变。
+- 不增加真实网关传输、工具执行或凭据读取；不把这片描述为四类协议的真实端到端验收。矩阵中的 SSE 字节/事件数上限仍由既有 `sse_parser` 明确拒绝。
+
+### 验证与发布
+
+- 定向 `tool_call_aggregate` 测试 **9 passed / 0 failed**；测试注册表 **23 passed**；版本、需求矩阵、状态生成、rustfmt 与 `git diff --check` 均通过。
+- 完整 CI run `20261031T220911Z-fc66899ba6cd`：**128 passed / 0 failed / 0 blocked**。构建身份与随包 CLI run `20261031T221822Z-013ad46d2632`：**7/7**；真实签名正例和错签/篡改负例 **7/7**。
+- 隔离发布 VM 原生门禁全部通过，证据目录 `.build/vm/acceptance-472c760fc19740ad8b8aea6af0815cc8`，并核对发布包哈希。仍未验：原生动效逐边取证、真实官方 Claude 客户端取证。
+- 提交前和提交后历史脱敏扫描均通过。发布提交 `c6074dd`、tag `v0.0.424` 已推送；GitHub [v0.0.424 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.424) 已核实含 DMG、ZIP、updater 包、签名与 `latest.json`。脚本确认本机新构建重启成功，PID `77347`。
+- 独立规格与工程规范审查均 PASS；报告见 [`2026-11-01-0607-v0.0.424-independent.md`](../code-review/2026-11-01-0607-v0.0.424-independent.md)。
+
+### 未验项与下一步
+
+- GW-03 仍为 partial：流中失败状态机与四类协议真实端到端验收未完成；SSE parser 的单行 64 KiB、单事件 256 KiB 和每次解析 10,000 个事件上限已由现有解析器拒绝并有回归覆盖。
+- BUG-016 仍为 open。v0.0.416 真实客户端检查、安装、显式重启与真实错签拒绝仍未验；旧版 `agentisland-update-e2e` VM 保持原样，本轮没有要求用户手工操作。
+- TASK-01 的项目归属拖放与派生状态列拖放已分别在 v0.0.421 / v0.0.422 发布，下一片按当前 [`需求状态`](../需求状态.md)与[`需求测试矩阵`](../spec/需求测试矩阵.md)中的未完成缺口选择，不重复排已完成的拖放项。
