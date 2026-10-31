@@ -454,6 +454,85 @@ impl Store {
             }
         }
     }
+    /// Consume an explicit drag request between run-derived columns.
+    /// The caller must provide the concrete local progress chosen in the
+    /// confirmation dialog; the coarse target column alone is never written.
+    pub fn board_change_status(
+        &self,
+        task_id: &str,
+        source_column: crate::task_board_drag::BoardColumn,
+        target_column: crate::task_board_drag::BoardColumn,
+        status: RunStatus,
+        kind: Option<AttentionKind>,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<Data, Error> {
+        use crate::task_board_drag::{resolve_drag, DragAction, DraggableTask};
+
+        if status == RunStatus::Accepted {
+            return Err(error(
+                "invalid_input",
+                "拖放只能记录本地进度，不能标记来源已验收",
+            ));
+        }
+        let mut data = self.load()?;
+        if data.revision != expected_revision {
+            return Err(error("stale_revision", "任务已更新，请刷新后重试"));
+        }
+        let task = data
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| error("not_found", "任务不存在"))?;
+        let draggable = DraggableTask {
+            id: task.id.clone(),
+            project_id: task.project_id.clone(),
+            archived: task.archived_ms.is_some(),
+            current_column: board_column(&data, task),
+        };
+        let project_ids = data
+            .projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect::<Vec<_>>();
+        let action = resolve_drag(
+            Some(&draggable),
+            source_column,
+            target_column,
+            None,
+            expected_revision,
+            data.revision,
+            &project_ids,
+        )
+        .map_err(task_drag_error)?;
+
+        match action {
+            DragAction::Noop => Ok(data),
+            DragAction::RequestStatusChange {
+                task_id: action_task,
+                target_column: action_target,
+                expected_revision: action_revision,
+            } => {
+                if action_task != task_id
+                    || action_target != target_column
+                    || action_revision != data.revision
+                    || !status_matches_board_column(status, kind, target_column)
+                {
+                    return Err(error("invalid_input", "所选本地进度与拖放目标不匹配"));
+                }
+                data.record(task_id, status, kind, None, now, false)?;
+                data.revision = data
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| error("capacity", "任务版本已达上限"))?;
+                self.write(&data)?;
+                Ok(data)
+            }
+            DragAction::ChangeOwnership { .. } | DragAction::ReorderOnly { .. } => {
+                Err(error("invalid_input", "状态拖放目标必须是看板状态列"))
+            }
+        }
+    }
     pub fn archive(
         &self,
         task: &str,
@@ -1128,6 +1207,35 @@ pub fn board_column(data: &Data, task: &Task) -> crate::task_board_drag::BoardCo
         | RunStatus::Failed
         | RunStatus::Cancelled
         | RunStatus::Accepted => BoardColumn::Finished,
+    }
+}
+
+fn status_matches_board_column(
+    status: RunStatus,
+    kind: Option<AttentionKind>,
+    target: crate::task_board_drag::BoardColumn,
+) -> bool {
+    use crate::task_board_drag::BoardColumn;
+    match target {
+        BoardColumn::Attention => {
+            (matches!(
+                (status, kind),
+                (
+                    RunStatus::Waiting,
+                    Some(
+                        AttentionKind::Answer
+                            | AttentionKind::PlanApproval
+                            | AttentionKind::Confirmation
+                    )
+                ) | (RunStatus::Ready, Some(AttentionKind::ResultReview))
+            )) || (status == RunStatus::Failed && kind.is_none())
+        }
+        BoardColumn::Running => status == RunStatus::Running && kind.is_none(),
+        BoardColumn::Queued => status == RunStatus::Queued && kind.is_none(),
+        BoardColumn::Finished => {
+            matches!(status, RunStatus::Ready | RunStatus::Cancelled) && kind.is_none()
+        }
+        BoardColumn::ProjectGroup => false,
     }
 }
 

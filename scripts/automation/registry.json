@@ -175,10 +175,11 @@
         "task01.deps",
         "task01.projectdeps",
         "task01.drag",
-        "task01.dragui"
+        "task01.dragui",
+        "task01.dragstatus"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；跨项目搜索（task01.tasksearch）；项目依赖判据（task01.deps：依赖存在性/循环/深度上限/删除守卫/自依赖/传递闭包）；项目依赖存储与管理页接线（task01.projectdeps：旧文件兼容、聚合 revision、循环/深度拒绝、删除守卫、浏览器草稿冲突保持）；**看板拖拽语义**（task01.drag，2026-10-27）：拖到派生列不直接改状态，而产出带 expected_revision 的状态请求；拖拽不改写运行历史；任务不存在/已归档/目标缺失/revision 或来源列不符均拒绝。**项目归属拖放接线**（task01.dragui）：浏览器真实 DOM 拖到项目目标，经 Tauri 命令进入 Store；有效移动只改归属和 revision，运行记录保持不变；同项目 no-op、旧 revision、草稿保护与键盘详情编辑均有回归。仍缺：派生状态列拖放的安全请求消费链、actor-based authorization（单用户工具无多 actor 面）。",
+      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；跨项目搜索（task01.tasksearch）；项目依赖判据（task01.deps：依赖存在性/循环/深度上限/删除守卫/自依赖/传递闭包）；项目依赖存储与管理页接线（task01.projectdeps：旧文件兼容、聚合 revision、循环/深度拒绝、删除守卫、浏览器草稿冲突保持）；**看板拖拽语义**（task01.drag，2026-10-27）：拖到派生列不直接改状态，而产出带 expected_revision 的状态请求；拖拽不改写运行历史；任务不存在/已归档/目标缺失/revision 或来源列不符均拒绝。**项目归属拖放接线**（task01.dragui）：浏览器真实 DOM 拖到项目目标，经 Tauri 命令进入 Store；有效移动只改归属和 revision，运行记录保持不变；同项目 no-op、旧 revision、草稿保护与键盘详情编辑均有回归。**状态列拖放消费链**（task01.dragstatus）：确认框要求选择具体本地进度；取消、同列 no-op、无效 payload、草稿和过期 revision 不写入；后端复核目标/来源/归档/revision，人工关口为 observed=false，来源验收不可选。仍缺：actor-based authorization（单用户工具无多 actor 面）。",
       "status": "partial"
     },
     "TASK-04": {
@@ -3040,6 +3041,25 @@
         "scripts/test-task-board-drag.mjs"
       ]
     },
+    "task01.dragstatus": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-board-status-drag.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "TASK-01 状态列拖放消费链：真实 DOM drop 仅打开本地进度选择框；覆盖取消/同列 no-op/无效 payload 零写、目标允许值、拖动起点 revision、显式确认、人工关口 observed=false、过期拒绝保留选择与详情草稿保护；检查 Tauri 命令注册和真实 Store 转发。",
+      "test_files": [
+        "scripts/test-task-board-status-drag.mjs"
+      ]
+    },
     "task06.quality": {
       "command": [
         "cargo",
@@ -3247,6 +3267,7 @@
       "task01.tasksearch",
       "task01.projectdeps",
       "task01.dragui",
+      "task01.dragstatus",
       "task04.readerleave",
       "task04.refreshfocus",
       "gw01.connectionsui",
@@ -3336,6 +3357,7 @@
       "task01.projectdeps",
       "task01.drag",
       "task01.dragui",
+      "task01.dragstatus",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",
@@ -3513,6 +3535,7 @@
       "task01.projectdeps",
       "task01.drag",
       "task01.dragui",
+      "task01.dragstatus",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",
@@ -3690,7 +3713,7 @@
       "title": "隔离 VM 已安装 v0.0.416 的检查更新被用户报告卡在检查中（尚未复现）",
       "status": "open",
       "requirement": "NOT-06",
-      "evidence": "用户报告隔离 VM 的 ~/Applications/AgentIsland.app（核实版本 v0.0.416）点击检查更新后一直停在检查中；截图显示另一份 v0.0.418 验收包并显示“已是最新版本”。自动化只读检查确认原 VM 中 .416 安装包未运行，运行的是 agentisland-native-acceptance-* 下的验收构建。已克隆 VM 并启动确切 .416 安装包；tart exec 无响应，SSH 的 Aqua/会话检查通过，但主机 CUA 报告 Mac 锁屏，来宾 System Events 查询超时，且无图形会话时无法抓取屏幕。随后在原 VM 通过 SSH 对公开 updater manifest 做有界只读 GET，HTTP 200、1.91 秒；这只证明端点可达，不证明 .416 updater API 已请求或解析。没有触发检查、没有应用 updater 日志或请求证据；因此症状未复现，根因与可复现条件仍未知。原 VM 与验收进程未改动；克隆副本已停止并删除。"
+      "evidence": "用户报告隔离 VM 的 ~/Applications/AgentIsland.app（核实版本 v0.0.416）点击检查更新后一直停在检查中；截图显示另一份 v0.0.418 验收包并显示“已是最新版本”。自动化只读检查确认原 VM 中 .416 安装包未运行，运行的是 agentisland-native-acceptance-* 下的验收构建。已克隆 VM 并启动确切 .416 安装包；tart exec 无响应，SSH 的 Aqua/会话检查通过，但主机 CUA 报告 Mac 锁屏，来宾 System Events 查询超时，且无图形会话时无法抓取屏幕。随后在原 VM 通过 SSH 对公开 updater manifest 做有界只读 GET，HTTP 200、1.91 秒；这只证明端点可达，不证明 .416 updater API 已请求或解析。没有触发检查、没有应用 updater 日志或请求证据；因此症状未复现，根因与可复现条件仍未知。原 VM 与验收进程未改动；克隆副本已停止并删除。 2026-11-01 自动化续查（无需用户手工操作）：对 agentisland-update-e2e 的 VM 前置检查通过，确认 Aqua 会话与 pinned SSH 连接；SSH 只读核实安装包仍为 v0.0.416，而运行进程属于另一份 agentisland-native-acceptance 验收构建。Tart Guest Agent 的只读系统查询无响应并以 GRPC socket connection error 结束；SSH 的 System Events 辅助功能查询在 12 秒超时，来宾 screencapture 无法创建显示图像；主机 CUA 状态为锁屏且无法自动解锁。未向 VM 输入、未触发 updater 检查/安装/重启，也未更改已安装旧包或验收进程；仍无 updater 请求证据，BUG-016 未复现，根因未知。"
     }
   ]
 }

@@ -6,6 +6,19 @@ import { chiefResourcesPage, bindChiefResources } from './chief-resources-page.j
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const statuses = { queued: '未开始', running: '执行中', waiting: '等待处理', ready: '结果就绪', failed: '执行失败', cancelled: '已取消', accepted: '来源已验收' };
 const kinds = { answer: '待回答', plan_approval: '确认方案', result_review: '验收结果', confirmation: '需要确认' };
+const boardColumns = { attention: '需处理', running: '执行中', queued: '未开始', finished: '已结束' };
+const statusChoices = {
+  attention: [
+    ['waiting:answer', 'waiting', 'answer', '等待处理 · 待回答'],
+    ['waiting:plan_approval', 'waiting', 'plan_approval', '等待处理 · 确认方案'],
+    ['ready:result_review', 'ready', 'result_review', '等待处理 · 验收结果'],
+    ['waiting:confirmation', 'waiting', 'confirmation', '等待处理 · 需要确认'],
+    ['failed', 'failed', null, '执行失败'],
+  ],
+  running: [['running', 'running', null, '执行中']],
+  queued: [['queued', 'queued', null, '未开始']],
+  finished: [['ready', 'ready', null, '结果就绪'], ['cancelled', 'cancelled', null, '已取消']],
+};
 export function taskGateNotice(attention) {
   if (!attention.observed) return '本地记录，处理后标记即可。';
   return attention.kind === 'plan_approval' ? '来源未提供方案正文，请在工具中查看。' : '请在来源工具中处理，再更新本地记录。';
@@ -45,7 +58,7 @@ export function pageTasks() {
     <form class="task-compose" data-task-create><label class="sr-only" for="task-new-title">任务名称</label><input id="task-new-title" name="title" placeholder="记录一个任务…" maxlength="500" required autocomplete="off"><select name="projectId" aria-label="任务所属项目"><option value="">未分组</option></select><button class="mini-btn primary" type="submit">添加任务</button></form>
     <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form><section class="task-project-manager" data-task-project-manager aria-label="项目依赖管理"><label>配置项目<select data-task-project-select aria-label="选择要配置依赖的项目"><option value="">选择项目</option></select></label><form data-task-project-dependencies hidden></form><div class="task-project-delete" data-task-project-delete hidden><p data-project-task-count></p><button class="mini-btn" type="button" data-task-project-delete-button>删除项目</button></div></section></details>
     <button class="mini-btn task-chief-open" type="button" data-chief-open>团队资源配置</button>
-    <section class="task-project-targets" data-task-project-targets hidden aria-label="任务归属拖放目标"><p>将未归档任务卡拖到项目目标以调整归属；键盘可在任务详情中选择项目并保存。</p><div data-task-project-target-list role="list"></div></section>
+    <section class="task-project-targets" data-task-project-targets hidden aria-label="任务拖放目标"><p>项目目标调整归属；状态目标会先让你选择具体的本地进度。拖放不会启动、停止或批准外部智能体。</p><div data-task-project-target-list role="list"></div><div class="task-status-targets" data-task-status-targets><span>记录本地进度</span><div data-task-status-target-list role="list"></div></div></section>
     </div>
     <div class="task-board" data-task-board></div>
     </div>
@@ -54,6 +67,7 @@ export function pageTasks() {
     </div>
     <div class="task-footer"><p class="task-feedback" data-task-feedback role="status" aria-live="polite">正在读取任务</p><p class="task-note">仅整理本地记录，不会启动任务或批准操作。</p></div>
     ${chiefResourcesPage()}
+    <dialog class="task-status-dialog" data-task-status-dialog aria-labelledby="task-status-dialog-title"><form data-task-status-form><h2 id="task-status-dialog-title" data-task-status-title>记录本地进度</h2><p class="task-note">这只会更新本机任务记录，不会启动、停止或批准外部智能体；“来源已验收”不能通过拖放设置。</p><label>具体进度<select name="progress" data-task-status-select required></select></label><p class="task-form-feedback" data-task-status-feedback role="status" aria-live="polite" hidden></p><div class="task-form-actions"><button class="mini-btn" type="button" data-task-status-cancel>取消</button><button class="mini-btn" type="submit">确认记录</button></div></form></dialog>
   </section>`;
 }
 let requestedTask = null;
@@ -81,11 +95,11 @@ export async function hydrateTasks(isVisible = () => true) {
   const current = pageRequest(root);
   const message = root.querySelector('[data-task-feedback]');
   let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null, detailRevision=null, projectEditorId=null;
-  let activeDrag = null, suppressTaskClick = null, pendingRefreshNotice = null;
+  let activeDrag = null, suppressTaskClick = null, pendingRefreshNotice = null, pendingStatusDrop = null;
   subscribeTasks();
   const projectOptions = blank => `<option value="">${blank}</option>${data.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}`;
   const feedback = (text, form) => {
-    const local = form?.querySelector('[data-task-form-feedback]');
+    const local = form?.querySelector('[data-task-form-feedback], [data-task-status-feedback]');
     if (local) { local.textContent = text; local.hidden = !text; message.textContent = ''; }
     else message.textContent = text;
   };
@@ -185,6 +199,8 @@ export async function hydrateTasks(isVisible = () => true) {
       { id: '', name: '未分组' },
       ...data.projects.map(item => ({ id: item.id, name: item.name })),
     ].map(item => `<div role="listitem" class="task-project-target" data-task-project-target="${esc(item.id)}" aria-label="将任务移至${esc(item.name)}">${esc(item.name)}</div>`).join('');
+    root.querySelector('[data-task-status-target-list]').innerHTML = Object.entries(boardColumns)
+      .map(([column, label]) => `<div role="listitem" class="task-status-target" data-task-status-target="${column}" aria-label="记录为${label}">${label}</div>`).join('');
     // 跨项目搜索：按名称或来源 agent 模糊匹配，与项目过滤、归档开关组合（AND）。
     // 默认项目过滤是「全部项目」，所以空查询=原行为；有查询时想不起项目也能找到。
     const query = root.querySelector('[data-task-search]').value.trim().toLowerCase();
@@ -218,6 +234,7 @@ export async function hydrateTasks(isVisible = () => true) {
         if (projectManagerDirty()) { event.preventDefault(); feedback('项目依赖有未保存草稿，请先保存或撤销。'); return; }
         activeDrag = {
           taskId: task.id,
+          taskTitle: task.title,
           sourceColumn: button.dataset.taskSourceColumn,
           expectedRevision: data.revision,
         };
@@ -270,6 +287,50 @@ export async function hydrateTasks(isVisible = () => true) {
             sourceColumn: drag.sourceColumn,
             projectId: target.dataset.taskProjectTarget || null,
           }, null, drag.expectedRevision);
+        }
+        if (refreshQueued && !busy) { refreshQueued = false; refresh(); }
+      });
+    });
+    root.querySelectorAll('[data-task-status-target]').forEach(target => {
+      target.addEventListener('dragover', event => {
+        if (!activeDrag) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        target.classList.add('is-drop-target');
+      });
+      target.addEventListener('dragleave', event => {
+        if (!target.contains(event.relatedTarget)) target.classList.remove('is-drop-target');
+      });
+      target.addEventListener('drop', event => {
+        event.preventDefault();
+        const drag = activeDrag;
+        activeDrag = null;
+        projectTargets.hidden = true;
+        root.classList.remove('is-task-dragging');
+        target.classList.remove('is-drop-target');
+        if (!drag) return;
+        if (event.dataTransfer?.getData('text/plain') !== drag.taskId) {
+          feedback('拖动任务已失效，请重新选择后再试。');
+          if (refreshQueued && !busy) { refreshQueued = false; refresh(); }
+          return;
+        }
+        if (detailDirty()) { feedback('任务详情有未保存修改，请先保存或撤销。'); }
+        else if (projectManagerDirty()) { feedback('项目依赖有未保存草稿，请先保存或撤销。'); }
+        else if (drag.sourceColumn === target.dataset.taskStatusTarget) {
+          feedback('任务已在该状态列，无需变更。');
+        } else {
+          const dialog = root.querySelector('[data-task-status-dialog]');
+          const select = dialog.querySelector('[data-task-status-select]');
+          const title = dialog.querySelector('[data-task-status-title]');
+          const notice = dialog.querySelector('[data-task-status-feedback]');
+          pendingStatusDrop = { ...drag, targetColumn: target.dataset.taskStatusTarget };
+          title.textContent = `记录「${drag.taskTitle}」的本地进度`;
+          select.innerHTML = `<option value="">选择具体进度</option>${statusChoices[pendingStatusDrop.targetColumn]
+            .map(([value, status, kind, label]) => `<option value="${value}" data-status="${status}"${kind ? ` data-kind="${kind}"` : ''}>${label}</option>`).join('')}`;
+          select.value = '';
+          notice.textContent = ''; notice.hidden = true;
+          dialog.showModal();
+          select.focus({ preventScroll: true });
         }
         if (refreshQueued && !busy) { refreshQueued = false; refresh(); }
       });
@@ -383,7 +444,7 @@ export async function hydrateTasks(isVisible = () => true) {
   };
   const mutate = async (command, args, form, expectedRevisionOverride = null) => {
     if (busy || !data) return;
-    if (command === 'task_board_move_project' && projectManagerDirty()) {
+    if (['task_board_move_project', 'task_board_change_status'].includes(command) && projectManagerDirty()) {
       feedback('项目依赖有未保存草稿，请先保存或撤销。'); return;
     }
     if (args.id === selected && detailDirty(form)) { feedback('另一处有未保存修改，请先保存或撤销。', form); return; }
@@ -401,6 +462,10 @@ export async function hydrateTasks(isVisible = () => true) {
       pendingRefreshNotice = null;
       if (command === 'task_project_create') projectEditorId = next.projects.at(-1)?.id ?? projectEditorId;
       if (form) { form.reset(); form.dispatchEvent(new Event('input', { bubbles: true })); }
+      if (command === 'task_board_change_status') {
+        root.querySelector('[data-task-status-dialog]').close();
+        pendingStatusDrop = null;
+      }
       redraw(args.id === selected, command.startsWith('task_project_')); feedback('已保存到本机');
     } catch (error) {
       if (current.ownsRequest()) {
@@ -409,9 +474,14 @@ export async function hydrateTasks(isVisible = () => true) {
             ? '任务记录已更新，依赖草稿已保留。撤销草稿并重新载入后再保存。'
             : '任务已更新，草稿已保留。撤销修改后核对新记录。'
           : error?.message ?? String(error);
-        if (command === 'task_board_move_project') {
-          pendingRefreshNotice = `拖放未应用：${text}`;
+        if (command === 'task_board_change_status') {
+          if (error?.code === 'stale_revision') {
+            refreshQueued = true;
+            feedback('任务记录已更新，本次拖放未应用。取消后重新拖放；已选进度已保留。', form);
+          } else feedback(text, form);
+        } else if (command === 'task_board_move_project') {
           refreshQueued = true;
+          pendingRefreshNotice = `拖放未应用：${text}`;
           feedback(`${pendingRefreshNotice} 正在重新载入。`, form);
         } else feedback(text, form);
       }
@@ -474,6 +544,28 @@ export async function hydrateTasks(isVisible = () => true) {
     if (!projectEditorId || busy) return;
     if (projectManagerDirty()) { feedback('项目依赖有未保存草稿，请先保存或撤销。'); return; }
     mutate('task_project_delete', { projectId: projectEditorId });
+  };
+  const statusDialog = root.querySelector('[data-task-status-dialog]');
+  const statusForm = root.querySelector('[data-task-status-form]');
+  const statusSelect = root.querySelector('[data-task-status-select]');
+  const statusFeedback = root.querySelector('[data-task-status-feedback]');
+  const closeStatusDialog = () => { pendingStatusDrop = null; statusFeedback.textContent = ''; statusFeedback.hidden = true; };
+  root.querySelector('[data-task-status-cancel]').onclick = () => statusDialog.close();
+  statusDialog.addEventListener('close', () => { if (!statusDialog.open) closeStatusDialog(); });
+  statusForm.onsubmit = event => {
+    event.preventDefault();
+    const drop = pendingStatusDrop;
+    const choice = statusSelect.selectedOptions[0];
+    if (!drop || !choice?.dataset.status) {
+      statusFeedback.textContent = '请选择具体进度。'; statusFeedback.hidden = false; statusSelect.focus(); return;
+    }
+    mutate('task_board_change_status', {
+      id: drop.taskId,
+      sourceColumn: drop.sourceColumn,
+      targetColumn: drop.targetColumn,
+      status: choice.dataset.status,
+      kind: choice.dataset.kind || null,
+    }, statusForm, drop.expectedRevision);
   };
   root.querySelector('[data-task-filter]').onchange = () => { if (data) redraw(false); };
   root.querySelector('[data-task-archived]').onchange = () => { if (data) redraw(false); };

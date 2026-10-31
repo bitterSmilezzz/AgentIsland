@@ -2756,6 +2756,33 @@ fn task_board_move_project(
     }
 }
 #[tauri::command]
+fn task_board_change_status(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    source_column: crate::task_board_drag::BoardColumn,
+    target_column: crate::task_board_drag::BoardColumn,
+    status: crate::tasks::RunStatus,
+    kind: Option<crate::tasks::AttentionKind>,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    let result = with_tasks(state, |s| {
+        s.board_change_status(
+            &id,
+            source_column,
+            target_column,
+            status,
+            kind,
+            expected_revision,
+            crate::tokens::now_ms(),
+        )
+    });
+    match result {
+        Ok(data) if data.revision == expected_revision => Ok(data),
+        result => publish_tasks(&app, result),
+    }
+}
+#[tauri::command]
 fn task_create(
     app: AppHandle,
     state: State<TaskStore>,
@@ -4979,6 +5006,7 @@ fn main() {
             task_project_dependencies_update,
             task_project_delete,
             task_board_move_project,
+            task_board_change_status,
             task_create,
             task_update,
             task_archive,
