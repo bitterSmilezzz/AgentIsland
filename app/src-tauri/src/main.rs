@@ -35,6 +35,7 @@ mod gateway_fallback;
 mod gateway_protocol;
 pub(crate) mod gateway_retry;
 mod gateway_routing;
+mod gateway_stream_failure;
 mod filemon;
 mod forecast;
 mod headless;

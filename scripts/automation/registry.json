@@ -389,9 +389,10 @@
       "checks": [
         "rust.default",
         "gw06.retrytable",
-        "gw06.fallback"
+        "gw06.fallback",
+        "gw06.streamfailure"
       ],
-      "coverage_note": "partial — 首片（v0.0.374）：**重试资格判据表**（gateway_retry.rs 纯函数）：Transient（链路/服务抖动）才自动重试、有界预算（共 3 次尝试）、账号权限类不重试（换不来权限）、请求类不重试（原样重发必然同样失败）、限流不重试（对端说了什么时候再来）。**第二片（2026-10-27）：候选耗尽后的有序降级链**（gateway_fallback.rs）。只有 Transient 值得降级（账号/请求/配置/限流都不降级——换机器换凭据换不来结果，只会把失败扩散到整条链）；链按声明顺序走（挑选是 gateway_routing 的职责，两者不混）、重复候选拒绝（会绕圈）、链长上限 8、空链拒绝、链走完返回 None（如实报「所有候选都试过了」）；重试=同一目标再试一次，fallback=换目标。4 条用例 + 变异（任何错误都降级）被拒。全量 1319 passed，脱敏 0 命中。缺：转发层真实接入后的端到端验收（需真实网关与凭据）、流中失败的状态机（属转发层）。",
+      "coverage_note": "partial — 首片（v0.0.374）：**重试资格判据表**（gateway_retry.rs 纯函数）：Transient（链路/服务抖动）才自动重试、有界预算（共 3 次尝试）、账号权限类不重试（换不来权限）、请求类不重试（原样重发必然同样失败）、限流不重试（对端说了什么时候再来）。**第二片（2026-10-27）：候选耗尽后的有序降级链**（gateway_fallback.rs）。只有 Transient 值得降级（账号/请求/配置/限流都不降级——换机器换凭据换不来结果，只会把失败扩散到整条链）；链按声明顺序走（挑选是 gateway_routing 的职责，两者不混）、重复候选拒绝（会绕圈）、链长上限 8、空链拒绝、链走完返回 None（如实报「所有候选都试过了」）；重试=同一目标再试一次，fallback=换目标。4 条用例 + 变异（任何错误都降级）被拒。全量 1319 passed，脱敏 0 命中。第三片（2026-11-01）：首字节边界与流中失败状态机（gateway_stream_failure.rs 纯状态判据）：首字节前仅 Transient 按既有每候选 3 次预算重试，耗尽后按已校验候选顺序降级；限流进入等待态，调用方确认 Retry-After 后恢复同一候选且共享预算，不猜时长；首字节后所有失败终止部分响应且不启动新尝试；单请求最多候选数×3，绝不超过 24；完成/取消/失败均结算内存尝试记录。7 条定向用例。缺：真实转发接入、工具执行与费用账本对接，以及真实网关端到端验收（需真实网关与凭据）。",
       "status": "partial"
     },
     "TASK-02": {
@@ -2458,6 +2459,25 @@
         "app/src-tauri/src/gateway_retry.rs"
       ]
     },
+    "gw06.streamfailure": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "gateway_stream_failure"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "GW-06 第三片：首字节提交边界与流中失败纯状态机（gateway_stream_failure.rs）。复用 gateway_retry 的 Transient 分类/每候选两次重试预算及 gateway_fallback 的链校验/顺序；首字节前 Transient 可同候选重试，预算用尽才走下一候选；Throttled 返回等待态，调用方确认 Retry-After 后可恢复同一候选并沿用预算，不自动计时/重试/降级；其他错误停止；首字节后不论失败分类均终止部分响应，不再重试/降级，终止后拒绝晚到字节；候选数×每候选 3 次、最大 24 次；正常完成、取消及失败均为明确终态。尝试记录只描述状态机，不是计费账本；不声称网络、工具执行或费用接线。7 条定向回归覆盖边界、重试/降级顺序、总预算、取消/完成与终态拒写。",
+      "test_files": [
+        "app/src-tauri/src/gateway_stream_failure.rs"
+      ]
+    },
     "sup05.keyboard": {
       "command": [
         "node",
@@ -3325,6 +3345,7 @@
       "rust.default",
       "gw06.retrytable",
       "gw06.fallback",
+      "gw06.streamfailure",
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
@@ -3503,6 +3524,7 @@
       "rust.default",
       "gw06.retrytable",
       "gw06.fallback",
+      "gw06.streamfailure",
       "gw04.routing",
       "gw05.conditions",
       "gw03.protocolmatrix",
@@ -3595,7 +3617,8 @@
       "sup02.actions",
       "sup03.sessions",
       "task01.tasks",
-      "task04.readerleave"
+      "task04.readerleave",
+      "gw06.streamfailure"
     ],
     "soak": [
       "soak.resource"

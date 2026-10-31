@@ -31,6 +31,9 @@ pub enum Eligibility {
     Configuration,
 }
 
+/// 同一候选在首次尝试之外允许的最大重试次数。
+pub const MAX_RETRIES_PER_CANDIDATE: u32 = 2;
+
 impl Eligibility {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -65,7 +68,9 @@ pub fn classify(failure: &Failure) -> Eligibility {
         Failure::RateLimited | Failure::HttpStatus(429) => Eligibility::Throttled,
         // 账号/凭据/权限：重试换不来权限。401/403 通常在传输层已折成
         // AuthFailed/Forbidden，这里防御直传状态码的路径——两类说法必须同判。
-        Failure::AuthFailed | Failure::RefreshFailed | Failure::Forbidden
+        Failure::AuthFailed
+        | Failure::RefreshFailed
+        | Failure::Forbidden
         | Failure::HttpStatus(401 | 403) => Eligibility::Credential,
         // 请求/模型侧：原样重发必然原样失败
         Failure::HttpStatus(400 | 404 | 405 | 413 | 414 | 415 | 422)
@@ -88,7 +93,7 @@ pub fn classify(failure: &Failure) -> Eligibility {
 /// 与 NOT-05 的「连续 3 次临时失败升级通道故障」同一节奏：重试有界、
 /// 失败可见，不无限循环。
 pub fn budget(eligibility: Eligibility, prior_retries: u32) -> bool {
-    eligibility.auto_retryable() && prior_retries < 2
+    eligibility.auto_retryable() && prior_retries < MAX_RETRIES_PER_CANDIDATE
 }
 
 #[cfg(test)]
@@ -115,14 +120,21 @@ mod tests {
             assert_eq!(classify(&failure), Eligibility::Request, "{failure:?}");
         }
         // 服务/网络：500/502/超时——有界重试有意义
-        for failure in [Failure::HttpStatus(502), Failure::Timeout, Failure::Unavailable] {
+        for failure in [
+            Failure::HttpStatus(502),
+            Failure::Timeout,
+            Failure::Unavailable,
+        ] {
             assert_eq!(classify(&failure), Eligibility::Transient, "{failure:?}");
         }
         // 限流单列：资格由对端指示决定，不自行猜测节奏
         assert_eq!(classify(&Failure::RateLimited), Eligibility::Throttled);
         assert_eq!(classify(&Failure::HttpStatus(429)), Eligibility::Throttled);
         // 配置错：不重试
-        assert_eq!(classify(&Failure::InvalidAddress), Eligibility::Configuration);
+        assert_eq!(
+            classify(&Failure::InvalidAddress),
+            Eligibility::Configuration
+        );
         assert_eq!(
             classify(&Failure::InsecureTransport),
             Eligibility::Configuration
@@ -133,7 +145,10 @@ mod tests {
     fn only_transient_errors_earn_a_bounded_retry_budget() {
         assert!(budget(Eligibility::Transient, 0));
         assert!(budget(Eligibility::Transient, 1));
-        assert!(!budget(Eligibility::Transient, 2), "重试必须有界（共 3 次尝试）");
+        assert!(
+            !budget(Eligibility::Transient, 2),
+            "重试必须有界（共 3 次尝试）"
+        );
         // 其余类型一次都不给：自动重试只会加负载，不改变结果
         for other in [
             Eligibility::Throttled,
