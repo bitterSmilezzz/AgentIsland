@@ -102,6 +102,8 @@ mod smtp;
 mod sqlite;
 mod task_artifacts;
 mod task_board_drag;
+#[cfg(test)]
+mod task_board_drag_store;
 mod task_attention;
 mod task_sources;
 mod task_schedule;
@@ -2731,6 +2733,29 @@ fn task_project_delete(
     )
 }
 #[tauri::command]
+fn task_board_move_project(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    source_column: crate::task_board_drag::BoardColumn,
+    project_id: Option<String>,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    let result = with_tasks(state, |s| {
+        s.board_move_project(
+            &id,
+            source_column,
+            project_id,
+            expected_revision,
+            crate::tokens::now_ms(),
+        )
+    });
+    match result {
+        Ok(data) if data.revision == expected_revision => Ok(data),
+        result => publish_tasks(&app, result),
+    }
+}
+#[tauri::command]
 fn task_create(
     app: AppHandle,
     state: State<TaskStore>,
@@ -4953,6 +4978,7 @@ fn main() {
             task_project_create,
             task_project_dependencies_update,
             task_project_delete,
+            task_board_move_project,
             task_create,
             task_update,
             task_archive,

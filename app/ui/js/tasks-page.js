@@ -45,6 +45,7 @@ export function pageTasks() {
     <form class="task-compose" data-task-create><label class="sr-only" for="task-new-title">任务名称</label><input id="task-new-title" name="title" placeholder="记录一个任务…" maxlength="500" required autocomplete="off"><select name="projectId" aria-label="任务所属项目"><option value="">未分组</option></select><button class="mini-btn primary" type="submit">添加任务</button></form>
     <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form><section class="task-project-manager" data-task-project-manager aria-label="项目依赖管理"><label>配置项目<select data-task-project-select aria-label="选择要配置依赖的项目"><option value="">选择项目</option></select></label><form data-task-project-dependencies hidden></form><div class="task-project-delete" data-task-project-delete hidden><p data-project-task-count></p><button class="mini-btn" type="button" data-task-project-delete-button>删除项目</button></div></section></details>
     <button class="mini-btn task-chief-open" type="button" data-chief-open>团队资源配置</button>
+    <section class="task-project-targets" data-task-project-targets hidden aria-label="任务归属拖放目标"><p>将未归档任务卡拖到项目目标以调整归属；键盘可在任务详情中选择项目并保存。</p><div data-task-project-target-list role="list"></div></section>
     </div>
     <div class="task-board" data-task-board></div>
     </div>
@@ -80,6 +81,7 @@ export async function hydrateTasks(isVisible = () => true) {
   const current = pageRequest(root);
   const message = root.querySelector('[data-task-feedback]');
   let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null, detailRevision=null, projectEditorId=null;
+  let activeDrag = null, suppressTaskClick = null, pendingRefreshNotice = null;
   subscribeTasks();
   const projectOptions = blank => `<option value="">${blank}</option>${data.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}`;
   const feedback = (text, form) => {
@@ -168,6 +170,7 @@ export async function hydrateTasks(isVisible = () => true) {
     reveal([...root.querySelectorAll('[data-task-select]')].find(button => button.dataset.taskSelect === origin) ?? root.querySelector('[data-task-filter]'));
   };
   const redraw = (detail = true, forceProjectManager = false) => retainTaskFocus(root, () => {
+    if (activeDrag) { refreshQueued = true; return; }
     for (const select of [root.querySelector('[data-task-filter]'), root.querySelector('[data-task-create] select')]) {
       const value = select.value;
       select.innerHTML = projectOptions(select.hasAttribute('data-task-filter') ? '全部项目' : '未分组');
@@ -176,6 +179,12 @@ export async function hydrateTasks(isVisible = () => true) {
     renderProjectManager(forceProjectManager);
     const project = root.querySelector('[data-task-filter]').value;
     const archived = root.querySelector('[data-task-archived]').checked;
+    const projectTargets = root.querySelector('[data-task-project-targets]');
+    projectTargets.hidden = true;
+    root.querySelector('[data-task-project-target-list]').innerHTML = [
+      { id: '', name: '未分组' },
+      ...data.projects.map(item => ({ id: item.id, name: item.name })),
+    ].map(item => `<div role="listitem" class="task-project-target" data-task-project-target="${esc(item.id)}" aria-label="将任务移至${esc(item.name)}">${esc(item.name)}</div>`).join('');
     // 跨项目搜索：按名称或来源 agent 模糊匹配，与项目过滤、归档开关组合（AND）。
     // 默认项目过滤是「全部项目」，所以空查询=原行为；有查询时想不起项目也能找到。
     const query = root.querySelector('[data-task-search]').value.trim().toLowerCase();
@@ -191,15 +200,80 @@ export async function hydrateTasks(isVisible = () => true) {
         const attention = data.attentions.find(a => a.run_id === run?.id && a.state === 'open');
         const project = data.projects.find(p => p.id === t.project_id);
         const sourceMissing = t.source && !sources.some(c => c.source.agent_id === t.source.agent_id && c.source.session_id === t.source.session_id);
-        return `<button class="task-row${t.id === selected ? ' is-selected' : ''}" type="button" data-task-select="${esc(t.id)}" aria-expanded="${t.id === selected}"><span><strong>${esc(t.title)}</strong><small>${esc(project?.name ?? '未分组')}${t.source ? ` · ${esc(t.source.agent_id)}${sourceMissing ? ' · 来源暂未观测' : ''}` : ' · 本地任务'}</small></span><span class="task-state state-${key}">${esc(attention ? kinds[attention.kind] : sourceMissing && run?.status === 'running' ? '执行中 · 最后记录' : statuses[run?.status] ?? '未开始')}</span></button>`;
+        return `<button class="task-row${t.id === selected ? ' is-selected' : ''}" type="button" draggable="${t.archived_ms == null}" data-task-select="${esc(t.id)}" data-task-source-column="${key}" aria-expanded="${t.id === selected}"><span><strong>${esc(t.title)}</strong><small>${esc(project?.name ?? '未分组')}${t.source ? ` · ${esc(t.source.agent_id)}${sourceMissing ? ' · 来源暂未观测' : ''}` : ' · 本地任务'}</small></span><span class="task-state state-${key}">${esc(attention ? kinds[attention.kind] : sourceMissing && run?.status === 'running' ? '执行中 · 最后记录' : statuses[run?.status] ?? '未开始')}</span></button>`;
       }).join('')}</div></section>`;
     }).join('') : `<div class="wb-empty">${query ? `没有匹配「${esc(root.querySelector('[data-task-search]').value.trim())}」的任务` : archived ? '暂无归档任务' : project ? '这个项目还没有任务' : '还没有任务。先记录一件要做的事。'}</div>`;
-    root.querySelectorAll('[data-task-select]').forEach(button => { button.onclick = () => {
+    root.querySelectorAll('[data-task-select]').forEach(button => {
+      button.onclick = () => {
+      if (suppressTaskClick === button.dataset.taskSelect) { suppressTaskClick = null; return; }
       if (busy || !leaveDetail()) return;
       selected = selected === button.dataset.taskSelect ? null : button.dataset.taskSelect;
       redraw();
       if (selected) revealDetail();
-    }; });
+      };
+      button.addEventListener('dragstart', event => {
+        const task = data.tasks.find(item => item.id === button.dataset.taskSelect);
+        if (!task || task.archived_ms != null || busy) { event.preventDefault(); return; }
+        if (detailDirty()) { event.preventDefault(); feedback('任务详情有未保存修改，请先保存或撤销。'); return; }
+        if (projectManagerDirty()) { event.preventDefault(); feedback('项目依赖有未保存草稿，请先保存或撤销。'); return; }
+        activeDrag = {
+          taskId: task.id,
+          sourceColumn: button.dataset.taskSourceColumn,
+          expectedRevision: data.revision,
+        };
+        projectTargets.hidden = false;
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', task.id);
+        root.classList.add('is-task-dragging');
+      });
+      button.addEventListener('dragend', () => {
+        const ownsDrag = activeDrag?.taskId === button.dataset.taskSelect;
+        if (ownsDrag) {
+          activeDrag = null;
+        }
+        projectTargets.hidden = true;
+        root.classList.remove('is-task-dragging');
+        if (ownsDrag && refreshQueued && !busy) { refreshQueued = false; refresh(); }
+        if (suppressTaskClick === button.dataset.taskSelect) return;
+        suppressTaskClick = button.dataset.taskSelect;
+        setTimeout(() => { if (suppressTaskClick === button.dataset.taskSelect) suppressTaskClick = null; }, 0);
+      });
+    });
+    root.querySelectorAll('[data-task-project-target]').forEach(target => {
+      target.addEventListener('dragover', event => {
+        if (!activeDrag) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        target.classList.add('is-drop-target');
+      });
+      target.addEventListener('dragleave', event => {
+        if (!target.contains(event.relatedTarget)) target.classList.remove('is-drop-target');
+      });
+      target.addEventListener('drop', event => {
+        event.preventDefault();
+        const drag = activeDrag;
+        activeDrag = null;
+        projectTargets.hidden = true;
+        root.classList.remove('is-task-dragging');
+        target.classList.remove('is-drop-target');
+        if (!drag) return;
+        if (event.dataTransfer?.getData('text/plain') !== drag.taskId) {
+          feedback('拖动任务已失效，请重新选择后再试。');
+          if (refreshQueued && !busy) { refreshQueued = false; refresh(); }
+          return;
+        }
+        if (detailDirty()) { feedback('任务详情有未保存修改，请先保存或撤销。'); }
+        else if (projectManagerDirty()) { feedback('项目依赖有未保存草稿，请先保存或撤销。'); }
+        else {
+          mutate('task_board_move_project', {
+            id: drag.taskId,
+            sourceColumn: drag.sourceColumn,
+            projectId: target.dataset.taskProjectTarget || null,
+          }, null, drag.expectedRevision);
+        }
+        if (refreshQueued && !busy) { refreshQueued = false; refresh(); }
+      });
+    });
     if (detail) renderDetail();
   });
   const renderDetail = () => {
@@ -309,6 +383,9 @@ export async function hydrateTasks(isVisible = () => true) {
   };
   const mutate = async (command, args, form, expectedRevisionOverride = null) => {
     if (busy || !data) return;
+    if (command === 'task_board_move_project' && projectManagerDirty()) {
+      feedback('项目依赖有未保存草稿，请先保存或撤销。'); return;
+    }
     if (args.id === selected && detailDirty(form)) { feedback('另一处有未保存修改，请先保存或撤销。', form); return; }
     if (args.id !== selected && detailDirty(form)) { feedback('任务详情有未保存修改，请先保存或撤销。', form); return; }
     busy = true;
@@ -321,20 +398,29 @@ export async function hydrateTasks(isVisible = () => true) {
       const next = await invoke(command, { ...args, expectedRevision: expectedRevisionOverride ?? (args.id === selected ? detailRevision : data.revision) });
       if (!current.ownsRequest()) return;
       data = next;
+      pendingRefreshNotice = null;
       if (command === 'task_project_create') projectEditorId = next.projects.at(-1)?.id ?? projectEditorId;
       if (form) { form.reset(); form.dispatchEvent(new Event('input', { bubbles: true })); }
       redraw(args.id === selected, command.startsWith('task_project_')); feedback('已保存到本机');
     } catch (error) {
-      if (current.ownsRequest()) feedback(form && error?.code === 'stale_revision'
-        ? form.hasAttribute('data-task-project-dependencies')
-          ? '任务记录已更新，依赖草稿已保留。撤销草稿并重新载入后再保存。'
-          : '任务已更新，草稿已保留。撤销修改后核对新记录。'
-        : error?.message ?? String(error), form);
+      if (current.ownsRequest()) {
+        const text = form && error?.code === 'stale_revision'
+          ? form.hasAttribute('data-task-project-dependencies')
+            ? '任务记录已更新，依赖草稿已保留。撤销草稿并重新载入后再保存。'
+            : '任务已更新，草稿已保留。撤销修改后核对新记录。'
+          : error?.message ?? String(error);
+        if (command === 'task_board_move_project') {
+          pendingRefreshNotice = `拖放未应用：${text}`;
+          refreshQueued = true;
+          feedback(`${pendingRefreshNotice} 正在重新载入。`, form);
+        } else feedback(text, form);
+      }
     }
     finally { busy = false; controls.forEach((control, index) => { control.disabled = disabled[index]; }); root.removeAttribute('aria-busy'); if (refreshQueued) { refreshQueued = false; refresh(); } }
   };
   const refresh = async () => {
     if (!current() || !taskVisible()) return;
+    if (activeDrag) { refreshQueued = true; return; }
     if (busy) { refreshQueued = true; return; }
     busy = true;
     try {
@@ -355,7 +441,10 @@ export async function hydrateTasks(isVisible = () => true) {
       }
       redraw(focusRequested || !detailDirty());
       if (focusRequested) revealDetail();
-      root.dataset.pageReady = 'true'; feedback('');
+      root.dataset.pageReady = 'true';
+      const notice = pendingRefreshNotice;
+      pendingRefreshNotice = null;
+      feedback(notice ?? '');
     } catch (error) { if (current()) feedback(error?.message ?? String(error)); }
     finally { busy = false; if (refreshQueued) { refreshQueued = false; refresh(); } }
   };

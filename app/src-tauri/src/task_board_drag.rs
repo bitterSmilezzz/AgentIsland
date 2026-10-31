@@ -20,7 +20,8 @@
 //! 4. **越权与未知目标一律拒绝**：目标不存在、拖动已归档任务、revision 不符 ⇒ 拒绝。
 
 /// 看板列。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BoardColumn {
     /// 需处理（有未决关口）。
     Attention,
@@ -61,7 +62,7 @@ pub enum DragAction {
     /// 改归属（拖到项目分组）。
     ChangeOwnership {
         task_id: String,
-        project_id: String,
+        project_id: Option<String>,
         expected_revision: u64,
     },
     /// 产出状态变更请求（拖到派生列）。
@@ -83,6 +84,8 @@ pub enum DragRefusal {
     TaskArchived,
     /// revision 不匹配（并发改动）——拒绝而不是覆盖。
     RevisionMismatch,
+    /// 拖动来源列与任务当前真实列不一致。
+    SourceColumnMismatch,
 }
 
 impl DragRefusal {
@@ -92,6 +95,7 @@ impl DragRefusal {
             Self::TargetNotFound => "target_not_found",
             Self::TaskArchived => "task_archived",
             Self::RevisionMismatch => "revision_mismatch",
+            Self::SourceColumnMismatch => "source_column_mismatch",
         }
     }
 }
@@ -117,6 +121,7 @@ pub fn resolve_drag(
     target_project_id: Option<&str>,
     expected_revision: u64,
     current_revision: u64,
+    project_ids: &[String],
 ) -> Result<DragAction, DragRefusal> {
     let Some(task) = task else {
         return Err(DragRefusal::TaskNotFound);
@@ -127,18 +132,26 @@ pub fn resolve_drag(
     if expected_revision != current_revision {
         return Err(DragRefusal::RevisionMismatch);
     }
+    if source_column != task.current_column {
+        return Err(DragRefusal::SourceColumnMismatch);
+    }
     // 拖回原处 ⇒ 无事可做
     if source_column == target_column && target_column != BoardColumn::ProjectGroup {
         return Ok(DragAction::Noop);
     }
     // 拖到项目分组 ⇒ 改归属（需要目标项目存在）
     if target_column == BoardColumn::ProjectGroup {
-        let Some(project_id) = target_project_id else {
+        if target_project_id
+            .is_some_and(|project_id| !project_ids.iter().any(|id| id == project_id))
+        {
             return Err(DragRefusal::TargetNotFound);
-        };
+        }
+        if task.project_id.as_deref() == target_project_id {
+            return Ok(DragAction::Noop);
+        }
         return Ok(DragAction::ChangeOwnership {
             task_id: task.id.clone(),
-            project_id: project_id.to_string(),
+            project_id: target_project_id.map(str::to_string),
             expected_revision,
         });
     }
@@ -163,6 +176,10 @@ mod tests {
         }
     }
 
+    fn project_ids() -> Vec<String> {
+        vec!["p-web".into(), "p-db".into()]
+    }
+
     #[test]
     fn dragging_back_to_the_same_column_is_a_noop() {
         let action = resolve_drag(
@@ -172,6 +189,7 @@ mod tests {
             None,
             7,
             7,
+            &project_ids(),
         );
         assert_eq!(action, Ok(DragAction::Noop), "拖回原处不应产生任何变更");
     }
@@ -186,6 +204,7 @@ mod tests {
             None,
             7,
             7,
+            &project_ids(),
         );
         match action {
             Ok(DragAction::RequestStatusChange {
@@ -210,12 +229,13 @@ mod tests {
             Some("p-db"),
             9,
             9,
+            &project_ids(),
         );
         assert_eq!(
             action,
             Ok(DragAction::ChangeOwnership {
                 task_id: "task-1".into(),
-                project_id: "p-db".into(),
+                project_id: Some("p-db".into()),
                 expected_revision: 9,
             })
         );
@@ -230,6 +250,7 @@ mod tests {
             None,
             7,
             9, // 存储已经前进（别人改过）
+            &project_ids(),
         );
         assert_eq!(action, Err(DragRefusal::RevisionMismatch));
     }
@@ -245,25 +266,83 @@ mod tests {
                 BoardColumn::Finished,
                 None,
                 1,
-                1
+                1,
+                &project_ids(),
             ),
             Err(DragRefusal::TaskArchived)
         );
         assert_eq!(
-            resolve_drag(None, BoardColumn::Running, BoardColumn::Finished, None, 1, 1),
+            resolve_drag(
+                None,
+                BoardColumn::Running,
+                BoardColumn::Finished,
+                None,
+                1,
+                1,
+                &project_ids(),
+            ),
             Err(DragRefusal::TaskNotFound)
         );
-        // 拖到项目分组但没给目标项目 ⇒ 拒绝
+        // 未知项目拒绝；None 代表有效的“未分组”目标。
+        assert_eq!(
+            resolve_drag(
+                Some(&task()),
+                BoardColumn::Running,
+                BoardColumn::ProjectGroup,
+                Some("p-missing"),
+                1,
+                1,
+                &project_ids(),
+            ),
+            Err(DragRefusal::TargetNotFound)
+        );
+    }
+
+    #[test]
+    fn project_group_noop_and_unassigned_move_are_explicit() {
+        assert_eq!(
+            resolve_drag(
+                Some(&task()),
+                BoardColumn::Running,
+                BoardColumn::ProjectGroup,
+                Some("p-web"),
+                3,
+                3,
+                &project_ids(),
+            ),
+            Ok(DragAction::Noop)
+        );
         assert_eq!(
             resolve_drag(
                 Some(&task()),
                 BoardColumn::Running,
                 BoardColumn::ProjectGroup,
                 None,
-                1,
-                1
+                3,
+                3,
+                &project_ids(),
             ),
-            Err(DragRefusal::TargetNotFound)
+            Ok(DragAction::ChangeOwnership {
+                task_id: "task-1".into(),
+                project_id: None,
+                expected_revision: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn stale_source_column_is_refused() {
+        assert_eq!(
+            resolve_drag(
+                Some(&task()),
+                BoardColumn::Queued,
+                BoardColumn::ProjectGroup,
+                Some("p-db"),
+                7,
+                7,
+                &project_ids(),
+            ),
+            Err(DragRefusal::SourceColumnMismatch)
         );
     }
 }

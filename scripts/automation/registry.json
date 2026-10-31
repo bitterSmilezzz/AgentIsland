@@ -174,10 +174,11 @@
         "task01.tasksearch",
         "task01.deps",
         "task01.projectdeps",
-        "task01.drag"
+        "task01.drag",
+        "task01.dragui"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；跨项目搜索（task01.tasksearch）；项目依赖判据（task01.deps：依赖存在性/循环/深度上限/删除守卫/自依赖/传递闭包）；项目依赖存储与管理页接线（task01.projectdeps：旧文件兼容、聚合 revision、循环/深度拒绝、删除守卫、浏览器草稿冲突保持）；**看板拖拽语义**（task01.drag，2026-10-27）：把「拖到已结束意味着什么」固化成可选项——看板四列全由运行状态派生，因此拖到派生列**不直接改状态**，而是产出带 expected_revision 的状态变更请求由既有状态机执行；拖拽**不改写历史**（不产生新运行记录）；拖到项目分组改归属；任务不存在/已归档/目标缺失/revision 不符一律拒绝（并发改动拒绝而非覆盖）。5 条用例 + 变异（绕过状态机直接改）被拒。仍缺：拖拽的界面实现与接线（判据已定）、actor-based authorization（单用户工具无多 actor 面）。",
+      "coverage_note": "partial — task/run 归属、过期 revision、创建/更新/归档、损坏与未来格式输入、写失败保原有回归覆盖；跨项目搜索（task01.tasksearch）；项目依赖判据（task01.deps：依赖存在性/循环/深度上限/删除守卫/自依赖/传递闭包）；项目依赖存储与管理页接线（task01.projectdeps：旧文件兼容、聚合 revision、循环/深度拒绝、删除守卫、浏览器草稿冲突保持）；**看板拖拽语义**（task01.drag，2026-10-27）：拖到派生列不直接改状态，而产出带 expected_revision 的状态请求；拖拽不改写运行历史；任务不存在/已归档/目标缺失/revision 或来源列不符均拒绝。**项目归属拖放接线**（task01.dragui）：浏览器真实 DOM 拖到项目目标，经 Tauri 命令进入 Store；有效移动只改归属和 revision，运行记录保持不变；同项目 no-op、旧 revision、草稿保护与键盘详情编辑均有回归。仍缺：派生状态列拖放的安全请求消费链、actor-based authorization（单用户工具无多 actor 面）。",
       "status": "partial"
     },
     "TASK-04": {
@@ -3014,9 +3015,29 @@
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "TASK-01 进展：看板**拖拽语义**判据（task_board_drag.rs 纯函数）。背景：看板四列（需处理/执行中/未开始/已结束）全部由运行状态派生（前端 taskGroup），不是可随手拖入的容器——因此「拖到已结束」必须先说清后果。四条语义：①**不改写历史**（拖拽只改看板投影，不产生新运行记录、不改运行状态——否则「拖一下卡片」就凭空多出一次执行，账目与审计全对不上）；②**状态变更请求**（拖到派生列不直接改状态，产出带 expected_revision 的请求，由既有状态机执行）；③**归属变更**（拖到项目分组改归属，同样带 revision）；④**越权与未知目标一律拒绝**（任务不存在/已归档/目标缺失/revision 不符——并发改动拒绝而非覆盖）。5 条用例 + 变异（绕过状态机直接改）被拒。全量 1348 passed，脱敏 0 命中。",
+      "source": "TASK-01 拖拽语义与 Store 生产路径：派生列只生成状态变更请求，不直接改运行状态；项目分组通过同一任务快照校验来源列、目标项目、归档标记和聚合 revision。真实 Store 移动只修改归属与任务/聚合 revision，不新增运行记录、attention、artifact 或 receipt；同项目 no-op 与无效请求均不写文件。",
       "test_files": [
-        "app/src-tauri/src/task_board_drag.rs"
+        "app/src-tauri/src/task_board_drag.rs",
+        "app/src-tauri/src/task_board_drag_store.rs"
+      ]
+    },
+    "task01.dragui": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-board-drag.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "TASK-01 项目归属拖放 UI：浏览器真实 DOM 拖动任务卡，拖动开始后显示项目目标；检查 Tauri 命令注册和 Store 转发；覆盖 revision 起点绑定、同项目 no-op、原生项目选择控件的键盘类型搜索与 Tab/Enter 提交、详情/项目依赖草稿保护、正常/拒绝/无效 payload drop 后收起目标、归档卡不可拖动、刷新竞争拒绝和取消零写。",
+      "test_files": [
+        "scripts/test-task-board-drag.mjs"
       ]
     },
     "task06.quality": {
@@ -3225,6 +3246,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task01.projectdeps",
+      "task01.dragui",
       "task04.readerleave",
       "task04.refreshfocus",
       "gw01.connectionsui",
@@ -3313,6 +3335,7 @@
       "task01.deps",
       "task01.projectdeps",
       "task01.drag",
+      "task01.dragui",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",
@@ -3489,6 +3512,7 @@
       "task01.deps",
       "task01.projectdeps",
       "task01.drag",
+      "task01.dragui",
       "task04.readerleave",
       "task04.ordering",
       "task04.limits",

@@ -469,3 +469,26 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - Release 明确保留 2 项未验：原生逐边动效取证（需 `NATIVE_MOTION=1`）与真实官方 Claude 客户端取证（需 pinned CLI）；本次不能据此推断两项通过。
 - NOT-06 仍为 partial：v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝、Intel/universal 路径未验；BUG-016 仍未复现。`agentisland-update-e2e` 保持运行，本轮原生门禁使用的是独立 `agentisland-iso`，没有操作旧版升级实例。
 - 可脱离来宾 UI 的下一片优先完成 TASK-01 看板拖拽界面接线；NOT-06 真实升级与错签验收待隔离来宾桌面自动控制链可用时继续。
+
+## 15. 2026-11-01 追加：TASK-01 看板项目归属拖放（v0.0.421 候选，未发布）
+
+### 改动
+
+- 未归档任务卡可拖到项目或“未分组”目标修改归属。项目目标栏在真实 `dragstart` 后显示、`dragend` 后收起，避免窄窗口常驻目标区挤压任务列表；详情页的原生项目选择控件保留键盘编辑路径。
+- Tauri 命令将写入交给 Store；Store 在同一快照下核对任务、归档、来源列、目标项目和聚合 revision。成功只改归属与任务/聚合 revision，不碰运行历史、attention、artifact 或 receipt。同项目 no-op 不写文件也不发变化事件。
+- 拖动期间刷新排队；取消不写入；过期 revision 和未保存的详情/项目依赖草稿拒绝提交并保留当前内容。
+
+### 验证与更正
+
+- 全量 Rust：**1395 passed / 0 failed / 15 ignored**。
+- `node scripts/automation/browser-check.mjs test-task-board-drag.mjs`：通过；真实 DOM 拖放、键盘类型搜索及 Tab/Enter 保存、历史保持、同项目 no-op、草稿保护、归档任务、刷新竞争与取消均覆盖。
+- `node scripts/automation/browser-check.mjs test-task-detail-navigation.mjs`：通过，**12 组**尺寸/主题/动效组合。首次 CI 发现项目目标常驻导致 880 px 窗口只剩 59 px 列表高度；目标区现改为仅拖动时出现，该回归复测通过。
+- 最终稳定源码 CI run `20261031T193956Z-abc279c27993`：**127 passed / 0 failed / 0 blocked**。更早 run `20261031T191334Z-62b9d67e1308` 保留了第一次布局回归失败与源在验证期间变动导致的 `source.integrity` 失败；随后修复并完整复跑通过。
+- 规格与工程规范两项最终复核均 PASS。审查发现键盘测试误称、短窗口目标栏挤压列表、drop 清理依赖已清空的 `activeDrag`，均已修复并加入浏览器断言。前端与 Rust 独立推导来源列是服务端信任边界所需；建议未来增加共享状态夹具，不作为当前阻断项。
+
+### 未发布状态与未验项
+
+- 工作树版本文件、README、CHANGELOG 与站点下载链接已准备为 v0.0.421；**未提交、未打包、未重启、未打 tag、未创建 GitHub Release**。当前 shell 未注入 updater 签名私钥（`TAURI_SIGNING_PRIVATE_KEY` / `_PATH`），release 脚本的签名构建硬门无法通过；不能用无签名包替代。
+- `verify-framework.sh` 的 Windows 交叉类型检查仍受既有 BUG-011（本机缺 Windows SDK 头文件）影响；本轮 CI profile 独立通过。原生门禁与 release/package 未运行。
+- TASK-01 仍为 partial：派生状态请求消费链、actor-based authorization 未完成。NOT-06 的 v0.0.416 真实升级、真实 updater/UI 错签拒绝及 Intel/universal 路径未验；BUG-016 仍未复现。本轮未操作隔离升级 VM，也不需要用户手动操作。
+- 独立审查报告：[`2026-11-01-0345-v0.0.421-independent.md`](../code-review/2026-11-01-0345-v0.0.421-independent.md)。

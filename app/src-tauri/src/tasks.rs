@@ -188,6 +188,18 @@ fn dependency_error(reason: crate::project_deps::DepRefusal) -> Error {
         DepRefusal::StillDependedOn => error("still_depended_on", "仍有其他项目依赖此项目"),
     }
 }
+fn task_drag_error(reason: crate::task_board_drag::DragRefusal) -> Error {
+    use crate::task_board_drag::DragRefusal;
+    match reason {
+        DragRefusal::TaskNotFound => error("not_found", "任务不存在"),
+        DragRefusal::TargetNotFound => error("target_not_found", "目标项目不存在"),
+        DragRefusal::TaskArchived => error("task_archived", "已归档任务不能拖动"),
+        DragRefusal::RevisionMismatch => error("stale_revision", "任务已更新，请刷新后重试"),
+        DragRefusal::SourceColumnMismatch => {
+            error("source_column_mismatch", "任务所在看板列已变化，拖放未应用")
+        }
+    }
+}
 fn text(value: &str) -> Result<String, Error> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 500 {
@@ -366,6 +378,81 @@ impl Store {
             t.revision += 1;
             Ok(())
         })
+    }
+    /// Move an active task between project groups without creating a run or
+    /// changing the run-derived status. The source column and target project
+    /// are checked against the same snapshot whose aggregate revision is
+    /// advanced atomically with the ownership change.
+    pub fn board_move_project(
+        &self,
+        task_id: &str,
+        source_column: crate::task_board_drag::BoardColumn,
+        project_id: Option<String>,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<Data, Error> {
+        use crate::task_board_drag::{resolve_drag, DragAction, DraggableTask};
+        let mut data = self.load()?;
+        let task = data
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| error("not_found", "任务不存在"))?;
+        let draggable = DraggableTask {
+            id: task.id.clone(),
+            project_id: task.project_id.clone(),
+            archived: task.archived_ms.is_some(),
+            current_column: board_column(&data, task),
+        };
+        let project_ids = data
+            .projects
+            .iter()
+            .map(|project| project.id.clone())
+            .collect::<Vec<_>>();
+        let action = resolve_drag(
+            Some(&draggable),
+            source_column,
+            crate::task_board_drag::BoardColumn::ProjectGroup,
+            project_id.as_deref(),
+            expected_revision,
+            data.revision,
+            &project_ids,
+        )
+        .map_err(task_drag_error)?;
+        match action {
+            DragAction::Noop => Ok(data),
+            DragAction::ChangeOwnership {
+                task_id,
+                project_id,
+                expected_revision: action_revision,
+            } => {
+                if action_revision != data.revision {
+                    return Err(task_drag_error(
+                        crate::task_board_drag::DragRefusal::RevisionMismatch,
+                    ));
+                }
+                let task = data
+                    .tasks
+                    .iter_mut()
+                    .find(|task| task.id == task_id)
+                    .ok_or_else(|| error("not_found", "任务不存在"))?;
+                task.project_id = project_id;
+                task.updated_ms = now;
+                task.revision = task
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| error("capacity", "任务版本已达上限"))?;
+                data.revision = data
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| error("capacity", "任务版本已达上限"))?;
+                self.write(&data)?;
+                Ok(data)
+            }
+            DragAction::ReorderOnly { .. } | DragAction::RequestStatusChange { .. } => {
+                Err(error("invalid_input", "项目拖放只能调整任务归属"))
+            }
+        }
     }
     pub fn archive(
         &self,
@@ -1012,6 +1099,35 @@ impl Data {
             }
         }
         Ok(())
+    }
+}
+
+/// Keep drag source validation aligned with the task board's run-derived columns.
+pub fn board_column(data: &Data, task: &Task) -> crate::task_board_drag::BoardColumn {
+    use crate::task_board_drag::BoardColumn;
+    let Some(run) = task
+        .current_run_id
+        .as_ref()
+        .and_then(|id| data.runs.iter().find(|run| &run.id == id))
+    else {
+        return BoardColumn::Queued;
+    };
+    if data
+        .attentions
+        .iter()
+        .any(|attention| attention.run_id == run.id && attention.state == AttentionState::Open)
+        || matches!(run.status, RunStatus::Waiting | RunStatus::Failed)
+    {
+        return BoardColumn::Attention;
+    }
+    match run.status {
+        RunStatus::Running => BoardColumn::Running,
+        RunStatus::Queued => BoardColumn::Queued,
+        RunStatus::Waiting
+        | RunStatus::Ready
+        | RunStatus::Failed
+        | RunStatus::Cancelled
+        | RunStatus::Accepted => BoardColumn::Finished,
     }
 }
 
