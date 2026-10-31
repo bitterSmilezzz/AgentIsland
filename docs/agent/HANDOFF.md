@@ -445,3 +445,27 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - `scripts/release.sh 0.0.419 "NOT-06：跳过版本可保存并恢复提示"`：成功；GitHub [v0.0.419 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.419) 含 DMG、ZIP、updater 包、签名和 `latest.json`。CI 125/125 通过、package 7/7、原生门禁全部通过、真实产物签名验证 7/7；提交前及提交后脱敏扫描均通过。
 - 发布未验项：原生动效逐边取证、真实 Claude 客户端取证。它们已由 `release.sh` 明确登记，不能据本次全绿推断覆盖。
 - 后续优先安排旧版真实升级、签名拒绝和 Intel/universal 验收；BUG-016 需获得可自动操作的来宾桌面或独立的应用 updater 请求证据后继续定因。原 VM 的公开 updater manifest 有界 GET 为 HTTP 200、1.91 秒，但这不能证明 v0.0.416 应用本身完成了检查。
+
+## 14. 2026-11-01 追加：TASK-01 项目依赖持久化与管理页接线（v0.0.420）
+
+### 改动
+
+- `Project.dependencies` 持久化在 `tasks.v1.json`；旧记录缺字段时默认为空。Store 在完整依赖图验证通过后沿用聚合 revision 与原子写契约。
+- 项目依赖更新及项目删除已接入 Tauri 命令和管理页。界面可以选择项目、编辑依赖、保存或撤销草稿；共享 revision 写入前会拦截未保存依赖草稿，冲突后保留草稿并提示重新载入。
+- 完整图校验对项目和依赖边线性遍历；未知项目、重复、自依赖、循环和超过 8 层的图均拒绝。删除守卫同时检查仍被依赖及仍有任务归属的项目。
+- TASK-01 仍为 partial：看板拖拽界面接线与 actor-based authorization 未实现。
+
+### 验证与发布
+
+- 全量 Rust：**1391 passed / 0 failed / 15 ignored**。
+- `node scripts/automation/browser-check.mjs test-task-dependencies.mjs`：通过；覆盖空项目控件隐藏/旧处理器清除、Tauri 命令注册与 Store 转发、共享 revision 草稿保护、依赖增删、循环拒绝、过期 revision 草稿保留和删除守卫。
+- `python3 scripts/test-test-registry.py`：**23 passed**；`check-version.py 0.0.420`、需求矩阵和状态生成器通过。
+- 规格与工程规范两项独立审查最终均 PASS；finding 修复和复测证据见 [`2026-11-01-0226-v0.0.420-independent.md`](../code-review/2026-11-01-0226-v0.0.420-independent.md)。
+- `scripts/release.sh 0.0.420 "TASK-01：项目依赖持久化与管理页接线"`：CI **126 passed / 0 failed**，package **7 passed / 0 failed**；实际签名错误负例 7/7 通过，隔离 VM 原生门禁报告所有门禁均通过并核对了传输产物哈希。提交前、提交后脱敏扫描均通过。
+- 提交 `f946d24818ea773ac1fa174f01d2606881f39620`、tag `v0.0.420` 已推送，GitHub [v0.0.420 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.420) 已核实含 DMG、ZIP、updater 包、签名及 `latest.json`。脚本两次确认重启成功，最终进程 PID `88859`，运行 `dist/AgentIsland.app`。
+
+### 未验项与下一步
+
+- Release 明确保留 2 项未验：原生逐边动效取证（需 `NATIVE_MOTION=1`）与真实官方 Claude 客户端取证（需 pinned CLI）；本次不能据此推断两项通过。
+- NOT-06 仍为 partial：v0.0.416 客户端真实升级、真实 updater/UI 错签拒绝、Intel/universal 路径未验；BUG-016 仍未复现。`agentisland-update-e2e` 保持运行，本轮原生门禁使用的是独立 `agentisland-iso`，没有操作旧版升级实例。
+- 可脱离来宾 UI 的下一片优先完成 TASK-01 看板拖拽界面接线；NOT-06 真实升级与错签验收待隔离来宾桌面自动控制链可用时继续。
