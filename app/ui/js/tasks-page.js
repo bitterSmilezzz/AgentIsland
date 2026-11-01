@@ -29,7 +29,8 @@ export function runSourceAction(run) {
   return { runId: run.id, label: run.source.thread_id && run.source.agent_id === 'codex' ? '打开来源会话' : '打开来源工具' };
 }
 export function artifactReadAction(artifact, runId) {
-  return artifact?.event_ref ? { artifactId: artifact.id, runId, label:artifact.kind === 'answer' ? '查看问题' : artifact.kind === 'plan_approval' ? '查看方案' : '查看结果' } : null;
+  if (!artifact?.event_ref && !artifact?.local_content?.sha256) return null;
+  return { artifactId: artifact.id, runId, label:artifact.event_ref ? (artifact.kind === 'answer' ? '查看问题' : artifact.kind === 'plan_approval' ? '查看方案' : '查看结果') : '查看产出' };
 }
 function artifactReadButton(artifact, runId) {
   const action=artifactReadAction(artifact,runId);
@@ -103,7 +104,7 @@ export async function hydrateTasks(isVisible = () => true) {
     if (local) { local.textContent = text; local.hidden = !text; message.textContent = ''; }
     else message.textContent = text;
   };
-  const detailDirty = except => [...root.querySelectorAll('[data-task-detail] input, [data-task-detail] select')].some(control => !except?.contains(control) && control.value !== control.dataset.savedValue);
+  const detailDirty = except => [...root.querySelectorAll('[data-task-detail] input, [data-task-detail] select, [data-task-detail] textarea')].some(control => !except?.contains(control) && control.value !== control.dataset.savedValue);
   const projectManagerDirty = () => {
     const form = root.querySelector('[data-task-project-dependencies]');
     return Boolean(form && !form.hidden && [...form.querySelectorAll('[data-project-dependency]')]
@@ -353,8 +354,8 @@ export async function hydrateTasks(isVisible = () => true) {
       <div class="task-source"><span>${task.source ? `已关联 ${esc(task.source.agent_id)}` : '尚未关联会话'}</span>${task.source ? `<button type="button" class="mini-btn" data-task-open>${task.source.thread_id && task.source.agent_id === 'codex' ? '打开会话' : '打开工具'}</button>` : ''}</div>
       ${!task.source && availableSources.length ? `<form data-task-link><label>关联来源<select name="source">${availableSources.map((c, index) => `<option value="${index}">${esc(c.name)} · ${esc(statuses[c.observation.status])}${c.target?.exactSession ? ' · 会话' : c.target ? ' · 仅打开工具' : ' · 无桌面跳转'}</option>`).join('')}</select></label>${draftActions('关联')}</form>` : !task.source ? '<p class="task-note">暂未观测到可关联的会话。工具产生明确执行状态后，刷新查看。</p>' : ''}
       ${open.map(a => `<div class="task-gate"><div><strong>${esc(kinds[a.kind])}</strong><p>${esc(data.artifacts.find(x => x.id === a.artifact_id)?.title ?? taskGateNotice(a))}</p>${artifactReadButton(data.artifacts.find(x=>x.id===a.artifact_id),run.id)}</div><button class="mini-btn" type="button" data-task-handle="${esc(a.id)}">本地已处理</button></div>`).join('')}
-      <section class="task-artifact-view" data-task-artifact-view hidden aria-label="来源内容"><div class="task-detail-heading"><strong data-artifact-title>来源内容</strong><button class="mini-btn" type="button" data-artifact-close>关闭</button></div><p data-artifact-notice role="status" aria-live="polite"></p><pre data-artifact-text tabindex="0" hidden></pre></section>
-      ${task.archived_ms == null ? `<form class="task-progress" data-task-progress><label>记录进度<select name="progress"><option value="running">执行中</option><option value="answer">待回答</option><option value="plan_approval">确认方案</option><option value="result_review">验收结果</option><option value="ready">结果就绪</option><option value="failed">执行失败</option><option value="cancelled">已取消</option></select></label><label>产出引用<input name="artifactTitle" placeholder="简短说明（可选）" maxlength="500"></label>${draftActions('记录')}</form>` : ''}
+      <section class="task-artifact-view" data-task-artifact-view hidden aria-label="产出内容"><div class="task-detail-heading"><strong data-artifact-title>产出内容</strong><button class="mini-btn" type="button" data-artifact-close>关闭</button></div><p data-artifact-notice role="status" aria-live="polite"></p><pre data-artifact-text tabindex="0" hidden></pre></section>
+      ${task.archived_ms == null ? `<form class="task-progress" data-task-progress><label>记录进度<select name="progress"><option value="running">执行中</option><option value="answer">待回答</option><option value="plan_approval">确认方案</option><option value="result_review">验收结果</option><option value="ready">结果就绪</option><option value="failed">执行失败</option><option value="cancelled">已取消</option></select></label><label>产出名称（填写正文时必填）<input name="artifactTitle" placeholder="简短说明（可选）" maxlength="500"></label><label>产出正文（可选）<textarea name="artifactContent" rows="4" placeholder="最多 64 KiB；可识别的凭据内容不会保存"></textarea></label>${draftActions('记录')}</form>` : ''}
       ${renderTaskHistory(data, task.id)}
       <button class="mini-btn" type="button" data-task-archive>${task.archived_ms == null ? '归档任务' : '恢复任务'}</button>`;
     const viewer=box.querySelector('[data-task-artifact-view]');
@@ -372,8 +373,9 @@ export async function hydrateTasks(isVisible = () => true) {
       if(busy)return;
       busy=true;readerLifetime?.();readerLifetime=null;const token=++readerToken;readerCaller=button;const requestedAt=performance.now();
       const readButtons=[...box.querySelectorAll('[data-task-artifact-read]')];readButtons.forEach(control=>{control.disabled=true;});
-      viewer.hidden=false;viewer.setAttribute('aria-busy','true');body.textContent='';body.hidden=true;notice.textContent='正在读取来源内容';
-      viewer.querySelector('[data-artifact-title]').textContent=button.textContent==='查看问题'?'来源问题':button.textContent==='查看方案'?'来源方案':'本轮结果';
+      const localOutput=button.textContent==='查看产出';
+      viewer.hidden=false;viewer.setAttribute('aria-busy','true');body.textContent='';body.hidden=true;notice.textContent=localOutput?'正在读取本地产出':'正在读取来源内容';
+      viewer.querySelector('[data-artifact-title]').textContent=localOutput?'本地产出':button.textContent==='查看问题'?'来源问题':button.textContent==='查看方案'?'来源方案':'本轮结果';
       try {
         const result=await invoke('task_artifact_content',{id:task.id,runId:button.dataset.artifactRun,artifactId:button.dataset.taskArtifactRead,expectedRevision:revision});
         if(!current()||selected!==task.id||token!==readerToken||!viewer.isConnected)return;
@@ -391,9 +393,9 @@ export async function hydrateTasks(isVisible = () => true) {
       finally{busy=false;readButtons.forEach(control=>{if(control.isConnected)control.disabled=false;});viewer.removeAttribute('aria-busy');if(refreshQueued){refreshQueued=false;refresh();}}
     };});
     box.querySelector('[name="projectId"]').value = task.project_id ?? '';
-    box.querySelectorAll('input, select').forEach(control => { control.dataset.savedValue = control.value; });
+    box.querySelectorAll('input, select, textarea').forEach(control => { control.dataset.savedValue = control.value; });
     box.querySelectorAll('[data-task-edit], [data-task-progress], [data-task-link]').forEach(form => {
-      const controls = [...form.querySelectorAll('input, select')];
+      const controls = [...form.querySelectorAll('input, select, textarea')];
       const discard = form.querySelector('[data-task-discard]');
       const update = () => {
         discard.hidden = !controls.some(control => control.value !== control.dataset.savedValue);
@@ -440,7 +442,7 @@ export async function hydrateTasks(isVisible = () => true) {
     };
     box.querySelectorAll('[data-task-handle]').forEach(button => { button.onclick = () => mutate('task_mark_handled', { id: task.id, runId: run.id, attentionId: button.dataset.taskHandle }); });
     const progress = box.querySelector('[data-task-progress]');
-    if (progress) progress.onsubmit = event => { event.preventDefault(); const value = progress.elements.progress.value; const kind = kinds[value] ? value : null; const status = value === 'result_review' ? 'ready' : kind ? 'waiting' : value; mutate('task_record_progress', { id: task.id, status, kind, artifactTitle: progress.elements.artifactTitle.value.trim() || null }, progress); };
+    if (progress) progress.onsubmit = event => { event.preventDefault(); const value = progress.elements.progress.value; const kind = kinds[value] ? value : null; const status = value === 'result_review' ? 'ready' : kind ? 'waiting' : value; mutate('task_record_progress', { id: task.id, status, kind, artifactTitle: progress.elements.artifactTitle.value.trim() || null, artifactContent: progress.elements.artifactContent.value || null }, progress); };
   };
   const mutate = async (command, args, form, expectedRevisionOverride = null) => {
     if (busy || !data) return;
@@ -450,7 +452,7 @@ export async function hydrateTasks(isVisible = () => true) {
     if (args.id === selected && detailDirty(form)) { feedback('另一处有未保存修改，请先保存或撤销。', form); return; }
     if (args.id !== selected && detailDirty(form)) { feedback('任务详情有未保存修改，请先保存或撤销。', form); return; }
     busy = true;
-    const controls = [...root.querySelectorAll('input, select, button')];
+    const controls = [...root.querySelectorAll('input, select, textarea, button')];
     const disabled = controls.map(control => control.disabled);
     controls.forEach(control => { control.disabled = true; });
     root.setAttribute('aria-busy', 'true');

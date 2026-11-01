@@ -18,7 +18,7 @@ export function retainTaskFocus(root, render, active = document.activeElement) {
     if (saved) node.open = saved[1];
   }
   if (!owned || active.isConnected && root.contains(active)) return;
-  const target = [...root.querySelectorAll('input, select, button, summary, [tabindex]')]
+  const target = [...root.querySelectorAll('input, select, textarea, button, summary, [tabindex]')]
     .find(node => !node.disabled && !node.closest('[hidden]') && identity(node) === key)
     ?? root.querySelector('[data-task-detail]:not([hidden])')
     ?? root.querySelector('[data-task-filter]');

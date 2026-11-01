@@ -2848,16 +2848,18 @@ fn task_record_progress(
     status: crate::tasks::RunStatus,
     kind: Option<crate::tasks::AttentionKind>,
     artifact_title: Option<String>,
+    artifact_content: Option<String>,
     expected_revision: u64,
 ) -> Result<crate::tasks::Data, crate::tasks::Error> {
     publish_tasks(
         &app,
         with_tasks(state, |s| {
-            s.record(
+            s.record_with_content(
                 &id,
                 status,
                 kind,
                 artifact_title,
+                artifact_content,
                 expected_revision,
                 crate::tokens::now_ms(),
             )
@@ -3001,60 +3003,76 @@ async fn task_artifact_content(
 ) -> Result<crate::task_artifacts::Content, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let store = app.state::<TaskStore>();
-        let snapshot = store
-            .lock()
-            .map_err(|_| "任务服务暂不可用")?
-            .load()
+        let (snapshot, blob_store) = {
+            let guard = store.lock().map_err(|_| "任务服务暂不可用")?;
+            (
+                guard.load().map_err(|e| e.message)?,
+                guard.artifact_blob_store().map_err(|e| e.message)?,
+            )
+        };
+        let local_ref = snapshot
+            .local_artifact_content_ref(&id, &run_id, &artifact_id, expected_revision)
             .map_err(|e| e.message)?;
-        let source = snapshot
-            .navigation_source(&id, Some(&run_id), Some(&artifact_id), expected_revision)
-            .map_err(|e| e.message)?;
-        let profile = crate::registry::builtin()
-            .into_iter()
-            .find(|p| p.id == source.agent_id)
-            .ok_or("来源工具未支持内容读取")?;
-        #[cfg(target_os = "macos")]
-        let runtime = app
-            .state::<SharedEngine>()
-            .lock()
-            .map_err(|_| "采集状态不可用")?
-            .claude_plan_runtime
-            .clone();
-        #[cfg(target_os = "macos")]
-        let result = if let Some(runtime) = runtime {
-            runtime
-                .lock()
-                .map_err(|_| "采集状态不可用")?
-                .with_cache(|capture| {
-                    crate::task_artifacts::read_with_capture(
+        let result = if let Some(local_ref) = local_ref {
+            let bytes = blob_store
+                .read(&local_ref.sha256, local_ref.bytes)
+                .map_err(|reason| crate::artifact_store::StoreRefusal::error_details(reason).1)?;
+            let text =
+                String::from_utf8(bytes).map_err(|_| "本地产出正文格式无效，未展示内容。")?;
+            crate::task_artifacts::local_content(text)
+        } else {
+            let source = snapshot
+                .navigation_source(&id, Some(&run_id), Some(&artifact_id), expected_revision)
+                .map_err(|e| e.message)?;
+            let profile = crate::registry::builtin()
+                .into_iter()
+                .find(|p| p.id == source.agent_id)
+                .ok_or("来源工具未支持内容读取")?;
+            #[cfg(target_os = "macos")]
+            let source_result = {
+                let runtime = app
+                    .state::<SharedEngine>()
+                    .lock()
+                    .map_err(|_| "采集状态不可用")?
+                    .claude_plan_runtime
+                    .clone();
+                if let Some(runtime) = runtime {
+                    runtime
+                        .lock()
+                        .map_err(|_| "采集状态不可用")?
+                        .with_cache(|capture| {
+                            crate::task_artifacts::read_with_capture(
+                                &snapshot,
+                                &id,
+                                &run_id,
+                                &artifact_id,
+                                expected_revision,
+                                &profile,
+                                capture,
+                            )
+                        })?
+                } else {
+                    crate::task_artifacts::read(
                         &snapshot,
                         &id,
                         &run_id,
                         &artifact_id,
                         expected_revision,
                         &profile,
-                        capture,
-                    )
-                })?
-        } else {
-            crate::task_artifacts::read(
+                    )?
+                }
+            };
+            #[cfg(not(target_os = "macos"))]
+            let source_result = crate::task_artifacts::read(
                 &snapshot,
                 &id,
                 &run_id,
                 &artifact_id,
                 expected_revision,
                 &profile,
-            )?
+            )?;
+            source_result
         };
-        #[cfg(not(target_os = "macos"))]
-        let result = crate::task_artifacts::read(
-            &snapshot,
-            &id,
-            &run_id,
-            &artifact_id,
-            expected_revision,
-            &profile,
-        )?;
         if store
             .lock()
             .map_err(|_| "任务服务暂不可用")?

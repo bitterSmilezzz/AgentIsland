@@ -8,6 +8,7 @@ const scripts = new Set([
   'test-session-refresh-focus.mjs',
   'test-task-detail-navigation.mjs',
   'test-task-reader-leave.mjs',
+  'test-task-local-content.mjs',
   'test-notify-latency-ui.mjs',
   'test-update-panel.mjs',
   'test-connections-page.mjs',

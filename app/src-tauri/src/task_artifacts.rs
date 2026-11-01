@@ -8,7 +8,7 @@ use crate::{
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-const MAX_BODY: usize = crate::claude_plan_capture::MAX_BODY;
+pub(crate) const MAX_BODY: usize = crate::claude_plan_capture::MAX_BODY;
 const MAX_ENTRIES: usize = 10_000;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Evidence {
@@ -77,6 +77,53 @@ fn readable(text: String, secret: bool) -> Content {
         notice: "来源记录 · 只读，打开不会回答或批准操作。".into(),
         read_at_ms: crate::tokens::now_ms(),
         transient_valid_for_ms: None,
+    }
+}
+
+/// Build the response for an explicitly user-authored local output body.
+/// It is validated again on read and is never confused with a source event.
+pub(crate) fn local_content(text: String) -> Content {
+    if known_private(&text) {
+        return unavailable("内容涉及私密输入或凭据，无法展示。");
+    }
+    if text.len() > MAX_BODY {
+        return unavailable("内容超过显示范围，请返回任务进度重新记录。");
+    }
+    if text.trim().is_empty() {
+        return unavailable("此本地记录没有可展示的正文。");
+    }
+    Content {
+        available: true,
+        text: Some(text),
+        notice: "本地保存 · 只读查看。".into(),
+        read_at_ms: crate::tokens::now_ms(),
+        transient_valid_for_ms: None,
+    }
+}
+
+#[cfg(test)]
+mod local_content_tests {
+    use super::{local_content, MAX_BODY};
+
+    #[test]
+    fn local_artifact_body_read_rechecks_privacy_size_and_blank_content() {
+        let readable = local_content("仅供本地查看".into());
+        assert!(readable.available);
+        assert_eq!(readable.text.as_deref(), Some("仅供本地查看"));
+        assert!(readable.transient_valid_for_ms.is_none());
+
+        let secret = ["api", "_key = ", "present"].concat();
+        let private = local_content(secret);
+        assert!(!private.available);
+        assert!(private.text.is_none());
+
+        let oversized = local_content("x".repeat(MAX_BODY + 1));
+        assert!(!oversized.available);
+        assert!(oversized.text.is_none());
+
+        let blank = local_content(" \n ".into());
+        assert!(!blank.available);
+        assert!(blank.text.is_none());
     }
 }
 fn record(line: &str, path: &str, include_body: bool) -> Option<Record> {

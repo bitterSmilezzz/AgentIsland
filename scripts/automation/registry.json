@@ -423,9 +423,11 @@
         "rust.default",
         "task05.artifactcap",
         "task05.versioning",
-        "task05.content"
+        "task05.content",
+        "task05.localcontent",
+        "task05.localcontentui"
       ],
-      "coverage_note": "partial — 第一片（v0.0.371）：产出有界留存（MAX_ARTIFACTS=2000，未引用行先淘汰，引用行永不淘汰，evicted_artifacts 对界面可见）；第二片（v0.0.384）：产出版本演进、两两比较与历史恢复（向后追加不覆盖、外部只读源不伪造历史、恢复产出新 revision）；第三片（v0.0.391）：验证清单模型与判据（空清单不得通过、全 Passed 才算通过、条目不可匿名）；**第四片（2026-10-27）：产出内容主体按版本的存取**（artifact_store.rs）：按 (逻辑 id, revision) 存取、读不到如实说没有（不返回别版）、同版本不可二次写入、单版 4MiB/总量 64MiB 超限拒绝不截断、私密内容当场拒收、sha256 内容寻址可核对；5 条用例 + 变异（缺失版本返回别版内容）被 2 用例同拒。全量 1324 passed，脱敏 0 命中。缺：内容存储与 tasks.rs 的接线（判据已定，实现未接）、真实文件后端。",
+      "coverage_note": "partial — 第一片（v0.0.371）：产出有界留存（MAX_ARTIFACTS=2000，未引用行先淘汰，引用行永不淘汰，evicted_artifacts 对界面可见）；第二片（v0.0.384）：产出版本演进、两两比较与历史恢复（向后追加不覆盖、外部只读源不伪造历史、恢复产出新 revision）；第三片（v0.0.391）：验证清单模型与判据（空清单不得通过、全 Passed 才算通过、条目不可匿名）；第四片（2026-10-27）：版本内容寻址判据，保留摘要、长度、上限、拒收私密正文和错版拒读；**第五片（本轮）：本地用户填写的任务产出正文接入 tasks**，正文按 SHA-256 文件原子保存，任务 JSON 只留摘要和长度，重开 Store 后仍能读回；拒绝已识别凭据、超限、过期 revision 和损坏 blob；任务页支持填写、撤销草稿、查看和关闭即清除。来源事件正文继续走原有瞬时读取，不落入任务文件或 blob 后端。缺：产出版本演进、比较与恢复尚未接入任务页生产流程，需继续按版本契约完成。",
       "status": "partial"
     },
     "TASK-06": {
@@ -2949,6 +2951,41 @@
         "app/src-tauri/src/artifact_store.rs"
       ]
     },
+    "task05.localcontent": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "local_artifact"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-05 本地正文生产接线：Store 将用户填写的正文作为 SHA-256 文件 blob 原子发布，任务元数据绑定摘要和字节数；覆盖重开读回、正文不进入任务 JSON、任务/运行/产物/revision 绑定、已识别凭据与 64 KiB 超限拒写、空白正文、旧文件兼容及读取时二次隐私检查。源事件产物不使用该持久化路径；Rust 测试文件归 rust.default，不重复登记。"
+    },
+    "task05.localcontentui": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-local-content.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "TASK-05 本地任务产出正文 UI：真实浏览器确认草稿撤销与保存期间 textarea 锁定、提交名称/状态/正文、任务摘要出现查看产出入口、读回以纯文本渲染且关闭后清空；不调用外部智能体或服务。",
+      "test_files": [
+        "scripts/test-task-local-content.mjs"
+      ]
+    },
     "gw03.toolcalls": {
       "command": [
         "cargo",
@@ -3289,6 +3326,7 @@
       "task01.dragui",
       "task01.dragstatus",
       "task04.readerleave",
+      "task05.localcontentui",
       "task04.refreshfocus",
       "gw01.connectionsui",
       "gw02.profilepage"
@@ -3357,6 +3395,7 @@
       "task05.artifactcap",
       "task05.versioning",
       "task05.content",
+      "task05.localcontent",
       "task03.lifecycle",
       "task08.schedule",
       "task08.dst",
@@ -3380,6 +3419,7 @@
       "task01.dragui",
       "task01.dragstatus",
       "task04.readerleave",
+      "task05.localcontentui",
       "task04.ordering",
       "task04.limits",
       "task04.refreshfocus",
@@ -3536,6 +3576,7 @@
       "task05.artifactcap",
       "task05.versioning",
       "task05.content",
+      "task05.localcontent",
       "task03.lifecycle",
       "task08.schedule",
       "task08.dst",
@@ -3559,6 +3600,7 @@
       "task01.dragui",
       "task01.dragstatus",
       "task04.readerleave",
+      "task05.localcontentui",
       "task04.ordering",
       "task04.limits",
       "task04.refreshfocus",

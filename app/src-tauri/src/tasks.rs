@@ -105,6 +105,17 @@ pub struct Artifact {
     pub title: String,
     pub revision: u64,
     pub kind: AttentionKind,
+    /// User-authored local output is stored in an immutable content-addressed blob.
+    /// Source-event bodies remain transient and never use this reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_content: Option<LocalArtifactContentRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalArtifactContentRef {
+    pub sha256: String,
+    pub bytes: usize,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,6 +187,10 @@ fn error(code: &str, message: &str) -> Error {
         message: message.into(),
     }
 }
+fn artifact_store_error(reason: crate::artifact_store::StoreRefusal) -> Error {
+    let (code, message) = reason.error_details();
+    error(code, message)
+}
 fn dependency_error(reason: crate::project_deps::DepRefusal) -> Error {
     use crate::project_deps::DepRefusal;
     match reason {
@@ -224,6 +239,15 @@ impl Store {
         Self {
             path: crate::settings::config_dir().join("tasks.v1.json"),
         }
+    }
+    pub fn artifact_blob_store(&self) -> Result<crate::artifact_store::FileBlobStore, Error> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| error("io_error", "任务目录不可用"))?;
+        Ok(crate::artifact_store::FileBlobStore::new(
+            parent.join("task-artifact-content"),
+        ))
     }
     pub fn load(&self) -> Result<Data, Error> {
         let metadata = match fs::symlink_metadata(&self.path) {
@@ -592,6 +616,22 @@ impl Store {
         revision: u64,
         now: i64,
     ) -> Result<Data, Error> {
+        self.record_with_content(task, status, kind, title, None, revision, now)
+    }
+
+    /// Record local progress and optionally persist a user-authored output body.
+    /// The body is published before the task JSON references it, so a failed
+    /// metadata write can leave only an unreadable orphan blob.
+    pub fn record_with_content(
+        &self,
+        task: &str,
+        status: RunStatus,
+        kind: Option<AttentionKind>,
+        title: Option<String>,
+        content: Option<String>,
+        revision: u64,
+        now: i64,
+    ) -> Result<Data, Error> {
         if status == RunStatus::Accepted {
             return Err(error(
                 "invalid_input",
@@ -599,11 +639,54 @@ impl Store {
             ));
         }
         let title = title.map(|t| text(&t)).transpose()?;
+        let content = content.filter(|body| !body.trim().is_empty());
+        if content.is_some() && title.is_none() {
+            return Err(error("invalid_input", "保存产出正文前请先填写产出名称"));
+        }
+        if content
+            .as_ref()
+            .is_some_and(|body| body.len() > crate::task_artifacts::MAX_BODY)
+        {
+            return Err(error("capacity", "产出正文超过 64 KiB，未保存"));
+        }
+        if content
+            .as_deref()
+            .is_some_and(crate::private_text::known_private)
+        {
+            return Err(error(
+                "invalid_input",
+                "产出正文包含已识别的凭据形态，未保存",
+            ));
+        }
         if title.is_some() && kind.is_none() && status != RunStatus::Ready {
             return Err(error("invalid_input", "产出引用需关联结果就绪或人工关口"));
         }
+        let blob_store = content
+            .as_ref()
+            .map(|_| self.artifact_blob_store())
+            .transpose()?;
         self.edit(revision, |d| {
-            d.record(task, status, kind, title, now, false)
+            let artifact_id = d.record(task, status, kind, title, now, false)?;
+            if let Some(content) = content.as_deref() {
+                let artifact_id =
+                    artifact_id.ok_or_else(|| error("capacity", "产出留存已满，正文未保存"))?;
+                let total = d.local_artifact_content_bytes();
+                let stored = blob_store
+                    .as_ref()
+                    .ok_or_else(|| error("io_error", "产出存储不可用"))?
+                    .put(content.as_bytes(), false, total)
+                    .map_err(artifact_store_error)?;
+                let artifact = d
+                    .artifacts
+                    .iter_mut()
+                    .find(|artifact| artifact.id == artifact_id)
+                    .ok_or_else(|| error("capacity", "产出留存已满，正文未保存"))?;
+                artifact.local_content = Some(LocalArtifactContentRef {
+                    sha256: stored.sha256,
+                    bytes: stored.bytes,
+                });
+            }
+            Ok(())
         })
     }
     pub fn handled(
@@ -717,6 +800,7 @@ impl Store {
                             title: evidence.title().into(),
                             revision: 1,
                             kind: evidence.kind,
+                            local_content: None,
                         });
                         attention.artifact_id = Some(artifact_id);
                         let run_id = attention.run_id.clone();
@@ -842,6 +926,56 @@ impl Store {
     }
 }
 impl Data {
+    fn local_artifact_content_bytes(&self) -> usize {
+        self.artifacts
+            .iter()
+            .filter_map(|artifact| artifact.local_content.as_ref().map(|content| content.bytes))
+            .fold(0usize, usize::saturating_add)
+    }
+
+    /// Return an exact local body reference after checking task, run, artifact,
+    /// and snapshot revision ownership. `None` means the artifact is a source
+    /// event and must stay on the transient source-reader path.
+    pub fn local_artifact_content_ref(
+        &self,
+        task_id: &str,
+        run_id: &str,
+        artifact_id: &str,
+        revision: u64,
+    ) -> Result<Option<LocalArtifactContentRef>, Error> {
+        if self.revision != revision {
+            return Err(error("conflict", "任务已更新，请刷新后重试"));
+        }
+        let task = self
+            .tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| error("not_found", "任务不存在"))?;
+        if !self
+            .runs
+            .iter()
+            .any(|run| run.id == run_id && run.task_id == task.id)
+        {
+            return Err(error("source_mismatch", "运行记录不属于所选任务"));
+        }
+        let artifact = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == artifact_id)
+            .ok_or_else(|| error("not_found", "产出引用不存在"))?;
+        if artifact.run_id != run_id {
+            return Err(error("source_mismatch", "产出引用不属于所选运行"));
+        }
+        if artifact.event_ref.is_some() {
+            return Ok(None);
+        }
+        artifact
+            .local_content
+            .clone()
+            .map(Some)
+            .ok_or_else(|| error("content_missing", "这条本地记录没有保存正文"))
+    }
+
     fn project_dependency_graph(&self) -> crate::project_deps::DepGraph {
         self.projects
             .iter()
@@ -962,7 +1096,7 @@ impl Data {
         title: Option<String>,
         now: i64,
         observed: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<String>, Error> {
         let t = self
             .tasks
             .iter()
@@ -1047,6 +1181,7 @@ impl Data {
                 title,
                 revision: 1,
                 kind: kind.unwrap_or(AttentionKind::ResultReview),
+                local_content: None,
             });
             self.enforce_artifact_cap();
             artifact_id
@@ -1058,7 +1193,7 @@ impl Data {
                 run_id: run_id.clone(),
                 kind,
                 state: AttentionState::Open,
-                artifact_id,
+                artifact_id: artifact_id.clone(),
                 manual_resolution: false,
             });
         }
@@ -1066,7 +1201,7 @@ impl Data {
         t.current_run_id = Some(run_id);
         t.updated_ms = now;
         t.revision += 1;
-        Ok(())
+        Ok(artifact_id)
     }
     pub fn validate(&self) -> Result<(), Error> {
         let invalid = || error("read_only", "任务记录版本或关联不完整，原文件已保留");
@@ -1140,6 +1275,24 @@ impl Data {
             if !self.runs.iter().any(|r| r.id == a.run_id) {
                 return Err(invalid());
             }
+            match &a.local_content {
+                None => {}
+                Some(content)
+                    if a.event_ref.is_none()
+                        && content.sha256.len() == 64
+                        && content
+                            .sha256
+                            .bytes()
+                            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                        && content.bytes <= crate::task_artifacts::MAX_BODY =>
+                {
+                    // The aggregate bound below is checked after row validation.
+                }
+                _ => return Err(invalid()),
+            }
+        }
+        if self.local_artifact_content_bytes() > crate::artifact_store::MAX_TOTAL_BYTES {
+            return Err(invalid());
         }
         let mut sources = std::collections::HashSet::new();
         for t in &self.tasks {
@@ -1318,6 +1471,7 @@ mod tests {
                 title: format!("产出 {index}"),
                 revision: 1,
                 kind: AttentionKind::ResultReview,
+                local_content: None,
             });
             if index % referenced_every.max(1) == 0 {
                 data.attentions.push(Attention {
@@ -1786,6 +1940,218 @@ mod tests {
             path: sandbox.path().join("tasks.v1.json"),
         };
         (sandbox, store)
+    }
+
+    #[test]
+    fn local_artifact_body_is_persisted_by_hash_and_read_after_store_reopen() {
+        let (_sandbox, store) = store_in("tasks-local-artifact-content");
+        let created = store.create("本地任务", None, 0, 1).unwrap();
+        let task_id = created.tasks[0].id.clone();
+        let body = "用户记录的产出正文\n第二行";
+        let recorded = store
+            .record_with_content(
+                &task_id,
+                RunStatus::Ready,
+                None,
+                Some("交付说明".into()),
+                Some(body.into()),
+                created.revision,
+                2,
+            )
+            .unwrap();
+        let artifact = recorded.artifacts.last().unwrap();
+        let run_id = artifact.run_id.clone();
+        let artifact_id = artifact.id.clone();
+        let content_ref = artifact.local_content.as_ref().unwrap();
+        assert_eq!(content_ref.bytes, body.len());
+        let digest = content_ref.sha256.as_str();
+        assert_eq!(digest.len(), 64);
+
+        let task_bytes = fs::read(&store.path).unwrap();
+        let task_json = String::from_utf8(task_bytes).unwrap();
+        assert!(!task_json.contains(body), "正文不得进入 tasks JSON");
+        assert!(task_json.contains(digest), "任务元数据要保存正文摘要");
+
+        let second_task = store
+            .create("另一条任务", None, recorded.revision, 3)
+            .unwrap();
+        let second_task_id = second_task.tasks.last().unwrap().id.clone();
+        let second_recorded = store
+            .record(
+                &second_task_id,
+                RunStatus::Ready,
+                None,
+                Some("另一条产出".into()),
+                second_task.revision,
+                4,
+            )
+            .unwrap();
+        let second_run_id = second_recorded
+            .runs
+            .iter()
+            .find(|run| run.task_id == second_task_id)
+            .unwrap()
+            .id
+            .clone();
+
+        let reopened = Store {
+            path: store.path.clone(),
+        };
+        let loaded = reopened.load().unwrap();
+        let body_ref = loaded
+            .local_artifact_content_ref(&task_id, &run_id, &artifact_id, second_recorded.revision)
+            .unwrap()
+            .unwrap();
+        let bytes = reopened
+            .artifact_blob_store()
+            .unwrap()
+            .read(&body_ref.sha256, body_ref.bytes)
+            .unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), body);
+        assert_eq!(
+            loaded
+                .local_artifact_content_ref(
+                    &second_task_id,
+                    &run_id,
+                    &artifact_id,
+                    second_recorded.revision,
+                )
+                .unwrap_err()
+                .code,
+            "source_mismatch"
+        );
+        assert_eq!(
+            loaded
+                .local_artifact_content_ref(
+                    &task_id,
+                    &second_run_id,
+                    &artifact_id,
+                    second_recorded.revision,
+                )
+                .unwrap_err()
+                .code,
+            "source_mismatch"
+        );
+        assert_eq!(
+            loaded
+                .local_artifact_content_ref(
+                    &task_id,
+                    &run_id,
+                    "missing-artifact",
+                    second_recorded.revision,
+                )
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(
+            loaded
+                .local_artifact_content_ref(
+                    &task_id,
+                    &run_id,
+                    &artifact_id,
+                    second_recorded.revision - 1,
+                )
+                .unwrap_err()
+                .code,
+            "conflict"
+        );
+    }
+
+    #[test]
+    fn local_artifact_content_refuses_secret_oversized_stale_and_unlabeled_bodies_without_writes() {
+        let (_sandbox, store) = store_in("tasks-local-artifact-reject");
+        let created = store.create("本地任务", None, 0, 1).unwrap();
+        let task_id = created.tasks[0].id.clone();
+        let before = fs::read(&store.path).unwrap();
+        let secret = ["api", "_key = ", "present"].concat();
+        let cases = [
+            (
+                Some(secret),
+                Some("凭据".into()),
+                created.revision,
+                "invalid_input",
+            ),
+            (
+                Some("x".repeat(crate::task_artifacts::MAX_BODY + 1)),
+                Some("过长".into()),
+                created.revision,
+                "capacity",
+            ),
+            (
+                Some("没有名称的正文".into()),
+                None,
+                created.revision,
+                "invalid_input",
+            ),
+            (
+                Some("陈旧草稿".into()),
+                Some("陈旧".into()),
+                created.revision - 1,
+                "stale_revision",
+            ),
+        ];
+        for (body, title, revision, expected) in cases {
+            assert_eq!(
+                store
+                    .record_with_content(
+                        &task_id,
+                        RunStatus::Ready,
+                        None,
+                        title,
+                        body,
+                        revision,
+                        2,
+                    )
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+            assert_eq!(fs::read(&store.path).unwrap(), before);
+            assert!(
+                !store
+                    .path
+                    .parent()
+                    .unwrap()
+                    .join("task-artifact-content")
+                    .exists(),
+                "拒绝路径不得发布正文 blob"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_local_artifacts_load_but_future_content_fields_remain_read_only() {
+        let (_sandbox, store) = store_in("tasks-local-artifact-legacy");
+        let created = store.create("旧任务", None, 0, 1).unwrap();
+        let recorded = store
+            .record(
+                &created.tasks[0].id,
+                RunStatus::Ready,
+                None,
+                Some("旧产出".into()),
+                created.revision,
+                2,
+            )
+            .unwrap();
+        let mut legacy = serde_json::to_value(&recorded).unwrap();
+        let artifact = legacy["artifacts"][0].as_object_mut().unwrap();
+        artifact.remove("local_content");
+        fs::write(&store.path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.artifacts[0].local_content, None);
+        loaded.validate().unwrap();
+
+        legacy["artifacts"][0]["local_content"] = serde_json::json!({
+            "sha256": "a".repeat(64),
+            "bytes": 1,
+            "future": true
+        });
+        let future_bytes = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&store.path, &future_bytes).unwrap();
+        assert_eq!(store.load().unwrap_err().code, "read_only");
+        assert_eq!(fs::read(&store.path).unwrap(), future_bytes);
     }
 
     #[test]
