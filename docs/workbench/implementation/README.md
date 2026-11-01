@@ -15,6 +15,7 @@
 | [04 · macOS 窗口布局](04-macos-window-layouts.md) | 枚举、预览、权限、应用/部分失败/撤销 | 01；显示依赖 02 |
 | [05 · 模型与连接](05-models-and-connections.md) | 现有档位归位、外部只读连接、配置适配 | 01、02 |
 | [15 · 本机工具预算](15-local-tool-budgets.md) | 按工具预算、来源状态、受控保存、草稿和预警 | 02、05 |
+| [16 · 自有执行历史容量测量](16-managed-history-measurements.md) | 合成密文/文件测量、当前证据边界与容量数字的定案条件 | TASK-05、ADR 0041 |
 | [06 · 平台适配](06-platform-adaptation.md) | Windows、Linux 交付项与 Web/移动边界 | macOS 完整验收后进入实现 |
 | [14 · 隔离原生验收](14-native-vm-acceptance.md) | VM 身份、产物一致性、UI/Dock/单实例/CLI门禁及证据边界 | 07、08 |
 | [07 · 实施与验收](07-delivery-and-acceptance.md) | 小批次交付、退出条件与验证命令 | 贯穿全部 |

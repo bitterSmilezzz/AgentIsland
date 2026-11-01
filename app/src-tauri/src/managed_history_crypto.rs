@@ -104,18 +104,23 @@ pub(crate) fn seal(
         UnboundKey::new(&AES_256_GCM, key.as_bytes()).map_err(|_| CryptoError::Internal)?;
     let key = LessSafeKey::new(unbound);
     let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let mut ciphertext = plaintext.to_vec();
-    key.seal_in_place_append_tag(nonce, Aad::from(aad.as_slice()), &mut ciphertext)
-        .map_err(|_| CryptoError::Internal)?;
-
     let capacity = HEADER_LEN
-        .checked_add(ciphertext.len())
+        .checked_add(plaintext.len())
+        .and_then(|length| length.checked_add(TAG_LEN))
         .ok_or(CryptoError::Internal)?;
     let mut envelope = Vec::with_capacity(capacity);
     envelope.extend_from_slice(MAGIC);
     envelope.push(FORMAT_VERSION);
     envelope.extend_from_slice(&nonce_bytes);
-    envelope.extend_from_slice(&ciphertext);
+    envelope.extend_from_slice(plaintext);
+    let tag = key
+        .seal_in_place_separate_tag(
+            nonce,
+            Aad::from(aad.as_slice()),
+            &mut envelope[HEADER_LEN..],
+        )
+        .map_err(|_| CryptoError::Internal)?;
+    envelope.extend_from_slice(tag.as_ref());
     Ok(envelope)
 }
 
@@ -124,7 +129,7 @@ pub(crate) fn open(
     key: &DataKey,
     identity: &ContentIdentity<'_>,
     envelope: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
     if envelope.len() < MAGIC.len() {
         return Err(CryptoError::Truncated);
     }
@@ -147,11 +152,15 @@ pub(crate) fn open(
         UnboundKey::new(&AES_256_GCM, key.as_bytes()).map_err(|_| CryptoError::Internal)?;
     let key = LessSafeKey::new(unbound);
     let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-    let mut ciphertext = envelope[HEADER_LEN..].to_vec();
-    let plaintext = key
-        .open_in_place(nonce, Aad::from(aad.as_slice()), &mut ciphertext)
+    // The returned buffer is already decrypted in place; keep it in a zeroizing
+    // owner and avoid a second full-size plaintext copy.
+    let mut plaintext = Zeroizing::new(envelope[HEADER_LEN..].to_vec());
+    let authenticated = key
+        .open_in_place(nonce, Aad::from(aad.as_slice()), &mut plaintext)
         .map_err(|_| CryptoError::AuthenticationFailed)?;
-    Ok(plaintext.to_vec())
+    let plaintext_len = authenticated.len();
+    plaintext.truncate(plaintext_len);
+    Ok(plaintext)
 }
 
 fn aad_for(identity: &ContentIdentity<'_>) -> Result<Vec<u8>, CryptoError> {
@@ -210,7 +219,10 @@ mod tests {
         assert!(!envelope
             .windows(SECRET.len())
             .any(|window| window == SECRET));
-        assert_eq!(open(&key(), &identity, &envelope).unwrap(), SECRET);
+        assert_eq!(
+            open(&key(), &identity, &envelope).unwrap().as_slice(),
+            SECRET
+        );
     }
 
     #[test]
@@ -219,8 +231,8 @@ mod tests {
         let first = seal(&key(), &identity, SECRET).unwrap();
         let second = seal(&key(), &identity, SECRET).unwrap();
         assert_ne!(first, second);
-        assert_eq!(open(&key(), &identity, &first).unwrap(), SECRET);
-        assert_eq!(open(&key(), &identity, &second).unwrap(), SECRET);
+        assert_eq!(open(&key(), &identity, &first).unwrap().as_slice(), SECRET);
+        assert_eq!(open(&key(), &identity, &second).unwrap().as_slice(), SECRET);
     }
 
     #[test]
@@ -231,7 +243,7 @@ mod tests {
         let mut changed = envelope.clone();
         *changed.last_mut().unwrap() ^= 0x80;
         assert_eq!(
-            open(&key(), &identity, &changed),
+            open(&key(), &identity, &changed).map(|plain| plain.to_vec()),
             Err(CryptoError::AuthenticationFailed)
         );
         assert_eq!(
@@ -239,7 +251,8 @@ mod tests {
                 &DataKey::from_slice(&[0xa5; KEY_LEN]).unwrap(),
                 &identity,
                 &envelope
-            ),
+            )
+            .map(|plain| plain.to_vec()),
             Err(CryptoError::AuthenticationFailed)
         );
 
@@ -248,7 +261,7 @@ mod tests {
             ..identity
         };
         assert_eq!(
-            open(&key(), &wrong_project, &envelope),
+            open(&key(), &wrong_project, &envelope).map(|plain| plain.to_vec()),
             Err(CryptoError::AuthenticationFailed)
         );
         let wrong_run = ContentIdentity {
@@ -256,7 +269,7 @@ mod tests {
             ..identity
         };
         assert_eq!(
-            open(&key(), &wrong_run, &envelope),
+            open(&key(), &wrong_run, &envelope).map(|plain| plain.to_vec()),
             Err(CryptoError::AuthenticationFailed)
         );
         let wrong_artifact = ContentIdentity {
@@ -264,7 +277,7 @@ mod tests {
             ..identity
         };
         assert_eq!(
-            open(&key(), &wrong_artifact, &envelope),
+            open(&key(), &wrong_artifact, &envelope).map(|plain| plain.to_vec()),
             Err(CryptoError::AuthenticationFailed)
         );
         let wrong_version = ContentIdentity {
@@ -272,7 +285,7 @@ mod tests {
             ..identity
         };
         assert_eq!(
-            open(&key(), &wrong_version, &envelope),
+            open(&key(), &wrong_version, &envelope).map(|plain| plain.to_vec()),
             Err(CryptoError::AuthenticationFailed)
         );
     }
@@ -281,22 +294,23 @@ mod tests {
     fn unknown_format_foreign_data_and_truncation_are_distinct() {
         let identity = identity();
         assert_eq!(
-            open(&key(), &identity, b"foreign"),
+            open(&key(), &identity, b"foreign").map(|plain| plain.to_vec()),
             Err(CryptoError::NotEnvelope)
         );
         assert_eq!(
-            open(&key(), &identity, b"AIHM"),
+            open(&key(), &identity, b"AIHM").map(|plain| plain.to_vec()),
             Err(CryptoError::Truncated)
         );
         let mut unknown = seal(&key(), &identity, SECRET).unwrap();
         unknown[MAGIC.len()] = FORMAT_VERSION + 1;
         assert_eq!(
-            open(&key(), &identity, &unknown),
+            open(&key(), &identity, &unknown).map(|plain| plain.to_vec()),
             Err(CryptoError::UnsupportedFormat)
         );
         let truncated = seal(&key(), &identity, SECRET).unwrap();
         assert_eq!(
-            open(&key(), &identity, &truncated[..HEADER_LEN + TAG_LEN - 1]),
+            open(&key(), &identity, &truncated[..HEADER_LEN + TAG_LEN - 1])
+                .map(|plain| plain.to_vec()),
             Err(CryptoError::Truncated)
         );
     }
@@ -331,5 +345,179 @@ mod tests {
             DataKey::from_slice(&[0; KEY_LEN + 1]),
             Err(CryptoError::InvalidKey)
         ));
+    }
+}
+
+/// Opt-in, synthetic-only storage/crypto measurement. It writes only under a
+/// fresh temporary directory, uses generated test keys, and emits aggregate
+/// byte/timing metrics without payloads, IDs, or paths.
+#[cfg(all(test, target_os = "macos"))]
+mod measurement {
+    use super::*;
+    use std::fs;
+    use std::io;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::PathBuf;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock is after Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "agentisland-managed-history-measure-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).expect("create isolated measurement directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn identity_parts(index: usize) -> (String, String) {
+        (
+            format!("synthetic-run-{}", index / 32),
+            format!("synthetic-artifact-{index}"),
+        )
+    }
+
+    fn median_ms(samples: &mut [f64]) -> f64 {
+        samples.sort_by(f64::total_cmp);
+        samples[samples.len() / 2]
+    }
+
+    #[test]
+    #[ignore = "Opt-in synthetic storage measurement; reads and writes no user history"]
+    fn measure_synthetic_managed_history_storage_and_crypto() {
+        let key = DataKey::generate().expect("synthetic key");
+        let sizes = [1_024usize, 16_384, 65_536, 262_144, 1_048_576, 4_194_304];
+        let crypto_samples = 15usize;
+        let crypto = sizes
+            .iter()
+            .map(|size| {
+                let plaintext = vec![0x53; *size];
+                let mut seal_ms = Vec::with_capacity(crypto_samples);
+                let mut open_ms = Vec::with_capacity(crypto_samples);
+                let (run_id, artifact_id) = identity_parts(*size);
+                let id = ContentIdentity {
+                    project_id: "synthetic-project",
+                    run_id: &run_id,
+                    artifact_id: &artifact_id,
+                    content_version: 1,
+                };
+                for _ in 0..crypto_samples {
+                    let started = Instant::now();
+                    let envelope = seal(&key, &id, &plaintext).expect("seal synthetic payload");
+                    seal_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+                    assert_eq!(envelope.len(), plaintext.len() + HEADER_LEN + TAG_LEN);
+
+                    let started = Instant::now();
+                    let recovered = open(&key, &id, &envelope).expect("open synthetic payload");
+                    open_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+                    assert_eq!(recovered.as_slice(), plaintext.as_slice());
+                }
+                serde_json::json!({
+                    "plaintext_bytes": size,
+                    "envelope_bytes": size + HEADER_LEN + TAG_LEN,
+                    "envelope_overhead_bytes": HEADER_LEN + TAG_LEN,
+                    "seal_median_ms": median_ms(&mut seal_ms),
+                    "open_median_ms": median_ms(&mut open_ms),
+                    "samples": crypto_samples,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // Every profile stores exactly 1 MiB of synthetic plaintext. Different
+        // object counts expose filesystem allocation cost for tiny content.
+        let profiles = [
+            (1_024usize, 1_024usize),
+            (16_384, 64),
+            (65_536, 16),
+            (262_144, 4),
+            (1_048_576, 1),
+        ];
+        let scratch = Scratch::new();
+        let mut storage = Vec::with_capacity(profiles.len());
+        for (profile_index, (object_bytes, object_count)) in profiles.into_iter().enumerate() {
+            let root = scratch.0.join(format!("profile-{profile_index}"));
+            fs::create_dir(&root).expect("create profile directory");
+            let plaintext = vec![0x6b; object_bytes];
+            let started = Instant::now();
+            for index in 0..object_count {
+                let (run_id, artifact_id) = identity_parts(profile_index * 2_000 + index);
+                let id = ContentIdentity {
+                    project_id: "synthetic-project",
+                    run_id: &run_id,
+                    artifact_id: &artifact_id,
+                    content_version: 1,
+                };
+                let envelope = seal(&key, &id, &plaintext).expect("seal stored payload");
+                let target = root.join(format!("{}.blob", uuid::Uuid::new_v4().simple()));
+                crate::atomicfile::atomic_create_validated(&target, &envelope, |staged| {
+                    let bytes = fs::read(staged)?;
+                    let recovered = open(&key, &id, &bytes).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "synthetic envelope invalid")
+                    })?;
+                    if recovered.as_slice() != plaintext.as_slice() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "synthetic payload mismatch",
+                        ));
+                    }
+                    Ok(())
+                })
+                .expect("atomically publish validated synthetic envelope");
+            }
+            let publish_ms = started.elapsed().as_secs_f64() * 1_000.0;
+            let mut logical_file_bytes = 0u64;
+            let mut allocated_file_bytes = 0u64;
+            let mut count = 0usize;
+            for entry in fs::read_dir(&root).expect("enumerate synthetic files") {
+                let metadata = entry.expect("read synthetic entry").metadata().unwrap();
+                logical_file_bytes += metadata.len();
+                allocated_file_bytes += metadata.blocks() * 512;
+                count += 1;
+            }
+            let directory_allocated_bytes = fs::metadata(&root).unwrap().blocks() * 512;
+            storage.push(serde_json::json!({
+                "object_bytes": object_bytes,
+                "object_count": object_count,
+                "logical_plaintext_bytes": object_bytes * object_count,
+                "logical_file_bytes": logical_file_bytes,
+                "allocated_file_bytes": allocated_file_bytes,
+                "directory_allocated_bytes": directory_allocated_bytes,
+                "files_observed": count,
+                "file_sync_publish_and_authenticate_ms": publish_ms,
+            }));
+        }
+
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema_version": 1,
+                "measurement": "managed-history-synthetic-v1",
+                "crate_version": env!("CARGO_PKG_VERSION"),
+                "os": std::env::consts::OS,
+                "architecture": std::env::consts::ARCH,
+                "crypto": crypto,
+                "storage_profiles": storage,
+                "notes": [
+                    "synthetic payloads only; no user data read",
+                    "storage uses production AEAD and atomic create helper",
+                    "allocated_file_bytes uses st_blocks multiplied by 512",
+                    "parent directory sync and crash durability are not measured",
+                    "index, run frequency, backup copies, and app-wide RSS are not measured",
+                ],
+            })
+        );
     }
 }
