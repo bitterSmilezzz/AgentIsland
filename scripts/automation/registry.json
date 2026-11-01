@@ -422,12 +422,13 @@
       "checks": [
         "rust.default",
         "task05.artifactcap",
-        "task05.versioning",
         "task05.content",
+        "task05.historycrypto",
         "task05.localcontent",
-        "task05.localcontentui"
+        "task05.localcontentui",
+        "task05.versioning"
       ],
-      "coverage_note": "partial — 第一片（v0.0.371）：产出有界留存（MAX_ARTIFACTS=2000，未引用行先淘汰，引用行永不淘汰，evicted_artifacts 对界面可见）；第二片（v0.0.384）：产出版本演进、两两比较与历史恢复判据（向后追加不覆盖、外部只读源不伪造历史、恢复产出新 revision）；第三片（v0.0.391）：验证清单模型与判据（空清单不得通过、全 Passed 才算通过、条目不可匿名）；第四片（2026-10-27）：版本内容寻址判据，保留摘要、长度、上限、拒收私密正文和错版拒读；第五片（v0.0.427）：本地用户填写的任务产出正文接入 tasks，正文按 SHA-256 文件原子保存，任务 JSON 只留摘要和长度；任务页支持记录、撤销草稿、查看和关闭即清除。第六片（v0.0.428）：本地产出显式加入稳定逻辑 ID 和单调版本号；旧版本不可覆盖且不被容量淘汰；任意两版可比较本地正文差异、标题和运行上下文；恢复任意历史版会复制其名称与正文，追加当前最高 revision+1。任务页提供版本列表、新版记录、比较和恢复；旧/过期 revision、归档任务、外部事件、跨任务和跨逻辑产物请求明确拒绝；读取/比较仍检查任务、运行、产物与当前 revision。来源事件正文继续走原瞬时读取，不落入任务文件或本地版本链。第七片（v0.0.429）：验证项绑定具体本地产出物理版本；追加和恢复版本自动从空清单开始；空清单不通过，待验/失败/全通过状态在任务页可见并可修改；旧任务文件缺清单字段按空清单读取；来源事件、无正文、跨任务、归档和过期 revision 写入被拒；清单有条目数、标题长度和私密文本边界。缺：AgentIsland 自有执行历史的项目访问、加密、保留/删除和备份恢复契约按需求 §4 另行确定。",
+      "coverage_note": "partial — 第一片（v0.0.371）：产出有界留存（MAX_ARTIFACTS=2000，未引用行先淘汰，引用行永不淘汰，evicted_artifacts 对界面可见）；第二片（v0.0.384）：产出版本演进、两两比较与历史恢复判据（向后追加不覆盖、外部只读源不伪造历史、恢复产出新 revision）；第三片（v0.0.391）：验证清单模型与判据（空清单不得通过、全 Passed 才算通过、条目不可匿名）；第四片（2026-10-27）：版本内容寻址判据，保留摘要、长度、上限、拒收私密正文和错版拒读；第五片（v0.0.427）：本地用户填写的任务产出正文接入 tasks，正文按 SHA-256 文件原子保存，任务 JSON 只留摘要和长度；任务页支持记录、撤销草稿、查看和关闭即清除。第六片（v0.0.428）：本地产出显式加入稳定逻辑 ID 和单调版本号；旧版本不可覆盖且不被容量淘汰；任意两版可比较本地正文差异、标题和运行上下文；恢复任意历史版会复制其名称与正文，追加当前最高 revision+1。任务页提供版本列表、新版记录、比较和恢复；旧/过期 revision、归档任务、外部事件、跨任务和跨逻辑产物请求明确拒绝；读取/比较仍检查任务、运行、产物与当前 revision。来源事件正文继续走原瞬时读取，不落入任务文件或本地版本链。第七片（v0.0.429）：验证项绑定具体本地产出物理版本；追加和恢复版本自动从空清单开始；空清单不通过，待验/失败/全通过状态在任务页可见并可修改；旧任务文件缺清单字段按空清单读取；来源事件、无正文、跨任务、归档和过期 revision 写入被拒；清单有条目数、标题长度和私密文本边界。第八片（2026-11-01）：自有执行历史数据策略由 ADR 0041 定案；新增身份绑定 AES-256-GCM 封套（随机 nonce，AAD 绑定 project/run/artifact/version）、零化数据密钥及 macOS 专用钥匙串 create-only 项目密钥接口；错密钥、密文篡改、跨项目/运行/产物/版本、未知格式和截断拒绝返回正文，非 macOS 拒写。本轮定向用例覆盖 9 个边界。当前只交付安全原语和密钥接口，未接任务正文、UI 或受管理运行写入口。缺：项目策略/容量期限测量、密文文件存储、精确删除、备份恢复、TASK-03 授权接线及平台原生验收。",
       "status": "partial"
     },
     "TASK-06": {
@@ -3211,6 +3212,26 @@
       "test_files": [
         "app/src-tauri/src/slot_lease.rs"
       ]
+    },
+    "task05.historycrypto": {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml",
+        "managed_history"
+      ],
+      "host_os": [
+        "darwin"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "source": "TASK-05 自有历史加密首片：身份 AAD 与 AES-256-GCM 随机 nonce；明文不出现在封套；错密钥、篡改、跨 project/run/artifact/version、未知格式、截断和无效身份拒绝；macOS 项目密钥专用 service、UUID 账户隔离、create-only 错误口径及非 macOS 拒写。静态纯逻辑覆盖不替代钥匙串原生包验收。",
+      "test_files": [
+        "app/src-tauri/src/managed_history_crypto.rs",
+        "app/src-tauri/src/managed_history_key.rs"
+      ]
     }
   },
   "agents": {
@@ -3381,6 +3402,7 @@
       "automation.runner",
       "automation.registry",
       "rust.default",
+      "task05.historycrypto",
       "gw06.retrytable",
       "gw06.fallback",
       "gw06.streamfailure",
@@ -3562,6 +3584,7 @@
       "automation.runner",
       "automation.registry",
       "rust.default",
+      "task05.historycrypto",
       "gw06.retrytable",
       "gw06.fallback",
       "gw06.streamfailure",

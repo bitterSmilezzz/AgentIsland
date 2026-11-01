@@ -48,6 +48,8 @@ mod installed;
 mod interface_models;
 mod localclock;
 mod machine_node;
+mod managed_history_crypto;
+mod managed_history_key;
 mod mcp_config;
 mod mcp_grant;
 mod memory;

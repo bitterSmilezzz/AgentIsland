@@ -701,3 +701,27 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - BUG-014 保持 open：当前真实 VM 门禁通过，但没有再次触发文档记载的“来宾重启后首跑 / 长时间闲置后”故障；不能据一次暖机通过关闭问题。
 - BUG-016 / NOT-06 保持 open：用户明确不希望承担手工操作；不能用代码级超时测试或本轮 VM 验收替代 v0.0.416 的真实 updater 请求和安装验证。旧 `agentisland-update-e2e` VM 本轮未触碰。
 - TASK-05 的 AgentIsland 自有执行历史数据策略草稿仍待用户确认；此前已请求确认，未收到答案时不把草案当成获批契约。全局计划继续进行，不将本轮验收改动写成整体完成。
+
+## 25. 2026-11-01 追加：TASK-05 自有执行历史数据策略与加密基础（v0.0.431）
+
+### 改动
+
+- 用户确认按草案定案；新增 ADR 0041 和实施基线。项目默认关闭采集，来源会话正文不复制；手动删除为默认留存，期限清理需显式选择，容量超限拒绝新写入，备份恢复全有或全无。容量和期限数值继续等资源实测，不预设默认值。
+- 新增自有历史 AES-256-GCM 密文封套，随机 nonce，AAD 绑定格式/project/run/artifact/content-version；`DataKey` 与钥匙串读回缓冲区用 `Zeroizing` 清理。错密钥、错身份、篡改、未知格式和截断均拒绝返回正文。
+- 新增执行历史专用 macOS 钥匙串 service。项目密钥通过 create-only `SecItemAdd` 创建；已有条目拒绝，不覆盖。未实现安全凭据适配器的平台拒绝写入。
+- 该分片未接任务 JSON、现有明文本地 blob、Tauri 命令或受管理运行写入口；不迁移历史正文，不触发用户数据写入。
+
+### 验证与发布
+
+- 变更前 `scripts/verify-framework.sh` exit 0：Rust **1426 passed / 15 ignored**，统一 CI **131/131**，脱敏扫描 **41/41**，Windows 四片段 **4/4**。Windows 整 crate MSVC 类型检查因本机缺 SDK/CRT 头文件 blocked；native、manual、client、soak profile 因外部前置缺失标为 blocked / unverified。
+- 变更后密文与密钥定向测试 **9/9**，自动化注册表测试 **23/23**；需求矩阵/状态生成、版本一致性、`git diff --check` 和新增文件格式校验通过。
+- Windows GNU 检查也因缺 `x86_64-w64-mingw32-gcc` 在依赖构建阶段终止，没有验证本轮非 macOS 分支。Windows 权威 CI 仍需覆盖。
+- 本轮没有实际读写系统钥匙串；create-only、锁定/拒绝访问和密钥删除需另做原生验收。当前平台原生门禁只覆盖既有 UI、Dock、单实例、CLI 与窗口释放。
+- 代码审查报告：[`2026-11-01-1415-v0.0.431-codex.md`](../code-review/2026-11-01-1415-v0.0.431-codex.md)。预定以 `scripts/release.sh 0.0.431 "TASK-05：定案自有执行历史策略并加入加密基础"` 收尾；本轮发布使用隔离 `agentisland-iso`，旧 `agentisland-update-e2e` VM 保持不动。
+
+### 未完成与下一步
+
+- TASK-05 仍为 partial。下一片先做磁盘/资源测量并定容量、期限 UI 范围，再实现项目 opt-in 与运行策略快照；之后依序完成加密内容存储/精确删除、备份恢复、任务页和平台原生验收。
+- TASK-03 真实执行授权未完成，因此目前不允许将加密接口连接到受管理运行写入；TASK-05 历史数据仍不产生。
+- BUG-016 / NOT-06 的 v0.0.416 检查更新卡住仍未复现；用户不承担手动操作。任何更新 VM 复验只可使用专门隔离实例；本轮没有触碰旧 `agentisland-update-e2e` VM。
+- 全局计划继续进行。状态仍有 **23 项 partial**、**14 项 done**；bug 登记为 **18 条记录、3 条 open**。本轮只关闭 TASK-05 数据策略定案，不代表计划或 TASK-05 全部完成。
