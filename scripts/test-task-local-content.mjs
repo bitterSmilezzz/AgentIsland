@@ -11,6 +11,7 @@ function fixture() {
     tasks: [{ id: 'task', title: 'Task', current_run_id: 'run', archived_ms: null }],
     runs: [{ id: 'run', task_id: 'task', status: 'ready', started_ms: 0 }], attentions: [], artifacts: [] };
   window.commands = []; window.lastProgress = null; window.deferProgress = false; window.progressReply = null;
+  window.lastArtifactVersion = null; window.lastRestore = null; window.artifactBodies = new Map();
   window.localBody = '本地用户记录\n<img src=x onerror="window.injected=true">';
   window.__TAURI__ = { core: { invoke: async (command, args) => {
     commands.push({ command, args });
@@ -27,13 +28,52 @@ function fixture() {
       fixtureData.revision++;
       const hasBody = Boolean(args.artifactContent?.trim());
       fixtureData.runs[0].status = args.status;
-      fixtureData.artifacts.push({ id: 'local-artifact', run_id: 'run', kind: args.kind ?? 'result_review',
+      const artifactId = 'local-artifact';
+      fixtureData.artifacts.push({ id: artifactId, run_id: 'run', kind: args.kind ?? 'result_review',
         title: args.artifactTitle, revision: 1, ...(hasBody ? { local_content: { sha256: 'a'.repeat(64), bytes: new TextEncoder().encode(args.artifactContent).length } } : {}) });
+      if (hasBody) artifactBodies.set(artifactId, args.artifactContent);
       const snapshot = structuredClone(fixtureData);
       return deferProgress ? await new Promise(resolve => { progressReply = () => resolve(snapshot); }) : snapshot;
     }
+    if (command === 'task_record_artifact_version') {
+      if (args.expectedRevision !== fixtureData.revision) throw { code: 'stale_revision', message: '任务已更新，请刷新后重试' };
+      lastArtifactVersion = args;
+      fixtureData.revision++;
+      const target = fixtureData.artifacts.find(item => item.id === args.artifactId);
+      const logicalId = target.logical_id ?? target.id;
+      const chain = fixtureData.artifacts.filter(item => (item.logical_id ?? item.id) === logicalId);
+      for (const item of chain) item.logical_id = logicalId;
+      const version = Math.max(...chain.map(item => item.revision)) + 1;
+      const artifactId = `local-artifact-v${version}`;
+      fixtureData.artifacts.push({ id: artifactId, logical_id: logicalId, run_id: target.run_id, kind: target.kind,
+        title: args.artifactTitle, revision: version, local_content: { sha256: String(version).repeat(64).slice(0, 64), bytes: new TextEncoder().encode(args.artifactContent).length } });
+      artifactBodies.set(artifactId, args.artifactContent);
+      return structuredClone(fixtureData);
+    }
+    if (command === 'task_restore_artifact_version') {
+      if (args.expectedRevision !== fixtureData.revision) throw { code: 'stale_revision', message: '任务已更新，请刷新后重试' };
+      lastRestore = args;
+      fixtureData.revision++;
+      const target = fixtureData.artifacts.find(item => item.id === args.artifactId);
+      const logicalId = target.logical_id ?? target.id;
+      const chain = fixtureData.artifacts.filter(item => (item.logical_id ?? item.id) === logicalId);
+      for (const item of chain) item.logical_id = logicalId;
+      const version = Math.max(...chain.map(item => item.revision)) + 1;
+      const artifactId = `local-artifact-v${version}`;
+      fixtureData.artifacts.push({ id: artifactId, logical_id: logicalId, run_id: target.run_id, kind: target.kind,
+        title: target.title, revision: version, local_content: { sha256: String(version).repeat(64).slice(0, 64), bytes: new TextEncoder().encode(artifactBodies.get(target.id)).length } });
+      artifactBodies.set(artifactId, artifactBodies.get(target.id));
+      return structuredClone(fixtureData);
+    }
     if (command === 'task_artifact_content') {
-      return { available: true, text: localBody, notice: '本地保存 · 只读查看。' };
+      return { available: true, text: artifactBodies.get(args.artifactId) ?? localBody, notice: '本地保存 · 只读查看。' };
+    }
+    if (command === 'task_artifact_compare') {
+      const from = fixtureData.artifacts.find(item => item.id === args.fromArtifactId);
+      const to = fixtureData.artifacts.find(item => item.id === args.toArtifactId);
+      return { fromRevision: from.revision, toRevision: to.revision, titleFrom: from.title, titleTo: to.title,
+        titleChanged: from.title !== to.title, crossRun: from.run_id !== to.run_id,
+        contentDiff: `--- v${from.revision}\n+++ v${to.revision}\n-${artifactBodies.get(from.id)}\n+${artifactBodies.get(to.id)}` };
     }
     return null;
   } }, event: { listen: async () => () => {} } };
@@ -92,7 +132,7 @@ try {
     readLabel: document.querySelector('[data-task-artifact-read]').textContent,
   })), { status: 'ready', title: '本地交付', body: submittedBody, revision: 1, textareaDisabled: false, readLabel: '查看产出' });
 
-  await page.locator('[data-task-artifact-read]').click();
+  await page.locator('[data-task-artifact-read]').first().click();
   await page.waitForFunction(() => document.querySelector('[data-artifact-text]')?.textContent === window.localBody);
   assert.equal(await page.locator('[data-artifact-title]').textContent(), '本地产出');
   assert.equal(await page.locator('[data-artifact-notice]').textContent(), '本地保存 · 只读查看。');
@@ -103,8 +143,51 @@ try {
   assert.deepEqual(await page.evaluate(() => commands.filter(x => x.command === 'task_artifact_content').map(x => x.args)), [
     { id: 'task', runId: 'run', artifactId: 'local-artifact', expectedRevision: 2 },
   ]);
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  const versionForm = page.locator('[data-task-version-form]');
+  await versionForm.locator('[name="artifactTitle"]').fill('本地交付修订');
+  const secondBody = '修订后的本地内容\n<img src=x onerror="window.injected=true">';
+  await versionForm.locator('[name="artifactContent"]').fill(secondBody);
+  await versionForm.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => window.lastArtifactVersion?.artifactContent === '修订后的本地内容\n<img src=x onerror="window.injected=true">');
+  assert.deepEqual(await page.evaluate(() => lastArtifactVersion), {
+    id: 'task', artifactId: 'local-artifact', artifactTitle: '本地交付修订', artifactContent: secondBody, expectedRevision: 2,
+  });
+
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  const staleVersionForm = page.locator('[data-task-version-form]');
+  await staleVersionForm.locator('[name="artifactTitle"]').fill('未丢失的草稿');
+  await staleVersionForm.locator('[name="artifactContent"]').fill('等待刷新后再提交');
+  await page.evaluate(() => { fixtureData.revision++; });
+  await staleVersionForm.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-task-version-form] [data-task-form-feedback]')?.textContent.includes('草稿已保留'));
+  assert.equal(await page.locator('[data-task-version-form] [name="artifactContent"]').inputValue(), '等待刷新后再提交');
+  await page.locator('[data-task-refresh]').click();
+  await page.waitForFunction(() => commands.filter(x => x.command === 'tasks_snapshot').length >= 2);
+  await page.locator('[data-task-version-form] [data-task-discard]').click();
+  await page.waitForFunction(() => document.querySelector('[data-task-version-form] [name="artifactContent"]')?.value === '');
+
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  const compareForm = page.locator('[data-task-version-compare]');
+  await compareForm.locator('[name="fromArtifactId"]').selectOption('local-artifact');
+  await compareForm.locator('[name="toArtifactId"]').selectOption('local-artifact-v2');
+  await compareForm.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-artifact-text]')?.textContent.includes('+修订后的本地内容'));
+  assert.equal(await page.locator('[data-artifact-title]').textContent(), '版本比较');
+  assert.equal(await page.locator('[data-artifact-text] img').count(), 0, '比较结果必须以纯文本展示');
+  assert.deepEqual(await page.evaluate(() => commands.find(x => x.command === 'task_artifact_compare').args), {
+    id: 'task', fromArtifactId: 'local-artifact', toArtifactId: 'local-artifact-v2', expectedRevision: 4,
+  });
+  await page.locator('[data-artifact-close]').click();
+  assert.equal(await page.locator('[data-artifact-text]').textContent(), '');
+
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  await page.locator('[data-task-artifact-restore="local-artifact"]').click();
+  await page.waitForFunction(() => window.lastRestore?.artifactId === 'local-artifact');
+  assert.deepEqual(await page.evaluate(() => lastRestore), { id: 'task', artifactId: 'local-artifact', expectedRevision: 4 });
+  assert.equal(await page.evaluate(() => artifactBodies.get('local-artifact-v3')), submittedBody, '恢复必须复制所选历史正文并追加新版本');
   assert.deepEqual(errors, []);
-  console.log('PASS: local task output is saved, read as text, and cleared when closed');
+  console.log('PASS: local task outputs append, compare, and restore immutable versions');
   await page.close();
 } finally {
   await browser?.close(); await new Promise(resolve => server.close(resolve));

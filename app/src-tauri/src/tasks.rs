@@ -9,7 +9,8 @@ const MAX_RECEIPTS: usize = 20_000;
 /// 长期运行攒下的产出行会先撑满 `MAX_BYTES`，把「任务记录达到容量上限」
 /// 挡在**用户数据**的写入上：派生数据饿死用户数据。淘汰从最旧、且**没有**
 /// 被任何 attention 引用的行开始（那条链接是用户回到来源内容的路）；
-/// 全都被引用时不淘汰，仍由 `MAX_BYTES` 兜底拒绝。被淘汰的数量记在
+/// 本地版本链也整体保留，避免容量整理切断可比较/恢复的历史。全都被引用时
+/// 不淘汰，仍由 `MAX_BYTES` 兜底拒绝。被淘汰的数量记在
 /// `evicted_artifacts`，对界面可见——「淘汰发生了」不许静默。
 const MAX_ARTIFACTS: usize = 2_000;
 fn id() -> String {
@@ -101,8 +102,13 @@ pub struct Artifact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_ref: Option<String>,
     pub id: String,
+    /// Stable identity shared by explicit local versions. None keeps legacy
+    /// and source-event artifacts as independent entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_id: Option<String>,
     pub run_id: String,
     pub title: String,
+    /// Revision within this logical artifact chain; source entries remain 1.
     pub revision: u64,
     pub kind: AttentionKind,
     /// User-authored local output is stored in an immutable content-addressed blob.
@@ -155,20 +161,17 @@ impl Default for Data {
     }
 }
 impl Data {
-    /// 产出留存的上限执行。见 `MAX_ARTIFACTS` 的注释：淘汰只动**未被引用**的
-    /// 最旧行，引用中的行永远保留；一个都动不了时安静返回（`MAX_BYTES` 仍兜底）。
+    /// 产出留存的上限执行：淘汰只动**未被引用且不属于版本链**的最旧行，
+    /// 引用行与完整版本历史永远保留；一个都动不了时由 `MAX_BYTES` 兜底拒写。
     fn enforce_artifact_cap(&mut self) {
         while self.artifacts.len() > MAX_ARTIFACTS {
-            let referenced = |artifact: &str| {
-                self.attentions
-                    .iter()
-                    .any(|a| a.artifact_id.as_deref() == Some(artifact))
-            };
-            let Some(index) = self
-                .artifacts
-                .iter()
-                .position(|artifact| !referenced(&artifact.id))
-            else {
+            let Some(index) = self.artifacts.iter().position(|artifact| {
+                artifact.logical_id.is_none()
+                    && !self
+                        .attentions
+                        .iter()
+                        .any(|attention| attention.artifact_id.as_deref() == Some(&artifact.id))
+            }) else {
                 break;
             };
             self.artifacts.remove(index);
@@ -190,6 +193,22 @@ fn error(code: &str, message: &str) -> Error {
 fn artifact_store_error(reason: crate::artifact_store::StoreRefusal) -> Error {
     let (code, message) = reason.error_details();
     error(code, message)
+}
+fn artifact_version_error(reason: crate::artifact_version::VersionRefusal) -> Error {
+    use crate::artifact_version::VersionRefusal;
+    match reason {
+        VersionRefusal::ExternalReadOnlyCannotEvolve => error(
+            "external_readonly_cannot_evolve",
+            "来源事件产物不能创建本地版本",
+        ),
+        VersionRefusal::RevisionNotMonotonic => {
+            error("read_only", "产出版本链无效，原任务记录已保留")
+        }
+        VersionRefusal::TargetVersionNotFound => error("not_found", "所选产出版本不存在"),
+        VersionRefusal::DifferentLogicalArtifact => {
+            error("source_mismatch", "所选版本不属于同一逻辑产出")
+        }
+    }
 }
 fn dependency_error(reason: crate::project_deps::DepRefusal) -> Error {
     use crate::project_deps::DepRefusal;
@@ -689,6 +708,167 @@ impl Store {
             Ok(())
         })
     }
+
+    /// Add an explicitly authored version to an existing local output chain.
+    /// This changes task metadata only; it never starts, accepts, or forwards work.
+    pub fn record_local_artifact_version(
+        &self,
+        task: &str,
+        artifact_id: &str,
+        title: String,
+        content: String,
+        revision: u64,
+        now: i64,
+    ) -> Result<Data, Error> {
+        let title = text(&title)?;
+        if content.trim().is_empty() {
+            return Err(error("invalid_input", "新版本正文不能为空"));
+        }
+        if content.len() > crate::task_artifacts::MAX_BODY {
+            return Err(error("capacity", "产出正文超过 64 KiB，未保存"));
+        }
+        if crate::private_text::known_private(&content) {
+            return Err(error(
+                "invalid_input",
+                "产出正文包含已识别的凭据形态，未保存",
+            ));
+        }
+        let blob_store = self.artifact_blob_store()?;
+        self.edit(revision, |data| {
+            let task_record = data
+                .tasks
+                .iter()
+                .find(|item| item.id == task)
+                .ok_or_else(|| error("not_found", "任务不存在"))?;
+            if task_record.archived_ms.is_some() {
+                return Err(error("invalid_input", "请先恢复任务"));
+            }
+            let current_run_id = task_record.current_run_id.clone();
+            let (selected, _) = data.local_artifact_version_ref(task, artifact_id)?;
+            let mut chain = data.local_artifact_chain(task, artifact_id)?;
+            let logical_id = chain.logical_id.clone();
+
+            // Once a user starts a version chain, retain every member. Make the
+            // existing singleton explicit before enforcing the row limit.
+            for artifact in &mut data.artifacts {
+                if artifact.logical_id.as_deref().unwrap_or(&artifact.id) == logical_id {
+                    artifact.logical_id = Some(logical_id.clone());
+                }
+            }
+            let run_id = current_run_id.unwrap_or_else(|| selected.run_id.clone());
+            if !data
+                .runs
+                .iter()
+                .any(|run| run.id == run_id && run.task_id == task)
+            {
+                return Err(error("source_mismatch", "当前运行不属于所选任务"));
+            }
+            let new_id = id();
+            let next_revision = chain
+                .current_revision()
+                .checked_add(1)
+                .ok_or_else(|| error("capacity", "产出版本号已达上限"))?;
+            let version = crate::artifact_version::ArtifactVersion {
+                logical_id: logical_id.clone(),
+                entry_id: new_id.clone(),
+                run_id: run_id.clone(),
+                title: title.clone(),
+                revision: next_revision,
+                event_ref: None,
+            };
+            chain.append(version).map_err(artifact_version_error)?;
+
+            let kind = data
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == selected.entry_id)
+                .map(|artifact| artifact.kind)
+                .ok_or_else(|| error("not_found", "产出版本不存在"))?;
+            data.artifacts.push(Artifact {
+                event_ref: None,
+                id: new_id.clone(),
+                logical_id: Some(logical_id),
+                run_id: run_id.clone(),
+                title,
+                revision: next_revision,
+                kind,
+                local_content: None,
+            });
+            data.enforce_artifact_cap();
+            if data.artifacts.len() > MAX_ARTIFACTS {
+                return Err(error("capacity", "产出版本留存达到上限；历史未改动"));
+            }
+            let stored = blob_store
+                .put(
+                    content.as_bytes(),
+                    false,
+                    data.local_artifact_content_bytes(),
+                )
+                .map_err(artifact_store_error)?;
+            let new_artifact = data
+                .artifacts
+                .iter_mut()
+                .find(|artifact| artifact.id == new_id)
+                .ok_or_else(|| error("capacity", "产出版本留存达到上限；正文未保存"))?;
+            new_artifact.local_content = Some(LocalArtifactContentRef {
+                sha256: stored.sha256,
+                bytes: stored.bytes,
+            });
+            let run = data
+                .runs
+                .iter_mut()
+                .find(|run| run.id == run_id && run.task_id == task)
+                .ok_or_else(|| error("source_mismatch", "当前运行不属于所选任务"))?;
+            run.revision = run
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| error("capacity", "运行版本已达上限"))?;
+            let task_record = data
+                .tasks
+                .iter_mut()
+                .find(|item| item.id == task)
+                .ok_or_else(|| error("not_found", "任务不存在"))?;
+            task_record.updated_ms = now;
+            task_record.revision = task_record
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| error("capacity", "任务版本已达上限"))?;
+            Ok(())
+        })
+    }
+
+    /// Restore a historical local body by appending it as the next version.
+    pub fn restore_local_artifact_version(
+        &self,
+        task: &str,
+        artifact_id: &str,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<Data, Error> {
+        let snapshot = self.load()?;
+        if snapshot.revision != expected_revision {
+            return Err(error("stale_revision", "任务已更新，请刷新后重试"));
+        }
+        let (version, content_ref) = snapshot.local_artifact_version_ref(task, artifact_id)?;
+        let bytes = self
+            .artifact_blob_store()?
+            .read(&content_ref.sha256, content_ref.bytes)
+            .map_err(artifact_store_error)?;
+        let content = String::from_utf8(bytes)
+            .map_err(|_| error("content_corrupt", "本地产出正文格式无效，未恢复"))?;
+        let readable = crate::task_artifacts::local_content(content.clone());
+        if !readable.available {
+            return Err(error("invalid_input", &readable.notice));
+        }
+        self.record_local_artifact_version(
+            task,
+            artifact_id,
+            version.title,
+            content,
+            expected_revision,
+            now,
+        )
+    }
     pub fn handled(
         &self,
         task: &str,
@@ -796,6 +976,7 @@ impl Store {
                         d.artifacts.push(Artifact {
                             event_ref: Some(evidence.event_ref.clone()),
                             id: artifact_id.clone(),
+                            logical_id: None,
                             run_id: attention.run_id.clone(),
                             title: evidence.title().into(),
                             revision: 1,
@@ -974,6 +1155,108 @@ impl Data {
             .clone()
             .map(Some)
             .ok_or_else(|| error("content_missing", "这条本地记录没有保存正文"))
+    }
+
+    fn local_artifact_version_ref(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+    ) -> Result<
+        (
+            crate::artifact_version::ArtifactVersion,
+            LocalArtifactContentRef,
+        ),
+        Error,
+    > {
+        self.tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| error("not_found", "任务不存在"))?;
+        let artifact = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == artifact_id)
+            .ok_or_else(|| error("not_found", "产出版本不存在"))?;
+        let run = self
+            .runs
+            .iter()
+            .find(|run| run.id == artifact.run_id && run.task_id == task_id)
+            .ok_or_else(|| error("source_mismatch", "产出版本不属于所选任务"))?;
+        if artifact.event_ref.is_some() {
+            return Err(artifact_version_error(
+                crate::artifact_version::VersionRefusal::ExternalReadOnlyCannotEvolve,
+            ));
+        }
+        let local_content = artifact
+            .local_content
+            .clone()
+            .ok_or_else(|| error("content_missing", "本地产出版本没有保存正文"))?;
+        Ok((
+            crate::artifact_version::ArtifactVersion {
+                logical_id: artifact
+                    .logical_id
+                    .clone()
+                    .unwrap_or_else(|| artifact.id.clone()),
+                entry_id: artifact.id.clone(),
+                run_id: run.id.clone(),
+                title: artifact.title.clone(),
+                revision: artifact.revision,
+                event_ref: artifact.event_ref.clone(),
+            },
+            local_content,
+        ))
+    }
+
+    fn local_artifact_chain(
+        &self,
+        task_id: &str,
+        artifact_id: &str,
+    ) -> Result<crate::artifact_version::ArtifactChain, Error> {
+        let (target, _) = self.local_artifact_version_ref(task_id, artifact_id)?;
+        let mut entries = self
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.logical_id.as_deref().unwrap_or(&artifact.id) == target.logical_id
+            })
+            .map(|artifact| self.local_artifact_version_ref(task_id, &artifact.id))
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|(version, _)| version.revision);
+        let mut chain = crate::artifact_version::ArtifactChain::new(&target.logical_id);
+        for (version, _) in entries {
+            chain.append(version).map_err(artifact_version_error)?;
+        }
+        Ok(chain)
+    }
+
+    /// Resolve two exact local versions after checking task ownership, chain
+    /// identity, and the snapshot revision supplied by the UI.
+    pub fn local_artifact_version_pair(
+        &self,
+        task_id: &str,
+        from_artifact_id: &str,
+        to_artifact_id: &str,
+        expected_revision: u64,
+    ) -> Result<
+        (
+            crate::artifact_version::ArtifactVersion,
+            LocalArtifactContentRef,
+            crate::artifact_version::ArtifactVersion,
+            LocalArtifactContentRef,
+        ),
+        Error,
+    > {
+        if self.revision != expected_revision {
+            return Err(error("conflict", "任务已更新，请刷新后重试"));
+        }
+        let (from, from_content) = self.local_artifact_version_ref(task_id, from_artifact_id)?;
+        let (to, to_content) = self.local_artifact_version_ref(task_id, to_artifact_id)?;
+        if from.logical_id != to.logical_id {
+            return Err(artifact_version_error(
+                crate::artifact_version::VersionRefusal::DifferentLogicalArtifact,
+            ));
+        }
+        Ok((from, from_content, to, to_content))
     }
 
     fn project_dependency_graph(&self) -> crate::project_deps::DepGraph {
@@ -1177,6 +1460,7 @@ impl Data {
             self.artifacts.push(Artifact {
                 event_ref: None,
                 id: artifact_id.clone(),
+                logical_id: None,
                 run_id: run_id.clone(),
                 title,
                 revision: 1,
@@ -1266,13 +1550,43 @@ impl Data {
                 return Err(invalid());
             }
         }
+        let mut version_chains: std::collections::HashMap<
+            String,
+            (String, std::collections::BTreeSet<u64>),
+        > = std::collections::HashMap::new();
         for a in &self.artifacts {
+            if a.revision == 0
+                || a.logical_id
+                    .as_ref()
+                    .is_some_and(|logical| logical.is_empty())
+            {
+                return Err(invalid());
+            }
             if a.event_ref.as_ref().is_some_and(|value| {
                 value.len() != 64 || !value.bytes().all(|c| c.is_ascii_hexdigit())
             }) {
                 return Err(invalid());
             }
             if !self.runs.iter().any(|r| r.id == a.run_id) {
+                return Err(invalid());
+            }
+            if let Some(logical_id) = &a.logical_id {
+                if a.event_ref.is_some() || a.local_content.is_none() {
+                    return Err(invalid());
+                }
+                let owner = self
+                    .runs
+                    .iter()
+                    .find(|run| run.id == a.run_id)
+                    .map(|run| run.task_id.clone())
+                    .ok_or_else(invalid)?;
+                let chain = version_chains
+                    .entry(logical_id.clone())
+                    .or_insert_with(|| (owner.clone(), std::collections::BTreeSet::new()));
+                if chain.0 != owner || !chain.1.insert(a.revision) {
+                    return Err(invalid());
+                }
+            } else if a.revision != 1 {
                 return Err(invalid());
             }
             match &a.local_content {
@@ -1289,6 +1603,19 @@ impl Data {
                     // The aggregate bound below is checked after row validation.
                 }
                 _ => return Err(invalid()),
+            }
+        }
+        for (logical_id, (_, revisions)) in version_chains {
+            if !self.artifacts.iter().any(|artifact| {
+                artifact.id == logical_id
+                    && artifact.logical_id.as_deref() == Some(logical_id.as_str())
+                    && artifact.revision == 1
+            }) || revisions
+                .iter()
+                .enumerate()
+                .any(|(index, revision)| *revision != index as u64 + 1)
+            {
+                return Err(invalid());
             }
         }
         if self.local_artifact_content_bytes() > crate::artifact_store::MAX_TOTAL_BYTES {
@@ -1467,6 +1794,7 @@ mod tests {
             data.artifacts.push(Artifact {
                 event_ref: None,
                 id: artifact_id.clone(),
+                logical_id: None,
                 run_id,
                 title: format!("产出 {index}"),
                 revision: 1,
@@ -1531,6 +1859,30 @@ mod tests {
             "全被引用时不得淘汰任何行"
         );
         assert_eq!(data.evicted_artifacts, 0, "计数不得虚增");
+    }
+
+    #[test]
+    fn artifact_version_retention_never_splits_a_local_version_chain() {
+        let mut data = artifact_hoard(MAX_ARTIFACTS + 10, 500);
+        let first_version = data
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.id == "artifact-2")
+            .unwrap();
+        first_version.logical_id = Some(first_version.id.clone());
+        first_version.local_content = Some(LocalArtifactContentRef {
+            sha256: "a".repeat(64),
+            bytes: 1,
+        });
+        data.enforce_artifact_cap();
+        assert!(
+            data.artifacts
+                .iter()
+                .any(|artifact| artifact.id == "artifact-2"),
+            "未被 attention 引用的版本链根也必须保留"
+        );
+        assert_eq!(data.artifacts.len(), MAX_ARTIFACTS);
+        assert_eq!(data.evicted_artifacts, 10);
     }
 
     /// 旧文件（没有 `evicted_artifacts` 字段）必须还能读进来：
@@ -2051,6 +2403,272 @@ mod tests {
                     &run_id,
                     &artifact_id,
                     second_recorded.revision - 1,
+                )
+                .unwrap_err()
+                .code,
+            "conflict"
+        );
+    }
+
+    #[test]
+    fn local_artifact_versions_append_compare_and_restore_without_rewriting_history() {
+        let (_sandbox, store) = store_in("tasks-local-artifact-versions");
+        let created = store.create("版本任务", None, 0, 1).unwrap();
+        let task_id = created.tasks[0].id.clone();
+        let first_body = "保留\n旧方案\n结尾";
+        let first = store
+            .record_with_content(
+                &task_id,
+                RunStatus::Ready,
+                None,
+                Some("方案".into()),
+                Some(first_body.into()),
+                created.revision,
+                2,
+            )
+            .unwrap();
+        let first_artifact_id = first.artifacts.last().unwrap().id.clone();
+        let next_run = store
+            .record(&task_id, RunStatus::Running, None, None, first.revision, 3)
+            .unwrap();
+        let second_body = "保留\n新方案\n结尾";
+        let second = store
+            .record_local_artifact_version(
+                &task_id,
+                &first_artifact_id,
+                "方案修订".into(),
+                second_body.into(),
+                next_run.revision,
+                4,
+            )
+            .unwrap();
+        let chain: Vec<_> = second
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.logical_id.as_deref() == Some(first_artifact_id.as_str()))
+            .collect();
+        assert_eq!(chain.len(), 2, "两个物理版本都应保留");
+        assert_eq!(chain[0].id, first_artifact_id);
+        assert_eq!(chain[0].revision, 1);
+        assert_eq!(chain[1].revision, 2);
+        assert_ne!(chain[0].run_id, chain[1].run_id, "新版本绑定当前任务运行");
+
+        let (from, from_ref, to, to_ref) = second
+            .local_artifact_version_pair(&task_id, &chain[0].id, &chain[1].id, second.revision)
+            .unwrap();
+        let blobs = store.artifact_blob_store().unwrap();
+        let from_body =
+            String::from_utf8(blobs.read(&from_ref.sha256, from_ref.bytes).unwrap()).unwrap();
+        let to_body = String::from_utf8(blobs.read(&to_ref.sha256, to_ref.bytes).unwrap()).unwrap();
+        let diff =
+            crate::artifact_version::compare_content(&from, &to, &from_body, &to_body).unwrap();
+        assert_eq!(diff.from_revision, 1);
+        assert_eq!(diff.to_revision, 2);
+        assert!(diff.title_changed);
+        assert!(diff.cross_run);
+        assert!(diff.content_diff.contains("-旧方案\n"));
+        assert!(diff.content_diff.contains("+新方案\n"));
+
+        let restored = store
+            .restore_local_artifact_version(&task_id, &first_artifact_id, second.revision, 5)
+            .unwrap();
+        let versions: Vec<_> = restored
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.logical_id.as_deref() == Some(first_artifact_id.as_str()))
+            .collect();
+        assert_eq!(versions.len(), 3, "恢复产生新版本，不改写旧版本");
+        assert_eq!(
+            versions
+                .iter()
+                .map(|item| item.revision)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(versions[0].title, "方案");
+        assert_eq!(versions[1].title, "方案修订");
+        assert_eq!(versions[2].title, "方案");
+        let restored_ref = versions[2].local_content.as_ref().unwrap();
+        let restored_body = blobs
+            .read(&restored_ref.sha256, restored_ref.bytes)
+            .unwrap();
+        assert_eq!(String::from_utf8(restored_body).unwrap(), first_body);
+        restored.validate().unwrap();
+        let reopened = Store {
+            path: store.path.clone(),
+        };
+        let persisted = reopened.load().unwrap();
+        assert_eq!(
+            persisted
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact.logical_id.as_deref() == Some(first_artifact_id.as_str())
+                })
+                .map(|artifact| artifact.revision)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn local_artifact_version_writes_reject_stale_archived_and_source_entries() {
+        let (_sandbox, store) = store_in("tasks-local-artifact-version-refusals");
+        let created = store.create("版本边界", None, 0, 1).unwrap();
+        let task_id = created.tasks[0].id.clone();
+        let recorded = store
+            .record_with_content(
+                &task_id,
+                RunStatus::Ready,
+                None,
+                Some("本地方案".into()),
+                Some("正文".into()),
+                created.revision,
+                2,
+            )
+            .unwrap();
+        let artifact_id = recorded.artifacts.last().unwrap().id.clone();
+        let path_bytes = fs::read(&store.path).unwrap();
+        for (body, expected_code) in [
+            (["api", "_key = ", "present"].concat(), "invalid_input"),
+            ("x".repeat(crate::task_artifacts::MAX_BODY + 1), "capacity"),
+        ] {
+            assert_eq!(
+                store
+                    .record_local_artifact_version(
+                        &task_id,
+                        &artifact_id,
+                        "拒绝的版本".into(),
+                        body,
+                        recorded.revision,
+                        3,
+                    )
+                    .unwrap_err()
+                    .code,
+                expected_code
+            );
+            assert_eq!(fs::read(&store.path).unwrap(), path_bytes);
+        }
+        assert_eq!(
+            store
+                .record_local_artifact_version(
+                    &task_id,
+                    &artifact_id,
+                    "陈旧版本".into(),
+                    "不应保存".into(),
+                    recorded.revision - 1,
+                    3,
+                )
+                .unwrap_err()
+                .code,
+            "stale_revision"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), path_bytes);
+
+        let archived = store.archive(&task_id, true, recorded.revision, 4).unwrap();
+        let archived_bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .record_local_artifact_version(
+                    &task_id,
+                    &artifact_id,
+                    "归档版本".into(),
+                    "不应保存".into(),
+                    archived.revision,
+                    5,
+                )
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), archived_bytes);
+
+        let mut source = archived;
+        source.tasks[0].archived_ms = None;
+        source.artifacts[0].event_ref = Some("a".repeat(64));
+        source.artifacts[0].local_content = None;
+        store.write(&source).unwrap();
+        let source_bytes = fs::read(&store.path).unwrap();
+        let source_snapshot = store.load().unwrap();
+        assert_eq!(
+            source_snapshot
+                .local_artifact_version_pair(
+                    &task_id,
+                    &artifact_id,
+                    &artifact_id,
+                    source_snapshot.revision,
+                )
+                .unwrap_err()
+                .code,
+            "external_readonly_cannot_evolve"
+        );
+        assert_eq!(
+            store
+                .record_local_artifact_version(
+                    &task_id,
+                    &artifact_id,
+                    "来源伪造版本".into(),
+                    "不应保存".into(),
+                    source.revision,
+                    6,
+                )
+                .unwrap_err()
+                .code,
+            "external_readonly_cannot_evolve"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), source_bytes);
+    }
+
+    #[test]
+    fn artifact_version_comparison_rejects_other_tasks_and_stale_snapshots() {
+        let (_sandbox, store) = store_in("tasks-artifact-version-compare-ownership");
+        let first_task = store.create("任务一", None, 0, 1).unwrap();
+        let first_task_id = first_task.tasks[0].id.clone();
+        let first = store
+            .record_with_content(
+                &first_task_id,
+                RunStatus::Ready,
+                None,
+                Some("产出".into()),
+                Some("第一份".into()),
+                first_task.revision,
+                2,
+            )
+            .unwrap();
+        let first_artifact_id = first.artifacts.last().unwrap().id.clone();
+        let second_task = store.create("任务二", None, first.revision, 3).unwrap();
+        let second_task_id = second_task.tasks.last().unwrap().id.clone();
+        let second = store
+            .record_with_content(
+                &second_task_id,
+                RunStatus::Ready,
+                None,
+                Some("产出".into()),
+                Some("第二份".into()),
+                second_task.revision,
+                4,
+            )
+            .unwrap();
+        let second_artifact_id = second.artifacts.last().unwrap().id.clone();
+        assert_eq!(
+            second
+                .local_artifact_version_pair(
+                    &first_task_id,
+                    &first_artifact_id,
+                    &second_artifact_id,
+                    second.revision,
+                )
+                .unwrap_err()
+                .code,
+            "source_mismatch"
+        );
+        assert_eq!(
+            second
+                .local_artifact_version_pair(
+                    &first_task_id,
+                    &first_artifact_id,
+                    &first_artifact_id,
+                    second.revision - 1,
                 )
                 .unwrap_err()
                 .code,

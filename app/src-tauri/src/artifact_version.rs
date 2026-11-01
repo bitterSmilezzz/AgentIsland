@@ -13,11 +13,13 @@
 //! 2. **外部只读源不伪造历史**：外部只读源来的产物（带 `event_ref`），其版本
 //!    必须来自**外部实际观测**，不得由本仓自造 revision 推进。
 //!    只有本地/自有执行产物才允许由本仓演进版本。
-//! 3. **两版本比较（diff）**：任意两个 revision 的元数据比对——标题变化、
-//!    种类变化、时间先后。版本相同时无 diff；版本不同时给出明确的前后变化。
+//! 3. **两版本比较（diff）**：元数据比对标题变化和是否跨 run；生产路径还会
+//!    对两个本地正文给出有界逐行差异。外部只读源不读取或持久化正文来伪造历史。
 //! 4. **任意版本恢复**：恢复到某一历史 revision 产出一个**新 revision**
 //!    （内容等于历史版本，revision = 当前最高 + 1）——**历史不可改写**，
 //!    恢复不是「删掉后面的版本」。
+
+use serde::Serialize;
 
 /// 产物的一个版本快照（包含版本演进所需的元数据）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +44,8 @@ pub enum VersionRefusal {
     RevisionNotMonotonic,
     /// 要恢复的历史版本不存在。
     TargetVersionNotFound,
+    /// 两个条目不属于同一逻辑产物。
+    DifferentLogicalArtifact,
 }
 
 impl VersionRefusal {
@@ -50,6 +54,7 @@ impl VersionRefusal {
             Self::ExternalReadOnlyCannotEvolve => "external_readonly_cannot_evolve",
             Self::RevisionNotMonotonic => "revision_not_monotonic",
             Self::TargetVersionNotFound => "target_version_not_found",
+            Self::DifferentLogicalArtifact => "different_logical_artifact",
         }
     }
 }
@@ -65,6 +70,148 @@ pub struct VersionDiff {
     pub title_to: String,
     /// 是否跨 run（新版本是否在不同的 run 产出）。
     pub cross_run: bool,
+}
+
+/// 版本元数据与本地正文的比较结果，正文只在用户显式比较时返回。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactCompare {
+    pub from_revision: u64,
+    pub to_revision: u64,
+    pub title_from: String,
+    pub title_to: String,
+    pub title_changed: bool,
+    pub cross_run: bool,
+    pub content_diff: String,
+}
+
+/// 比较同一逻辑产物的两个本地版本。
+///
+/// 小型正文使用 LCS 生成逐行差异；超出 250,000 个 LCS 单元时，使用
+/// 一个精确的公共前缀/后缀包围变更段，保证 64 KiB 正文不会触发无界计算。
+pub fn compare_content(
+    from: &ArtifactVersion,
+    to: &ArtifactVersion,
+    from_body: &str,
+    to_body: &str,
+) -> Result<ArtifactCompare, VersionRefusal> {
+    if from.logical_id != to.logical_id {
+        return Err(VersionRefusal::DifferentLogicalArtifact);
+    }
+    if from.event_ref.is_some() || to.event_ref.is_some() {
+        return Err(VersionRefusal::ExternalReadOnlyCannotEvolve);
+    }
+    Ok(ArtifactCompare {
+        from_revision: from.revision,
+        to_revision: to.revision,
+        title_from: from.title.clone(),
+        title_to: to.title.clone(),
+        title_changed: from.title != to.title,
+        cross_run: from.run_id != to.run_id,
+        content_diff: line_diff(from.revision, to.revision, from_body, to_body),
+    })
+}
+
+const MAX_LCS_CELLS: usize = 250_000;
+
+fn line_diff(from_revision: u64, to_revision: u64, from: &str, to: &str) -> String {
+    let old: Vec<&str> = if from.is_empty() {
+        Vec::new()
+    } else {
+        from.split_inclusive('\n').collect()
+    };
+    let new: Vec<&str> = if to.is_empty() {
+        Vec::new()
+    } else {
+        to.split_inclusive('\n').collect()
+    };
+    let mut output = format!("--- v{from_revision}\n+++ v{to_revision}\n");
+    if from == to {
+        output.push_str("正文没有变化\n");
+        return output;
+    }
+
+    let cells = old
+        .len()
+        .saturating_add(1)
+        .checked_mul(new.len().saturating_add(1));
+    if cells.is_none_or(|count| count > MAX_LCS_CELLS) {
+        let mut prefix = 0;
+        while prefix < old.len().min(new.len()) && old[prefix] == new[prefix] {
+            prefix += 1;
+        }
+        let mut suffix = 0;
+        while suffix
+            < old
+                .len()
+                .saturating_sub(prefix)
+                .min(new.len().saturating_sub(prefix))
+            && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+        {
+            suffix += 1;
+        }
+        output.push_str("大段正文采用单一变更区间显示\n");
+        for line in &old[..prefix] {
+            push_diff_line(&mut output, ' ', line);
+        }
+        for line in &old[prefix..old.len() - suffix] {
+            push_diff_line(&mut output, '-', line);
+        }
+        for line in &new[prefix..new.len() - suffix] {
+            push_diff_line(&mut output, '+', line);
+        }
+        for line in &old[old.len() - suffix..] {
+            push_diff_line(&mut output, ' ', line);
+        }
+        return output;
+    }
+
+    let columns = new.len() + 1;
+    let mut lcs = vec![0u32; cells.unwrap()];
+    for old_index in (0..old.len()).rev() {
+        for new_index in (0..new.len()).rev() {
+            let cell = old_index * columns + new_index;
+            lcs[cell] = if old[old_index] == new[new_index] {
+                1 + lcs[(old_index + 1) * columns + new_index + 1]
+            } else {
+                lcs[(old_index + 1) * columns + new_index]
+                    .max(lcs[old_index * columns + new_index + 1])
+            };
+        }
+    }
+    let (mut old_index, mut new_index) = (0, 0);
+    while old_index < old.len() && new_index < new.len() {
+        if old[old_index] == new[new_index] {
+            push_diff_line(&mut output, ' ', old[old_index]);
+            old_index += 1;
+            new_index += 1;
+        } else if lcs[(old_index + 1) * columns + new_index]
+            >= lcs[old_index * columns + new_index + 1]
+        {
+            push_diff_line(&mut output, '-', old[old_index]);
+            old_index += 1;
+        } else {
+            push_diff_line(&mut output, '+', new[new_index]);
+            new_index += 1;
+        }
+    }
+    while old_index < old.len() {
+        push_diff_line(&mut output, '-', old[old_index]);
+        old_index += 1;
+    }
+    while new_index < new.len() {
+        push_diff_line(&mut output, '+', new[new_index]);
+        new_index += 1;
+    }
+    output
+}
+
+fn push_diff_line(output: &mut String, marker: char, line: &str) {
+    output.push(marker);
+    output.push_str(line);
+    if !line.ends_with('\n') {
+        output.push('\n');
+    }
 }
 
 /// 一个逻辑产物的版本链。
@@ -264,9 +411,15 @@ mod tests {
     fn versions_evolve_monotonically_and_preserve_history() {
         let mut chain = ArtifactChain::new("art-1");
         assert_eq!(chain.current_revision(), 0);
-        chain.append(version("e1", "run-1", "初版方案", 1, false)).unwrap();
-        chain.append(version("e2", "run-1", "修订方案", 2, false)).unwrap();
-        chain.append(version("e3", "run-2", "终版方案", 3, false)).unwrap();
+        chain
+            .append(version("e1", "run-1", "初版方案", 1, false))
+            .unwrap();
+        chain
+            .append(version("e2", "run-1", "修订方案", 2, false))
+            .unwrap();
+        chain
+            .append(version("e3", "run-2", "终版方案", 3, false))
+            .unwrap();
 
         assert_eq!(chain.current_revision(), 3);
         assert_eq!(chain.versions.len(), 3, "历史记录全部保留，不覆盖");
@@ -303,9 +456,15 @@ mod tests {
     #[test]
     fn arbitrary_versions_can_be_compared() {
         let mut chain = ArtifactChain::new("art-1");
-        chain.append(version("e1", "run-1", "初版方案", 1, false)).unwrap();
-        chain.append(version("e2", "run-1", "初版方案", 2, false)).unwrap();
-        chain.append(version("e3", "run-2", "大改方案", 3, false)).unwrap();
+        chain
+            .append(version("e1", "run-1", "初版方案", 1, false))
+            .unwrap();
+        chain
+            .append(version("e2", "run-1", "初版方案", 2, false))
+            .unwrap();
+        chain
+            .append(version("e3", "run-2", "大改方案", 3, false))
+            .unwrap();
 
         // 1 vs 2：同 run，同标题
         let diff12 = chain.diff(1, 2).unwrap();
@@ -326,14 +485,58 @@ mod tests {
     }
 
     #[test]
+    fn content_comparison_marks_changed_lines_and_metadata() {
+        let before = version("e1", "run-1", "初版", 1, false);
+        let after = version("e2", "run-2", "修订版", 2, false);
+        let diff =
+            compare_content(&before, &after, "保留\n旧内容\n结束", "保留\n新内容\n结束").unwrap();
+        assert!(diff.title_changed);
+        assert!(diff.cross_run);
+        assert!(diff.content_diff.contains("-旧内容\n"));
+        assert!(diff.content_diff.contains("+新内容\n"));
+        assert!(diff.content_diff.contains(" 保留\n"));
+        assert!(diff.content_diff.contains(" 结束\n"));
+    }
+
+    #[test]
+    fn content_comparison_bounds_large_lcs_and_rejects_foreign_chains() {
+        let before = version("e1", "run-1", "大文件", 1, false);
+        let after = version("e2", "run-2", "大文件", 2, false);
+        let old = (0..600)
+            .map(|index| format!("old-{index}\n"))
+            .collect::<String>();
+        let new = (0..600)
+            .map(|index| format!("new-{index}\n"))
+            .collect::<String>();
+        let diff = compare_content(&before, &after, &old, &new).unwrap();
+        assert!(diff.content_diff.contains("单一变更区间"));
+        assert!(diff.content_diff.contains("-old-0\n"));
+        assert!(diff.content_diff.contains("+new-0\n"));
+
+        let mut other = after;
+        other.logical_id = "another-artifact".into();
+        assert_eq!(
+            compare_content(&before, &other, "a", "b"),
+            Err(VersionRefusal::DifferentLogicalArtifact)
+        );
+    }
+
+    #[test]
     fn restoring_a_historical_version_produces_a_new_forward_revision() {
         let mut chain = ArtifactChain::new("art-1");
-        chain.append(version("e1", "run-1", "稳定版", 1, false)).unwrap();
-        chain.append(version("e2", "run-2", "尝试改坏了", 2, false)).unwrap();
+        chain
+            .append(version("e1", "run-1", "稳定版", 1, false))
+            .unwrap();
+        chain
+            .append(version("e2", "run-2", "尝试改坏了", 2, false))
+            .unwrap();
 
         // 恢复到 v1：产出 v3，内容=稳定版，历史 1 与 2 原样保留
         let restored = chain.restore_to(1, "e3", "run-3").unwrap();
-        assert_eq!(restored.revision, 3, "恢复是向前追加新版本，revision=最高+1");
+        assert_eq!(
+            restored.revision, 3,
+            "恢复是向前追加新版本，revision=最高+1"
+        );
         assert_eq!(restored.title, "稳定版");
         assert_eq!(chain.versions.len(), 3, "历史不可改写：v1/v2/v3 都在");
         assert_eq!(chain.current_revision(), 3);

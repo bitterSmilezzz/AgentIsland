@@ -2867,6 +2867,50 @@ fn task_record_progress(
     )
 }
 #[tauri::command]
+fn task_record_artifact_version(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    artifact_id: String,
+    artifact_title: String,
+    artifact_content: String,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |store| {
+            store.record_local_artifact_version(
+                &id,
+                &artifact_id,
+                artifact_title,
+                artifact_content,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+#[tauri::command]
+fn task_restore_artifact_version(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    artifact_id: String,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |store| {
+            store.restore_local_artifact_version(
+                &id,
+                &artifact_id,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+#[tauri::command]
 fn task_mark_handled(
     app: AppHandle,
     state: State<TaskStore>,
@@ -3087,6 +3131,64 @@ async fn task_artifact_content(
     })
     .await
     .map_err(|_| "来源内容读取未完成，请重试".to_string())?
+}
+
+#[tauri::command]
+async fn task_artifact_compare(
+    app: AppHandle,
+    id: String,
+    from_artifact_id: String,
+    to_artifact_id: String,
+    expected_revision: u64,
+) -> Result<crate::artifact_version::ArtifactCompare, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<TaskStore>();
+        let (snapshot, blob_store) = {
+            let guard = store.lock().map_err(|_| "任务服务暂不可用")?;
+            (
+                guard.load().map_err(|error| error.message)?,
+                guard.artifact_blob_store().map_err(|error| error.message)?,
+            )
+        };
+        let (from, from_ref, to, to_ref) = snapshot
+            .local_artifact_version_pair(&id, &from_artifact_id, &to_artifact_id, expected_revision)
+            .map_err(|error| error.message)?;
+        let read_body = |reference: &crate::tasks::LocalArtifactContentRef| {
+            let bytes = blob_store
+                .read(&reference.sha256, reference.bytes)
+                .map_err(|reason| {
+                    crate::artifact_store::StoreRefusal::error_details(reason)
+                        .1
+                        .to_string()
+                })?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| "本地产出正文格式无效，无法比较".to_string())?;
+            let readable = crate::task_artifacts::local_content(text);
+            if !readable.available {
+                return Err(readable.notice);
+            }
+            readable
+                .text
+                .ok_or_else(|| "本地产出正文不存在，无法比较".to_string())
+        };
+        let from_body = read_body(&from_ref)?;
+        let to_body = read_body(&to_ref)?;
+        let result = crate::artifact_version::compare_content(&from, &to, &from_body, &to_body)
+            .map_err(|_| "所选产出版本无法比较".to_string())?;
+        if store
+            .lock()
+            .map_err(|_| "任务服务暂不可用")?
+            .load()
+            .map_err(|error| error.message)?
+            .revision
+            != expected_revision
+        {
+            return Err("任务已更新，请刷新后重试".into());
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "产出版本比较未完成".to_string())?
 }
 
 // Claude plan controls return metadata only; body reads use the existing exact artifact command.
@@ -5009,6 +5111,7 @@ fn main() {
             task_link_source,
             task_open_source,
             task_artifact_content,
+            task_artifact_compare,
             claude_plan_status,
             claude_plan_preview,
             claude_plan_apply,
@@ -5030,6 +5133,8 @@ fn main() {
             task_update,
             task_archive,
             task_record_progress,
+            task_record_artifact_version,
+            task_restore_artifact_version,
             task_mark_handled,
             todos_list,
             todos_add,

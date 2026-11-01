@@ -40,8 +40,37 @@ export function renderTaskHistory(data, taskId) {
   const history = data.runs.filter(r => r.task_id === taskId).slice().reverse();
   return `<details class="task-history"><summary>运行记录 · ${history.length}</summary>${history.length ? history.map((r, i) => {
     const action = runSourceAction(r);
-    return `<article><div class="task-history-heading"><strong>第 ${history.length - i} 次 · ${esc(statuses[r.status])}</strong>${action ? `<button type="button" class="mini-btn" data-task-run-open="${esc(action.runId)}">${esc(action.label)}</button>` : '<span class="task-history-local">未保存来源</span>'}</div><time>${esc(new Date(r.started_ms).toLocaleString())}</time>${data.artifacts.filter(a => a.run_id === r.id && !data.attentions.some(g => g.artifact_id === a.id)).map(a => `<p class="task-artifact-line"><span>产出引用 · ${esc(a.title)}</span>${artifactReadButton(a,r.id)}</p>`).join('')}${data.attentions.filter(a => a.run_id === r.id).map(a => `<p>${esc(kinds[a.kind])} · ${a.state === 'expired' ? '已过期' : a.state === 'open' ? '待处理' : a.manual_resolution ? '本地已处理' : '来源已处理'}${a.artifact_id ? ` · ${esc(data.artifacts.find(x => x.id === a.artifact_id)?.title)}` : ''}${artifactReadButton(data.artifacts.find(x => x.id === a.artifact_id),r.id)}</p>`).join('')}</article>`;
+    return `<article><div class="task-history-heading"><strong>第 ${history.length - i} 次 · ${esc(statuses[r.status])}</strong>${action ? `<button type="button" class="mini-btn" data-task-run-open="${esc(action.runId)}">${esc(action.label)}</button>` : '<span class="task-history-local">未保存来源</span>'}</div><time>${esc(new Date(r.started_ms).toLocaleString())}</time>${data.artifacts.filter(a => a.run_id === r.id && !data.attentions.some(g => g.artifact_id === a.id)).map(a => `<p class="task-artifact-line"><span>产出引用${a.local_content?.sha256 ? ` · 版本 ${a.revision}` : ''} · ${esc(a.title)}</span>${artifactReadButton(a,r.id)}</p>`).join('')}${data.attentions.filter(a => a.run_id === r.id).map(a => `<p>${esc(kinds[a.kind])} · ${a.state === 'expired' ? '已过期' : a.state === 'open' ? '待处理' : a.manual_resolution ? '本地已处理' : '来源已处理'}${a.artifact_id ? ` · ${esc(data.artifacts.find(x => x.id === a.artifact_id)?.title)}` : ''}${artifactReadButton(data.artifacts.find(x => x.id === a.artifact_id),r.id)}</p>`).join('')}</article>`;
   }).join('') : '<p>尚无运行记录</p>'}</details>`;
+}
+function localArtifactChains(data, taskId) {
+  const runIds = new Set(data.runs.filter(run => run.task_id === taskId).map(run => run.id));
+  const groups = new Map();
+  for (const artifact of data.artifacts) {
+    if (!runIds.has(artifact.run_id) || artifact.event_ref || !artifact.local_content?.sha256) continue;
+    const logicalId = artifact.logical_id ?? artifact.id;
+    const chain = groups.get(logicalId) ?? [];
+    chain.push(artifact);
+    groups.set(logicalId, chain);
+  }
+  return [...groups.entries()].map(([logicalId, versions]) => ({
+    logicalId,
+    versions: versions.slice().sort((a, b) => a.revision - b.revision),
+  }));
+}
+function renderArtifactVersions(data, task) {
+  const chains = localArtifactChains(data, task.id);
+  if (!chains.length) return '';
+  return `<section class="task-artifact-versions" aria-label="本地产出版本"><h3>本地产出版本</h3>${chains.map(chain => {
+    const latest = chain.versions.at(-1);
+    const fromOptions = chain.versions.map(version => `<option value="${esc(version.id)}">版本 ${version.revision} · ${esc(version.title)}</option>`).join('');
+    const toOptions = chain.versions.map((version, index) => `<option value="${esc(version.id)}"${index === chain.versions.length - 1 ? ' selected' : ''}>版本 ${version.revision} · ${esc(version.title)}</option>`).join('');
+    return `<details class="task-version-chain"><summary>${esc(latest.title)} · ${chain.versions.length} 个版本</summary>
+      <ol>${chain.versions.map(version => `<li><span>版本 ${version.revision} · ${esc(version.title)}</span><span class="task-version-actions">${artifactReadButton(version, version.run_id)}${chain.versions.length > 1 ? `<button class="mini-btn" type="button" data-task-artifact-restore="${esc(version.id)}">恢复到此版（会新增版本）</button>` : ''}</span></li>`).join('')}</ol>
+      ${chain.versions.length > 1 ? `<form class="task-version-compare" data-task-version-compare><label>从<select name="fromArtifactId">${fromOptions}</select></label><label>比较到<select name="toArtifactId">${toOptions}</select></label><button class="mini-btn" type="submit">比较版本</button><p class="task-form-feedback" data-version-feedback role="status" aria-live="polite" hidden></p></form>` : ''}
+      ${task.archived_ms == null ? `<form class="task-version-form" data-task-version-form data-artifact-id="${esc(latest.id)}"><label>新版本名称<input name="artifactTitle" value="${esc(latest.title)}" maxlength="500" required></label><label>新版本正文<textarea name="artifactContent" rows="4" maxlength="65536" required placeholder="最多 64 KiB；可识别的凭据内容不会保存"></textarea></label>${draftActions('记录新版本')}</form>` : ''}
+    </details>`;
+  }).join('')}</section>`;
 }
 export function taskGroup(data, task) {
   const run = data.runs.find(r => r.id === task.current_run_id);
@@ -104,7 +133,7 @@ export async function hydrateTasks(isVisible = () => true) {
     if (local) { local.textContent = text; local.hidden = !text; message.textContent = ''; }
     else message.textContent = text;
   };
-  const detailDirty = except => [...root.querySelectorAll('[data-task-detail] input, [data-task-detail] select, [data-task-detail] textarea')].some(control => !except?.contains(control) && control.value !== control.dataset.savedValue);
+  const detailDirty = except => [...root.querySelectorAll('[data-task-detail] input, [data-task-detail] select, [data-task-detail] textarea')].some(control => !control.closest('[data-task-version-compare]') && !except?.contains(control) && control.value !== control.dataset.savedValue);
   const projectManagerDirty = () => {
     const form = root.querySelector('[data-task-project-dependencies]');
     return Boolean(form && !form.hidden && [...form.querySelectorAll('[data-project-dependency]')]
@@ -357,6 +386,7 @@ export async function hydrateTasks(isVisible = () => true) {
       <section class="task-artifact-view" data-task-artifact-view hidden aria-label="产出内容"><div class="task-detail-heading"><strong data-artifact-title>产出内容</strong><button class="mini-btn" type="button" data-artifact-close>关闭</button></div><p data-artifact-notice role="status" aria-live="polite"></p><pre data-artifact-text tabindex="0" hidden></pre></section>
       ${task.archived_ms == null ? `<form class="task-progress" data-task-progress><label>记录进度<select name="progress"><option value="running">执行中</option><option value="answer">待回答</option><option value="plan_approval">确认方案</option><option value="result_review">验收结果</option><option value="ready">结果就绪</option><option value="failed">执行失败</option><option value="cancelled">已取消</option></select></label><label>产出名称（填写正文时必填）<input name="artifactTitle" placeholder="简短说明（可选）" maxlength="500"></label><label>产出正文（可选）<textarea name="artifactContent" rows="4" placeholder="最多 64 KiB；可识别的凭据内容不会保存"></textarea></label>${draftActions('记录')}</form>` : ''}
       ${renderTaskHistory(data, task.id)}
+      ${renderArtifactVersions(data, task)}
       <button class="mini-btn" type="button" data-task-archive>${task.archived_ms == null ? '归档任务' : '恢复任务'}</button>`;
     const viewer=box.querySelector('[data-task-artifact-view]');
     const body=viewer.querySelector('[data-artifact-text]'),notice=viewer.querySelector('[data-artifact-notice]');
@@ -392,9 +422,33 @@ export async function hydrateTasks(isVisible = () => true) {
       }catch(error){if(current()&&token===readerToken&&viewer.isConnected){notice.textContent=error?.message??String(error);viewer.querySelector('[data-artifact-close]').focus({preventScroll:true});}}
       finally{busy=false;readButtons.forEach(control=>{if(control.isConnected)control.disabled=false;});viewer.removeAttribute('aria-busy');if(refreshQueued){refreshQueued=false;refresh();}}
     };});
+    box.querySelectorAll('[data-task-version-compare]').forEach(form=>{form.onsubmit=async event=>{
+      event.preventDefault();
+      if(busy)return;
+      const fromArtifactId=form.elements.fromArtifactId.value;
+      const toArtifactId=form.elements.toArtifactId.value;
+      const localFeedback=form.querySelector('[data-version-feedback]');
+      localFeedback.textContent='';localFeedback.hidden=true;
+      if(fromArtifactId===toArtifactId){localFeedback.textContent='请选择两个不同版本。';localFeedback.hidden=false;return;}
+      busy=true;readerLifetime?.();readerLifetime=null;const token=++readerToken;
+      const submit=form.querySelector('[type="submit"]');readerCaller=submit;
+      const controls=[...root.querySelectorAll('input, select, textarea, button')];
+      const disabled=controls.map(control=>control.disabled);controls.forEach(control=>{control.disabled=true;});
+      viewer.hidden=false;viewer.setAttribute('aria-busy','true');body.textContent='';body.hidden=true;
+      notice.textContent='正在比较本地产出版本';viewer.querySelector('[data-artifact-title]').textContent='版本比较';
+      try{
+        const result=await invoke('task_artifact_compare',{id:task.id,fromArtifactId,toArtifactId,expectedRevision:revision});
+        if(!current()||selected!==task.id||token!==readerToken||!viewer.isConnected)return;
+        const titleChange=result.titleChanged?`；名称「${result.titleFrom}」→「${result.titleTo}」`:'';
+        notice.textContent=`版本 ${result.fromRevision} → ${result.toRevision}${result.crossRun?' · 跨运行':''}${titleChange}`;
+        body.textContent=result.contentDiff??'';body.hidden=false;body.focus({preventScroll:true});
+        viewer.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
+      }catch(error){if(current()&&token===readerToken&&viewer.isConnected){notice.textContent=error?.message??String(error);viewer.querySelector('[data-artifact-close]').focus({preventScroll:true});}}
+      finally{busy=false;controls.forEach((control,index)=>{if(control.isConnected)control.disabled=disabled[index];});viewer.removeAttribute('aria-busy');if(refreshQueued){refreshQueued=false;refresh();}}
+    };});
     box.querySelector('[name="projectId"]').value = task.project_id ?? '';
     box.querySelectorAll('input, select, textarea').forEach(control => { control.dataset.savedValue = control.value; });
-    box.querySelectorAll('[data-task-edit], [data-task-progress], [data-task-link]').forEach(form => {
+    box.querySelectorAll('[data-task-edit], [data-task-progress], [data-task-link], [data-task-version-form]').forEach(form => {
       const controls = [...form.querySelectorAll('input, select, textarea')];
       const discard = form.querySelector('[data-task-discard]');
       const update = () => {
@@ -413,7 +467,8 @@ export async function hydrateTasks(isVisible = () => true) {
           // edited form. Only after all drafts are explicitly discarded do we
           // reveal the newer saved record and bind its actions to that version.
           const selector = form.hasAttribute('data-task-edit') ? '[data-task-edit]'
-            : form.hasAttribute('data-task-progress') ? '[data-task-progress]' : '[data-task-link]';
+            : form.hasAttribute('data-task-progress') ? '[data-task-progress]'
+              : form.hasAttribute('data-task-version-form') ? '[data-task-version-form]' : '[data-task-link]';
           renderDetail();
           box.querySelector(`${selector} input, ${selector} select`)?.focus({ preventScroll: true });
         } else controls[0]?.focus({ preventScroll: true });
@@ -443,6 +498,11 @@ export async function hydrateTasks(isVisible = () => true) {
     box.querySelectorAll('[data-task-handle]').forEach(button => { button.onclick = () => mutate('task_mark_handled', { id: task.id, runId: run.id, attentionId: button.dataset.taskHandle }); });
     const progress = box.querySelector('[data-task-progress]');
     if (progress) progress.onsubmit = event => { event.preventDefault(); const value = progress.elements.progress.value; const kind = kinds[value] ? value : null; const status = value === 'result_review' ? 'ready' : kind ? 'waiting' : value; mutate('task_record_progress', { id: task.id, status, kind, artifactTitle: progress.elements.artifactTitle.value.trim() || null, artifactContent: progress.elements.artifactContent.value || null }, progress); };
+    box.querySelectorAll('[data-task-version-form]').forEach(form=>{form.onsubmit=event=>{
+      event.preventDefault();
+      mutate('task_record_artifact_version',{id:task.id,artifactId:form.dataset.artifactId,artifactTitle:form.elements.artifactTitle.value.trim(),artifactContent:form.elements.artifactContent.value},form);
+    };});
+    box.querySelectorAll('[data-task-artifact-restore]').forEach(button=>{button.onclick=()=>mutate('task_restore_artifact_version',{id:task.id,artifactId:button.dataset.taskArtifactRestore});});
   };
   const mutate = async (command, args, form, expectedRevisionOverride = null) => {
     if (busy || !data) return;

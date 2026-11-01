@@ -5,13 +5,13 @@
 > [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
 **交接时点**：2026-11-01
-**本轮起始基线**：`main` at `4021fd3`（v0.0.426）；本轮改造为 TASK-05 本地产出正文持久化。
-**本轮开始时最新发布**：`v0.0.426`（DMG / ZIP / updater 包 / `latest.json`）。
-**本轮完成发布**：`v0.0.427`，提交 `b861578bc37f979f132ac2d418a258d5e831ca9c`，tag 与 GitHub Release 已创建；详见第 21 节。
-**基线状态**：最终 `verify-framework.sh` exit 0；本机 Windows 整 crate 检查因缺少 ring 所需 Windows CRT/SDK `assert.h` 标记未验证。发布源码 CI、包身份检查与隔离 VM 原生门禁均通过。
+**本轮起始基线**：`main` at `11723f2`（v0.0.427）；本轮继续 TASK-05 本地产出版本追加、比较与恢复。
+**本轮起始最新发布**：`v0.0.427`（DMG / ZIP / updater 包 / `latest.json`）。
+**本轮发布结果**：v0.0.428；验证、原生验收与剩余未验项见第 22 节。旧版 `agentisland-update-e2e` VM 保持未触碰。
+**验证状态**：以第 22 节的最终回执为准；本机 Windows 整 crate 检查如缺 Windows CRT/SDK `assert.h`，明确列为 blocked / unverified。
 
 > 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9、12、13 节。
-> v0.0.427 完成本地产出正文第五片；TASK-05 仍缺产出版本演进、比较与恢复的任务页接线。NOT-06 的 v0.0.416 真实升级仍未验，旧版 `agentisland-update-e2e` VM 保持原样。
+> v0.0.427 完成本地产出正文持久化；本轮将版本追加、比较和恢复接入任务页。TASK-05 仍缺验证清单 UI 与 AgentIsland 自有执行历史的独立数据策略。NOT-06 的 v0.0.416 真实升级仍未验，旧版 `agentisland-update-e2e` VM 保持原样。
 
 > ⚠️ 本文件由**多个会话接力**：第 1–6 节是 2026-10-17 晚（NOT-05 交付与三轮复审），
 > 第 7 节是 CI 身份规则修复（**不是本次交接者写的**，但记录的是真实修复，保留不删），
@@ -631,3 +631,25 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - TASK-05 仍为 partial：既有版本判据尚未接入任务页生产流程，下一片继续完成产出版本演进、比较与恢复 UI；外部单版本来源不伪造历史。
 - BUG-016 仍为 open：v0.0.416 卡在“检查更新”的原始请求/错误证据未取得，不能用宿主 v0.0.418、发布 VM 或代码级超时测试冒充旧版复现。
 - TASK-01 `task01.dragstatus` 已满足本轮确认的本地进度选择与确认语义；不要重复排期。后续按当前 [`需求状态`](../需求状态.md)和 [`需求测试矩阵`](../spec/需求测试矩阵.md)选择未完成项。
+
+## 22. 2026-11-01 追加：TASK-05 本地产出版本 UI（v0.0.428）
+
+### 改动
+
+- 本地产出记录有稳定逻辑 ID 和单调 revision；新版本追加保存，历史不覆盖，容量淘汰保护整条版本链。旧任务文件仍兼容。
+- 任务页可追加本地版本、比较任意两版的正文/标题/运行上下文，并将任意旧版恢复为新版本。恢复不改写历史；差异和正文仅按纯文本渲染。
+- 写入与读取绑定任务、运行、产物与 revision；归档任务、陈旧版本、跨任务/跨产物和来源事件均拒绝。来源事件继续按原瞬时只读路径，不落入任务文件或版本 blob。
+- 版本表单保留草稿；页面刷新、离页和关闭阅读器遵循当前内容清除边界。此片不执行外部智能体或任务。
+
+### 验证与发布
+
+- `cargo test ... artifact_version` **12/12**；本地产出真实浏览器回归通过，覆盖追加、比较、历史恢复、陈旧 revision 草稿保留与纯文本安全渲染。`scripts/build-app.sh 0.0.428` 完成全量测试、签名 updater 包、DMG 与构建身份回执；本机应用重启到 v0.0.428。
+- 首次稳定统一 CI **130/131**，仅因 `tasks.rs` 同时映射到 `rust.default` 与 `task05.versioning` 被 registry 审计拒绝（run `20261101T030351Z-c0919016a224`）。将源文件唯一归属保留在全量 `rust.default` 后，`test-test-registry.py` **23/23** 通过；完整 `verify-framework.sh` 最终 **exit 0**，Rust **1423 passed / 0 failed / 15 ignored**，统一 CI run `20261101T031451Z-d565ec0709b4` **131/131**，package run `20261101T031957Z-8591c387d1cb` **7/7**，Windows 片段 **4/4**，工作区脱敏扫描零新增命中。
+- 本机整 crate Windows 交叉类型检查因缺少 `ring` 所需 Windows CRT/SDK `assert.h` 明确 blocked / unverified；这不是 Windows 构建通过。框架的 native/manual/client/soak profiles 也分别按前置缺失登记为 blocked；原生五项随后经独立隔离 `agentisland-iso` 实跑全部通过，回执 `.build/vm/acceptance-58a128fb72ea4bce880e404f86e5b805`。updater 正签、错签、篡改等 **7/7** 通过；首次 `--published` 因签名包尚未复制到 `dist/` 而失败，按 `release.sh` 的复制路径重跑通过。
+- `render-update-manifest.py --write/--check` 已按新签名包更新并核对；`scripts/check-version.py 0.0.428`、`render-status.py`、`render-matrix.py` 和 `git diff --check` 通过。v0.0.416 原始 updater 实例未运行，本轮没有手工 VM 操作，也未触碰旧版 `agentisland-update-e2e`。
+
+### 未完成与下一步
+
+- TASK-05 继续保持 `partial`：验证清单目前只有判据与数据模型，下一片接入本地任务产出和任务页；空清单不得通过，只有全部 `Passed` 才显示通过。
+- AgentIsland 自有执行历史的项目访问、加密、保留/删除与备份恢复契约尚未确定，应按需求 §4 另行设计与验收；它不是本地产出版本 blob 的直接复用项。
+- BUG-016 仍 open：旧版 v0.0.416 的原始检查更新请求与失败证据未取得。后续按当前 [`需求状态`](../需求状态.md)、[`需求测试矩阵`](../spec/需求测试矩阵.md) 与 [`04 · 实施计划`](../workbench/04-plan.md)选择下一项，不重复已完成的看板本地进度选择确认语义。
