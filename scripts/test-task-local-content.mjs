@@ -12,6 +12,7 @@ function fixture() {
     runs: [{ id: 'run', task_id: 'task', status: 'ready', started_ms: 0 }], attentions: [], artifacts: [] };
   window.commands = []; window.lastProgress = null; window.deferProgress = false; window.progressReply = null;
   window.lastArtifactVersion = null; window.lastRestore = null; window.artifactBodies = new Map();
+  window.lastChecklistAdd = null; window.lastChecklistMark = null;
   window.localBody = '本地用户记录\n<img src=x onerror="window.injected=true">';
   window.__TAURI__ = { core: { invoke: async (command, args) => {
     commands.push({ command, args });
@@ -30,7 +31,7 @@ function fixture() {
       fixtureData.runs[0].status = args.status;
       const artifactId = 'local-artifact';
       fixtureData.artifacts.push({ id: artifactId, run_id: 'run', kind: args.kind ?? 'result_review',
-        title: args.artifactTitle, revision: 1, ...(hasBody ? { local_content: { sha256: 'a'.repeat(64), bytes: new TextEncoder().encode(args.artifactContent).length } } : {}) });
+        title: args.artifactTitle, revision: 1, checklist: { items: [] }, ...(hasBody ? { local_content: { sha256: 'a'.repeat(64), bytes: new TextEncoder().encode(args.artifactContent).length } } : {}) });
       if (hasBody) artifactBodies.set(artifactId, args.artifactContent);
       const snapshot = structuredClone(fixtureData);
       return deferProgress ? await new Promise(resolve => { progressReply = () => resolve(snapshot); }) : snapshot;
@@ -46,7 +47,7 @@ function fixture() {
       const version = Math.max(...chain.map(item => item.revision)) + 1;
       const artifactId = `local-artifact-v${version}`;
       fixtureData.artifacts.push({ id: artifactId, logical_id: logicalId, run_id: target.run_id, kind: target.kind,
-        title: args.artifactTitle, revision: version, local_content: { sha256: String(version).repeat(64).slice(0, 64), bytes: new TextEncoder().encode(args.artifactContent).length } });
+        title: args.artifactTitle, revision: version, checklist: { items: [] }, local_content: { sha256: String(version).repeat(64).slice(0, 64), bytes: new TextEncoder().encode(args.artifactContent).length } });
       artifactBodies.set(artifactId, args.artifactContent);
       return structuredClone(fixtureData);
     }
@@ -61,8 +62,26 @@ function fixture() {
       const version = Math.max(...chain.map(item => item.revision)) + 1;
       const artifactId = `local-artifact-v${version}`;
       fixtureData.artifacts.push({ id: artifactId, logical_id: logicalId, run_id: target.run_id, kind: target.kind,
-        title: target.title, revision: version, local_content: { sha256: String(version).repeat(64).slice(0, 64), bytes: new TextEncoder().encode(artifactBodies.get(target.id)).length } });
+        title: target.title, revision: version, checklist: { items: [] }, local_content: { sha256: String(version).repeat(64).slice(0, 64), bytes: new TextEncoder().encode(artifactBodies.get(target.id)).length } });
       artifactBodies.set(artifactId, artifactBodies.get(target.id));
+      return structuredClone(fixtureData);
+    }
+    if (command === 'task_artifact_checklist_add') {
+      if (args.expectedRevision !== fixtureData.revision) throw { code: 'stale_revision', message: '任务已更新，请刷新后重试' };
+      lastChecklistAdd = args;
+      fixtureData.revision++;
+      const artifact = fixtureData.artifacts.find(item => item.id === args.artifactId);
+      artifact.checklist ??= { items: [] };
+      artifact.checklist.items.push({ id: 'check-item', title: args.title.trim(), status: 'pending' });
+      return structuredClone(fixtureData);
+    }
+    if (command === 'task_artifact_checklist_mark') {
+      if (args.expectedRevision !== fixtureData.revision) throw { code: 'stale_revision', message: '任务已更新，请刷新后重试' };
+      lastChecklistMark = args;
+      fixtureData.revision++;
+      const artifact = fixtureData.artifacts.find(item => item.id === args.artifactId);
+      const item = artifact.checklist.items.find(entry => entry.id === args.itemId);
+      item.status = args.status;
       return structuredClone(fixtureData);
     }
     if (command === 'task_artifact_content') {
@@ -186,8 +205,74 @@ try {
   await page.waitForFunction(() => window.lastRestore?.artifactId === 'local-artifact');
   assert.deepEqual(await page.evaluate(() => lastRestore), { id: 'task', artifactId: 'local-artifact', expectedRevision: 4 });
   assert.equal(await page.evaluate(() => artifactBodies.get('local-artifact-v3')), submittedBody, '恢复必须复制所选历史正文并追加新版本');
+
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  const firstChecklist = page.locator('[data-task-checklist][data-artifact-id="local-artifact"]');
+  const secondChecklist = page.locator('[data-task-checklist][data-artifact-id="local-artifact-v2"]');
+  const restoredChecklist = page.locator('[data-task-checklist][data-artifact-id="local-artifact-v3"]');
+  assert.match(await firstChecklist.locator('summary').textContent(), /未添加验证项 · 尚未通过/);
+  assert.match(await secondChecklist.locator('summary').textContent(), /未添加验证项 · 尚未通过/);
+  assert.match(await restoredChecklist.locator('summary').textContent(), /未添加验证项 · 尚未通过/);
+  await firstChecklist.evaluate(node => { node.open = true; });
+  const checklistAdd = firstChecklist.locator('[data-task-checklist-add]');
+  await checklistAdd.locator('[name="title"]').fill('正文可完整读回');
+  await checklistAdd.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => window.lastChecklistAdd?.artifactId === 'local-artifact');
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  assert.deepEqual(await page.evaluate(() => lastChecklistAdd), {
+    id: 'task', artifactId: 'local-artifact', title: '正文可完整读回', expectedRevision: 5,
+  });
+  assert.match(await firstChecklist.locator('summary').textContent(), /1 项待验/);
+  assert.match(await restoredChecklist.locator('summary').textContent(), /未添加验证项 · 尚未通过/, '恢复版的清单与旧版分开');
+
+  let checklistMark = firstChecklist.locator('[data-task-checklist-mark]');
+  await checklistMark.locator('[name="status"]').selectOption('failed');
+  await checklistMark.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => window.lastChecklistMark?.status === 'failed');
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  assert.match(await firstChecklist.locator('summary').textContent(), /有 1 项未通过/);
+  assert.deepEqual(await page.evaluate(() => lastChecklistMark), {
+    id: 'task', artifactId: 'local-artifact', itemId: 'check-item', status: 'failed', expectedRevision: 6,
+  });
+
+  checklistMark = firstChecklist.locator('[data-task-checklist-mark]');
+  await checklistMark.locator('[name="status"]').selectOption('passed');
+  await checklistMark.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => window.lastChecklistMark?.status === 'passed');
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  assert.match(await firstChecklist.locator('summary').textContent(), /全部通过/);
+
+  checklistMark = firstChecklist.locator('[data-task-checklist-mark]');
+  await checklistMark.locator('[name="status"]').selectOption('failed');
+  await page.evaluate(() => { fixtureData.revision++; });
+  await checklistMark.locator('button[type="submit"]').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-task-form-feedback]')].some(node => node.textContent.includes('草稿已保留')));
+  assert.equal(await page.locator('[data-task-checklist-mark] [name="status"]').inputValue(), 'failed');
+  let snapshotCount = await page.evaluate(() => commands.filter(x => x.command === 'tasks_snapshot').length);
+  await page.locator('[data-task-refresh]').click();
+  await page.waitForFunction(count => commands.filter(x => x.command === 'tasks_snapshot').length > count, snapshotCount);
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  await firstChecklist.evaluate(node => { node.open = true; });
+  await page.locator('[data-task-checklist-mark] [data-task-discard]').click();
+  assert.equal(await page.locator('[data-task-checklist-mark] [name="status"]').inputValue(), 'passed');
+
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  const restoredChecklistForm = page.locator('[data-task-checklist][data-artifact-id="local-artifact-v3"]');
+  await restoredChecklistForm.evaluate(node => { node.open = true; });
+  await page.locator('[data-task-checklist-add][data-artifact-id="local-artifact-v3"] [name="title"]').fill('陈旧草稿保留');
+  await page.evaluate(() => { fixtureData.revision++; });
+  await page.locator('[data-task-checklist-add][data-artifact-id="local-artifact-v3"] button[type="submit"]').click();
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-task-form-feedback]')].some(node => node.textContent.includes('草稿已保留')));
+  assert.equal(await page.locator('[data-task-checklist-add][data-artifact-id="local-artifact-v3"] [name="title"]').inputValue(), '陈旧草稿保留');
+  snapshotCount = await page.evaluate(() => commands.filter(x => x.command === 'tasks_snapshot').length);
+  await page.locator('[data-task-refresh]').click();
+  await page.waitForFunction(count => commands.filter(x => x.command === 'tasks_snapshot').length > count, snapshotCount);
+  await page.locator('.task-version-chain').evaluate(node => { node.open = true; });
+  await restoredChecklistForm.evaluate(node => { node.open = true; });
+  await page.locator('[data-task-checklist-add][data-artifact-id="local-artifact-v3"] [data-task-discard]').click();
+  await page.waitForFunction(() => document.querySelector('[data-task-checklist-add][data-artifact-id="local-artifact-v3"] [name="title"]')?.value === '');
   assert.deepEqual(errors, []);
-  console.log('PASS: local task outputs append, compare, and restore immutable versions');
+  console.log('PASS: local task outputs append, compare, restore, and keep version-scoped validation checklists');
   await page.close();
 } finally {
   await browser?.close(); await new Promise(resolve => server.close(resolve));

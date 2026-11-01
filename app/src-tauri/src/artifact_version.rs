@@ -19,7 +19,7 @@
 //!    （内容等于历史版本，revision = 当前最高 + 1）——**历史不可改写**，
 //!    恢复不是「删掉后面的版本」。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// 产物的一个版本快照（包含版本演进所需的元数据）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,7 +308,8 @@ impl ArtifactChain {
 // 3. **条目状态互斥**：Pending（待验）、Passed（通过）、Failed（未过）；
 // 4. **条目不可匿名**：标题去空白后不能为空（未命名的条目是摆设）。
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
     Pending,
     Passed,
@@ -325,16 +326,20 @@ impl CheckStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckItem {
     pub id: String,
     pub title: String,
     pub status: CheckStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Checklist {
+    #[serde(default)]
     pub items: Vec<CheckItem>,
 }
 
@@ -343,11 +348,18 @@ impl Checklist {
         Checklist::default()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     /// 添加一条验证项。标题去空白为空时拒绝。
     pub fn add(&mut self, id: &str, title: &str) -> Result<(), &'static str> {
         let clean = title.trim();
         if clean.is_empty() {
             return Err("title_empty");
+        }
+        if crate::private_text::known_private(clean) {
+            return Err("title_private");
         }
         if self.items.iter().any(|i| i.id == id) {
             return Err("duplicate_id");
@@ -578,7 +590,25 @@ mod tests {
         let mut list = Checklist::new();
         assert_eq!(list.add("c1", ""), Err("title_empty"));
         assert_eq!(list.add("c1", "   "), Err("title_empty"));
+        assert_eq!(
+            list.add("c-secret", "Authorization: Bearer placeholder-token"),
+            Err("title_private")
+        );
         assert_eq!(list.add("c1", "合法标题"), Ok(()));
         assert_eq!(list.add("c1", "重复 id"), Err("duplicate_id"));
+    }
+
+    #[test]
+    fn checklist_serializes_lowercase_status_and_reads_legacy_empty_shape() {
+        let mut list = Checklist::new();
+        list.add("check-1", "本地验收").unwrap();
+        let encoded = serde_json::to_value(&list).unwrap();
+        assert_eq!(encoded["items"][0]["status"], "pending");
+        assert_eq!(serde_json::from_value::<Checklist>(encoded).unwrap(), list);
+        assert!(serde_json::from_str::<Checklist>("{}").unwrap().is_empty());
+        assert!(serde_json::from_str::<Checklist>(
+            r#"{"items":[{"id":"x","title":"y","status":"unknown"}]}"#
+        )
+        .is_err());
     }
 }

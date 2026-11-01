@@ -2911,6 +2911,52 @@ fn task_restore_artifact_version(
     )
 }
 #[tauri::command]
+fn task_artifact_checklist_add(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    artifact_id: String,
+    title: String,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |store| {
+            store.add_artifact_checklist_item(
+                &id,
+                &artifact_id,
+                &title,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+#[tauri::command]
+fn task_artifact_checklist_mark(
+    app: AppHandle,
+    state: State<TaskStore>,
+    id: String,
+    artifact_id: String,
+    item_id: String,
+    status: crate::artifact_version::CheckStatus,
+    expected_revision: u64,
+) -> Result<crate::tasks::Data, crate::tasks::Error> {
+    publish_tasks(
+        &app,
+        with_tasks(state, |store| {
+            store.mark_artifact_checklist_item(
+                &id,
+                &artifact_id,
+                &item_id,
+                status,
+                expected_revision,
+                crate::tokens::now_ms(),
+            )
+        }),
+    )
+}
+#[tauri::command]
 fn task_mark_handled(
     app: AppHandle,
     state: State<TaskStore>,
@@ -5135,6 +5181,8 @@ fn main() {
             task_record_progress,
             task_record_artifact_version,
             task_restore_artifact_version,
+            task_artifact_checklist_add,
+            task_artifact_checklist_mark,
             task_mark_handled,
             todos_list,
             todos_add,

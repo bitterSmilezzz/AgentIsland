@@ -4,6 +4,9 @@ use std::{fs, path::PathBuf};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECEIPTS: usize = 20_000;
+const MAX_CHECKLIST_ITEMS_PER_ARTIFACT: usize = 100;
+const MAX_CHECKLIST_ITEMS_TOTAL: usize = 2_000;
+const MAX_CHECKLIST_NOTE_BYTES: usize = 2 * 1024;
 /// 产出条目的留存上限（TASK-05「超限说明」）。产出是**派生的展示元数据**
 /// （来源观测的投影），不像任务/项目是用户手写的记录——没有这条上限时，
 /// 长期运行攒下的产出行会先撑满 `MAX_BYTES`，把「任务记录达到容量上限」
@@ -115,6 +118,12 @@ pub struct Artifact {
     /// Source-event bodies remain transient and never use this reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_content: Option<LocalArtifactContentRef>,
+    /// Per-version local verification data. Old task files default to empty.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::artifact_version::Checklist::is_empty"
+    )]
+    pub checklist: crate::artifact_version::Checklist,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -793,6 +802,7 @@ impl Store {
                 revision: next_revision,
                 kind,
                 local_content: None,
+                checklist: crate::artifact_version::Checklist::default(),
             });
             data.enforce_artifact_cap();
             if data.artifacts.len() > MAX_ARTIFACTS {
@@ -869,6 +879,101 @@ impl Store {
             now,
         )
     }
+
+    fn verify_checklist_artifact_body(&self, data: &Data, artifact_id: &str) -> Result<(), Error> {
+        let content_ref = data
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == artifact_id)
+            .and_then(|artifact| artifact.local_content.as_ref())
+            .ok_or_else(|| error("content_missing", "此产出没有保存本地正文"))?;
+        let bytes = self
+            .artifact_blob_store()?
+            .read(&content_ref.sha256, content_ref.bytes)
+            .map_err(artifact_store_error)?;
+        let content = String::from_utf8(bytes)
+            .map_err(|_| error("content_corrupt", "本地产出正文格式无效，未保存验证清单"))?;
+        let readable = crate::task_artifacts::local_content(content);
+        if !readable.available {
+            return Err(error("invalid_input", &readable.notice));
+        }
+        Ok(())
+    }
+
+    /// Add one validation item to an exact locally persisted artifact version.
+    pub fn add_artifact_checklist_item(
+        &self,
+        task: &str,
+        artifact_id: &str,
+        title: &str,
+        revision: u64,
+        now: i64,
+    ) -> Result<Data, Error> {
+        let title = text(title)?;
+        self.edit(revision, |data| {
+            let task_record = data
+                .tasks
+                .iter()
+                .find(|item| item.id == task)
+                .ok_or_else(|| error("not_found", "任务不存在"))?;
+            if task_record.archived_ms.is_some() {
+                return Err(error("invalid_input", "请先恢复任务"));
+            }
+            let run_id = data.local_checklist_run(task, artifact_id)?;
+            self.verify_checklist_artifact_body(data, artifact_id)?;
+            let item_count = data.checklist_item_count();
+            if item_count >= MAX_CHECKLIST_ITEMS_TOTAL {
+                return Err(error("capacity", "验证清单达到本地条目上限"));
+            }
+            let artifact = data
+                .artifacts
+                .iter_mut()
+                .find(|item| item.id == artifact_id)
+                .ok_or_else(|| error("not_found", "产出版本不存在"))?;
+            if artifact.checklist.items.len() >= MAX_CHECKLIST_ITEMS_PER_ARTIFACT {
+                return Err(error("capacity", "此版本的验证项已达到上限"));
+            }
+            artifact
+                .checklist
+                .add(&id(), &title)
+                .map_err(|_| error("invalid_input", "验证项名称无效或重复"))?;
+            touch_checklist_owner(data, task, &run_id, now)
+        })
+    }
+
+    /// Update the explicit result for one item on an exact artifact version.
+    pub fn mark_artifact_checklist_item(
+        &self,
+        task: &str,
+        artifact_id: &str,
+        item_id: &str,
+        status: crate::artifact_version::CheckStatus,
+        revision: u64,
+        now: i64,
+    ) -> Result<Data, Error> {
+        self.edit(revision, |data| {
+            let task_record = data
+                .tasks
+                .iter()
+                .find(|item| item.id == task)
+                .ok_or_else(|| error("not_found", "任务不存在"))?;
+            if task_record.archived_ms.is_some() {
+                return Err(error("invalid_input", "请先恢复任务"));
+            }
+            let run_id = data.local_checklist_run(task, artifact_id)?;
+            self.verify_checklist_artifact_body(data, artifact_id)?;
+            let artifact = data
+                .artifacts
+                .iter_mut()
+                .find(|item| item.id == artifact_id)
+                .ok_or_else(|| error("not_found", "产出版本不存在"))?;
+            if !artifact.checklist.mark(item_id, status, None) {
+                return Err(error("not_found", "验证项不存在"));
+            }
+            touch_checklist_owner(data, task, &run_id, now)
+        })
+    }
+
     pub fn handled(
         &self,
         task: &str,
@@ -982,6 +1087,7 @@ impl Store {
                             revision: 1,
                             kind: evidence.kind,
                             local_content: None,
+                            checklist: crate::artifact_version::Checklist::default(),
                         });
                         attention.artifact_id = Some(artifact_id);
                         let run_id = attention.run_id.clone();
@@ -1107,6 +1213,39 @@ impl Store {
     }
 }
 impl Data {
+    fn checklist_item_count(&self) -> usize {
+        self.artifacts
+            .iter()
+            .map(|artifact| artifact.checklist.items.len())
+            .fold(0usize, usize::saturating_add)
+    }
+
+    fn local_checklist_run(&self, task_id: &str, artifact_id: &str) -> Result<String, Error> {
+        self.tasks
+            .iter()
+            .find(|task| task.id == task_id)
+            .ok_or_else(|| error("not_found", "任务不存在"))?;
+        let artifact = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id == artifact_id)
+            .ok_or_else(|| error("not_found", "产出版本不存在"))?;
+        if artifact.event_ref.is_some() {
+            return Err(error(
+                "external_readonly_cannot_evolve",
+                "来源事件产物不能保存本地验证清单",
+            ));
+        }
+        if artifact.local_content.is_none() {
+            return Err(error("content_missing", "此产出没有保存本地正文"));
+        }
+        self.runs
+            .iter()
+            .find(|run| run.id == artifact.run_id && run.task_id == task_id)
+            .map(|run| run.id.clone())
+            .ok_or_else(|| error("source_mismatch", "产出版本不属于所选任务"))
+    }
+
     fn local_artifact_content_bytes(&self) -> usize {
         self.artifacts
             .iter()
@@ -1466,6 +1605,7 @@ impl Data {
                 revision: 1,
                 kind: kind.unwrap_or(AttentionKind::ResultReview),
                 local_content: None,
+                checklist: crate::artifact_version::Checklist::default(),
             });
             self.enforce_artifact_cap();
             artifact_id
@@ -1554,6 +1694,7 @@ impl Data {
             String,
             (String, std::collections::BTreeSet<u64>),
         > = std::collections::HashMap::new();
+        let mut checklist_item_total = 0usize;
         for a in &self.artifacts {
             if a.revision == 0
                 || a.logical_id
@@ -1603,6 +1744,30 @@ impl Data {
                     // The aggregate bound below is checked after row validation.
                 }
                 _ => return Err(invalid()),
+            }
+            if a.checklist.items.len() > MAX_CHECKLIST_ITEMS_PER_ARTIFACT
+                || (!a.checklist.is_empty() && (a.event_ref.is_some() || a.local_content.is_none()))
+            {
+                return Err(invalid());
+            }
+            checklist_item_total = checklist_item_total
+                .checked_add(a.checklist.items.len())
+                .filter(|count| *count <= MAX_CHECKLIST_ITEMS_TOTAL)
+                .ok_or_else(invalid)?;
+            let mut checklist_ids = std::collections::HashSet::new();
+            for item in &a.checklist.items {
+                if uuid::Uuid::parse_str(&item.id).is_err()
+                    || !checklist_ids.insert(&item.id)
+                    || item.title.trim() != item.title
+                    || crate::private_text::known_private(&item.title)
+                    || text(&item.title).is_err()
+                    || item.note.as_ref().is_some_and(|note| {
+                        note.len() > MAX_CHECKLIST_NOTE_BYTES
+                            || crate::private_text::known_private(note)
+                    })
+                {
+                    return Err(invalid());
+                }
             }
         }
         for (logical_id, (_, revisions)) in version_chains {
@@ -1719,6 +1884,31 @@ fn status_matches_board_column(
     }
 }
 
+fn touch_checklist_owner(
+    data: &mut Data,
+    task_id: &str,
+    run_id: &str,
+    now: i64,
+) -> Result<(), Error> {
+    let run = data
+        .runs
+        .iter_mut()
+        .find(|run| run.id == run_id && run.task_id == task_id)
+        .ok_or_else(|| error("source_mismatch", "产出版本运行记录已不存在"))?;
+    run.revision = run
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| error("capacity", "运行版本已达上限"))?;
+
+    let task = data.task_mut(task_id)?;
+    task.revision = task
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| error("capacity", "任务版本已达上限"))?;
+    task.updated_ms = now;
+    Ok(())
+}
+
 impl Source {
     fn validate(&self) -> Result<(), Error> {
         if self.agent_id.is_empty()
@@ -1800,6 +1990,7 @@ mod tests {
                 revision: 1,
                 kind: AttentionKind::ResultReview,
                 local_content: None,
+                checklist: crate::artifact_version::Checklist::default(),
             });
             if index % referenced_every.max(1) == 0 {
                 data.attentions.push(Attention {
@@ -1889,13 +2080,21 @@ mod tests {
     /// `#[serde(default)]` 的存在理由就是这条兼容。
     #[test]
     fn old_task_files_without_the_eviction_counter_still_load() {
-        let mut data = Data::default();
+        let mut data = artifact_hoard(1, 1);
         data.revision = 7;
         let mut value = serde_json::to_value(&data).unwrap();
         value.as_object_mut().unwrap().remove("evicted_artifacts");
+        value["artifacts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("checklist");
         let loaded: Data = serde_json::from_value(value).unwrap();
         assert_eq!(loaded.revision, 7);
         assert_eq!(loaded.evicted_artifacts, 0, "缺字段按 0 起步，不炸不猜");
+        assert!(
+            loaded.artifacts[0].checklist.is_empty(),
+            "旧产物缺清单字段时按空清单加载"
+        );
     }
     #[test]
     fn historical_navigation_uses_run_snapshot_and_never_falls_back() {
@@ -2509,6 +2708,390 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 2, 3]
         );
+    }
+
+    #[test]
+    fn local_artifact_checklists_are_scoped_to_each_persisted_version() {
+        let (_sandbox, store) = store_in("tasks-local-artifact-checklists");
+        let created = store.create("验证清单任务", None, 0, 1).unwrap();
+        let task_id = created.tasks[0].id.clone();
+        let first = store
+            .record_with_content(
+                &task_id,
+                RunStatus::Ready,
+                None,
+                Some("初版".into()),
+                Some("初版正文".into()),
+                created.revision,
+                2,
+            )
+            .unwrap();
+        let first_artifact = first.artifacts.last().unwrap().id.clone();
+        let first_run = first.artifacts.last().unwrap().run_id.clone();
+        let first_run_revision = first
+            .runs
+            .iter()
+            .find(|run| run.id == first_run)
+            .unwrap()
+            .revision;
+        let first_task_revision = first.tasks[0].revision;
+        assert!(!first.artifacts.last().unwrap().checklist.all_passed());
+
+        let added = store
+            .add_artifact_checklist_item(
+                &task_id,
+                &first_artifact,
+                "  可读回正文  ",
+                first.revision,
+                3,
+            )
+            .unwrap();
+        let original = added
+            .artifacts
+            .iter()
+            .find(|item| item.id == first_artifact)
+            .unwrap();
+        assert_eq!(original.checklist.items.len(), 1);
+        assert_eq!(original.checklist.items[0].title, "可读回正文");
+        assert_eq!(
+            original.checklist.items[0].status,
+            crate::artifact_version::CheckStatus::Pending
+        );
+        assert!(!original.checklist.all_passed(), "待验项不能算通过");
+        assert_eq!(
+            added
+                .runs
+                .iter()
+                .find(|run| run.id == first_run)
+                .unwrap()
+                .revision,
+            first_run_revision + 1
+        );
+        assert_eq!(added.tasks[0].revision, first_task_revision + 1);
+        let item_id = original.checklist.items[0].id.clone();
+        let before_stale_status = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .mark_artifact_checklist_item(
+                    &task_id,
+                    &first_artifact,
+                    &item_id,
+                    crate::artifact_version::CheckStatus::Passed,
+                    first.revision,
+                    4,
+                )
+                .unwrap_err()
+                .code,
+            "stale_revision"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), before_stale_status);
+
+        let passed = store
+            .mark_artifact_checklist_item(
+                &task_id,
+                &first_artifact,
+                &item_id,
+                crate::artifact_version::CheckStatus::Passed,
+                added.revision,
+                4,
+            )
+            .unwrap();
+        assert!(passed
+            .artifacts
+            .iter()
+            .find(|item| item.id == first_artifact)
+            .unwrap()
+            .checklist
+            .all_passed());
+
+        let next = store
+            .record_local_artifact_version(
+                &task_id,
+                &first_artifact,
+                "第二版".into(),
+                "第二版正文".into(),
+                passed.revision,
+                5,
+            )
+            .unwrap();
+        let second_artifact = next.artifacts.last().unwrap();
+        assert_eq!(second_artifact.revision, 2);
+        assert!(
+            second_artifact.checklist.is_empty(),
+            "追加版本必须有全新空清单"
+        );
+        assert!(next
+            .artifacts
+            .iter()
+            .find(|item| item.id == first_artifact)
+            .unwrap()
+            .checklist
+            .all_passed());
+
+        let failed = store
+            .mark_artifact_checklist_item(
+                &task_id,
+                &first_artifact,
+                &item_id,
+                crate::artifact_version::CheckStatus::Failed,
+                next.revision,
+                6,
+            )
+            .unwrap();
+        assert!(!failed
+            .artifacts
+            .iter()
+            .find(|item| item.id == first_artifact)
+            .unwrap()
+            .checklist
+            .all_passed());
+
+        let restored = store
+            .restore_local_artifact_version(&task_id, &first_artifact, failed.revision, 7)
+            .unwrap();
+        let third_artifact = restored.artifacts.last().unwrap();
+        assert_eq!(third_artifact.revision, 3);
+        assert!(
+            third_artifact.checklist.is_empty(),
+            "恢复也必须从空清单开始"
+        );
+        assert_eq!(
+            restored
+                .artifacts
+                .iter()
+                .find(|item| item.id == first_artifact)
+                .unwrap()
+                .checklist
+                .items[0]
+                .status,
+            crate::artifact_version::CheckStatus::Failed,
+            "旧版的检查结果仍绑定旧版"
+        );
+        let reopened = Store {
+            path: store.path.clone(),
+        };
+        let persisted = reopened.load().unwrap();
+        assert_eq!(
+            persisted
+                .artifacts
+                .iter()
+                .find(|item| item.id == first_artifact)
+                .unwrap()
+                .checklist
+                .items[0]
+                .status,
+            crate::artifact_version::CheckStatus::Failed,
+            "清单与版本状态应在重新打开后保持"
+        );
+        restored.validate().unwrap();
+    }
+
+    #[test]
+    fn local_artifact_checklist_rejects_stale_archived_source_and_bodyless_targets() {
+        let (_sandbox, store) = store_in("tasks-local-artifact-checklist-refusals");
+        let created = store.create("验证边界", None, 0, 1).unwrap();
+        let task_id = created.tasks[0].id.clone();
+        let empty = store
+            .record(
+                &task_id,
+                RunStatus::Ready,
+                None,
+                Some("只有标题".into()),
+                created.revision,
+                2,
+            )
+            .unwrap();
+        let empty_artifact = empty.artifacts.last().unwrap().id.clone();
+        assert_eq!(
+            store
+                .add_artifact_checklist_item(
+                    &task_id,
+                    &empty_artifact,
+                    "正文已保存",
+                    empty.revision,
+                    3
+                )
+                .unwrap_err()
+                .code,
+            "content_missing"
+        );
+
+        let with_body = store
+            .record_local_artifact_version(
+                &task_id,
+                &empty_artifact,
+                "有正文".into(),
+                "可校验正文".into(),
+                empty.revision,
+                4,
+            )
+            .unwrap_err();
+        assert_eq!(
+            with_body.code, "content_missing",
+            "无正文的旧产物不能生成内容版本"
+        );
+
+        let body_record = store
+            .record_with_content(
+                &task_id,
+                RunStatus::Ready,
+                None,
+                Some("本地正文".into()),
+                Some("正文".into()),
+                empty.revision,
+                5,
+            )
+            .unwrap();
+        let body_artifact = body_record.artifacts.last().unwrap().id.clone();
+        assert_eq!(
+            store
+                .add_artifact_checklist_item(
+                    &task_id,
+                    &body_artifact,
+                    "陈旧提交",
+                    empty.revision,
+                    6
+                )
+                .unwrap_err()
+                .code,
+            "stale_revision"
+        );
+
+        let other_task = store
+            .create("其他任务", None, body_record.revision, 6)
+            .unwrap();
+        let other_task_id = other_task.tasks.last().unwrap().id.clone();
+        assert_eq!(
+            store
+                .add_artifact_checklist_item(
+                    &other_task_id,
+                    &body_artifact,
+                    "跨任务拒绝",
+                    other_task.revision,
+                    7
+                )
+                .unwrap_err()
+                .code,
+            "source_mismatch"
+        );
+
+        let before_private_title = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .add_artifact_checklist_item(
+                    &task_id,
+                    &body_artifact,
+                    "Authorization: Bearer placeholder-token",
+                    other_task.revision,
+                    8,
+                )
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), before_private_title);
+
+        let checklist_added = store
+            .add_artifact_checklist_item(
+                &task_id,
+                &body_artifact,
+                "正文必须保持可读",
+                other_task.revision,
+                9,
+            )
+            .unwrap();
+        let checklist_item_id = checklist_added
+            .artifacts
+            .iter()
+            .find(|item| item.id == body_artifact)
+            .unwrap()
+            .checklist
+            .items[0]
+            .id
+            .clone();
+
+        let body_store = store.path.parent().unwrap().join("task-artifact-content");
+        fs::remove_dir_all(body_store).unwrap();
+        let before_missing_body_write = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .add_artifact_checklist_item(
+                    &task_id,
+                    &body_artifact,
+                    "正文缺失时拒绝",
+                    checklist_added.revision,
+                    10
+                )
+                .unwrap_err()
+                .code,
+            "content_missing"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), before_missing_body_write);
+        assert_eq!(
+            store
+                .mark_artifact_checklist_item(
+                    &task_id,
+                    &body_artifact,
+                    &checklist_item_id,
+                    crate::artifact_version::CheckStatus::Passed,
+                    checklist_added.revision,
+                    11,
+                )
+                .unwrap_err()
+                .code,
+            "content_missing"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), before_missing_body_write);
+
+        let archived = store
+            .archive(&task_id, true, checklist_added.revision, 12)
+            .unwrap();
+        let archived_bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .add_artifact_checklist_item(
+                    &task_id,
+                    &body_artifact,
+                    "归档后拒绝",
+                    archived.revision,
+                    9
+                )
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(
+            fs::read(&store.path).unwrap(),
+            archived_bytes,
+            "拒绝写入不得改动原记录"
+        );
+
+        let mut source = archived;
+        source.tasks[0].archived_ms = None;
+        let source_artifact = source
+            .artifacts
+            .iter_mut()
+            .find(|item| item.id == body_artifact)
+            .unwrap();
+        source_artifact.event_ref = Some("b".repeat(64));
+        source_artifact.local_content = None;
+        source_artifact.checklist = crate::artifact_version::Checklist::default();
+        store.write(&source).unwrap();
+        let source_bytes = fs::read(&store.path).unwrap();
+        assert_eq!(
+            store
+                .add_artifact_checklist_item(
+                    &task_id,
+                    &body_artifact,
+                    "来源事件拒绝",
+                    source.revision,
+                    10
+                )
+                .unwrap_err()
+                .code,
+            "external_readonly_cannot_evolve"
+        );
+        assert_eq!(fs::read(&store.path).unwrap(), source_bytes);
     }
 
     #[test]

@@ -488,6 +488,23 @@ html.shell-workbench .connection-row .sb-tag[data-connection-state="offline"]{co
 .task-version-form textarea { min-height:72px;resize:vertical; }
 .task-version-form .task-form-actions { justify-content:flex-start; }
 .task-version-compare .task-form-feedback { grid-column:1/-1;margin:0;color:var(--danger);font-size:11px; }
+.task-version-row > div { display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap; }
+.task-checklist { margin:8px 0 12px;padding:8px 10px;border:1px solid var(--border-subtle);border-radius:9px;background:var(--surface-inset); }
+.task-checklist > summary { display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;font-size:11px; }
+.task-checklist-summary { color:var(--text-muted);text-align:right; }
+.task-checklist-empty,.task-checklist-status { color:var(--text-muted);font-size:11px; }
+.task-checklist ul { list-style:none;display:grid;gap:8px;margin:9px 0;padding:0; }
+.task-checklist-item { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px; }
+.task-checklist-title { min-width:0;overflow-wrap:anywhere;color:var(--text); }
+.task-checklist-item form { display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px; }
+.task-checklist-item select { min-height:30px;padding:4px 7px;border:1px solid var(--border);border-radius:7px;background:var(--field-fill);color:var(--text);font-size:11px; }
+.task-checklist-item .task-form-actions,.task-checklist-add .task-form-actions { gap:5px; }
+.task-checklist-item .task-form-actions .mini-btn,.task-checklist-add .task-form-actions .mini-btn { min-height:28px;padding:4px 8px;font-size:10px; }
+.task-checklist-item .task-form-feedback,.task-checklist-add .task-form-feedback { flex-basis:100%;margin:0;color:var(--danger);font-size:10px;text-align:right; }
+.task-checklist-add { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px;border-top:1px solid var(--border-subtle);padding-top:8px; }
+.task-checklist-add label { display:grid;gap:5px;font-size:10px;color:var(--text-muted); }
+.task-checklist-add input { min-height:32px;padding:6px 8px;border:1px solid var(--border);border-radius:7px;background:var(--field-fill);color:var(--text);font-size:11px; }
+.task-checklist-add .task-form-actions { justify-content:flex-start; }
 @media (max-width:520px) { .task-version-compare { grid-template-columns:1fr; } }
 
 .shell-workbench .workspace-space{max-width:860px;margin:auto}

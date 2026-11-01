@@ -58,6 +58,24 @@ function localArtifactChains(data, taskId) {
     versions: versions.slice().sort((a, b) => a.revision - b.revision),
   }));
 }
+function checklistSummary(checklist) {
+  const items = Array.isArray(checklist?.items) ? checklist.items : [];
+  if (!items.length) return '未添加验证项 · 尚未通过';
+  const failed = items.filter(item => item.status === 'failed').length;
+  const pending = items.filter(item => item.status === 'pending').length;
+  if (failed) return `有 ${failed} 项未通过${pending ? ` · ${pending} 项待验` : ''}`;
+  if (pending) return `${pending} 项待验`;
+  return '全部通过';
+}
+function renderArtifactChecklist(version, editable) {
+  const items = Array.isArray(version.checklist?.items) ? version.checklist.items : [];
+  const statusNames = { pending: '待验', passed: '通过', failed: '未通过' };
+  return `<details class="task-checklist" data-task-checklist data-artifact-id="${esc(version.id)}">
+    <summary><span>验证清单</span><span class="task-checklist-summary">${esc(checklistSummary(version.checklist))}</span></summary>
+    ${items.length ? `<ul>${items.map(item => `<li class="task-checklist-item"><span class="task-checklist-title">${esc(item.title)}</span>${editable ? `<form data-task-checklist-mark data-artifact-id="${esc(version.id)}" data-checklist-item-id="${esc(item.id)}"><label><span class="sr-only">${esc(item.title)}的验证结果</span><select name="status">${Object.entries(statusNames).map(([value, label]) => `<option value="${value}"${item.status === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>${draftActions('保存状态')}</form>` : `<span class="task-checklist-status">${esc(statusNames[item.status] ?? '状态无效')}</span>`}</li>`).join('')}</ul>` : '<p class="task-checklist-empty">还没有验证项；空清单不会显示为通过。</p>'}
+    ${editable ? `<form class="task-checklist-add" data-task-checklist-add data-artifact-id="${esc(version.id)}"><label><span>添加验证项</span><input name="title" maxlength="500" required placeholder="写下可核对的本地验收项"></label>${draftActions('添加')}</form>` : ''}
+  </details>`;
+}
 function renderArtifactVersions(data, task) {
   const chains = localArtifactChains(data, task.id);
   if (!chains.length) return '';
@@ -66,7 +84,7 @@ function renderArtifactVersions(data, task) {
     const fromOptions = chain.versions.map(version => `<option value="${esc(version.id)}">版本 ${version.revision} · ${esc(version.title)}</option>`).join('');
     const toOptions = chain.versions.map((version, index) => `<option value="${esc(version.id)}"${index === chain.versions.length - 1 ? ' selected' : ''}>版本 ${version.revision} · ${esc(version.title)}</option>`).join('');
     return `<details class="task-version-chain"><summary>${esc(latest.title)} · ${chain.versions.length} 个版本</summary>
-      <ol>${chain.versions.map(version => `<li><span>版本 ${version.revision} · ${esc(version.title)}</span><span class="task-version-actions">${artifactReadButton(version, version.run_id)}${chain.versions.length > 1 ? `<button class="mini-btn" type="button" data-task-artifact-restore="${esc(version.id)}">恢复到此版（会新增版本）</button>` : ''}</span></li>`).join('')}</ol>
+      <ol>${chain.versions.map(version => `<li class="task-version-row"><div><span>版本 ${version.revision} · ${esc(version.title)}</span><span class="task-version-actions">${artifactReadButton(version, version.run_id)}${chain.versions.length > 1 ? `<button class="mini-btn" type="button" data-task-artifact-restore="${esc(version.id)}">恢复到此版（会新增版本）</button>` : ''}</span></div>${renderArtifactChecklist(version, task.archived_ms == null)}</li>`).join('')}</ol>
       ${chain.versions.length > 1 ? `<form class="task-version-compare" data-task-version-compare><label>从<select name="fromArtifactId">${fromOptions}</select></label><label>比较到<select name="toArtifactId">${toOptions}</select></label><button class="mini-btn" type="submit">比较版本</button><p class="task-form-feedback" data-version-feedback role="status" aria-live="polite" hidden></p></form>` : ''}
       ${task.archived_ms == null ? `<form class="task-version-form" data-task-version-form data-artifact-id="${esc(latest.id)}"><label>新版本名称<input name="artifactTitle" value="${esc(latest.title)}" maxlength="500" required></label><label>新版本正文<textarea name="artifactContent" rows="4" maxlength="65536" required placeholder="最多 64 KiB；可识别的凭据内容不会保存"></textarea></label>${draftActions('记录新版本')}</form>` : ''}
     </details>`;
@@ -448,7 +466,7 @@ export async function hydrateTasks(isVisible = () => true) {
     };});
     box.querySelector('[name="projectId"]').value = task.project_id ?? '';
     box.querySelectorAll('input, select, textarea').forEach(control => { control.dataset.savedValue = control.value; });
-    box.querySelectorAll('[data-task-edit], [data-task-progress], [data-task-link], [data-task-version-form]').forEach(form => {
+    box.querySelectorAll('[data-task-edit], [data-task-progress], [data-task-link], [data-task-version-form], [data-task-checklist-add], [data-task-checklist-mark]').forEach(form => {
       const controls = [...form.querySelectorAll('input, select, textarea')];
       const discard = form.querySelector('[data-task-discard]');
       const update = () => {
@@ -468,7 +486,9 @@ export async function hydrateTasks(isVisible = () => true) {
           // reveal the newer saved record and bind its actions to that version.
           const selector = form.hasAttribute('data-task-edit') ? '[data-task-edit]'
             : form.hasAttribute('data-task-progress') ? '[data-task-progress]'
-              : form.hasAttribute('data-task-version-form') ? '[data-task-version-form]' : '[data-task-link]';
+              : form.hasAttribute('data-task-version-form') ? '[data-task-version-form]'
+                : form.hasAttribute('data-task-checklist-add') ? '[data-task-checklist-add]'
+                  : form.hasAttribute('data-task-checklist-mark') ? '[data-task-checklist-mark]' : '[data-task-link]';
           renderDetail();
           box.querySelector(`${selector} input, ${selector} select`)?.focus({ preventScroll: true });
         } else controls[0]?.focus({ preventScroll: true });
@@ -501,6 +521,14 @@ export async function hydrateTasks(isVisible = () => true) {
     box.querySelectorAll('[data-task-version-form]').forEach(form=>{form.onsubmit=event=>{
       event.preventDefault();
       mutate('task_record_artifact_version',{id:task.id,artifactId:form.dataset.artifactId,artifactTitle:form.elements.artifactTitle.value.trim(),artifactContent:form.elements.artifactContent.value},form);
+    };});
+    box.querySelectorAll('[data-task-checklist-add]').forEach(form=>{form.onsubmit=event=>{
+      event.preventDefault();
+      mutate('task_artifact_checklist_add',{id:task.id,artifactId:form.dataset.artifactId,title:form.elements.title.value.trim()},form);
+    };});
+    box.querySelectorAll('[data-task-checklist-mark]').forEach(form=>{form.onsubmit=event=>{
+      event.preventDefault();
+      mutate('task_artifact_checklist_mark',{id:task.id,artifactId:form.dataset.artifactId,itemId:form.dataset.checklistItemId,status:form.elements.status.value},form);
     };});
     box.querySelectorAll('[data-task-artifact-restore]').forEach(button=>{button.onclick=()=>mutate('task_restore_artifact_version',{id:task.id,artifactId:button.dataset.taskArtifactRestore});});
   };
