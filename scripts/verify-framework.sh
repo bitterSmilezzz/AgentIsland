@@ -19,12 +19,21 @@ bad() { fail=1; printf 'FAILED: %s\n' "$1"; }
 
 # Capture status before any output formatting; continue independent suites after failure.
 run_suite() {
-  local label="$1" out rc
+  local label="$1" allow_blocked=0 out rc
   shift
+  if [ "${1:-}" = "--allow-blocked" ]; then
+    allow_blocked=1
+    shift
+  fi
   if out=$("$@" 2>&1); then rc=0; else rc=$?; fi
   if [ "$rc" -eq 0 ]; then
     printf '%-34s passed\n' "$label"
     printf '%s\n' "$out" | tail -6
+  elif [ "$rc" -eq 3 ] && [ "$allow_blocked" -eq 1 ]; then
+    blocked=$((blocked + 1))
+    printf '%-34s blocked (exit %s)\n' "$label" "$rc"
+    printf 'UNVERIFIED: %s prerequisites unavailable; authoritative Windows CI remains required\n' "$label"
+    printf '%s\n' "$out"
   else
     printf '%s\n' "$out"
     bad "$label (exit $rc)"
@@ -106,7 +115,7 @@ note "windows crate type check (cross-module and test code)"
 # 代价：首次分钟级（依赖编译），之后约 7 秒；缓存在 .build/，约 2.0G。
 # 它在临时快照里关闭 tauri-build 的 Windows 资源分支（本机没有 llvm-rc），
 # 因此**不是**标准 Windows 构建：资源编译、链接、打包、实机运行仍未验。
-run_suite "windows crate" bash scripts/check-windows-crate.sh
+run_suite "windows crate" --allow-blocked bash scripts/check-windows-crate.sh
 
 note "unified gate (ci)"
 run_profile ci no --check-timeout 1800
@@ -121,7 +130,7 @@ done
 printf '\n'
 if [ "$fail" -eq 0 ]; then
   if [ "$blocked" -gt 0 ]; then
-    printf 'ALL VERIFIED (available checks only; %s profiles blocked / unverified)\n' "$blocked"
+    printf 'ALL VERIFIED (available checks only; %s suites/profiles blocked / unverified)\n' "$blocked"
   else
     printf 'ALL VERIFIED\n'
   fi

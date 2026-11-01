@@ -1,6 +1,26 @@
 //! 本地日历的系统接口。所有调用使用调用方自己的缓冲区，可并发读取。
 //! Unix 与 Windows 的接口参数顺序、成功判据不同，统一在这里处理。
 
+#[cfg(windows)]
+extern "C" {
+    // Rust's libc exposes Windows localtime/gmtime but not mktime. Bind the
+    // Windows CRT's explicit 64-bit conversion and narrow to the target's
+    // libc::time_t only after checking its range.
+    #[link_name = "_mktime64"]
+    fn windows_mktime64(time: *mut libc::tm) -> i64;
+}
+
+#[cfg(unix)]
+fn mktime_local(time: &mut libc::tm) -> Option<libc::time_t> {
+    Some(unsafe { libc::mktime(time) })
+}
+
+#[cfg(windows)]
+fn mktime_local(time: &mut libc::tm) -> Option<libc::time_t> {
+    let seconds = unsafe { windows_mktime64(time) };
+    libc::time_t::try_from(seconds).ok()
+}
+
 pub fn local_time(now_ms: i64) -> Option<libc::tm> {
     let seconds: libc::time_t = now_ms.div_euclid(1000).try_into().ok()?;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -80,7 +100,9 @@ pub fn local_wall_time_to_utc(
     // 那是时区数据库的事（自研一套必然与系统规则漂移）。
     tm.tm_isdst = -1;
 
-    let seconds = unsafe { libc::mktime(&mut tm) };
+    let Some(seconds) = mktime_local(&mut tm) else {
+        return LocalTimeResolution::Nonexistent;
+    };
     if seconds == -1 {
         return LocalTimeResolution::Nonexistent;
     }
@@ -131,7 +153,12 @@ fn is_leap_year(year: i32) -> bool {
 fn month_day_from_day_of_year(year: i32, day_of_year: i32) -> (i32, i32) {
     let mut remaining = day_of_year;
     for (index, base) in MONTH_DAYS.iter().enumerate() {
-        let length = base + if index == 1 && is_leap_year(year) { 1 } else { 0 };
+        let length = base
+            + if index == 1 && is_leap_year(year) {
+                1
+            } else {
+                0
+            };
         if remaining < length {
             return (index as i32, remaining + 1);
         }
@@ -232,10 +259,10 @@ mod tests {
     fn local_wall_time_round_trips_through_utc() {
         // 覆盖一年里的多个日期（含月末与年末附近）
         for (year, day_of_year, hour, minute) in [
-            (2026, 0, 0, 0),   // 1 月 1 日 00:00
-            (2026, 58, 23, 59), // 3 月 1 日前夜
+            (2026, 0, 0, 0),     // 1 月 1 日 00:00
+            (2026, 58, 23, 59),  // 3 月 1 日前夜
             (2026, 181, 12, 30), // 7 月 1 日正午
-            (2026, 359, 9, 0),  // 12 月 26 日上午
+            (2026, 359, 9, 0),   // 12 月 26 日上午
             (2027, 364, 23, 59),
         ] {
             match local_wall_time_to_utc(year, day_of_year, hour, minute) {
@@ -297,8 +324,9 @@ mod tests {
     /// 「mktime 把不存在的 02:30 规范化成 03:30」这一情形。
     #[test]
     fn a_candidate_normalized_to_another_wall_time_is_reported_as_nonexistent() {
-        let requested = (2026, 59, 2, 30); // 3 月 1 日 02:30（春季跳变的典型时刻）
-        // 注入的读回：把候选时刻读成 03:30 —— 正是 mktime 规范化后的结果
+        // 3 月 1 日 02:30 是春季跳变的典型不存在时刻。
+        let requested = (2026, 59, 2, 30);
+        // 注入的读回把候选时刻读成 03:30，正是 mktime 规范化后的结果。
         let normalized = |_ms: i64| Some((2026, 59, 3, 30));
         assert_eq!(
             resolve_by_read_back(1_700_000_000_000, &normalized, requested),
@@ -317,14 +345,15 @@ mod tests {
     #[test]
     fn resolved_local_times_are_exact_not_approximate() {
         for ms in [0i64, 1_700_000_000_000, 1_721_001_600_000] {
-            let Some(local) = local_time(ms) else { continue };
-            let resolved =
-                local_wall_time_to_utc(
-                    local.tm_year + 1900,
-                    local.tm_yday,
-                    local.tm_hour as u8,
-                    local.tm_min as u8,
-                );
+            let Some(local) = local_time(ms) else {
+                continue;
+            };
+            let resolved = local_wall_time_to_utc(
+                local.tm_year + 1900,
+                local.tm_yday,
+                local.tm_hour as u8,
+                local.tm_min as u8,
+            );
             if let LocalTimeResolution::Unique(utc_ms) = resolved {
                 // 解析结果的本地日历必须与请求一致（秒差允许，因为请求没有秒）
                 let back = local_time(utc_ms).unwrap();

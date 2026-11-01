@@ -149,11 +149,21 @@ if (cd "$WORK/source" && env \
       cargo check --offline --target "$TARGET" $TARGETS \
         --manifest-path app/src-tauri/Cargo.toml) >"$LOG" 2>&1; then
   errors=0
+  blocked=0
   echo "  ✓ 无 Rust 错误（$(grep -c '^warning' "$LOG" || true) 条 warning 行）"
 else
-  echo "  ✗ 类型检查失败：" >&2
-  grep -n -A6 '^error' "$LOG" | head -60 >&2
-  errors=1
+  errors=0
+  blocked=0
+  classification="$(python3 "$REPO_ROOT/scripts/windows_crate_failure.py" "$LOG")"
+  if [[ "$classification" == "windows_sdk_headers_unavailable" ]]; then
+    echo "BLOCKED: Windows SDK/CRT headers required by ring are unavailable for the ${TARGET} cross-check."
+    echo "The real Windows CI build and test job remains required."
+    blocked=1
+  else
+    echo "  ✗ 类型检查失败：" >&2
+    grep -n -A6 '^error' "$LOG" | head -60 >&2
+    errors=1
+  fi
 fi
 
 cat >&2 <<'EOF'
@@ -164,6 +174,9 @@ Windows 资源分支（本机没有 llvm-rc/windres），并且只做类型检�
 权威判据仍是 .github/workflows/build.yml 的 windows job。
 EOF
 
+if [[ "$blocked" -ne 0 ]]; then
+  exit 3
+fi
 if [[ "$errors" -ne 0 ]]; then
   exit 1
 fi

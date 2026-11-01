@@ -134,6 +134,22 @@ class FrameworkVerifierTests(unittest.TestCase):
         self.assert_passes()
         self.assertIn("unverified", self.output.lower())
 
+    def test_windows_crate_prerequisite_is_explicitly_blocked(self):
+        self.config = {
+            "check-windows-crate.sh": [
+                "BLOCKED: WINDOWS_SDK_HEADERS_UNAVAILABLE", 3,
+            ],
+        }
+        self.assert_passes()
+        self.assertIn("UNVERIFIED: windows crate prerequisites unavailable", self.output)
+        self.assertIn("6 suites/profiles blocked / unverified", self.output)
+        self.assertIn("ALL VERIFIED (available checks only", self.output)
+
+    def test_exit_three_from_an_ordinary_suite_still_fails(self):
+        self.config = {"cargo": ["blocked-looking output", 3]}
+        self.assert_fails()
+        self.assertNotIn("UNVERIFIED: cargo", self.output)
+
     def test_success_text_cannot_mask_failed_command(self):
         for key, text in (
             ("cargo", "test result: ok. 42 passed; 0 failed"),
@@ -355,6 +371,74 @@ sys.exit(int(os.environ["CARGO_RC"]))
         self.assertIn("inspected generated source", self.output)
 class WindowsCrateTests(unittest.TestCase):
     """Fail-fast behaviour of the whole-crate Windows type check, without cargo."""
+
+    def run_failure_classifier(self, cargo_log: str):
+        with tempfile.TemporaryDirectory(prefix="windows-crate-classifier-") as directory:
+            log_path = Path(directory) / "check.log"
+            log_path.write_text(cargo_log, encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(SCRIPTS / "windows_crate_failure.py"), str(log_path)],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+
+    def test_ring_missing_windows_assert_header_is_an_environment_block(self):
+        result = self.run_failure_classifier(
+            "error: failed to run custom build command for `ring v0.17.14`\n"
+            "warning: ring@0.17.14: /registry/ring-0.17.14/include/ring-core/check.h:27:11: "
+            "fatal error: 'assert.h' file not found\n"
+            "  cargo:warning=1 error generated.\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "windows_sdk_headers_unavailable")
+
+    def test_other_ring_errors_remain_failures(self):
+        result = self.run_failure_classifier(
+            "error: failed to run custom build command for `ring v0.17.14`\n"
+            "error: unsupported compiler flag\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "windows_crate_typecheck_failed")
+
+    def test_missing_assert_header_from_another_crate_remains_a_failure(self):
+        result = self.run_failure_classifier(
+            "error: failed to run custom build command for `other v1.2.3`\n"
+            "warning: other@1.2.3: /registry/other-1.2.3/other.c:1:10: "
+            "fatal error: 'assert.h' file not found\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "windows_crate_typecheck_failed")
+
+    def test_ring_failure_and_another_crates_missing_header_are_not_combined(self):
+        result = self.run_failure_classifier(
+            "error: failed to run custom build command for `ring v0.17.14`\n"
+            "error: failed to run custom build command for `other v1.2.3`\n"
+            "warning: other@1.2.3: /registry/other-1.2.3/other.c:1:10: "
+            "fatal error: 'assert.h' file not found\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "windows_crate_typecheck_failed")
+
+    def test_ring_sdk_block_does_not_mask_another_crates_build_failure(self):
+        result = self.run_failure_classifier(
+            "warning: ring@0.17.14: /registry/ring-0.17.14/check.h:27:11: "
+            "fatal error: 'assert.h' file not found\n"
+            "error: failed to run custom build command for `ring v0.17.14`\n"
+            "warning: other@1.2.3: /registry/other-1.2.3/other.c:1:10: "
+            "fatal error: 'assert.h' file not found\n"
+            "error: failed to run custom build command for `other v1.2.3`\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "windows_crate_typecheck_failed")
+
+    def test_ring_sdk_block_does_not_mask_another_ring_compiler_error(self):
+        result = self.run_failure_classifier(
+            "warning: ring@0.17.14: /registry/ring-0.17.14/check.h:27:11: "
+            "fatal error: 'assert.h' file not found\n"
+            "warning: ring@0.17.14: clang: error: unsupported compiler flag\n"
+            "error: failed to run custom build command for `ring v0.17.14`\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "windows_crate_typecheck_failed")
 
     def test_unresolvable_tauri_build_version_fails_before_cargo(self):
         with tempfile.TemporaryDirectory(prefix="windows-crate-") as directory:
