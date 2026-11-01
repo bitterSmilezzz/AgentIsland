@@ -585,3 +585,25 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 
 - BUG-016 仍为 open：v0.0.416 真实客户端检查、安装、显式重启与真实错签拒绝尚未完成；旧版 `agentisland-update-e2e` VM 保持原样。本轮没有要求用户手工操作，也未把 v0.0.418/0.0.425 宿主或隔离发布 VM 的结果冒充旧版复现。
 - 下一片从当前 [`需求状态`](../需求状态.md)与[`需求测试矩阵`](../spec/需求测试矩阵.md)的未完成缺口选取；若继续 GW-06，必须先接入消费该状态机的转发/工具/账本子系统并按 ADR 0040 另行定义授权与真实验收，不能把纯状态判据升级描述为端到端完成。
+
+## 20. 2026-11-01 追加：Windows 本地时钟编译与本机交叉门禁分类（v0.0.426）
+
+### 改动与验证
+
+- `localclock.rs` 的 Windows 反向墙钟转换改用 Windows CRT `_mktime64`，在窄化到目标 `libc::time_t` 前检查范围；Unix 继续走 `libc::mktime`，系统 DST 规则和读回校验不变。
+- 本机整 crate Windows 交叉检查现在只在唯一失败根因是 `ring` 且 ring 明确缺少 Windows CRT `assert.h` 时返回 exit 3。ring 自身额外 clang 错误、其他 crate 的错误、多重 C 编译错误与普通测试 suite 的 exit 3 都仍然失败；框架只把 Windows crate 检查的这个精确结果显示为 blocked / unverified。
+- classifier 的真实 ring 日志正例、其他 crate 缺头文件、跨 crate 混合错误、ring 自身混合 clang 错误、普通 suite exit 3 均有回归。新加 ring 混合 clang 错误用例先按预期失败，再在修正后通过。完整 verifier 单测 **29/29**，Windows classifier 用例 **7/7**；registry 测试 **23/23**。
+- 全量 Rust suite **1,409 passed / 0 failed / 15 ignored**；最终 `scripts/verify-framework.sh` exit 0，统一 CI profile passed。Windows 整 crate 本机交叉检查因本机没有 Windows CRT/SDK 头文件仍明确 blocked；5 个 suite/profile 列为 blocked / unverified（Windows crate、native、manual、client、soak）。不能把它们写成通过。
+- Release 源码 CI run `20261101T000945Z-7171479e841e` **129 passed / 0 failed / 0 blocked**；随包 CLI 与构建身份验收 `20261101T001709Z-1b088dc99d3c` **7/7**；更新包错签、篡改与正例 **7/7**；隔离 VM 五项原生门禁通过，证据 `.build/vm/acceptance-35f166bbbe1d40988b4f4e82e08063c2`。GitHub Actions [run 41256233179](https://github.com/bitterSmilezzz/AgentIsland/actions/runs/41256233179) 的 **Windows 与 macOS jobs 均 success**；Windows 编译、HTTP 超时/取消回归、Rust 测试全部通过，因此 **BUG-017 已关闭**。独立审查报告 [`2026-11-01-0807-v0.0.426-independent.md`](../code-review/2026-11-01-0807-v0.0.426-independent.md) 的复审时点结论为 Standards / Spec 均 PASS。
+- `scripts/release.sh` 完成脱敏扫描、签名构建、原生验收、提交后历史复扫与附件校验；提交 `4021fd300cbe802641adcbeec13c04fc810bd56b`，tag `v0.0.426` 已推送，GitHub [v0.0.426 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.426) 含 DMG、ZIP、updater 包、签名与 `latest.json`。应用已重启，PID `90057` 运行 `dist/AgentIsland.app`。本轮另有两个明确未验项：原生动效逐边取证、真实 pinned Claude 客户端取证。
+
+### 失败与更正记录
+
+- 第一次全框架复验因源码已升为 0.0.426、磁盘签名 updater 包仍是 0.0.425 而在只读清单漂移检查失败；随后按实际构建路径生成 0.0.426 包、复制签名副本并重写清单，完整复验 exit 0。一次独立 `test-update-signature.py --published` 在复制更新包/签名到 `dist/` 前运行，7 项均在版本一致性准备断言处失败；按发布脚本顺序复制后 7/7 通过。
+- 首次发版文件清单预检含一条误写路径，脚本在暂存前拒绝，未提交或推送；修正显式清单后才继续。签名内容始终由构建脚本读取，没有查看或输出。
+
+### 未验项与下一步
+
+- BUG-011 的“本机环境前置误报为门禁失败”已关闭；本机整 crate Windows 交叉编译依然因缺 SDK 头文件未验证，Windows 权威 CI 已通过。
+- BUG-016 仍 open：没有在 `agentisland-update-e2e` 中触发检查或变更旧版应用。代码级超时回归证明当前版本不会无限停在 checking，但不能证明 v0.0.416 的原始根因。全程没有要求用户做手工 VM 操作。
+- 后续按当前 [`需求状态`](../需求状态.md)、[`需求测试矩阵`](../spec/需求测试矩阵.md) 与 [`04 · 实施计划`](../workbench/04-plan.md)选择未完成项；若继续网关方向，按 ADR 0040 接入真实消费子系统并单独定义授权和验收，不把现有纯状态逻辑描述成端到端能力。

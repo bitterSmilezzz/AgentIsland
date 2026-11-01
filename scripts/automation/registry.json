@@ -3741,9 +3741,9 @@
     {
       "id": "BUG-017",
       "title": "Windows 构建无法解析 libc::mktime，TASK-08 墙钟反向解析未编译",
-      "status": "open",
+      "status": "closed",
       "requirement": "TASK-08",
-      "evidence": "2026-10-31 Actions run 41251586203 的 Windows「编译检查」失败：`src/localclock.rs:83` 报 `cannot find function mktime in crate libc`，Rust 测试被跳过。修复前的复现夹具 `.scratch/localclock-port-check` 对生产 `localclock.rs` 执行 `cargo check --tests --target x86_64-pc-windows-msvc --offline` 得到同一错误。当前修复将 Windows 墙钟转换绑定到 CRT `_mktime64`，并对 libc::time_t 做范围转换；同一生产源码的 MSVC 与 GNU Windows `cargo check --tests` 均通过，主机 localclock 定向测试 6/6 通过。修复后的真实 Windows Actions 编译和测试 job 尚未完成；保持 open 直至该 job 通过。"
+      "evidence": "2026-10-31 Actions run 41251586203 的 Windows「编译检查」失败：`src/localclock.rs:83` 报 `cannot find function mktime in crate libc`，Rust 测试被跳过。修复前的复现夹具 `.scratch/localclock-port-check` 对生产 `localclock.rs` 执行 `cargo check --tests --target x86_64-pc-windows-msvc --offline` 得到同一错误。当前修复将 Windows 墙钟转换绑定到 CRT `_mktime64`，并对 libc::time_t 做范围转换；同一生产源码的 MSVC 与 GNU Windows `cargo check --tests` 均通过，主机 localclock 定向测试 6/6 通过。修复后的真实 Windows Actions 编译和测试 job 后续由 run 41256233179 的 Windows job 全部通过（见下方追加证据）。 2026-11-01 GitHub Actions run 41256233179 的 Windows job success：编译检查、HTTP 超时与取消回归、Rust 测试均通过，BUG-017 关闭。"
     }
   ]
 }
