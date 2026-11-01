@@ -273,7 +273,7 @@
         "ops01.soakphases"
       ],
       "audit_ref": "docs/测试映射盘点.md（§8 含 Rust 侧补充）",
-      "coverage_note": "partial — 热/稳态 soak、清理失败、崩溃部分、原子写与坏文件保原件已有；**冷/热/稳态分段判据**（ops01.soakphases，2026-10-27）：三阶段按「连续稳定采样」推进（不按分钟数）；冷启动窗口的峰值单列、不作稳态基线也不参与漂移/增长判定（一次性开销不是泄漏）；稳态漂移越界报告基线与上限（不下「泄漏」结论）；单调增长早于越界报警；间隔异常/时钟回拨的采样被排除而非当成增长（判定基准是最近观测）。5 条用例 + 变异（摘掉漂移检查）被拒。全量 1343 passed，脱敏 0 命中。**过程中修掉三个真 bug**：①漂移判据拿「增量 > 绝对上限」比较（条件永远为假，越界形同虚设）；②冷启动峰值只在第一个样本记录（phase 立刻转 Warm）；③不规整样本不更新基准，导致时钟回拨被算成正常间隔。缺：扩展 soak(>30min) 与真实进程采样（需长时档）、网关背压（GW-08 边界：当前无网关用量源）、升级回滚（与 NOT-06 真实安装路径同属外部验收层）。",
+      "coverage_note": "partial — 热/稳态 soak、清理失败、崩溃部分、原子写与坏文件保原件已有；**冷/热/稳态分段判据**（ops01.soakphases，2026-10-27）：三阶段按「连续稳定采样」推进（不按分钟数）；冷启动窗口的峰值单列、不作稳态基线也不参与漂移/增长判定（一次性开销不是泄漏）；稳态漂移越界报告基线与上限（不下「泄漏」结论）；单调增长早于越界报警；间隔异常/时钟回拨的采样被排除而非当成增长（判定基准是最近观测）。5 条用例 + 变异（摘掉漂移检查）被拒。全量 1343 passed，脱敏 0 命中。**过程中修掉三个真 bug**：①漂移判据拿「增量 > 绝对上限」比较（条件永远为假，越界形同虚设）；②冷启动峰值只在第一个样本记录（phase 立刻转 Warm）；③不规整样本不更新基准，导致时钟回拨被算成正常间隔。缺：扩展 soak(>30min) 与真实进程采样（需长时档）、网关背压（GW-08 边界：当前无网关用量源）、升级回滚（与 NOT-06 真实安装路径同属外部验收层）。 **UI 冒烟完成等待（2026-11-01）**：`scripts/ui-smoke.sh` 以 island/sidebar/workbench 三窗口均到达 `done` 或 `threw` 为完成信号，结果齐备即结束，120 秒是冷启动上限；缺项仍失败。合成回归覆盖延迟完成提前退出和运行态到上限失败。隔离 VM `agentisland-iso` 本轮五道原生门禁 exit 0，三个窗口均 `done`，回执 `.build/vm/acceptance-37ac43602445496aab2aedf30cfc1358`。历史冷启动/闲置后失败尚未复现，BUG-014 保持 open。",
       "status": "partial"
     },
     "NOT-02": {
@@ -1108,7 +1108,7 @@
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "existing asset, assertions audited 2026-10-14；2026-10-27 修正夹具缺陷：复位用的解释器路径未转义就拼进 shell 命令串，本机 python 位于 `.../Application Support/...`（含空格）⇒ 命令被切开 ⇒ 夹具恒红。现与生产同口径（先 `shlex.quote` 再传），并用 `shlex.split` 避免二次解析。",
+      "source": "existing asset, assertions audited 2026-10-14；2026-10-27 修正夹具缺陷：复位用的解释器路径未转义就拼进 shell 命令串，本机 python 位于 `.../Application Support/...`（含空格）⇒ 命令被切开 ⇒ 夹具恒红。现与生产同口径（先 `shlex.quote` 再传），并用 `shlex.split` 避免二次解析。 2026-11-01 scratch cleanup isolation: `test_scratch_directory_exists_on_a_clean_checkout` copies and reloads the gate in a disposable checkout; it does not delete the shared `.build/` tree or native acceptance evidence.",
       "test_files": [
         "scripts/test-native-gates-vm.py"
       ]
@@ -3764,7 +3764,7 @@
       "title": "VM 连跑多轮原生验收后来宾 UI 冒烟偶发「没有结果」：三个窗口前端未完成点按，重启来宾后恢复",
       "status": "open",
       "requirement": "OPS-01",
-      "evidence": "2026-10-25 v0.0.385 首跑发版：五道原生门禁第一道 ui-smoke.sh 报三窗口均为 running、未点到元素失败；同一产物在 tart stop + tart run 重启来宾后单独复跑 native-gates-vm.py，五道门禁全绿（All native gates passed）。与 BUG-013 同型（连跑多轮后累积的来宾系统状态劣化）。处置：连续跑多轮发布时，每 3–4 轮主动重启一次来宾；若再次出现，考虑让 native-gates-vm.py 在起跑前检测来宾运行时间或加一次重试。 **2026-10-25 追加（关键操作细节）**：v0.0.414 发版时查明——**来宾重启后的第一次原生门禁必失败**（UI 冒烟三窗口报「没有结果」= WebView 冷启动未就绪），第二次跑才全绿。因此「重启来宾」不是修复手段本身：必须**重启后先跑一次预热**（失败也算预热完成），紧接着发版；来宾长时间闲置（每轮间隔 4 分钟）也会让 WebKit 被挂起而复现同样的假失败。处置：发版前预热来宾一次；预热后立刻发版，缩短来宾空闲时间。"
+      "evidence": "2026-10-25 v0.0.385 首跑发版：五道原生门禁第一道 ui-smoke.sh 报三窗口均为 running、未点到元素失败；同一产物在 tart stop + tart run 重启来宾后单独复跑 native-gates-vm.py，五道门禁全绿（All native gates passed）。与 BUG-013 同型（连跑多轮后累积的来宾系统状态劣化）。处置：连续跑多轮发布时，每 3–4 轮主动重启一次来宾；若再次出现，考虑让 native-gates-vm.py 在起跑前检测来宾运行时间或加一次重试。 **2026-10-25 追加（关键操作细节）**：v0.0.414 发版时查明——**来宾重启后的第一次原生门禁必失败**（UI 冒烟三窗口报「没有结果」= WebView 冷启动未就绪），第二次跑才全绿。因此「重启来宾」不是修复手段本身：必须**重启后先跑一次预热**（失败也算预热完成），紧接着发版；来宾长时间闲置（每轮间隔 4 分钟）也会让 WebKit 被挂起而复现同样的假失败。处置：发版前预热来宾一次；预热后立刻发版，缩短来宾空闲时间。 2026-11-01 event-driven completion: fixed 30-second sleep was replaced by polling terminal SMOKE_RESULT for all three windows with a 120-second upper bound; assertions still fail on missing/running/threw results. Synthetic regression proves late `done` returns early and a never-terminal fixture fails at the bound; the old fixed-wait implementation failed the late-result test. A fresh unlocked `agentisland-iso` five-gate run passed (all three UI windows `done`, CLI and window-lifetime gates passed; receipt `.build/vm/acceptance-37ac43602445496aab2aedf30cfc1358`). This did not recreate the documented post-restart/idle condition, so the bug remains open."
     },
     {
       "id": "BUG-015",
@@ -3786,6 +3786,13 @@
       "status": "closed",
       "requirement": "TASK-08",
       "evidence": "2026-10-31 Actions run 41251586203 的 Windows「编译检查」失败：`src/localclock.rs:83` 报 `cannot find function mktime in crate libc`，Rust 测试被跳过。修复前的复现夹具 `.scratch/localclock-port-check` 对生产 `localclock.rs` 执行 `cargo check --tests --target x86_64-pc-windows-msvc --offline` 得到同一错误。当前修复将 Windows 墙钟转换绑定到 CRT `_mktime64`，并对 libc::time_t 做范围转换；同一生产源码的 MSVC 与 GNU Windows `cargo check --tests` 均通过，主机 localclock 定向测试 6/6 通过。修复后的真实 Windows Actions 编译和测试 job 后续由 run 41256233179 的 Windows job 全部通过（见下方追加证据）。 2026-11-01 GitHub Actions run 41256233179 的 Windows job success：编译检查、HTTP 超时与取消回归、Rust 测试均通过，BUG-017 关闭。"
+    },
+    {
+      "id": "BUG-018",
+      "title": "原生门禁回归测试会删除共享 .build 验收证据",
+      "status": "closed",
+      "requirement": "OPS-01",
+      "evidence": "2026-11-01 运行全量原生门禁单测时发现 `ResourceGateTests.test_scratch_directory_exists_on_a_clean_checkout` 调用 `shutil.rmtree(vm.SCRATCH)`；`SCRATCH` 指向仓库共享 `.build/`，会删除既有 VM 验收回执、失败日志和 SSH host-key pin。本轮确有 `.build/vm/acceptance-a363e4ae847242b482187112882d981e` 失败日志被删；会话保留失败阶段摘要，但完整原始日志无法恢复。修复为在一次性临时 checkout 中复制并导入门禁脚本，验证其创建临时 `.build/`，不接触真实共享目录。定向回归和全量 `scripts/test-native-gates-vm.py`（19/19）通过。"
     }
   ]
 }

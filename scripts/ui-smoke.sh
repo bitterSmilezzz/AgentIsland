@@ -21,7 +21,10 @@ shift
 cd "$(dirname "$0")/.."
 
 LOG="${TMPDIR:-/tmp}agentisland-tauri.log"
-RUN_MS="${UI_SMOKE_RUN_MS:-30000}"
+# WebKit can take longer on the first run after a guest restart or idle period.
+# The bound remains strict; successful runs stop as soon as all three windows
+# have emitted a terminal result instead of sleeping through the whole window.
+RUN_MS="${UI_SMOKE_RUN_MS:-120000}"
 
 # 用哪个二进制：默认取**新一点**的那个。发布产物比源码旧时（刚改完还没重打包）
 # 会自动退回 debug——否则会拿一个不带 --ui-smoke 的二进制去跑，冒烟静默不执行。
@@ -63,8 +66,31 @@ PID=$!
 LOG="${TMPDIR:-/tmp/}agentisland-test-${PID}.log"
 trap 'kill $PID 2>/dev/null' EXIT
 
-# 等它跑完（冒烟 1.2s 开跑、约 5~6s 点完、8s 后读回，留 3s 余量）
-sleep "$(( RUN_MS / 1000 ))"
+smoke_results_terminal() {
+    [[ -f "$LOG" ]] || return 1
+    local flat line label
+    flat=$(grep '\[webview\] SMOKE_RESULT' "$LOG" | tr -d '\\' || true)
+    for label in island sidebar workbench; do
+        line=$(printf '%s\n' "$flat" | grep -F "SMOKE_RESULT ${label} " | tail -1 || true)
+        [[ -n "$line" ]] || return 1
+        case "$line" in
+            *'"state":"done"'*|*'"state":"threw"'*) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+# 等每个窗口自己回报最终状态；仍保留严格上限，缺回执/卡在 running 都会失败。
+MAX_SECONDS=$(( (RUN_MS + 999) / 1000 ))
+(( MAX_SECONDS < 1 )) && MAX_SECONDS=1
+START_SECONDS=$SECONDS
+while ! smoke_results_terminal; do
+    if ! kill -0 "$PID" 2>/dev/null || (( SECONDS - START_SECONDS >= MAX_SECONDS )); then
+        break
+    fi
+    sleep 0.2
+done
 kill $PID 2>/dev/null
 wait $PID 2>/dev/null
 

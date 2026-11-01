@@ -679,3 +679,25 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - TASK-05 仍为 partial：AgentIsland 自有执行历史尚未确定项目访问、加密、保留/删除和备份恢复数据契约；按需求 §4 单独设计，不把本地验证清单复用成执行历史。
 - BUG-016 / NOT-06 仍 open：v0.0.416 “检查更新”卡住的原始请求与失败证据未取得，未在旧版 VM 上重做操作，也没有要求用户手工操作。
 - 全局计划并未结束：需求状态仍有 **23 项 partial** 和 **17 项 open bugs**。下一项按当前 [`需求状态`](../需求状态.md)、[`需求测试矩阵`](../spec/需求测试矩阵.md)和已定边界选择；不能把 TASK-05 的这一片写成整项或整份计划完成。
+
+## 24. 2026-11-01 追加：BUG-014 有界完成等待与验收证据保护（v0.0.430）
+
+### 改动
+
+- `scripts/ui-smoke.sh` 不再固定睡眠 30 秒后读取前端结果，而是轮询 island/sidebar/workbench 三个窗口的终态 `SMOKE_RESULT`；全部到达 `done` 或 `threw` 即结束，默认 120 秒是冷启动上限。现有断言不放宽，缺结果、仍在运行或抛错都失败。
+- `scripts/test-native-gates-vm.py` 的干净 checkout 回归在一次性临时目录复制并加载脚本，不再删除共享 `.build/`。原用例的 `shutil.rmtree(vm.SCRATCH)` 会清掉 VM 回执、失败日志和 SSH host-key pin。
+- 登记 BUG-018 为已修复的验收测试隔离缺陷。需求状态仍是 23 项 partial；bug 登记现有 **18 条记录、3 条 open、15 条 closed**。§23 的“17 项 open bugs”是当时记录数误写为 open 数的更正点，历史原文保留。
+
+### 验证与发布
+
+- 先在旧固定等待实现上运行延迟完成合成回归，结果在脚本结束前已到达，但固定睡眠仍继续到超时，测试按预期变红；新实现改为按结果结束后，该用例与“始终 running 必须在上限失败”用例均通过。
+- `python3 scripts/test-native-gates-vm.py` **19/19**；`bash -n scripts/ui-smoke.sh`、`git diff --check`、`render-status.py` 与 `render-matrix.py` 校验通过。版本 bump 后先发现 updater 清单仍对应旧包；签名构建并重写清单后，完整 `bash scripts/verify-framework.sh` **exit 0**：Rust **1426 passed / 15 ignored**，CI run `20261101T054038Z-270b13cbe3a2` 与 package run `20261101T054058Z-60a7da0d4ad9` 通过，扫描器 **41/41**、updater manifest 与 4 个 Windows 片段通过。Windows 整 crate 因缺 SDK/CRT 头文件 blocked；native、manual、client、soak 共 5 个 profile 按外部前置如实列为 blocked / unverified。
+- 隔离 VM `agentisland-iso` 的本轮五道原生门禁 exit 0：UI、Dock、单实例、CLI 原生投递、窗口生命周期全部通过；三个 UI 窗口均记录为 `done`。回执与构建哈希在 `.build/vm/acceptance-37ac43602445496aab2aedf30cfc1358`。
+- 本轮较早一次全门禁曾通过 UI、Dock、单实例后，在 CLI `helper-hide-delivery` 阶段以 `ValueError` 不完整退出；当时只读进程探测得到目标进程数 0，根因未确定。原日志目录 `.build/vm/acceptance-a363e4ae847242b482187112882d981e` 后被旧的 scratch 回归用例清理，完整原始日志无法恢复；本段与 BUG-018 保留失败摘要，不以之后的通过覆盖失败。
+- 本轮审查报告：[`2026-11-01-1315-v0.0.430-codex.md`](../code-review/2026-11-01-1315-v0.0.430-codex.md)。计划以 `scripts/release.sh 0.0.430 "原生验收等待有界化并保护门禁证据"` 收尾；提交、tag、Release 与应用重启状态以该命令的校验输出为准。
+
+### 未完成与下一步
+
+- BUG-014 保持 open：当前真实 VM 门禁通过，但没有再次触发文档记载的“来宾重启后首跑 / 长时间闲置后”故障；不能据一次暖机通过关闭问题。
+- BUG-016 / NOT-06 保持 open：用户明确不希望承担手工操作；不能用代码级超时测试或本轮 VM 验收替代 v0.0.416 的真实 updater 请求和安装验证。旧 `agentisland-update-e2e` VM 本轮未触碰。
+- TASK-05 的 AgentIsland 自有执行历史数据策略草稿仍待用户确认；此前已请求确认，未收到答案时不把草案当成获批契约。全局计划继续进行，不将本轮验收改动写成整体完成。

@@ -187,25 +187,27 @@ class ResourceGateTests(unittest.TestCase):
     def test_scratch_directory_exists_on_a_clean_checkout(self):
         # `.build/` is git-ignored, so it is absent from a fresh checkout. The gate
         # stages temporary payloads there, so it must create the directory rather than
-        # let TemporaryDirectory fail with FileNotFoundError -- which on a clean tree
-        # reported 18 errors before a single assertion ran.
-        import shutil
+        # let TemporaryDirectory fail with FileNotFoundError. Exercise this against a
+        # disposable checkout: removing the real `.build/` would erase user evidence.
         import sys
-        shutil.rmtree(vm.SCRATCH, ignore_errors=True)
-        self.assertFalse(vm.SCRATCH.exists())
-        # Other tests in this module stage their payloads in the same shared
-        # directory, so it must be restored whatever this assertion concludes.
-        self.addCleanup(vm.SCRATCH.mkdir, parents=True, exist_ok=True)
-        # Re-importing must be enough to make the gate usable again.
-        spec = importlib.util.spec_from_file_location('native_gates_vm_reload', vm.__file__)
-        reloaded = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = reloaded
-        try:
-            spec.loader.exec_module(reloaded)
-        finally:
-            sys.modules.pop(spec.name, None)
-        self.assertTrue(reloaded.SCRATCH.is_dir())
-        self.assertEqual(reloaded.SCRATCH, vm.SCRATCH)
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='native-gates-clean-checkout-') as temporary:
+            checkout = Path(temporary)
+            scripts = checkout / 'scripts'
+            scripts.mkdir()
+            isolated_source = scripts / 'native-gates-vm.py'
+            isolated_source.write_bytes(Path(vm.__file__).read_bytes())
+            isolated_scratch = checkout / '.build'
+            self.assertFalse(isolated_scratch.exists())
+            spec = importlib.util.spec_from_file_location('native_gates_vm_clean_checkout', isolated_source)
+            reloaded = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = reloaded
+            try:
+                spec.loader.exec_module(reloaded)
+            finally:
+                sys.modules.pop(spec.name, None)
+            self.assertTrue(reloaded.SCRATCH.is_dir())
+            self.assertEqual(reloaded.SCRATCH.resolve(), isolated_scratch.resolve())
 
     def test_preflight_hint_ignores_arbitrary_remote_details(self):
         import json, tempfile
@@ -301,6 +303,91 @@ class ResourceGateTests(unittest.TestCase):
         for changed in variants:
             with self.subTest(), self.assertRaises(ValueError): self.check(changed, manifest)
         with self.assertRaises(ValueError): self.check(data, manifest, exit_code=2)
+
+
+class UiSmokeCompletionTests(unittest.TestCase):
+    def fake_binary(self, directory):
+        import sys
+        binary = Path(directory) / 'fake-agentisland'
+        binary.write_text(f'''#!{sys.executable}
+import json, os, pathlib, signal, time
+tmp = pathlib.Path(os.environ['TMPDIR'])
+pid = os.getpid()
+log = tmp / f"agentisland-test-{{pid}}.log"
+times = tmp / f"smoke-times-{{pid}}.json"
+log.write_text('')
+mode = os.environ.get('FAKE_SMOKE_MODE', 'delayed-done')
+def terminate(signum, frame):
+    try:
+        record = json.loads(times.read_text()) if times.exists() else {{}}
+    except (OSError, ValueError):
+        record = {{}}
+    record['terminated'] = time.monotonic()
+    times.write_text(json.dumps(record))
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, terminate)
+time.sleep(float(os.environ.get('FAKE_SMOKE_DELAY', '0.5')))
+state = 'done' if mode == 'delayed-done' else 'running'
+records = {{
+    'island': {{'found': {{'[data-analytics]': 1}}, 'errs': []}},
+    'sidebar': {{'found': {{'[data-nav]': 1}}, 'errs': [], 'activeNav': '待办', 'firstNav': '监控'}},
+    'workbench': {{'found': {{'[data-wb-nav]': 1}}, 'errs': [],
+                  'emptyState': {{'monitorBox': True, 'runningAgents': 0, 'emptyEl': True,
+                                  'text': '暂无在线智能体', 'box': 100}}}},
+}}
+lines = ''.join('[webview] SMOKE_RESULT ' + label + ' ' +
+                json.dumps(dict(state=state, steps=[], **record), ensure_ascii=False,
+                           separators=(',', ':')) + '\\n'
+                for label, record in records.items())
+times.write_text(json.dumps({{'completed': time.monotonic()}}))
+with log.open('a') as stream:
+    stream.write(lines)
+    stream.flush()
+while True:
+    time.sleep(0.2)
+''')
+        binary.chmod(0o755)
+        return binary
+
+    def run_smoke(self, directory, mode, run_ms):
+        import os, subprocess, time
+        root = Path(__file__).resolve().parent.parent
+        fake = self.fake_binary(directory)
+        temp = str(Path(directory)) + os.sep
+        env = dict(os.environ, TMPDIR=temp, UI_SMOKE_BIN=str(fake),
+                   UI_SMOKE_RUN_MS=str(run_ms), FAKE_SMOKE_MODE=mode,
+                   FAKE_SMOKE_DELAY='0.5')
+        started = time.monotonic()
+        result = subprocess.run(['bash', str(root / 'scripts/ui-smoke.sh'), '--isolated-session'],
+                                cwd=root, env=env, capture_output=True, text=True, timeout=12)
+        return result, time.monotonic() - started, Path(directory)
+
+    def test_late_done_results_end_the_smoke_without_waiting_out_the_full_timeout(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            result, elapsed, root = self.run_smoke(directory, 'delayed-done', 8000)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('✓ UI 冒烟通过', result.stdout)
+            timing_files = list(root.glob('smoke-times-*.json'))
+            self.assertEqual(len(timing_files), 1)
+            timing = json.loads(timing_files[0].read_text())
+            self.assertLess(timing['terminated'] - timing['completed'], 2.0,
+                            '所有窗口回报后应立即结束，不应继续睡满固定窗口')
+            self.assertLess(elapsed, 6.5,
+                            '模拟的冷启动结果已在 0.5 秒后完成，冒烟不应继续等待 8 秒')
+
+    def test_running_results_still_fail_at_the_bounded_deadline(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            result, elapsed, root = self.run_smoke(directory, 'running', 3000)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('没跑完', result.stdout)
+            self.assertNotIn('✓ UI 冒烟通过', result.stdout)
+            timing_files = list(root.glob('smoke-times-*.json'))
+            self.assertEqual(len(timing_files), 1)
+            timing = json.loads(timing_files[0].read_text())
+            self.assertGreater(timing['terminated'] - timing['completed'], 1.0)
+            self.assertLess(elapsed, 5.0, '未完成结果必须在设定上限内失败')
 
 
 if __name__ == '__main__':
