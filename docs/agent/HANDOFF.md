@@ -5,13 +5,13 @@
 > [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
 **交接时点**：2026-11-01
-**本轮起始基线**：`main` at `da909e8`（v0.0.418）；本轮改造为 NOT-06 跳过版本可保存与恢复提示
-**本轮开始时最新发布**：`v0.0.418`（DMG / zip / updater 更新包 / `latest.json`）
-**本轮完成发布**：`v0.0.419`，提交 `bb4fdec`，tag 与 GitHub Release 已创建；发布后文档同步见第 13 节。
-**基线状态**：`verify-framework.sh` 的 Windows 交叉类型检查因本机缺 Windows SDK 失败（已登记 BUG-011）；ci/package 可运行，原生门禁依赖 `agentisland-iso` 来宾会话。
+**本轮起始基线**：`main` at `4021fd3`（v0.0.426）；本轮改造为 TASK-05 本地产出正文持久化。
+**本轮开始时最新发布**：`v0.0.426`（DMG / ZIP / updater 包 / `latest.json`）。
+**本轮完成发布**：`v0.0.427`，提交 `b861578bc37f979f132ac2d418a258d5e831ca9c`，tag 与 GitHub Release 已创建；详见第 21 节。
+**基线状态**：最终 `verify-framework.sh` exit 0；本机 Windows 整 crate 检查因缺少 ring 所需 Windows CRT/SDK `assert.h` 标记未验证。发布源码 CI、包身份检查与隔离 VM 原生门禁均通过。
 
 > 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9、12、13 节。
-> 本轮（v0.0.419）补上跳过版本持久化、恢复入口与异步代次保护，见第 13 节；NOT-06 仍有真实升级和 Intel/universal 验收缺口。
+> v0.0.427 完成本地产出正文第五片；TASK-05 仍缺产出版本演进、比较与恢复的任务页接线。NOT-06 的 v0.0.416 真实升级仍未验，旧版 `agentisland-update-e2e` VM 保持原样。
 
 > ⚠️ 本文件由**多个会话接力**：第 1–6 节是 2026-10-17 晚（NOT-05 交付与三轮复审），
 > 第 7 节是 CI 身份规则修复（**不是本次交接者写的**，但记录的是真实修复，保留不删），
@@ -607,3 +607,27 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - BUG-011 的“本机环境前置误报为门禁失败”已关闭；本机整 crate Windows 交叉编译依然因缺 SDK 头文件未验证，Windows 权威 CI 已通过。
 - BUG-016 仍 open：没有在 `agentisland-update-e2e` 中触发检查或变更旧版应用。代码级超时回归证明当前版本不会无限停在 checking，但不能证明 v0.0.416 的原始根因。全程没有要求用户做手工 VM 操作。
 - 后续按当前 [`需求状态`](../需求状态.md)、[`需求测试矩阵`](../spec/需求测试矩阵.md) 与 [`04 · 实施计划`](../workbench/04-plan.md)选择未完成项；若继续网关方向，按 ADR 0040 接入真实消费子系统并单独定义授权和验收，不把现有纯状态逻辑描述成端到端能力。
+
+## 21. 2026-11-01 追加：TASK-05 本地产出正文持久化（v0.0.427）
+
+### 改动
+
+- 用户在“记录进度”中填写的产出正文以 SHA-256 文件独立、原子保存；任务 JSON 仅保留摘要和字节数。任务、运行、产出与 revision 精确绑定，重开 Store 后仍可读回。
+- 单条正文上限 64 KiB、被引用正文总量上限 64 MiB；凭据形态、软链接、非普通文件、陈旧 revision、损坏或摘要不符内容均拒绝。任务页支持草稿撤销与纯文本只读查看；关闭阅读器或离页后清空正文。
+- 来源事件正文仍按原只读路径瞬时读取，不进入任务文件或 blob 存储。未接入产出版本追加、比较/恢复 UI 或自动任务执行。
+- 用户本轮确认的看板拖拽语义与既有 `task01.dragstatus` 实现一致：选择具体本地进度并确认；不写“来源已验收”，也不操作外部智能体，因此没有重复改动该项。
+
+### 验证与发布
+
+- 定向 `artifact_store` **9/9**、`local_artifact` **4/4**；本地产出浏览器回归通过；automation registry **23/23**；需求矩阵、状态生成、版本检查与 `git diff --check` 通过。
+- 最终 `scripts/verify-framework.sh` **exit 0**：Rust **1417 passed / 0 failed / 15 ignored**；Windows 四片段 **4/4**；工作区脱敏扫描零新增命中。Windows 整 crate 交叉类型检查因本机缺 `ring` 所需 Windows CRT/SDK `assert.h` 明确 blocked / unverified；该结果不是 Windows 构建通过。
+- 同次统一 CI run `20261101T015604Z-6a6ebd4591d7` **131 passed / 0 failed / 0 blocked**；package profile run `20261101T020539Z-a1961bc63747` **7/7**。首次复验因本地 updater 包仍为 v0.0.426、随后因 `dist/latest.json` 未重生成而失败；按发布构建路径重建 v0.0.427 签名包并运行 `render-update-manifest.py --write` 后，最终总验证 exit 0。失败原因与更正均保留在本段。
+- `release.sh` 源码 CI run `20261101T020818Z-02ffe983807f` **131/131**；构建身份与随包 CLI run `20261101T021509Z-c0c0b851e0cb` **7/7**。隔离 VM 五项原生门禁全部通过，证据 `.build/vm/acceptance-5a4fcce6f0ac40369763dc94bf0edd7b`；updater 正签、错签和篡改测试 **7/7**。
+- 提交前/提交后历史脱敏扫描通过。提交 `b861578bc37f979f132ac2d418a258d5e831ca9c`、tag `v0.0.427` 已推送；GitHub [v0.0.427 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.427) 已核实包含 DMG、ZIP、updater 包、签名与 `latest.json`。脚本重启 `dist/AgentIsland.app` 成功，PID `28348`。
+- 本轮未验：原生动效逐边取证、真实 pinned Claude 客户端取证；真实 v0.0.416 updater 升级也未触发。未要求用户手动操作，旧 `agentisland-update-e2e` VM 未触碰。
+
+### 未验项与下一步
+
+- TASK-05 仍为 partial：既有版本判据尚未接入任务页生产流程，下一片继续完成产出版本演进、比较与恢复 UI；外部单版本来源不伪造历史。
+- BUG-016 仍为 open：v0.0.416 卡在“检查更新”的原始请求/错误证据未取得，不能用宿主 v0.0.418、发布 VM 或代码级超时测试冒充旧版复现。
+- TASK-01 `task01.dragstatus` 已满足本轮确认的本地进度选择与确认语义；不要重复排期。后续按当前 [`需求状态`](../需求状态.md)和 [`需求测试矩阵`](../spec/需求测试矩阵.md)选择未完成项。
