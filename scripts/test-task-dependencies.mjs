@@ -15,7 +15,6 @@ const registeredCommands = new Set(mainRs.slice(handlerStart, handlerEnd).split(
   .filter(Boolean).map(name => name.split('::').pop()));
 for (const [command, storeMethod] of [
   ['task_project_dependencies_update', 'project_dependencies_update'],
-  ['task_project_delete', 'project_delete'],
 ]) {
   assert.ok(registeredCommands.has(command), `${command} 必须注册到 Tauri handler`);
   const start = mainRs.indexOf(`fn ${command}(`);
@@ -24,6 +23,13 @@ for (const [command, storeMethod] of [
   assert.match(mainRs.slice(start, end), new RegExp(`s\\.${storeMethod}\\(`),
     `${command} 必须转发到 Store::${storeMethod}`);
 }
+const projectDeleteStart = mainRs.indexOf('fn task_project_delete(');
+const projectDeleteEnd = mainRs.indexOf('\n#[tauri::command]', projectDeleteStart);
+assert.ok(projectDeleteStart >= 0 && projectDeleteEnd > projectDeleteStart, '项目删除命令必须可解析');
+assert.match(mainRs.slice(projectDeleteStart, projectDeleteEnd), /store\.project_delete\(/,
+  '项目删除必须仍调用 Store::project_delete');
+assert.match(mainRs.slice(projectDeleteStart, projectDeleteEnd), /authorization\.has_enabled_grant\(/,
+  '仍有运行授权的项目必须先撤销授权');
 const server = createServer(async (req, res) => {
   try {
     const path = resolve(root, '.' + decodeURIComponent(new URL(req.url, 'http://localhost').pathname));
@@ -59,6 +65,7 @@ try {
         if (command === 'tasks_attention_summary') return { revision: 1, total: 0, first: null };
         if (command === 'tasks_snapshot') return structuredClone(window.projectState);
         if (command === 'task_sources') return [];
+        if (command === 'task_project_authorization_snapshot') return { projectId: args.projectId, policyRevision: 0, status: 'not_authorized', rootPath: null, roles: [], historyCaptureEnabled: false };
         if (command === 'task_project_dependencies_update') {
           if (window.nextDependencyFailure === 'stale_revision') {
             window.nextDependencyFailure = null;

@@ -16,6 +16,7 @@ const scripts = new Set([
   'test-reduced-motion.mjs',
   'test-task-search.mjs',
   'test-task-dependencies.mjs',
+  'test-task-project-authorization.mjs',
   'test-task-board-drag.mjs',
   'test-task-board-status-drag.mjs',
   'test-chief-resources.mjs',

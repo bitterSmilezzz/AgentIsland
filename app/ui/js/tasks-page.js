@@ -104,7 +104,7 @@ export function pageTasks() {
     <div class="task-controls">
     <div class="task-toolbar"><label class="task-filter">项目<select data-task-filter aria-label="筛选项目"><option value="">全部项目</option></select></label><label class="task-search">搜索<input type="search" data-task-search aria-label="搜索任务（跨项目，按名称或来源）" placeholder="名称或来源…" autocomplete="off"></label><label class="task-archive-filter"><input type="checkbox" data-task-archived>已归档</label><button class="mini-btn" type="button" data-task-refresh>刷新</button></div>
     <form class="task-compose" data-task-create><label class="sr-only" for="task-new-title">任务名称</label><input id="task-new-title" name="title" placeholder="记录一个任务…" maxlength="500" required autocomplete="off"><select name="projectId" aria-label="任务所属项目"><option value="">未分组</option></select><button class="mini-btn primary" type="submit">添加任务</button></form>
-    <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form><section class="task-project-manager" data-task-project-manager aria-label="项目依赖管理"><label>配置项目<select data-task-project-select aria-label="选择要配置依赖的项目"><option value="">选择项目</option></select></label><form data-task-project-dependencies hidden></form><div class="task-project-delete" data-task-project-delete hidden><p data-project-task-count></p><button class="mini-btn" type="button" data-task-project-delete-button>删除项目</button></div></section></details>
+    <details class="task-project-create"><summary>管理项目</summary><form data-task-project><input name="name" aria-label="新项目名称" placeholder="项目名称" maxlength="500" required autocomplete="off"><button class="mini-btn" type="submit">添加项目</button></form><section class="task-project-manager" data-task-project-manager aria-label="项目管理"><label>配置项目<select data-task-project-select aria-label="选择要配置的项目"><option value="">选择项目</option></select></label><form data-task-project-dependencies hidden></form><section class="task-project-authorization" data-task-project-authorization hidden aria-label="项目运行授权"></section><div class="task-project-delete" data-task-project-delete hidden><p data-project-task-count></p><button class="mini-btn" type="button" data-task-project-delete-button>删除项目</button></div></section></details>
     <button class="mini-btn task-chief-open" type="button" data-chief-open>团队资源配置</button>
     <section class="task-project-targets" data-task-project-targets hidden aria-label="任务拖放目标"><p>项目目标调整归属；状态目标会先让你选择具体的本地进度。拖放不会启动、停止或批准外部智能体。</p><div data-task-project-target-list role="list"></div><div class="task-status-targets" data-task-status-targets><span>记录本地进度</span><div data-task-status-target-list role="list"></div></div></section>
     </div>
@@ -132,6 +132,7 @@ function subscribeTasks() {
   if (!taskEvents) taskEvents = Promise.all([
     listen('tasks://changed', refreshTasks),
     listen('tasks://sources_changed', refreshTasks),
+    listen('managed-run-authorization://changed', refreshTasks),
     listen('tasks://error', event => { if (!taskVisible()) return; const feedback = document.querySelector('[data-task-feedback]'); if (feedback) feedback.textContent = event.payload?.message ?? '任务同步失败，请刷新'; }),
   ]).catch(() => { taskEvents = null; });
 }
@@ -143,6 +144,7 @@ export async function hydrateTasks(isVisible = () => true) {
   const current = pageRequest(root);
   const message = root.querySelector('[data-task-feedback]');
   let data, selected = null, busy = false, sources = [], refreshQueued = false, readerLifetime=null, detailRevision=null, projectEditorId=null;
+  let projectAuthorization = null, authorizationDraft = null, authorizationRequest = 0;
   let activeDrag = null, suppressTaskClick = null, pendingRefreshNotice = null, pendingStatusDrop = null;
   subscribeTasks();
   const projectOptions = blank => `<option value="">${blank}</option>${data.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}`;
@@ -152,10 +154,200 @@ export async function hydrateTasks(isVisible = () => true) {
     else message.textContent = text;
   };
   const detailDirty = except => [...root.querySelectorAll('[data-task-detail] input, [data-task-detail] select, [data-task-detail] textarea')].some(control => !control.closest('[data-task-version-compare]') && !except?.contains(control) && control.value !== control.dataset.savedValue);
+  const authorizationDraftDirty = () => {
+    if (authorizationDraft?.projectId === projectEditorId) return true;
+    const form = root.querySelector('[data-task-project-history]');
+    const toggle = form?.querySelector('[data-task-authorization-history]');
+    return Boolean(toggle && String(toggle.checked) !== toggle.dataset.savedValue);
+  };
   const projectManagerDirty = () => {
     const form = root.querySelector('[data-task-project-dependencies]');
-    return Boolean(form && !form.hidden && [...form.querySelectorAll('[data-project-dependency]')]
+    return authorizationDraftDirty() || Boolean(form && !form.hidden && [...form.querySelectorAll('[data-project-dependency]')]
       .some(control => String(control.checked) !== control.dataset.savedValue));
+  };
+  const authorizationPanel = root.querySelector('[data-task-project-authorization]');
+  const authorizationRoleLabels = { planner: '规划', executor: '执行', reviewer: '复核' };
+  const authorizationRolesMarkup = (selectedRoles = []) => Object.entries(authorizationRoleLabels).map(([role, label]) =>
+    `<label class="task-project-authorization-role"><input type="checkbox" data-task-authorization-role="${role}"${selectedRoles.includes(role) ? ' checked' : ''}>${label}</label>`).join('');
+  const paintProjectAuthorization = () => {
+    if (!projectAuthorization || projectAuthorization.projectId !== projectEditorId) return;
+    const view = projectAuthorization;
+    if (authorizationDraft?.projectId === projectEditorId) {
+      const draft = authorizationDraft;
+      authorizationPanel.innerHTML = `<div class="task-project-authorization-heading"><strong>确认项目运行授权</strong><span>策略版本 ${view.policyRevision}</span></div>
+        ${draft.canonicalPath ? `<p>将授权此本机目录：</p><code class="task-project-root-path">${esc(draft.canonicalPath)}</code>` : '<p>请重新选择本机项目目录，再确认本地授权。</p>'}
+        <fieldset><legend>允许的项目能力</legend>${authorizationRolesMarkup(draft.roles)}</fieldset>
+        <label class="task-project-history-opt-in"><input type="checkbox" data-task-authorization-history${draft.historyCaptureEnabled ? ' checked' : ''}>允许记录此项目的自有运行历史（默认关闭）</label>
+        <p class="task-project-authorization-note">确认只保存本地授权，不会启动智能体。目录身份或策略状态无法核实时，授权会保持关闭。</p>
+        <p class="task-project-authorization-feedback" data-task-authorization-feedback role="status" aria-live="polite"${draft.feedback ? '' : ' hidden'}>${esc(draft.feedback ?? '')}</p>
+        <div class="task-project-authorization-actions"><button class="mini-btn" type="button" data-task-authorization-reselect>${draft.token ? '重新选择目录' : '选择项目目录'}</button><button class="mini-btn primary" type="button" data-task-authorization-confirm${draft.token && draft.roles.length ? '' : ' disabled'}>确认授权</button><button class="mini-btn" type="button" data-task-authorization-cancel>取消</button></div>`;
+      authorizationPanel.hidden = false;
+      authorizationPanel.querySelectorAll('[data-task-authorization-role]').forEach(input => {
+        input.onchange = () => {
+          draft.roles = [...authorizationPanel.querySelectorAll('[data-task-authorization-role]:checked')].map(control => control.dataset.taskAuthorizationRole);
+          authorizationPanel.querySelector('[data-task-authorization-confirm]').disabled = !draft.token || !draft.roles.length;
+        };
+      });
+      authorizationPanel.querySelector('[data-task-authorization-history]').onchange = event => { draft.historyCaptureEnabled = event.currentTarget.checked; };
+      authorizationPanel.querySelector('[data-task-authorization-reselect]').onclick = async () => {
+        if (busy) return;
+        const previousToken = draft.token;
+        draft.token = null;
+        draft.canonicalPath = null;
+        draft.feedback = '';
+        draft.expectedPolicyRevision = view.policyRevision;
+        if (previousToken) await invoke('task_project_authorization_cancel_consent', { token: previousToken }).catch(() => {});
+        const button = authorizationPanel.querySelector('[data-task-authorization-reselect]');
+        if (button) button.disabled = true;
+        try {
+          const candidate = await invoke('task_project_authorization_choose_root', {
+            projectId: draft.projectId,
+            expectedPolicyRevision: draft.expectedPolicyRevision,
+          });
+          if (!candidate) { authorizationDraft = null; paintProjectAuthorization(); return; }
+          Object.assign(draft, candidate, { token: candidate.token });
+          draft.canonicalPath = candidate.canonicalPath;
+          paintProjectAuthorization();
+        } catch (error) {
+          draft.token = null;
+          draft.canonicalPath = null;
+          if (error?.code === 'project_policy_revision_conflict') {
+            try {
+              projectAuthorization = await invoke('task_project_authorization_snapshot', { projectId: draft.projectId });
+              draft.expectedPolicyRevision = projectAuthorization.policyRevision;
+            } catch {}
+          }
+          draft.feedback = `${error?.message ?? String(error)}；请重新选择目录后再试。`;
+          paintProjectAuthorization();
+        }
+      };
+      authorizationPanel.querySelector('[data-task-authorization-cancel]').onclick = async () => {
+        if (draft.token) await invoke('task_project_authorization_cancel_consent', { token: draft.token }).catch(() => {});
+        authorizationDraft = null;
+        paintProjectAuthorization();
+      };
+      authorizationPanel.querySelector('[data-task-authorization-confirm]').onclick = async () => {
+        if (busy || !draft.token || !draft.roles.length) return;
+        const button = authorizationPanel.querySelector('[data-task-authorization-confirm]');
+        button.disabled = true;
+        try {
+          const next = await invoke('task_project_authorization_confirm', {
+            projectId: draft.projectId,
+            candidateToken: draft.token,
+            roles: draft.roles,
+            historyCaptureEnabled: draft.historyCaptureEnabled,
+            expectedPolicyRevision: draft.expectedPolicyRevision,
+          });
+          authorizationDraft = null;
+          projectAuthorization = next;
+          paintProjectAuthorization();
+        } catch (error) {
+          if (draft.token) await invoke('task_project_authorization_cancel_consent', { token: draft.token }).catch(() => {});
+          draft.token = null;
+          draft.canonicalPath = null;
+          if (error?.code === 'project_policy_revision_conflict') {
+            try {
+              projectAuthorization = await invoke('task_project_authorization_snapshot', { projectId: draft.projectId });
+              draft.expectedPolicyRevision = projectAuthorization.policyRevision;
+            } catch {}
+          }
+          draft.feedback = `${error?.message ?? String(error)}；确认没有写入，请重新选择目录。`;
+          paintProjectAuthorization();
+        }
+      };
+      return;
+    }
+
+    const authorized = view.status === 'authorized';
+    const needsReconfirmation = view.status === 'requires_reconfirmation';
+    const roleSummary = view.roles.map(role => authorizationRoleLabels[role] ?? role).join('、') || '无';
+    authorizationPanel.innerHTML = `<div class="task-project-authorization-heading"><strong>项目运行授权</strong><span>策略版本 ${view.policyRevision}</span></div>
+      <p>${authorized ? '已授权' : needsReconfirmation ? '目录身份需要重新确认' : '未授权；运行保持关闭'}</p>
+      ${view.rootPath ? `<code class="task-project-root-path">${esc(view.rootPath)}</code>` : ''}
+      ${authorized || needsReconfirmation ? `<p class="task-project-authorization-summary">允许：${esc(roleSummary)} · 自有历史${view.historyCaptureEnabled ? '已开启' : '关闭'}</p>` : ''}
+      ${needsReconfirmation ? '<p class="task-project-authorization-note">目录身份已变化或无法核实；旧授权不会生效。请重新选择目录并再次确认。</p>' : ''}
+      <p class="task-project-authorization-note">此阶段只管理本地授权；不会启动智能体。项目历史采集默认关闭，策略文件没有自动导入或恢复入口。</p>
+      ${authorized ? `<form data-task-project-history><label class="task-project-history-opt-in"><input type="checkbox" data-task-authorization-history${view.historyCaptureEnabled ? ' checked' : ''}>允许记录此项目的自有运行历史</label><div class="task-project-authorization-actions"><button class="mini-btn" type="submit" data-task-authorization-save-history hidden>保存历史设置</button><button class="mini-btn" type="button" data-task-authorization-edit>调整授权</button><button class="mini-btn" type="button" data-task-authorization-revoke>撤销授权</button></div><p class="task-project-authorization-feedback" data-task-authorization-feedback role="status" aria-live="polite" hidden></p></form>` : `<div class="task-project-authorization-actions"><button class="mini-btn" type="button" data-task-authorization-edit>${needsReconfirmation ? '重新选择目录并确认' : '选择目录并配置授权'}</button>${needsReconfirmation ? '<button class="mini-btn" type="button" data-task-authorization-revoke>撤销旧授权</button>' : ''}</div><p class="task-project-authorization-feedback" data-task-authorization-feedback role="status" aria-live="polite" hidden></p>`}`;
+    authorizationPanel.hidden = false;
+    authorizationPanel.querySelector('[data-task-authorization-edit]')?.addEventListener('click', () => {
+      authorizationDraft = {
+        projectId: projectEditorId,
+        roles: authorized || needsReconfirmation ? [...view.roles] : [],
+        historyCaptureEnabled: authorized || needsReconfirmation ? view.historyCaptureEnabled : false,
+        token: null,
+        canonicalPath: null,
+        expectedPolicyRevision: view.policyRevision,
+      };
+      paintProjectAuthorization();
+      authorizationPanel.querySelector('[data-task-authorization-reselect]')?.click();
+    });
+    const historyForm = authorizationPanel.querySelector('[data-task-project-history]');
+    if (historyForm) {
+      const toggle = historyForm.querySelector('[data-task-authorization-history]');
+      const save = historyForm.querySelector('[data-task-authorization-save-history]');
+      toggle.dataset.savedValue = String(toggle.checked);
+      toggle.onchange = () => { save.hidden = String(toggle.checked) === toggle.dataset.savedValue; };
+      historyForm.onsubmit = async event => {
+        event.preventDefault();
+        const enabled = toggle.checked;
+        if (enabled && !window.confirm('开启后，此项目受管理运行产生的历史会按本地保留策略保存。是否开启？')) return;
+        save.disabled = true;
+        try {
+          projectAuthorization = await invoke('task_project_authorization_set_history', {
+            projectId: projectEditorId,
+            enabled,
+            expectedPolicyRevision: view.policyRevision,
+          });
+          paintProjectAuthorization();
+        } catch (error) {
+          const feedback = historyForm.querySelector('[data-task-authorization-feedback]');
+          feedback.textContent = error?.message ?? String(error);
+          feedback.hidden = false;
+          save.disabled = false;
+        }
+      };
+    }
+    authorizationPanel.querySelector('[data-task-authorization-revoke]')?.addEventListener('click', async event => {
+      if (busy || !window.confirm('撤销后，此项目的旧运行授权立即失效。确定撤销吗？')) return;
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        projectAuthorization = await invoke('task_project_authorization_revoke', {
+          projectId: projectEditorId,
+          expectedPolicyRevision: view.policyRevision,
+        });
+        paintProjectAuthorization();
+      } catch (error) {
+        const feedback = authorizationPanel.querySelector('[data-task-authorization-feedback]');
+        feedback.textContent = error?.message ?? String(error);
+        feedback.hidden = false;
+        button.disabled = false;
+      }
+    });
+  };
+  const loadProjectAuthorization = async () => {
+    if (!projectEditorId) {
+      authorizationRequest++;
+      authorizationPanel.hidden = true;
+      authorizationPanel.innerHTML = '';
+      projectAuthorization = null;
+      authorizationDraft = null;
+      return;
+    }
+    const projectId = projectEditorId;
+    const request = ++authorizationRequest;
+    authorizationPanel.hidden = false;
+    authorizationPanel.innerHTML = '<p class="task-project-authorization-note">正在读取授权状态…</p>';
+    try {
+      const view = await invoke('task_project_authorization_snapshot', { projectId });
+      if (request !== authorizationRequest || projectId !== projectEditorId) return;
+      projectAuthorization = view;
+      paintProjectAuthorization();
+    } catch (error) {
+      if (request !== authorizationRequest || projectId !== projectEditorId) return;
+      authorizationPanel.innerHTML = `<p class="task-project-authorization-feedback" role="status">${esc(error?.message ?? String(error))}；未授予新权限。</p>`;
+      authorizationPanel.hidden = false;
+    }
   };
   const renderProjectManager = (force = false) => {
     if (!force && projectManagerDirty()) return;
@@ -170,7 +362,7 @@ export async function hydrateTasks(isVisible = () => true) {
     select.innerHTML = `<option value="">选择项目</option>${data.projects.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}`;
     projectEditorId = data.projects.some(p => p.id === previous) ? previous : data.projects[0]?.id ?? null;
     select.value = projectEditorId ?? '';
-    if (!projectEditorId) { form.hidden = true; form.innerHTML = ''; deletePanel.hidden = true; return; }
+    if (!projectEditorId) { form.hidden = true; form.innerHTML = ''; deletePanel.hidden = true; loadProjectAuthorization(); return; }
     const project = data.projects.find(p => p.id === projectEditorId);
     const dependencies = new Set(project.dependencies ?? []);
     const choices = data.projects.filter(item => item.id !== project.id);
@@ -209,6 +401,7 @@ export async function hydrateTasks(isVisible = () => true) {
     deletePanel.querySelector('[data-project-task-count]').textContent = taskCount
       ? `有 ${taskCount} 个任务归属此项目；调整归属后才可删除。`
       : '没有任务归属此项目。';
+    loadProjectAuthorization();
   };
   const leaveDetail = () => {
     if (!detailDirty()) return true;

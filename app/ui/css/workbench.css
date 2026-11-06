@@ -271,6 +271,20 @@ html:is(.shell-sidebar,.shell-workbench) .sb-empty { padding: 24px 10px; color: 
 .task-project-manager [hidden] { display: none; }
 .task-project-manager > label { display: flex; align-items: center; gap: 9px; }
 .task-project-manager > label select { flex: 1; }
+.task-project-authorization { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); }
+.task-project-authorization > p { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.task-project-authorization-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.task-project-authorization-heading strong { color: var(--text); font-size: 12px; }
+.task-project-authorization-heading span { color: var(--text-faint); font-size: 10px; }
+.task-project-authorization fieldset { display: flex; flex-wrap: wrap; gap: 7px 14px; min-width: 0; margin: 0; padding: 9px; border: 1px solid var(--border); border-radius: 7px; }
+.task-project-authorization legend { padding: 0 5px; color: var(--text-muted); font-size: 11px; }
+.task-project-authorization-role, .task-project-history-opt-in { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.task-project-root-path { display: block; max-height: 72px; overflow: auto; padding: 7px 8px; border-radius: 6px; color: var(--text); background: var(--surface-inset); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
+.task-project-authorization-note { color: var(--text-faint) !important; }
+.task-project-authorization-summary { color: var(--text-muted); font-size: 11px; }
+.task-project-authorization-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.task-project-authorization-feedback { margin: 0; color: var(--danger, #a33); font-size: 11px; line-height: 1.5; }
+.task-project-authorization [aria-busy="true"] { opacity: .7; }
 .task-project-manager fieldset { display: flex; flex-wrap: wrap; gap: 7px 14px; min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
 .task-project-manager legend { padding: 0 5px; color: var(--text-muted); }
 .task-project-dependency { display: inline-flex; align-items: center; gap: 6px; }
@@ -352,6 +366,7 @@ html:is(.shell-sidebar,.shell-workbench) .sb-empty { padding: 24px 10px; color: 
 .shell-workbench .task-compose select { max-width: 180px; }
 .shell-workbench .task-space input:not([type=checkbox]), .shell-workbench .task-space select { padding: 6px 8px; min-height: 32px; }
 .shell-workbench .task-project-create { margin-top: 8px; font-size: 12px; }
+.shell-workbench .task-project-manager { max-height: min(48vh, 380px); overflow-y: auto; padding-right: 5px; scrollbar-gutter: stable; }
 .shell-workbench .task-project-create form { flex-wrap: wrap; }
 .shell-workbench .task-project-create input { flex: 1; }
 .shell-workbench .task-board { overflow: auto; min-height: 0; padding: 4px 6px 4px 3px; scrollbar-gutter: stable; }

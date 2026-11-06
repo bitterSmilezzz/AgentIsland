@@ -2624,6 +2624,59 @@ fn chief_resources_delete(
 
 // Local task commands share one writer and never invoke source-agent actions.
 type TaskStore = Mutex<crate::tasks::Store>;
+type ManagedRunAuthorizationStore = crate::managed_run_authorization_store::ConsentService;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedRunAuthorizationCommandError {
+    code: String,
+    message: String,
+}
+
+impl From<crate::managed_run_authorization_store::PolicyError>
+    for ManagedRunAuthorizationCommandError
+{
+    fn from(error: crate::managed_run_authorization_store::PolicyError) -> Self {
+        Self {
+            code: error.code().to_owned(),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<crate::tasks::Error> for ManagedRunAuthorizationCommandError {
+    fn from(error: crate::tasks::Error) -> Self {
+        Self {
+            code: error.code,
+            message: error.message,
+        }
+    }
+}
+
+fn managed_run_authorization_error(
+    code: &str,
+    message: &str,
+) -> ManagedRunAuthorizationCommandError {
+    ManagedRunAuthorizationCommandError {
+        code: code.to_owned(),
+        message: message.to_owned(),
+    }
+}
+
+fn require_task_project(
+    data: &crate::tasks::Data,
+    project_id: &str,
+) -> Result<(), ManagedRunAuthorizationCommandError> {
+    if data.projects.iter().any(|project| project.id == project_id) {
+        Ok(())
+    } else {
+        Err(managed_run_authorization_error(
+            "unknown_project",
+            "本机项目记录不存在；未授予权限",
+        ))
+    }
+}
+
 fn with_tasks<T>(
     state: State<TaskStore>,
     f: impl FnOnce(&crate::tasks::Store) -> Result<T, crate::tasks::Error>,
@@ -2729,13 +2782,202 @@ fn task_project_dependencies_update(
 fn task_project_delete(
     app: AppHandle,
     state: State<TaskStore>,
+    authorization: State<ManagedRunAuthorizationStore>,
     project_id: String,
     expected_revision: u64,
 ) -> Result<crate::tasks::Data, crate::tasks::Error> {
-    publish_tasks(
-        &app,
-        with_tasks(state, |s| s.project_delete(&project_id, expected_revision)),
-    )
+    let result = (|| {
+        let store = state.lock().map_err(|_| crate::tasks::Error {
+            code: "unavailable".into(),
+            message: "任务服务暂不可用".into(),
+        })?;
+        let data = store.load()?;
+        if !data.projects.iter().any(|project| project.id == project_id) {
+            return Err(crate::tasks::Error {
+                code: "not_found".into(),
+                message: "项目不存在".into(),
+            });
+        }
+        match authorization.has_enabled_grant(&project_id) {
+            Ok(true) => {
+                return Err(crate::tasks::Error {
+                    code: "project_authorized".into(),
+                    message: "该项目仍有运行授权，请先撤销授权后再删除".into(),
+                })
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return Err(crate::tasks::Error {
+                    code: error.code().into(),
+                    message: error.to_string(),
+                })
+            }
+        }
+        store.project_delete(&project_id, expected_revision)
+    })();
+    publish_tasks(&app, result)
+}
+
+#[tauri::command]
+fn task_project_authorization_snapshot(
+    state: State<TaskStore>,
+    authorization: State<ManagedRunAuthorizationStore>,
+    project_id: String,
+) -> Result<
+    crate::managed_run_authorization_store::ProjectAuthorizationView,
+    ManagedRunAuthorizationCommandError,
+> {
+    let data = with_tasks(state, |store| store.load())?;
+    require_task_project(&data, &project_id)?;
+    authorization.view(&project_id).map_err(Into::into)
+}
+
+#[tauri::command]
+async fn task_project_authorization_choose_root(
+    app: AppHandle,
+    state: State<'_, TaskStore>,
+    authorization: State<'_, ManagedRunAuthorizationStore>,
+    project_id: String,
+    expected_policy_revision: u64,
+) -> Result<
+    Option<crate::managed_run_authorization_store::ConsentCandidateView>,
+    ManagedRunAuthorizationCommandError,
+> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let current = state
+        .lock()
+        .map_err(|_| managed_run_authorization_error("unavailable", "任务服务暂不可用"))?
+        .load()?;
+    require_task_project(&current, &project_id)?;
+    let before = authorization.view(&project_id)?;
+    if before.policy_revision != expected_policy_revision {
+        return Err(crate::managed_run_authorization_store::PolicyError::RevisionConflict.into());
+    }
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("选择此项目对应的本机目录")
+        .pick_folder(move |selection| {
+            let _ = sender.send(selection);
+        });
+    let selection = receiver.await.map_err(|_| {
+        managed_run_authorization_error(
+            "project_root_unavailable",
+            "目录选择器没有返回结果；未授予权限",
+        )
+    })?;
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+    let root_path = selection.into_path().map_err(|_| {
+        managed_run_authorization_error(
+            "project_root_invalid",
+            "所选目录无法在本机定位；未授予权限",
+        )
+    })?;
+
+    let current = state
+        .lock()
+        .map_err(|_| managed_run_authorization_error("unavailable", "任务服务暂不可用"))?
+        .load()?;
+    require_task_project(&current, &project_id)?;
+    authorization
+        .prepare_consent(&project_id, &root_path, expected_policy_revision)
+        .map(Some)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn task_project_authorization_cancel_consent(
+    authorization: State<ManagedRunAuthorizationStore>,
+    token: String,
+) -> Result<(), ManagedRunAuthorizationCommandError> {
+    authorization.cancel_consent(&token).map_err(Into::into)
+}
+
+#[tauri::command]
+fn task_project_authorization_confirm(
+    app: AppHandle,
+    state: State<TaskStore>,
+    authorization: State<ManagedRunAuthorizationStore>,
+    project_id: String,
+    candidate_token: String,
+    roles: Vec<crate::managed_run_authorization_store::AllowedRole>,
+    history_capture_enabled: bool,
+    expected_policy_revision: u64,
+) -> Result<
+    crate::managed_run_authorization_store::ProjectAuthorizationView,
+    ManagedRunAuthorizationCommandError,
+> {
+    let unique_roles = roles
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if unique_roles.len() != roles.len() {
+        return Err(crate::managed_run_authorization_store::PolicyError::InvalidRoles.into());
+    }
+    let store = state
+        .lock()
+        .map_err(|_| managed_run_authorization_error("unavailable", "任务服务暂不可用"))?;
+    require_task_project(&store.load()?, &project_id)?;
+    authorization.confirm_consent(
+        &project_id,
+        &candidate_token,
+        unique_roles,
+        history_capture_enabled,
+        expected_policy_revision,
+    )?;
+    let view = authorization.view(&project_id)?;
+    drop(store);
+    let _ = app.emit("managed-run-authorization://changed", &project_id);
+    Ok(view)
+}
+
+#[tauri::command]
+fn task_project_authorization_set_history(
+    app: AppHandle,
+    state: State<TaskStore>,
+    authorization: State<ManagedRunAuthorizationStore>,
+    project_id: String,
+    enabled: bool,
+    expected_policy_revision: u64,
+) -> Result<
+    crate::managed_run_authorization_store::ProjectAuthorizationView,
+    ManagedRunAuthorizationCommandError,
+> {
+    let store = state
+        .lock()
+        .map_err(|_| managed_run_authorization_error("unavailable", "任务服务暂不可用"))?;
+    require_task_project(&store.load()?, &project_id)?;
+    authorization.set_history_capture(&project_id, enabled, expected_policy_revision)?;
+    let view = authorization.view(&project_id)?;
+    drop(store);
+    let _ = app.emit("managed-run-authorization://changed", &project_id);
+    Ok(view)
+}
+
+#[tauri::command]
+fn task_project_authorization_revoke(
+    app: AppHandle,
+    state: State<TaskStore>,
+    authorization: State<ManagedRunAuthorizationStore>,
+    project_id: String,
+    expected_policy_revision: u64,
+) -> Result<
+    crate::managed_run_authorization_store::ProjectAuthorizationView,
+    ManagedRunAuthorizationCommandError,
+> {
+    let store = state
+        .lock()
+        .map_err(|_| managed_run_authorization_error("unavailable", "任务服务暂不可用"))?;
+    require_task_project(&store.load()?, &project_id)?;
+    authorization.revoke(&project_id, expected_policy_revision)?;
+    let view = authorization.view(&project_id)?;
+    drop(store);
+    let _ = app.emit("managed-run-authorization://changed", &project_id);
+    Ok(view)
 }
 #[tauri::command]
 fn task_board_move_project(
@@ -4763,6 +5005,7 @@ fn main() {
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         // 自动更新（NOT-06 方向）。插件本身不做任何事：端点与公钥在
         // `tauri.conf.json` 的 `plugins.updater`，检查/下载由界面按需触发。
         // 签名校验不可关闭——它验的是「这个更新包确实是我们发布的」。
@@ -4783,6 +5026,7 @@ fn main() {
         .manage(SkillPackageStore::new())
         .manage(ConnectionStore::new(connections::Store::at_default()))
         .manage(Mutex::new(crate::tasks::Store::at_default()))
+        .manage(crate::managed_run_authorization_store::ConsentService::at_default())
         .manage(Mutex::new(chief_resource_store::Store::at_default(
             isolated_instance_requested(),
         )))
@@ -5177,6 +5421,12 @@ fn main() {
             task_project_create,
             task_project_dependencies_update,
             task_project_delete,
+            task_project_authorization_snapshot,
+            task_project_authorization_choose_root,
+            task_project_authorization_cancel_consent,
+            task_project_authorization_confirm,
+            task_project_authorization_set_history,
+            task_project_authorization_revoke,
             task_board_move_project,
             task_board_change_status,
             task_create,

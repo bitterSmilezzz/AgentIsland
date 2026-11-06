@@ -1,26 +1,28 @@
 //! Versioned, local-only storage for TASK-03 project grants.
 //!
-//! This store is deliberately separate from `tasks.v1.json`. The production UI
-//! and executor are not connected yet; `confirm_project` is the only grant
-//! issuing API and is intended for a future user-confirmation command. Other
-//! write APIs only adjust history capture or revoke an existing grant.
-//! There is no import or restore API, and the root identity is rechecked before
-//! a stored grant is returned for use.
+//! This store is deliberately separate from `tasks.v1.json`. The project UI
+//! issues grants only after explicit confirmation; no runner, managed execution,
+//! or history-write path is connected. Other write APIs only adjust history
+//! capture or revoke an existing grant. There is no import or restore API, and
+//! the root identity is rechecked before a stored grant is returned for use.
 
-#![allow(dead_code)] // Production command wiring follows the consent UI slice.
+#![allow(dead_code)] // Runner-facing reads remain unused until the execution slice.
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File, OpenOptions},
     io::{self, Read},
     path::{Path, PathBuf},
     sync::Mutex,
+    time::{Duration, Instant},
 };
 
 const FORMAT_VERSION: u32 = 1;
 const MAX_POLICY_BYTES: usize = 1024 * 1024;
 const MAX_PROJECTS: usize = 10_000;
+const MAX_CONSENT_CANDIDATES: usize = 32;
+const CONSENT_CANDIDATE_TTL: Duration = Duration::from_secs(5 * 60);
 static POLICY_WRITE_GATE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -167,6 +169,10 @@ impl ProjectRootIdentity {
         Ok(())
     }
 
+    pub(crate) fn canonical_path(&self) -> &str {
+        &self.canonical_path
+    }
+
     fn verify_current(&self) -> Result<(), PolicyError> {
         self.validate()?;
         let current =
@@ -194,6 +200,36 @@ pub(crate) struct ProjectGrant {
     pub(crate) history_capture_enabled: bool,
     pub(crate) history_policy_version: u64,
     pub(crate) roles: BTreeSet<AllowedRole>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AuthorizationStatus {
+    NotAuthorized,
+    Authorized,
+    RequiresReconfirmation,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectAuthorizationView {
+    pub(crate) project_id: String,
+    pub(crate) policy_revision: u64,
+    pub(crate) status: AuthorizationStatus,
+    pub(crate) root_path: Option<String>,
+    pub(crate) roles: Vec<AllowedRole>,
+    pub(crate) history_capture_enabled: bool,
+    pub(crate) grant_version: Option<u64>,
+    pub(crate) history_policy_version: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConsentCandidateView {
+    pub(crate) token: String,
+    pub(crate) project_id: String,
+    pub(crate) canonical_path: String,
+    pub(crate) expected_policy_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -269,6 +305,10 @@ pub(crate) enum PolicyError {
     UnsupportedPlatform,
     RevisionConflict,
     VersionExhausted,
+    ConsentCandidateMissing,
+    ConsentCandidateExpired,
+    ConsentCandidateMismatch,
+    ConsentCandidateCapacity,
 }
 
 impl PolicyError {
@@ -291,6 +331,10 @@ impl PolicyError {
             Self::UnsupportedPlatform => "project_root_identity_unsupported",
             Self::RevisionConflict => "project_policy_revision_conflict",
             Self::VersionExhausted => "project_policy_version_exhausted",
+            Self::ConsentCandidateMissing => "project_consent_candidate_missing",
+            Self::ConsentCandidateExpired => "project_consent_candidate_expired",
+            Self::ConsentCandidateMismatch => "project_consent_candidate_mismatch",
+            Self::ConsentCandidateCapacity => "project_consent_candidate_capacity",
         }
     }
 }
@@ -315,6 +359,10 @@ impl std::fmt::Display for PolicyError {
             Self::UnsupportedPlatform => "本平台无法核实项目目录身份；授权保持关闭",
             Self::RevisionConflict => "项目授权已更新，请刷新后重试",
             Self::VersionExhausted => "项目授权版本已达上限；原记录未改变",
+            Self::ConsentCandidateMissing => "目录确认已取消或过期，请重新选择目录",
+            Self::ConsentCandidateExpired => "目录确认已过期，请重新选择目录",
+            Self::ConsentCandidateMismatch => "目录确认与当前项目或策略版本不匹配，请重新选择目录",
+            Self::ConsentCandidateCapacity => "待确认目录数量已达上限，请先完成或取消已有确认",
         })
     }
 }
@@ -368,7 +416,35 @@ impl Store {
             _ => PolicyError::RootUnavailable,
         })?;
 
+        self.confirm_project_with_identity(
+            project_id,
+            &root,
+            roles,
+            history_capture_enabled,
+            expected_revision,
+        )
+    }
+
+    pub(crate) fn confirm_project_with_identity(
+        &self,
+        project_id: &str,
+        root: &ProjectRootIdentity,
+        roles: BTreeSet<AllowedRole>,
+        history_capture_enabled: bool,
+        expected_revision: u64,
+    ) -> Result<PolicyDocument, PolicyError> {
+        if !valid_project_id(project_id) {
+            return Err(PolicyError::InvalidProjectId);
+        }
+        if roles.is_empty() {
+            return Err(PolicyError::InvalidRoles);
+        }
+        let root = root.clone();
+
         self.update(expected_revision, |document| {
+            // Revalidate the exact identity captured for the preview. Never
+            // recapture a replacement directory after the user confirmed it.
+            root.verify_current()?;
             let previous = document.projects.get(project_id);
             let grant_changed = previous.is_none_or(|grant| {
                 !grant.enabled || grant.root.as_ref() != Some(&root) || grant.roles != roles
@@ -538,6 +614,197 @@ impl Store {
                 PolicyError::Io
             }
         })
+    }
+}
+
+struct PendingConsentCandidate {
+    project_id: String,
+    root: ProjectRootIdentity,
+    expected_policy_revision: u64,
+    expires_at: Instant,
+}
+
+/// Keeps one-use, short-lived directory identities in memory between the
+/// native folder picker and the explicit confirmation click. The UI receives
+/// only a random token and the canonical display path.
+pub(crate) struct ConsentService {
+    store: Store,
+    candidates: Mutex<HashMap<String, PendingConsentCandidate>>,
+}
+
+impl ConsentService {
+    pub(crate) fn at_default() -> Self {
+        Self::at_path(crate::settings::config_dir().join("managed-run-authorization.v1.json"))
+    }
+
+    pub(crate) fn at_path(path: PathBuf) -> Self {
+        Self {
+            store: Store::at_path(path),
+            candidates: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn view(&self, project_id: &str) -> Result<ProjectAuthorizationView, PolicyError> {
+        if !valid_project_id(project_id) {
+            return Err(PolicyError::InvalidProjectId);
+        }
+        let document = self.store.load()?;
+        let Some(grant) = document
+            .projects
+            .get(project_id)
+            .filter(|grant| grant.enabled)
+        else {
+            return Ok(ProjectAuthorizationView {
+                project_id: project_id.to_owned(),
+                policy_revision: document.revision,
+                status: AuthorizationStatus::NotAuthorized,
+                root_path: None,
+                roles: Vec::new(),
+                history_capture_enabled: false,
+                grant_version: None,
+                history_policy_version: None,
+            });
+        };
+        let root = grant.root.as_ref().ok_or(PolicyError::Corrupt)?;
+        Ok(ProjectAuthorizationView {
+            project_id: project_id.to_owned(),
+            policy_revision: document.revision,
+            status: if root.verify_current().is_ok() {
+                AuthorizationStatus::Authorized
+            } else {
+                AuthorizationStatus::RequiresReconfirmation
+            },
+            root_path: Some(root.canonical_path().to_owned()),
+            roles: grant.roles.iter().copied().collect(),
+            history_capture_enabled: grant.history_capture_enabled,
+            grant_version: Some(grant.grant_version),
+            history_policy_version: Some(grant.history_policy_version),
+        })
+    }
+
+    pub(crate) fn has_enabled_grant(&self, project_id: &str) -> Result<bool, PolicyError> {
+        let document = self.store.load()?;
+        Ok(document
+            .projects
+            .get(project_id)
+            .is_some_and(|grant| grant.enabled))
+    }
+
+    pub(crate) fn prepare_consent(
+        &self,
+        project_id: &str,
+        root_path: &Path,
+        expected_policy_revision: u64,
+    ) -> Result<ConsentCandidateView, PolicyError> {
+        if !valid_project_id(project_id) {
+            return Err(PolicyError::InvalidProjectId);
+        }
+        let before = self.store.load()?;
+        if before.revision != expected_policy_revision {
+            return Err(PolicyError::RevisionConflict);
+        }
+        let root = ProjectRootIdentity::capture(root_path).map_err(map_root_identity_error)?;
+        let after = self.store.load()?;
+        if after.revision != expected_policy_revision {
+            return Err(PolicyError::RevisionConflict);
+        }
+        root.verify_current()?;
+
+        let now = Instant::now();
+        let mut candidates = self.candidates.lock().map_err(|_| PolicyError::Io)?;
+        candidates.retain(|_, candidate| candidate.expires_at > now);
+        if candidates.len() >= MAX_CONSENT_CANDIDATES {
+            return Err(PolicyError::ConsentCandidateCapacity);
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        let expires_at = now
+            .checked_add(CONSENT_CANDIDATE_TTL)
+            .ok_or(PolicyError::Io)?;
+        let view = ConsentCandidateView {
+            token: token.clone(),
+            project_id: project_id.to_owned(),
+            canonical_path: root.canonical_path().to_owned(),
+            expected_policy_revision,
+        };
+        candidates.insert(
+            token,
+            PendingConsentCandidate {
+                project_id: project_id.to_owned(),
+                root,
+                expected_policy_revision,
+                expires_at,
+            },
+        );
+        Ok(view)
+    }
+
+    pub(crate) fn cancel_consent(&self, token: &str) -> Result<(), PolicyError> {
+        self.candidates
+            .lock()
+            .map_err(|_| PolicyError::Io)?
+            .remove(token);
+        Ok(())
+    }
+
+    pub(crate) fn confirm_consent(
+        &self,
+        project_id: &str,
+        token: &str,
+        roles: BTreeSet<AllowedRole>,
+        history_capture_enabled: bool,
+        expected_policy_revision: u64,
+    ) -> Result<PolicyDocument, PolicyError> {
+        if roles.is_empty() {
+            return Err(PolicyError::InvalidRoles);
+        }
+        let candidate = self
+            .candidates
+            .lock()
+            .map_err(|_| PolicyError::Io)?
+            .remove(token)
+            .ok_or(PolicyError::ConsentCandidateMissing)?;
+        if candidate.expires_at <= Instant::now() {
+            return Err(PolicyError::ConsentCandidateExpired);
+        }
+        if candidate.project_id != project_id
+            || candidate.expected_policy_revision != expected_policy_revision
+        {
+            return Err(PolicyError::ConsentCandidateMismatch);
+        }
+        self.store.confirm_project_with_identity(
+            project_id,
+            &candidate.root,
+            roles,
+            history_capture_enabled,
+            expected_policy_revision,
+        )
+    }
+
+    pub(crate) fn set_history_capture(
+        &self,
+        project_id: &str,
+        enabled: bool,
+        expected_policy_revision: u64,
+    ) -> Result<PolicyDocument, PolicyError> {
+        self.store
+            .set_history_capture(project_id, enabled, expected_policy_revision)
+    }
+
+    pub(crate) fn revoke(
+        &self,
+        project_id: &str,
+        expected_policy_revision: u64,
+    ) -> Result<PolicyDocument, PolicyError> {
+        self.store.revoke(project_id, expected_policy_revision)
+    }
+}
+
+fn map_root_identity_error(error: RootIdentityError) -> PolicyError {
+    match error {
+        RootIdentityError::UnsupportedPlatform => PolicyError::UnsupportedPlatform,
+        RootIdentityError::Missing => PolicyError::RootMissing,
+        RootIdentityError::Changed | RootIdentityError::Symlink => PolicyError::RootIdentityChanged,
+        _ => PolicyError::RootUnavailable,
     }
 }
 
@@ -1230,5 +1497,132 @@ mod tests {
         assert_eq!(store.load(), Err(PolicyError::Corrupt));
         assert_eq!(store.verified_grant(PROJECT), Err(PolicyError::Corrupt));
         assert_eq!(fs::read(&store.path).unwrap(), original);
+    }
+
+    #[test]
+    fn consent_cancel_discards_the_candidate_without_writing_policy() {
+        let sandbox = Sandbox::new();
+        let policy_path = sandbox.0.join("authorization.json");
+        let service = ConsentService::at_path(policy_path.clone());
+        let root = sandbox.root("project");
+        let candidate = service.prepare_consent(PROJECT, &root, 0).unwrap();
+
+        assert_eq!(
+            candidate.canonical_path,
+            root.canonicalize().unwrap().to_string_lossy()
+        );
+        assert!(!policy_path.exists(), "preview must remain memory-only");
+        service.cancel_consent(&candidate.token).unwrap();
+        assert_eq!(
+            service.confirm_consent(
+                PROJECT,
+                &candidate.token,
+                roles(&[AllowedRole::Planner]),
+                false,
+                0,
+            ),
+            Err(PolicyError::ConsentCandidateMissing)
+        );
+        assert!(
+            !policy_path.exists(),
+            "cancel must leave policy bytes untouched"
+        );
+    }
+
+    #[test]
+    fn consent_confirmation_uses_the_previewed_directory_identity() {
+        let sandbox = Sandbox::new();
+        let policy_path = sandbox.0.join("authorization.json");
+        let service = ConsentService::at_path(policy_path.clone());
+        let root = sandbox.root("project");
+        let moved = sandbox.0.join("moved-project");
+        let candidate = service.prepare_consent(PROJECT, &root, 0).unwrap();
+        fs::rename(&root, &moved).unwrap();
+
+        assert_eq!(
+            service.confirm_consent(
+                PROJECT,
+                &candidate.token,
+                roles(&[AllowedRole::Executor]),
+                false,
+                0,
+            ),
+            Err(PolicyError::RootMissing)
+        );
+        assert!(
+            !policy_path.exists(),
+            "a moved root must not receive a grant"
+        );
+    }
+
+    #[test]
+    fn explicit_consent_persists_only_the_selected_roles_and_history_choice() {
+        let sandbox = Sandbox::new();
+        let service = ConsentService::at_path(sandbox.0.join("authorization.json"));
+        let root = sandbox.root("project");
+        let candidate = service.prepare_consent(PROJECT, &root, 0).unwrap();
+        let document = service
+            .confirm_consent(
+                PROJECT,
+                &candidate.token,
+                roles(&[AllowedRole::Planner, AllowedRole::Reviewer]),
+                false,
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(document.revision, 1);
+        let view = service.view(PROJECT).unwrap();
+        assert_eq!(view.status, AuthorizationStatus::Authorized);
+        assert_eq!(
+            view.roles,
+            vec![AllowedRole::Planner, AllowedRole::Reviewer]
+        );
+        assert!(!view.history_capture_enabled);
+    }
+
+    #[test]
+    fn stale_consent_revision_cannot_overwrite_a_newer_grant() {
+        let sandbox = Sandbox::new();
+        let service = ConsentService::at_path(sandbox.0.join("authorization.json"));
+        let first_root = sandbox.root("first-project");
+        let second_root = sandbox.root("second-project");
+        let first_id = PROJECT;
+        let second_id = "00000000-0000-4000-8000-000000000002";
+        let first = service.prepare_consent(first_id, &first_root, 0).unwrap();
+        let stale = service.prepare_consent(second_id, &second_root, 0).unwrap();
+        service
+            .confirm_consent(
+                first_id,
+                &first.token,
+                roles(&[AllowedRole::Planner]),
+                false,
+                0,
+            )
+            .unwrap();
+        let accepted_bytes = fs::read(sandbox.0.join("authorization.json")).unwrap();
+
+        assert_eq!(
+            service.confirm_consent(
+                second_id,
+                &stale.token,
+                roles(&[AllowedRole::Executor]),
+                false,
+                0,
+            ),
+            Err(PolicyError::RevisionConflict)
+        );
+        assert_eq!(
+            fs::read(sandbox.0.join("authorization.json")).unwrap(),
+            accepted_bytes
+        );
+        assert_eq!(
+            service.view(first_id).unwrap().status,
+            AuthorizationStatus::Authorized
+        );
+        assert_eq!(
+            service.view(second_id).unwrap().status,
+            AuthorizationStatus::NotAuthorized
+        );
     }
 }

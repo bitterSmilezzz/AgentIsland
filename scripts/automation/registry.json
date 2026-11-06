@@ -413,9 +413,10 @@
       "checks": [
         "rust.default",
         "task03.lifecycle",
-        "task03.authorization"
+        "task03.authorization",
+        "task03.authorizationui"
       ],
-      "coverage_note": "partial — 首片（v0.0.380）：执行生命周期状态机判据（run_lifecycle.rs，八阶段/合法转移表/计划先行/规划≠执行/终态不可复活/重跑新轮；8 条用例）；真实状态机接线与 Accepted 证据（v0.0.382：可信来源事件可受理、已受理运行不得被迟到结果改写回未完成）；**取消与关闭对外区别 + 机器掉线重新认领**（2026-10-26）：①**对外区别** `TerminationReason`（用户执行中取消 CancelledByUser 为取消语义，操作者作废 ClosedByOperator 为关闭语义，文案与审计分清）；②**机器掉线重新认领**：掉线后 reclaim_after_disconnect 递增 claim_version 并指派新机器，旧机器恢复后汇报结果被拒以 StaleExecutionClaim（防两台机器执行同一任务）；2 条新用例 + 变异被拒。全量 1299 passed，脱敏 0 命中。新增设计片（2026-11-01，ADR 0042）：明确外部来源 `tasks::Run` 与自有 ManagedRun 分离，受管理正文按顺序事件批量封入 AEAD 密文段；执行授权与生产执行器仍未接入。缺：Run now 与计划的分工细则（用户操作流）、端到端验收。 新增受管理运行项目授权判据（v0.0.434，ADR 0043）：项目授权与历史采集默认关闭；planning/execution/review 分权；run 快照固定 project/task/run、grant/history-policy 版本、runner 进程代次和 claim version；权限或 runner 变化拒绝旧快照，history opt-in 与执行权分离。7 条拒绝矩阵用例；没有用户授权签发、runner 启动器、持久化、Tauri 命令或生产写路径。新增本地策略存储与项目根身份绑定（v0.0.435）：版本化独立策略文件、严格拒绝坏格式/未来格式、原子写入、Unix 权限约束、Windows 文件 ID/卷身份、移动或替换根目录时拒绝旧授权；定向用例 17 条（含多 Store handle 并发 revision 冲突），目录替换变异被拒。当前只完成存储核心和 `confirm_project` 存储入口，没有 Tauri 用户确认界面/命令、抗回滚或恢复策略、可信 runner 握手/停止与真实 Run now 接线，因此 TASK-03 继续 partial，生产执行与 TASK-05 历史写入仍关闭。",
+      "coverage_note": "partial — 首片（v0.0.380）：执行生命周期状态机判据（run_lifecycle.rs，八阶段/合法转移表/计划先行/规划≠执行/终态不可复活/重跑新轮；8 条用例）；真实状态机接线与 Accepted 证据（v0.0.382：可信来源事件可受理、已受理运行不得被迟到结果改写回未完成）；**取消与关闭对外区别 + 机器掉线重新认领**（2026-10-26）：①**对外区别** `TerminationReason`（用户执行中取消 CancelledByUser 为取消语义，操作者作废 ClosedByOperator 为关闭语义，文案与审计分清）；②**机器掉线重新认领**：掉线后 reclaim_after_disconnect 递增 claim_version 并指派新机器，旧机器恢复后汇报结果被拒以 StaleExecutionClaim（防两台机器执行同一任务）；2 条新用例 + 变异被拒。全量 1299 passed，脱敏 0 命中。新增设计片（2026-11-01，ADR 0042）：明确外部来源 `tasks::Run` 与自有 ManagedRun 分离，受管理正文按顺序事件批量封入 AEAD 密文段；执行授权与生产执行器仍未接入。缺：Run now 与计划的分工细则（用户操作流）、端到端验收。 新增受管理运行项目授权判据（v0.0.434，ADR 0043）：项目授权与历史采集默认关闭；planning/execution/review 分权；run 快照固定 project/task/run、grant/history-policy 版本、runner 进程代次和 claim version；权限或 runner 变化拒绝旧快照，history opt-in 与执行权分离。7 条拒绝矩阵用例；没有用户授权签发、runner 启动器、持久化、Tauri 命令或生产写路径。新增本地策略存储与项目根身份绑定（v0.0.435）：版本化独立策略文件、严格拒绝坏格式/未来格式、原子写入、Unix 权限约束、Windows 文件 ID/卷身份、移动或替换根目录时拒绝旧授权；定向用例 17 条（含多 Store handle 并发 revision 冲突），目录替换变异被拒。当前只完成存储核心和 `confirm_project` 存储入口，没有 Tauri 用户确认界面/命令、抗回滚或恢复策略、可信 runner 握手/停止与真实 Run now 接线，因此 TASK-03 继续 partial，生产执行与 TASK-05 历史写入仍关闭。 新增用户授权确认（v0.0.436）：TASK-03 接入系统目录选择与本地授权摘要；5 分钟一次性候选绑定所选目录身份、项目与策略 revision，取消不写盘；角色显式勾选、历史采集默认关闭，撤销需确认且并发确认 revision 冲突拒绝；已授权项目撤销前不允许删除。没有可信单调信任锚：不提供策略导入/恢复，手工替换为有效旧策略仍无法从本机文件自身识别回滚，列 BUG-019/ISSUE-06；runner/Run now/TASK-05 历史写入仍关闭。",
       "status": "partial"
     },
     "TASK-05": {
@@ -3253,6 +3254,25 @@
         "app/src-tauri/src/managed_history_crypto.rs",
         "app/src-tauri/src/managed_history_key.rs"
       ]
+    },
+    "task03.authorizationui": {
+      "command": [
+        "node",
+        "scripts/automation/browser-check.mjs",
+        "test-task-project-authorization.mjs"
+      ],
+      "host_os": [
+        "darwin",
+        "linux",
+        "windows"
+      ],
+      "requires_live_service": false,
+      "requires_spending": false,
+      "external_requirement": "npm ci; npx --no-install playwright install chromium (root lockfile)",
+      "source": "TASK-03 用户授权确认界面：原生目录选择取消不写入；预览显示规范路径和独立角色选项；历史采集默认关闭；确认使用一次性候选令牌；历史启用与撤销均需显式确认；UI 不触发执行器。",
+      "test_files": [
+        "scripts/test-task-project-authorization.mjs"
+      ]
     }
   },
   "agents": {
@@ -3365,6 +3385,7 @@
       "task01.detailnav",
       "task01.tasksearch",
       "task01.projectdeps",
+      "task03.authorizationui",
       "task01.dragui",
       "task01.dragstatus",
       "task04.readerleave",
@@ -3441,6 +3462,7 @@
       "task05.localcontent",
       "task03.lifecycle",
       "task03.authorization",
+      "task03.authorizationui",
       "task08.schedule",
       "task08.dst",
       "task08.budget",
@@ -3624,6 +3646,7 @@
       "task05.localcontent",
       "task03.lifecycle",
       "task03.authorization",
+      "task03.authorizationui",
       "task08.schedule",
       "task08.dst",
       "task08.budget",
@@ -3839,6 +3862,13 @@
       "status": "closed",
       "requirement": "OPS-01",
       "evidence": "2026-11-01 运行全量原生门禁单测时发现 `ResourceGateTests.test_scratch_directory_exists_on_a_clean_checkout` 调用 `shutil.rmtree(vm.SCRATCH)`；`SCRATCH` 指向仓库共享 `.build/`，会删除既有 VM 验收回执、失败日志和 SSH host-key pin。本轮确有 `.build/vm/acceptance-a363e4ae847242b482187112882d981e` 失败日志被删；会话保留失败阶段摘要，但完整原始日志无法恢复。修复为在一次性临时 checkout 中复制并导入门禁脚本，验证其创建临时 `.build/`，不接触真实共享目录。定向回归和全量 `scripts/test-native-gates-vm.py`（19/19）通过。"
+    },
+    {
+      "id": "BUG-019",
+      "title": "受管理运行项目授权策略缺少可信单调版本锚，回放有效旧策略文件可能复活已撤销授权",
+      "status": "open",
+      "requirement": "TASK-03",
+      "evidence": "策略 JSON 只保存文件内 revision；目录身份绑定不能证明策略文件相对已见版本是新的。当前没有策略导入/恢复 API，但把授权文件替换为此前有效副本仍可恢复旧 grant，文件自身无法识别整体回滚。生产 runner 与 Run now 尚未接入。回滚防护设计和负例验收跟踪在 TASK-03 项目授权实施文档与 ISSUE-06。"
     }
   ]
 }
