@@ -771,3 +771,18 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - 2026-11-01 首次 v0.0.433：源码 CI **132/132**（run `20261101T073346Z-cc52d4b3474a`）通过，应用 bundle 已构建；外层会话在 DMG 打包进行时被中断，命令未给出最终终态，且没有提交、tag 或 Release。
 - 2026-11-06 第二次：源码 CI **132/132**（run `20261106T135710Z-10c20b9de4db`）通过；打包在 `artifact.py begin` 因第一轮留下的 active 状态拒绝（`build_in_progress`）。检查确认没有构建进程，状态文件来自 2026-11-01、build ID `1ca4f51e2b144ad8a9658fb80794fae1`；按 `artifact.py fail` 的有界恢复接口将该次尝试标成 failed，未删除或改写先前成功构建收据。
 - 当前发布尚未完成；须从完整 `release.sh` 再跑一次，不能把上述 CI 通过或旧 bundle 当作 v0.0.433 发布结果。
+
+## 28. 2026-11-06 追加：TASK-03 受管理运行项目授权判据（v0.0.434）
+
+### 决策与改动
+
+- ADR 0043 定义项目 grant、规划/执行/审查角色、runner 稳定 ID+进程代次、run claim version 与独立历史策略版本。新项目默认不允许运行或采集；历史 opt-in 不授予执行权，项目 grant 不授权 Git/通知/网关等外部副作用。
+- `managed_run_authorization.rs` 当前只提供纯拒绝判据，没有 Tauri/持久化/runner/生产写入口。用户授权签发、项目根目录身份、runner 握手和撤销后的进程停止仍未实现，执行与 TASK-05 历史写入继续关闭。
+- 7 条定向 Rust 用例通过；隔离移除授权版本校验后，撤销用例失败（6 pass / 1 fail），证明该检查可拒错。TASK-03 的 `task03.authorization` 已加入 ci/release profile，状态/矩阵由 registry 生成。
+- 下一张本地票为项目授权持久化与根目录身份绑定；票据见忽略目录 `.scratch/task03-managed-run-history/issues/04-project-consent-store-and-root-identity.md`。
+
+### 验证与未完成项
+
+- 变更前 `scripts/verify-framework.sh` 的 Rust 全量 **1435 passed / 16 ignored**；框架元测试、扫描器、Windows 四片段及 package 通过。该次统一 CI 为 **131/132**，单项 `auto01.restartapp` 失败；隔离独立复跑该脚本全绿，且相同 v0.0.433 源码此前两次完整 release CI 均为 132/132。此次失败已保留在 `.scratch/automation-runs/20261106T145631Z-76dd17b2a5fb/`，不能将该次 verify-framework 总体记为通过。
+- manual/client/soak 在基线中因外部前置缺失明确 blocked；verify-framework 执行时 `agentisland-iso` 已停止，所以 native profile 也 blocked。Windows 整 crate 本机类型检查缺 SDK/CRT 未验证。
+- TASK-03 仍缺本地授权签发、项目根身份、真实 runner 注册/停止、Run now 和端到端执行；TASK-05 仍缺密文事件文件、索引/容量、精确删除、备份恢复、UI 与平台原生验收。BUG-016 / NOT-06 的 v0.0.416 updater 卡住仍 open，继续不要求用户手工操作。

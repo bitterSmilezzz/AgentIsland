@@ -263,7 +263,7 @@ Agent 转为 working 时面板自动短暂展开示警，随后收回；有冷�
 
 需求更新以 [ADR 0040](docs/adr/0040-supervisor-full-integration-requirements.md)为准；07/21/25/26/28与ADR0039中的历史范围排除不再约束本次完整能力目标，但其尚适用安全约束与事故证据保留。
 
-**自有执行历史**是 AgentIsland 获得项目授权后创建的受管理运行所生成的方案、diff、对话与产出版本；它与外部工具的**来源观测**分离，来源正文仍遵循 ADR 0029 的瞬时只读规则。代码中的 `tasks::Run` 继续表示来源观测，不承载受管理运行内容；受管理运行按逻辑事件序列批量封装为独立密文段，详见 [ADR 0042](docs/adr/0042-managed-run-event-segments.md)。项目默认不采集；留存、静态加密、密钥、删除与加密备份恢复口径由 [ADR 0041](docs/adr/0041-managed-history-data-policy.md) 定义。该决策不授予 TASK-03 未实现的执行权限，也不表示现有普通任务正文已迁入加密历史。
+**自有执行历史**是 AgentIsland 获得项目授权后创建的受管理运行所生成的方案、diff、对话与产出版本；它与外部工具的**来源观测**分离，来源正文仍遵循 ADR 0029 的瞬时只读规则。代码中的 `tasks::Run` 继续表示来源观测，不承载受管理运行内容；受管理运行按逻辑事件序列批量封装为独立密文段，详见 [ADR 0042](docs/adr/0042-managed-run-event-segments.md)。项目默认不采集；留存、静态加密、密钥、删除与加密备份恢复口径由 [ADR 0041](docs/adr/0041-managed-history-data-policy.md) 定义。项目 grant 与 runner 身份/代次判据见 [ADR 0043](docs/adr/0043-managed-run-project-authorization.md)；当前仍没有授权签发、真实 runner 或可写执行路径，也不表示现有普通任务正文已迁入加密历史。
 
 ### 产品命名
 

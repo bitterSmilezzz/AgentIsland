@@ -21,6 +21,7 @@
 [具体实现文档](implementation/README.md)：契约、UI/动效、任务、macOS窗口布局、模型与连接、平台适配、批次与验收。
 
 TASK-03/TASK-05 的受管理运行与自有历史实施边界见 [17 · 受管理运行事件与密文存储](implementation/17-managed-run-event-storage.md)；它是领域边界与测量条件，不表示真实执行或历史写入已开放。
+项目授权与可信 runner 身份的当前纯判据及下一片前置见 [18 · 受管理运行授权与执行者身份](implementation/18-managed-run-authorization.md)；它不表示生产执行路径已经开放。
 
 ## 当前工程入口
 

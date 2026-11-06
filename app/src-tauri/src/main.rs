@@ -82,6 +82,7 @@ mod resilience;
 mod resource_diagnostics;
 mod review_quality;
 mod run_lifecycle;
+mod managed_run_authorization;
 mod runtime_log;
 mod secret;
 mod security_audit;
