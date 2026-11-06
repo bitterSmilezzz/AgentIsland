@@ -20,6 +20,8 @@
 
 [具体实现文档](implementation/README.md)：契约、UI/动效、任务、macOS窗口布局、模型与连接、平台适配、批次与验收。
 
+TASK-03/TASK-05 的受管理运行与自有历史实施边界见 [17 · 受管理运行事件与密文存储](implementation/17-managed-run-event-storage.md)；它是领域边界与测量条件，不表示真实执行或历史写入已开放。
+
 ## 当前工程入口
 
 先读 [ADR 0016 · Rust/Tauri 唯一主线](../adr/0016-rust-only-main.md) 和 [04 · 实施计划](04-plan.md)。Swift 冻结与两端对照表是迁移取证，查旧端实现时使用归档分支。

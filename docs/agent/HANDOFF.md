@@ -749,3 +749,25 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - TASK-05 仍为 partial，策略/容量票据在测量后保持 in-progress：文件粒度成本已量化，但真实运行边界、索引与备份占用未知，容量/期限数字尚不能定。
 - 下一片先明确 TASK-03 运行事件的持久化分段及存储批次压力门槛；之后继续项目 opt-in/运行快照、密文存储、精确删除、备份恢复与 UI。
 - BUG-016 / NOT-06 的 v0.0.416 更新检查卡住仍 open；用户不承担手工复验。全局计划仍有 **23 项 partial**、**14 项 done**，bug 登记为 **18 条、3 条 open**。
+
+## 27. 2026-11-01 追加：TASK-03/TASK-05 受管理运行事件与密文段边界（v0.0.433）
+
+### 决策与改动
+
+- ADR 0042 明确 `tasks::Run` 和 `event_receipts` 继续只表达外部来源观测；AgentIsland 自行创建的 ManagedRun 使用单独身份、授权和策略版本，不复制来源正文。
+- 受管理正文按每个运行的顺序事件表达，多个逻辑事件批量封入不可变 AEAD 密文段；段认证绑定项目/运行/段标识/事件序号范围。候选段尺寸为 64 KiB、256 KiB、1 MiB，须在完整合成运行轨迹上测量后再决定。
+- 本片只定领域边界与实施前置项；未增加执行器、授权命令、任务 JSON 写入或密文存储路径。现有用户任务和来源历史未改写。
+- 票据与依赖见忽略目录 `.scratch/task03-managed-run-history/`；下一步先补 TASK-03 项目/运行授权与事件生命周期，再根据生成的合成轨迹完成 TASK-05 分段、索引与备份测量。
+
+### 验证与未完成项
+
+- 变更前 `scripts/verify-framework.sh` exit 0：Rust **1435 passed / 16 ignored**；框架元测试、统一 CI 与 package profile 通过；Windows 四片段 **4/4**。本机 Windows 整 crate 类型检查因缺 Windows SDK/CRT 头文件未验证；native/manual/client/soak profile 在基线扫描中因外部前置缺失明确标记 blocked，不能据此声称完成。
+- 本片没有更改测试检查项或需求状态机；状态说明由 `scripts/automation/registry.json` 渲染。发布门禁将针对本次候选再次执行 CI、隔离 VM 原生门禁、签名包和脱敏扫描。
+- TASK-03 仍为 partial；真实项目授权、Run now、规划/执行角色接线和端到端验收未完成。TASK-05 仍为 partial；分段实现、容量期限、密文存储、精确删除、备份恢复、UI 及 Keychain 原生验收未完成。
+- BUG-016 / NOT-06 的 v0.0.416 实际检查与安装仍 open；用户不承担手工 VM 操作，旧 `agentisland-update-e2e` 未触碰。
+
+### 发布尝试记录
+
+- 2026-11-01 首次 v0.0.433：源码 CI **132/132**（run `20261101T073346Z-cc52d4b3474a`）通过，应用 bundle 已构建；外层会话在 DMG 打包进行时被中断，命令未给出最终终态，且没有提交、tag 或 Release。
+- 2026-11-06 第二次：源码 CI **132/132**（run `20261106T135710Z-10c20b9de4db`）通过；打包在 `artifact.py begin` 因第一轮留下的 active 状态拒绝（`build_in_progress`）。检查确认没有构建进程，状态文件来自 2026-11-01、build ID `1ca4f51e2b144ad8a9658fb80794fae1`；按 `artifact.py fail` 的有界恢复接口将该次尝试标成 failed，未删除或改写先前成功构建收据。
+- 当前发布尚未完成；须从完整 `release.sh` 再跑一次，不能把上述 CI 通过或旧 bundle 当作 v0.0.433 发布结果。
