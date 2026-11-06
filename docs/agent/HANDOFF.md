@@ -4,14 +4,14 @@
 > 与它配套的还有：[`AGENTS.md`](../../AGENTS.md)（工作约定，Agent 无关）、
 > [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
-**交接时点**：2026-11-01
-**本轮起始基线**：`main` at `b0e4e8a`（v0.0.428）；本轮继续 TASK-05 验证清单生产接线。
-**本轮起始最新发布**：`v0.0.428`（DMG / ZIP / updater 包 / `latest.json`）。
-**本轮交接**：TASK-05 清单接线、验证、发布与遗留项见第 23 节；NOT-06 旧版 `agentisland-update-e2e` VM 保持未触碰。
-**验证状态**：以第 23 节的最终回执为准；本机 Windows 整 crate 检查如缺 Windows CRT/SDK `assert.h`，明确列为 blocked / unverified。
+**交接时点**：2026-11-07
+**本轮起始基线**：`main` at `eeb26cf`（v0.0.434）；继续 TASK-03 项目授权存储与项目根身份绑定。
+**本轮起始最新发布**：`v0.0.434`（DMG / ZIP / updater 包 / `latest.json`）。
+**本轮交接**：TASK-03 当前切片与发布门禁证据见第 29 节；NOT-06 的 v0.0.416 真实升级仍待隔离 VM 可观测证据，旧 `agentisland-update-e2e` 保持未触碰。
+**验证状态**：本轮基线 Rust 1442 passed / 16 ignored；统一 CI、package 与所有可用检查通过，Windows 整 crate、native/manual/client/soak 仍有外部前置未验证。切片定向测试与 Windows 片段检查见第 29 节。
 
 > 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9、12、13 节。
-> v0.0.427 完成本地产出正文持久化，v0.0.428 将版本追加、比较和恢复接入任务页。本轮推进版本绑定的验证清单 UI 与本地存储。TASK-05 仍缺 AgentIsland 自有执行历史的独立数据策略。NOT-06 的 v0.0.416 真实升级仍未验，旧版 `agentisland-update-e2e` VM 保持原样。
+> v0.0.435 候选新增 TASK-03 独立本地授权策略存储与项目根目录身份绑定，但没有接入产品确认 UI/Tauri 命令、可信 runner 或执行写入口。TASK-03 与 TASK-05 仍为 partial；NOT-06 的 v0.0.416 卡住仍未由旧版客户端本身取到请求/错误证据，用户无需承担手工 VM 操作。
 
 > ⚠️ 本文件由**多个会话接力**：第 1–6 节是 2026-10-17 晚（NOT-05 交付与三轮复审），
 > 第 7 节是 CI 身份规则修复（**不是本次交接者写的**，但记录的是真实修复，保留不删），
@@ -786,3 +786,25 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - 变更前 `scripts/verify-framework.sh` 的 Rust 全量 **1435 passed / 16 ignored**；框架元测试、扫描器、Windows 四片段及 package 通过。该次统一 CI 为 **131/132**，单项 `auto01.restartapp` 失败；隔离独立复跑该脚本全绿，且相同 v0.0.433 源码此前两次完整 release CI 均为 132/132。此次失败已保留在 `.scratch/automation-runs/20261106T145631Z-76dd17b2a5fb/`，不能将该次 verify-framework 总体记为通过。
 - manual/client/soak 在基线中因外部前置缺失明确 blocked；verify-framework 执行时 `agentisland-iso` 已停止，所以 native profile 也 blocked。Windows 整 crate 本机类型检查缺 SDK/CRT 未验证。
 - TASK-03 仍缺本地授权签发、项目根身份、真实 runner 注册/停止、Run now 和端到端执行；TASK-05 仍缺密文事件文件、索引/容量、精确删除、备份恢复、UI 与平台原生验收。BUG-016 / NOT-06 的 v0.0.416 updater 卡住仍 open，继续不要求用户手工操作。
+
+## 29. 2026-11-07 追加：TASK-03 项目授权存储与根身份绑定（v0.0.435）
+
+### 改动
+
+- 新增 `managed_run_authorization_store.rs`：独立版本化策略文件；缺失时执行授权和历史采集均关闭；严格拒绝损坏/未来格式、未知字段、符号链接、不安全 Unix 权限和原子发布失败，并保留原件。
+- grant 绑定本机 project UUID、规范根路径和文件系统身份；Unix 使用 device/inode，Windows 使用卷序列号与 128-bit file ID。路径移动、目录替换或重定向时拒绝复用旧 grant。grant 与 history-policy 版本独立维护，撤销保留版本墓碑。
+- `confirm_project` 仅作为存储层的授权签发 API；本片没有 Tauri 确认 UI/命令、策略抗回滚/备份恢复、真实 runner、Run now 或 TASK-05 生产写入。
+
+### 验证与边界
+
+- 变更前 `scripts/verify-framework.sh`：Rust **1442 passed / 16 ignored**；统一 CI、package、框架自检、扫描器及可用 Windows 片段通过。Windows 整 crate 因缺 MSVC SDK/CRT `assert.h` blocked；native、manual、client、soak 因外部前置缺失 blocked，共 **5 个 profile 未验**。不得推断完整 Windows 构建、真实客户端升级或端到端验收通过。
+- 新模块定向回归 **17/17**；并发不同 Store handle 在相同 revision 下只允许一个写入成功。最新源码的隔离 Windows MSVC harness `cargo check` 通过，但不替代完整 crate/链接/打包/实机验收。
+- 隔离移除根身份相等检查后，目录替换拒绝用例失败，证明变异可被该用例捕获；变异只在 `.scratch/` 隔离副本执行。
+- Registry **23/23**，需求状态与矩阵生成器、版本检查、`git diff --check` 通过。自审报告：[`2026-11-07-0047-v0.0.435-codex.md`](../code-review/2026-11-07-0047-v0.0.435-codex.md)；本轮没有独立审查者。
+- 本节记录发布流程启动前的候选状态。发布最终结果以 Git tag、Release 资产、脚本回执与重启验证为准；不要把构建或 VM 前置检查单独视为已发布。
+
+### 未完成与下一步
+
+- TASK-03 继续 partial：下一步是把存储入口接到本地用户确认 UI/Tauri 命令，并定策略抗回滚/备份恢复规则；随后完成可信 runner 握手、撤销停止、Run now 和端到端验收。
+- TASK-05 继续 partial：仍缺运行密文段、索引/容量与期限实测、精确删除、全有或全无备份恢复、自有历史 UI 和钥匙串原生验收；不得开放写入。
+- BUG-016 / NOT-06 的 v0.0.416 “检查更新”卡住仍 open。用户明确不希望承担手工操作；继续保留隔离 VM，等待可观测的旧版 updater 请求/错误证据，不操作 `agentisland-update-e2e`。

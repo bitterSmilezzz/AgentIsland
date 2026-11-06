@@ -83,6 +83,7 @@ mod resource_diagnostics;
 mod review_quality;
 mod run_lifecycle;
 mod managed_run_authorization;
+mod managed_run_authorization_store;
 mod runtime_log;
 mod secret;
 mod security_audit;

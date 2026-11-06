@@ -415,7 +415,7 @@
         "task03.lifecycle",
         "task03.authorization"
       ],
-      "coverage_note": "partial — 首片（v0.0.380）：执行生命周期状态机判据（run_lifecycle.rs，八阶段/合法转移表/计划先行/规划≠执行/终态不可复活/重跑新轮；8 条用例）；真实状态机接线与 Accepted 证据（v0.0.382：可信来源事件可受理、已受理运行不得被迟到结果改写回未完成）；**取消与关闭对外区别 + 机器掉线重新认领**（2026-10-26）：①**对外区别** `TerminationReason`（用户执行中取消 CancelledByUser 为取消语义，操作者作废 ClosedByOperator 为关闭语义，文案与审计分清）；②**机器掉线重新认领**：掉线后 reclaim_after_disconnect 递增 claim_version 并指派新机器，旧机器恢复后汇报结果被拒以 StaleExecutionClaim（防两台机器执行同一任务）；2 条新用例 + 变异被拒。全量 1299 passed，脱敏 0 命中。新增设计片（2026-11-01，ADR 0042）：明确外部来源 `tasks::Run` 与自有 ManagedRun 分离，受管理正文按顺序事件批量封入 AEAD 密文段；执行授权与生产执行器仍未接入。缺：Run now 与计划的分工细则（用户操作流）、端到端验收。 新增受管理运行项目授权判据（v0.0.434，ADR 0043）：项目授权与历史采集默认关闭；planning/execution/review 分权；run 快照固定 project/task/run、grant/history-policy 版本、runner 进程代次和 claim version；权限或 runner 变化拒绝旧快照，history opt-in 与执行权分离。7 条拒绝矩阵用例；没有用户授权签发、runner 启动器、持久化、Tauri 命令或生产写路径。下一步仍需项目目录身份、本地授权存储、可信 runner 握手/停止与真实 Run now 接线。",
+      "coverage_note": "partial — 首片（v0.0.380）：执行生命周期状态机判据（run_lifecycle.rs，八阶段/合法转移表/计划先行/规划≠执行/终态不可复活/重跑新轮；8 条用例）；真实状态机接线与 Accepted 证据（v0.0.382：可信来源事件可受理、已受理运行不得被迟到结果改写回未完成）；**取消与关闭对外区别 + 机器掉线重新认领**（2026-10-26）：①**对外区别** `TerminationReason`（用户执行中取消 CancelledByUser 为取消语义，操作者作废 ClosedByOperator 为关闭语义，文案与审计分清）；②**机器掉线重新认领**：掉线后 reclaim_after_disconnect 递增 claim_version 并指派新机器，旧机器恢复后汇报结果被拒以 StaleExecutionClaim（防两台机器执行同一任务）；2 条新用例 + 变异被拒。全量 1299 passed，脱敏 0 命中。新增设计片（2026-11-01，ADR 0042）：明确外部来源 `tasks::Run` 与自有 ManagedRun 分离，受管理正文按顺序事件批量封入 AEAD 密文段；执行授权与生产执行器仍未接入。缺：Run now 与计划的分工细则（用户操作流）、端到端验收。 新增受管理运行项目授权判据（v0.0.434，ADR 0043）：项目授权与历史采集默认关闭；planning/execution/review 分权；run 快照固定 project/task/run、grant/history-policy 版本、runner 进程代次和 claim version；权限或 runner 变化拒绝旧快照，history opt-in 与执行权分离。7 条拒绝矩阵用例；没有用户授权签发、runner 启动器、持久化、Tauri 命令或生产写路径。新增本地策略存储与项目根身份绑定（v0.0.435）：版本化独立策略文件、严格拒绝坏格式/未来格式、原子写入、Unix 权限约束、Windows 文件 ID/卷身份、移动或替换根目录时拒绝旧授权；定向用例 17 条（含多 Store handle 并发 revision 冲突），目录替换变异被拒。当前只完成存储核心和 `confirm_project` 存储入口，没有 Tauri 用户确认界面/命令、抗回滚或恢复策略、可信 runner 握手/停止与真实 Run now 接线，因此 TASK-03 继续 partial，生产执行与 TASK-05 历史写入仍关闭。",
       "status": "partial"
     },
     "TASK-05": {
@@ -2610,9 +2610,10 @@
       ],
       "requires_live_service": false,
       "requires_spending": false,
-      "source": "TASK-03 受管理运行授权判据（managed_run_authorization.rs）：新项目默认拒绝运行与历史；planner/executor/reviewer 分权；快照绑定 project/task/run、授权版本、历史策略版本、runner ID+generation 与 claim version；跨身份、权限撤销、history opt-in 关闭/换版、runner 重启和认领换代均拒绝；历史授权不提升执行权，项目授权不包含 Git/通知/网关副作用；版本溢出拒绝且不改状态。7 条定向用例，另用隔离源码变异验证去掉版本复核会被拒。该模块没有 Tauri/存储/执行器接线。",
+      "source": "TASK-03 受管理运行授权判据与本地策略存储（managed_run_authorization.rs、managed_run_authorization_store.rs）：新项目默认拒绝运行与历史；planner/executor/reviewer 分权；快照绑定 project/task/run、授权版本、历史策略版本、runner ID+generation 与 claim version；跨身份、权限撤销、history opt-in 关闭/换版、runner 重启和认领换代均拒绝；历史授权不提升执行权，项目授权不包含 Git/通知/网关副作用；版本溢出拒绝且不改状态。存储核心以独立版本化文件记录显式 grant/revoke 和历史采集策略，绑定 canonical root path、Unix dev/inode 或 Windows 128-bit file ID/volume serial；坏格式、未知字段、symlink、非安全权限、根目录替换和原子发布失败均 fail closed，并保留原件。17 条存储定向用例；隔离删除根目录身份比对的源码变异被替换目录拒绝用例捕获。仍无 Tauri 用户确认界面/命令、抗回滚与恢复策略、可信 runner/生产执行器接线；测试和存储 API 不构成生产授权路径。",
       "test_files": [
-        "app/src-tauri/src/managed_run_authorization.rs"
+        "app/src-tauri/src/managed_run_authorization.rs",
+        "app/src-tauri/src/managed_run_authorization_store.rs"
       ]
     },
     "task02.orchestration": {
