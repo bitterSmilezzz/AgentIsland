@@ -7,11 +7,12 @@
 **交接时点**：2026-11-07
 **本轮起始基线**：`main` at `eeb26cf`（v0.0.434）；继续 TASK-03 项目授权存储与项目根身份绑定。
 **本轮起始最新发布**：`v0.0.434`（DMG / ZIP / updater 包 / `latest.json`）。
+**当前最新发布**：`v0.0.435`（GitHub Release 已发布，五个附件已核对）。
 **本轮交接**：TASK-03 当前切片与发布门禁证据见第 29 节；NOT-06 的 v0.0.416 真实升级仍待隔离 VM 可观测证据，旧 `agentisland-update-e2e` 保持未触碰。
 **验证状态**：本轮基线 Rust 1442 passed / 16 ignored；统一 CI、package 与所有可用检查通过，Windows 整 crate、native/manual/client/soak 仍有外部前置未验证。切片定向测试与 Windows 片段检查见第 29 节。
 
 > 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9、12、13 节。
-> v0.0.435 候选新增 TASK-03 独立本地授权策略存储与项目根目录身份绑定，但没有接入产品确认 UI/Tauri 命令、可信 runner 或执行写入口。TASK-03 与 TASK-05 仍为 partial；NOT-06 的 v0.0.416 卡住仍未由旧版客户端本身取到请求/错误证据，用户无需承担手工 VM 操作。
+> v0.0.435 新增 TASK-03 独立本地授权策略存储与项目根目录身份绑定，但没有接入产品确认 UI/Tauri 命令、可信 runner 或执行写入口。TASK-03 与 TASK-05 仍为 partial；NOT-06 的 v0.0.416 卡住仍未由旧版客户端本身取到请求/错误证据，用户无需承担手工 VM 操作。
 
 > ⚠️ 本文件由**多个会话接力**：第 1–6 节是 2026-10-17 晚（NOT-05 交付与三轮复审），
 > 第 7 节是 CI 身份规则修复（**不是本次交接者写的**，但记录的是真实修复，保留不删），
@@ -801,7 +802,11 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - 新模块定向回归 **17/17**；并发不同 Store handle 在相同 revision 下只允许一个写入成功。最新源码的隔离 Windows MSVC harness `cargo check` 通过，但不替代完整 crate/链接/打包/实机验收。
 - 隔离移除根身份相等检查后，目录替换拒绝用例失败，证明变异可被该用例捕获；变异只在 `.scratch/` 隔离副本执行。
 - Registry **23/23**，需求状态与矩阵生成器、版本检查、`git diff --check` 通过。自审报告：[`2026-11-07-0047-v0.0.435-codex.md`](../code-review/2026-11-07-0047-v0.0.435-codex.md)；本轮没有独立审查者。
-- 本节记录发布流程启动前的候选状态。发布最终结果以 Git tag、Release 资产、脚本回执与重启验证为准；不要把构建或 VM 前置检查单独视为已发布。
+- 发布成功：提交 `4107ab604155b089f7309142a3f28479535a9640`、tag `v0.0.435`、GitHub [v0.0.435 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.435)；DMG、ZIP、updater `.app.tar.gz`、签名和 `latest.json` 五个附件均已上传。
+- release CI **133/133**；受控构建身份/CLI 检查 **7/7**；五道隔离 VM 原生门禁通过；签名包拒错正例 **7/7**；发布前与提交后脱敏扫描均通过。
+- 脚本验证并重启宿主 `dist/AgentIsland.app`，运行 PID `22685`。发布 VM `agentisland-iso` 已停止；旧版验收 VM `agentisland-update-e2e` 未触碰、仍停止。
+- 明确保留 2 项未验：原生动效逐边取证（需 `NATIVE_MOTION=1`）和真实官方 Claude 客户端取证（需 pinned CLI）。基线中 Windows 整 crate、native、manual、client、soak 未满足外部前置；本次发布的原生 VM 门禁通过不能覆盖其余平台或真实客户端验收。
+- 全仓 `cargo fmt --check` 返回非零，列出 61 个文件的格式差异；新增存储模块的独立 `rustfmt --edition 2021 --check` 通过。没有批量改写既有文件来掩盖仓库级差异。
 
 ### 未完成与下一步
 
