@@ -4,15 +4,15 @@
 > 与它配套的还有：[`AGENTS.md`](../../AGENTS.md)（工作约定，Agent 无关）、
 > [`docs/README.md`](../README.md)（文档地图）、[`需求状态.md`](../需求状态.md)（做到哪了）。
 
-**交接时点**：2026-11-08
+**交接时点**：2026-11-18
 **本轮起始基线**：`main` at `e291220`（v0.0.436）；继续 TASK-03 授权策略锚与 ISSUE-06。
 **本轮起始最新发布**：`v0.0.436`（DMG / ZIP / updater 包 / `latest.json`）。
-**当前最新发布**：记录时为 `v0.0.436`；v0.0.437 候选真实 Keychain L5 与六项隔离 VM 原生门禁已通过，完整 CI / 正式签名包 / Release 正在由 `scripts/release.sh` 收尾。
+**当前最新发布**：`v0.0.437`（GitHub Release 已发布，五个附件已核对）；提交 `8c7cda0`、tag `v0.0.437`。
 **本轮交接**：v0.0.436 TASK-03 显式授权 UI 与命令见第 30 节；v0.0.437 策略锚与原生回执见第 31 节。TASK-05 自有执行历史实施基线已按用户确认；下一片继续完成密文历史存储与生命周期。NOT-06 的 v0.0.416 更新检查卡住仍待真实旧版请求/错误证据；用户不承担手工 VM 操作，旧 `agentisland-update-e2e` 保持未触碰。
-**验证状态**：授权存储定向 Rust 回归 30/30，门禁脚本 21/21，隔离 VM 六项原生验收通过（receipt `acceptance-a95f156f1abf4a5cbb20a8470cb992a7`）；版本/矩阵/状态、注册表与工作区空白检查通过。完整 CI、正式包和发版状态以正在执行的 release 门禁结果为准。
+**验证状态**：授权存储定向 Rust 回归 30/30，门禁脚本 21/21；v0.0.437 发布门禁 release CI **134/134**、package 跑分 **7/7**，隔离 VM 六项原生验收在发布产物上通过（发布回执 `.build/vm/acceptance-8850e3f748bb40988a0428cf2a7535e0/receipt.json`；11-08 候选回执 `acceptance-a95f156f1abf4a5cbb20a8470cb992a7` 保留为历史）。
 
 > 🟢 **DMG 分发 + 自动更新已上线**（第 8 节），自动更新界面层见第 9、12、13 节。
-> v0.0.435 新增 TASK-03 独立本地授权策略存储与项目根目录身份绑定；v0.0.436 加入显式项目确认 UI/Tauri 命令。v0.0.437 正在完成 macOS Keychain 策略锚；可信 runner 与执行写入口仍关闭。TASK-03 与 TASK-05 仍为 partial；NOT-06 的 v0.0.416 卡住仍未由旧版客户端本身取到请求/错误证据，用户无需承担手工 VM 操作。
+> v0.0.435 新增 TASK-03 独立本地授权策略存储与项目根目录身份绑定；v0.0.436 加入显式项目确认 UI/Tauri 命令。v0.0.437 已发布 macOS Keychain 策略锚；可信 runner 与执行写入口仍关闭。TASK-03 与 TASK-05 仍为 partial；NOT-06 的 v0.0.416 卡住仍未由旧版客户端本身取到请求/错误证据，用户无需承担手工 VM 操作。
 
 > ⚠️ 本文件由**多个会话接力**：第 1–6 节是 2026-10-17 晚（NOT-05 交付与三轮复审），
 > 第 7 节是 CI 身份规则修复（**不是本次交接者写的**，但记录的是真实修复，保留不删），
@@ -825,7 +825,11 @@ vendor/tiny_http 的 timeout-cancel 回归、独立签名脚本与 release --pub
 - 定向 Rust 策略存储回归 **30/30**；Python VM 门禁回归 **21/21**；原生探针成功构建。v0.0.437 候选在 `agentisland-iso` 来宾（macOS build `26A434`）上通过 **UI、Dock、单实例、CLI、窗口生命周期、Keychain create/read/update/delete 六项**，精确产物 manifest 与回执见 `.build/vm/acceptance-a95f156f1abf4a5cbb20a8470cb992a7/`。
 - 首轮原生探针依次保留了来宾脚本语法、SSH CLI 上下文 `errSecInteractionNotAllowed` 两类失败；探针改由 LaunchServices 运行于 Aqua 用户会话后全项通过。失败回执位于 `.build/vm/acceptance-275c4bf7b781498f9aa268a5dff15af1/`、`acceptance-ba138867894a403582cdf4dd2fa970c8/`、`acceptance-bc1d023430b543789102f659ab7dc17d/`。
 - 2026-11-18 发版当天在全新启动的 `agentisland-iso` 来宾上重跑六项门禁复验通过（`guest_verified=true`、`console_unlocked=true`、OS build `26A434`、`exit_code=0`），回执 `.build/vm/acceptance-c8ed3504a3b14c79a2d7c9f062efef51/receipt.json`。上一轮 11-08 的回执保留为历史记录。
-- 自审报告为 [`2026-11-08-1923-v0.0.437-codex.md`](../code-review/2026-11-08-1923-v0.0.437-codex.md)，没有独立审查者。完整 CI、正式打包与 GitHub Release 由本轮 `scripts/release.sh 0.0.437 ...` 继续执行；结果以该脚本最终输出和 git tag 为准。
+- 自审报告为 [`2026-11-08-1923-v0.0.437-codex.md`](../code-review/2026-11-08-1923-v0.0.437-codex.md)，没有独立审查者。
+- **发布完成（2026-11-18）**：提交 `8c7cda0`、tag `v0.0.437`、GitHub [v0.0.437 Release](https://github.com/bitterSmilezzz/AgentIsland/releases/tag/v0.0.437)；DMG / ZIP / updater `.app.tar.gz` / `.sig` / `latest.json` 五个附件已上传并逐个核对（DMG 6,912,387 B、ZIP 20,384,727 B、`.app.tar.gz` 7,195,661 B、`.sig` 412 B、`latest.json` 802 B）。`releases/latest/download/latest.json` 返回 version `0.0.437` 且带签名，四个下载直链 HTTP 200。
+- release CI **134/134**、package 跑分 **7/7**（`.scratch/automation-runs/` 下两份 `summary.md` 均为 passed）；发布产物上的隔离 VM 六项原生门禁再次通过，回执 `.build/vm/acceptance-8850e3f748bb40988a0428cf2a7535e0/receipt.json`（`gates` 六项、`guest_verified=true`、`console_unlocked=true`、OS build `26A434`、`exit_code=0`），manifest 固定了 `dist/AgentIsland.app/Contents/MacOS/agentisland` 的 SHA-256（`c2a0f1cc…aa244`）。
+- 脚本验证并重启宿主 `dist/AgentIsland.app`（`CFBundleShortVersionString` = 0.0.437，运行 PID 78449）。
+- 本轮未验 2 项（按 `scripts/release.sh` 的未验项登记簿）：原生动效逐边取证（需 `NATIVE_MOTION=1`）与真实官方 Claude 客户端取证（需 pinned CLI）。基线中 Windows 整 crate、native/manual/client/soak 仍缺外部前置；本次 VM 门禁通过不覆盖其余平台或真实客户端。
 
 ### 未完成与下一步
 
