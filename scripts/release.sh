@@ -245,7 +245,7 @@ python3 scripts/automation/pipeline.py --profile package
 
 # VM 路径核实虚拟化、Aqua、系统 build 与产物身份，不以一个旗标冒充隔离。
 if [[ -n "${NATIVE_TEST_VM:-}" ]]; then
-    step "隔离 macOS VM 原生验收（UI / Dock / 单实例 / CLI / 窗口释放）"
+    step "隔离 macOS VM 原生验收（UI / Dock / 单实例 / CLI / 窗口释放 / Keychain 锚）"
     # On macOS the system Python can read Tart's local ARP metadata; a separately
     # installed interpreter may be denied by Local Network privacy (empty ARP).
     # 来宾账号必须显式给出：native-gates-vm.py 的 --user 没有默认值，缺了它只会在

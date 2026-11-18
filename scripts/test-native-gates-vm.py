@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for isolation gates; never start a VM or native window."""
 import importlib.util
+import json
 import shlex
 import subprocess
 import unittest
@@ -57,7 +58,7 @@ class IsolationTests(unittest.TestCase):
 
 
 class PriorAcceptanceTests(unittest.TestCase):
-    def test_only_verified_five_gate_receipt_for_same_vm_authorizes_cleanup(self):
+    def test_only_verified_native_receipt_for_same_vm_authorizes_cleanup(self):
         import json, tempfile
         name = 'acceptance-' + 'a' * 32
         with tempfile.TemporaryDirectory() as directory:
@@ -71,12 +72,33 @@ class PriorAcceptanceTests(unittest.TestCase):
             (path / 'manifest.json').write_text(json.dumps(manifest))
             (path / 'receipt.json').write_text(json.dumps(receipt))
             self.assertEqual(vm.verified_prior_acceptance(name, 'fixture-vm', base), 'b' * 64)
+            credential_anchor_receipt = dict(
+                receipt,
+                gates=['ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime', 'credential-anchor'])
+            (path / 'receipt.json').write_text(json.dumps(credential_anchor_receipt))
+            self.assertEqual(vm.verified_prior_acceptance(name, 'fixture-vm', base), 'b' * 64)
             for change in [dict(passed=False), dict(exit_code=True), dict(vm='other'),
-                           dict(console_unlocked=False), dict(gates=['resource-soak']), dict(manifest={})]:
+                           dict(console_unlocked=False), dict(gates=['resource-soak']),
+                           dict(gates=['credential-anchor', 'ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime']),
+                           dict(manifest={})]:
                 (path / 'receipt.json').write_text(json.dumps(dict(receipt, **change)))
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     vm.verified_prior_acceptance(name, 'fixture-vm', base)
             with self.assertRaises(ValueError): vm.verified_prior_acceptance('../escape', 'fixture-vm', base)
+
+
+class GuestCommandTests(unittest.TestCase):
+    def test_credential_probe_command_launches_inside_aqua_session(self):
+        run_id = '43db7d51aa6546578e34a12ed353024f'
+        command = json.loads(vm.policy_anchor_command_literal(run_id))
+        self.assertEqual(command, [
+            '/usr/bin/open', '-n', '.build/NativePolicyAnchorProbe.app', '--args', run_id,
+        ])
+
+    def test_credential_probe_command_rejects_nonrandom_identity_shape(self):
+        for run_id in ['', 'g' * 32, 'a' * 31, "a' + __import__('os').system('false')"]:
+            with self.subTest(run_id=run_id), self.assertRaises(ValueError):
+                vm.policy_anchor_command_literal(run_id)
 
 
 class ResourceGateTests(unittest.TestCase):

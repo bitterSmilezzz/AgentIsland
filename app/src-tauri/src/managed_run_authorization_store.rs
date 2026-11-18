@@ -8,22 +8,31 @@
 
 #![allow(dead_code)] // Runner-facing reads remain unused until the execution slice.
 
+use crate::managed_run_policy_anchor::{
+    AnchorError, AnchorPhase, AnchorRecord, CredentialAnchor, NativeCredentialAnchor,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File, OpenOptions},
     io::{self, Read},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
-const FORMAT_VERSION: u32 = 1;
+use sha2::Digest;
+
+const FORMAT_VERSION: u32 = 2;
+const LEGACY_FORMAT_VERSION: u32 = 1;
 const MAX_POLICY_BYTES: usize = 1024 * 1024;
 const MAX_PROJECTS: usize = 10_000;
 const MAX_CONSENT_CANDIDATES: usize = 32;
 const CONSENT_CANDIDATE_TTL: Duration = Duration::from_secs(5 * 60);
-static POLICY_WRITE_GATE: Mutex<()> = Mutex::new(());
+const POLICY_LOCK_WAIT: Duration = Duration::from_secs(5);
+const POLICY_LOCK_RETRY: Duration = Duration::from_millis(20);
+static POLICY_ACCESS_GATE: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -216,6 +225,8 @@ pub(crate) struct ProjectAuthorizationView {
     pub(crate) project_id: String,
     pub(crate) policy_revision: u64,
     pub(crate) status: AuthorizationStatus,
+    pub(crate) policy_anchor_supported: bool,
+    pub(crate) policy_anchor_missing: bool,
     pub(crate) root_path: Option<String>,
     pub(crate) roles: Vec<AllowedRole>,
     pub(crate) history_capture_enabled: bool,
@@ -236,6 +247,8 @@ pub(crate) struct ConsentCandidateView {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PolicyDocument {
     format_version: u32,
+    #[serde(default)]
+    epoch: String,
     pub(crate) revision: u64,
     pub(crate) projects: BTreeMap<String, ProjectGrant>,
 }
@@ -244,6 +257,7 @@ impl Default for PolicyDocument {
     fn default() -> Self {
         Self {
             format_version: FORMAT_VERSION,
+            epoch: String::new(),
             revision: 0,
             projects: BTreeMap::new(),
         }
@@ -259,6 +273,30 @@ impl PolicyDocument {
         {
             return Err(PolicyError::Corrupt);
         }
+        if self.revision == 0 {
+            if !self.epoch.is_empty() || !self.projects.is_empty() {
+                return Err(PolicyError::Corrupt);
+            }
+        } else if uuid::Uuid::parse_str(&self.epoch).is_err() {
+            return Err(PolicyError::Corrupt);
+        }
+        self.validate_projects()
+    }
+
+    fn validate_unanchored(&self) -> Result<(), PolicyError> {
+        if !matches!(self.format_version, LEGACY_FORMAT_VERSION | FORMAT_VERSION)
+            || self.revision == 0
+            || self.projects.len() > MAX_PROJECTS
+        {
+            return Err(PolicyError::Corrupt);
+        }
+        if self.format_version == FORMAT_VERSION && uuid::Uuid::parse_str(&self.epoch).is_err() {
+            return Err(PolicyError::Corrupt);
+        }
+        self.validate_projects()
+    }
+
+    fn validate_projects(&self) -> Result<(), PolicyError> {
         for (project_id, grant) in &self.projects {
             if !valid_project_id(project_id)
                 || grant.grant_version == 0
@@ -309,6 +347,10 @@ pub(crate) enum PolicyError {
     ConsentCandidateExpired,
     ConsentCandidateMismatch,
     ConsentCandidateCapacity,
+    AnchorUnavailable,
+    AnchorMissing,
+    AnchorMismatch,
+    AnchorRecoveryRequired,
 }
 
 impl PolicyError {
@@ -335,6 +377,10 @@ impl PolicyError {
             Self::ConsentCandidateExpired => "project_consent_candidate_expired",
             Self::ConsentCandidateMismatch => "project_consent_candidate_mismatch",
             Self::ConsentCandidateCapacity => "project_consent_candidate_capacity",
+            Self::AnchorUnavailable => "project_policy_anchor_unavailable",
+            Self::AnchorMissing => "project_policy_anchor_missing",
+            Self::AnchorMismatch => "project_policy_anchor_mismatch",
+            Self::AnchorRecoveryRequired => "project_policy_anchor_recovery_required",
         }
     }
 }
@@ -363,30 +409,73 @@ impl std::fmt::Display for PolicyError {
             Self::ConsentCandidateExpired => "目录确认已过期，请重新选择目录",
             Self::ConsentCandidateMismatch => "目录确认与当前项目或策略版本不匹配，请重新选择目录",
             Self::ConsentCandidateCapacity => "待确认目录数量已达上限，请先完成或取消已有确认",
+            Self::AnchorUnavailable => "本平台的系统凭据存储尚未通过授权安全验收；授权保持关闭",
+            Self::AnchorMissing => "授权策略没有可信系统凭据锚；旧权限已停用，请逐项目重新确认",
+            Self::AnchorMismatch => "授权策略与系统凭据中的版本锚不一致；授权保持关闭",
+            Self::AnchorRecoveryRequired => {
+                "授权更新中断且恢复凭据不匹配；授权保持关闭并保留原文件"
+            }
         })
     }
 }
 
 pub(crate) struct Store {
     path: PathBuf,
+    anchor: Arc<dyn CredentialAnchor>,
+}
+
+enum LoadedPolicy {
+    Empty(PolicyDocument),
+    Anchored(PolicyDocument),
+    Unanchored(PolicyDocument),
 }
 
 impl Store {
     pub(crate) fn at_default() -> Self {
-        Self::at_path(crate::settings::config_dir().join("managed-run-authorization.v1.json"))
+        Self {
+            path: crate::settings::config_dir().join("managed-run-authorization.v1.json"),
+            anchor: Arc::new(NativeCredentialAnchor),
+        }
     }
 
+    #[cfg(test)]
     pub(crate) fn at_path(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            anchor: Arc::new(
+                crate::managed_run_policy_anchor::FileCredentialAnchor::for_policy_path(&path),
+            ),
+            path,
+        }
+    }
+
+    fn anchor_supported(&self) -> bool {
+        self.anchor.supported()
     }
 
     pub(crate) fn load(&self) -> Result<PolicyDocument, PolicyError> {
-        let Some(bytes) = read_policy_bytes(&self.path)? else {
-            return Ok(PolicyDocument::default());
-        };
-        let document = decode_document(&bytes)?;
-        document.validate(false)?;
-        Ok(document)
+        if !self.anchor_supported() {
+            return Err(PolicyError::AnchorUnavailable);
+        }
+        let _process_guard = POLICY_ACCESS_GATE.lock().map_err(|_| PolicyError::Io)?;
+        let _file_guard = self.acquire_policy_lock()?;
+        match self.load_state_locked()? {
+            LoadedPolicy::Empty(document) | LoadedPolicy::Anchored(document) => Ok(document),
+            LoadedPolicy::Unanchored(_) => Err(PolicyError::AnchorMissing),
+        }
+    }
+
+    fn inspect_for_consent(&self) -> Result<(PolicyDocument, bool), PolicyError> {
+        if !self.anchor_supported() {
+            return Err(PolicyError::AnchorUnavailable);
+        }
+        let _process_guard = POLICY_ACCESS_GATE.lock().map_err(|_| PolicyError::Io)?;
+        let _file_guard = self.acquire_policy_lock()?;
+        match self.load_state_locked()? {
+            LoadedPolicy::Empty(document) | LoadedPolicy::Anchored(document) => {
+                Ok((document, false))
+            }
+            LoadedPolicy::Unanchored(document) => Ok((document, true)),
+        }
     }
 
     /// This is the only grant-issuing API. Its future Tauri caller must invoke it
@@ -441,7 +530,7 @@ impl Store {
         }
         let root = root.clone();
 
-        self.update(expected_revision, |document| {
+        self.update(expected_revision, true, |document| {
             // Revalidate the exact identity captured for the preview. Never
             // recapture a replacement directory after the user confirmed it.
             root.verify_current()?;
@@ -488,7 +577,7 @@ impl Store {
         if !valid_project_id(project_id) {
             return Err(PolicyError::InvalidProjectId);
         }
-        self.update(expected_revision, |document| {
+        self.update(expected_revision, false, |document| {
             let grant = document
                 .projects
                 .get_mut(project_id)
@@ -520,7 +609,7 @@ impl Store {
         if !valid_project_id(project_id) {
             return Err(PolicyError::InvalidProjectId);
         }
-        self.update(expected_revision, |document| {
+        self.update(expected_revision, false, |document| {
             let grant = document
                 .projects
                 .get_mut(project_id)
@@ -562,58 +651,188 @@ impl Store {
         Ok(Some(grant.clone()))
     }
 
-    fn update<F>(&self, expected_revision: u64, update: F) -> Result<PolicyDocument, PolicyError>
+    fn update<F>(
+        &self,
+        expected_revision: u64,
+        allow_unanchored_reconfirmation: bool,
+        update: F,
+    ) -> Result<PolicyDocument, PolicyError>
     where
         F: FnOnce(&mut PolicyDocument) -> Result<bool, PolicyError>,
     {
-        // A process-wide gate also serializes distinct Store handles that point
-        // at the same policy file. The app's single-instance guard remains the
-        // cross-process boundary when this store is wired into Tauri.
-        let _guard = POLICY_WRITE_GATE.lock().map_err(|_| PolicyError::Io)?;
-        let mut document = self.load()?;
+        if !self.anchor_supported() {
+            return Err(PolicyError::AnchorUnavailable);
+        }
+        // The process mutex covers multiple handles in this process. The OS
+        // file lock also serializes separate app processes before they compare
+        // the policy revision and update the credential-store anchor.
+        let _process_guard = POLICY_ACCESS_GATE.lock().map_err(|_| PolicyError::Io)?;
+        let _file_guard = self.acquire_policy_lock()?;
+        let (mut document, was_unanchored) = match self.load_state_locked()? {
+            LoadedPolicy::Empty(document) | LoadedPolicy::Anchored(document) => (document, false),
+            LoadedPolicy::Unanchored(document) if allow_unanchored_reconfirmation => {
+                (document, true)
+            }
+            LoadedPolicy::Unanchored(_) => return Err(PolicyError::AnchorMissing),
+        };
         if document.revision != expected_revision {
             return Err(PolicyError::RevisionConflict);
+        }
+        if was_unanchored {
+            // v0.0.436 and any policy whose anchor was deleted cannot be
+            // trusted. A fresh, explicit consent adopts only the selected
+            // project and gives the document a new epoch; other old grants do
+            // not carry over.
+            document.format_version = FORMAT_VERSION;
+            document.epoch = uuid::Uuid::new_v4().to_string();
+            document.projects.clear();
         }
         let changed = update(&mut document)?;
         if !changed {
             return Ok(document);
         }
+        document.format_version = FORMAT_VERSION;
+        if document.epoch.is_empty() {
+            document.epoch = uuid::Uuid::new_v4().to_string();
+        }
         document.revision = next_version(document.revision)?;
         document.validate(false)?;
-        self.write(&document)?;
+        self.commit_document_locked(&document)?;
         Ok(document)
     }
 
-    fn write(&self, document: &PolicyDocument) -> Result<(), PolicyError> {
+    fn load_state_locked(&self) -> Result<LoadedPolicy, PolicyError> {
+        let policy_bytes = read_policy_bytes(&self.path)?;
+        let anchor_raw = self.anchor.read_raw().map_err(map_anchor_error)?;
+        let Some(anchor_raw) = anchor_raw else {
+            return match policy_bytes {
+                None => Ok(LoadedPolicy::Empty(PolicyDocument::default())),
+                Some(bytes) => {
+                    let document = decode_unanchored_document(&bytes)?;
+                    document.validate_unanchored()?;
+                    Ok(LoadedPolicy::Unanchored(document))
+                }
+            };
+        };
+
+        let anchor = AnchorRecord::decode(&anchor_raw).map_err(|_| PolicyError::AnchorMismatch)?;
+        if anchor.phase == AnchorPhase::Pending {
+            return self.recover_pending_locked(anchor, policy_bytes);
+        }
+
+        let bytes = policy_bytes.ok_or(PolicyError::AnchorMismatch)?;
+        let document = decode_document(&bytes).map_err(|_| PolicyError::AnchorMismatch)?;
+        document
+            .validate(false)
+            .map_err(|_| PolicyError::AnchorMismatch)?;
+        if !anchor_matches_document(&anchor, &document, &bytes) {
+            return Err(PolicyError::AnchorMismatch);
+        }
+        Ok(LoadedPolicy::Anchored(document))
+    }
+
+    fn recover_pending_locked(
+        &self,
+        pending: AnchorRecord,
+        current_bytes: Option<Vec<u8>>,
+    ) -> Result<LoadedPolicy, PolicyError> {
+        let current_matches = current_bytes
+            .as_ref()
+            .is_some_and(|bytes| policy_digest(bytes) == pending.policy_digest);
+        let target_bytes = if current_matches {
+            current_bytes.ok_or(PolicyError::AnchorRecoveryRequired)?
+        } else {
+            read_policy_bytes(&self.journal_path())?
+                .filter(|bytes| policy_digest(bytes) == pending.policy_digest)
+                .ok_or(PolicyError::AnchorRecoveryRequired)?
+        };
+        let document =
+            decode_document(&target_bytes).map_err(|_| PolicyError::AnchorRecoveryRequired)?;
+        document
+            .validate(false)
+            .map_err(|_| PolicyError::AnchorRecoveryRequired)?;
+        if !anchor_matches_document(&pending, &document, &target_bytes) {
+            return Err(PolicyError::AnchorRecoveryRequired);
+        }
+        if !current_matches {
+            write_policy_bytes(&self.path, &target_bytes)?;
+        }
+        self.write_anchor_record(&pending.committed())?;
+        let _ = fs::remove_file(self.journal_path());
+        Ok(LoadedPolicy::Anchored(document))
+    }
+
+    fn commit_document_locked(&self, document: &PolicyDocument) -> Result<(), PolicyError> {
         document.validate(false)?;
         let bytes = serde_json::to_vec_pretty(document).map_err(|_| PolicyError::Corrupt)?;
         if bytes.len() > MAX_POLICY_BYTES {
             return Err(PolicyError::Capacity);
         }
-        let parent = self.path.parent().ok_or(PolicyError::Io)?;
+        let digest = policy_digest(&bytes);
+        let pending = AnchorRecord::new(
+            document.epoch.clone(),
+            document.revision,
+            digest,
+            AnchorPhase::Pending,
+        );
+        write_policy_bytes(&self.journal_path(), &bytes)?;
+        self.write_anchor_record(&pending)?;
+        write_policy_bytes(&self.path, &bytes)?;
+        self.write_anchor_record(&pending.committed())?;
+        let _ = fs::remove_file(self.journal_path());
+        Ok(())
+    }
+
+    fn write_anchor_record(&self, record: &AnchorRecord) -> Result<(), PolicyError> {
+        let expected = record.encode().map_err(|_| PolicyError::AnchorMismatch)?;
+        self.anchor.write_raw(&expected).map_err(map_anchor_error)?;
+        if self.anchor.read_raw().map_err(map_anchor_error)?.as_deref() != Some(expected.as_str()) {
+            return Err(PolicyError::AnchorMismatch);
+        }
+        Ok(())
+    }
+
+    fn journal_path(&self) -> PathBuf {
+        self.path.with_extension("pending")
+    }
+
+    fn acquire_policy_lock(&self) -> Result<File, PolicyError> {
+        let lock_path = self.path.with_extension("lock");
+        let parent = lock_path.parent().ok_or(PolicyError::Io)?;
         fs::create_dir_all(parent).map_err(|_| PolicyError::Io)?;
-        crate::atomicfile::atomic_replace_validated(&self.path, &bytes, |staged| {
-            let file = open_policy_file(staged)?;
-            ensure_private_regular_file(&file)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.code()))?;
-            let mut staged_bytes = Vec::new();
-            file.take((MAX_POLICY_BYTES + 1) as u64)
-                .read_to_end(&mut staged_bytes)?;
-            let decoded = decode_document(&staged_bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.code()))?;
-            decoded
-                .validate(false)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.code()))
-        })
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::InvalidData {
-                PolicyError::Corrupt
-            } else if error.kind() == io::ErrorKind::InvalidInput {
-                PolicyError::Symlink
-            } else {
-                PolicyError::Io
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(
+                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+            );
+        }
+        let file = options.open(&lock_path).map_err(|_| PolicyError::Io)?;
+        ensure_private_regular_file(&file)?;
+        let started = Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < POLICY_LOCK_WAIT => {
+                    thread::sleep(POLICY_LOCK_RETRY);
+                }
+                Err(_) => return Err(PolicyError::Io),
             }
-        })
+        }
+    }
+
+    #[cfg(test)]
+    fn write(&self, document: &PolicyDocument) -> Result<(), PolicyError> {
+        let _process_guard = POLICY_ACCESS_GATE.lock().map_err(|_| PolicyError::Io)?;
+        let _file_guard = self.acquire_policy_lock()?;
+        self.commit_document_locked(document)
     }
 }
 
@@ -634,9 +853,13 @@ pub(crate) struct ConsentService {
 
 impl ConsentService {
     pub(crate) fn at_default() -> Self {
-        Self::at_path(crate::settings::config_dir().join("managed-run-authorization.v1.json"))
+        Self {
+            store: Store::at_default(),
+            candidates: Mutex::new(HashMap::new()),
+        }
     }
 
+    #[cfg(test)]
     pub(crate) fn at_path(path: PathBuf) -> Self {
         Self {
             store: Store::at_path(path),
@@ -648,7 +871,45 @@ impl ConsentService {
         if !valid_project_id(project_id) {
             return Err(PolicyError::InvalidProjectId);
         }
-        let document = self.store.load()?;
+        if !self.store.anchor_supported() {
+            return Ok(ProjectAuthorizationView {
+                project_id: project_id.to_owned(),
+                policy_revision: 0,
+                status: AuthorizationStatus::NotAuthorized,
+                policy_anchor_supported: false,
+                policy_anchor_missing: false,
+                root_path: None,
+                roles: Vec::new(),
+                history_capture_enabled: false,
+                grant_version: None,
+                history_policy_version: None,
+            });
+        }
+        let (document, anchor_missing) = self.store.inspect_for_consent()?;
+        if anchor_missing {
+            let has_unanchored_grant = document
+                .projects
+                .get(project_id)
+                .is_some_and(|grant| grant.enabled);
+            return Ok(ProjectAuthorizationView {
+                project_id: project_id.to_owned(),
+                policy_revision: document.revision,
+                status: if has_unanchored_grant {
+                    AuthorizationStatus::RequiresReconfirmation
+                } else {
+                    AuthorizationStatus::NotAuthorized
+                },
+                policy_anchor_supported: true,
+                policy_anchor_missing: true,
+                // Data in an unanchored file is shown only as a warning. Do
+                // not prefill a root, role, history choice, or version from it.
+                root_path: None,
+                roles: Vec::new(),
+                history_capture_enabled: false,
+                grant_version: None,
+                history_policy_version: None,
+            });
+        }
         let Some(grant) = document
             .projects
             .get(project_id)
@@ -658,6 +919,8 @@ impl ConsentService {
                 project_id: project_id.to_owned(),
                 policy_revision: document.revision,
                 status: AuthorizationStatus::NotAuthorized,
+                policy_anchor_supported: true,
+                policy_anchor_missing: false,
                 root_path: None,
                 roles: Vec::new(),
                 history_capture_enabled: false,
@@ -674,6 +937,8 @@ impl ConsentService {
             } else {
                 AuthorizationStatus::RequiresReconfirmation
             },
+            policy_anchor_supported: true,
+            policy_anchor_missing: false,
             root_path: Some(root.canonical_path().to_owned()),
             roles: grant.roles.iter().copied().collect(),
             history_capture_enabled: grant.history_capture_enabled,
@@ -699,12 +964,12 @@ impl ConsentService {
         if !valid_project_id(project_id) {
             return Err(PolicyError::InvalidProjectId);
         }
-        let before = self.store.load()?;
+        let (before, _) = self.store.inspect_for_consent()?;
         if before.revision != expected_policy_revision {
             return Err(PolicyError::RevisionConflict);
         }
         let root = ProjectRootIdentity::capture(root_path).map_err(map_root_identity_error)?;
-        let after = self.store.load()?;
+        let (after, _) = self.store.inspect_for_consent()?;
         if after.revision != expected_policy_revision {
             return Err(PolicyError::RevisionConflict);
         }
@@ -819,6 +1084,77 @@ fn decode_document(bytes: &[u8]) -> Result<PolicyDocument, PolicyError> {
         return Err(PolicyError::UnsupportedFormat);
     }
     serde_json::from_slice(bytes).map_err(|_| PolicyError::Corrupt)
+}
+
+fn decode_unanchored_document(bytes: &[u8]) -> Result<PolicyDocument, PolicyError> {
+    let header: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|_| PolicyError::Corrupt)?;
+    let version = header
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64);
+    if !matches!(
+        version,
+        Some(version)
+            if version == LEGACY_FORMAT_VERSION as u64 || version == FORMAT_VERSION as u64
+    ) {
+        return Err(PolicyError::UnsupportedFormat);
+    }
+    serde_json::from_slice(bytes).map_err(|_| PolicyError::Corrupt)
+}
+
+fn policy_digest(bytes: &[u8]) -> [u8; 32] {
+    sha2::Sha256::digest(bytes).into()
+}
+
+fn anchor_matches_document(anchor: &AnchorRecord, document: &PolicyDocument, bytes: &[u8]) -> bool {
+    anchor.epoch == document.epoch
+        && anchor.revision == document.revision
+        && anchor.policy_digest == policy_digest(bytes)
+}
+
+fn map_anchor_error(error: AnchorError) -> PolicyError {
+    match error {
+        AnchorError::Unavailable => PolicyError::AnchorUnavailable,
+        AnchorError::Corrupt => PolicyError::AnchorMismatch,
+    }
+}
+
+fn write_policy_bytes(path: &Path, bytes: &[u8]) -> Result<(), PolicyError> {
+    if bytes.len() > MAX_POLICY_BYTES {
+        return Err(PolicyError::Capacity);
+    }
+    let document = decode_document(bytes)?;
+    document.validate(false)?;
+    let parent = path.parent().ok_or(PolicyError::Io)?;
+    fs::create_dir_all(parent).map_err(|_| PolicyError::Io)?;
+    crate::atomicfile::atomic_replace_validated(path, bytes, |staged| {
+        let file = open_policy_file(staged)?;
+        ensure_private_regular_file(&file)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.code()))?;
+        let mut staged_bytes = Vec::new();
+        file.take((MAX_POLICY_BYTES + 1) as u64)
+            .read_to_end(&mut staged_bytes)?;
+        if staged_bytes != bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "policy bytes changed during atomic publication",
+            ));
+        }
+        let decoded = decode_document(&staged_bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.code()))?;
+        decoded
+            .validate(false)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.code()))
+    })
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidData {
+            PolicyError::Corrupt
+        } else if error.kind() == io::ErrorKind::InvalidInput {
+            PolicyError::Symlink
+        } else {
+            PolicyError::Io
+        }
+    })
 }
 
 fn read_policy_bytes(path: &Path) -> Result<Option<Vec<u8>>, PolicyError> {
@@ -1040,6 +1376,7 @@ fn next_version(current: u64) -> Result<u64, PolicyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed_run_policy_anchor::FileCredentialAnchor;
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -1358,6 +1695,317 @@ mod tests {
     }
 
     #[test]
+    fn policy_file_replay_after_a_newer_grant_is_rejected_by_the_credential_anchor() {
+        let sandbox = Sandbox::new();
+        let store = sandbox.store();
+        let root = sandbox.root("project");
+        let first = confirm(&store, &root, 0);
+        let old_policy = fs::read(&store.path).unwrap();
+        let anchor_path = FileCredentialAnchor::for_policy_path(&store.path)
+            .path()
+            .to_path_buf();
+        let old_anchor = fs::read(&anchor_path).unwrap();
+
+        store
+            .set_history_capture(PROJECT, true, first.revision)
+            .unwrap();
+        let new_policy = fs::read(&store.path).unwrap();
+        let new_anchor = fs::read(&anchor_path).unwrap();
+        assert_ne!(old_policy, new_policy);
+        assert_ne!(old_anchor, new_anchor);
+
+        write_private_fixture(&store.path, &old_policy);
+        assert_eq!(store.load(), Err(PolicyError::AnchorMismatch));
+        assert_eq!(fs::read(&anchor_path).unwrap(), new_anchor);
+    }
+
+    #[test]
+    fn deleting_policy_or_replaying_only_the_old_anchor_fails_closed() {
+        let sandbox = Sandbox::new();
+        let store = sandbox.store();
+        let root = sandbox.root("project");
+        let first = confirm(&store, &root, 0);
+        let anchor_path = FileCredentialAnchor::for_policy_path(&store.path)
+            .path()
+            .to_path_buf();
+        let old_anchor = fs::read(&anchor_path).unwrap();
+        let second = store
+            .set_history_capture(PROJECT, true, first.revision)
+            .unwrap();
+        let new_policy = fs::read(&store.path).unwrap();
+        let new_anchor = fs::read(&anchor_path).unwrap();
+
+        fs::remove_file(&store.path).unwrap();
+        assert_eq!(store.load(), Err(PolicyError::AnchorMismatch));
+        write_private_fixture(&store.path, &new_policy);
+        write_private_fixture(&anchor_path, &old_anchor);
+        assert_eq!(store.load(), Err(PolicyError::AnchorMismatch));
+        assert_eq!(fs::read(&anchor_path).unwrap(), old_anchor);
+        assert_ne!(first.revision, second.revision);
+        assert_ne!(old_anchor, new_anchor);
+    }
+
+    #[test]
+    fn corrupt_or_unavailable_credential_anchor_fails_closed_and_preserves_policy() {
+        let sandbox = Sandbox::new();
+        let store = sandbox.store();
+        let root = sandbox.root("project");
+        confirm(&store, &root, 0);
+        let policy = fs::read(&store.path).unwrap();
+        let anchor_path = FileCredentialAnchor::for_policy_path(&store.path)
+            .path()
+            .to_path_buf();
+        let anchor = fs::read(&anchor_path).unwrap();
+
+        write_private_fixture(&anchor_path, b"not an anchor record");
+        assert_eq!(store.load(), Err(PolicyError::AnchorMismatch));
+        assert_eq!(fs::read(&store.path).unwrap(), policy);
+
+        write_private_fixture(&anchor_path, &anchor);
+        fs::remove_file(&anchor_path).unwrap();
+        fs::create_dir(&anchor_path).unwrap();
+        assert_eq!(store.load(), Err(PolicyError::AnchorUnavailable));
+        assert_eq!(fs::read(&store.path).unwrap(), policy);
+        assert!(anchor_path.is_dir());
+    }
+
+    #[test]
+    fn missing_anchor_requires_reconfirmation_and_drops_every_untrusted_grant() {
+        let sandbox = Sandbox::new();
+        let store = sandbox.store();
+        let first_root = sandbox.root("first-project");
+        let second_root = sandbox.root("second-project");
+        let first = confirm(&store, &first_root, 0);
+        let second_id = "00000000-0000-4000-8000-000000000002";
+        let prior = store
+            .confirm_project(
+                second_id,
+                &second_root,
+                roles(&[AllowedRole::Executor]),
+                true,
+                first.revision,
+            )
+            .unwrap();
+        let old_epoch = prior.epoch.clone();
+        let anchor = FileCredentialAnchor::for_policy_path(&store.path);
+        fs::remove_file(anchor.path()).unwrap();
+
+        assert_eq!(store.load(), Err(PolicyError::AnchorMissing));
+        let service = ConsentService {
+            store: sandbox.store(),
+            candidates: Mutex::new(HashMap::new()),
+        };
+        let view = service.view(PROJECT).unwrap();
+        assert_eq!(view.status, AuthorizationStatus::RequiresReconfirmation);
+        assert!(view.policy_anchor_missing);
+        assert!(view.root_path.is_none());
+        assert!(view.roles.is_empty());
+        assert!(!view.history_capture_enabled);
+        assert!(view.grant_version.is_none());
+
+        let recovered = service
+            .store
+            .confirm_project(
+                PROJECT,
+                &first_root,
+                roles(&[AllowedRole::Reviewer]),
+                false,
+                prior.revision,
+            )
+            .unwrap();
+        assert_ne!(recovered.epoch, old_epoch);
+        assert_eq!(recovered.revision, prior.revision + 1);
+        assert_eq!(recovered.projects.len(), 1);
+        assert_eq!(
+            recovered.projects[PROJECT].roles,
+            roles(&[AllowedRole::Reviewer])
+        );
+        assert!(!recovered.projects[PROJECT].history_capture_enabled);
+        assert!(!recovered.projects.contains_key(second_id));
+        assert!(service.store.verified_grant(PROJECT).unwrap().is_some());
+    }
+
+    #[test]
+    fn upgrading_a_v1_policy_requires_explicit_consent_without_carrying_legacy_grants() {
+        let sandbox = Sandbox::new();
+        let store = sandbox.store();
+        let first_root = sandbox.root("first-project");
+        let second_root = sandbox.root("second-project");
+        let first = confirm(&store, &first_root, 0);
+        let second_id = "00000000-0000-4000-8000-000000000002";
+        let legacy_candidate = store
+            .confirm_project(
+                second_id,
+                &second_root,
+                roles(&[AllowedRole::Executor]),
+                true,
+                first.revision,
+            )
+            .unwrap();
+        let mut legacy_value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.path).unwrap()).unwrap();
+        legacy_value["format_version"] = serde_json::json!(LEGACY_FORMAT_VERSION);
+        legacy_value.as_object_mut().unwrap().remove("epoch");
+        let legacy_bytes = serde_json::to_vec_pretty(&legacy_value).unwrap();
+        write_private_fixture(&store.path, &legacy_bytes);
+        fs::remove_file(FileCredentialAnchor::for_policy_path(&store.path).path()).unwrap();
+
+        let service = ConsentService {
+            store: sandbox.store(),
+            candidates: Mutex::new(HashMap::new()),
+        };
+        let view = service.view(second_id).unwrap();
+        assert_eq!(view.status, AuthorizationStatus::RequiresReconfirmation);
+        assert!(view.policy_anchor_missing);
+        assert!(view.root_path.is_none());
+        assert!(view.roles.is_empty());
+        assert!(!view.history_capture_enabled);
+
+        let confirmed = service
+            .store
+            .confirm_project(
+                second_id,
+                &second_root,
+                roles(&[AllowedRole::Reviewer]),
+                false,
+                legacy_candidate.revision,
+            )
+            .unwrap();
+        assert_eq!(confirmed.projects.len(), 1);
+        assert!(!confirmed.projects.contains_key(PROJECT));
+        assert_eq!(
+            confirmed.projects[second_id].roles,
+            roles(&[AllowedRole::Reviewer])
+        );
+        assert!(!confirmed.projects[second_id].history_capture_enabled);
+    }
+
+    #[test]
+    fn pending_anchor_recovers_the_exact_journaled_policy_after_interruption() {
+        let sandbox = Sandbox::new();
+        let store = sandbox.store();
+        let root = sandbox.root("project");
+        let first = confirm(&store, &root, 0);
+        let current_policy = fs::read(&store.path).unwrap();
+        let mut target = first.clone();
+        target.revision += 1;
+        let grant = target.projects.get_mut(PROJECT).unwrap();
+        grant.history_policy_version += 1;
+        grant.history_capture_enabled = true;
+        let target_bytes = serde_json::to_vec_pretty(&target).unwrap();
+        let pending = AnchorRecord::new(
+            target.epoch.clone(),
+            target.revision,
+            policy_digest(&target_bytes),
+            AnchorPhase::Pending,
+        );
+        write_policy_bytes(&store.journal_path(), &target_bytes).unwrap();
+        store.write_anchor_record(&pending).unwrap();
+
+        let recovered = store.load().unwrap();
+        assert_eq!(recovered, target);
+        assert_eq!(fs::read(&store.path).unwrap(), target_bytes);
+        assert!(!store.journal_path().exists());
+        let committed = AnchorRecord::decode(
+            &fs::read_to_string(FileCredentialAnchor::for_policy_path(&store.path).path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(committed.phase, AnchorPhase::Committed);
+        assert_ne!(current_policy, fs::read(&store.path).unwrap());
+    }
+
+    #[test]
+    fn pending_anchor_without_matching_policy_or_journal_fails_closed() {
+        let sandbox = Sandbox::new();
+        let store = sandbox.store();
+        let root = sandbox.root("project");
+        let first = confirm(&store, &root, 0);
+        let old_policy = fs::read(&store.path).unwrap();
+        let mut missing_target = first;
+        missing_target.revision += 1;
+        let target_bytes = serde_json::to_vec_pretty(&missing_target).unwrap();
+        let pending = AnchorRecord::new(
+            missing_target.epoch,
+            missing_target.revision,
+            policy_digest(&target_bytes),
+            AnchorPhase::Pending,
+        );
+        store.write_anchor_record(&pending).unwrap();
+
+        assert_eq!(store.load(), Err(PolicyError::AnchorRecoveryRequired));
+        assert_eq!(fs::read(&store.path).unwrap(), old_policy);
+    }
+
+    #[test]
+    fn cross_process_policy_lock_worker() {
+        let Ok(mode) = std::env::var("AGENTISLAND_POLICY_LOCK_WORKER") else {
+            return;
+        };
+        let policy_path = PathBuf::from(std::env::var_os("AGENTISLAND_POLICY_LOCK_PATH").unwrap());
+        let marker_path =
+            PathBuf::from(std::env::var_os("AGENTISLAND_POLICY_LOCK_MARKER").unwrap());
+        let store = Store::at_path(policy_path);
+        match mode.as_str() {
+            "hold" => {
+                let lock = store.acquire_policy_lock().unwrap();
+                fs::write(&marker_path, b"locked").unwrap();
+                thread::sleep(Duration::from_millis(700));
+                drop(lock);
+            }
+            "wait" => {
+                let started = Instant::now();
+                let _lock = store.acquire_policy_lock().unwrap();
+                fs::write(&marker_path, started.elapsed().as_millis().to_string()).unwrap();
+            }
+            _ => panic!("unknown policy lock worker mode"),
+        }
+    }
+
+    #[test]
+    fn policy_lock_serializes_independent_processes() {
+        use std::process::{Command, Stdio};
+
+        let sandbox = Sandbox::new();
+        let policy_path = sandbox.0.join("authorization.json");
+        let first_marker = sandbox.0.join("first.locked");
+        let second_marker = sandbox.0.join("second.waited-ms");
+        let executable = std::env::current_exe().unwrap();
+        let spawn = |mode: &str, marker: &Path| {
+            Command::new(&executable)
+                .arg("--exact")
+                .arg("managed_run_authorization_store::tests::cross_process_policy_lock_worker")
+                .arg("--nocapture")
+                .env("AGENTISLAND_POLICY_LOCK_WORKER", mode)
+                .env("AGENTISLAND_POLICY_LOCK_PATH", &policy_path)
+                .env("AGENTISLAND_POLICY_LOCK_MARKER", marker)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+
+        let mut first = spawn("hold", &first_marker);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !first_marker.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !first_marker.exists() {
+            let _ = first.kill();
+            let _ = first.wait();
+            panic!("first process never acquired policy lock");
+        }
+
+        let mut second = spawn("wait", &second_marker);
+        assert!(first.wait().unwrap().success());
+        assert!(second.wait().unwrap().success());
+        let waited_ms: u128 = fs::read_to_string(second_marker).unwrap().parse().unwrap();
+        assert!(
+            waited_ms >= 400,
+            "second process did not wait: {waited_ms} ms"
+        );
+    }
+
+    #[test]
     fn grant_and_history_version_overflow_rejects_without_mutating_file() {
         let sandbox = Sandbox::new();
         let store = sandbox.store();
@@ -1365,6 +2013,7 @@ mod tests {
         let identity = ProjectRootIdentity::capture(&root).unwrap();
         let mut document = PolicyDocument {
             format_version: FORMAT_VERSION,
+            epoch: uuid::Uuid::new_v4().to_string(),
             revision: 7,
             projects: BTreeMap::from([(
                 PROJECT.to_owned(),
@@ -1409,7 +2058,7 @@ mod tests {
         for (bytes, expected) in [
             (b"{bad".as_slice(), PolicyError::Corrupt),
             (
-                br#"{"format_version":2,"revision":0,"projects":{}}"#.as_slice(),
+                br#"{"format_version":3,"revision":1,"projects":{}}"#.as_slice(),
                 PolicyError::UnsupportedFormat,
             ),
             (

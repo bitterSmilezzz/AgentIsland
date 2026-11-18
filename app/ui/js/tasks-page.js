@@ -260,14 +260,18 @@ export async function hydrateTasks(isVisible = () => true) {
 
     const authorized = view.status === 'authorized';
     const needsReconfirmation = view.status === 'requires_reconfirmation';
+    const anchorSupported = view.policyAnchorSupported !== false;
+    const anchorMissing = view.policyAnchorMissing === true;
     const roleSummary = view.roles.map(role => authorizationRoleLabels[role] ?? role).join('、') || '无';
     authorizationPanel.innerHTML = `<div class="task-project-authorization-heading"><strong>项目运行授权</strong><span>策略版本 ${view.policyRevision}</span></div>
-      <p>${authorized ? '已授权' : needsReconfirmation ? '目录身份需要重新确认' : '未授权；运行保持关闭'}</p>
+      <p>${!anchorSupported ? '此平台尚未开放项目授权' : anchorMissing ? '策略可信版本锚缺失；旧授权已停用' : authorized ? '已授权' : needsReconfirmation ? '目录身份需要重新确认' : '未授权；运行保持关闭'}</p>
       ${view.rootPath ? `<code class="task-project-root-path">${esc(view.rootPath)}</code>` : ''}
-      ${authorized || needsReconfirmation ? `<p class="task-project-authorization-summary">允许：${esc(roleSummary)} · 自有历史${view.historyCaptureEnabled ? '已开启' : '关闭'}</p>` : ''}
-      ${needsReconfirmation ? '<p class="task-project-authorization-note">目录身份已变化或无法核实；旧授权不会生效。请重新选择目录并再次确认。</p>' : ''}
+      ${authorized || (needsReconfirmation && !anchorMissing) ? `<p class="task-project-authorization-summary">允许：${esc(roleSummary)} · 自有历史${view.historyCaptureEnabled ? '已开启' : '关闭'}</p>` : ''}
+      ${!anchorSupported ? '<p class="task-project-authorization-note">本平台的系统凭据版本锚尚未完成原生验收；项目授权保持关闭。</p>' : ''}
+      ${anchorMissing ? '<p class="task-project-authorization-note">系统凭据中没有此策略的可信版本锚；所有旧授权保持关闭。重新确认只保留当前项目，其他项目需逐个确认。</p>' : ''}
+      ${needsReconfirmation && !anchorMissing ? '<p class="task-project-authorization-note">目录身份已变化或无法核实；旧授权不会生效。请重新选择目录并再次确认。</p>' : ''}
       <p class="task-project-authorization-note">此阶段只管理本地授权；不会启动智能体。项目历史采集默认关闭，策略文件没有自动导入或恢复入口。</p>
-      ${authorized ? `<form data-task-project-history><label class="task-project-history-opt-in"><input type="checkbox" data-task-authorization-history${view.historyCaptureEnabled ? ' checked' : ''}>允许记录此项目的自有运行历史</label><div class="task-project-authorization-actions"><button class="mini-btn" type="submit" data-task-authorization-save-history hidden>保存历史设置</button><button class="mini-btn" type="button" data-task-authorization-edit>调整授权</button><button class="mini-btn" type="button" data-task-authorization-revoke>撤销授权</button></div><p class="task-project-authorization-feedback" data-task-authorization-feedback role="status" aria-live="polite" hidden></p></form>` : `<div class="task-project-authorization-actions"><button class="mini-btn" type="button" data-task-authorization-edit>${needsReconfirmation ? '重新选择目录并确认' : '选择目录并配置授权'}</button>${needsReconfirmation ? '<button class="mini-btn" type="button" data-task-authorization-revoke>撤销旧授权</button>' : ''}</div><p class="task-project-authorization-feedback" data-task-authorization-feedback role="status" aria-live="polite" hidden></p>`}`;
+      ${authorized ? `<form data-task-project-history><label class="task-project-history-opt-in"><input type="checkbox" data-task-authorization-history${view.historyCaptureEnabled ? ' checked' : ''}>允许记录此项目的自有运行历史</label><div class="task-project-authorization-actions"><button class="mini-btn" type="submit" data-task-authorization-save-history hidden>保存历史设置</button><button class="mini-btn" type="button" data-task-authorization-edit>调整授权</button><button class="mini-btn" type="button" data-task-authorization-revoke>撤销授权</button></div><p class="task-project-authorization-feedback" data-task-authorization-feedback role="status" aria-live="polite" hidden></p></form>` : anchorSupported ? `<div class="task-project-authorization-actions"><button class="mini-btn" type="button" data-task-authorization-edit>${needsReconfirmation ? (anchorMissing ? '重新确认此项目' : '重新选择目录并确认') : '选择目录并配置授权'}</button>${needsReconfirmation && !anchorMissing ? '<button class="mini-btn" type="button" data-task-authorization-revoke>撤销旧授权</button>' : ''}</div><p class="task-project-authorization-feedback" data-task-authorization-feedback role="status" aria-live="polite" hidden></p>` : ''}`;
     authorizationPanel.hidden = false;
     authorizationPanel.querySelector('[data-task-authorization-edit]')?.addEventListener('click', () => {
       authorizationDraft = {

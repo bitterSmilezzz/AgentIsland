@@ -263,7 +263,7 @@ Agent 转为 working 时面板自动短暂展开示警，随后收回；有冷�
 
 需求更新以 [ADR 0040](docs/adr/0040-supervisor-full-integration-requirements.md)为准；07/21/25/26/28与ADR0039中的历史范围排除不再约束本次完整能力目标，但其尚适用安全约束与事故证据保留。
 
-**自有执行历史**是 AgentIsland 获得项目授权后创建的受管理运行所生成的方案、diff、对话与产出版本；它与外部工具的**来源观测**分离，来源正文仍遵循 ADR 0029 的瞬时只读规则。代码中的 `tasks::Run` 继续表示来源观测，不承载受管理运行内容；受管理运行按逻辑事件序列批量封装为独立密文段，详见 [ADR 0042](docs/adr/0042-managed-run-event-segments.md)。项目默认不采集；留存、静态加密、密钥、删除与加密备份恢复口径由 [ADR 0041](docs/adr/0041-managed-history-data-policy.md) 定义。项目 grant 与 runner 身份/代次判据见 [ADR 0043](docs/adr/0043-managed-run-project-authorization.md)；项目管理页已接入本机目录选择、显式角色确认、历史 opt-in 和撤销，策略文件仍没有可信单调版本锚，整体回滚可能复现旧授权（BUG-019）；目前不提供策略导入/恢复，也没有真实 runner、执行路径或 TASK-05 密文历史写入口。
+**自有执行历史**是 AgentIsland 获得项目授权后创建的受管理运行所生成的方案、diff、对话与产出版本；它与外部工具的**来源观测**分离，来源正文仍遵循 ADR 0029 的瞬时只读规则。代码中的 `tasks::Run` 继续表示来源观测，不承载受管理运行内容；受管理运行按逻辑事件序列批量封装为独立密文段，详见 [ADR 0042](docs/adr/0042-managed-run-event-segments.md)。项目默认不采集；留存、静态加密、密钥、删除与加密备份恢复口径由 [ADR 0041](docs/adr/0041-managed-history-data-policy.md) 定义。项目 grant 与 runner 身份/代次判据见 [ADR 0043](docs/adr/0043-managed-run-project-authorization.md)；项目管理页已接入本机目录选择、显式角色确认、历史 opt-in 和撤销。macOS 用 Keychain 锚检测策略文件单独回放（[ADR 0044](docs/adr/0044-managed-run-policy-anchor.md)）；Windows/Linux 项目授权保持关闭，直到各自原生凭据库验收。没有策略导入/恢复或孤立锚的一键重置入口；系统凭据快照整体回滚不在锚保证范围内。真实 runner、执行路径或 TASK-05 密文历史写入口仍未开放。
 
 ### 产品命名
 

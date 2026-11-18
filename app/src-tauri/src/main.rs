@@ -84,6 +84,7 @@ mod review_quality;
 mod run_lifecycle;
 mod managed_run_authorization;
 mod managed_run_authorization_store;
+mod managed_run_policy_anchor;
 mod runtime_log;
 mod secret;
 mod security_audit;

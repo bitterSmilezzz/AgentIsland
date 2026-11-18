@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import shlex
@@ -61,6 +62,15 @@ def guest_verified(meta):
 
 def run(args, **options):
     return subprocess.run(args, check=True, timeout=options.pop('timeout', 30), **options)
+
+
+def policy_anchor_command_literal(run_id):
+    """Return JSON/Python argv for launching the probe inside the Aqua session."""
+    if not re.fullmatch(r'[0-9a-f]{32}', run_id):
+        raise ValueError('Invalid credential-anchor run identity')
+    return json.dumps([
+        '/usr/bin/open', '-n', '.build/NativePolicyAnchorProbe.app', '--args', run_id,
+    ])
 
 
 
@@ -205,7 +215,9 @@ def verified_prior_acceptance(name, vm, base):
     if (receipt.get('passed') is not True or type(receipt.get('exit_code')) is not int
             or receipt['exit_code'] != 0 or receipt.get('vm') != vm
             or receipt.get('guest_verified') is not True or receipt.get('console_unlocked') is not True
-            or receipt.get('gates') != ['ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime']
+            or receipt.get('gates') not in (
+                ['ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime'],
+                ['ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime', 'credential-anchor'])
             or receipt.get('manifest') != manifest):
         raise ValueError('Prior acceptance receipt is not verified for this VM')
     digest = manifest.get('dist/AgentIsland.app/Contents/MacOS/agentisland')
@@ -401,9 +413,38 @@ if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(pro
     lifetime_helper.write_bytes((lifetime_target / 'debug/agentisland-window-lifetime-probe').read_bytes())
     lifetime_helper.chmod(0o700)
     run(['codesign', '--force', '--sign', '-', str(lifetime_helper)], capture_output=True)
+    policy_anchor_run_id = uuid.uuid4().hex
+    policy_anchor_app = None
+    if not args.motion_only:
+        run(['cargo', 'build', '--locked', '--quiet', '--manifest-path',
+             str(ROOT / 'app/src-tauri/Cargo.toml'), '--example', 'native_policy_anchor_probe'],
+            timeout=900)
+        policy_anchor_app = evidence / 'NativePolicyAnchorProbe.app'
+        probe_contents = policy_anchor_app / 'Contents'
+        probe_executable = probe_contents / 'MacOS/NativePolicyAnchorProbe'
+        probe_executable.parent.mkdir(parents=True)
+        probe_executable.write_bytes(
+            (ROOT / 'app/src-tauri/target/debug/examples/native_policy_anchor_probe').read_bytes())
+        probe_executable.chmod(0o700)
+        (probe_contents / 'Info.plist').write_bytes(plistlib.dumps({
+            'CFBundleExecutable': 'NativePolicyAnchorProbe',
+            'CFBundleIdentifier': f'dev.agentisland.policy-anchor-acceptance.{policy_anchor_run_id}',
+            'CFBundleName': 'NativePolicyAnchorProbe',
+            'CFBundlePackageType': 'APPL',
+            'CFBundleVersion': '1',
+            'LSUIElement': True,
+        }))
+        run(['codesign', '--force', '--deep', '--sign', '-', str(policy_anchor_app)], capture_output=True)
     files = {f'scripts/{name}': ROOT / 'scripts' / name for name in SCRIPTS}
     files['.build/policy-helper'] = helper
     files['.build/window-lifetime-probe'] = lifetime_helper
+    if policy_anchor_app is not None:
+        files['app/src-tauri/examples/native_policy_anchor_probe.rs'] = (
+            ROOT / 'app/src-tauri/examples/native_policy_anchor_probe.rs')
+        for path in policy_anchor_app.rglob('*'):
+            if path.is_file():
+                guest_path = Path('.build/NativePolicyAnchorProbe.app') / path.relative_to(policy_anchor_app)
+                files[guest_path.as_posix()] = path
     for name in ['scripts/window-lifetime-probe/Cargo.toml',
                  'scripts/window-lifetime-probe/Cargo.lock',
                  'scripts/window-lifetime-probe/src/main.rs',
@@ -433,7 +474,7 @@ if let pid = Int32(CommandLine.arguments[1]), let app = NSRunningApplication(pro
             retire_prior_acceptance(ssh, python, quoted, evidence, meta['home'], args.retire_acceptance, expected)
         run_resource(ssh, python, quoted, evidence, manifest)
         return
-    guest = '''import hashlib,json,os,subprocess,sys,plistlib
+    guest = '''import hashlib,json,os,subprocess,sys,plistlib,time
 from pathlib import Path
 root=Path.cwd()
 console=plistlib.loads(subprocess.check_output(['ioreg','-n','Root','-d1','-a']))
@@ -459,15 +500,31 @@ for name,expected in json.loads((root/'manifest.json').read_text()).items():
     assert hashlib.sha256((root/name).read_bytes()).hexdigest()==expected, 'Artifact identity mismatch'
 subprocess.run(['codesign','--verify','--strict','dist/AgentIsland.app'],check=True)
 subprocess.run(['codesign','--verify','--strict','.build/window-lifetime-probe'],check=True)
+if not MOTION_ONLY:
+ subprocess.run(['codesign','--verify','--strict','.build/NativePolicyAnchorProbe.app'],check=True)
 env=dict(os.environ,UI_SMOKE_BIN=str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland'),POLICY_HELPER=str(root/'.build/policy-helper'))
 commands=[['bash','scripts/ui-smoke.sh','--isolated-session'],[sys.executable,'scripts/test-dock-presence.py','--isolated-session'],[sys.executable,'scripts/test-app-instance.py','--cold'],[sys.executable,'scripts/test-cli-native.py'],['.build/window-lifetime-probe']]
 if MOTION_ONLY:
     commands=[[sys.executable,'scripts/test-native-motion.py','--binary',str(root/'dist/AgentIsland.app/Contents/MacOS/agentisland')]]
+else:
+    anchor_result_path = root / '.build/native-policy-anchor-result.json'
+    anchor_result_path.unlink(missing_ok=True)
+    subprocess.run(POLICY_ANCHOR_LAUNCH_COMMAND + [str(anchor_result_path)], check=True, timeout=30)
+    anchor_deadline = time.monotonic() + 60
+    while not anchor_result_path.is_file() and time.monotonic() < anchor_deadline:
+        time.sleep(0.25)
+    if not anchor_result_path.is_file():
+        raise TimeoutError('Credential anchor GUI probe did not produce a result')
+    anchor_result = json.loads(anchor_result_path.read_text())
+    if anchor_result != {'result': 'passed'}:
+        raise RuntimeError('Credential anchor GUI probe failed [' + str(anchor_result.get('error', 'INVALID_RESULT')) + ']')
+    print('GATE credential-anchor: create/read/update/delete passed', flush=True)
 for command in commands:
     print('GATE '+Path(command[1] if len(command)>1 else command[0]).name,flush=True)
     subprocess.run(command,env=env,check=True,timeout=360 if MOTION_ONLY else 180)
 print('ALL GATES PASS',flush=True)
-'''.replace('MOTION_ONLY', repr(args.motion_only))
+'''.replace('MOTION_ONLY', repr(args.motion_only)).replace(
+        'POLICY_ANCHOR_LAUNCH_COMMAND', policy_anchor_command_literal(policy_anchor_run_id))
     with (evidence / 'gates.log').open('w') as log:
         result = subprocess.run(ssh + [f'cd {quoted} && {python} -c {shlex.quote(guest)}'],
                                 stdout=log, stderr=subprocess.STDOUT, timeout=600)
@@ -479,7 +536,7 @@ print('ALL GATES PASS',flush=True)
                 data = json.loads(captured.stdout)
                 (evidence / f'motion-{edge}.json').write_text(json.dumps(data))
     receipt = {'schema_version': 1, 'vm': args.vm, 'manifest': manifest,
-               'gates': ['motion-four-edges'] if args.motion_only else ['ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime'],
+               'gates': ['motion-four-edges'] if args.motion_only else ['ui', 'dock', 'single-instance', 'cli-native', 'window-lifetime', 'credential-anchor'],
                'guest_verified': True, 'console_unlocked': True, 'os_build': host_build, 'exit_code': result.returncode,
                'passed': result.returncode == 0 and 'ALL GATES PASS' in (evidence / 'gates.log').read_text()}
     (evidence / 'receipt.json').write_text(json.dumps(receipt, indent=2))

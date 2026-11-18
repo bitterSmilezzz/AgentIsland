@@ -85,7 +85,7 @@ print(f'   {copied} 个文件')
 PY
 
 echo "-- 临时副本里关闭 tauri-build 的 Windows 资源分支"
-python3 - "$WORK" <<'PY'
+python3 - "$WORK" "$TARGET" <<'PY'
 import shutil
 import subprocess
 import sys
@@ -130,6 +130,7 @@ manifest.write_text(text.rstrip('\n') + '\ntauri-build = { path = "../../vendor/
                     encoding='utf-8')
 # lock 里该包的 registry 来源必须去掉，否则 path patch 不生效。
 subprocess.run(['cargo', 'metadata', '--offline', '--format-version', '1',
+                '--filter-platform', sys.argv[2],
                 '--manifest-path', str(manifest)],
                cwd=work / 'source', check=True, capture_output=True)
 print(f'   tauri-build {version} 已复制并关闭资源分支')
